@@ -1,0 +1,7 @@
+// Release.xcconfig — values used for TestFlight / App Store builds.
+#include "Shared.xcconfig"
+
+// Production API. "$()" protects the "//" from being read as a comment.
+ARC_API_BASE_URL = https:/$()/app.arcnaples.com/api/mobile/v1
+APS_ENVIRONMENT = production
+ARC_PUSH_ENABLED = YES

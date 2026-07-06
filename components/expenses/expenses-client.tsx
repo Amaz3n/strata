@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { type DragEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react"
 import { usePathname, useSearchParams } from "next/navigation"
 import { toast } from "sonner"
@@ -17,15 +18,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { Check, CheckCircle2, ChevronLeft, ChevronRight, ChevronsUpDown, Clock, MoreHorizontal, Plus, Receipt, RefreshCcw, Sparkles, Upload, XCircle } from "@/components/icons"
+import { Check, CheckCircle2, ChevronLeft, ChevronRight, ChevronsUpDown, Clock, ExternalLink, MoreHorizontal, Plus, Receipt, RefreshCcw, Sparkles, Upload, XCircle } from "@/components/icons"
 
 import {
-  approveProjectExpenseFormAction,
   createMyExpenseAction,
   extractExpenseReceiptAction,
   getExpenseAccountingContextAction,
   listProjectExpensesPageAction,
-  rejectProjectExpenseFormAction,
   syncProjectExpenseToQBOAction,
   updateProjectExpenseAccountingAction,
   updateProjectExpenseDetailsAction,
@@ -621,30 +620,6 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
     setSheetOpen(true)
   }
 
-  function approve(expenseId: string) {
-    startTransition(async () => {
-      try {
-        await approveProjectExpenseFormAction(projectId, expenseId)
-        toast.success("Expense approved")
-        refresh()
-      } catch (error: any) {
-        toast.error("Could not approve", { description: error?.message })
-      }
-    })
-  }
-
-  function reject(expenseId: string) {
-    startTransition(async () => {
-      try {
-        await rejectProjectExpenseFormAction(projectId, expenseId)
-        toast.success("Expense rejected")
-        refresh()
-      } catch (error: any) {
-        toast.error("Could not reject", { description: error?.message })
-      }
-    })
-  }
-
   function syncExpense(expenseId: string) {
     startTransition(async () => {
       try {
@@ -806,13 +781,9 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
           <DropdownMenuItem onClick={() => openExpense(expense.id)}>QuickBooks coding</DropdownMenuItem>
           <DropdownMenuSeparator />
           {isSubmitted ? (
-            <>
-              <DropdownMenuItem onClick={() => approve(expense.id)}>Approve</DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => reject(expense.id)} className="text-destructive focus:text-destructive">
-                Reject
-              </DropdownMenuItem>
-            </>
+            <DropdownMenuItem asChild>
+              <Link href={`/projects/${projectId}/financials/review`}>Review in Financials</Link>
+            </DropdownMenuItem>
           ) : canSync ? (
             <DropdownMenuItem onClick={() => syncExpense(expense.id)}>Sync to QuickBooks</DropdownMenuItem>
           ) : (
@@ -823,27 +794,23 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
     )
   }
 
-  function rowApproveAction(expense: ProjectExpense) {
+  function rowReviewAction(expense: ProjectExpense) {
     const isSubmitted = expense.status === "submitted"
     return (
-      <IconTooltip label={isSubmitted ? "Approve expense" : "Only submitted expenses can be approved"}>
+      <IconTooltip label={isSubmitted ? "Review in Financials" : statusLabels[expense.status] ?? expense.status}>
         <span>
-          <Button
-            type="button"
-            size="icon"
-            variant="outline"
-            className={cn(
-              "h-9 w-9 rounded-md bg-background",
-              isSubmitted
-                ? "border-emerald-600 text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700"
-                : "border-muted text-muted-foreground opacity-70",
-            )}
-            disabled={isPending || !isSubmitted}
-            onClick={() => approve(expense.id)}
-          >
-            <Check className="h-5 w-5" />
-            <span className="sr-only">Approve expense</span>
-          </Button>
+          {isSubmitted ? (
+            <Button asChild type="button" size="icon" variant="outline" className="h-9 w-9 rounded-md bg-background">
+              <Link href={`/projects/${projectId}/financials/review`}>
+                <ExternalLink className="h-4 w-4" />
+                <span className="sr-only">Review expense in Financials</span>
+              </Link>
+            </Button>
+          ) : (
+            <span className="inline-flex h-9 w-9 items-center justify-center rounded-md border bg-muted/30">
+              <ExpenseStatusIcon status={expense.status} />
+            </span>
+          )}
         </span>
       </IconTooltip>
     )
@@ -1094,7 +1061,7 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
                   <TableHead className="min-w-[280px] px-4 py-3">QBO Vendor</TableHead>
                   {costCodesEnabled ? <TableHead className="min-w-[180px] px-4 py-3">Cost Code</TableHead> : null}
                   <TableHead className="sticky right-[56px] z-10 w-14 min-w-14 border-l-2 border-r bg-background px-2 py-3 text-center shadow-[-2px_0_0_hsl(var(--border))]">
-                    <span className="sr-only">Approve</span>
+                    <span className="sr-only">Review</span>
                   </TableHead>
                   <TableHead className="sticky right-0 z-10 w-14 min-w-14 border-l bg-background px-2 py-3 text-center shadow-[-1px_0_0_hsl(var(--border))]">
                     <span className="sr-only">More actions</span>
@@ -1194,7 +1161,7 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
                         </TableCell>
                       ) : null}
                       <TableCell className="sticky right-[56px] z-10 w-14 min-w-14 border-l-2 border-r bg-background px-2 py-2 text-center shadow-[-2px_0_0_hsl(var(--border))]" onClick={(event) => event.stopPropagation()}>
-                        <div className="flex items-center justify-center">{rowApproveAction(expense)}</div>
+                        <div className="flex items-center justify-center">{rowReviewAction(expense)}</div>
                       </TableCell>
                       <TableCell className="sticky right-0 z-10 w-14 min-w-14 border-l bg-background px-2 py-2 text-center shadow-[-1px_0_0_hsl(var(--border))]" onClick={(event) => event.stopPropagation()}>
                         <div className="flex items-center justify-center">{rowActions(expense)}</div>

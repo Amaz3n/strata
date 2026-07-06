@@ -6,6 +6,8 @@ import { listChangeOrdersAction } from "@/app/(app)/change-orders/actions"
 import { ChangeOrdersClient } from "@/components/change-orders/change-orders-client"
 import { Skeleton } from "@/components/ui/skeleton"
 import { getOrgBilling } from "@/lib/services/orgs"
+import { listProjectBudgetLines } from "@/lib/services/budgets"
+import { listCostCodes } from "@/lib/services/cost-codes"
 import type { Address } from "@/lib/types"
 
 interface ProjectChangeOrdersPageProps {
@@ -44,14 +46,22 @@ async function ProjectChangeOrdersData({ id }: { id: string }) {
     notFound()
   }
 
-  const changeOrders = await listChangeOrdersAction(id)
-  const orgBilling = await getOrgBilling().catch(() => null)
+  const costCodesEnabled = project.financial_settings?.cost_codes_enabled ?? true
+  const [changeOrders, orgBilling, costCodes, budgetLines] = await Promise.all([
+    listChangeOrdersAction(id),
+    getOrgBilling().catch(() => null),
+    costCodesEnabled ? listCostCodes().catch(() => []) : Promise.resolve([]),
+    costCodesEnabled ? Promise.resolve([]) : listProjectBudgetLines(id).catch(() => []),
+  ])
 
   return (
     <div className="space-y-6">
       <ChangeOrdersClient
         changeOrders={changeOrders}
         projects={[project]}
+        costCodes={costCodes}
+        budgetLines={budgetLines}
+        costCodesEnabled={costCodesEnabled}
         hideProjectFilter
         builderInfo={{
           name: orgBilling?.org?.name,

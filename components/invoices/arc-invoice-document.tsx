@@ -27,6 +27,8 @@ export type ArcInvoiceDocumentData = {
   taxCents: number
   totalCents: number
   taxRate?: number | null
+  discountCents?: number | null
+  discountPercent?: number | null
 }
 
 export type ArcInvoiceBranding = {
@@ -125,6 +127,8 @@ export function toArcInvoiceData(invoice: Invoice, branding?: ArcInvoiceBranding
     taxCents: invoice.tax_cents ?? invoice.totals?.tax_cents ?? 0,
     totalCents: invoice.total_cents ?? invoice.totals?.total_cents ?? 0,
     taxRate: invoice.totals?.tax_rate ?? (metadata.tax_rate as number | undefined) ?? null,
+    discountCents: invoice.totals?.discount_cents ?? null,
+    discountPercent: invoice.totals?.discount_type === "percent" ? invoice.totals?.discount_value ?? null : null,
   }
 }
 
@@ -253,6 +257,14 @@ export function ArcInvoiceDocument({
             <span className="text-[#4B5563]">Subtotal</span>
             <span>{money(data.subtotalCents)}</span>
           </div>
+          {data.discountCents && data.discountCents > 0 ? (
+            <div className="mt-2.5 flex justify-between text-[13px]">
+              <span className="text-[#4B5563]">
+                Discount{typeof data.discountPercent === "number" ? ` (${data.discountPercent}%)` : ""}
+              </span>
+              <span>-{money(data.discountCents)}</span>
+            </div>
+          ) : null}
           <div className="mt-2.5 flex justify-between text-[13px]">
             <span className="text-[#4B5563]">Tax{typeof data.taxRate === "number" ? ` (${data.taxRate}%)` : ""}</span>
             <span>{money(data.taxCents)}</span>

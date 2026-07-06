@@ -39,6 +39,13 @@ const periodInputSchema = z.object({
 
 export type CreateBillingPeriodInput = z.infer<typeof periodInputSchema>
 
+const closePeriodInputSchema = z.object({
+  projectId: z.string().uuid(),
+  billingPeriodId: z.string().uuid(),
+})
+
+export type CloseBillingPeriodInput = z.infer<typeof closePeriodInputSchema>
+
 function mapPeriod(row: any): ProjectBillingPeriod {
   return {
     id: row.id,
@@ -120,6 +127,23 @@ export async function createProjectBillingPeriod(input: CreateBillingPeriodInput
     permission: "invoice.write",
   })
 
+  const { data: overlapping, error: overlapError } = await supabase
+    .from("project_billing_periods")
+    .select("id, name, period_start, period_end")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", parsed.projectId)
+    .lte("period_start", parsed.periodEnd)
+    .gte("period_end", parsed.periodStart)
+    .limit(1)
+    .maybeSingle()
+
+  if (overlapError) throw new Error(`Failed to check billing period overlap: ${overlapError.message}`)
+  if (overlapping) {
+    throw new Error(
+      `Billing period overlaps ${overlapping.name} (${overlapping.period_start} to ${overlapping.period_end}).`,
+    )
+  }
+
   const payload = {
     org_id: resolvedOrgId,
     project_id: parsed.projectId,
@@ -157,6 +181,71 @@ export async function createProjectBillingPeriod(input: CreateBillingPeriodInput
       project_id: parsed.projectId,
       period_start: parsed.periodStart,
       period_end: parsed.periodEnd,
+    },
+  })
+
+  return mapPeriod(data)
+}
+
+export async function closeProjectBillingPeriod(input: CloseBillingPeriodInput, orgId?: string) {
+  const parsed = closePeriodInputSchema.parse(input)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectInvoicePermission({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    projectId: parsed.projectId,
+    permission: "invoice.write",
+  })
+
+  const existing = await getProjectBillingPeriod({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: parsed.projectId,
+    billingPeriodId: parsed.billingPeriodId,
+  })
+  if (!existing) throw new Error("Billing period not found.")
+  if (existing.status === "closed") return existing
+
+  const now = new Date().toISOString()
+  const { data, error } = await supabase
+    .from("project_billing_periods")
+    .update({
+      status: "closed",
+      closed_by: userId,
+      closed_at: now,
+      updated_by: userId,
+      metadata: {
+        ...(existing.metadata ?? {}),
+        closed_from: "financials_close_workflow",
+        closed_at: now,
+      },
+    })
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", parsed.projectId)
+    .eq("id", parsed.billingPeriodId)
+    .select("*")
+    .single()
+
+  if (error || !data) throw new Error(`Failed to close billing period: ${error?.message}`)
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "project_billing_period",
+    entityId: parsed.billingPeriodId,
+    before: { ...existing },
+    after: data,
+  })
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "project_billing_period_closed",
+    entityType: "project_billing_period",
+    entityId: parsed.billingPeriodId,
+    payload: {
+      project_id: parsed.projectId,
+      invoice_ids: Array.isArray(data.invoice_ids) ? data.invoice_ids : [],
     },
   })
 

@@ -1,5 +1,7 @@
 "use client"
 
+import "./gantt.css"
+
 import { useRef, useState, useCallback, useMemo, useEffect } from "react"
 import { format, differenceInDays, startOfDay, isSameDay, isWeekend as checkIsWeekend, addDays as dateAddDays } from "date-fns"
 import { calculateScheduleImpacts, calculateCriticalPath } from "@/lib/utils/schedule-calc"

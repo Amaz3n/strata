@@ -1,13 +1,13 @@
 "use server"
 
-import { validatePortalToken } from "@/lib/services/portal-access"
+import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { listProjectSelections, listSelectionCategories, listSelectionOptions, selectProjectOption } from "@/lib/services/selections"
 
 export async function loadSelectionsAction(token: string) {
-  const access = await validatePortalToken(token)
-  if (!access || !access.permissions.can_submit_selections) {
-    throw new Error("Access denied")
-  }
+  const access = await assertPortalActionAccess(token, {
+    portalType: "client",
+    permission: "can_submit_selections",
+  })
 
   const [selections, categories] = await Promise.all([
     listProjectSelections(access.org_id, access.project_id),
@@ -27,10 +27,10 @@ export async function loadSelectionsAction(token: string) {
 }
 
 export async function selectOptionAction(input: { token: string; selectionId: string; optionId: string }) {
-  const access = await validatePortalToken(input.token)
-  if (!access || !access.permissions.can_submit_selections) {
-    throw new Error("Access denied")
-  }
+  const access = await assertPortalActionAccess(input.token, {
+    portalType: "client",
+    permission: "can_submit_selections",
+  })
 
   await selectProjectOption({
     orgId: access.org_id,
@@ -42,7 +42,6 @@ export async function selectOptionAction(input: { token: string; selectionId: st
 
   return { success: true }
 }
-
 
 
 

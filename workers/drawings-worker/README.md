@@ -1,4 +1,11 @@
-# Drawings Worker
+# Drawings Worker (RETIRED)
+
+> **This worker is retired.** Drawing processing now runs inside the Next.js
+> app (`lib/services/drawings-pipeline.ts`) using MuPDF WASM + sharp, driven by
+> the `/api/jobs/drawings-pipeline` kick route and the `process-outbox` cron.
+> The Cloud Run deployment can be torn down; nothing in the app calls it
+> anymore (`DRAWINGS_WORKER_URL` / `DRAWINGS_WORKER_SECRET` env vars are unused).
+> This directory is kept for reference until the migration has soaked in prod.
 
 A Cloud Run worker for processing PDF drawing sets into tiled images.
 

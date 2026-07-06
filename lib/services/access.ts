@@ -1,6 +1,8 @@
+import { cache } from "react"
+
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { isPlatformAdminUser } from "@/lib/auth/platform"
-import { requireOrgMembership } from "@/lib/auth/context"
+import { hasActivePlatformMembership, requireOrgMembership } from "@/lib/auth/context"
 
 export type OrgAccessStatus =
   | "active"
@@ -29,7 +31,9 @@ function addDays(date: Date, days: number) {
   return result
 }
 
-export async function getOrgAccessStateForOrg(orgId: string, isPlatformAdmin = false): Promise<OrgAccessState> {
+// Request-cached: the lock check runs in requireOrgContext for every service
+// call in a render, plus the app layout; the answer cannot change mid-request.
+export const getOrgAccessStateForOrg = cache(async (orgId: string, isPlatformAdmin = false): Promise<OrgAccessState> => {
   if (isPlatformAdmin) {
     return { status: "active", locked: false, orgName: null }
   }
@@ -92,7 +96,7 @@ export async function getOrgAccessStateForOrg(orgId: string, isPlatformAdmin = f
     default:
       return { status: "unknown", locked: true, reason: "Unknown subscription status.", orgName: (org as any).name ?? null }
   }
-}
+})
 
 export async function getOrgAccessState(): Promise<OrgAccessState> {
   const { user, orgId } = await requireOrgMembership()
@@ -101,15 +105,7 @@ export async function getOrgAccessState(): Promise<OrgAccessState> {
   }
 
   // Platform operators with explicit platform roles can bypass org lock state.
-  const serviceSupabase = createServiceSupabaseClient()
-  const { data: platformMembership } = await serviceSupabase
-    .from("platform_memberships")
-    .select("id")
-    .eq("user_id", user.id)
-    .eq("status", "active")
-    .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
-    .limit(1)
-    .maybeSingle()
+  const isPlatformOperator = await hasActivePlatformMembership(user.id)
 
-  return getOrgAccessStateForOrg(orgId, Boolean(platformMembership?.id))
+  return getOrgAccessStateForOrg(orgId, isPlatformOperator)
 }

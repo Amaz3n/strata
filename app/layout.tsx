@@ -40,15 +40,18 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={`${_dmSans.variable} ${_dmMono.variable} font-sans antialiased`} style={{ fontOpticalSizing: "auto" }}>
+        <script
+          id="arc-ui-size-init"
+          dangerouslySetInnerHTML={{
+            __html: `try{var s=localStorage.getItem("arc-ui-size");document.documentElement.dataset.uiSize=s==="compact"||s==="comfortable"?s:"default"}catch(e){document.documentElement.dataset.uiSize="default"}`
+          }}
+        />
         <ThemeProvider
           attribute="class"
           defaultTheme="dark"
           enableSystem
           disableTransitionOnChange
         >
-          <Script id="arc-ui-size-init" strategy="beforeInteractive">
-            {`try{var s=localStorage.getItem("arc-ui-size");document.documentElement.dataset.uiSize=s==="compact"||s==="comfortable"?s:"default"}catch(e){document.documentElement.dataset.uiSize="default"}`}
-          </Script>
           <PersonalizationProvider>{children}</PersonalizationProvider>
           <Toaster />
           <Analytics />
@@ -57,7 +60,7 @@ export default function RootLayout({
           {/* Google Maps JavaScript API Script */}
           {process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY && (
             <Script
-              src={`https://maps.googleapis.com/maps/api/js?key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}&libraries=places`}
+              src={`https://maps.googleapis.com/maps/api/js?key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}&libraries=places&loading=async`}
               strategy="afterInteractive"
             />
           )}

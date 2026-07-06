@@ -12,17 +12,22 @@ import type {
   Task,
   ScheduleItem,
   DailyLog,
+  DailyReport,
+  DailyReportManpower,
   FileMetadata,
   ProjectVendor,
   DrawSchedule,
   Retainage,
 } from "@/lib/types"
 import type { ScheduleItemInput } from "@/lib/validation/schedule"
-import type { TaskInput } from "@/lib/validation/tasks"
 import type { DailyLogEntryInput, DailyLogInput } from "@/lib/validation/daily-logs"
 import { scheduleItemInputSchema, scheduleBulkUpdateSchema } from "@/lib/validation/schedule"
 import { taskInputSchema } from "@/lib/validation/tasks"
-import { dailyLogInputSchema } from "@/lib/validation/daily-logs"
+import {
+  dailyLogInputSchema,
+  dailyReportUpdateSchema,
+  manpowerInputSchema,
+} from "@/lib/validation/daily-logs"
 import { getBudgetWithActuals } from "@/lib/services/budgets"
 import type { ProjectInput } from "@/lib/validation/projects"
 import { getProjectWithFinancials, updateProject } from "@/lib/services/projects"
@@ -35,6 +40,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { buildInternalFileUrl, getDefaultFolderForCategory, normalizeFolderPath } from "@/lib/services/files"
 import { triggerFileIndexing } from "@/lib/services/files-indexing"
 import { createInitialVersion } from "@/lib/services/file-versions"
+import { generateDrawPayApplicationPdf } from "@/lib/services/reports/pay-application"
 import {
   deleteFilesObjects,
   ensureOrgScopedPath,
@@ -1643,13 +1649,14 @@ export async function getProjectDependenciesAction(projectId: string) {
 export async function getProjectDailyLogsAction(projectId: string): Promise<DailyLog[]> {
   const { supabase, orgId } = await requireOrgContext()
 
+  // Scoped to a single project, so fetch the whole record — the day-centric UI
+  // navigates any date, and the old .limit(50) made older days unreachable.
   const { data, error } = await supabase
     .from("daily_logs")
-    .select("id, org_id, project_id, log_date, summary, weather, created_by, created_at, updated_at")
+    .select("id, org_id, project_id, log_date, summary, weather, daily_report_id, created_by, created_at, updated_at, author:app_users!daily_logs_created_by_fkey(id, full_name, email, avatar_url)")
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .order("log_date", { ascending: false })
-    .limit(50)
 
   if (error) {
     console.error("Failed to fetch daily logs:", error.message)
@@ -1785,6 +1792,7 @@ export async function getProjectDailyLogsAction(projectId: string): Promise<Dail
     const weatherText = typeof weather === "string"
       ? weather
       : [weather.conditions, weather.temperature, weather.notes].filter(Boolean).join(" • ")
+    const author = row.author as any
 
     return {
       id: row.id,
@@ -1793,9 +1801,16 @@ export async function getProjectDailyLogsAction(projectId: string): Promise<Dail
       date: row.log_date,
       weather: weatherText || undefined,
       notes: row.summary ?? undefined,
+      daily_report_id: row.daily_report_id ?? undefined,
       created_by: row.created_by ?? undefined,
       created_at: row.created_at,
       updated_at: row.updated_at,
+      author: author ? {
+        id: author.id,
+        full_name: author.full_name ?? undefined,
+        email: author.email ?? undefined,
+        avatar_url: author.avatar_url ?? undefined,
+      } : undefined,
       entries: entriesByLogId[row.id] ?? [],
       mentions: mentionsByLogId[row.id] ?? [],
       comments: commentsByLogId[row.id] ?? [],
@@ -2784,225 +2799,78 @@ export async function createProjectTaskAction(projectId: string, input: unknown)
   }
 }
 
-export async function updateProjectTaskAction(
-  projectId: string,
-  taskId: string,
-  input: Partial<TaskInput>
-): Promise<Task> {
-  const { supabase, orgId, userId } = await requireOrgContext()
-
-  // Fetch existing task
-  const { data: existing, error: fetchError } = await supabase
-    .from("tasks")
-    .select("*, task_assignments(user_id)")
+/**
+ * Return the id of the day-report for (project, date), creating a draft on first
+ * touch. Every contribution (log, manpower, weather) hangs off this report, so it
+ * is the single point that guarantees one report per day. If the report has no
+ * weather yet and the caller supplies some, seed it here.
+ */
+async function getOrCreateDailyReportId(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  {
+    orgId,
+    projectId,
+    date,
+    userId,
+    weather,
+  }: { orgId: string; projectId: string; date: string; userId: string; weather?: unknown },
+): Promise<{ id: string; status: string }> {
+  const { data: existing } = await supabase
+    .from("daily_reports")
+    .select("id, status, weather")
     .eq("org_id", orgId)
-    .eq("id", taskId)
-    .single()
+    .eq("project_id", projectId)
+    .eq("report_date", date)
+    .maybeSingle()
 
-  if (fetchError || !existing) {
-    throw new Error("Task not found")
-  }
-
-  const existingMetadata = (existing.metadata ?? {}) as Record<string, any>
-  const updateData: Record<string, any> = {}
-
-  // Basic fields
-  if (input.title !== undefined) updateData.title = input.title
-  if (input.description !== undefined) updateData.description = input.description || null
-  if (input.status !== undefined) {
-    updateData.status = input.status
-    // Set completed_at when task is marked as done
-    if (input.status === "done" && existing.status !== "done") {
-      updateData.completed_at = new Date().toISOString()
-    } else if (input.status !== "done" && existing.status === "done") {
-      updateData.completed_at = null
+  if (existing) {
+    if (weather && !existing.weather) {
+      await supabase.from("daily_reports").update({ weather }).eq("id", existing.id)
     }
+    return { id: existing.id as string, status: existing.status as string }
   }
-  if (input.priority !== undefined) updateData.priority = input.priority
-  if (input.start_date !== undefined) updateData.start_date = input.start_date || null
-  if (input.due_date !== undefined) updateData.due_date = input.due_date || null
 
-  // Build metadata update
-  const metadata = { ...existingMetadata }
-  if (input.location !== undefined) metadata.location = input.location || undefined
-  if (input.trade !== undefined) metadata.trade = input.trade || undefined
-  if (input.estimated_hours !== undefined) metadata.estimated_hours = input.estimated_hours
-  if ((input as any).actual_hours !== undefined) metadata.actual_hours = (input as any).actual_hours
-  if (input.tags !== undefined) metadata.tags = input.tags?.length ? input.tags : undefined
-  if (input.checklist !== undefined) metadata.checklist = input.checklist?.length ? input.checklist : undefined
-
-  // Clean up undefined values
-  Object.keys(metadata).forEach(key => {
-    if (metadata[key] === undefined) delete metadata[key]
-  })
-
-  updateData.metadata = metadata
-
-  const { data, error } = await supabase
-    .from("tasks")
-    .update(updateData)
-    .eq("org_id", orgId)
-    .eq("id", taskId)
-    .select(`
-      id, org_id, project_id, title, description, status, priority,
-      start_date, due_date, completed_at, metadata, created_by, assigned_by,
-      created_at, updated_at
-    `)
+  const { data: created, error } = await supabase
+    .from("daily_reports")
+    .insert({
+      org_id: orgId,
+      project_id: projectId,
+      report_date: date,
+      status: "draft",
+      weather: weather ?? null,
+      created_by: userId,
+    })
+    .select("id, status")
+    // A concurrent insert may have won the unique (project_id, report_date) race.
     .single()
 
-  if (error || !data) {
-    throw new Error(`Failed to update task: ${error?.message}`)
-  }
-
-  // Handle assignee change
-  let assignee: { id: string; full_name: string; avatar_url?: string } | undefined
-  if (input.assignee_id !== undefined) {
-    // Remove existing assignments
-    await supabase
-      .from("task_assignments")
-      .delete()
+  if (error || !created) {
+    const { data: raced } = await supabase
+      .from("daily_reports")
+      .select("id, status")
       .eq("org_id", orgId)
-      .eq("task_id", taskId)
-
-    if (input.assignee_id) {
-      await supabase.from("task_assignments").insert({
-        org_id: orgId,
-        task_id: taskId,
-        user_id: input.assignee_id,
-        assigned_by: userId,
-        due_date: data.due_date,
-      })
-
-      const { data: userData } = await supabase
-        .from("app_users")
-        .select("id, full_name, avatar_url")
-        .eq("id", input.assignee_id)
-        .single()
-
-      if (userData) {
-        assignee = {
-          id: userData.id,
-          full_name: userData.full_name ?? "Unknown",
-          avatar_url: userData.avatar_url ?? undefined,
-        }
-      }
-    }
-  } else {
-    // Fetch existing assignee
-    const assignments = existing.task_assignments as any[] ?? []
-    const existingAssignment = assignments.find((a) => a?.user_id)
-    if (existingAssignment?.user_id) {
-      const { data: userData } = await supabase
-        .from("app_users")
-        .select("id, full_name, avatar_url")
-        .eq("id", existingAssignment.user_id)
-        .single()
-
-      if (userData) {
-        assignee = {
-          id: userData.id,
-          full_name: userData.full_name ?? "Unknown",
-          avatar_url: userData.avatar_url ?? undefined,
-        }
-      }
-    }
+      .eq("project_id", projectId)
+      .eq("report_date", date)
+      .single()
+    if (raced) return { id: raced.id as string, status: raced.status as string }
+    throw new Error(`Failed to open daily report: ${error?.message}`)
   }
 
-  await recordEvent({
-    orgId,
-    eventType: "task_updated",
-    entityType: "task",
-    entityId: taskId,
-    payload: { title: data.title, status: data.status },
-  })
-
-  await recordAudit({
-    orgId,
-    actorId: userId,
-    action: "update",
-    entityType: "task",
-    entityId: taskId,
-    before: existing,
-    after: data,
-  })
-
-  revalidatePath(`/projects/${projectId}`)
-
-  const returnedMetadata = (data.metadata ?? {}) as Record<string, any>
-  const assigneeId = input.assignee_id ?? (existing.task_assignments as any[])?.[0]?.user_id
-
-  return {
-    id: data.id,
-    org_id: data.org_id,
-    project_id: data.project_id,
-    title: data.title,
-    description: data.description ?? undefined,
-    status: data.status,
-    priority: data.priority,
-    start_date: data.start_date ?? undefined,
-    due_date: data.due_date ?? undefined,
-    completed_at: data.completed_at ?? undefined,
-    assignee_id: assigneeId,
-    assignee,
-    location: returnedMetadata.location,
-    trade: returnedMetadata.trade,
-    estimated_hours: returnedMetadata.estimated_hours,
-    actual_hours: returnedMetadata.actual_hours,
-    tags: returnedMetadata.tags,
-    checklist: returnedMetadata.checklist,
-    created_by: data.created_by ?? undefined,
-    assigned_by: data.assigned_by ?? undefined,
-    created_at: data.created_at,
-    updated_at: data.updated_at,
-  }
-}
-
-export async function deleteProjectTaskAction(projectId: string, taskId: string): Promise<void> {
-  const { supabase, orgId, userId } = await requireOrgContext()
-
-  const { data: existing, error: fetchError } = await supabase
-    .from("tasks")
-    .select("id, title")
-    .eq("org_id", orgId)
-    .eq("id", taskId)
-    .single()
-
-  if (fetchError || !existing) {
-    throw new Error("Task not found")
-  }
-
-  // Delete assignments first
-  await supabase
-    .from("task_assignments")
-    .delete()
-    .eq("org_id", orgId)
-    .eq("task_id", taskId)
-
-  const { error } = await supabase
-    .from("tasks")
-    .delete()
-    .eq("org_id", orgId)
-    .eq("id", taskId)
-
-  if (error) {
-    throw new Error(`Failed to delete task: ${error.message}`)
-  }
-
-  await recordAudit({
-    orgId,
-    actorId: userId,
-    action: "delete",
-    entityType: "task",
-    entityId: taskId,
-    before: existing,
-  })
-
-  revalidatePath(`/projects/${projectId}`)
+  return { id: created.id as string, status: created.status as string }
 }
 
 export async function createProjectDailyLogAction(projectId: string, input: unknown): Promise<DailyLog> {
   const parsed = dailyLogInputSchema.parse({ ...input as object, project_id: projectId })
   const { supabase, orgId, userId } = await requireOrgContext()
+  await requireProjectPermission(userId, projectId, "daily_log.write")
+
+  const report = await getOrCreateDailyReportId(supabase, {
+    orgId,
+    projectId,
+    date: parsed.date,
+    userId,
+    weather: parsed.weather,
+  })
 
   const { data, error } = await supabase
     .from("daily_logs")
@@ -3012,9 +2880,10 @@ export async function createProjectDailyLogAction(projectId: string, input: unkn
       log_date: parsed.date,
       summary: parsed.summary || null,
       weather: parsed.weather || null,
+      daily_report_id: report.id,
       created_by: userId,
     })
-    .select("id, org_id, project_id, log_date, summary, weather, created_by, created_at, updated_at")
+    .select("id, org_id, project_id, log_date, summary, weather, daily_report_id, created_by, created_at, updated_at")
     .single()
 
   if (error || !data) {
@@ -3113,6 +2982,7 @@ export async function createProjectDailyLogAction(projectId: string, input: unkn
     date: data.log_date,
     weather: weatherText || undefined,
     notes: data.summary ?? undefined,
+    daily_report_id: data.daily_report_id ?? report.id,
     created_by: data.created_by ?? undefined,
     created_at: data.created_at,
     updated_at: data.updated_at,
@@ -3178,10 +3048,11 @@ export async function updateProjectDailyLogAction(
 ): Promise<Pick<DailyLog, "id" | "notes" | "weather" | "updated_at" | "mentions">> {
   const parsed = dailyLogUpdateInputSchema.parse(input)
   const { supabase, orgId, userId } = await requireOrgContext()
+  await requireProjectPermission(userId, projectId, "daily_log.write")
 
   const { data: existing, error: existingError } = await supabase
     .from("daily_logs")
-    .select("id, org_id, project_id, summary, weather")
+    .select("id, org_id, project_id, summary, weather, daily_report_id, daily_report:daily_reports(status)")
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .eq("id", dailyLogId)
@@ -3189,6 +3060,10 @@ export async function updateProjectDailyLogAction(
 
   if (existingError || !existing) {
     throw new Error("Daily log not found")
+  }
+
+  if ((existing.daily_report as { status?: string } | null)?.status === "submitted") {
+    throw new Error("This day's report is submitted. Reopen it before editing entries.")
   }
 
   const { data, error } = await supabase
@@ -3290,6 +3165,19 @@ export async function updateProjectDailyLogAction(
 
 export async function deleteProjectDailyLogAction(projectId: string, dailyLogId: string): Promise<void> {
   const { supabase, orgId, userId } = await requireOrgContext()
+  await requireProjectPermission(userId, projectId, "daily_log.write")
+
+  const { data: existing } = await supabase
+    .from("daily_logs")
+    .select("id, daily_report:daily_reports(status)")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("id", dailyLogId)
+    .maybeSingle()
+
+  if ((existing?.daily_report as { status?: string } | null)?.status === "submitted") {
+    throw new Error("This day's report is submitted. Reopen it before deleting entries.")
+  }
 
   const { error } = await supabase
     .from("daily_logs")
@@ -3321,6 +3209,283 @@ export async function deleteProjectDailyLogAction(projectId: string, dailyLogId:
   revalidatePath(`/projects/${projectId}/daily-logs`)
 }
 
+
+// ---------------------------------------------------------------------------
+// Daily report lifecycle + manpower
+// ---------------------------------------------------------------------------
+
+function reportWeatherText(weather: unknown): string | undefined {
+  if (!weather) return undefined
+  if (typeof weather === "string") return weather || undefined
+  const w = weather as { conditions?: string; temperature?: string; notes?: string }
+  const text = [w.conditions, w.temperature, w.notes].filter(Boolean).join(" • ")
+  return text || undefined
+}
+
+function mapManpower(row: any): DailyReportManpower {
+  return {
+    id: row.id,
+    org_id: row.org_id,
+    project_id: row.project_id,
+    daily_report_id: row.daily_report_id,
+    company: row.company ?? undefined,
+    trade: row.trade ?? undefined,
+    workers: row.workers ?? undefined,
+    hours: row.hours != null ? Number(row.hours) : undefined,
+    notes: row.notes ?? undefined,
+    created_by: row.created_by ?? undefined,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }
+}
+
+function mapDailyReport(row: any): DailyReport {
+  return {
+    id: row.id,
+    org_id: row.org_id,
+    project_id: row.project_id,
+    date: row.report_date,
+    status: row.status,
+    weather: reportWeatherText(row.weather),
+    day_type: row.day_type ?? undefined,
+    share_with_client: row.share_with_client ?? false,
+    submitted_at: row.submitted_at ?? undefined,
+    submitted_by: row.submitted_by ?? undefined,
+    submitted_by_user: row.submitted_by_user ?? undefined,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    manpower: (row.manpower ?? []).map(mapManpower).sort((a: DailyReportManpower, b: DailyReportManpower) =>
+      a.created_at.localeCompare(b.created_at),
+    ),
+  }
+}
+
+const DAILY_REPORT_SELECT =
+  "id, org_id, project_id, report_date, status, weather, day_type, share_with_client, submitted_at, submitted_by, created_at, updated_at, " +
+  "submitted_by_user:app_users!daily_reports_submitted_by_fkey(id, full_name, email, avatar_url), " +
+  "manpower:daily_report_manpower(id, org_id, project_id, daily_report_id, company, trade, workers, hours, notes, created_by, created_at, updated_at)"
+
+async function fetchDailyReport(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  { orgId, projectId, reportId }: { orgId: string; projectId: string; reportId: string },
+): Promise<DailyReport> {
+  const { data, error } = await supabase
+    .from("daily_reports")
+    .select(DAILY_REPORT_SELECT)
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("id", reportId)
+    .single()
+
+  if (error || !data) throw new Error(`Failed to load daily report: ${error?.message}`)
+  return mapDailyReport(data)
+}
+
+export async function getProjectDailyReportsAction(projectId: string): Promise<DailyReport[]> {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireProjectPermission(userId, projectId, "daily_log.read")
+
+  const { data, error } = await supabase
+    .from("daily_reports")
+    .select(DAILY_REPORT_SELECT)
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .order("report_date", { ascending: false })
+
+  if (error) throw new Error(`Failed to list daily reports: ${error.message}`)
+  return (data ?? []).map(mapDailyReport)
+}
+
+/** Ensure a report exists for a day, then patch its weather / day type. */
+export async function updateDailyReportAction(
+  projectId: string,
+  date: string,
+  input: unknown,
+): Promise<DailyReport> {
+  const parsed = dailyReportUpdateSchema.parse(input)
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireProjectPermission(userId, projectId, "daily_log.write")
+
+  const report = await getOrCreateDailyReportId(supabase, { orgId, projectId, date, userId })
+  if (report.status === "submitted") {
+    throw new Error("This day's report is submitted. Reopen it before editing conditions.")
+  }
+
+  const patch: Record<string, unknown> = {}
+  if (parsed.weather !== undefined) patch.weather = parsed.weather
+  if (parsed.day_type !== undefined) patch.day_type = parsed.day_type
+  if (parsed.share_with_client !== undefined) patch.share_with_client = parsed.share_with_client
+
+  if (Object.keys(patch).length > 0) {
+    const { error } = await supabase.from("daily_reports").update(patch).eq("id", report.id)
+    if (error) throw new Error(`Failed to update daily report: ${error.message}`)
+  }
+
+  revalidatePath(`/projects/${projectId}/daily-logs`)
+  return fetchDailyReport(supabase, { orgId, projectId, reportId: report.id })
+}
+
+export async function submitDailyReportAction(projectId: string, reportId: string): Promise<DailyReport> {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireProjectPermission(userId, projectId, "daily_log.approve")
+
+  const { data, error } = await supabase
+    .from("daily_reports")
+    .update({ status: "submitted", submitted_at: new Date().toISOString(), submitted_by: userId })
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("id", reportId)
+    .eq("status", "draft")
+    .select("id")
+    .maybeSingle()
+
+  if (error) throw new Error(`Failed to submit daily report: ${error.message}`)
+  if (!data) throw new Error("Report not found or already submitted")
+
+  await recordEvent({
+    orgId,
+    eventType: "daily_report_submitted",
+    entityType: "daily_report",
+    entityId: reportId,
+    payload: { project_id: projectId },
+  })
+  await recordAudit({ orgId, actorId: userId, action: "update", entityType: "daily_report", entityId: reportId, after: { status: "submitted" } })
+
+  revalidatePath(`/projects/${projectId}/daily-logs`)
+  return fetchDailyReport(supabase, { orgId, projectId, reportId })
+}
+
+export async function reopenDailyReportAction(projectId: string, reportId: string): Promise<DailyReport> {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireProjectPermission(userId, projectId, "daily_log.approve")
+
+  const { error } = await supabase
+    .from("daily_reports")
+    .update({ status: "draft", submitted_at: null, submitted_by: null })
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("id", reportId)
+
+  if (error) throw new Error(`Failed to reopen daily report: ${error.message}`)
+
+  await recordAudit({ orgId, actorId: userId, action: "update", entityType: "daily_report", entityId: reportId, after: { status: "draft" } })
+
+  revalidatePath(`/projects/${projectId}/daily-logs`)
+  return fetchDailyReport(supabase, { orgId, projectId, reportId })
+}
+
+/** Guard: manpower rows can only be mutated while the report is a draft. */
+async function assertReportDraftForManpower(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  { orgId, projectId, reportId }: { orgId: string; projectId: string; reportId: string },
+) {
+  const { data } = await supabase
+    .from("daily_reports")
+    .select("status")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("id", reportId)
+    .maybeSingle()
+  if (data?.status === "submitted") {
+    throw new Error("This day's report is submitted. Reopen it before editing manpower.")
+  }
+}
+
+export async function addManpowerAction(
+  projectId: string,
+  date: string,
+  input: unknown,
+): Promise<DailyReport> {
+  const parsed = manpowerInputSchema.parse(input)
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireProjectPermission(userId, projectId, "daily_log.write")
+
+  const report = await getOrCreateDailyReportId(supabase, { orgId, projectId, date, userId })
+  if (report.status === "submitted") {
+    throw new Error("This day's report is submitted. Reopen it before adding manpower.")
+  }
+
+  const { error } = await supabase.from("daily_report_manpower").insert({
+    org_id: orgId,
+    project_id: projectId,
+    daily_report_id: report.id,
+    company: parsed.company?.trim() || null,
+    trade: parsed.trade?.trim() || null,
+    workers: parsed.workers ?? null,
+    hours: parsed.hours ?? null,
+    notes: parsed.notes?.trim() || null,
+    created_by: userId,
+  })
+  if (error) throw new Error(`Failed to add manpower: ${error.message}`)
+
+  revalidatePath(`/projects/${projectId}/daily-logs`)
+  return fetchDailyReport(supabase, { orgId, projectId, reportId: report.id })
+}
+
+export async function updateManpowerAction(
+  projectId: string,
+  manpowerId: string,
+  input: unknown,
+): Promise<DailyReport> {
+  const parsed = manpowerInputSchema.parse(input)
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireProjectPermission(userId, projectId, "daily_log.write")
+
+  const { data: existing } = await supabase
+    .from("daily_report_manpower")
+    .select("id, daily_report_id")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("id", manpowerId)
+    .maybeSingle()
+  if (!existing) throw new Error("Manpower entry not found")
+
+  await assertReportDraftForManpower(supabase, { orgId, projectId, reportId: existing.daily_report_id as string })
+
+  const { error } = await supabase
+    .from("daily_report_manpower")
+    .update({
+      company: parsed.company?.trim() || null,
+      trade: parsed.trade?.trim() || null,
+      workers: parsed.workers ?? null,
+      hours: parsed.hours ?? null,
+      notes: parsed.notes?.trim() || null,
+    })
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("id", manpowerId)
+  if (error) throw new Error(`Failed to update manpower: ${error.message}`)
+
+  revalidatePath(`/projects/${projectId}/daily-logs`)
+  return fetchDailyReport(supabase, { orgId, projectId, reportId: existing.daily_report_id as string })
+}
+
+export async function deleteManpowerAction(projectId: string, manpowerId: string): Promise<DailyReport> {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireProjectPermission(userId, projectId, "daily_log.write")
+
+  const { data: existing } = await supabase
+    .from("daily_report_manpower")
+    .select("id, daily_report_id")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("id", manpowerId)
+    .maybeSingle()
+  if (!existing) throw new Error("Manpower entry not found")
+
+  await assertReportDraftForManpower(supabase, { orgId, projectId, reportId: existing.daily_report_id as string })
+
+  const { error } = await supabase
+    .from("daily_report_manpower")
+    .delete()
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("id", manpowerId)
+  if (error) throw new Error(`Failed to delete manpower: ${error.message}`)
+
+  revalidatePath(`/projects/${projectId}/daily-logs`)
+  return fetchDailyReport(supabase, { orgId, projectId, reportId: existing.daily_report_id as string })
+}
 
 export async function createDailyLogCommentAction(
   projectId: string,
@@ -4172,4 +4337,13 @@ export async function getFileDownloadUrlAction(fileId: string): Promise<string> 
   }
 
   return buildInternalFileUrl(fileId)
+}
+
+export async function generateDrawPayApplicationAction(projectId: string, drawId: string) {
+  const { fileName, pdf } = await generateDrawPayApplicationPdf({ projectId, drawId })
+
+  return {
+    fileName,
+    pdfBase64: pdf.toString("base64"),
+  }
 }

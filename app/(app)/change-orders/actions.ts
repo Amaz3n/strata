@@ -13,7 +13,14 @@ import {
   updateChangeOrder,
   deleteChangeOrder,
   voidChangeOrder,
+  type ManualOfflineChangeOrderApprovalInput,
 } from "@/lib/services/change-orders"
+import {
+  createCommitmentChangeOrderFromClientChangeOrder,
+  getChangeOrderSubCostSignal,
+  listCommitmentChangeOrdersForClientChangeOrder,
+} from "@/lib/services/commitment-change-orders"
+import { listProjectCommitments } from "@/lib/services/commitments"
 import {
   createPortalAccessToken,
   findReusablePortalAccessToken,
@@ -39,6 +46,23 @@ function escapeEmailHtml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;")
+}
+
+function optionalStringFromRecord(record: Record<string, unknown>, key: string) {
+  const value = record[key]
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined
+}
+
+function parseManualOfflineApprovalInput(input: unknown): ManualOfflineChangeOrderApprovalInput | undefined {
+  if (!input || typeof input !== "object") return undefined
+  const record = input as Record<string, unknown>
+  return {
+    approvedAt: optionalStringFromRecord(record, "approvedAt"),
+    signerName: optionalStringFromRecord(record, "signerName"),
+    signerEmail: optionalStringFromRecord(record, "signerEmail"),
+    note: optionalStringFromRecord(record, "note"),
+    signedFileId: optionalStringFromRecord(record, "signedFileId"),
+  }
 }
 
 export async function listChangeOrdersAction(projectId?: string) {
@@ -206,10 +230,19 @@ export async function publishChangeOrderAction(changeOrderId: string) {
   }
 }
 
-export async function approveChangeOrderAction(changeOrderId: string) {
+export async function approveChangeOrderAction(changeOrderId: string, input?: unknown) {
   try {
-    const changeOrder = await approveChangeOrder({ changeOrderId })
+    const changeOrder = await approveChangeOrder({
+      changeOrderId,
+      approval: parseManualOfflineApprovalInput(input),
+    })
     revalidatePath("/change-orders")
+    if (changeOrder.project_id) {
+      revalidatePath(`/projects/${changeOrder.project_id}/change-orders`)
+      revalidatePath(`/projects/${changeOrder.project_id}/budget`)
+      revalidatePath(`/projects/${changeOrder.project_id}/financials/receivables`)
+      revalidatePath(`/projects/${changeOrder.project_id}`)
+    }
     return changeOrder
   } catch (error) {
     rethrowTypedAuthError(error)
@@ -265,6 +298,52 @@ export async function listLinkableInvoicesForChangeOrderAction(
 export async function getChangeOrderLinkedInvoicesAction(changeOrderId: string) {
   try {
     return await getChangeOrderLinkedInvoices({ changeOrderId })
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
+}
+
+export async function listCommitmentChangeOrdersForChangeOrderAction(changeOrderId: string) {
+  try {
+    return await listCommitmentChangeOrdersForClientChangeOrder({ changeOrderId })
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
+}
+
+export async function getChangeOrderSubCostSignalAction(changeOrderId: string) {
+  try {
+    return await getChangeOrderSubCostSignal({ changeOrderId })
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
+}
+
+export async function listCommitmentsForChangeOrderAction(projectId: string) {
+  try {
+    return await listProjectCommitments(projectId)
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
+}
+
+export async function createCommitmentChangeOrderFromChangeOrderAction(
+  projectId: string,
+  changeOrderId: string,
+  commitmentId: string,
+) {
+  try {
+    const result = await createCommitmentChangeOrderFromClientChangeOrder({
+      input: {
+        change_order_id: changeOrderId,
+        commitment_id: commitmentId,
+      },
+    })
+    revalidatePath("/change-orders")
+    revalidatePath(`/projects/${projectId}/change-orders`)
+    revalidatePath(`/projects/${projectId}/commitments`)
+    revalidatePath(`/projects/${projectId}/financials/budget`)
+    return result
   } catch (error) {
     rethrowTypedAuthError(error)
   }

@@ -57,6 +57,8 @@ export const TEAM_PERMISSION_OPTIONS: PermissionOption[] = [
   { key: "drawing.upload", label: "Upload drawings", category: "Field Operations" },
   { key: "schedule.publish", label: "Publish schedule", category: "Field Operations" },
   { key: "daily_log.approve", label: "Approve daily logs", category: "Field Operations" },
+  { key: "time.read", label: "View time entries", category: "Field Operations" },
+  { key: "time.write", label: "Create/edit time entries", category: "Field Operations" },
   { key: "rfi.close", label: "Close RFIs", category: "Field Operations" },
   { key: "submittal.review", label: "Review submittals", category: "Field Operations" },
   { key: "submittal.approve", label: "Approve submittals", category: "Field Operations" },

@@ -1,0 +1,12 @@
+// Shared.xcconfig
+// Non-secret config shared by every build configuration. Safe to commit.
+//
+// IMPORTANT — the xcconfig "//" gotcha:
+// In .xcconfig files, "//" starts a comment. A raw URL like
+// "https://example.com" would be truncated to "https:". Break the "//" with
+// an empty "$()" substitution so the value survives:
+//
+//     ARC_SUPABASE_URL = https:/$()/your-project.supabase.co
+//
+// Pull the local-only secret values in from Secrets.xcconfig (git-ignored).
+#include? "Secrets.xcconfig"

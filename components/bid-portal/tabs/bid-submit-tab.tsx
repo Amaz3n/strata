@@ -31,12 +31,14 @@ import { cn } from "@/lib/utils"
 import type { BidPortalAccess, BidPortalSubmission } from "@/lib/services/bid-portal"
 import { submitBidAction } from "@/app/b/[token]/actions"
 import { uploadBidFileAction } from "@/app/b/[token]/actions"
+import { declineBidAction } from "@/app/b/[token]/actions"
 
 interface BidSubmitTabProps {
   token: string
   access: BidPortalAccess
   currentSubmission?: BidPortalSubmission
   submissions: BidPortalSubmission[]
+  unacknowledgedAddenda?: number
   onSubmissionChange?: (submission: BidPortalSubmission) => void
 }
 
@@ -95,11 +97,15 @@ export function BidSubmitTab({
   access,
   currentSubmission: initialSubmission,
   submissions: initialSubmissions,
+  unacknowledgedAddenda = 0,
   onSubmissionChange,
 }: BidSubmitTabProps) {
   const [currentSubmission, setCurrentSubmission] = useState(initialSubmission)
   const [submissions, setSubmissions] = useState(initialSubmissions)
   const [isSubmitting, startSubmitting] = useTransition()
+  const [isDeclining, startDeclining] = useTransition()
+  const [declined, setDeclined] = useState(access.invite.status === "declined")
+  const [declineReason, setDeclineReason] = useState("")
 
   const [total, setTotal] = useState(() =>
     initialSubmission?.total_cents
@@ -142,8 +148,9 @@ export function BidSubmitTab({
   const dueDate = access.bidPackage.due_at ? new Date(access.bidPackage.due_at) : null
   const isPastDue = dueDate ? dueDate.getTime() < Date.now() : false
   const biddingClosed = disallowedStatuses.includes(access.bidPackage.status)
-  const inviteInactive = ["declined", "withdrawn"].includes(access.invite.status)
-  const canSubmit = !biddingClosed && !inviteInactive
+  const inviteInactive = declined || ["declined", "withdrawn"].includes(access.invite.status)
+  const hasUnacknowledgedAddenda = unacknowledgedAddenda > 0
+  const canSubmit = !biddingClosed && !inviteInactive && !hasUnacknowledgedAddenda
 
   const submissionLabel = currentSubmission ? "Submit Revised Bid" : "Submit Bid"
 
@@ -238,6 +245,10 @@ export function BidSubmitTab({
   }, [])
 
   const handleSubmit = () => {
+    if (hasUnacknowledgedAddenda) {
+      toast.error("Acknowledge outstanding addenda before submitting")
+      return
+    }
     const cents = parseCurrencyToCents(total)
     if (!cents || cents <= 0) {
       toast.error("Enter a valid total amount")
@@ -287,6 +298,23 @@ export function BidSubmitTab({
     })
   }
 
+  const handleDecline = () => {
+    startDeclining(async () => {
+      const result = await declineBidAction({
+        token,
+        reason: declineReason.trim() || null,
+      })
+
+      if (!result.success) {
+        toast.error(result.error ?? "Failed to decline bid")
+        return
+      }
+
+      setDeclined(true)
+      toast.success("No-bid response sent")
+    })
+  }
+
   return (
     <div className="space-y-4">
       {/* Closed/Inactive Warning */}
@@ -296,9 +324,15 @@ export function BidSubmitTab({
             <div className="flex items-start gap-3">
               <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
               <div>
-                <p className="text-sm font-medium">Bidding Closed</p>
+                <p className="text-sm font-medium">
+                  {hasUnacknowledgedAddenda ? "Addenda Need Acknowledgement" : inviteInactive ? "No Bid Recorded" : "Bidding Closed"}
+                </p>
                 <p className="text-sm text-muted-foreground">
-                  This bid package is no longer accepting submissions.
+                  {hasUnacknowledgedAddenda
+                    ? `Acknowledge ${unacknowledgedAddenda} addendum${unacknowledgedAddenda === 1 ? "" : "a"} before submitting.`
+                    : inviteInactive
+                      ? "Your no-bid response has been sent to the builder."
+                      : "This bid package is no longer accepting submissions."}
                 </p>
               </div>
             </div>
@@ -672,7 +706,7 @@ export function BidSubmitTab({
             </div>
 
             {/* Submit Button */}
-            <div className="pt-2">
+            <div className="space-y-3 pt-2">
               <Button
                 className="w-full h-12 text-base font-medium"
                 size="lg"
@@ -691,6 +725,30 @@ export function BidSubmitTab({
                   </>
                 )}
               </Button>
+              {!currentSubmission && !declined && (
+                <div className="rounded-lg border p-3">
+                  <div className="space-y-2">
+                    <Label htmlFor="declineReason">Decline to bid</Label>
+                    <Textarea
+                      id="declineReason"
+                      value={declineReason}
+                      onChange={(e) => setDeclineReason(e.target.value)}
+                      rows={2}
+                      placeholder="Optional reason"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full"
+                      onClick={handleDecline}
+                      disabled={isDeclining}
+                    >
+                      {isDeclining && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      Send no-bid
+                    </Button>
+                  </div>
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>

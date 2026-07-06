@@ -11,10 +11,27 @@ import {
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
-import { archiveCompanyAction } from "@/app/(app)/companies/actions";
-import { archiveContactAction } from "@/app/(app)/contacts/actions";
+import {
+  archiveCompanyAction,
+  restoreCompanyAction,
+} from "@/app/(app)/companies/actions";
+import {
+  archiveContactAction,
+  restoreContactAction,
+} from "@/app/(app)/contacts/actions";
 import { listDirectoryPageAction } from "@/app/(app)/directory/actions";
-import type { Company, Contact } from "@/lib/types";
+import type { Company, ComplianceStatusSummary, Contact, Project } from "@/lib/types";
+import type { DirectoryEntry } from "@/lib/services/directory";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -34,9 +51,12 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { ToastAction } from "@/components/ui/toast";
+import { ComplianceAlert } from "@/components/directory/compliance-alert";
 import { CompanyForm } from "@/components/companies/company-form";
 import { ContactForm } from "@/components/contacts/contact-form";
 import { ContactDetailSheet } from "@/components/contacts/contact-detail-sheet";
+import { PortalInviteDialog } from "@/components/contacts/portal-invite-dialog";
 import { ImportContactsSheet } from "@/components/directory/import-contacts-sheet";
 import {
   DirectoryTable,
@@ -59,8 +79,12 @@ import { useToast } from "@/hooks/use-toast";
 interface DirectoryClientProps {
   companies: Company[];
   contacts: Contact[];
+  entries: DirectoryEntry[];
+  complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>;
+  complianceWatchCompanies: Company[];
+  projects: Project[];
   canCreate: boolean;
-  canDelete?: boolean;
+  canArchive?: boolean;
   view: DirectoryView;
   search: string;
   typeFilter: string;
@@ -76,8 +100,12 @@ interface DirectoryClientProps {
 export function DirectoryClient({
   companies: initialCompanies,
   contacts: initialContacts,
+  entries: initialEntries,
+  complianceStatusByCompanyId,
+  complianceWatchCompanies,
+  projects,
   canCreate,
-  canDelete = false,
+  canArchive = false,
   view,
   search,
   typeFilter,
@@ -96,6 +124,7 @@ export function DirectoryClient({
 
   const [companies, setCompanies] = useState<Company[]>(initialCompanies);
   const [contacts, setContacts] = useState<Contact[]>(initialContacts);
+  const [entries, setEntries] = useState<DirectoryEntry[]>(initialEntries);
   const [loadedPage, setLoadedPage] = useState(1);
   const [total, setTotal] = useState(initialTotal);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -109,6 +138,7 @@ export function DirectoryClient({
       generation.current += 1;
       setCompanies(initialCompanies);
       setContacts(initialContacts);
+      setEntries(initialEntries);
       setLoadedPage(1);
       setTotal(initialTotal);
       setIsLoadingMore(false);
@@ -120,12 +150,21 @@ export function DirectoryClient({
       setContacts((prev) =>
         prev.length === 0 || loadedPage === 1 ? initialContacts : prev,
       );
+      setEntries((prev) =>
+        prev.length === 0 || loadedPage === 1 ? initialEntries : prev,
+      );
       setTotal(initialTotal);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterKey, initialCompanies, initialContacts, initialTotal]);
+  }, [
+    filterKey,
+    initialCompanies,
+    initialContacts,
+    initialEntries,
+    initialTotal,
+  ]);
 
-  const loadedCount = companies.length + contacts.length;
+  const loadedCount = entries.length;
   const hasMore = loadedCount < total;
 
   const loadMore = useCallback(async () => {
@@ -147,6 +186,7 @@ export function DirectoryClient({
       if (fetchGeneration !== generation.current) return;
       setCompanies((prev) => [...prev, ...result.companies]);
       setContacts((prev) => [...prev, ...result.contacts]);
+      setEntries((prev) => [...prev, ...result.entries]);
       setTotal(result.total);
       setLoadedPage(next);
     } catch (error) {
@@ -183,6 +223,13 @@ export function DirectoryClient({
   const [detailContactId, setDetailContactId] = useState<string | undefined>();
   const [detailContactOpen, setDetailContactOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteContact, setInviteContact] = useState<Contact | undefined>();
+  const [archiveTarget, setArchiveTarget] = useState<
+    | { kind: "company"; id: string; name: string }
+    | { kind: "contact"; id: string; name: string }
+    | null
+  >(null);
 
   const typeOptions = useMemo(() => {
     if (view === "companies") {
@@ -206,12 +253,11 @@ export function DirectoryClient({
     }
     return [
       ["subcontractor", "Subcontractors"],
-      ["supplier", "Suppliers"],
+      ["supplier", "Suppliers / vendors"],
       ["client", "Clients"],
       ["architect", "Architects"],
       ["engineer", "Engineers"],
       ["consultant", "Consultants"],
-      ["vendor", "Vendors"],
       ["internal", "Internal"],
       ["other", "Other"],
     ];
@@ -264,6 +310,11 @@ export function DirectoryClient({
     setContactDialogOpen(true);
   };
 
+  const openPortalInvite = (contact: Contact) => {
+    setInviteContact(contact);
+    setInviteOpen(true);
+  };
+
   const setDirectoryView = (nextView: DirectoryView) => {
     updateParams({
       view: nextView,
@@ -296,32 +347,79 @@ export function DirectoryClient({
     setContactDialogOpen(true);
   };
 
-  const archiveCompany = (companyId: string) => {
-    startTransition(async () => {
-      try {
-        await archiveCompanyAction(companyId);
-        setCompanies((prev) => prev.filter((c) => c.id !== companyId));
-        setTotal((prev) => Math.max(0, prev - 1));
-        toast({ title: "Company deleted" });
-      } catch (error) {
-        toast({
-          title: "Unable to delete company",
-          description: (error as Error).message,
-        });
+  const restoreArchived = async (
+    kind: "company" | "contact",
+    id: string,
+    name: string,
+  ) => {
+    try {
+      if (kind === "company") {
+        await restoreCompanyAction(id);
+      } else {
+        await restoreContactAction(id);
       }
+      router.refresh();
+      toast({ title: `${kind === "company" ? "Company" : "Contact"} restored`, description: name });
+    } catch (error) {
+      toast({
+        title: `Unable to restore ${kind}`,
+        description: (error as Error).message,
+      });
+    }
+  };
+
+  const archiveCompany = (companyId: string) => {
+    const company = companies.find((item) => item.id === companyId);
+    setArchiveTarget({
+      kind: "company",
+      id: companyId,
+      name: company?.name ?? "this company",
     });
   };
 
   const archiveContact = (contactId: string) => {
+    const contact = contacts.find((item) => item.id === contactId);
+    setArchiveTarget({
+      kind: "contact",
+      id: contactId,
+      name: contact?.full_name ?? "this contact",
+    });
+  };
+
+  const confirmArchive = () => {
+    if (!archiveTarget) return;
+    const target = archiveTarget;
+    setArchiveTarget(null);
     startTransition(async () => {
       try {
-        await archiveContactAction(contactId);
-        setContacts((prev) => prev.filter((c) => c.id !== contactId));
+        if (target.kind === "company") {
+          await archiveCompanyAction(target.id);
+          setCompanies((prev) => prev.filter((c) => c.id !== target.id));
+        } else {
+          await archiveContactAction(target.id);
+          setContacts((prev) => prev.filter((c) => c.id !== target.id));
+        }
+        setEntries((prev) =>
+          prev.filter(
+            (entry) => !(entry.type === target.kind && entry.id === target.id),
+          ),
+        );
         setTotal((prev) => Math.max(0, prev - 1));
-        toast({ title: "Contact deleted" });
+        toast({
+          title: `${target.kind === "company" ? "Company" : "Contact"} archived`,
+          description: target.name,
+          action: (
+            <ToastAction
+              altText={`Restore ${target.name}`}
+              onClick={() => void restoreArchived(target.kind, target.id, target.name)}
+            >
+              Undo
+            </ToastAction>
+          ),
+        });
       } catch (error) {
         toast({
-          title: "Unable to delete contact",
+          title: `Unable to archive ${target.kind}`,
           description: (error as Error).message,
         });
       }
@@ -587,9 +685,16 @@ export function DirectoryClient({
         </div>
       </div>
 
+      <ComplianceAlert
+        companies={complianceWatchCompanies}
+        complianceStatusByCompanyId={complianceStatusByCompanyId}
+      />
+
       <DirectoryTable
         companies={companies}
         contacts={contacts}
+        entries={entries}
+        complianceStatusByCompanyId={complianceStatusByCompanyId}
         view={view}
         sort={sort}
         direction={direction}
@@ -611,8 +716,9 @@ export function DirectoryClient({
         onSelectContact={openContactDetail}
         onEditCompany={canCreate ? openEditCompany : undefined}
         onEditContact={canCreate ? openEditContact : undefined}
-        onArchiveCompany={canDelete && !isPending ? archiveCompany : undefined}
-        onArchiveContact={canDelete && !isPending ? archiveContact : undefined}
+        onInviteContact={canCreate ? openPortalInvite : undefined}
+        onArchiveCompany={canArchive && !isPending ? archiveCompany : undefined}
+        onArchiveContact={canArchive && !isPending ? archiveContact : undefined}
       />
 
       <Sheet
@@ -639,7 +745,7 @@ export function DirectoryClient({
               {selectedCompany ? "Edit company" : "Create company"}
             </SheetTitle>
             <SheetDescription className="text-sm text-muted-foreground">
-              Capture company details, trade, and insurance info.
+              Capture company details, trade, and accounting links.
             </SheetDescription>
           </SheetHeader>
           <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4">
@@ -700,11 +806,51 @@ export function DirectoryClient({
         open={detailContactOpen}
         onOpenChange={setDetailContactOpen}
         onEditContact={openEditContact}
+        onInvitePortal={canCreate ? openPortalInvite : undefined}
+      />
+
+      <PortalInviteDialog
+        contact={inviteContact}
+        projects={projects}
+        open={inviteOpen}
+        onOpenChange={(open) => {
+          setInviteOpen(open);
+          if (!open) setInviteContact(undefined);
+        }}
       />
 
       {canCreate ? (
         <ImportContactsSheet open={importOpen} onOpenChange={setImportOpen} />
       ) : null}
+
+      <AlertDialog
+        open={Boolean(archiveTarget)}
+        onOpenChange={(open) => {
+          if (!open) setArchiveTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Archive {archiveTarget?.kind === "company" ? "company" : "contact"}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {archiveTarget?.name ?? "This record"} will be hidden from the directory.
+              You can restore it with Undo after archiving.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={confirmArchive}
+            >
+              Archive
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

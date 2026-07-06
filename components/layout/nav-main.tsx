@@ -26,6 +26,7 @@ type NavSubItem = {
   title: string
   url: string
   isActive?: boolean
+  badge?: number
 }
 
 type NavItem = {
@@ -59,6 +60,11 @@ export function NavMain({ items }: { items: NavGroup[] }) {
 
   const [currentPath, setCurrentPath] = React.useState(pathname)
   React.useEffect(() => {
+    if (pathname.includes("?")) {
+      setCurrentPath(pathname)
+      return
+    }
+
     try {
       const searchParams = new URLSearchParams(window.location.search)
       const query = searchParams.toString()
@@ -149,6 +155,11 @@ export function NavMain({ items }: { items: NavGroup[] }) {
                                 >
                                   <OptimisticLink href={subItem.url}>
                                     <span>{subItem.title}</span>
+                                    {subItem.badge !== undefined && subItem.badge > 0 ? (
+                                      <span className="ml-auto flex h-4 min-w-4 items-center justify-center bg-red-500 px-1 text-[9px] font-semibold text-white">
+                                        {subItem.badge > 99 ? "99+" : subItem.badge}
+                                      </span>
+                                    ) : null}
                                   </OptimisticLink>
                                 </SidebarMenuSubButton>
                               </SidebarMenuSubItem>

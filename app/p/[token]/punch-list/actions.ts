@@ -1,15 +1,15 @@
 "use server"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { validatePortalToken } from "@/lib/services/portal-access"
+import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { createPunchItemFromPortal, listPunchItems } from "@/lib/services/punch-lists"
-import { buildFilesPublicUrl, deleteFilesObjects, uploadFilesObject } from "@/lib/storage/files-storage"
+import { deleteFilesObjects, uploadFilesObject } from "@/lib/storage/files-storage"
 
 export async function loadPunchItemsAction(token: string) {
-  const access = await validatePortalToken(token)
-  if (!access || !access.permissions.can_create_punch_items) {
-    throw new Error("Access denied")
-  }
+  const access = await assertPortalActionAccess(token, {
+    portalType: "client",
+    permission: "can_create_punch_items",
+  })
   return listPunchItems(access.org_id, access.project_id)
 }
 
@@ -20,10 +20,10 @@ export async function createPunchItemAction(input: {
   location?: string
   severity?: string
 }) {
-  const access = await validatePortalToken(input.token)
-  if (!access || !access.permissions.can_create_punch_items) {
-    throw new Error("Access denied")
-  }
+  const access = await assertPortalActionAccess(input.token, {
+    portalType: "client",
+    permission: "can_create_punch_items",
+  })
 
   const item = await createPunchItemFromPortal({
     orgId: access.org_id,
@@ -69,10 +69,10 @@ export async function uploadPunchItemAttachmentAction({
   punchItemId: string
   formData: FormData
 }) {
-  const access = await validatePortalToken(token)
-  if (!access || !access.permissions.can_create_punch_items) {
-    throw new Error("Access denied")
-  }
+  const access = await assertPortalActionAccess(token, {
+    portalType: "client",
+    permission: "can_create_punch_items",
+  })
 
   const file = formData.get("file") as File
   if (!file) {
@@ -176,7 +176,7 @@ export async function uploadPunchItemAttachmentAction({
     linkId = link.id as string
   }
 
-  const downloadUrl = buildFilesPublicUrl(storagePath) ?? undefined
+  const downloadUrl = `/api/portal/files/${token}/${fileRecord.id}`
 
   return {
     id: fileRecord.id as string,
@@ -198,10 +198,10 @@ export async function listPunchItemAttachmentsAction({
   token: string
   punchItemId: string
 }): Promise<PunchItemAttachment[]> {
-  const access = await validatePortalToken(token)
-  if (!access || !access.permissions.can_create_punch_items) {
-    throw new Error("Access denied")
-  }
+  const access = await assertPortalActionAccess(token, {
+    portalType: "client",
+    permission: "can_create_punch_items",
+  })
 
   const supabase = createServiceSupabaseClient()
 
@@ -224,11 +224,7 @@ export async function listPunchItemAttachmentsAction({
   const results: PunchItemAttachment[] = []
   for (const row of data ?? []) {
     const file = (row as any).files
-    const storagePath = file?.storage_path as string | undefined
-    let signedUrl: string | undefined
-    if (storagePath) {
-      signedUrl = buildFilesPublicUrl(storagePath) ?? undefined
-    }
+    const signedUrl = file?.id ? `/api/portal/files/${token}/${file.id}` : undefined
 
     results.push({
       id: file.id,
@@ -253,10 +249,10 @@ export async function detachPunchItemAttachmentAction({
   token: string
   linkId: string
 }): Promise<void> {
-  const access = await validatePortalToken(token)
-  if (!access || !access.permissions.can_create_punch_items) {
-    throw new Error("Access denied")
-  }
+  const access = await assertPortalActionAccess(token, {
+    portalType: "client",
+    permission: "can_create_punch_items",
+  })
 
   const supabase = createServiceSupabaseClient()
   const { error } = await supabase
@@ -270,8 +266,6 @@ export async function detachPunchItemAttachmentAction({
     throw new Error(`Failed to remove attachment: ${error.message}`)
   }
 }
-
-
 
 
 

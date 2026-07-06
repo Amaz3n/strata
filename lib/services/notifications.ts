@@ -1,5 +1,6 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
+import { isApnsConfigured } from "@/lib/services/apns"
 import { requireOrgMembership } from "@/lib/auth/context"
 import {
   EMAIL_NOTIFICATION_TYPES,
@@ -64,6 +65,17 @@ export class NotificationService {
       await this.queueDelivery(notification.id, input.orgId)
     }
 
+    // Mobile push is delivered for every in-app notification, but only when APNs
+    // is configured — otherwise this enqueue is skipped and nothing changes.
+    if (isApnsConfigured()) {
+      await enqueueOutboxJob({
+        orgId: input.orgId,
+        jobType: 'deliver_push',
+        payload: { notificationId: notification.id },
+        runAt: new Date().toISOString(),
+      })
+    }
+
     return notification.id
   }
 
@@ -78,13 +90,19 @@ export class NotificationService {
   }
 
   // Mark as read
-  async markAsRead(notificationId: string): Promise<void> {
+  async markAsRead(notificationId: string, userId?: string): Promise<void> {
     const { supabase } = await requireOrgMembership()
 
-    const { error } = await supabase
+    let query = supabase
       .from('notifications')
       .update({ read_at: new Date().toISOString() })
       .eq('id', notificationId)
+
+    if (userId) {
+      query = query.eq('user_id', userId)
+    }
+
+    const { error } = await query
 
     if (error) {
       console.error('Failed to mark notification as read:', error)

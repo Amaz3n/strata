@@ -2,9 +2,11 @@ import { Suspense } from "react"
 import { notFound } from "next/navigation"
 import { PageLayout } from "@/components/layout/page-layout"
 import { getProjectAction } from "../actions"
-import { getCloseoutPackageAction } from "@/app/(app)/closeout/actions"
+import { getCloseoutPackageAction, getProjectCloseReadinessAction } from "@/app/(app)/closeout/actions"
 import { CloseoutClient } from "@/components/closeout/closeout-client"
+import { GmpSavingsSettlementPanel } from "@/components/closeout/gmp-savings-settlement-panel"
 import { Skeleton } from "@/components/ui/skeleton"
+import { getProjectGmpControlSummary } from "@/lib/services/gmp-control"
 
 interface ProjectCloseoutPageProps {
   params: Promise<{ id: string }>
@@ -40,11 +42,18 @@ async function ProjectCloseoutData({ id }: { id: string }) {
 
   if (!project) notFound()
 
-  const closeout = await getCloseoutPackageAction(id)
+  const [closeout, readiness, gmpSummary] = await Promise.all([
+    getCloseoutPackageAction(id),
+    getProjectCloseReadinessAction(id),
+    getProjectGmpControlSummary(id).catch(() => null),
+  ])
 
   return (
     <div className="space-y-6">
-      <CloseoutClient projectId={project.id} closeoutPackage={closeout?.package} items={closeout?.items ?? []} />
+      {gmpSummary?.enabled ? (
+        <GmpSavingsSettlementPanel projectId={project.id} projectStatus={project.status} summary={gmpSummary} />
+      ) : null}
+      <CloseoutClient projectId={project.id} closeoutPackage={closeout?.package} items={closeout?.items ?? []} readiness={readiness} />
     </div>
   )
 }

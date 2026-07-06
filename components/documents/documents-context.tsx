@@ -15,7 +15,7 @@ import { listFilesAction, getFileCountsAction, listChildFoldersAction, listProje
 import { listDrawingSetsAction, listDrawingSheetsWithUrlsAction } from "@/app/(app)/drawings/actions"
 import type { FileWithUrls, ProjectFolderPermissions } from "@/app/(app)/documents/types"
 import type { DrawingSet, DrawingSheet } from "@/app/(app)/drawings/types"
-import type { DocumentsContextValue, QuickFilter, ViewMode, FolderNode } from "./types"
+import type { DocumentsContextValue, QuickFilter, RefreshFilesOptions, ViewMode, FolderNode } from "./types"
 
 const DocumentsContext = createContext<DocumentsContextValue | null>(null)
 
@@ -96,6 +96,22 @@ function buildFileViewCacheKey({
   ].join("|")
 }
 
+function getCategoryFilter(quickFilter: QuickFilter) {
+  if (quickFilter === "all" || quickFilter === "drawings" || quickFilter === "expiring" || quickFilter === "trash") {
+    return undefined
+  }
+  return quickFilter
+}
+
+function getExpiringDueRange(quickFilter: QuickFilter) {
+  if (quickFilter !== "expiring") {
+    return {}
+  }
+  return {
+    due_before: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+  }
+}
+
 export function DocumentsProvider({
   children,
   project,
@@ -137,6 +153,7 @@ export function DocumentsProvider({
   const [currentPath, setCurrentPathState] = useState<string>(initialNormalizedPath)
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("all")
   const [searchQuery, setSearchQuery] = useState<string>("")
+  const [committedSearchQuery, setCommittedSearchQuery] = useState<string>("")
   const [selectedDrawingSetId, setSelectedDrawingSetId] = useState<string | null>(initialSetId ?? null)
   const [selectedDrawingSetTitle, setSelectedDrawingSetTitle] = useState<string | null>(() => {
     if (initialSetId) {
@@ -181,7 +198,7 @@ export function DocumentsProvider({
       const key = buildFileViewCacheKey({
         path,
         quickFilter: nextQuickFilter,
-        searchQuery,
+        searchQuery: committedSearchQuery,
         sort,
         direction,
       })
@@ -192,7 +209,7 @@ export function DocumentsProvider({
       setHasMore(cached.hasMore)
       return true
     },
-    [direction, quickFilter, searchQuery, sort],
+    [committedSearchQuery, direction, quickFilter, sort],
   )
 
   // UI state
@@ -407,36 +424,45 @@ export function DocumentsProvider({
   }, [project.id])
 
   // Refresh functions
-  const refreshFiles = useCallback(async () => {
+  const refreshFiles = useCallback(async (options: RefreshFilesOptions = {}) => {
     if (quickFilter === "drawings") return
+    const searchFilter = committedSearchQuery.trim()
+    const includeMetadata = options.includeMetadata ?? true
+    const isTrashView = quickFilter === "trash"
+    const isFilteredView = quickFilter !== "all"
+    const dueRange = getExpiringDueRange(quickFilter)
     const requestId = fileRefreshRequestRef.current + 1
     fileRefreshRequestRef.current = requestId
     const startedAt = performance.now()
     docsDebugLog("refreshFiles:start", {
       projectId: project.id,
       quickFilter,
-      searchQuery,
+      searchQuery: searchFilter,
       currentPath,
       sort,
       direction,
+      includeMetadata,
     })
     setIsLoading(true)
     try {
-      const shouldLoadFolders = !searchQuery
+      const shouldLoadFolders = includeMetadata && !searchFilter
       const [filesData, countsData, permsData, childFolders] = await Promise.all([
         listFilesAction({
           project_id: project.id,
-          category: quickFilter === "all" ? undefined : quickFilter,
+          category: getCategoryFilter(quickFilter),
           folder_path: currentPath || undefined,
-          root_only: currentPath || searchQuery ? undefined : true,
-          search: searchQuery || undefined,
+          root_only: isTrashView || isFilteredView || currentPath || searchFilter ? undefined : true,
+          search: searchFilter || undefined,
+          include_archived: isTrashView,
+          archived_only: isTrashView,
+          ...dueRange,
           sort,
           direction,
           limit: pageSize,
           offset: 0,
         }),
-        getFileCountsAction(project.id),
-        listProjectFolderPermissionsAction(project.id),
+        includeMetadata ? getFileCountsAction(project.id) : Promise.resolve(null),
+        includeMetadata ? listProjectFolderPermissionsAction(project.id) : Promise.resolve(null),
         shouldLoadFolders
           ? listChildFoldersAction(project.id, currentPath || undefined)
           : Promise.resolve([]),
@@ -445,7 +471,7 @@ export function DocumentsProvider({
       const cacheKey = buildFileViewCacheKey({
         path: currentPath,
         quickFilter,
-        searchQuery,
+        searchQuery: searchFilter,
         sort,
         direction,
       })
@@ -457,8 +483,8 @@ export function DocumentsProvider({
       setFiles(filesData.data)
       setTotalCount(filesData.count)
       setHasMore(filesData.hasMore)
-      setCounts(countsData)
-      setFolderPermissions(permsData)
+      if (countsData) setCounts(countsData)
+      if (permsData) setFolderPermissions(permsData)
       if (shouldLoadFolders) {
         setFolderItemCounts((prev) => {
           const next = { ...prev }
@@ -493,7 +519,7 @@ export function DocumentsProvider({
         setIsLoading(false)
       }
     }
-  }, [project.id, quickFilter, searchQuery, currentPath, sort, direction])
+  }, [project.id, quickFilter, committedSearchQuery, currentPath, sort, direction])
 
   const refreshFolderPermissions = useCallback(async () => {
     try {
@@ -509,12 +535,16 @@ export function DocumentsProvider({
     
     setIsLoadingMore(true)
     try {
+      const dueRange = getExpiringDueRange(quickFilter)
       const filesData = await listFilesAction({
         project_id: project.id,
-        category: quickFilter === "all" ? undefined : quickFilter,
+        category: getCategoryFilter(quickFilter),
         folder_path: currentPath || undefined,
-        root_only: currentPath || searchQuery ? undefined : true,
-        search: searchQuery || undefined,
+        root_only: quickFilter !== "all" || currentPath || committedSearchQuery ? undefined : true,
+        search: committedSearchQuery || undefined,
+        include_archived: quickFilter === "trash",
+        archived_only: quickFilter === "trash",
+        ...dueRange,
         sort,
         direction,
         limit: pageSize,
@@ -526,7 +556,7 @@ export function DocumentsProvider({
         const cacheKey = buildFileViewCacheKey({
           path: currentPath,
           quickFilter,
-          searchQuery,
+          searchQuery: committedSearchQuery,
           sort,
           direction,
         })
@@ -544,7 +574,7 @@ export function DocumentsProvider({
     } finally {
       setIsLoadingMore(false)
     }
-  }, [project.id, quickFilter, hasMore, isLoadingMore, currentPath, searchQuery, sort, direction, files.length])
+  }, [project.id, quickFilter, hasMore, isLoadingMore, currentPath, committedSearchQuery, sort, direction, files.length])
 
   const refreshDrawingSets = useCallback(async () => {
     try {
@@ -557,6 +587,12 @@ export function DocumentsProvider({
 
   // Files/folders are fetched server-side for initial load, and refreshed explicitly
   // after mutations (upload/move/rename/delete) to avoid action polling loops.
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setCommittedSearchQuery(searchQuery.trim())
+    }, 250)
+    return () => window.clearTimeout(timeout)
+  }, [searchQuery])
 
   const urlPath = useMemo(() => normalizeDocsPath(searchParams.get("path")), [searchParams])
   const urlSetId = searchParams.get("set")
@@ -613,8 +649,8 @@ export function DocumentsProvider({
       isFirstMountRef.current = false
       return
     }
-    refreshFiles()
-  }, [refreshFiles])
+    refreshFiles({ includeMetadata: !committedSearchQuery })
+  }, [committedSearchQuery, refreshFiles])
 
   // Auto-expand parent folders when navigating to a path
   useEffect(() => {

@@ -1,5 +1,6 @@
 "use server"
 
+import { createHash } from "node:crypto"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -57,8 +58,118 @@ import {
   type FileShareLink,
 } from "@/lib/services/file-share-links"
 import type { FinalizeUploadedFileInput } from "./types"
-import { downloadFilesObject } from "@/lib/storage/files-storage"
+import { deleteFilesObjects, downloadFilesObject } from "@/lib/storage/files-storage"
 import { suggestDocumentFileNameFromBytes } from "@/lib/services/document-ai-rename"
+
+function hashBytes(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex")
+}
+
+function splitFileName(fileName: string): { stem: string; extension: string } {
+  const dotIndex = fileName.lastIndexOf(".")
+  if (dotIndex <= 0) return { stem: fileName, extension: "" }
+  return {
+    stem: fileName.slice(0, dotIndex),
+    extension: fileName.slice(dotIndex),
+  }
+}
+
+function folderScopeLabel(folderPath?: string | null): string {
+  return folderPath && folderPath !== "/" ? folderPath : "Project root"
+}
+
+async function assertNoDuplicateFile({
+  supabase,
+  orgId,
+  projectId,
+  folderPath,
+  checksum,
+}: {
+  supabase: any
+  orgId: string
+  projectId?: string | null
+  folderPath?: string | null
+  checksum?: string | null
+}) {
+  if (!checksum) return
+
+  let query = supabase
+    .from("files")
+    .select("id, file_name")
+    .eq("org_id", orgId)
+    .eq("checksum", checksum)
+    .is("archived_at", null)
+    .limit(1)
+
+  if (projectId) {
+    query = query.eq("project_id", projectId)
+  } else {
+    query = query.is("project_id", null)
+  }
+
+  if (folderPath) {
+    query = query.eq("folder_path", folderPath)
+  } else {
+    query = query.is("folder_path", null)
+  }
+
+  const { data, error } = await query.maybeSingle()
+  if (error && error.code !== "PGRST116") {
+    throw new Error(`Failed to check duplicate files: ${error.message}`)
+  }
+  if (data?.id) {
+    throw new Error(`Duplicate upload blocked: ${data.file_name} already exists in ${folderScopeLabel(folderPath)}.`)
+  }
+}
+
+async function getUniqueFileName({
+  supabase,
+  orgId,
+  projectId,
+  folderPath,
+  fileName,
+}: {
+  supabase: any
+  orgId: string
+  projectId?: string | null
+  folderPath?: string | null
+  fileName: string
+}): Promise<string> {
+  let query = supabase
+    .from("files")
+    .select("file_name")
+    .eq("org_id", orgId)
+    .is("archived_at", null)
+
+  if (projectId) {
+    query = query.eq("project_id", projectId)
+  } else {
+    query = query.is("project_id", null)
+  }
+
+  if (folderPath) {
+    query = query.eq("folder_path", folderPath)
+  } else {
+    query = query.is("folder_path", null)
+  }
+
+  const { data, error } = await query
+  if (error) {
+    throw new Error(`Failed to check file name collisions: ${error.message}`)
+  }
+
+  const existingNames = new Set((data ?? []).map((row: any) => String(row.file_name).toLowerCase()))
+  if (!existingNames.has(fileName.toLowerCase())) return fileName
+
+  const { stem, extension } = splitFileName(fileName)
+  let index = 2
+  let candidate = `${stem} (${index})${extension}`
+  while (existingNames.has(candidate.toLowerCase())) {
+    index += 1
+    candidate = `${stem} (${index})${extension}`
+  }
+  return candidate
+}
 
 /**
  * List files with optional filters
@@ -342,7 +453,8 @@ export async function bulkMoveFilesAction(
 }
 
 /**
- * Bulk delete files permanently.
+ * Move files to trash/archive. Permanent deletion remains available through
+ * deleteFileAction for explicit purge flows.
  */
 export async function bulkDeleteFilesAction(fileIds: string[]): Promise<void> {
   const uniqueIds = Array.from(new Set(fileIds)).filter(Boolean)
@@ -356,7 +468,7 @@ export async function bulkDeleteFilesAction(fileIds: string[]): Promise<void> {
     }
   }
 
-  await Promise.all(uniqueIds.map((fileId) => deleteFile(fileId)))
+  await Promise.all(uniqueIds.map((fileId) => archiveFile(fileId)))
 
   revalidatePath("/documents")
   for (const projectId of projectIds) {
@@ -541,22 +653,8 @@ export async function uploadFileAction(formData: FormData): Promise<FileWithUrls
     }
   }
 
-  // Generate unique storage path
-  const timestamp = Date.now()
-  const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_")
-  const storagePath = projectId
-    ? `${orgId}/${projectId}/${timestamp}_${safeName}`
-    : `${orgId}/general/${timestamp}_${safeName}`
-
   const bytes = Buffer.from(await file.arrayBuffer())
-  await uploadFilesObject({
-    supabase,
-    orgId,
-    path: storagePath,
-    bytes,
-    contentType: file.type,
-    upsert: false,
-  })
+  const checksum = hashBytes(bytes)
 
   // Infer category from mime type/filename if not provided
   const inferredCategory = category ?? inferCategory(file.name, file.type)
@@ -566,6 +664,38 @@ export async function uploadFileAction(formData: FormData): Promise<FileWithUrls
     : projectId
       ? getDefaultFolderForCategory(inferredCategory)
       : undefined
+
+  await assertNoDuplicateFile({
+    supabase,
+    orgId,
+    projectId,
+    folderPath: resolvedFolderPath,
+    checksum,
+  })
+
+  const resolvedFileName = await getUniqueFileName({
+    supabase,
+    orgId,
+    projectId,
+    folderPath: resolvedFolderPath,
+    fileName: file.name,
+  })
+
+  // Generate unique storage path
+  const timestamp = Date.now()
+  const safeName = resolvedFileName.replace(/[^a-zA-Z0-9.-]/g, "_")
+  const storagePath = projectId
+    ? `${orgId}/${projectId}/${timestamp}_${safeName}`
+    : `${orgId}/general/${timestamp}_${safeName}`
+
+  await uploadFilesObject({
+    supabase,
+    orgId,
+    path: storagePath,
+    bytes,
+    contentType: file.type,
+    upsert: false,
+  })
 
   let resolvedShareWithClients = shareWithClientsRaw === "true"
   let resolvedShareWithSubs = shareWithSubsRaw === "true"
@@ -583,10 +713,11 @@ export async function uploadFileAction(formData: FormData): Promise<FileWithUrls
   // Create file record
   const record = await createFileRecord({
     project_id: projectId || undefined,
-    file_name: file.name,
+    file_name: resolvedFileName,
     storage_path: storagePath,
     mime_type: file.type,
     size_bytes: file.size,
+    checksum,
     visibility: visibility === "private" ? "private" : "public",
     category: inferredCategory,
     folder_path: resolvedFolderPath,
@@ -600,9 +731,10 @@ export async function uploadFileAction(formData: FormData): Promise<FileWithUrls
   await createInitialVersion({
     fileId: record.id,
     storagePath,
-    fileName: file.name,
+    fileName: resolvedFileName,
     mimeType: file.type,
     sizeBytes: file.size,
+    checksum,
   })
 
   const downloadUrl = buildInternalFileUrl(record.id)
@@ -679,16 +811,44 @@ export async function finalizeUploadedFileAction(input: FinalizeUploadedFileInpu
     resolvedShareWithSubs = input.shareWithSubs ?? defaults.share_with_subs
   }
 
+  try {
+    await assertNoDuplicateFile({
+      supabase,
+      orgId,
+      projectId,
+      folderPath: resolvedFolderPath,
+      checksum: input.checksum,
+    })
+  } catch (error) {
+    await deleteFilesObjects({
+      supabase,
+      orgId,
+      paths: [normalizedStoragePath],
+    }).catch((cleanupError) => {
+      console.warn("[Documents] Failed to clean up duplicate upload object", cleanupError)
+    })
+    throw error
+  }
+
+  const resolvedFileName = await getUniqueFileName({
+    supabase,
+    orgId,
+    projectId,
+    folderPath: resolvedFolderPath,
+    fileName: input.fileName,
+  })
+
   const mimeType = input.mimeType || "application/octet-stream"
   const { data: insertedFile, error: fileError } = await supabase
     .from("files")
     .insert({
       org_id: orgId,
       project_id: projectId || undefined,
-      file_name: input.fileName,
+      file_name: resolvedFileName,
       storage_path: normalizedStoragePath,
       mime_type: mimeType,
       size_bytes: input.fileSize,
+      checksum: input.checksum || undefined,
       visibility: input.visibility === "private" ? "private" : "public",
       category: inferredCategory,
       folder_path: resolvedFolderPath,
@@ -708,6 +868,13 @@ export async function finalizeUploadedFileAction(input: FinalizeUploadedFileInpu
     .single()
 
   if (fileError || !insertedFile) {
+    await deleteFilesObjects({
+      supabase,
+      orgId,
+      paths: [normalizedStoragePath],
+    }).catch((cleanupError) => {
+      console.warn("[Documents] Failed to clean up failed upload object", cleanupError)
+    })
     throw new Error(`Failed to create file record: ${fileError?.message}`)
   }
 
@@ -718,15 +885,28 @@ export async function finalizeUploadedFileAction(input: FinalizeUploadedFileInpu
       file_id: insertedFile.id,
       version_number: 1,
       storage_path: normalizedStoragePath,
-      file_name: input.fileName,
+      file_name: resolvedFileName,
       mime_type: mimeType,
       size_bytes: input.fileSize,
+      checksum: input.checksum || undefined,
       created_by: userId,
     })
     .select("id")
     .single()
 
   if (versionError || !version) {
+    await supabase
+      .from("files")
+      .delete()
+      .eq("org_id", orgId)
+      .eq("id", insertedFile.id)
+    await deleteFilesObjects({
+      supabase,
+      orgId,
+      paths: [normalizedStoragePath],
+    }).catch((cleanupError) => {
+      console.warn("[Documents] Failed to clean up failed version upload object", cleanupError)
+    })
     throw new Error(`Failed to create initial version: ${versionError?.message}`)
   }
 
@@ -751,7 +931,7 @@ export async function finalizeUploadedFileAction(input: FinalizeUploadedFileInpu
     entityType: "file",
     entityId: insertedFile.id as string,
     payload: {
-      file_name: input.fileName,
+      file_name: resolvedFileName,
       project_id: projectId,
       category: inferredCategory,
     },

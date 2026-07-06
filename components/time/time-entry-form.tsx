@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { Calendar as CalendarPicker } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -265,14 +266,22 @@ function HoursPicker({ value, onChange, size = "md" }: HoursPickerProps) {
 
 function useSelfModeState() {
   const [hours, setHours] = useState<number>(0)
+  const [isOvertime, setIsOvertime] = useState(false)
+  const [otMultiplier, setOtMultiplier] = useState(1.5)
+  const [isDoubleTime, setIsDoubleTime] = useState(false)
+  const [dtMultiplier, setDtMultiplier] = useState(2)
   const [notes, setNotes] = useState("")
   const [attachment, setAttachment] = useState<File | null>(null)
   function reset() {
     setHours(0)
+    setIsOvertime(false)
+    setOtMultiplier(1.5)
+    setIsDoubleTime(false)
+    setDtMultiplier(2)
     setNotes("")
     setAttachment(null)
   }
-  return { hours, setHours, notes, setNotes, attachment, setAttachment, reset }
+  return { hours, setHours, isOvertime, setIsOvertime, otMultiplier, setOtMultiplier, isDoubleTime, setIsDoubleTime, dtMultiplier, setDtMultiplier, notes, setNotes, attachment, setAttachment, reset }
 }
 
 function useCrewModeState(crewMembers: CrewMemberOption[], defaultBurdenMultiplier = 1) {
@@ -288,16 +297,101 @@ function useCrewModeState(crewMembers: CrewMemberOption[], defaultBurdenMultipli
     costCodeId: null,
   })
   const [lines, setLines] = useState<CrewDraftLine[]>(() => [createLine(first)])
+  const [isOvertime, setIsOvertime] = useState(false)
+  const [otMultiplier, setOtMultiplier] = useState(1.5)
+  const [isDoubleTime, setIsDoubleTime] = useState(false)
+  const [dtMultiplier, setDtMultiplier] = useState(2)
   const [notes, setNotes] = useState("")
   const [attachment, setAttachment] = useState<File | null>(null)
 
   function reset() {
     setLines([createLine(first)])
+    setIsOvertime(false)
+    setOtMultiplier(1.5)
+    setIsDoubleTime(false)
+    setDtMultiplier(2)
     setNotes("")
     setAttachment(null)
   }
 
-  return { lines, setLines, notes, setNotes, attachment, setAttachment, reset, createLine }
+  return { lines, setLines, isOvertime, setIsOvertime, otMultiplier, setOtMultiplier, isDoubleTime, setIsDoubleTime, dtMultiplier, setDtMultiplier, notes, setNotes, attachment, setAttachment, reset, createLine }
+}
+
+function OvertimeFields({
+  isOvertime,
+  setIsOvertime,
+  otMultiplier,
+  setOtMultiplier,
+  isDoubleTime,
+  setIsDoubleTime,
+  dtMultiplier,
+  setDtMultiplier,
+}: {
+  isOvertime: boolean
+  setIsOvertime: (value: boolean) => void
+  otMultiplier: number
+  setOtMultiplier: (value: number) => void
+  isDoubleTime: boolean
+  setIsDoubleTime: (value: boolean) => void
+  dtMultiplier: number
+  setDtMultiplier: (value: number) => void
+}) {
+  const premiumActive = isOvertime || isDoubleTime
+  const multiplier = isDoubleTime ? dtMultiplier : otMultiplier
+  const setMultiplier = isDoubleTime ? setDtMultiplier : setOtMultiplier
+
+  return (
+    <div className="rounded-lg border bg-muted/20 px-3 py-2">
+      <div className="grid gap-2 sm:grid-cols-2">
+        <div className="flex items-center justify-between gap-3">
+        <Label className="text-sm font-medium" htmlFor="time-entry-overtime">
+          OT
+        </Label>
+        <Switch
+          id="time-entry-overtime"
+          checked={isOvertime}
+          onCheckedChange={(checked) => {
+            setIsOvertime(checked)
+            if (checked) setIsDoubleTime(false)
+          }}
+        />
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <Label className="text-sm font-medium" htmlFor="time-entry-double-time">
+            DT
+          </Label>
+          <Switch
+            id="time-entry-double-time"
+            checked={isDoubleTime}
+            onCheckedChange={(checked) => {
+              setIsDoubleTime(checked)
+              if (checked) setIsOvertime(false)
+            }}
+          />
+        </div>
+      </div>
+      {premiumActive ? (
+        <div className="mt-3 grid grid-cols-[1fr_96px] items-center gap-3">
+          <Label htmlFor="time-entry-premium-multiplier" className="text-xs text-muted-foreground">
+            Multiplier
+          </Label>
+          <Input
+            id="time-entry-premium-multiplier"
+            value={String(multiplier)}
+            onChange={(event) => {
+              const next = Number(event.target.value)
+              setMultiplier(Number.isFinite(next) && next >= 1 ? next : isDoubleTime ? 2 : 1.5)
+            }}
+            inputMode="decimal"
+            min={1}
+            max={4}
+            step={0.05}
+            className="h-9 text-right"
+          />
+        </div>
+      ) : null}
+    </div>
+  )
 }
 
 function CrewEditor({
@@ -488,7 +582,10 @@ function DesktopTimeEntrySheet({
           workDate: date.workDateString,
           burdenMultiplier: defaultBurdenMultiplier,
           isBillable: true,
-          isOvertime: false,
+          isOvertime: crew.isOvertime,
+          otMultiplier: crew.otMultiplier,
+          isDoubleTime: crew.isDoubleTime,
+          dtMultiplier: crew.dtMultiplier,
           notes: crew.notes.trim() || null,
           crew: validCrew.map((line) => ({
             workerUserId: line.memberUserId ?? null,
@@ -515,6 +612,10 @@ function DesktopTimeEntrySheet({
         {
           workDate: date.workDateString,
           hours: self.hours,
+          isOvertime: self.isOvertime,
+          otMultiplier: self.otMultiplier,
+          isDoubleTime: self.isDoubleTime,
+          dtMultiplier: self.dtMultiplier,
           notes: self.notes.trim() || null,
         },
         self.attachment,
@@ -583,6 +684,16 @@ function DesktopTimeEntrySheet({
                 crewMembers={crewMembers}
                 costCodes={costCodes}
               />
+              <OvertimeFields
+                isOvertime={crew.isOvertime}
+                setIsOvertime={crew.setIsOvertime}
+                otMultiplier={crew.otMultiplier}
+                setOtMultiplier={crew.setOtMultiplier}
+                isDoubleTime={crew.isDoubleTime}
+                setIsDoubleTime={crew.setIsDoubleTime}
+                dtMultiplier={crew.dtMultiplier}
+                setDtMultiplier={crew.setDtMultiplier}
+              />
               <Textarea
                 rows={3}
                 value={crew.notes}
@@ -599,6 +710,17 @@ function DesktopTimeEntrySheet({
                   <HoursPicker value={self.hours} onChange={self.setHours} />
                 </div>
               </div>
+
+              <OvertimeFields
+                isOvertime={self.isOvertime}
+                setIsOvertime={self.setIsOvertime}
+                otMultiplier={self.otMultiplier}
+                setOtMultiplier={self.setOtMultiplier}
+                isDoubleTime={self.isDoubleTime}
+                setIsDoubleTime={self.setIsDoubleTime}
+                dtMultiplier={self.dtMultiplier}
+                setDtMultiplier={self.setDtMultiplier}
+              />
 
               <div className="space-y-1.5">
                 <Label htmlFor="self-notes" className="text-xs text-muted-foreground">
@@ -712,7 +834,10 @@ function MobileTimeEntryDrawer({
           workDate: date.workDateString,
           burdenMultiplier: defaultBurdenMultiplier,
           isBillable: true,
-          isOvertime: false,
+          isOvertime: crew.isOvertime,
+          otMultiplier: crew.otMultiplier,
+          isDoubleTime: crew.isDoubleTime,
+          dtMultiplier: crew.dtMultiplier,
           notes: crew.notes.trim() || null,
           crew: validCrew.map((line) => ({
             workerUserId: line.memberUserId ?? null,
@@ -739,6 +864,10 @@ function MobileTimeEntryDrawer({
         {
           workDate: date.workDateString,
           hours: self.hours,
+          isOvertime: self.isOvertime,
+          otMultiplier: self.otMultiplier,
+          isDoubleTime: self.isDoubleTime,
+          dtMultiplier: self.dtMultiplier,
           notes: self.notes.trim() || null,
         },
         self.attachment,
@@ -790,6 +919,16 @@ function MobileTimeEntryDrawer({
                 crewMembers={crewMembers}
                 costCodes={costCodes}
               />
+              <OvertimeFields
+                isOvertime={crew.isOvertime}
+                setIsOvertime={crew.setIsOvertime}
+                otMultiplier={crew.otMultiplier}
+                setOtMultiplier={crew.setOtMultiplier}
+                isDoubleTime={crew.isDoubleTime}
+                setIsDoubleTime={crew.setIsDoubleTime}
+                dtMultiplier={crew.dtMultiplier}
+                setDtMultiplier={crew.setDtMultiplier}
+              />
               <Textarea
                 value={crew.notes}
                 onChange={(event) => crew.setNotes(event.target.value)}
@@ -801,6 +940,16 @@ function MobileTimeEntryDrawer({
           ) : (
             <>
               <HoursPicker value={self.hours} onChange={self.setHours} />
+              <OvertimeFields
+                isOvertime={self.isOvertime}
+                setIsOvertime={self.setIsOvertime}
+                otMultiplier={self.otMultiplier}
+                setOtMultiplier={self.setOtMultiplier}
+                isDoubleTime={self.isDoubleTime}
+                setIsDoubleTime={self.setIsDoubleTime}
+                dtMultiplier={self.dtMultiplier}
+                setDtMultiplier={self.setDtMultiplier}
+              />
               <Textarea
                 value={self.notes}
                 onChange={(event) => self.setNotes(event.target.value)}

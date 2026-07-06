@@ -1,6 +1,6 @@
 "use client"
 
-import { LayoutDashboard, FileText, HelpCircle, Package, MessageCircle, ShieldCheck } from "lucide-react"
+import { LayoutDashboard, FileText, HelpCircle, ShieldCheck } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 export type SubPortalTab = "dashboard" | "documents" | "rfis" | "submittals" | "compliance"

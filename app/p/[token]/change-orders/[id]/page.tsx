@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation"
 
-import { validatePortalToken } from "@/lib/services/portal-access"
+import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { getChangeOrderForPortal } from "@/lib/services/change-orders"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { ChangeOrderApprovalClient } from "./approval-client"
@@ -13,8 +13,13 @@ export const revalidate = 0
 
 export default async function ChangeOrderApprovalPage({ params }: Params) {
   const { token, id } = await params
-  const access = await validatePortalToken(token)
-  if (!access || !access.permissions.can_approve_change_orders) {
+  let access
+  try {
+    access = await assertPortalActionAccess(token, {
+      portalType: "client",
+      permission: "can_approve_change_orders",
+    })
+  } catch {
     notFound()
   }
 

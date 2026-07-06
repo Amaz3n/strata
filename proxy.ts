@@ -19,6 +19,23 @@ const PUBLIC_API_ROUTES = [
   // Codex review callback — no user session cookie; it self-authenticates via
   // CODEX_REVIEW_CALLBACK_SECRET. Without this, GitHub receives a 307 to sign-in.
   "/api/platform/bugs/ai-review-callback",
+  "/api/platform/bugs/ai-fix-callback",
+  // Mobile API — no web session cookie; each route self-authenticates via the
+  // Supabase bearer token (requireMobileUser). Without this, the proxy 307s
+  // every request to /auth/signin and the iOS app sees empty orgs/projects.
+  "/api/mobile/",
+  // Drawings pipeline kick — self-authenticates via CRON_SECRET.
+  "/api/jobs/drawings-pipeline",
+  // Task self-reminder sweep — cron only, self-authenticates via CRON_SECRET.
+  "/api/jobs/task-reminders",
+  // Recurring invoice generator — cron only, self-authenticates via CRON_SECRET.
+  "/api/jobs/invoice-schedules",
+  // Portal drawing sheet PDFs — self-authenticate via the portal access token
+  // in the path (no session cookie on client/sub portals).
+  "/api/portal/drawings/",
+  "/api/portal/files/",
+  "/api/portal/log-file-access",
+  "/api/portal/s/",
 ]
 const PUBLIC_FILE_EXTENSIONS = [
   ".svg",

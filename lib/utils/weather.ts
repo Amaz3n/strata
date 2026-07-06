@@ -38,6 +38,46 @@ export function mapWmoCodeToLabel(code: number): string {
   return "Partly Cloudy" // Default fallback
 }
 
+export interface DailyWeather {
+  condition: string
+  tempMax: number | null
+}
+
+/**
+ * Condition + high temp for one calendar day. Recent dates come from the
+ * forecast API (which also serves the past ~3 months); older dates fall back
+ * to the historical archive.
+ */
+export async function getDailyWeather(lat: number, lon: number, dateKey: string): Promise<DailyWeather | null> {
+  try {
+    const date = new Date(`${dateKey}T12:00:00`)
+    const ageDays = (Date.now() - date.getTime()) / 86_400_000
+    if (ageDays < 0) return null
+
+    const host = ageDays > 85 ? "https://archive-api.open-meteo.com/v1/archive" : "https://api.open-meteo.com/v1/forecast"
+    const url = `${host}?latitude=${lat}&longitude=${lon}&daily=weather_code,temperature_2m_max,wind_speed_10m_max&temperature_unit=fahrenheit&wind_speed_unit=mph&start_date=${dateKey}&end_date=${dateKey}`
+    const response = await fetch(url)
+    if (!response.ok) return null
+    const data = await response.json()
+
+    const code = data.daily?.weather_code?.[0]
+    if (code == null) return null
+    const tempMax = data.daily?.temperature_2m_max?.[0] ?? null
+    const windMax = data.daily?.wind_speed_10m_max?.[0] ?? null
+
+    let condition = mapWmoCodeToLabel(code)
+    // Only override calm conditions — a storm stays a storm even when it's hot.
+    const isPrecip = /rain/i.test(condition)
+    if (!isPrecip && windMax != null && windMax > 20) condition = "Windy"
+    if (!isPrecip && tempMax != null && tempMax > 90) condition = "Hot"
+
+    return { condition, tempMax: tempMax != null ? Math.round(tempMax) : null }
+  } catch (error) {
+    console.error("Failed to fetch daily weather:", error)
+    return null
+  }
+}
+
 export async function getCurrentWeather(lat: number, lon: number): Promise<WeatherData | null> {
   try {
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code,wind_speed_10m&temperature_unit=fahrenheit&wind_speed_unit=mph`

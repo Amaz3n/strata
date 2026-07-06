@@ -17,11 +17,6 @@ const {
   assertBillingPeriodStatusAllowsEdit,
   assertBillingPeriodStatusAllowsInvoice,
 } = require("../lib/financials/billing-period-rules")
-const {
-  qboSyncAttentionReason,
-  qboSyncStatusNeedsAttention,
-  resolveLocalFinancialTruthAmount,
-} = require("../lib/financials/portfolio-control")
 
 test("fixed-price projects cannot create approved-cost invoices", () => {
   assert.throws(
@@ -186,6 +181,7 @@ test("budget actuals include vendor bills, expenses, and time exactly once", () 
   assert.deepEqual(actuals, [
     {
       cost_code_id: "03-100",
+      budget_line_id: null,
       actual_cents: 18900,
       billable_actual_cents: 12500,
       non_billable_actual_cents: 6400,
@@ -228,6 +224,7 @@ test("voided vendor bill actuals are ignored and reversal rows reduce actuals", 
   assert.deepEqual(actuals, [
     {
       cost_code_id: "04-200",
+      budget_line_id: null,
       actual_cents: 5000,
       billable_actual_cents: 5000,
       non_billable_actual_cents: 0,
@@ -241,21 +238,6 @@ test("owner portal open-book detail respects open_book=false", () => {
   assert.equal(shouldExposeOpenBookCostDetail(true), true)
   assert.equal(shouldExposeOpenBookCostDetail(null), true)
   assert.equal(shouldExposeOpenBookCostDetail(undefined), true)
-})
-
-test("QBO sync errors surface exceptions without replacing local financial truth", () => {
-  assert.equal(qboSyncStatusNeedsAttention("error"), true)
-  assert.equal(qboSyncStatusNeedsAttention("pending"), true)
-  assert.equal(qboSyncStatusNeedsAttention("synced"), false)
-
-  const balance = resolveLocalFinancialTruthAmount({
-    total_cents: 50000,
-    paid_cents: 20000,
-    balance_due_cents: 30000,
-  })
-  assert.equal(balance, 30000)
-  assert.equal(qboSyncAttentionReason("error", "Invoice"), "Invoice sync failed")
-  assert.equal(qboSyncAttentionReason("pending", "Invoice"), "Invoice sync pending")
 })
 
 test("closed billing periods block invoice creation and in-place edits", () => {
@@ -301,10 +283,10 @@ test("financial jobs and public payment links keep their authorization boundarie
     assert.match(source, /status:\s*401/)
   }
 
-  const payLinkPage = fs.readFileSync(path.join(__dirname, "../app/p/pay/[token]/page.tsx"), "utf8")
+  const payLinkAction = fs.readFileSync(path.join(__dirname, "../app/p/pay/[token]/actions.ts"), "utf8")
   const paymentService = fs.readFileSync(path.join(__dirname, "../lib/services/payments.ts"), "utf8")
-  assert.match(payLinkPage, /createPayLinkPaymentIntent\(token\)/)
-  assert.doesNotMatch(payLinkPage, /createPaymentIntent\(/)
+  assert.match(payLinkAction, /createPayLinkPaymentIntent\(token\)/)
+  assert.doesNotMatch(payLinkAction, /createPaymentIntent\(/)
   assert.match(paymentService, /data\.client_visible === false \|\| data\.status === "void"/)
 })
 

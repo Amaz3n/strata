@@ -3,9 +3,11 @@
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react"
 import { toast } from "sonner"
 
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Button } from "@/components/ui/button"
+import { Textarea } from "@/components/ui/textarea"
 
-import { submitDocumentSignatureAction } from "./actions"
+import { declineDocumentSignatureAction, submitDocumentSignatureAction } from "./actions"
 import { FieldNavigator } from "./components/field-navigator"
 import { PdfFieldViewer } from "./components/pdf-field-viewer"
 import { ReviewStep } from "./components/review-step"
@@ -28,7 +30,7 @@ interface DocumentSigningClientProps {
   signerEmail?: string | null
 }
 
-type SigningStep = "fields" | "review" | "success"
+type SigningStep = "fields" | "review" | "success" | "declined"
 
 const ELECTRONIC_SIGNATURE_CONSENT_TEXT =
   "I agree to use electronic records and signatures for this document, I can access and retain the document electronically, and I intend my electronic signature to be legally binding."
@@ -62,13 +64,15 @@ export function DocumentSigningClient({
 
   const [signedAt, setSignedAt] = useState<Date | null>(null)
   const [executedDocumentUrl, setExecutedDocumentUrl] = useState<string | null>(null)
+  const [declineDialogOpen, setDeclineDialogOpen] = useState(false)
+  const [declineReason, setDeclineReason] = useState("")
   const [isPending, startTransition] = useTransition()
 
   useEffect(() => {
     const loadPdf = async () => {
       try {
         const { Document, Page, pdfjs } = await import("react-pdf")
-        pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
+        pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs"
         setPDFComponents({ Document, Page })
       } catch (error) {
         console.error("Failed to load PDF renderer", error)
@@ -326,6 +330,22 @@ export function DocumentSigningClient({
     })
   }
 
+  const handleDecline = () => {
+    startTransition(async () => {
+      try {
+        await declineDocumentSignatureAction({ token, reason: declineReason })
+        setDeclineDialogOpen(false)
+        setStep("declined")
+        toast.success("Signature request declined")
+      } catch (error: any) {
+        console.error(error)
+        toast.error("Unable to decline", {
+          description: error?.message ?? "Please try again.",
+        })
+      }
+    })
+  }
+
   if (step === "success" && signedAt) {
     return (
       <div className="min-h-screen bg-background">
@@ -335,6 +355,19 @@ export function DocumentSigningClient({
           signedAt={signedAt}
           executedDocumentUrl={executedDocumentUrl}
         />
+      </div>
+    )
+  }
+
+  if (step === "declined") {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background px-4">
+        <div className="w-full max-w-lg rounded-lg border bg-card p-6 text-center shadow-sm">
+          <h1 className="text-xl font-semibold">Signature request declined</h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            The sender will see that this envelope is no longer active.
+          </p>
+        </div>
       </div>
     )
   }
@@ -367,6 +400,13 @@ export function DocumentSigningClient({
         completedRequired={completedRequired}
         totalRequired={requiredFields.length}
       />
+      <div className="border-b bg-muted/20 px-4 py-2">
+        <div className="mx-auto flex w-full max-w-7xl justify-end">
+          <Button variant="ghost" size="sm" onClick={() => setDeclineDialogOpen(true)}>
+            Decline to sign
+          </Button>
+        </div>
+      </div>
 
       <main className="mx-auto w-full max-w-7xl px-4 pb-32 pt-4">
         <PdfFieldViewer
@@ -422,6 +462,31 @@ export function DocumentSigningClient({
               }}
             />
           ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={declineDialogOpen} onOpenChange={setDeclineDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Decline to sign?</DialogTitle>
+            <DialogDescription>
+              This will stop the signing process and notify the sender that the request was declined.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            value={declineReason}
+            onChange={(event) => setDeclineReason(event.target.value)}
+            rows={4}
+            placeholder="Reason (optional)"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeclineDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleDecline} disabled={isPending}>
+              {isPending ? "Declining..." : "Decline"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

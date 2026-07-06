@@ -16,6 +16,7 @@ export const AI_SEARCH_FEATURE_FLAGS = {
   multiStepPlanning: "ai_search_multistep_planner_v2",
   generalAssistant: "ai_search_general_assistant",
   evalHarness: "ai_search_eval_harness",
+  agentHarness: "ai_search_agent_harness",
 } as const
 
 export interface AiSearchRuntimeFlags {
@@ -27,6 +28,7 @@ export interface AiSearchRuntimeFlags {
   multiStepPlanning: boolean
   generalAssistant: boolean
   evalHarness: boolean
+  agentHarness: boolean
 }
 
 function parseEnvFlag(name: string, fallback: boolean) {
@@ -65,8 +67,19 @@ export async function getAiSearchRuntimeFlags(context: OrgServiceContext): Promi
   const multiStepDefault = parseEnvFlag("AI_SEARCH_MULTI_STEP_DEFAULT", true)
   const generalDefault = parseEnvFlag("AI_SEARCH_GENERAL_ASSISTANT_DEFAULT", true)
   const evalDefault = parseEnvFlag("AI_SEARCH_EVAL_HARNESS_DEFAULT", false)
+  const agentHarnessDefault = parseEnvFlag("AI_SEARCH_AGENT_HARNESS_DEFAULT", true)
 
-  const [enabled, plannerV2, hybridRetrieval, conversationMemory, intentRouter, multiStepPlanning, generalAssistant, evalHarness] = await Promise.all([
+  const [
+    enabled,
+    plannerV2,
+    hybridRetrieval,
+    conversationMemory,
+    intentRouter,
+    multiStepPlanning,
+    generalAssistant,
+    evalHarness,
+    agentHarness,
+  ] = await Promise.all([
     isFeatureEnabledForOrg({
       supabase: context.supabase,
       orgId: context.orgId,
@@ -115,6 +128,12 @@ export async function getAiSearchRuntimeFlags(context: OrgServiceContext): Promi
       flagKey: AI_SEARCH_FEATURE_FLAGS.evalHarness,
       defaultEnabled: evalDefault,
     }),
+    isFeatureEnabledForOrg({
+      supabase: context.supabase,
+      orgId: context.orgId,
+      flagKey: AI_SEARCH_FEATURE_FLAGS.agentHarness,
+      defaultEnabled: agentHarnessDefault,
+    }),
   ])
 
   return {
@@ -126,5 +145,6 @@ export async function getAiSearchRuntimeFlags(context: OrgServiceContext): Promi
     multiStepPlanning,
     generalAssistant,
     evalHarness,
+    agentHarness,
   }
 }

@@ -57,6 +57,7 @@ import {
   getFileAction,
   getFileDownloadUrlAction,
   listFileVersionsAction,
+  unarchiveFileAction,
   uploadFileVersionAction,
   makeVersionCurrentAction,
   updateFileVersionAction,
@@ -1366,7 +1367,7 @@ function UnifiedDocumentsLayoutInner() {
     try {
       await bulkDeleteFilesAction(deleteFileIds);
       toast.success(
-        `Deleted ${deleteFileIds.length} file${deleteFileIds.length === 1 ? "" : "s"}`,
+        `Moved ${deleteFileIds.length} file${deleteFileIds.length === 1 ? "" : "s"} to trash`,
       );
       setDeleteDialogOpen(false);
       setDeleteFileIds([]);
@@ -1380,6 +1381,25 @@ function UnifiedDocumentsLayoutInner() {
       setIsDeleting(false);
     }
   }, [deleteFileIds, refreshFiles]);
+
+  const handleRestoreFiles = useCallback(
+    async (fileIds: string[]) => {
+      const ids = Array.from(new Set(fileIds)).filter(Boolean);
+      if (ids.length === 0) return;
+
+      try {
+        await Promise.all(ids.map((fileId) => unarchiveFileAction(fileId)));
+        toast.success(`Restored ${ids.length} file${ids.length === 1 ? "" : "s"}`);
+        setSelectedFileIds(new Set());
+        await refreshFiles({ includeMetadata: true });
+        dispatchNavRefresh();
+      } catch (error) {
+        console.error("Failed to restore files:", error);
+        toast.error("Failed to restore files");
+      }
+    },
+    [refreshFiles],
+  );
 
   const handleDownloadSelected = useCallback(async () => {
     const ids = Array.from(selectedFileIds);
@@ -1814,6 +1834,9 @@ function UnifiedDocumentsLayoutInner() {
           onFileClick={handleFileClick}
           onDownloadFile={handleDownloadById}
           onFolderClick={handleFolderClick}
+          onRenameFolder={handleRenameFolder}
+          onShareFolder={handleShareFolder}
+          onDeleteFolder={handleDeleteFolder}
           onUploadClick={handleUploadClick}
           onDropOnFolder={handleDropOnFolder}
           selectedFileIds={selectedFileIds}
@@ -1824,6 +1847,7 @@ function UnifiedDocumentsLayoutInner() {
         onRenameFile={openRenameDialog}
         onMoveFile={(fileId) => openMoveDialog(fileId)}
         onDeleteFile={(fileId) => openDeleteDialog(fileId)}
+        onRestoreFile={(fileId) => handleRestoreFiles([fileId])}
         onViewActivity={openTimeline}
         onShareFile={openShareDialog}
         onUploadNewVersion={openVersionUploadDialog}
@@ -1863,6 +1887,7 @@ function UnifiedDocumentsLayoutInner() {
           onRenameFile={openRenameDialog}
           onMoveFile={(fileId) => openMoveDialog(fileId)}
           onDeleteFile={(fileId) => openDeleteDialog(fileId)}
+          onRestoreFile={(fileId) => handleRestoreFiles([fileId])}
           onViewActivity={openTimeline}
           onShareFile={openShareDialog}
           onUploadNewVersion={openVersionUploadDialog}
@@ -1891,6 +1916,7 @@ function UnifiedDocumentsLayoutInner() {
           onDownloadSelected={handleDownloadSelected}
           onMoveSelected={() => openMoveDialog()}
           onDeleteSelected={() => openDeleteDialog()}
+          onRestoreSelected={() => handleRestoreFiles(Array.from(selectedFileIds))}
           onClearSelection={() => {
             setSelectedFileIds(new Set());
             setSelectedFolderPaths(new Set());
@@ -2708,10 +2734,10 @@ function UnifiedDocumentsLayoutInner() {
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete files?</AlertDialogTitle>
+            <AlertDialogTitle>Move files to trash?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete {deleteFileIds.length} file
-              {deleteFileIds.length === 1 ? "" : "s"}.
+              This will archive {deleteFileIds.length} file
+              {deleteFileIds.length === 1 ? "" : "s"} so they are hidden from the active documents list and can be restored from a trash view.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -2724,10 +2750,10 @@ function UnifiedDocumentsLayoutInner() {
               {isDeleting ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Deleting...
+                  Moving...
                 </>
               ) : (
-                "Delete"
+                "Move to trash"
               )}
             </AlertDialogAction>
           </AlertDialogFooter>

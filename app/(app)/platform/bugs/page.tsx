@@ -4,6 +4,7 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { PlatformBugsClient } from "@/components/platform/platform-bugs-client"
 import {
   listPlatformBugEvents,
+  listPlatformBugAiFixes,
   listPlatformBugAiReviews,
   listPlatformBugContextOptions,
   listPlatformBugOwners,
@@ -27,6 +28,7 @@ export default async function PlatformBugsPage() {
   ])
   const events = await listPlatformBugEvents(bugs.map((bug) => bug.id))
   const aiReviews = await listPlatformBugAiReviews(bugs.map((bug) => bug.id))
+  const aiFixes = await listPlatformBugAiFixes(bugs.map((bug) => bug.id))
 
   return (
     <PageLayout title="Platform Issues">
@@ -35,6 +37,7 @@ export default async function PlatformBugsPage() {
           initialBugs={bugs}
           initialEvents={events}
           initialAiReviews={aiReviews}
+          initialAiFixes={aiFixes}
           owners={owners}
           orgs={contextOptions.orgs}
         />

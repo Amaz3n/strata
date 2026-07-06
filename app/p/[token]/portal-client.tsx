@@ -2,13 +2,14 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react"
 import { useIsMobile } from "@/components/ui/use-mobile"
-import { Home, Camera, FileText, CheckSquare, MessageCircle, Info, Map } from "lucide-react"
+import { Home, Camera, FileText, CheckSquare, Info, Map, ReceiptText } from "lucide-react"
 import { PortalBottomNav, type PortalTab } from "@/components/portal/portal-bottom-nav"
 import { PortalPinGate } from "@/components/portal/portal-pin-gate"
 import { ExternalPortalShell } from "@/components/portal/external-portal-shell"
 import { PortalHomeTab } from "@/components/portal/tabs/portal-home-tab"
 import { PortalTimelineTab } from "@/components/portal/tabs/portal-timeline-tab"
 import { PortalDocumentsTab } from "@/components/portal/tabs/portal-documents-tab"
+import { PortalInvoicesTab } from "@/components/portal/tabs/portal-invoices-tab"
 import { PortalActionsTab } from "@/components/portal/tabs/portal-actions-tab"
 import { PortalAboutTab } from "@/components/portal/tabs/portal-about-tab"
 import { PortalRoadmapTab } from "@/components/portal/tabs/portal-roadmap-tab"
@@ -17,9 +18,9 @@ import type { ClientPortalData, ExternalPortalWorkspaceContext } from "@/lib/typ
 interface PortalPublicClientProps {
   data: ClientPortalData
   token: string
-  portalType?: "client" | "sub"
   pinRequired?: boolean
-  canMessage?: boolean
+  canDownloadFiles?: boolean
+  canPayInvoices?: boolean
   workspace?: ExternalPortalWorkspaceContext | null
   inviteEmail?: string
   suggestedFullName?: string
@@ -28,8 +29,9 @@ interface PortalPublicClientProps {
 export function PortalPublicClient({
   data,
   token,
-  portalType = "client",
   pinRequired = false,
+  canDownloadFiles = true,
+  canPayInvoices = false,
   workspace = null,
   inviteEmail = "",
   suggestedFullName = "",
@@ -37,10 +39,11 @@ export function PortalPublicClient({
   const [activeTab, setActiveTab] = useState<PortalTab | "roadmap">("home")
   const [pinVerified, setPinVerified] = useState(!pinRequired)
   const isMobile = useIsMobile()
+  const hasInvoices = data.invoices.length > 0
 
   const tabsForPortal = useMemo<(PortalTab | "roadmap")[]>(
-    () => ["home", "roadmap", "timeline", "documents", "actions", "about"],
-    [],
+    () => ["home", "roadmap", "timeline", "documents", ...(hasInvoices ? (["invoices"] as const) : []), "actions", "about"],
+    [hasInvoices],
   )
 
   const hasPendingActions = data.pendingChangeOrders.length > 0 || data.pendingSelections.length > 0
@@ -58,6 +61,7 @@ export function PortalPublicClient({
         { id: "roadmap", label: "Roadmap", icon: Map },
         { id: "timeline", label: "Photos", icon: Camera },
         { id: "documents", label: "Documents", icon: FileText },
+        hasInvoices ? { id: "invoices", label: "Invoices", icon: ReceiptText } : null,
         {
           id: "actions",
           label: "Actions",
@@ -66,15 +70,16 @@ export function PortalPublicClient({
         },
         { id: "about", label: "About", icon: Info },
       ].filter(Boolean) as Array<{ id: any; label: string; icon: typeof Home; indicator?: ReactNode }>,
-    [hasPendingActions],
+    [hasInvoices, hasPendingActions],
   )
 
   const renderTab = (tab: string) => {
-    if (tab === "home") return <PortalHomeTab data={data} />
+    if (tab === "home") return <PortalHomeTab data={data} token={token} canPayInvoices={canPayInvoices} />
     if (tab === "roadmap") return <PortalRoadmapTab data={data} />
     if (tab === "timeline") return <PortalTimelineTab data={data} />
-    if (tab === "documents") return <PortalDocumentsTab data={data} token={token} portalType={portalType} />
-    if (tab === "actions") return <PortalActionsTab data={data} token={token} portalType={portalType} />
+    if (tab === "documents") return <PortalDocumentsTab data={data} token={token} canDownload={canDownloadFiles} />
+    if (tab === "invoices") return <PortalInvoicesTab data={data} token={token} />
+    if (tab === "actions") return <PortalActionsTab data={data} token={token} portalType="client" />
     return <PortalAboutTab data={data} />
   }
 

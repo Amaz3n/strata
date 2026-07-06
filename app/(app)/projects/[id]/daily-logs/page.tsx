@@ -4,11 +4,11 @@ import { PageLayout } from "@/components/layout/page-layout"
 import {
   getProjectAction,
   getProjectDailyLogsAction,
+  getProjectDailyReportsAction,
   getProjectFilesAction,
   getProjectScheduleAction,
   getProjectTasksAction,
   listProjectPunchItemsAction,
-  getProjectActivityAction,
   getProjectTeamAction,
 } from "../actions"
 import { ProjectDailyLogsClient } from "./project-daily-logs-client"
@@ -26,7 +26,7 @@ export default async function ProjectDailyLogsPage({ params }: ProjectDailyLogsP
       <PageLayout title="Daily Logs" breadcrumbs={[
         { label: "Project" },
         { label: "Daily Logs" },
-      ]} />
+      ]} fullBleed />
       <Suspense fallback={
         <div className="p-6 space-y-4">
           <Skeleton className="h-8 w-48 mb-6" />
@@ -50,27 +50,28 @@ async function ProjectDailyLogsData({ id }: { id: string }) {
     notFound()
   }
 
-  const [dailyLogs, files, scheduleItems, tasks, punchItems, activity, projectTeam] = await Promise.all([
+  const [dailyLogs, dailyReports, files, scheduleItems, tasks, punchItems, projectTeam] = await Promise.all([
     getProjectDailyLogsAction(id),
+    getProjectDailyReportsAction(id),
     getProjectFilesAction(id),
     getProjectScheduleAction(id),
     getProjectTasksAction(id),
     listProjectPunchItemsAction(id),
-    getProjectActivityAction(id),
     getProjectTeamAction(id),
   ])
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-1 flex-col min-h-0">
       <ProjectDailyLogsClient
         projectId={project.id}
         projectAddress={project.address ?? undefined}
+        projectStartDate={project.start_date ?? undefined}
         initialDailyLogs={dailyLogs}
+        initialDailyReports={dailyReports}
         initialFiles={files}
         scheduleItems={scheduleItems}
         tasks={tasks}
         punchItems={punchItems}
-        activity={activity}
         mentionableUsers={projectTeam.map((member) => ({
           id: member.user_id,
           name: member.full_name,

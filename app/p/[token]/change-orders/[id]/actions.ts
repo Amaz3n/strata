@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache"
 
 import { recordEvent } from "@/lib/services/events"
 import { approveChangeOrderFromPortalSignature, getChangeOrderForPortal } from "@/lib/services/change-orders"
-import { validatePortalToken } from "@/lib/services/portal-access"
+import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
 
@@ -36,10 +36,10 @@ export async function approveChangeOrderInPortalAction(input: {
     consent_accepted: boolean
   }
 }) {
-  const access = await validatePortalToken(input.token)
-  if (!access || !access.permissions.can_approve_change_orders) {
-    throw new Error("This portal link cannot approve change orders.")
-  }
+  const access = await assertPortalActionAccess(input.token, {
+    portalType: "client",
+    permission: "can_approve_change_orders",
+  })
 
   const changeOrder = await getChangeOrderForPortal(input.changeOrderId, access.org_id, access.project_id)
   if (!changeOrder || !changeOrder.client_visible) {
@@ -84,10 +84,10 @@ export async function requestChangeOrderChangesAction(input: {
     throw new Error("Add a note before sending changes.")
   }
 
-  const access = await validatePortalToken(input.token)
-  if (!access || !access.permissions.can_approve_change_orders) {
-    throw new Error("This portal link cannot request change-order changes.")
-  }
+  const access = await assertPortalActionAccess(input.token, {
+    portalType: "client",
+    permission: "can_approve_change_orders",
+  })
 
   const changeOrder = await getChangeOrderForPortal(input.changeOrderId, access.org_id, access.project_id)
   if (!changeOrder || !changeOrder.client_visible) {

@@ -326,6 +326,89 @@ export async function sendReminderSMS(payload: ReminderSMSPayload): Promise<stri
   return undefined
 }
 
+export interface ComplianceAutopilotEmailPayload {
+  to: string
+  recipientName?: string | null
+  companyName: string
+  documentName: string
+  reminderKind: "missing" | "expiring" | "expired"
+  expiryDate?: string | null
+  daysUntilExpiry?: number | null
+  orgName?: string | null
+  orgLogoUrl?: string | null
+  orgSlug?: string | null
+  uploadUrl?: string | null
+}
+
+function escapeMessage(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;")
+}
+
+export async function sendComplianceAutopilotEmail(
+  payload: ComplianceAutopilotEmailPayload,
+): Promise<string | undefined> {
+  const expiryDate = payload.expiryDate
+    ? new Date(payload.expiryDate).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : null
+  const documentName = escapeMessage(payload.documentName)
+  const companyName = escapeMessage(payload.companyName)
+  const greeting = payload.recipientName
+    ? `<p style="margin:0 0 14px 0;">Hi ${escapeMessage(payload.recipientName)},</p>`
+    : ""
+
+  const message =
+    payload.reminderKind === "missing"
+      ? `${documentName} is missing for ${companyName}.`
+      : payload.reminderKind === "expired"
+        ? `${documentName} for ${companyName} has expired${expiryDate ? ` as of ${escapeMessage(expiryDate)}` : ""}.`
+        : `${documentName} for ${companyName} expires${expiryDate ? ` on ${escapeMessage(expiryDate)}` : ""}.`
+
+  const subject =
+    payload.reminderKind === "missing"
+      ? `Compliance request: ${payload.documentName} needed`
+      : payload.reminderKind === "expired"
+        ? `Compliance expired: ${payload.documentName}`
+        : `Compliance reminder: ${payload.documentName} expires soon`
+
+  const html = renderStandardEmailLayout({
+    title:
+      payload.reminderKind === "missing"
+        ? "Compliance document needed"
+        : payload.reminderKind === "expired"
+          ? "Compliance document expired"
+          : "Compliance document expiring",
+    messageHtml: `
+      ${greeting}
+      <p style="margin:0 0 14px 0;">${message}</p>
+      <p style="margin:0;">Please upload an updated document or send it to the project team so work and payments do not get held up.</p>
+    `,
+    buttonText: payload.uploadUrl ? "Upload document" : undefined,
+    buttonUrl: payload.uploadUrl ?? undefined,
+    orgName: payload.orgName,
+    orgLogoUrl: payload.orgLogoUrl,
+  })
+
+  const sent = await sendEmail({
+    to: [payload.to],
+    subject,
+    html,
+    from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
+  })
+
+  return sent
+    ? `compliance-${payload.reminderKind}-${payload.documentName}-${Date.now()}`
+    : undefined
+}
+
 export interface BidInviteEmailPayload {
   to: string
   companyName?: string | null

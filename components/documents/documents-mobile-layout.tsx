@@ -23,6 +23,7 @@ import {
   Search,
   Share2,
   Trash2,
+  Undo2,
   Upload,
   Users,
   X,
@@ -51,6 +52,7 @@ interface DocumentsMobileLayoutProps {
   onRenameFile: (fileId: string) => void
   onMoveFile: (fileId: string) => void
   onDeleteFile: (fileId: string) => void
+  onRestoreFile?: (fileId: string) => void
   onViewActivity: (fileId: string) => void
   onShareFile: (fileId: string) => void
   onUploadNewVersion: (fileId: string) => void
@@ -93,6 +95,7 @@ export function DocumentsMobileLayout({
   onRenameFile,
   onMoveFile,
   onDeleteFile,
+  onRestoreFile,
   onViewActivity,
   onShareFile,
   onUploadNewVersion,
@@ -176,7 +179,8 @@ export function DocumentsMobileLayout({
     return result
   }, [files, currentPath, searchQuery, quickFilter])
 
-  const showFolders = !searchQuery || Boolean(currentPath)
+  const showFolders = quickFilter === "all" && (!searchQuery || Boolean(currentPath))
+  const visibleFolderCount = showFolders ? currentFolders.length : 0
   const hasFilters = quickFilter !== "all" || Boolean(searchQuery) || Boolean(currentPath)
 
   const goUp = () => {
@@ -187,7 +191,7 @@ export function DocumentsMobileLayout({
 
   const isEmpty =
     !isLoading &&
-    currentFolders.length === 0 &&
+    visibleFolderCount === 0 &&
     filteredFiles.length === 0
 
   return (
@@ -351,6 +355,7 @@ export function DocumentsMobileLayout({
               onMoveFile={onMoveFile}
               onShareFile={onShareFile}
               onDeleteFile={onDeleteFile}
+              onRestoreFile={onRestoreFile}
             />
           ) : null}
         </DrawerContent>
@@ -590,6 +595,7 @@ function FileActionsSheet({
   onMoveFile,
   onShareFile,
   onDeleteFile,
+  onRestoreFile,
 }: {
   file: FileWithUrls
   close: () => void
@@ -603,11 +609,13 @@ function FileActionsSheet({
   onMoveFile: (fileId: string) => void
   onShareFile: (fileId: string) => void
   onDeleteFile: (fileId: string) => void
+  onRestoreFile?: (fileId: string) => void
 }) {
   const run = (fn: () => void) => {
     close()
     fn()
   }
+  const isArchived = Boolean(file.archived_at)
 
   return (
     <>
@@ -620,12 +628,14 @@ function FileActionsSheet({
         <ActionItem icon={Eye} label="Preview" onClick={() => run(() => onFileClick(file.id))} />
         <ActionItem icon={Info} label="Properties" onClick={() => run(() => onOpenProperties(file.id))} />
         <ActionItem icon={Download} label="Download" onClick={() => run(() => onDownloadFile(file.id))} />
-        <ActionItem
-          icon={FilePlus2}
-          label="Upload new version"
-          onClick={() => run(() => onUploadNewVersion(file.id))}
-        />
-        {file.mime_type === "application/pdf" && onSendForSignature ? (
+        {!isArchived ? (
+          <ActionItem
+            icon={FilePlus2}
+            label="Upload new version"
+            onClick={() => run(() => onUploadNewVersion(file.id))}
+          />
+        ) : null}
+        {!isArchived && file.mime_type === "application/pdf" && onSendForSignature ? (
           <ActionItem
             icon={FileSignature}
             label="Send for signature"
@@ -633,15 +643,21 @@ function FileActionsSheet({
           />
         ) : null}
         <ActionItem icon={Activity} label="Timeline" onClick={() => run(() => onViewActivity(file.id))} />
-        <ActionItem icon={Pencil} label="Rename" onClick={() => run(() => onRenameFile(file.id))} />
-        <ActionItem icon={FolderInput} label="Move" onClick={() => run(() => onMoveFile(file.id))} />
-        <ActionItem icon={Share2} label="Share" onClick={() => run(() => onShareFile(file.id))} />
-        <ActionItem
-          icon={Trash2}
-          label="Delete"
-          destructive
-          onClick={() => run(() => onDeleteFile(file.id))}
-        />
+        {isArchived ? (
+          <ActionItem icon={Undo2} label="Restore" onClick={() => run(() => onRestoreFile?.(file.id))} />
+        ) : (
+          <>
+            <ActionItem icon={Pencil} label="Rename" onClick={() => run(() => onRenameFile(file.id))} />
+            <ActionItem icon={FolderInput} label="Move" onClick={() => run(() => onMoveFile(file.id))} />
+            <ActionItem icon={Share2} label="Share" onClick={() => run(() => onShareFile(file.id))} />
+            <ActionItem
+              icon={Trash2}
+              label="Move to trash"
+              destructive
+              onClick={() => run(() => onDeleteFile(file.id))}
+            />
+          </>
+        )}
       </div>
     </>
   )

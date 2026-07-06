@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache"
 
-import { archiveCompany, createCompany, getCompany, getCompanyProjects, listCompanies, updateCompany } from "@/lib/services/companies"
+import { archiveCompany, createCompany, getCompany, getCompanyProjects, listCompanies, restoreCompany, updateCompany } from "@/lib/services/companies"
 import { requireOrgContext } from "@/lib/services/context"
 import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
 import {
@@ -50,6 +50,14 @@ export async function updateCompanyAction(companyId: string, input: unknown) {
 
 export async function archiveCompanyAction(companyId: string) {
   await archiveCompany(companyId)
+  revalidatePath("/companies")
+  revalidatePath(`/companies/${companyId}`)
+  revalidatePath("/directory")
+  return true
+}
+
+export async function restoreCompanyAction(companyId: string) {
+  await restoreCompany(companyId)
   revalidatePath("/companies")
   revalidatePath(`/companies/${companyId}`)
   revalidatePath("/directory")
@@ -192,5 +200,4 @@ export async function reviewComplianceDocumentAction(
   revalidatePath(`/companies`)
   return result
 }
-
 

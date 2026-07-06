@@ -9,6 +9,7 @@ export const invoiceLineInputSchema = z.object({
     message: "Unit cost is required",
   }),
   taxable: z.boolean().default(true),
+  tax_rate_percent: z.number().min(0).max(20).optional().nullable(),
   qbo_income_account_id: z.string().min(1).optional().nullable(),
   qbo_income_account_name: z.string().max(255).optional().nullable(),
   billable_cost_ids: z.array(z.string().uuid()).optional(),
@@ -46,6 +47,9 @@ export const invoiceInputSchema = z.object({
     .transform((val) => (val && val.trim().length > 0 ? val : undefined)),
   client_visible: z.boolean().default(false),
   tax_rate: z.number().min(0).max(20).default(0),
+  discount_type: z.enum(["percent", "fixed"]).optional().nullable(),
+  // Percent (0–100) or dollars depending on discount_type; ignored when discount_type is unset.
+  discount_value: z.number().min(0).optional().nullable(),
   lines: z.array(invoiceLineInputSchema).min(1, "Add at least one line item"),
   sent_to_emails: z.array(z.string().email()).optional(),
   payment_terms_days: z.number().min(0).max(365).optional(),

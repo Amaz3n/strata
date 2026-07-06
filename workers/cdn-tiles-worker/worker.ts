@@ -55,17 +55,21 @@ function safeEqual(a: string, b: string) {
   return diff === 0
 }
 
-async function validateCookie(token: string, secret: string) {
+async function validateCookie(
+  token: string,
+  secret: string,
+): Promise<{ orgId: string | null } | null> {
   const [payloadB64, sig] = token.split(".")
-  if (!payloadB64 || !sig) return false
+  if (!payloadB64 || !sig) return null
   const expected = await hmacSha256(secret, payloadB64)
-  if (!safeEqual(expected, sig)) return false
+  if (!safeEqual(expected, sig)) return null
 
   const payloadBytes = base64UrlToBytes(payloadB64)
   const payloadJson = new TextDecoder().decode(payloadBytes)
-  const payload = JSON.parse(payloadJson) as { exp?: number }
+  const payload = JSON.parse(payloadJson) as { exp?: number; org_id?: string }
   const now = Math.floor(Date.now() / 1000)
-  return typeof payload.exp === "number" && payload.exp > now
+  if (typeof payload.exp !== "number" || payload.exp <= now) return null
+  return { orgId: typeof payload.org_id === "string" ? payload.org_id : null }
 }
 
 const worker = {
@@ -82,13 +86,23 @@ const worker = {
       return new Response("Unauthorized", { status: 401 })
     }
 
-    const ok = await validateCookie(token, env.TILES_COOKIE_SECRET)
-    if (!ok) {
+    const session = await validateCookie(token, env.TILES_COOKIE_SECRET)
+    if (!session) {
       return new Response("Unauthorized", { status: 401 })
     }
 
     const objectPath = url.pathname.slice(matchedPrefix.length)
     if (!objectPath) {
+      return new Response("Not found", { status: 404 })
+    }
+
+    // Object keys are `{orgId}/{hash}/...` — the signed cookie carries the
+    // requester's org, so a valid session for one org can't read another
+    // org's tiles by guessing paths.
+    const pathWithoutBucketPrefix = objectPath.startsWith(`${R2_KEY_PREFIX}/`)
+      ? objectPath.slice(R2_KEY_PREFIX.length + 1)
+      : objectPath
+    if (!session.orgId || !pathWithoutBucketPrefix.startsWith(`${session.orgId}/`)) {
       return new Response("Not found", { status: 404 })
     }
 

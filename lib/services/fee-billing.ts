@@ -9,6 +9,7 @@ import { recordEvent } from "@/lib/services/events"
 import { createInvoice, getInvoiceWithLines } from "@/lib/services/invoices"
 import { getNextInvoiceNumber, markReservationUsed } from "@/lib/services/invoice-numbers"
 import { getProjectJobCostActualsByCostCode } from "@/lib/services/job-cost-actuals"
+import { applyRetainageToInvoice } from "@/lib/services/retainage"
 
 export type FeeScheduleStatus = "draft" | "active" | "closed" | "voided"
 export type FeeLineStatus = "planned" | "earned" | "unbilled" | "partially_billed" | "billed" | "voided"
@@ -68,6 +69,9 @@ export interface ProjectFeeBillingSummary {
   total_eac_cents: number
 }
 
+const CONTRACT_TERMS_FEE_SCHEDULE_ID = "00000000-0000-0000-0000-000000000000"
+const CONTRACT_TERMS_FEE_LINE_ID = "00000000-0000-0000-0000-000000000001"
+
 const updateFeeProgressSchema = z.object({
   projectId: z.string().uuid(),
   scheduleId: z.string().uuid(),
@@ -88,6 +92,12 @@ const createFeeInvoiceSchema = z.object({
 
 export type UpdateFeeProgressInput = z.infer<typeof updateFeeProgressSchema>
 export type CreateFeeInvoiceInput = z.infer<typeof createFeeInvoiceSchema>
+
+export interface PreparedProjectFeeBilling {
+  summary: ProjectFeeBillingSummary
+  amountCents: number
+  allocations: Array<{ line_id: string; amount_cents: number }>
+}
 
 function toNumber(value: unknown, fallback = 0) {
   const next = Number(value ?? fallback)
@@ -165,7 +175,7 @@ async function loadProjectFeeContext(args: { supabase: SupabaseClient; orgId: st
       .maybeSingle(),
     args.supabase
       .from("contracts")
-      .select("id, title, status, total_cents, snapshot")
+      .select("id, title, status, total_cents, fixed_fee_cents, retainage_percent, snapshot")
       .eq("org_id", args.orgId)
       .eq("project_id", args.projectId)
       .eq("status", "active")
@@ -186,7 +196,8 @@ async function loadProjectFeeContext(args: { supabase: SupabaseClient; orgId: st
 
   const settings = settingsResult.data
   const contract = contractResult.data
-  const fixedFeeCents = Number(contract?.snapshot?.fixed_fee_cents ?? settings?.metadata?.fixed_fee_cents ?? 0) || 0
+  const fixedFeeCents =
+    Number(contract?.fixed_fee_cents ?? contract?.snapshot?.fixed_fee_cents ?? settings?.metadata?.fixed_fee_cents ?? 0) || 0
 
   return {
     settings,
@@ -239,7 +250,53 @@ async function loadActiveSchedule(args: { supabase: SupabaseClient; orgId: strin
   return data ? mapSchedule(data) : null
 }
 
-async function syncContractFeeSchedule(args: {
+function buildContractTermsSchedule(args: {
+  orgId: string
+  projectId: string
+  context: Awaited<ReturnType<typeof loadProjectFeeContext>>
+}): { schedule: ProjectFeeSchedule; lines: ProjectFeeScheduleLine[] } {
+  const now = new Date().toISOString()
+  return {
+    schedule: {
+      id: CONTRACT_TERMS_FEE_SCHEDULE_ID,
+      org_id: args.orgId,
+      project_id: args.projectId,
+      contract_id: args.context.contract?.id ?? null,
+      name: "Construction management fee",
+      status: "active",
+      fee_basis: "fixed_fee",
+      earned_calculation: "percent_complete",
+      total_fee_cents: args.context.fixedFeeCents,
+      currency: "usd",
+      metadata: {
+        source: "contract_fixed_fee",
+        materialized: false,
+        contract_title: args.context.contract?.title ?? null,
+      },
+      created_at: now,
+      updated_at: now,
+    },
+    lines: [
+      {
+        id: CONTRACT_TERMS_FEE_LINE_ID,
+        org_id: args.orgId,
+        project_id: args.projectId,
+        schedule_id: CONTRACT_TERMS_FEE_SCHEDULE_ID,
+        name: "Construction management fee",
+        description: "Fixed construction management fee",
+        status: "unbilled",
+        scheduled_fee_cents: args.context.fixedFeeCents,
+        earned_fee_cents: 0,
+        billed_fee_cents: 0,
+        percent_complete: 0,
+        sort_order: 0,
+        metadata: { source: "contract_fixed_fee", materialized: false },
+      },
+    ],
+  }
+}
+
+async function materializeContractFeeSchedule(args: {
   supabase: SupabaseClient
   orgId: string
   projectId: string
@@ -265,6 +322,30 @@ async function syncContractFeeSchedule(args: {
   }
 
   const existing = await loadActiveSchedule(args)
+  if (existing) {
+    const existingLines = await loadScheduleLines({ supabase: args.supabase, orgId: args.orgId, scheduleId: existing.id })
+    if (existingLines.length === 0) {
+      const { error: lineError } = await args.supabase.from("project_fee_schedule_lines").insert({
+        org_id: args.orgId,
+        project_id: args.projectId,
+        schedule_id: existing.id,
+        name: "Construction management fee",
+        description: "Fixed construction management fee",
+        status: "unbilled",
+        scheduled_fee_cents: existing.total_fee_cents || context.fixedFeeCents,
+        earned_fee_cents: 0,
+        billed_fee_cents: 0,
+        percent_complete: 0,
+        sort_order: 0,
+        created_by: args.userId ?? null,
+        updated_by: args.userId ?? null,
+        metadata: { source: "contract_fixed_fee" },
+      })
+      if (lineError) throw new Error(`Failed to create default fee line: ${lineError.message}`)
+    }
+    return { enabled: true, context, schedule: existing, reason: undefined }
+  }
+
   const payload = {
     org_id: args.orgId,
     project_id: args.projectId,
@@ -278,24 +359,15 @@ async function syncContractFeeSchedule(args: {
     updated_by: args.userId ?? null,
     created_by: args.userId ?? null,
     metadata: {
-      ...(existing?.metadata ?? {}),
       source: "contract_fixed_fee",
       contract_title: context.contract?.title ?? null,
-      synced_from_contract_at: new Date().toISOString(),
+      materialized_from_contract_at: new Date().toISOString(),
     },
   }
 
-  const { data: scheduleRow, error } = existing
-    ? await args.supabase
-        .from("project_fee_schedules")
-        .update(payload)
-        .eq("org_id", args.orgId)
-        .eq("id", existing.id)
-        .select("*")
-        .single()
-    : await args.supabase.from("project_fee_schedules").insert(payload).select("*").single()
+  const { data: scheduleRow, error } = await args.supabase.from("project_fee_schedules").insert(payload).select("*").single()
 
-  if (error || !scheduleRow) throw new Error(`Failed to sync project fee schedule: ${error?.message}`)
+  if (error || !scheduleRow) throw new Error(`Failed to materialize project fee schedule: ${error?.message}`)
   const schedule = mapSchedule(scheduleRow)
 
   const { data: lines, error: linesError } = await args.supabase
@@ -386,27 +458,50 @@ export async function getProjectFeeBillingSummary(projectId: string, orgId?: str
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireFeePermission({ supabase, orgId: resolvedOrgId, userId, projectId, permission: "invoice.read" })
 
-  const [syncResult, progress] = await Promise.all([
-    syncContractFeeSchedule({ supabase, orgId: resolvedOrgId, projectId, userId }),
+  const [context, schedule, progress] = await Promise.all([
+    loadProjectFeeContext({ supabase, orgId: resolvedOrgId, projectId }),
+    loadActiveSchedule({ supabase, orgId: resolvedOrgId, projectId }),
     estimateProjectPercentComplete({ supabase, orgId: resolvedOrgId, projectId }),
   ])
 
-  if (!syncResult.enabled || !syncResult.schedule) {
+  if (context.billingModel !== "cost_plus_fixed_fee") {
     return summarizeFeeSchedule({
       enabled: false,
-      reason: syncResult.reason,
-      billingModel: syncResult.context.billingModel,
+      reason: "Fee billing is only enabled for cost-plus fixed-fee projects.",
+      billingModel: context.billingModel,
       schedule: null,
       lines: [],
       progress,
     })
   }
 
-  const lines = await loadScheduleLines({ supabase, orgId: resolvedOrgId, scheduleId: syncResult.schedule.id })
+  if (context.fixedFeeCents <= 0) {
+    return summarizeFeeSchedule({
+      enabled: false,
+      reason: "Cost-plus fixed-fee setup needs a fixed fee amount before fee billing can run.",
+      billingModel: context.billingModel,
+      schedule: null,
+      lines: [],
+      progress,
+    })
+  }
+
+  if (!schedule) {
+    const synthetic = buildContractTermsSchedule({ orgId: resolvedOrgId, projectId, context })
+    return summarizeFeeSchedule({
+      enabled: true,
+      billingModel: context.billingModel,
+      schedule: synthetic.schedule,
+      lines: synthetic.lines,
+      progress,
+    })
+  }
+
+  const lines = await loadScheduleLines({ supabase, orgId: resolvedOrgId, scheduleId: schedule.id })
   return summarizeFeeSchedule({
     enabled: true,
-    billingModel: syncResult.context.billingModel,
-    schedule: syncResult.schedule,
+    billingModel: context.billingModel,
+    schedule,
     lines,
     progress,
   })
@@ -424,9 +519,18 @@ export async function updateProjectFeeProgress(input: UpdateFeeProgressInput, or
     resourceId: parsed.scheduleId,
   })
 
+  const materialized = await materializeContractFeeSchedule({ supabase, orgId: resolvedOrgId, projectId: parsed.projectId, userId })
+  if (!materialized.enabled || !materialized.schedule) {
+    throw new Error(materialized.reason ?? "Fee schedule is not available for this project.")
+  }
+
   const current = await getProjectFeeBillingSummary(parsed.projectId, resolvedOrgId)
   const schedule = current.schedule
-  if (!current.enabled || !schedule || schedule.id !== parsed.scheduleId) {
+  if (
+    !current.enabled ||
+    !schedule ||
+    (schedule.id !== parsed.scheduleId && parsed.scheduleId !== CONTRACT_TERMS_FEE_SCHEDULE_ID)
+  ) {
     throw new Error(current.reason ?? "Fee schedule is not available for this project.")
   }
 
@@ -508,6 +612,136 @@ function allocateFeeBilling(lines: ProjectFeeScheduleLine[], amountCents: number
   return allocations
 }
 
+export async function prepareProjectFeeBillingForOwnerInvoice(args: {
+  supabase: SupabaseClient
+  orgId: string
+  projectId: string
+  userId?: string | null
+  amountCents?: number | null
+}): Promise<PreparedProjectFeeBilling> {
+  const materialized = await materializeContractFeeSchedule({
+    supabase: args.supabase,
+    orgId: args.orgId,
+    projectId: args.projectId,
+    userId: args.userId,
+  })
+  if (!materialized.enabled || !materialized.schedule) {
+    throw new Error(materialized.reason ?? "Fee billing is not available for this project.")
+  }
+
+  const [progress, lines] = await Promise.all([
+    estimateProjectPercentComplete({ supabase: args.supabase, orgId: args.orgId, projectId: args.projectId }),
+    loadScheduleLines({ supabase: args.supabase, orgId: args.orgId, scheduleId: materialized.schedule.id }),
+  ])
+  const summary = summarizeFeeSchedule({
+    enabled: true,
+    billingModel: materialized.context.billingModel,
+    schedule: materialized.schedule,
+    lines,
+    progress,
+  })
+  const amountCents = args.amountCents ?? summary.billable_fee_cents
+  if (amountCents <= 0) {
+    throw new Error("No earned fee is available to bill.")
+  }
+  if (amountCents > summary.billable_fee_cents) {
+    throw new Error("Fee invoice amount cannot exceed earned unbilled fee.")
+  }
+
+  const allocations = allocateFeeBilling(summary.lines, amountCents)
+  if (allocations.length === 0) {
+    throw new Error("No fee schedule lines are available to bill.")
+  }
+
+  return { summary, amountCents, allocations }
+}
+
+export async function recordProjectFeeBillingForInvoice(args: {
+  supabase: SupabaseClient
+  orgId: string
+  projectId: string
+  userId?: string | null
+  invoiceId: string
+  invoiceLineId?: string | null
+  billingPeriodId?: string | null
+  prepared: PreparedProjectFeeBilling
+  source: "fee_invoice" | "approved_cost_invoice"
+  invoiceMetadata?: Record<string, any>
+}) {
+  const now = new Date().toISOString()
+  const { summary, amountCents, allocations } = args.prepared
+
+  for (const allocation of allocations) {
+    const line = summary.lines.find((item) => item.id === allocation.line_id)
+    if (!line) continue
+    const nextBilled = line.billed_fee_cents + allocation.amount_cents
+    const nextStatus = nextBilled >= line.scheduled_fee_cents ? "billed" : "partially_billed"
+    const { error: lineError } = await args.supabase
+      .from("project_fee_schedule_lines")
+      .update({
+        billed_fee_cents: nextBilled,
+        invoice_id: args.invoiceId,
+        invoice_line_id: args.invoiceLineId ?? null,
+        billed_at: now,
+        status: nextStatus,
+        updated_by: args.userId ?? null,
+      })
+      .eq("org_id", args.orgId)
+      .eq("id", allocation.line_id)
+
+    if (lineError) throw new Error(`Failed to mark fee line billed: ${lineError.message}`)
+  }
+
+  const { error: billingError } = await args.supabase.from("project_fee_billings").insert({
+    org_id: args.orgId,
+    project_id: args.projectId,
+    schedule_id: summary.schedule?.id,
+    invoice_id: args.invoiceId,
+    billing_period_id: args.billingPeriodId ?? null,
+    status: "billed",
+    fee_line_ids: allocations.map((allocation) => allocation.line_id),
+    subtotal_fee_cents: amountCents,
+    tax_cents: 0,
+    total_fee_cents: amountCents,
+    billed_at: now,
+    created_by: args.userId ?? null,
+    updated_by: args.userId ?? null,
+    metadata: {
+      allocations,
+      source: args.source,
+      project_percent_complete: summary.project_percent_complete,
+      earned_fee_cents: summary.earned_fee_cents,
+      billed_fee_cents_before: summary.billed_fee_cents,
+    },
+  })
+
+  if (billingError) throw new Error(`Failed to record fee billing: ${billingError.message}`)
+
+  const { data: invoiceRow } = await args.supabase
+    .from("invoices")
+    .select("metadata")
+    .eq("org_id", args.orgId)
+    .eq("id", args.invoiceId)
+    .maybeSingle()
+
+  const existingMetadata = (invoiceRow?.metadata as Record<string, any> | null) ?? {}
+  await args.supabase
+    .from("invoices")
+    .update({
+      billing_period_id: args.billingPeriodId ?? null,
+      metadata: {
+        ...existingMetadata,
+        ...(args.invoiceMetadata ?? {}),
+        fee_schedule_id: summary.schedule?.id ?? null,
+        fee_line_ids: allocations.map((allocation) => allocation.line_id),
+        fee_billing_allocations: allocations,
+        earned_fee_cents: amountCents,
+      },
+    })
+    .eq("org_id", args.orgId)
+    .eq("id", args.invoiceId)
+}
+
 export async function createProjectFeeInvoice(input: CreateFeeInvoiceInput, orgId?: string): Promise<Invoice> {
   const parsed = createFeeInvoiceSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
@@ -521,7 +755,11 @@ export async function createProjectFeeInvoice(input: CreateFeeInvoiceInput, orgI
   if (!summary.enabled || !summary.schedule) {
     throw new Error(summary.reason ?? "Fee billing is not available for this project.")
   }
-  if (parsed.scheduleId && summary.schedule.id !== parsed.scheduleId) {
+  if (
+    parsed.scheduleId &&
+    summary.schedule.id !== parsed.scheduleId &&
+    parsed.scheduleId !== CONTRACT_TERMS_FEE_SCHEDULE_ID
+  ) {
     throw new Error("Selected fee schedule is not active for this project.")
   }
 
@@ -532,17 +770,23 @@ export async function createProjectFeeInvoice(input: CreateFeeInvoiceInput, orgI
   if (amountCents > summary.billable_fee_cents) {
     throw new Error("Fee invoice amount cannot exceed earned unbilled fee.")
   }
-
-  const allocations = allocateFeeBilling(summary.lines, amountCents)
-  if (allocations.length === 0) {
-    throw new Error("No fee schedule lines are available to bill.")
-  }
+  const preparedFeeBilling = await prepareProjectFeeBillingForOwnerInvoice({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: parsed.projectId,
+    userId,
+    amountCents,
+  })
 
   const nextNumber = await getNextInvoiceNumber(resolvedOrgId)
   const today = new Date().toISOString().slice(0, 10)
   const issueDate = parsed.issueDate ?? today
   const dueDate = parsed.dueDate ?? issueDate
   const status = parsed.status
+  const retainFee = context.contract?.snapshot?.retain_fee === true
+  const feeRetainagePercent = retainFee ? Number(context.contract?.retainage_percent ?? 0) : 0
+  const feeRetainageCents =
+    feeRetainagePercent > 0 ? Math.round(Math.max(amountCents, 0) * (feeRetainagePercent / 100)) : 0
 
   const invoice = await createInvoice({
     orgId: resolvedOrgId,
@@ -568,10 +812,31 @@ export async function createProjectFeeInvoice(input: CreateFeeInvoiceInput, orgI
           unit_cost: amountCents / 100,
           taxable: false,
         },
+        ...(feeRetainageCents > 0
+          ? [
+              {
+                description: `Retainage held (${feeRetainagePercent}%)`,
+                quantity: 1,
+                unit: "retainage",
+                unit_cost: -Math.abs(feeRetainageCents) / 100,
+                taxable: false,
+              },
+            ]
+          : []),
       ],
       notes: "Fixed fee billed separately from reimbursable project costs.",
     },
   })
+
+  if (feeRetainageCents > 0 && context.contract?.id) {
+    await applyRetainageToInvoice({
+      invoiceId: invoice.id,
+      contract_id: context.contract.id,
+      amount_cents: feeRetainageCents,
+      project_id: parsed.projectId,
+      orgId: resolvedOrgId,
+    })
+  }
 
   if (nextNumber.reservation_id) {
     await markReservationUsed(nextNumber.reservation_id, invoice.id, resolvedOrgId)
@@ -579,75 +844,24 @@ export async function createProjectFeeInvoice(input: CreateFeeInvoiceInput, orgI
 
   const freshInvoice = await getInvoiceWithLines(invoice.id, resolvedOrgId)
   const invoiceLineId = freshInvoice?.lines?.[0]?.id ?? null
-  const now = new Date().toISOString()
 
-  for (const allocation of allocations) {
-    const line = summary.lines.find((item) => item.id === allocation.line_id)
-    if (!line) continue
-    const nextBilled = line.billed_fee_cents + allocation.amount_cents
-    const nextStatus = nextBilled >= line.scheduled_fee_cents ? "billed" : "partially_billed"
-    const { error: lineError } = await supabase
-      .from("project_fee_schedule_lines")
-      .update({
-        billed_fee_cents: nextBilled,
-        invoice_id: invoice.id,
-        invoice_line_id: invoiceLineId,
-        billed_at: now,
-        status: nextStatus,
-        updated_by: userId,
-      })
-      .eq("org_id", resolvedOrgId)
-      .eq("id", allocation.line_id)
-
-    if (lineError) throw new Error(`Failed to mark fee line billed: ${lineError.message}`)
-  }
-
-  const { error: billingError } = await supabase.from("project_fee_billings").insert({
-    org_id: resolvedOrgId,
-    project_id: parsed.projectId,
-    schedule_id: summary.schedule.id,
-    invoice_id: invoice.id,
-    billing_period_id: parsed.billingPeriodId ?? null,
-    status: "billed",
-    fee_line_ids: allocations.map((allocation) => allocation.line_id),
-    subtotal_fee_cents: amountCents,
-    tax_cents: 0,
-    total_fee_cents: amountCents,
-    billed_at: now,
-    created_by: userId,
-    updated_by: userId,
-    metadata: {
-      allocations,
-      source: "fee_invoice",
-      project_percent_complete: summary.project_percent_complete,
-      earned_fee_cents: summary.earned_fee_cents,
-      billed_fee_cents_before: summary.billed_fee_cents,
+  await recordProjectFeeBillingForInvoice({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: parsed.projectId,
+    userId,
+    invoiceId: invoice.id,
+    invoiceLineId,
+    billingPeriodId: parsed.billingPeriodId ?? null,
+    prepared: preparedFeeBilling,
+    source: "fee_invoice",
+    invoiceMetadata: {
+        source_type: "fee",
+        retain_fee: retainFee,
+        retainage_percent: feeRetainagePercent > 0 ? feeRetainagePercent : null,
+        retainage_amount_cents: feeRetainageCents > 0 ? feeRetainageCents : null,
     },
   })
-
-  if (billingError) throw new Error(`Failed to record fee billing: ${billingError.message}`)
-
-  const { data: invoiceRow } = await supabase
-    .from("invoices")
-    .select("metadata")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", invoice.id)
-    .maybeSingle()
-
-  await supabase
-    .from("invoices")
-    .update({
-      billing_period_id: parsed.billingPeriodId ?? null,
-      metadata: {
-        ...((invoiceRow?.metadata as Record<string, any>) ?? {}),
-        source_type: "fee",
-        fee_schedule_id: summary.schedule.id,
-        fee_line_ids: allocations.map((allocation) => allocation.line_id),
-        fee_billing_allocations: allocations,
-      },
-    })
-    .eq("org_id", resolvedOrgId)
-    .eq("id", invoice.id)
 
   await recordEvent({
     orgId: resolvedOrgId,
@@ -656,9 +870,9 @@ export async function createProjectFeeInvoice(input: CreateFeeInvoiceInput, orgI
     entityId: invoice.id,
     payload: {
       project_id: parsed.projectId,
-      schedule_id: summary.schedule.id,
+      schedule_id: preparedFeeBilling.summary.schedule?.id,
       amount_cents: amountCents,
-      allocations,
+      allocations: preparedFeeBilling.allocations,
     },
   })
 

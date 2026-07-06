@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -11,10 +12,11 @@ interface PortalPinGateProps {
   token: string
   projectName: string
   orgName: string
-  onSuccess: () => void
+  onSuccess?: () => void
 }
 
 export function PortalPinGate({ token, projectName, orgName, onSuccess }: PortalPinGateProps) {
+  const router = useRouter()
   const [pin, setPin] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
@@ -27,7 +29,11 @@ export function PortalPinGate({ token, projectName, orgName, onSuccess }: Portal
       const result = await verifyPortalPinAction({ token, pin })
 
       if (result.valid) {
-        onSuccess()
+        if (onSuccess) {
+          onSuccess()
+        } else {
+          router.refresh()
+        }
       } else if (result.lockedUntil) {
         setError("Too many attempts. Please try again later.")
       } else if (result.attemptsRemaining !== undefined) {

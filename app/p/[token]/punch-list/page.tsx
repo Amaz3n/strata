@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation"
-import { validatePortalToken } from "@/lib/services/portal-access"
+import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { loadPunchItemsAction } from "./actions"
 import { PunchListPortalClient } from "./punch-list-client"
 
@@ -11,12 +11,15 @@ export const revalidate = 0
 
 export default async function PunchListPortalPage({ params }: Params) {
   const { token } = await params
-  const access = await validatePortalToken(token)
-  if (!access || !access.permissions.can_create_punch_items) {
+  try {
+    await assertPortalActionAccess(token, {
+      portalType: "client",
+      permission: "can_create_punch_items",
+    })
+  } catch {
     notFound()
   }
 
   const items = await loadPunchItemsAction(token)
   return <PunchListPortalClient token={token} items={items} />
 }
-

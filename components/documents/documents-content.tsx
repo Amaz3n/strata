@@ -10,6 +10,9 @@ interface DocumentsContentProps {
   onFileClick: (fileId: string) => void
   onDownloadFile: (fileId: string) => void
   onFolderClick: (path: string) => void
+  onRenameFolder?: (path: string) => void
+  onShareFolder?: (path: string) => void
+  onDeleteFolder?: (path: string) => void
   onUploadClick: () => void
   onDropOnFolder: (path: string, files?: File[]) => void
   selectedFileIds: Set<string>
@@ -20,6 +23,7 @@ interface DocumentsContentProps {
   onRenameFile: (fileId: string) => void
   onMoveFile: (fileId: string) => void
   onDeleteFile: (fileId: string) => void
+  onRestoreFile?: (fileId: string) => void
   onViewActivity: (fileId: string) => void
   onShareFile: (fileId: string) => void
   onUploadNewVersion: (fileId: string) => void
@@ -33,6 +37,9 @@ export function DocumentsContent({
   onFileClick,
   onDownloadFile,
   onFolderClick,
+  onRenameFolder,
+  onShareFolder,
+  onDeleteFolder,
   onUploadClick,
   onDropOnFolder,
   selectedFileIds,
@@ -43,6 +50,7 @@ export function DocumentsContent({
   onRenameFile,
   onMoveFile,
   onDeleteFile,
+  onRestoreFile,
   onViewActivity,
   onShareFile,
   onUploadNewVersion,
@@ -127,7 +135,7 @@ export function DocumentsContent({
   const documentItems: DocumentTableItem[] = useMemo(() => {
     const items: DocumentTableItem[] = []
 
-    if (!searchQuery || currentPath) {
+    if (quickFilter === "all" && (!searchQuery || currentPath)) {
       items.push(
         ...currentFolders.map((folder) => ({
           type: "folder" as const,
@@ -146,7 +154,7 @@ export function DocumentsContent({
     )
 
     return items
-  }, [currentFolders, filteredFiles, searchQuery, currentPath])
+  }, [currentFolders, filteredFiles, searchQuery, currentPath, quickFilter])
 
   const visibleFileIds = useMemo(
     () => filteredFiles.map((file) => file.id),
@@ -179,11 +187,15 @@ export function DocumentsContent({
           onFileClick={onFileClick}
           onDownloadFile={onDownloadFile}
           onFolderClick={onFolderClick}
+          onRenameFolder={onRenameFolder}
+          onShareFolder={onShareFolder}
+          onDeleteFolder={onDeleteFolder}
           onUploadClick={onUploadClick}
           onDropOnFolder={onDropOnFolder}
           onRenameFile={onRenameFile}
           onMoveFile={onMoveFile}
           onDeleteFile={onDeleteFile}
+          onRestoreFile={onRestoreFile}
           onViewActivity={onViewActivity}
           onShareFile={onShareFile}
           onUploadNewVersion={onUploadNewVersion}

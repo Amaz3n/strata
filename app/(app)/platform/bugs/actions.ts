@@ -9,6 +9,7 @@ import {
   createPlatformBug,
   deletePlatformBug,
   listPlatformBugProjectsForOrg,
+  startPlatformBugAiFix,
   startPlatformBugAiReview,
   uploadPlatformBugAttachments,
   updatePlatformBug,
@@ -218,5 +219,20 @@ export async function startPlatformBugAiReviewAction(id: string) {
     return { review }
   } catch (error: any) {
     return { error: error?.message ?? "Unable to start Codex review." }
+  }
+}
+
+export async function startPlatformBugAiFixAction(id: string) {
+  const parsed = z.string().uuid().safeParse(id)
+  if (!parsed.success) {
+    return { error: "Invalid issue id." }
+  }
+
+  try {
+    const fix = await startPlatformBugAiFix(parsed.data)
+    revalidatePath("/platform/bugs")
+    return { fix }
+  } catch (error: any) {
+    return { error: error?.message ?? "Unable to start Codex fix PR." }
   }
 }

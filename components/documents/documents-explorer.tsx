@@ -42,6 +42,7 @@ export function DocumentsExplorer({
   const {
     files,
     folders,
+    folderItemCounts,
     folderPermissions,
     currentPath,
     loadFolderChildren,
@@ -51,7 +52,10 @@ export function DocumentsExplorer({
     toggleFolderExpanded,
   } = useDocuments()
 
-  const folderTree = useMemo(() => buildFolderTree(folders, files), [folders, files])
+  const folderTree = useMemo(
+    () => buildFolderTree(folders, files, folderItemCounts),
+    [folders, files, folderItemCounts],
+  )
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col", className)}>
@@ -139,7 +143,8 @@ function FolderTreeNode({
   const isExpanded = expandedFolders.has(node.path)
   const isActive = currentPath === node.path
 
-  const permissions = folderPermissions.find(p => p.path === node.path)
+  const permissions = getFolderSharingState(folderPermissions, node.path)
+  const hasSharingDefault = permissions.share_with_clients || permissions.share_with_subs
 
   return (
     <div className="space-y-0.5">
@@ -183,15 +188,15 @@ function FolderTreeNode({
             <FolderClosed className="h-4 w-4 shrink-0" />
           )}
           <span className="truncate text-sm">{node.name}</span>
-          {permissions && (
+          {hasSharingDefault && (
             <div className="ml-auto flex items-center gap-0.5 pr-1 opacity-60 group-hover:opacity-100 transition-opacity">
               {permissions.share_with_clients && (
-                <div title="Shared with clients">
+                <div title={permissions.inherited ? "Client sharing inherited" : "Shared with clients"}>
                   <Users className="h-3 w-3 text-blue-500" />
                 </div>
               )}
               {permissions.share_with_subs && (
-                <div title="Shared with subs">
+                <div title={permissions.inherited ? "Subcontractor sharing inherited" : "Shared with subs"}>
                   <HardHat className="h-3 w-3 text-indigo-500" />
                 </div>
               )}
@@ -255,4 +260,29 @@ function FolderTreeNode({
       )}
     </div>
   )
+}
+
+function getFolderSharingState(
+  folderPermissions: Array<{ path: string; share_with_clients: boolean; share_with_subs: boolean }>,
+  path: string,
+) {
+  const normalizedPath = path.replace(/\/+/g, "/").replace(/\/$/, "")
+  let bestMatch: { share_with_clients: boolean; share_with_subs: boolean; inherited: boolean } | null = null
+  let bestMatchLength = -1
+
+  for (const permission of folderPermissions) {
+    const permissionPath = permission.path.replace(/\/+/g, "/").replace(/\/$/, "")
+    const applies =
+      normalizedPath === permissionPath ||
+      normalizedPath.startsWith(`${permissionPath}/`)
+    if (!applies || permissionPath.length <= bestMatchLength) continue
+    bestMatchLength = permissionPath.length
+    bestMatch = {
+      share_with_clients: permission.share_with_clients,
+      share_with_subs: permission.share_with_subs,
+      inherited: normalizedPath !== permissionPath,
+    }
+  }
+
+  return bestMatch ?? { share_with_clients: false, share_with_subs: false, inherited: false }
 }

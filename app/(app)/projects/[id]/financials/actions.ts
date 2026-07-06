@@ -4,18 +4,24 @@ import { revalidatePath } from "next/cache"
 
 import { getBudgetWithActuals, listBudgetBucketChangeOrders, listProjectBudgetLines, listVarianceAlertsForProject } from "@/lib/services/budgets"
 import { listCostCodes } from "@/lib/services/cost-codes"
-import { listCommitmentLines, listProjectCommitments } from "@/lib/services/commitments"
+import { listProjectCommitments } from "@/lib/services/commitments"
 import { listCompanies } from "@/lib/services/companies"
-import { listInvoices } from "@/lib/services/invoices"
+import { getProjectInvoiceArSummary, listInvoices } from "@/lib/services/invoices"
 import { listContacts } from "@/lib/services/contacts"
 import { listVendorBillsForProject } from "@/lib/services/vendor-bills"
+import { getProjectBuyoutStatus } from "@/lib/services/bids"
 import { getComplianceRules } from "@/lib/services/compliance"
 import { getCompaniesComplianceStatus } from "@/lib/services/compliance-documents"
 import {
   generateInvoiceFromCosts,
 } from "@/lib/services/cost-plus"
 import { generateInvoiceFromCostsInputSchema } from "@/lib/validation/cost-plus"
-import { createProjectBillingPeriod, type CreateBillingPeriodInput } from "@/lib/services/billing-periods"
+import {
+  closeProjectBillingPeriod,
+  createProjectBillingPeriod,
+  type CloseBillingPeriodInput,
+  type CreateBillingPeriodInput,
+} from "@/lib/services/billing-periods"
 import {
   generateInvoiceBackupPackage,
   listProjectOwnerBillingPackageSummaries,
@@ -29,12 +35,21 @@ import {
   type CreateFeeInvoiceInput,
   type UpdateFeeProgressInput,
 } from "@/lib/services/fee-billing"
-import { getProjectGmpControlSummary } from "@/lib/services/gmp-control"
-import { saveProjectFinancialSetup, type FinancialSetupInput } from "@/lib/services/project-financial-setup"
+import { getProjectGmpControlSummary, recordGmpContingencyDrawdown } from "@/lib/services/gmp-control"
 import {
-  getBillingAutopilotState,
-  prepareBillingAutopilotRun,
-} from "@/lib/services/billing-autopilot"
+  createTmTicket,
+  createTmTicketSignatureLink,
+  generateInvoiceFromTmTicket,
+  submitTmTicket,
+  voidTmTicket,
+} from "@/lib/services/tm-tickets"
+import {
+  getProjectFinancialSetupStatusForProject,
+  saveProjectFinancialSetup,
+  type FinancialSetupInput,
+} from "@/lib/services/project-financial-setup"
+import { prepareBillingAutopilotRun } from "@/lib/services/billing-autopilot"
+import { requireOrgContext } from "@/lib/services/context"
 
 function messageForError(error: unknown) {
   return error instanceof Error ? error.message : String(error ?? "Unknown error")
@@ -54,14 +69,26 @@ function resultError(label: string, result: PromiseSettledResult<unknown>) {
  * - Companies (for commitment vendor selection)
  */
 export async function fetchBudgetTabDataAction(projectId: string) {
-  const [budgetDataResult, costCodesResult, varianceAlertsResult, commitmentsResult, companiesResult, feeSummaryResult, gmpSummaryResult] = await Promise.allSettled([
+  const setupStatus = await getProjectFinancialSetupStatusForProject(projectId).catch(() => null)
+  const isFixedPrice = setupStatus?.billingModel === "fixed_price"
+  const [
+    budgetDataResult,
+    costCodesResult,
+    varianceAlertsResult,
+    commitmentsResult,
+    companiesResult,
+    buyoutStatusResult,
+    feeSummaryResult,
+    gmpSummaryResult,
+  ] = await Promise.allSettled([
     getBudgetWithActuals(projectId),
     listCostCodes(),
     listVarianceAlertsForProject(projectId),
     listProjectCommitments(projectId),
     listCompanies(),
-    getProjectFeeBillingSummary(projectId),
-    getProjectGmpControlSummary(projectId),
+    getProjectBuyoutStatus(projectId),
+    isFixedPrice ? Promise.resolve(null) : getProjectFeeBillingSummary(projectId),
+    isFixedPrice ? Promise.resolve(null) : getProjectGmpControlSummary(projectId),
   ])
 
   const budgetData = budgetDataResult.status === "fulfilled" ? budgetDataResult.value : null
@@ -75,8 +102,9 @@ export async function fetchBudgetTabDataAction(projectId: string) {
     resultError("Variance alerts", varianceAlertsResult),
     resultError("Commitments", commitmentsResult),
     resultError("Companies", companiesResult),
-    resultError("Fee billing", feeSummaryResult),
-    resultError("GMP control", gmpSummaryResult),
+    resultError("Buyout status", buyoutStatusResult),
+    isFixedPrice ? null : resultError("Fee billing", feeSummaryResult),
+    isFixedPrice ? null : resultError("GMP control", gmpSummaryResult),
   ].filter(Boolean) as string[]
   const budgetBucketCompanies = await buildBudgetBucketCompanies(commitments)
 
@@ -86,6 +114,7 @@ export async function fetchBudgetTabDataAction(projectId: string) {
     varianceAlerts,
     commitments,
     companies,
+    buyoutStatus: buyoutStatusResult.status === "fulfilled" ? buyoutStatusResult.value : null,
     budgetBucketCompanies,
     feeSummary: feeSummaryResult.status === "fulfilled" ? feeSummaryResult.value : null,
     gmpSummary: gmpSummaryResult.status === "fulfilled" ? gmpSummaryResult.value : null,
@@ -96,24 +125,25 @@ export async function fetchBudgetTabDataAction(projectId: string) {
 async function buildBudgetBucketCompanies(commitments: Awaited<ReturnType<typeof listProjectCommitments>>) {
   if (commitments.length === 0) return {}
 
+  const { supabase, orgId } = await requireOrgContext()
   const companyNamesByBucket = new Map<string, Set<string>>()
-  const commitmentLines = await Promise.all(
-    commitments.map(async (commitment) => ({
-      commitment,
-      lines: await listCommitmentLines(commitment.id).catch(() => []),
-    })),
-  )
+  const commitmentById = new Map(commitments.map((commitment) => [commitment.id, commitment]))
+  const { data: lines } = await supabase
+    .from("commitment_lines")
+    .select("commitment_id, cost_code_id, budget_line_id")
+    .eq("org_id", orgId)
+    .in("commitment_id", commitments.map((commitment) => commitment.id))
 
-  for (const { commitment, lines } of commitmentLines) {
+  for (const line of lines ?? []) {
+    const commitment = commitmentById.get(line.commitment_id as string)
+    if (!commitment) continue
     const companyName = commitment.company_name?.trim()
     if (!companyName) continue
 
-    for (const line of lines) {
-      const key = line.cost_code_id ?? line.budget_line_id ?? "uncoded"
-      const names = companyNamesByBucket.get(key) ?? new Set<string>()
-      names.add(companyName)
-      companyNamesByBucket.set(key, names)
-    }
+    const key = line.budget_line_id ?? line.cost_code_id ?? "uncoded"
+    const names = companyNamesByBucket.get(key) ?? new Set<string>()
+    names.add(companyName)
+    companyNamesByBucket.set(key, names)
   }
 
   return Object.fromEntries(
@@ -131,14 +161,18 @@ async function buildBudgetBucketCompanies(commitments: Awaited<ReturnType<typeof
  * - Cost codes for invoice line items
  */
 export async function fetchReceivablesTabDataAction(projectId: string) {
-  const [invoicesResult, contactsResult, costCodesResult, ownerPackagesResult, feeSummaryResult, gmpSummaryResult, autopilotResult] = await Promise.allSettled([
-    listInvoices({ projectId }),
+  const setupStatus = await getProjectFinancialSetupStatusForProject(projectId).catch(() => null)
+  const isFixedPrice = setupStatus?.billingModel === "fixed_price"
+  const isFixedFee = setupStatus?.billingModel === "cost_plus_fixed_fee"
+  const [invoicesResult, contactsResult, costCodesResult, ownerPackagesResult, feeSummaryResult, arSummaryResult] = await Promise.allSettled([
+    // First page only; the invoices tab lazy-loads the rest via "Load more".
+    listInvoices({ projectId, limit: 100 }),
     listContacts(),
     listCostCodes(),
-    listProjectOwnerBillingPackageSummaries(projectId),
-    getProjectFeeBillingSummary(projectId),
-    getProjectGmpControlSummary(projectId),
-    getBillingAutopilotState(projectId),
+    isFixedPrice ? Promise.resolve([]) : listProjectOwnerBillingPackageSummaries(projectId),
+    isFixedFee ? getProjectFeeBillingSummary(projectId) : Promise.resolve(null),
+    // Whole-book aging so the AR strip stays correct beyond the first invoice page.
+    getProjectInvoiceArSummary({ projectId }),
   ])
 
   return {
@@ -147,16 +181,13 @@ export async function fetchReceivablesTabDataAction(projectId: string) {
     costCodes: costCodesResult.status === "fulfilled" ? costCodesResult.value : [],
     ownerBillingPackages: ownerPackagesResult.status === "fulfilled" ? ownerPackagesResult.value : [],
     feeSummary: feeSummaryResult.status === "fulfilled" ? feeSummaryResult.value : null,
-    gmpSummary: gmpSummaryResult.status === "fulfilled" ? gmpSummaryResult.value : null,
-    autopilot: autopilotResult.status === "fulfilled" ? autopilotResult.value : { enabled: false, run: null },
+    arSummary: arSummaryResult.status === "fulfilled" ? arSummaryResult.value : null,
     errors: [
       resultError("Invoices", invoicesResult),
       resultError("Contacts", contactsResult),
       resultError("Cost codes", costCodesResult),
-      resultError("Owner billing packages", ownerPackagesResult),
-      resultError("Fee billing", feeSummaryResult),
-      resultError("GMP control", gmpSummaryResult),
-      resultError("Arc Autopilot", autopilotResult),
+      isFixedPrice ? null : resultError("Owner billing packages", ownerPackagesResult),
+      isFixedFee ? resultError("Fee billing", feeSummaryResult) : null,
     ].filter(Boolean) as string[],
   }
 }
@@ -187,6 +218,8 @@ export async function fetchPayablesTabDataAction(projectId: string) {
       : {
           require_lien_waiver: false,
           block_payment_on_missing_docs: true,
+          warn_subcontract_execution_on_missing_docs: true,
+          block_subcontract_execution_on_missing_docs: false,
         }
   const costCodes = costCodesResult.status === "fulfilled" ? costCodesResult.value : []
   const budgetLines = budgetLinesResult.status === "fulfilled" ? budgetLinesResult.value : []
@@ -212,7 +245,14 @@ export async function fetchPayablesTabDataAction(projectId: string) {
 
 export async function generateInvoiceFromCostsAction(input: unknown) {
   const parsed = generateInvoiceFromCostsInputSchema.parse(input)
-  return generateInvoiceFromCosts(parsed)
+  const result = await generateInvoiceFromCosts(parsed)
+  if (!parsed.dryRun) {
+    revalidatePath(`/projects/${parsed.projectId}`)
+    revalidatePath(`/projects/${parsed.projectId}/financials`)
+    revalidatePath(`/projects/${parsed.projectId}/financials/review`)
+    revalidatePath(`/projects/${parsed.projectId}/financials/receivables`)
+  }
+  return result
 }
 
 export async function saveProjectFinancialSetupAction(input: FinancialSetupInput) {
@@ -225,10 +265,63 @@ export async function saveProjectFinancialSetupAction(input: FinancialSetupInput
   return result
 }
 
+export async function createTmTicketAction(input: {
+  projectId: string
+  workDate: string
+  billableCostIds?: string[]
+  notes?: string | null
+}) {
+  const ticket = await createTmTicket({
+    projectId: input.projectId,
+    workDate: new Date(`${input.workDate}T00:00:00`),
+    billableCostIds: input.billableCostIds,
+    notes: input.notes ?? null,
+  })
+  revalidatePath(`/projects/${input.projectId}/financials/review`)
+  revalidatePath(`/projects/${input.projectId}/financials/tm-tickets`)
+  return ticket
+}
+
+export async function submitTmTicketAction(projectId: string, ticketId: string) {
+  const ticket = await submitTmTicket(ticketId)
+  revalidatePath(`/projects/${projectId}/financials/tm-tickets`)
+  return ticket
+}
+
+export async function createTmTicketSignatureLinkAction(projectId: string, ticketId: string) {
+  const link = await createTmTicketSignatureLink(ticketId)
+  revalidatePath(`/projects/${projectId}/financials/tm-tickets`)
+  return link
+}
+
+export async function generateInvoiceFromTmTicketAction(projectId: string, ticketId: string) {
+  const result = await generateInvoiceFromTmTicket(ticketId)
+  revalidatePath(`/projects/${projectId}/financials/review`)
+  revalidatePath(`/projects/${projectId}/financials/tm-tickets`)
+  revalidatePath(`/projects/${projectId}/financials/receivables`)
+  return result
+}
+
+export async function voidTmTicketAction(projectId: string, ticketId: string) {
+  const ticket = await voidTmTicket(ticketId)
+  revalidatePath(`/projects/${projectId}/financials/tm-tickets`)
+  return ticket
+}
+
 export async function createProjectBillingPeriodAction(input: CreateBillingPeriodInput) {
   const period = await createProjectBillingPeriod(input)
   revalidatePath(`/projects/${input.projectId}`)
   revalidatePath(`/projects/${input.projectId}/financials`)
+  revalidatePath(`/projects/${input.projectId}/financials/review`)
+  revalidatePath(`/projects/${input.projectId}/financials/receivables`)
+  return period
+}
+
+export async function closeProjectBillingPeriodAction(input: CloseBillingPeriodInput) {
+  const period = await closeProjectBillingPeriod(input)
+  revalidatePath(`/projects/${input.projectId}`)
+  revalidatePath(`/projects/${input.projectId}/financials`)
+  revalidatePath(`/projects/${input.projectId}/financials/review`)
   revalidatePath(`/projects/${input.projectId}/financials/receivables`)
   return period
 }
@@ -237,6 +330,7 @@ export async function generateOwnerBillingPackageAction(input: { projectId: stri
   const pkg = await generateInvoiceBackupPackage(input)
   revalidatePath(`/projects/${input.projectId}`)
   revalidatePath(`/projects/${input.projectId}/financials`)
+  revalidatePath(`/projects/${input.projectId}/financials/review`)
   revalidatePath(`/projects/${input.projectId}/financials/receivables`)
   return summarizeOwnerBillingPackage(pkg)
 }
@@ -266,6 +360,16 @@ export async function createProjectFeeInvoiceAction(input: CreateFeeInvoiceInput
   revalidatePath(`/projects/${input.projectId}/financials/budget`)
   revalidatePath(`/projects/${input.projectId}/financials/receivables`)
   return { invoice, feeSummary }
+}
+
+export async function recordGmpContingencyDrawdownAction(input: unknown) {
+  const result = await recordGmpContingencyDrawdown(input)
+  const projectId = result.summary.project_id
+  revalidatePath(`/projects/${projectId}`)
+  revalidatePath(`/projects/${projectId}/financials`)
+  revalidatePath(`/projects/${projectId}/financials/budget`)
+  revalidatePath(`/projects/${projectId}/financials/receivables`)
+  return result
 }
 
 /**
@@ -301,16 +405,23 @@ export async function fetchBudgetBucketCommitmentsAction(
   const commitments = await listProjectCommitments(projectId).catch(() => [])
   if (commitments.length === 0) return []
 
-  const commitmentLines = await Promise.all(
-    commitments.map(async (commitment) => ({
-      commitment,
-      lines: await listCommitmentLines(commitment.id).catch(() => []),
-    })),
-  )
+  const { supabase, orgId } = await requireOrgContext()
+  const { data: lines } = await supabase
+    .from("commitment_lines")
+    .select("commitment_id, cost_code_id, budget_line_id, unit_cost_cents, quantity")
+    .eq("org_id", orgId)
+    .in("commitment_id", commitments.map((commitment) => commitment.id))
 
-  return commitmentLines
-    .map(({ commitment, lines }) => {
-      const matching = lines.filter((line) =>
+  const linesByCommitment = new Map<string, any[]>()
+  for (const line of lines ?? []) {
+    const current = linesByCommitment.get(line.commitment_id as string) ?? []
+    current.push(line)
+    linesByCommitment.set(line.commitment_id as string, current)
+  }
+
+  return commitments
+    .map((commitment) => {
+      const matching = (linesByCommitment.get(commitment.id) ?? []).filter((line) =>
         groupBy === "budget_line"
           ? bucketId
             ? line.budget_line_id === bucketId
@@ -319,7 +430,7 @@ export async function fetchBudgetBucketCommitmentsAction(
             ? line.cost_code_id === bucketId
             : !line.cost_code_id,
       )
-      const allocatedCents = matching.reduce((sum, line) => sum + (line.total_cents ?? 0), 0)
+      const allocatedCents = matching.reduce((sum, line) => sum + (line.unit_cost_cents ?? 0) * (line.quantity ?? 1), 0)
       return {
         ...commitment,
         allocated_cents: allocatedCents,

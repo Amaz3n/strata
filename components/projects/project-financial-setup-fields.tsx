@@ -6,8 +6,12 @@ import { CheckCircle2, ClipboardCheck, FileCheck2, FileText, ListTree, ReceiptTe
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
-import type { ProjectBillingModel } from "@/lib/financials/billing-model"
-import { resolveProjectBillingModel } from "@/lib/financials/billing-model"
+import type { FeePresentation, ProjectBillingModel } from "@/lib/financials/billing-model"
+import {
+  defaultFeePresentationForBillingModel,
+  normalizeFeePresentation,
+  resolveProjectBillingModel,
+} from "@/lib/financials/billing-model"
 import type { Contract, Project } from "@/lib/types"
 import type { ProjectInput } from "@/lib/validation/projects"
 import { cn } from "@/lib/utils"
@@ -21,10 +25,13 @@ export type FinancialSetupValue = {
   retainagePercent: string
   markupPercent: string
   fixedFee: string
+  feePresentation: FeePresentation
   gmp: string
+  contingency: string
   savingsSplitOwnerPct: string
   savingsSplitBuilderPct: string
   laborBurdenMultiplier: string
+  rateScheduleId: string
   paidCostsRequired: boolean
   proofRequired: boolean
   clientCostApprovalRequired: boolean
@@ -38,6 +45,12 @@ export const billingModelOptions: Array<{ id: ProjectBillingModel; title: string
   { id: "cost_plus_fixed_fee", title: "Cost plus fixed fee", note: "Approved costs plus a fee amount." },
   { id: "cost_plus_gmp", title: "Cost plus GMP", note: "Approved costs under a guaranteed maximum." },
   { id: "time_and_materials", title: "Time & materials", note: "Labor, materials, and markup controls." },
+]
+
+const feePresentationOptions: Array<{ id: FeePresentation; title: string; note: string }> = [
+  { id: "embedded", title: "Embedded", note: "Markup stays inside each cost line." },
+  { id: "separate_total", title: "Separate total", note: "One fee line for the invoice." },
+  { id: "separate_by_code", title: "By cost code", note: "One fee line per cost-code group." },
 ]
 
 export function isCostDrivenModel(model: ProjectBillingModel) {
@@ -97,10 +110,13 @@ export function emptyFinancialSetup(model: ProjectBillingModel = "fixed_price"):
     retainagePercent: "0",
     markupPercent: costDriven ? "0" : "",
     fixedFee: "",
+    feePresentation: defaultFeePresentationForBillingModel(model),
     gmp: "",
+    contingency: "",
     savingsSplitOwnerPct: "0",
     savingsSplitBuilderPct: "0",
     laborBurdenMultiplier: "1",
+    rateScheduleId: "",
     paidCostsRequired: false,
     proofRequired: false,
     clientCostApprovalRequired: false,
@@ -111,10 +127,13 @@ export function emptyFinancialSetup(model: ProjectBillingModel = "fixed_price"):
 
 export function financialSetupFromProject(project: Project, contract?: Contract | null): FinancialSetupValue {
   const billingContract = contract ?? project.billing_contract ?? null
-  const snapshot = (billingContract?.snapshot ?? {}) as Record<string, any>
   const billingModel = resolveProjectBillingModel(project, billingContract)
   const costDriven = isCostDrivenModel(billingModel)
   const contractSnapshot = (billingContract?.snapshot ?? {}) as Record<string, any>
+  const legacyFixedFeeCents =
+    typeof contractSnapshot.fixed_fee_cents === "number" ? contractSnapshot.fixed_fee_cents : null
+  const legacyContingencyCents =
+    typeof contractSnapshot.contingency_cents === "number" ? contractSnapshot.contingency_cents : null
   const totalCents =
     (typeof contractSnapshot.base_total_cents === "number" ? contractSnapshot.base_total_cents : null) ??
     billingContract?.total_cents ??
@@ -126,13 +145,19 @@ export function financialSetupFromProject(project: Project, contract?: Contract 
     totalContractValue: centsToMoney(totalCents),
     retainagePercent: numberToField(billingContract?.retainage_percent ?? project.retainage_percent, "0"),
     markupPercent: numberToField(billingContract?.markup_percent, costDriven ? "0" : ""),
-    fixedFee: centsToMoney(typeof snapshot.fixed_fee_cents === "number" ? snapshot.fixed_fee_cents : null),
+    fixedFee: centsToMoney(billingContract?.fixed_fee_cents ?? legacyFixedFeeCents),
+    feePresentation:
+      normalizeFeePresentation(billingContract?.fee_presentation) ??
+      normalizeFeePresentation(contractSnapshot.fee_presentation) ??
+      "embedded",
     gmp: centsToMoney(billingContract?.gmp_cents),
+    contingency: centsToMoney(billingContract?.contingency_cents ?? legacyContingencyCents),
     savingsSplitOwnerPct: numberToField(billingContract?.savings_split_owner_pct, "0"),
     savingsSplitBuilderPct: numberToField(billingContract?.savings_split_builder_pct, "0"),
     laborBurdenMultiplier: numberToField(billingContract?.labor_burden_multiplier, "1"),
-    paidCostsRequired: Boolean(snapshot.paid_costs_required ?? false),
-    proofRequired: Boolean(snapshot.proof_required ?? false),
+    rateScheduleId: billingContract?.rate_schedule_id ?? contractSnapshot.rate_schedule_id ?? "",
+    paidCostsRequired: Boolean(contractSnapshot.paid_costs_required ?? false),
+    proofRequired: Boolean(contractSnapshot.proof_required ?? false),
     clientCostApprovalRequired: Boolean(billingContract?.requires_client_cost_approval ?? false),
     openBookRequired: billingContract?.open_book ?? costDriven,
     costCodesEnabled: project.financial_settings?.cost_codes_enabled ?? true,
@@ -146,6 +171,7 @@ export function applyBillingModel(value: FinancialSetupValue, model: ProjectBill
     ...value,
     billingModel: model,
     markupPercent: costDriven && !value.markupPercent ? "0" : value.markupPercent,
+    feePresentation: defaultFeePresentationForBillingModel(model),
     openBookRequired: costDriven ? true : false,
   }
 }
@@ -174,6 +200,9 @@ export function validateFinancialSetup(value: FinancialSetupValue): { blocking: 
   if (value.billingModel === "cost_plus_gmp" && !moneyToCents(value.gmp)) {
     blocking.push("Cost-plus GMP requires a GMP amount.")
   }
+  if (value.billingModel === "cost_plus_gmp" && value.contingency.trim() && moneyToCents(value.contingency) == null) {
+    blocking.push("GMP contingency must be a valid non-negative amount.")
+  }
   if (value.billingModel === "cost_plus_fixed_fee" && !moneyToCents(value.fixedFee)) {
     blocking.push("Cost-plus fixed fee requires a fixed fee amount.")
   }
@@ -197,6 +226,7 @@ export function financialSetupToProjectInput(value: FinancialSetupValue): Partia
   const isFixedFee = value.billingModel === "cost_plus_fixed_fee"
   const usesMarkup =
     value.billingModel === "cost_plus_percent" || isGmp || value.billingModel === "time_and_materials"
+  const showFeePresentation = costDriven && value.billingModel !== "time_and_materials"
 
   return {
     billing_model: value.billingModel,
@@ -206,10 +236,13 @@ export function financialSetupToProjectInput(value: FinancialSetupValue): Partia
     retainage_percent: fieldToNumber(value.retainagePercent, 0) ?? 0,
     markup_percent: usesMarkup ? fieldToNumber(value.markupPercent, 0) : null,
     gmp_cents: isGmp ? moneyToCents(value.gmp) : null,
+    contingency_cents: isGmp ? moneyToCents(value.contingency) : null,
     fixed_fee_cents: isFixedFee ? moneyToCents(value.fixedFee) : null,
+    fee_presentation: value.feePresentation,
     savings_split_owner_pct: isGmp ? fieldToNumber(value.savingsSplitOwnerPct, 0) : 0,
     savings_split_builder_pct: isGmp ? fieldToNumber(value.savingsSplitBuilderPct, 0) : 0,
     labor_burden_multiplier: fieldToNumber(value.laborBurdenMultiplier, 1) ?? 1,
+    rate_schedule_id: value.billingModel === "time_and_materials" ? value.rateScheduleId || null : null,
     open_book: value.openBookRequired,
     requires_client_cost_approval: value.clientCostApprovalRequired,
     paid_costs_required: value.paidCostsRequired,
@@ -230,6 +263,7 @@ export function ProjectFinancialSetupFields({
   const isFixedFee = value.billingModel === "cost_plus_fixed_fee"
   const usesMarkup =
     value.billingModel === "cost_plus_percent" || isGmp || value.billingModel === "time_and_materials"
+  const showFeePresentation = costDriven && value.billingModel !== "time_and_materials"
 
   function update<K extends keyof FinancialSetupValue>(key: K, next: FinancialSetupValue[K]) {
     onChange({ ...value, [key]: next })
@@ -302,6 +336,16 @@ export function ProjectFinancialSetupFields({
               />
             </Field>
           ) : null}
+          {value.billingModel === "time_and_materials" ? (
+            <Field label="Rate schedule ID" htmlFor="fin-rate-schedule">
+              <Input
+                id="fin-rate-schedule"
+                value={value.rateScheduleId}
+                onChange={(event) => update("rateScheduleId", event.target.value)}
+                placeholder="Assign from Settings > Billing Rates"
+              />
+            </Field>
+          ) : null}
           {isFixedFee ? (
             <Field label="Fixed fee" htmlFor="fin-fixed-fee">
               <MoneyInput id="fin-fixed-fee" value={value.fixedFee} onChange={(next) => update("fixedFee", next)} />
@@ -312,6 +356,9 @@ export function ProjectFinancialSetupFields({
               <Field label="GMP amount" htmlFor="fin-gmp">
                 <MoneyInput id="fin-gmp" value={value.gmp} onChange={(next) => update("gmp", next)} />
               </Field>
+              <Field label="Contingency" htmlFor="fin-contingency">
+                <MoneyInput id="fin-contingency" value={value.contingency} onChange={(next) => update("contingency", next)} />
+              </Field>
               <Field label="Owner savings split %" htmlFor="fin-owner-split">
                 <PercentInput id="fin-owner-split" value={value.savingsSplitOwnerPct} onChange={(next) => update("savingsSplitOwnerPct", next)} />
               </Field>
@@ -319,6 +366,31 @@ export function ProjectFinancialSetupFields({
                 <PercentInput id="fin-builder-split" value={value.savingsSplitBuilderPct} onChange={(next) => update("savingsSplitBuilderPct", next)} />
               </Field>
             </>
+          ) : null}
+          {showFeePresentation ? (
+            <div className="space-y-2 sm:col-span-2">
+              <Label>Fee presentation</Label>
+              <div className="grid gap-2 sm:grid-cols-3">
+                {feePresentationOptions.map((option) => {
+                  const active = value.feePresentation === option.id
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => update("feePresentation", option.id)}
+                      className={cn(
+                        "rounded-md border p-3 text-left transition-colors",
+                        active ? "border-primary bg-primary/5" : "border-border/70 hover:bg-muted/40",
+                      )}
+                    >
+                      <span className="block text-sm font-medium">{option.title}</span>
+                      <span className="mt-0.5 block text-xs text-muted-foreground">{option.note}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
           ) : null}
         </div>
       </section>

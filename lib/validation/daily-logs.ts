@@ -46,3 +46,39 @@ export const dailyLogInputSchema = z.object({
 
 export type DailyLogEntryInput = z.infer<typeof dailyLogEntrySchema>
 export type DailyLogInput = z.infer<typeof dailyLogInputSchema>
+
+const weatherSchema = z.union([
+  z.string(),
+  z.object({
+    conditions: z.string().optional(),
+    temperature: z.string().optional(),
+    notes: z.string().optional(),
+  }),
+])
+
+export const dayTypeSchema = z.enum(["work_day", "rain_day", "weekend", "holiday", "no_work"])
+
+/** Manpower row: at least one of company/trade must be present. */
+export const manpowerInputSchema = z
+  .object({
+    company: z.string().trim().optional(),
+    trade: z.string().trim().optional(),
+    workers: z.number().int().min(0).optional(),
+    hours: z.number().min(0).optional(),
+    notes: z.string().optional(),
+  })
+  .refine((v) => Boolean(v.company?.length || v.trade?.length), {
+    message: "Enter a company or trade",
+    path: ["company"],
+  })
+
+export type ManpowerInput = z.infer<typeof manpowerInputSchema>
+
+/** Editable day-level fields on the report itself (not a contribution). */
+export const dailyReportUpdateSchema = z.object({
+  weather: weatherSchema.optional(),
+  day_type: dayTypeSchema.optional(),
+  share_with_client: z.boolean().optional(),
+})
+
+export type DailyReportUpdateInput = z.infer<typeof dailyReportUpdateSchema>

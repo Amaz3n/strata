@@ -5,6 +5,7 @@ import { format } from "date-fns"
 import { toast } from "sonner"
 
 import { listUnbilledCostsAction } from "@/app/(app)/invoices/actions"
+import { unwrapAction } from "@/lib/action-result"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -92,7 +93,7 @@ export function UnbilledCostsPicker({ open, onOpenChange, projectId, costCodesEn
     setDateTo("")
     listUnbilledCostsAction(projectId)
       .then((res) => {
-        if (!cancelled) setCosts((res.costs as UnbilledCost[]) ?? [])
+        if (!cancelled) setCosts((unwrapAction(res).costs as UnbilledCost[]) ?? [])
       })
       .catch((error: any) => {
         if (cancelled) return

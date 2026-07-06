@@ -87,6 +87,7 @@ export function BidPortalClientNew({ token, access, data, pinRequired = false, w
           access={access}
           currentSubmission={currentSubmission}
           submissions={data.submissions}
+          unacknowledgedAddenda={unacknowledgedAddenda}
           onSubmissionChange={handleSubmissionChange}
         />
       )

@@ -1,5 +1,6 @@
-import { randomBytes } from "node:crypto"
+import { createHmac } from "node:crypto"
 import { compare, hash } from "bcryptjs"
+import { cookies } from "next/headers"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import type {
@@ -22,13 +23,37 @@ import type {
   WarrantyRequest,
 } from "@/lib/types"
 
-import { listScheduleItemsWithClient } from "@/lib/services/schedule"
+import { listProjectScheduleItemsWithClient } from "@/lib/services/schedule"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
+import { hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
 
 const PIN_SALT_ROUNDS = 10
 const MAX_PIN_ATTEMPTS = 5
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000
+const PORTAL_PIN_COOKIE_PREFIX = "portal_pin"
+const PORTAL_PIN_COOKIE_TTL_SECONDS = 60 * 60 * 12
+
+function getPortalAccessSecret() {
+  const secret =
+    process.env.PORTAL_ACCESS_SECRET ??
+    process.env.BID_PORTAL_SECRET ??
+    process.env.DOCUMENT_SIGNING_SECRET ??
+    process.env.SUPABASE_SERVICE_ROLE_KEY
+  if (!secret) {
+    throw new Error("Missing PORTAL_ACCESS_SECRET or another server-side portal secret")
+  }
+  return secret
+}
+
+function getPortalPinCookieName(token: string) {
+  const hash = createHmac("sha256", getPortalAccessSecret()).update(`portal:${token}`).digest("hex")
+  return `${PORTAL_PIN_COOKIE_PREFIX}_${hash.slice(0, 16)}`
+}
+
+function signPortalPinCookie(token: string) {
+  return createHmac("sha256", getPortalAccessSecret()).update(`portal-pin:${token}`).digest("hex")
+}
 
 function mapPermissions(row: any): PortalPermissions {
   return {
@@ -41,7 +66,7 @@ function mapPermissions(row: any): PortalPermissions {
     can_approve_change_orders: !!row.can_approve_change_orders,
     can_submit_selections: !!row.can_submit_selections,
     can_create_punch_items: !!row.can_create_punch_items,
-    can_message: row.can_message ?? true,
+    can_view_warranty: row.can_view_warranty ?? true,
     can_view_invoices: row.can_view_invoices ?? true,
     can_pay_invoices: row.can_pay_invoices ?? false,
     can_view_rfis: row.can_view_rfis ?? true,
@@ -52,6 +77,8 @@ function mapPermissions(row: any): PortalPermissions {
     can_view_commitments: row.can_view_commitments ?? true,
     can_view_bills: row.can_view_bills ?? true,
     can_submit_invoices: row.can_submit_invoices ?? true,
+    can_submit_time: row.can_submit_time ?? true,
+    can_submit_expenses: row.can_submit_expenses ?? true,
     can_upload_compliance_docs: row.can_upload_compliance_docs ?? true,
   }
 }
@@ -205,6 +232,10 @@ export async function validatePortalToken(token: string) {
     return null
   }
 
+  if (data.max_access_count && (data.access_count ?? 0) >= data.max_access_count) {
+    return null
+  }
+
   return mapAccessToken(data)
 }
 
@@ -298,30 +329,17 @@ export async function listPortalTokens(projectId: string, orgId?: string): Promi
 
 export async function recordPortalAccess(tokenId: string) {
   const supabase = createServiceSupabaseClient()
-  const { data: tokenRow, error } = await supabase
-    .from("portal_access_tokens")
-    .select("access_count, max_access_count")
-    .eq("id", tokenId)
-    .maybeSingle()
+  const { data, error } = await supabase.rpc("record_portal_access", { token_id_input: tokenId })
 
-  if (error) {
-    console.error("Failed to fetch portal access token for access count", error)
+  if (!error) {
+    if (data !== true) {
+      throw new Error("Portal access limit has been reached")
+    }
     return
   }
 
-  const currentCount = tokenRow?.access_count ?? 0
-  if (tokenRow?.max_access_count && currentCount >= tokenRow.max_access_count) {
-    console.warn("Portal token max access count reached", tokenId)
-    return
-  }
-
-  await supabase
-    .from("portal_access_tokens")
-    .update({
-      last_accessed_at: new Date().toISOString(),
-      access_count: currentCount + 1,
-    })
-    .eq("id", tokenId)
+  console.warn("record_portal_access RPC unavailable; falling back to legacy increment", error.message)
+  await supabase.rpc("increment_portal_access", { token_id_input: tokenId })
 }
 
 export async function setPortalTokenPin({
@@ -389,12 +407,12 @@ export async function validatePortalPin({
 
   const { data, error } = await supabase
     .from("portal_access_tokens")
-    .select("id, pin_hash, pin_attempts, pin_locked_until")
+    .select("id, pin_hash, pin_attempts, pin_locked_until, paused_at, revoked_at")
     .eq("token", token)
     .is("revoked_at", null)
     .maybeSingle()
 
-  if (error || !data || !data.pin_hash) {
+  if (error || !data || !data.pin_hash || data.paused_at || data.revoked_at) {
     return { valid: false }
   }
 
@@ -430,6 +448,84 @@ export async function validatePortalPin({
     attemptsRemaining: Math.max(0, MAX_PIN_ATTEMPTS - newAttempts),
     lockedUntil: lockoutTime ?? undefined,
   }
+}
+
+export async function markPortalPinVerified(token: string) {
+  const store = await cookies()
+  store.set({
+    name: getPortalPinCookieName(token),
+    value: signPortalPinCookie(token),
+    path: "/",
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: PORTAL_PIN_COOKIE_TTL_SECONDS,
+  })
+}
+
+export async function clearPortalPinVerification(token: string) {
+  const store = await cookies()
+  store.set({
+    name: getPortalPinCookieName(token),
+    value: "",
+    path: "/",
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: 0,
+  })
+}
+
+export async function isPortalPinVerified(token: string): Promise<boolean> {
+  const store = await cookies()
+  const cookieValue = store.get(getPortalPinCookieName(token))?.value
+  return !!cookieValue && cookieValue === signPortalPinCookie(token)
+}
+
+export async function assertPortalActionAccess(
+  token: string,
+  options: {
+    portalType?: "client" | "sub"
+    requireCompany?: boolean
+    permission?: keyof PortalPermissions
+  } = {},
+): Promise<PortalAccessToken> {
+  const access = await validatePortalToken(token)
+  if (!access) {
+    throw new Error("Invalid or expired portal access")
+  }
+
+  if (options.portalType && access.portal_type !== options.portalType) {
+    throw new Error("This portal link cannot access that resource")
+  }
+
+  if (options.requireCompany && !access.company_id) {
+    throw new Error("This portal link is missing subcontractor access")
+  }
+
+  if (options.permission && access.permissions[options.permission] !== true) {
+    throw new Error("This portal link does not have permission for that action")
+  }
+
+  if (access.require_account) {
+    const hasAccountAccess = await hasExternalPortalGrantForToken({
+      orgId: access.org_id,
+      tokenId: access.id,
+      tokenType: "portal",
+    })
+    if (!hasAccountAccess) {
+      throw new Error("Account access is required for this portal link")
+    }
+  }
+
+  if (access.pin_required) {
+    const pinVerified = await isPortalPinVerified(token)
+    if (!pinVerified) {
+      throw new Error("PIN verification is required for this portal link")
+    }
+  }
+
+  return access
 }
 
 async function loadPortalFinancialSummary({
@@ -477,10 +573,10 @@ async function loadPortalFinancialSummary({
       .eq("payment.status", "succeeded"),
     supabase
       .from("draw_schedules")
-      .select("id, draw_number, title, amount_cents, percent_of_contract, due_date, status")
+      .select("id, draw_number, title, amount_cents, percent_of_contract, due_date, status, invoice_id, invoice:invoices(id, client_visible, status, balance_due_cents)")
       .eq("org_id", orgId)
       .eq("project_id", projectId)
-      .eq("status", "pending")
+      .in("status", ["pending", "invoiced", "partial"])
       .order("due_date", { ascending: true })
       .limit(1)
       .maybeSingle(),
@@ -509,6 +605,20 @@ async function loadPortalFinancialSummary({
     return draw
   })
 
+  const nextDrawInvoice = Array.isArray((nextDrawResult.data as any)?.invoice)
+    ? (nextDrawResult.data as any)?.invoice[0]
+    : (nextDrawResult.data as any)?.invoice
+  const nextDrawBalanceDue =
+    typeof nextDrawInvoice?.balance_due_cents === "number"
+      ? nextDrawInvoice.balance_due_cents
+      : null
+  const nextDrawPaymentAvailable = Boolean(
+    nextDrawResult.data?.invoice_id &&
+      nextDrawInvoice?.client_visible === true &&
+      nextDrawInvoice?.status !== "void" &&
+      (nextDrawBalanceDue ?? 0) > 0,
+  )
+
   return {
     contractTotal,
     totalPaid,
@@ -522,6 +632,9 @@ async function loadPortalFinancialSummary({
         : nextDrawResult.data.amount_cents,
       due_date: nextDrawResult.data.due_date,
       status: nextDrawResult.data.status,
+      invoice_id: nextDrawResult.data.invoice_id ?? null,
+      invoice_balance_due_cents: nextDrawBalanceDue,
+      payment_available: nextDrawPaymentAvailable,
     } : undefined,
     draws: normalizedDraws,
   }
@@ -539,9 +652,10 @@ function mapPortalDailyLog(row: any): DailyLog {
     id: row.id,
     org_id: row.org_id,
     project_id: row.project_id,
-    date: row.log_date,
+    date: row.log_date ?? row.report_date,
     weather: weatherText || undefined,
     notes: summary,
+    daily_report_id: row.daily_report_id ?? undefined,
     created_by: row.created_by ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -549,40 +663,94 @@ function mapPortalDailyLog(row: any): DailyLog {
 }
 
 async function fetchSharedDailyLogsForPortal(supabase: any, orgId: string, projectId: string): Promise<DailyLog[]> {
-  const { data: sharedLinks, error: sharedError } = await supabase
-    .from("file_links")
-    .select("entity_id, files!inner(share_with_clients)")
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .eq("entity_type", "daily_log")
-    .eq("files.share_with_clients", true)
+  const [sharedLinksResult, sharedReportsResult] = await Promise.all([
+    supabase
+      .from("file_links")
+      .select("entity_id, files!inner(share_with_clients)")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .eq("entity_type", "daily_log")
+      .eq("files.share_with_clients", true),
+    supabase
+      .from("daily_reports")
+      .select("id, org_id, project_id, report_date, weather, day_type, created_at, updated_at")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .eq("status", "submitted")
+      .eq("share_with_client", true)
+      .order("report_date", { ascending: false })
+      .limit(50),
+  ])
 
-  if (sharedError) {
-    console.error("Failed to load shared daily log links for portal", sharedError)
-    return []
+  if (sharedLinksResult.error) {
+    console.error("Failed to load shared daily log links for portal", sharedLinksResult.error)
+  }
+  if (sharedReportsResult.error) {
+    console.error("Failed to load shared daily reports for portal", sharedReportsResult.error)
   }
 
   const dailyLogIds = Array.from(
-    new Set((sharedLinks ?? []).map((row: any) => row.entity_id).filter(Boolean)),
+    new Set((sharedLinksResult.data ?? []).map((row: any) => row.entity_id).filter(Boolean)),
   )
+  const sharedReports = sharedReportsResult.data ?? []
+  const sharedReportIds = sharedReports.map((row: any) => row.id).filter(Boolean)
 
-  if (dailyLogIds.length === 0) return []
+  if (dailyLogIds.length === 0 && sharedReportIds.length === 0) return []
 
-  const { data: logs, error } = await supabase
-    .from("daily_logs")
-    .select("id, org_id, project_id, log_date, summary, weather, created_by, created_at, updated_at")
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .in("id", dailyLogIds)
-    .order("log_date", { ascending: false })
-    .limit(50)
+  const [linkedLogsResult, reportLogsResult] = await Promise.all([
+    dailyLogIds.length
+      ? supabase
+          .from("daily_logs")
+          .select("id, org_id, project_id, log_date, summary, weather, daily_report_id, created_by, created_at, updated_at")
+          .eq("org_id", orgId)
+          .eq("project_id", projectId)
+          .in("id", dailyLogIds)
+          .order("log_date", { ascending: false })
+          .limit(50)
+      : Promise.resolve({ data: [], error: null }),
+    sharedReportIds.length
+      ? supabase
+          .from("daily_logs")
+          .select("id, org_id, project_id, log_date, summary, weather, daily_report_id, created_by, created_at, updated_at")
+          .eq("org_id", orgId)
+          .eq("project_id", projectId)
+          .in("daily_report_id", sharedReportIds)
+          .order("log_date", { ascending: false })
+          .limit(50)
+      : Promise.resolve({ data: [], error: null }),
+  ])
 
-  if (error) {
-    console.error("Failed to load shared daily logs for portal", error)
-    return []
+  if (linkedLogsResult.error) {
+    console.error("Failed to load file-shared daily logs for portal", linkedLogsResult.error)
+  }
+  if (reportLogsResult.error) {
+    console.error("Failed to load report-shared daily logs for portal", reportLogsResult.error)
   }
 
-  return (logs ?? []).map(mapPortalDailyLog)
+  const rowsById = new Map<string, any>()
+  for (const row of [...(linkedLogsResult.data ?? []), ...(reportLogsResult.data ?? [])]) {
+    rowsById.set(row.id, row)
+  }
+
+  const reportsWithLogs = new Set(
+    Array.from(rowsById.values()).map((row: any) => row.daily_report_id).filter(Boolean),
+  )
+  for (const report of sharedReports) {
+    if (!reportsWithLogs.has(report.id)) {
+      rowsById.set(`daily-report:${report.id}`, {
+        ...report,
+        id: `daily-report:${report.id}`,
+        log_date: report.report_date,
+        daily_report_id: report.id,
+        summary: report.day_type ? `Day type: ${String(report.day_type).replaceAll("_", " ")}` : undefined,
+      })
+    }
+  }
+
+  return Array.from(rowsById.values())
+    .map(mapPortalDailyLog)
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 50)
 }
 
 export async function loadClientPortalData({
@@ -592,6 +760,7 @@ export async function loadClientPortalData({
   portalType = "client",
   companyId,
   scopedRfiId,
+  portalToken,
 }: {
   orgId: string
   projectId: string
@@ -599,6 +768,7 @@ export async function loadClientPortalData({
   portalType?: "client" | "sub"
   companyId?: string | null
   scopedRfiId?: string | null
+  portalToken?: string
 }): Promise<ClientPortalData> {
   const supabase = createServiceSupabaseClient()
 
@@ -617,7 +787,7 @@ export async function loadClientPortalData({
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle(),
-    permissions.can_view_schedule ? listScheduleItemsWithClient(supabase, orgId) : Promise.resolve([]),
+    permissions.can_view_schedule ? listProjectScheduleItemsWithClient(supabase, orgId, projectId) : Promise.resolve([]),
     permissions.can_view_daily_logs ? fetchSharedDailyLogsForPortal(supabase, orgId, projectId) : Promise.resolve([]),
     permissions.can_view_documents
       ? supabase
@@ -657,7 +827,7 @@ export async function loadClientPortalData({
   const selections = permissions.can_submit_selections ? await fetchSelections(supabase, orgId, projectId) : []
   const punchItems = permissions.can_create_punch_items ? await fetchPunchItems(supabase, orgId, projectId) : []
   const photos = permissions.can_view_photos ? await fetchPhotoTimeline(supabase, orgId, projectId) : []
-  const warrantyRequests = await fetchWarrantyRequests(supabase, orgId, projectId)
+  const warrantyRequests = permissions.can_view_warranty ? await fetchWarrantyRequests(supabase, orgId, projectId) : []
 
   return {
     org: {
@@ -676,7 +846,7 @@ export async function loadClientPortalData({
       updated_at: projectRow.data.updated_at,
     },
     projectManager,
-    schedule: (scheduleItems ?? []).filter((item) => item.project_id === projectId),
+    schedule: scheduleItems ?? [],
     photos,
     pendingChangeOrders,
     pendingSelections: selections,
@@ -685,7 +855,18 @@ export async function loadClientPortalData({
     rfis,
     submittals,
     recentLogs: (dailyLogs ?? []).filter((log) => log.project_id === projectId).slice(0, 5),
-    sharedFiles: (filesResult.data ?? []).map(mapFileMetadata).slice(0, 10),
+    sharedFiles: [
+      ...(permissions.can_view_documents
+        ? await loadSharedDrawingSheetEntries({
+            supabase,
+            orgId,
+            projectId,
+            portalType,
+            portalToken,
+          })
+        : []),
+      ...(filesResult.data ?? []).map((file: any) => mapFileMetadata(file, portalToken)),
+    ].slice(0, 50),
     punchItems,
     financialSummary,
   }
@@ -697,12 +878,14 @@ export async function loadSubPortalData({
   companyId,
   permissions,
   scopedRfiId,
+  portalToken,
 }: {
   orgId: string
   projectId: string
   companyId: string
   permissions: PortalPermissions
   scopedRfiId?: string | null
+  portalToken?: string
 }): Promise<SubPortalData> {
   const supabase = createServiceSupabaseClient()
 
@@ -762,7 +945,8 @@ export async function loadSubPortalData({
       .from("commitments")
       .select(`
         id, title, status, total_cents, currency,
-        start_date, end_date, created_at
+        start_date, end_date, executed_at, source_document_id,
+        signature_envelope_id, created_at
       `)
       .eq("org_id", orgId)
       .eq("project_id", projectId)
@@ -776,7 +960,8 @@ export async function loadSubPortalData({
       .select(`
         id, bill_number, commitment_id, status,
         total_cents, paid_cents, bill_date, due_date,
-        created_at, paid_at, payment_reference, metadata,
+        created_at, paid_at, payment_reference, lien_waiver_status,
+        lien_waiver_received_at, metadata,
         commitments:commitment_id (title)
       `)
       .eq("org_id", orgId)
@@ -793,6 +978,8 @@ export async function loadSubPortalData({
               duration_days, percent_complete
             )
           `)
+          .eq("org_id", orgId)
+          .eq("project_id", projectId)
           .eq("company_id", companyId)
           .order("created_at", { ascending: true })
       : Promise.resolve({ data: [] }),
@@ -845,6 +1032,28 @@ export async function loadSubPortalData({
     commitmentIds.has(b.commitment_id)
   )
 
+  const { data: approvedCommitmentChangeOrders } =
+    commitmentIds.size > 0
+      ? await supabase
+          .from("commitment_change_orders")
+          .select("commitment_id, total_cents")
+          .eq("org_id", orgId)
+          .eq("project_id", projectId)
+          .eq("company_id", companyId)
+          .eq("status", "approved")
+          .in("commitment_id", Array.from(commitmentIds))
+      : { data: [] }
+
+  const approvedCcoByCommitment = new Map<string, number>()
+  for (const changeOrder of approvedCommitmentChangeOrders ?? []) {
+    const commitmentId = changeOrder.commitment_id as string | null
+    if (!commitmentId) continue
+    approvedCcoByCommitment.set(
+      commitmentId,
+      (approvedCcoByCommitment.get(commitmentId) ?? 0) + (changeOrder.total_cents ?? 0),
+    )
+  }
+
   // Aggregate bill amounts per commitment
   const billsByCommitment = new Map<string, { billed: number; paid: number }>()
   for (const bill of companyBills) {
@@ -861,16 +1070,23 @@ export async function loadSubPortalData({
   // Map commitments with aggregated amounts
   const commitments: SubPortalCommitment[] = (commitmentsResult.data ?? []).map(c => {
     const billTotals = billsByCommitment.get(c.id) ?? { billed: 0, paid: 0 }
+    const approvedChangeOrdersCents = approvedCcoByCommitment.get(c.id) ?? 0
+    const revisedTotalCents = (c.total_cents ?? 0) + approvedChangeOrdersCents
     return {
       id: c.id,
       title: c.title,
       status: c.status,
       total_cents: c.total_cents ?? 0,
+      approved_change_orders_cents: approvedChangeOrdersCents,
+      revised_total_cents: revisedTotalCents,
       billed_cents: billTotals.billed,
       paid_cents: billTotals.paid,
-      remaining_cents: (c.total_cents ?? 0) - billTotals.billed,
+      remaining_cents: revisedTotalCents - billTotals.billed,
       start_date: c.start_date,
       end_date: c.end_date,
+      executed_at: c.executed_at ?? null,
+      source_document_id: c.source_document_id ?? null,
+      signature_envelope_id: c.signature_envelope_id ?? null,
       project_name: projectResult.data?.name ?? "",
     }
   })
@@ -893,11 +1109,13 @@ export async function loadSubPortalData({
     submitted_at: b.created_at,
     paid_at: b.paid_at ?? b.metadata?.paid_at ?? null,
     payment_reference: b.payment_reference ?? b.metadata?.payment_reference ?? null,
+    lien_waiver_status: b.lien_waiver_status ?? null,
+    lien_waiver_received_at: b.lien_waiver_received_at ?? null,
   }))
 
   // Calculate financial summary
   const financialSummary: SubPortalFinancialSummary = {
-    total_committed: commitments.reduce((sum, c) => sum + c.total_cents, 0),
+    total_committed: commitments.reduce((sum, c) => sum + (c.revised_total_cents ?? c.total_cents), 0),
     total_billed: commitments.reduce((sum, c) => sum + c.billed_cents, 0),
     total_paid: commitments.reduce((sum, c) => sum + c.paid_cents, 0),
     total_remaining: commitments.reduce((sum, c) => sum + c.remaining_cents, 0),
@@ -906,7 +1124,7 @@ export async function loadSubPortalData({
       .reduce((sum, b) => sum + b.total_cents, 0),
     approved_unpaid: bills
       .filter(b => b.status === "approved" || b.status === "partial")
-      .reduce((sum, b) => sum + b.total_cents, 0),
+      .reduce((sum, b) => sum + Math.max(0, b.total_cents - (b.paid_cents ?? 0)), 0),
   }
 
   // Extract schedule items from assignments
@@ -953,10 +1171,81 @@ export async function loadSubPortalData({
     schedule,
     rfis: (rfisResult.data ?? []).map(mapRfi),
     submittals: (submittalsResult.data ?? []).map(mapSubmittal),
-    sharedFiles: (filesResult.data ?? []).map(mapFileMetadata),
+    sharedFiles: [
+      ...(permissions.can_view_documents
+        ? await loadSharedDrawingSheetEntries({
+            supabase,
+            orgId,
+            projectId,
+            portalType: "sub",
+            portalToken,
+          })
+        : []),
+      ...(filesResult.data ?? []).map((file: any) => mapFileMetadata(file, portalToken)),
+    ],
     pendingRfiCount,
     pendingSubmittalCount,
   }
+}
+
+/**
+ * Drawing sheets shared to a portal (drawing_sheets.share_with_subs /
+ * share_with_clients). Rendered alongside sharedFiles as PDF entries; the
+ * URL points at the portal sheet-PDF route, which extracts just the shared
+ * page from the source set.
+ */
+async function loadSharedDrawingSheetEntries({
+  supabase,
+  orgId,
+  projectId,
+  portalType,
+  portalToken,
+}: {
+  supabase: ReturnType<typeof createServiceSupabaseClient>
+  orgId: string
+  projectId: string
+  portalType: "client" | "sub"
+  portalToken?: string
+}) {
+  const shareColumn = portalType === "sub" ? "share_with_subs" : "share_with_clients"
+
+  const { data, error } = await supabase
+    .from("drawing_sheets")
+    .select(`
+      id, org_id, project_id, sheet_number, sheet_title, discipline, created_at,
+      current_revision_id,
+      drawing_revisions!drawing_sheets_current_revision_id_fkey(revision_label)
+    `)
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq(shareColumn, true)
+    .not("current_revision_id", "is", null)
+    .order("sheet_number", { ascending: true })
+
+  if (error) {
+    console.error("Failed to load shared drawing sheets for portal:", error)
+    return []
+  }
+
+  return (data ?? []).map((row: any) => {
+    const revisionLabel = row.drawing_revisions?.revision_label as string | undefined
+    const titlePart = row.sheet_title ? ` — ${row.sheet_title}` : ""
+    const revPart = revisionLabel ? ` (${revisionLabel})` : ""
+    return {
+      id: `sheet:${row.id}`,
+      org_id: row.org_id,
+      project_id: row.project_id,
+      file_name: `${row.sheet_number}${titlePart}${revPart}.pdf`,
+      storage_path: "",
+      mime_type: "application/pdf",
+      visibility: "shared",
+      category: "plans" as const,
+      created_at: row.created_at,
+      url: portalToken
+        ? `/api/portal/drawings/${portalToken}/${row.id}`
+        : undefined,
+    }
+  })
 }
 
 function permissionsToColumns(overrides?: Partial<PortalPermissions>) {
@@ -970,7 +1259,7 @@ function permissionsToColumns(overrides?: Partial<PortalPermissions>) {
     can_approve_change_orders: overrides?.can_approve_change_orders ?? true,
     can_submit_selections: overrides?.can_submit_selections ?? true,
     can_create_punch_items: overrides?.can_create_punch_items ?? false,
-    can_message: overrides?.can_message ?? true,
+    can_view_warranty: overrides?.can_view_warranty ?? true,
     can_view_invoices: overrides?.can_view_invoices ?? true,
     can_pay_invoices: overrides?.can_pay_invoices ?? false,
     can_view_rfis: overrides?.can_view_rfis ?? true,
@@ -981,6 +1270,8 @@ function permissionsToColumns(overrides?: Partial<PortalPermissions>) {
     can_view_commitments: overrides?.can_view_commitments ?? true,
     can_view_bills: overrides?.can_view_bills ?? true,
     can_submit_invoices: overrides?.can_submit_invoices ?? true,
+    can_submit_time: overrides?.can_submit_time ?? true,
+    can_submit_expenses: overrides?.can_submit_expenses ?? true,
     can_upload_compliance_docs: overrides?.can_upload_compliance_docs ?? true,
   }
 }
@@ -994,7 +1285,7 @@ async function fetchChangeOrders(supabase: any, orgId: string, projectId: string
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .eq("client_visible", true)
-    .in("status", ["pending", "draft", "sent", "approved"])
+    .in("status", ["pending", "sent", "approved", "requested_changes"])
     .order("created_at", { ascending: false })
 
   if (error) {
@@ -1007,7 +1298,16 @@ async function fetchChangeOrders(supabase: any, orgId: string, projectId: string
 async function fetchSelections(supabase: any, orgId: string, projectId: string): Promise<Selection[]> {
   const { data, error } = await supabase
     .from("project_selections")
-    .select("id, org_id, project_id, category_id, selected_option_id, status, due_date, selected_at, confirmed_at")
+    .select(
+      `
+        id, org_id, project_id, category_id, selected_option_id, status, due_date, selected_at, confirmed_at,
+        category:selection_categories!project_selections_category_id_fkey(id, name, description),
+        selected_option:selection_options!project_selections_selected_option_id_fkey(
+          id, org_id, category_id, name, description, price_cents, price_type,
+          price_delta_cents, image_url, sku, vendor, lead_time_days, sort_order, is_default
+        )
+      `,
+    )
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .order("due_date", { ascending: true })
@@ -1066,6 +1366,8 @@ async function fetchInvoices(
     )
     .eq("org_id", orgId)
     .eq("project_id", projectId)
+    .eq("client_visible", true)
+    .in("status", ["sent", "partial", "paid", "overdue"])
     .order("issue_date", { ascending: false })
 
   const { data, error } = await query
@@ -1075,26 +1377,7 @@ async function fetchInvoices(
     return []
   }
 
-  const invoices = data ?? []
-
-  // Ensure each invoice has a public token; generate if missing.
-  for (const inv of invoices) {
-    if (!inv.token) {
-      const newToken = randomBytes(32).toString("hex")
-      const { error: updateError } = await supabase
-        .from("invoices")
-        .update({ token: newToken })
-        .eq("id", inv.id)
-        .eq("org_id", orgId)
-      if (!updateError) {
-        inv.token = newToken
-      } else {
-        console.error("Failed to set invoice token for portal", inv.id, updateError.message)
-      }
-    }
-  }
-
-  return invoices
+  return data ?? []
 }
 
 async function fetchRfis(
@@ -1242,7 +1525,7 @@ function mapSubmittal(data: any): Submittal {
   }
 }
 
-function mapFileMetadata(data: any) {
+function mapFileMetadata(data: any, portalToken?: string) {
   return {
     id: data.id,
     org_id: data.org_id,
@@ -1256,5 +1539,6 @@ function mapFileMetadata(data: any) {
     tags: data.tags ?? undefined,
     folder_path: data.folder_path ?? undefined,
     created_at: data.created_at,
+    url: data.url ?? (portalToken ? `/api/portal/files/${portalToken}/${data.id}` : undefined),
   }
 }

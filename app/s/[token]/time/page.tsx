@@ -3,7 +3,7 @@ import Link from "next/link"
 import { ArrowLeft } from "lucide-react"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { validatePortalToken, loadSubPortalData } from "@/lib/services/portal-access"
+import { assertPortalActionAccess, loadSubPortalData } from "@/lib/services/portal-access"
 import { PortalHeader } from "@/components/portal/portal-header"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -21,8 +21,17 @@ export const revalidate = 0
 
 export default async function PortalTimePage({ params }: Props) {
   const { token } = await params
-  const access = await validatePortalToken(token)
-  if (!access || access.portal_type !== "sub" || !access.company_id) notFound()
+  let access
+  try {
+    access = await assertPortalActionAccess(token, {
+      portalType: "sub",
+      requireCompany: true,
+      permission: "can_submit_time",
+    })
+  } catch {
+    notFound()
+  }
+  if (!access.company_id) notFound()
 
   const [data, costCodesResult] = await Promise.all([
     loadSubPortalData({

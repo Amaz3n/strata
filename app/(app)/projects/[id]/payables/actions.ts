@@ -1,19 +1,17 @@
 "use server"
 
 import { revalidatePath } from "next/cache"
-import { vendorBillStatusUpdateSchema, vendorBillCreateSchema } from "@/lib/validation/vendor-bills"
 import {
+  createProjectVendorBill,
   updateVendorBillStatus,
   listVendorBillsForProject,
-  mapVendorBill,
   deleteVendorBill,
   reassignImportedPayable,
+  type VendorBillSummary,
 } from "@/lib/services/vendor-bills"
 import { listProjectCommitments } from "@/lib/services/commitments"
 import { createCompany, getCompany } from "@/lib/services/companies"
 import { requireOrgContext } from "@/lib/services/context"
-import { recordEvent } from "@/lib/services/events"
-import { attachFileWithServiceRole } from "@/lib/services/file-links"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { AuthorizationError } from "@/lib/services/authorization"
 import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
@@ -34,6 +32,7 @@ function cleanAndRethrowError(error: unknown): never {
 }
 
 export type PayableActionResult = { success: true } | { success: false; error: string }
+export type PayableMutationResult<T = VendorBillSummary> = { success: true; data: T } | { success: false; error: string }
 
 /**
  * Turn a thrown error into a user-facing message. Server Actions redact thrown
@@ -59,151 +58,30 @@ function revalidatePayablesPages(projectId: string) {
   revalidatePath(`/projects/${projectId}`)
 }
 
-export async function updateProjectVendorBillStatusAction(projectId: string, billId: string, input: unknown) {
+export async function updateProjectVendorBillStatusAction(
+  projectId: string,
+  billId: string,
+  input: unknown,
+): Promise<PayableMutationResult> {
   try {
-    const parsed = vendorBillStatusUpdateSchema.parse(input)
-    const updated = await updateVendorBillStatus({ billId, input: parsed })
+    const updated = await updateVendorBillStatus({ billId, input: input as any })
     revalidatePayablesPages(projectId)
-    return updated
+    return { success: true, data: updated }
   } catch (error) {
-    cleanAndRethrowError(error)
+    return { success: false, error: toPayableActionError(error) }
   }
 }
 
-export async function createProjectVendorBillAction(projectId: string, input: unknown) {
+export async function createProjectVendorBillAction(
+  projectId: string,
+  input: unknown,
+): Promise<PayableMutationResult> {
   try {
-    const { orgId, userId } = await requireOrgContext()
-    const parsed = vendorBillCreateSchema.parse(input)
-    const supabase = createServiceSupabaseClient()
-
-    let commitment: { id: string; total_cents: number | null; company_id?: string | null } | null = null
-    if (parsed.commitment_id) {
-      const { data, error: commitmentError } = await supabase
-        .from("commitments")
-        .select("id, total_cents, company_id")
-        .eq("id", parsed.commitment_id)
-        .eq("org_id", orgId)
-        .eq("project_id", projectId)
-        .maybeSingle()
-
-      if (commitmentError || !data) {
-        throw new Error("Commitment not found")
-      }
-      commitment = data
-    }
-
-    // 2. Check for over-budget
-    let isOverBudget = false
-    if (parsed.commitment_id && commitment) {
-      const { data: existingBills } = await supabase
-        .from("vendor_bills")
-        .select("total_cents")
-        .eq("commitment_id", parsed.commitment_id)
-        .eq("org_id", orgId)
-
-      const totalBilled = (existingBills ?? []).reduce((sum: number, b: any) => sum + (b.total_cents ?? 0), 0)
-      isOverBudget = (totalBilled + parsed.total_cents) > (commitment.total_cents ?? 0)
-    }
-
-    let companyId: string | null = parsed.company_id ?? commitment?.company_id ?? null
-    if (companyId) {
-      const { data: company, error: companyError } = await supabase
-        .from("companies")
-        .select("id")
-        .eq("org_id", orgId)
-        .eq("id", companyId)
-        .maybeSingle()
-      if (companyError || !company) {
-        throw new Error("Arc vendor not found")
-      }
-    } else if (!parsed.commitment_id && parsed.vendor_name?.trim()) {
-      const { data: company } = await supabase
-        .from("companies")
-        .select("id")
-        .eq("org_id", orgId)
-        .ilike("name", parsed.vendor_name.trim())
-        .is("metadata->>archived_at", null)
-        .limit(1)
-        .maybeSingle()
-      companyId = (company?.id as string | undefined) ?? null
-    }
-
-    // 3. Insert
-    const { data, error } = await supabase
-      .from("vendor_bills")
-      .insert({
-        org_id: orgId,
-        project_id: projectId,
-        commitment_id: parsed.commitment_id ?? null,
-        company_id: companyId,
-        bill_number: parsed.bill_number,
-        total_cents: parsed.total_cents,
-        currency: "usd",
-        status: "pending",
-        bill_date: parsed.bill_date,
-        due_date: parsed.due_date ?? null,
-        file_id: parsed.file_id ?? null,
-        submitted_by_contact_id: null, // Internal upload
-        metadata: {
-          description: parsed.description,
-          vendor_name: parsed.vendor_name || parsed.qbo_vendor_name || undefined,
-          period_start: parsed.period_start,
-          period_end: parsed.period_end,
-          internal_upload: true,
-          over_budget: isOverBudget,
-        },
-        qbo_vendor_id: parsed.qbo_vendor_id || null,
-        qbo_vendor_name: parsed.qbo_vendor_name || parsed.vendor_name || null,
-      })
-      .select(`
-        id, org_id, project_id, commitment_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_vendor_id, qbo_vendor_name,
-        project:projects(id, name),
-        company:companies!vendor_bills_company_id_fkey(id, name, qbo_vendor_id, qbo_vendor_name),
-        commitment:commitments(id, title, total_cents)
-      `)
-      .single()
-
-    if (error || !data) {
-      throw new Error(`Failed to create vendor bill: ${error?.message}`)
-    }
-
-    // 4. Attach file if provided
-    if (parsed.file_id) {
-      try {
-        await attachFileWithServiceRole({
-          orgId,
-          fileId: parsed.file_id,
-          projectId,
-          entityType: "vendor_bill",
-          entityId: data.id as string,
-          linkRole: "invoice",
-          createdBy: userId,
-        })
-      } catch (e) {
-        console.warn("Failed to attach file", e)
-      }
-    }
-
-    // 5. Record event
-    await recordEvent({
-      orgId,
-      eventType: "vendor_bill_submitted",
-      entityType: "vendor_bill",
-      entityId: data.id as string,
-      payload: {
-        project_id: projectId,
-        commitment_id: parsed.commitment_id ?? null,
-        total_cents: parsed.total_cents,
-        bill_number: parsed.bill_number,
-        internal_upload: true,
-      },
-    })
-
+    const bill = await createProjectVendorBill({ projectId, input: input as any })
     revalidatePayablesPages(projectId)
-
-    return mapVendorBill(data)
+    return { success: true, data: bill }
   } catch (error) {
-    cleanAndRethrowError(error)
+    return { success: false, error: toPayableActionError(error) }
   }
 }
 

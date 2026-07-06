@@ -30,11 +30,88 @@ import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { buildDrawingsImageUrl } from "@/lib/storage/drawings-urls"
 import { getDrawingPdfSignedUrl } from "@/lib/storage/drawings-pdfs-storage"
+import {
+  deleteTilesObjects,
+  listTilesObjects,
+} from "@/lib/storage/drawings-tiles-storage"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 // ============================================================================
 // TYPES
 // ============================================================================
+
+/**
+ * PostgREST `.or()` filters are comma/paren-delimited, so raw user input like
+ * "FLOOR PLAN (LEVEL 2)" breaks the filter expression. Strip the delimiters —
+ * they never appear in sheet numbers and rarely matter for title matching.
+ */
+function sanitizeIlikeSearch(value: string): string {
+  return value.replace(/[(),]/g, " ").replace(/\s+/g, " ").trim()
+}
+
+type VersionStorageRow = {
+  id: string
+  tiles_base_path?: string | null
+  extracted_metadata?: Record<string, any> | null
+  page_index?: number | null
+}
+
+/**
+ * Best-effort removal of derived storage (tile pyramids, temp renders) for
+ * deleted sheet versions. Tile paths are content-addressed by source hash, so
+ * a prefix is only deleted when no surviving version still references it
+ * (re-uploading the same PDF reuses the same paths).
+ */
+async function cleanupSheetVersionStorage(versionRows: VersionStorageRow[]) {
+  if (versionRows.length === 0) return
+  const supabase = createServiceSupabaseClient()
+  const deletedIds = new Set(versionRows.map((row) => row.id))
+
+  const directPaths: string[] = []
+  const candidatePrefixes = new Set<string>()
+
+  for (const row of versionRows) {
+    const metadata = row.extracted_metadata ?? {}
+    if (typeof metadata.temp_png_path === "string" && metadata.temp_png_path) {
+      directPaths.push(metadata.temp_png_path)
+    }
+    if (typeof metadata.source_hash === "string" && metadata.source_hash) {
+      // Temp per-page PDF written by the split job (already gone if the page
+      // finished processing; discard mid-flight leaves it behind).
+      const orgPrefix = row.tiles_base_path?.split("/")[0]
+      const pageIndex = row.page_index ?? metadata.page_index
+      if (orgPrefix && typeof pageIndex === "number") {
+        directPaths.push(`${orgPrefix}/${metadata.source_hash}/temp/page-${pageIndex}.pdf`)
+      }
+    }
+    if (row.tiles_base_path) {
+      candidatePrefixes.add(row.tiles_base_path)
+    }
+  }
+
+  try {
+    if (directPaths.length > 0) {
+      await deleteTilesObjects({ supabase, paths: directPaths })
+    }
+
+    for (const prefix of candidatePrefixes) {
+      const { data: stillReferenced } = await supabase
+        .from("drawing_sheet_versions")
+        .select("id")
+        .eq("tiles_base_path", prefix)
+        .limit(10)
+      const survivors = (stillReferenced ?? []).filter((row) => !deletedIds.has(row.id as string))
+      if (survivors.length > 0) continue
+
+      const objects = await listTilesObjects({ supabase, prefix: `${prefix}/`, limit: 1000 })
+      if (objects.length > 0) {
+        await deleteTilesObjects({ supabase, paths: objects.map((object) => object.name) })
+      }
+    }
+  } catch (error) {
+    console.error("[drawings] Failed to clean up version storage:", error)
+  }
+}
 
 async function refreshDrawingSheetsListView() {
   const supabase = createServiceSupabaseClient()
@@ -317,8 +394,11 @@ async function listDrawingSheetsOptimized(
   }
 
   if (parsed.search) {
-    const searchPattern = `%${parsed.search}%`
-    query = query.or(`sheet_number.ilike.${searchPattern},sheet_title.ilike.${searchPattern}`)
+    const sanitized = sanitizeIlikeSearch(parsed.search)
+    if (sanitized) {
+      const searchPattern = `%${sanitized}%`
+      query = query.or(`sheet_number.ilike.${searchPattern},sheet_title.ilike.${searchPattern}`)
+    }
   }
 
   const { data, error } = await query
@@ -615,6 +695,13 @@ export async function deleteDrawingSet(setId: string, orgId?: string): Promise<v
     throw new Error("Drawing set not found")
   }
 
+  // Collect derived-storage paths before the cascade removes the version rows.
+  const { data: setVersions } = await supabase
+    .from("drawing_sheet_versions")
+    .select("id, tiles_base_path, extracted_metadata, page_index, drawing_sheets!inner(drawing_set_id)")
+    .eq("org_id", resolvedOrgId)
+    .eq("drawing_sheets.drawing_set_id", setId)
+
   // Delete cascade will handle sheets, versions, etc.
   const { error } = await supabase
     .from("drawing_sets")
@@ -625,6 +712,8 @@ export async function deleteDrawingSet(setId: string, orgId?: string): Promise<v
   if (error) {
     throw new Error(`Failed to delete drawing set: ${error.message}`)
   }
+
+  await cleanupSheetVersionStorage((setVersions ?? []) as VersionStorageRow[])
 
   await recordAudit({
     orgId: resolvedOrgId,
@@ -932,8 +1021,11 @@ export async function listDrawingSheets(
   }
 
   if (parsed.search) {
-    const searchPattern = `%${parsed.search}%`
-    query = query.or(`sheet_number.ilike.${searchPattern},sheet_title.ilike.${searchPattern}`)
+    const sanitized = sanitizeIlikeSearch(parsed.search)
+    if (sanitized) {
+      const searchPattern = `%${sanitized}%`
+      query = query.or(`sheet_number.ilike.${searchPattern},sheet_title.ilike.${searchPattern}`)
+    }
   }
 
   const { data, error } = await query
@@ -1029,12 +1121,13 @@ export async function listDrawingSheetsWithUrls(
   const { data: versions, error: versionsError } = await supabase
     .from("drawing_sheet_versions")
     .select(`
-      drawing_sheet_id,
+      drawing_sheet_id, drawing_revision_id,
       thumb_path, medium_path, full_path,
       tile_manifest, tile_base_url, tile_manifest_path, tiles_base_path,
       thumbnail_url, medium_url, full_url,
       image_width, image_height,
-      created_at
+      created_at,
+      drawing_revisions!drawing_sheet_versions_drawing_revision_id_fkey(status)
     `)
     .in("drawing_sheet_id", sheetIds)
     .order("created_at", { ascending: false })
@@ -1042,6 +1135,27 @@ export async function listDrawingSheetsWithUrls(
   if (versionsError) {
     throw new Error(`Failed to load sheet versions: ${versionsError.message}`)
   }
+
+  // The register must show each sheet's *current published* imagery. Versions
+  // belonging to a pending draft revision would otherwise win here (they are
+  // the newest rows) and leak unreviewed drawings into the live register.
+  const currentRevisionBySheetId = new Map<string, string | undefined>()
+  for (const sheet of sheetsWithRevisionMeta) {
+    currentRevisionBySheetId.set(sheet.id, sheet.current_revision_id)
+  }
+  const eligibleVersions = (versions ?? []).filter((v: any) => {
+    const currentRevisionId = currentRevisionBySheetId.get(v.drawing_sheet_id)
+    if (currentRevisionId && v.drawing_revision_id === currentRevisionId) return true
+    const revisionStatus = (v.drawing_revisions as any)?.status
+    return revisionStatus !== "processing" && revisionStatus !== "draft"
+  })
+  // Prefer the version that belongs to the sheet's current revision.
+  eligibleVersions.sort((a: any, b: any) => {
+    const aCurrent = currentRevisionBySheetId.get(a.drawing_sheet_id) === a.drawing_revision_id ? 1 : 0
+    const bCurrent = currentRevisionBySheetId.get(b.drawing_sheet_id) === b.drawing_revision_id ? 1 : 0
+    if (aCurrent !== bCurrent) return bCurrent - aCurrent
+    return String(b.created_at).localeCompare(String(a.created_at))
+  })
 
   // Build a map of sheet ID to version data
   const versionMap = new Map<string, {
@@ -1058,7 +1172,7 @@ export async function listDrawingSheetsWithUrls(
     tileManifestPath?: string | null
     tilesBasePath?: string | null
   }>()
-  for (const v of versions ?? []) {
+  for (const v of eligibleVersions) {
     const existing = versionMap.get(v.drawing_sheet_id)
     if (!existing) {
       versionMap.set(v.drawing_sheet_id, {
@@ -1314,6 +1428,12 @@ export async function deleteDrawingSheet(sheetId: string, orgId?: string): Promi
     throw new Error("Drawing sheet not found")
   }
 
+  const { data: sheetVersions } = await supabase
+    .from("drawing_sheet_versions")
+    .select("id, tiles_base_path, extracted_metadata, page_index")
+    .eq("org_id", resolvedOrgId)
+    .eq("drawing_sheet_id", sheetId)
+
   const { error } = await supabase
     .from("drawing_sheets")
     .delete()
@@ -1323,6 +1443,8 @@ export async function deleteDrawingSheet(sheetId: string, orgId?: string): Promi
   if (error) {
     throw new Error(`Failed to delete drawing sheet: ${error.message}`)
   }
+
+  await cleanupSheetVersionStorage((sheetVersions ?? []) as VersionStorageRow[])
 
   await recordAudit({
     orgId: resolvedOrgId,
@@ -1834,7 +1956,7 @@ export async function discardRevision(revisionId: string, orgId?: string): Promi
 
   const { data: draftVersions } = await supabase
     .from("drawing_sheet_versions")
-    .select("id, drawing_sheet_id, drawing_sheets!inner(id, current_revision_id)")
+    .select("id, drawing_sheet_id, tiles_base_path, extracted_metadata, page_index, drawing_sheets!inner(id, current_revision_id)")
     .eq("org_id", resolvedOrgId)
     .eq("drawing_revision_id", revisionId)
 
@@ -1849,6 +1971,8 @@ export async function discardRevision(revisionId: string, orgId?: string): Promi
     .delete()
     .eq("org_id", resolvedOrgId)
     .eq("drawing_revision_id", revisionId)
+
+  await cleanupSheetVersionStorage((draftVersions ?? []) as VersionStorageRow[])
 
   for (const sheetId of draftOnlySheetIds) {
     const { count } = await supabase

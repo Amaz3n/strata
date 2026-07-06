@@ -248,7 +248,11 @@ export function ComplianceSettings({
 
   const rulesDirty =
     Boolean(savedRules.require_lien_waiver) !== Boolean(rules.require_lien_waiver) ||
-    Boolean(savedRules.block_payment_on_missing_docs) !== Boolean(rules.block_payment_on_missing_docs)
+    Boolean(savedRules.block_payment_on_missing_docs) !== Boolean(rules.block_payment_on_missing_docs) ||
+    Boolean(savedRules.warn_subcontract_execution_on_missing_docs) !==
+      Boolean(rules.warn_subcontract_execution_on_missing_docs) ||
+    Boolean(savedRules.block_subcontract_execution_on_missing_docs) !==
+      Boolean(rules.block_subcontract_execution_on_missing_docs)
   const reqsDirty = reqsKey(buildRequirements(), knownIds) !== reqsKey(defaults, knownIds)
   const dirty = !isLoading && (rulesDirty || reqsDirty)
 
@@ -297,6 +301,22 @@ export function ComplianceSettings({
       description: "Uses the org-wide baseline, vendor overrides, active waivers, and uploaded documents.",
       checked: rules.block_payment_on_missing_docs ?? false,
       onCheckedChange: (checked) => setRule("block_payment_on_missing_docs", checked),
+    },
+    {
+      id: "warn-subcontract-execution",
+      icon: ShieldCheck,
+      label: "Warn before executing subcontracts with missing documents",
+      description: "Show a compliance warning while still allowing the subcontract or sub change order to be sent.",
+      checked: rules.warn_subcontract_execution_on_missing_docs ?? true,
+      onCheckedChange: (checked) => setRule("warn_subcontract_execution_on_missing_docs", checked),
+    },
+    {
+      id: "block-subcontract-execution",
+      icon: Ban,
+      label: "Block subcontract execution when required documents are missing",
+      description: "Prevent subcontract and sub change order e-signature sends until the vendor is compliant.",
+      checked: rules.block_subcontract_execution_on_missing_docs ?? false,
+      onCheckedChange: (checked) => setRule("block_subcontract_execution_on_missing_docs", checked),
     },
   ]
 
@@ -356,7 +376,7 @@ export function ComplianceSettings({
               </p>
             </header>
 
-            <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
+            <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
               {policyRows.map((row) => {
                 const Icon = row.icon
                 return (

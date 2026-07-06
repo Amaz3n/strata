@@ -5,6 +5,7 @@ import { headers } from "next/headers"
 import { getInvoiceByToken, recordInvoiceViewed } from "@/lib/services/invoices"
 import { calculatePaymentFeeQuotes, loadPaymentFeePolicy } from "@/lib/payments/fees"
 import { listReceiptsForInvoice } from "@/lib/services/receipts"
+import { listPublicInvoiceLienWaivers } from "@/lib/services/invoice-lien-waivers"
 import { InvoicePublicWithPay } from "@/components/invoices/invoice-public-with-pay"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
@@ -13,6 +14,12 @@ interface Params {
 }
 
 export const revalidate = 0
+export const metadata = {
+  robots: {
+    index: false,
+    follow: false,
+  },
+}
 
 export default async function InvoicePublicPage({ params }: Params) {
   const { token } = await params
@@ -67,11 +74,10 @@ export default async function InvoicePublicPage({ params }: Params) {
         stack: err instanceof Error ? err.stack : undefined,
       })
     }
-  } else {
-    console.log("No publishable key found")
   }
 
   const receipts = await listReceiptsForInvoice({ orgId: invoice.org_id, invoiceId: invoice.id })
+  const lienWaivers = await listPublicInvoiceLienWaivers({ orgId: invoice.org_id, invoiceId: invoice.id })
 
   // Load org branding + project name so the on-page preview matches the downloaded PDF.
   const brandingClient = createServiceSupabaseClient()
@@ -90,5 +96,13 @@ export default async function InvoicePublicPage({ params }: Params) {
     projectName: projectResult.data?.name ?? null,
   }
 
-  return <InvoicePublicWithPay invoice={invoice} payment={paymentProps} receipts={receipts} branding={branding} />
+  return (
+    <InvoicePublicWithPay
+      invoice={invoice}
+      payment={paymentProps}
+      receipts={receipts}
+      branding={branding}
+      lienWaivers={lienWaivers}
+    />
+  )
 }

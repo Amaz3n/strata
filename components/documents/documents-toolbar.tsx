@@ -11,7 +11,9 @@ import {
   Download,
   CheckSquare,
   Plus,
+  Share2,
   Upload,
+  Undo2,
   ListFilter,
   PanelLeft,
   PanelLeftClose,
@@ -39,6 +41,7 @@ interface DocumentsToolbarProps {
   onDownloadSelected: () => void
   onMoveSelected: () => void
   onDeleteSelected: () => void
+  onRestoreSelected?: () => void
   onClearSelection: () => void
   onOpenSelectedFolder?: () => void
   onRenameSelectedFolder?: () => void
@@ -60,6 +63,7 @@ export function DocumentsToolbar({
   onDownloadSelected,
   onMoveSelected,
   onDeleteSelected,
+  onRestoreSelected,
   onClearSelection,
   onOpenSelectedFolder,
   onRenameSelectedFolder,
@@ -82,6 +86,7 @@ export function DocumentsToolbar({
 
   const searchInputRef = useRef<HTMLInputElement>(null)
   const hasFolderSelection = selectedFolderCount > 0
+  const isTrashView = quickFilter === "trash"
 
   return (
     <div className="flex flex-col gap-2">
@@ -108,7 +113,7 @@ export function DocumentsToolbar({
                   Rename
                 </Button>
                 <Button variant="secondary" size="sm" className="h-8" onClick={onShareSelectedFolder}>
-                  <Plus className="h-4 w-4 mr-2" />
+                  <Share2 className="h-4 w-4 mr-2" />
                   Share
                 </Button>
               </>
@@ -143,19 +148,28 @@ export function DocumentsToolbar({
               <Download className="h-4 w-4 mr-2" />
               {isDownloadingSelected ? "Downloading..." : "Download"}
             </Button>
-            <Button variant="secondary" size="sm" className="h-8" onClick={onMoveSelected}>
-              <FolderInput className="h-4 w-4 mr-2" />
-              Move
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 text-destructive hover:text-destructive"
-              onClick={onDeleteSelected}
-            >
-              <Trash2 className="h-4 w-4 mr-2" />
-              Delete
-            </Button>
+            {isTrashView ? (
+              <Button variant="secondary" size="sm" className="h-8" onClick={onRestoreSelected ?? onDeleteSelected}>
+                <Undo2 className="h-4 w-4 mr-2" />
+                Restore
+              </Button>
+            ) : (
+              <>
+                <Button variant="secondary" size="sm" className="h-8" onClick={onMoveSelected}>
+                  <FolderInput className="h-4 w-4 mr-2" />
+                  Move
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 text-destructive hover:text-destructive"
+                  onClick={onDeleteSelected}
+                >
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Delete
+                </Button>
+              </>
+            )}
             <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClearSelection} aria-label="Clear selection">
               <X className="h-4 w-4" />
             </Button>
@@ -208,7 +222,7 @@ export function DocumentsToolbar({
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" className="h-8 gap-1.5 hidden md:flex">
                 <ListFilter className="h-3.5 w-3.5" />
-                <span className="text-xs">Category</span>
+                <span className="text-xs">Filter</span>
                 {quickFilter !== "all" && (
                   <Badge variant="secondary" className="ml-1 px-1 py-0 h-4 text-[10px] min-w-[1.25rem] justify-center">
                     {QUICK_FILTER_CONFIG[quickFilter].label}
@@ -217,7 +231,7 @@ export function DocumentsToolbar({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-48">
-              <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">Filter by category</DropdownMenuLabel>
+              <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">Filter documents</DropdownMenuLabel>
               <DropdownMenuSeparator />
               {(Object.entries(QUICK_FILTER_CONFIG) as [any, any][])
                 .filter(([key]) => key !== "drawings")

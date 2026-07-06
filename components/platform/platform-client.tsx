@@ -9,6 +9,7 @@ import {
   Shield,
   Settings,
   BarChart3,
+  Bug,
   Eye,
   DollarSign,
   ArrowUpRight,
@@ -39,6 +40,7 @@ interface PlatformClientProps {
 }
 
 const OPERATIONS = [
+  { title: "Issue tracker", description: "Bugs, requests, owner progress", href: "/platform/bugs", icon: Bug },
   { title: "Customers", description: "Orgs, subscriptions, status", href: "/admin/customers", icon: Users },
   { title: "Plans", description: "Subscription plans & pricing", href: "/admin/plans", icon: DollarSign },
   { title: "Support contracts", description: "Support agreements", href: "/admin/support", icon: Shield },

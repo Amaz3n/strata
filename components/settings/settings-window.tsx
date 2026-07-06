@@ -1,9 +1,8 @@
 "use client"
 
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react"
-import { useSearchParams } from "next/navigation"
-
-import * as TabsPrimitive from "@radix-ui/react-tabs"
+import { useRouter, useSearchParams } from "next/navigation"
+import { toast } from "sonner"
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
@@ -19,6 +18,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { NotificationPreferences } from "@/components/settings/notification-preferences"
 import { AppearanceSettings } from "@/components/settings/appearance-settings"
 import { ComplianceSettings } from "@/components/settings/compliance-settings"
+import { ContractTemplateSettings } from "@/components/settings/contract-template-settings"
 import { CostCodeManager } from "@/components/cost-codes/cost-code-manager"
 import { QBOConnectionCard } from "@/components/integrations/qbo-connection-card"
 import { StripeConnectionCard } from "@/components/integrations/stripe-connection-card"
@@ -27,7 +27,7 @@ import { AlertTriangle, ArrowRight, Bell, Building2, Check, Clock, CreditCard, L
 import { Info } from "lucide-react"
 import { getQBOConnectionAction, getStripeConnectedAccountAction } from "@/app/(app)/settings/integrations/actions"
 import { listCostCodesAction } from "@/app/(app)/settings/cost-codes/actions"
-import { createBillingPortalSessionAction, createCheckoutSessionAction, getBillingPageDataAction, getOrganizationSettingsAction, getTeamSettingsDataAction, updateOrganizationLogoAction, updateOrganizationSettingsAction } from "@/app/(app)/settings/actions"
+import { createBillingPortalSessionAction, createCheckoutSessionAction, getBillingPageDataAction, getOrganizationSettingsAction, getTeamSettingsDataAction, updateOrganizationLogoAction, updateOrganizationSettingsAction, updateUserAvatarAction } from "@/app/(app)/settings/actions"
 import { useIsMobile } from "@/hooks/use-mobile"
 import type { QBOConnection } from "@/lib/services/qbo-connection"
 import type { StripeConnectedAccount } from "@/lib/services/stripe-connected-accounts"
@@ -124,38 +124,6 @@ const appInfo = {
   termsUrl: "/terms",
   privacyUrl: "/privacy",
   logoUrl: "/arc-logo2.svg",
-}
-
-type AiProvider = "openai" | "anthropic" | "google"
-type AiConfigSource = "org" | "platform" | "env" | "default"
-
-const AI_PROVIDER_LABELS: Record<AiProvider, string> = {
-  openai: "OpenAI",
-  anthropic: "Anthropic",
-  google: "Google",
-}
-
-const AI_PROVIDER_DEFAULT_MODELS: Record<AiProvider, string> = {
-  openai: "gpt-4.1-mini",
-  anthropic: "claude-3-5-sonnet-latest",
-  google: "gemini-2.0-flash",
-}
-
-const AI_PROVIDER_PRESET_MODELS: Record<AiProvider, string[]> = {
-  openai: ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"],
-  anthropic: ["claude-3-5-sonnet-latest", "claude-3-7-sonnet-latest", "claude-3-5-haiku-latest"],
-  google: ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"],
-}
-
-const AI_CONFIG_SOURCE_LABELS: Record<AiConfigSource, string> = {
-  org: "Organization override",
-  platform: "Arc default",
-  env: "Environment default",
-  default: "Built-in default",
-}
-
-function isAiProvider(value: string): value is AiProvider {
-  return value === "openai" || value === "anthropic" || value === "google"
 }
 
 function formatBillingStatus(status: string) {
@@ -265,9 +233,6 @@ type OrganizationSettingsData = {
   estimateIntroTemplate: string
   estimateBuilderSignerMode: "estimate_creator" | "prospect_owner" | "specific_user"
   estimateBuilderSignerUserId: string
-  aiProvider: AiProvider
-  aiModel: string
-  aiConfigSource: AiConfigSource
   logoUrl: string | null
   canManageOrganization: boolean
 }
@@ -277,7 +242,6 @@ interface SettingsWindowProps {
   initialTab?: string
   initialQboConnection?: QBOConnection | null
   initialStripeConnection?: StripeConnectedAccount | null
-  variant?: "page" | "dialog"
   teamMembers?: TeamMember[]
   roleOptions?: OrgRoleOption[]
   permissionOptions?: PermissionOption[]
@@ -305,7 +269,6 @@ export function SettingsWindow({
   initialTab = "profile",
   initialQboConnection = null,
   initialStripeConnection = null,
-  variant = "page",
   teamMembers: initialTeamMembers,
   roleOptions: initialRoleOptions,
   permissionOptions: initialPermissionOptions,
@@ -316,10 +279,13 @@ export function SettingsWindow({
   initialComplianceRules = {
     require_lien_waiver: false,
     block_payment_on_missing_docs: true,
+    warn_subcontract_execution_on_missing_docs: true,
+    block_subcontract_execution_on_missing_docs: false,
   },
   initialComplianceRequirementDefaults = [],
   canManageCompliance = false,
 }: SettingsWindowProps) {
+  const router = useRouter()
   const searchParams = useSearchParams()
   const settingsReturnTo = searchParams.get("returnTo")
   const defaultTab = sections.some((section) => section.value === initialTab) ? initialTab : "profile"
@@ -379,22 +345,19 @@ export function SettingsWindow({
     estimateIntroTemplate: "",
     estimateBuilderSignerMode: "estimate_creator" as "estimate_creator" | "prospect_owner" | "specific_user",
     estimateBuilderSignerUserId: "",
-    aiProvider: "openai" as AiProvider,
-    aiModel: AI_PROVIDER_DEFAULT_MODELS.openai,
   })
-  const [organizationAiSource, setOrganizationAiSource] = useState<AiConfigSource>("default")
-  const [useInheritedAiDefaults, setUseInheritedAiDefaults] = useState(true)
-  const [aiSettingsDirty, setAiSettingsDirty] = useState(false)
+  const [organizationDirty, setOrganizationDirty] = useState(false)
   const [hasFetchedOrganization, setHasFetchedOrganization] = useState(false)
   const [loadingOrganization, setLoadingOrganization] = useState(false)
   const [organizationError, setOrganizationError] = useState<string | null>(null)
   const [organizationNotice, setOrganizationNotice] = useState<string | null>(null)
   const [isSavingOrganization, startOrganizationSave] = useTransition()
   const [isUpdatingLogo, startLogoUpdate] = useTransition()
+  const [isUpdatingProfilePhoto, startProfilePhotoUpdate] = useTransition()
   const logoInputRef = useRef<HTMLInputElement | null>(null)
   const profilePhotoInputRef = useRef<HTMLInputElement | null>(null)
   const [profilePhotoPreviewUrl, setProfilePhotoPreviewUrl] = useState<string | null>(null)
-  const [profileNotice, setProfileNotice] = useState<string | null>(null)
+  const [profilePhotoUrl, setProfilePhotoUrl] = useState<string | null>(user?.avatar_url ?? null)
   const [profileError, setProfileError] = useState<string | null>(null)
   const initials = useMemo(() => getInitials(user), [user])
   const currentMemberRole = teamMembers.find((member) => member.user.id === user?.id)?.role
@@ -421,25 +384,18 @@ export function SettingsWindow({
       estimateIntroTemplate: data.estimateIntroTemplate ?? "",
       estimateBuilderSignerMode: data.estimateBuilderSignerMode ?? "estimate_creator",
       estimateBuilderSignerUserId: data.estimateBuilderSignerUserId ?? "",
-      aiProvider: data.aiProvider ?? "openai",
-      aiModel: data.aiModel ?? AI_PROVIDER_DEFAULT_MODELS[data.aiProvider ?? "openai"],
     })
-    setOrganizationAiSource(data.aiConfigSource ?? "default")
-    setUseInheritedAiDefaults(data.aiConfigSource !== "org")
-    setAiSettingsDirty(false)
+    setOrganizationDirty(false)
   }, [])
-
-  const aiSourceLabel = useMemo(() => {
-    if (useInheritedAiDefaults && organizationAiSource === "org") {
-      return "Arc default (pending save)"
-    }
-    return AI_CONFIG_SOURCE_LABELS[organizationAiSource]
-  }, [organizationAiSource, useInheritedAiDefaults])
 
   useEffect(() => {
     const nextTab = sections.some((section) => section.value === initialTab) ? initialTab : "profile"
     setTab(nextTab)
   }, [initialTab])
+
+  useEffect(() => {
+    setProfilePhotoUrl(user?.avatar_url ?? null)
+  }, [user?.avatar_url])
 
   useEffect(() => {
     setQboConnection(initialQboConnection ?? null)
@@ -639,15 +595,18 @@ export function SettingsWindow({
     loadTeam(true)
   }
 
+  const confirmDiscardOrganizationChanges = useCallback(() => {
+    if (!organizationDirty) return true
+    return window.confirm("Discard unsaved settings changes?")
+  }, [organizationDirty])
+
   const handleTabChange = (nextTab: string) => {
+    if (nextTab !== tab && !confirmDiscardOrganizationChanges()) return
     setTab(nextTab)
-    if (variant === "page") {
-      const nextParams = new URLSearchParams()
-      nextParams.set("tab", nextTab)
-      if (settingsReturnTo) nextParams.set("returnTo", settingsReturnTo)
-      window.history.replaceState(null, "", `/settings?${nextParams.toString()}`)
-      window.dispatchEvent(new CustomEvent("arc-settings-tab-change", { detail: nextTab }))
-    }
+    const nextParams = new URLSearchParams()
+    nextParams.set("tab", nextTab)
+    if (settingsReturnTo) nextParams.set("returnTo", settingsReturnTo)
+    router.replace(`/settings?${nextParams.toString()}`, { scroll: false })
     if (nextTab === "team" || nextTab === "organization") {
       loadTeam()
     }
@@ -657,26 +616,26 @@ export function SettingsWindow({
   }
 
   useEffect(() => {
-    if (variant !== "page") return
-    const handleSettingsTabChange = (event: Event) => {
-      const nextTab = (event as CustomEvent<string>).detail
-      if (!sections.some((section) => section.value === nextTab)) return
-      setTab(nextTab)
-      if (nextTab === "team" || nextTab === "organization") {
-        loadTeam()
-      }
-      if (nextTab === "cost-codes") {
-        loadCostCodes()
-      }
-    }
-    window.addEventListener("arc-settings-tab-change", handleSettingsTabChange)
-    return () => window.removeEventListener("arc-settings-tab-change", handleSettingsTabChange)
-  }, [variant, loadTeam, loadCostCodes])
-
-  useEffect(() => {
     if (currentMemberRole || loadingTeam) return
     loadTeam()
   }, [currentMemberRole, loadingTeam, loadTeam])
+
+  useEffect(() => {
+    if (!organizationDirty) return
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ""
+    }
+    window.addEventListener("beforeunload", handleBeforeUnload)
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload)
+  }, [organizationDirty])
+
+  useEffect(() => {
+    ;(window as typeof window & { __arcSettingsDirty?: boolean }).__arcSettingsDirty = organizationDirty
+    return () => {
+      delete (window as typeof window & { __arcSettingsDirty?: boolean }).__arcSettingsDirty
+    }
+  }, [organizationDirty])
 
   useEffect(() => {
     if (tab !== "organization") return
@@ -688,7 +647,7 @@ export function SettingsWindow({
     loadCostCodes()
   }, [tab, loadCostCodes])
 
-  const containerHeight = variant === "dialog" ? "flex h-[76vh] min-h-[560px] max-h-[84vh]" : "flex h-full min-h-0 w-full"
+  const containerHeight = "flex h-full min-h-0 w-full"
   const activeSection = sections.find((section) => section.value === tab) ?? sections[0]
 
   const planName = billing?.plan?.name ?? billing?.subscription?.plan_code ?? billing?.org?.billing_model ?? "Custom"
@@ -715,7 +674,6 @@ export function SettingsWindow({
   const planIntervalSuffix = billing?.plan?.amount_cents != null && interval ? `/${interval === "monthly" ? "mo" : interval === "yearly" ? "yr" : interval}` : ""
   const planCodeStr = (billing?.subscription?.plan_code ?? billing?.org?.billing_model ?? "").toLowerCase()
   const PlanTierIcon = planCodeStr.includes("business") || planCodeStr.includes("enterprise") ? Building2 : planCodeStr.includes("pro") ? Zap : Sparkles
-  const includedFeatures = ["Workspace access for your team and organization settings.", "Projects, cost codes, compliance rules, and financial workflows.", "Invoices, receipts, payment methods, and plan changes through the billing portal.", "Security settings, member permissions, and support from the Arc team."]
 
   useEffect(() => {
     if (!selectedPlanCode && plans.length > 0) {
@@ -763,54 +721,12 @@ export function SettingsWindow({
 
   const handleOrganizationFieldChange = (field: "name" | "billingEmail" | "addressLine1" | "addressLine2" | "city" | "state" | "postalCode" | "country" | "defaultPaymentTermsDays" | "defaultInvoiceNote" | "proposalTermsTemplate" | "estimateTermsTemplate" | "estimateAccentColor" | "estimateFont" | "estimateIntroTemplate" | "estimateBuilderSignerMode" | "estimateBuilderSignerUserId", value: string | number) => {
     setOrganizationForm((prev) => ({ ...prev, [field]: value }))
+    setOrganizationDirty(true)
     setOrganizationNotice(null)
     setOrganizationError(null)
   }
 
-  const handleAiProviderChange = (provider: string) => {
-    if (!isAiProvider(provider)) return
-
-    setOrganizationForm((prev) => {
-      const previousDefaultModel = AI_PROVIDER_DEFAULT_MODELS[prev.aiProvider]
-      const nextDefaultModel = AI_PROVIDER_DEFAULT_MODELS[provider]
-      const shouldResetModel = !prev.aiModel.trim() || prev.aiModel.trim() === previousDefaultModel
-      return {
-        ...prev,
-        aiProvider: provider,
-        aiModel: shouldResetModel ? nextDefaultModel : prev.aiModel,
-      }
-    })
-    setOrganizationAiSource("org")
-    setUseInheritedAiDefaults(false)
-    setAiSettingsDirty(true)
-    setOrganizationNotice(null)
-    setOrganizationError(null)
-  }
-
-  const handleAiModelChange = (value: string) => {
-    setOrganizationForm((prev) => ({ ...prev, aiModel: value }))
-    setOrganizationAiSource("org")
-    setUseInheritedAiDefaults(false)
-    setAiSettingsDirty(true)
-    setOrganizationNotice(null)
-    setOrganizationError(null)
-  }
-
-  const handleUseInheritedAiDefaults = (inherit: boolean) => {
-    setUseInheritedAiDefaults(inherit)
-    if (!inherit) {
-      setOrganizationAiSource("org")
-      setOrganizationForm((prev) => ({
-        ...prev,
-        aiModel: prev.aiModel.trim() || AI_PROVIDER_DEFAULT_MODELS[prev.aiProvider],
-      }))
-    }
-    setAiSettingsDirty(true)
-    setOrganizationNotice(null)
-    setOrganizationError(null)
-  }
-
-  const handleOrganizationSave = () => {
+  const handleOrganizationSave = (section: "organization" | "invoicing") => {
     if (!organizationSettings?.canManageOrganization || isSavingOrganization) return
 
     setOrganizationNotice(null)
@@ -818,6 +734,7 @@ export function SettingsWindow({
 
     startOrganizationSave(async () => {
       const result = await updateOrganizationSettingsAction({
+        section,
         name: organizationForm.name,
         billingEmail: organizationForm.billingEmail,
         addressLine1: organizationForm.addressLine1,
@@ -835,13 +752,11 @@ export function SettingsWindow({
         estimateIntroTemplate: organizationForm.estimateIntroTemplate,
         estimateBuilderSignerMode: organizationForm.estimateBuilderSignerMode,
         estimateBuilderSignerUserId: organizationForm.estimateBuilderSignerUserId || null,
-        aiProvider: useInheritedAiDefaults ? undefined : organizationForm.aiProvider,
-        aiModel: useInheritedAiDefaults ? undefined : organizationForm.aiModel,
-        aiInheritDefaults: useInheritedAiDefaults,
       })
 
       if (result?.error) {
         setOrganizationError(result.error)
+        toast.error("Unable to save settings", { description: result.error })
         return
       }
 
@@ -850,9 +765,10 @@ export function SettingsWindow({
         applyOrganizationSettings(refreshed)
       } catch (error) {
         console.error("Failed to refresh organization settings", error)
-        setAiSettingsDirty(false)
+        setOrganizationDirty(false)
       }
-      setOrganizationNotice("Organization settings saved.")
+      setOrganizationNotice(null)
+      toast.success(section === "invoicing" ? "Invoicing settings saved" : "Organization settings saved")
     })
   }
 
@@ -869,11 +785,13 @@ export function SettingsWindow({
 
       if (result?.error) {
         setOrganizationError(result.error)
+        toast.error("Unable to upload logo", { description: result.error })
         return
       }
 
       setOrganizationSettings((prev) => (prev ? { ...prev, logoUrl: result.logoUrl ?? null } : prev))
-      setOrganizationNotice("Organization logo updated.")
+      setOrganizationNotice(null)
+      toast.success("Organization logo updated")
       if (logoInputRef.current) {
         logoInputRef.current.value = ""
       }
@@ -893,11 +811,13 @@ export function SettingsWindow({
 
       if (result?.error) {
         setOrganizationError(result.error)
+        toast.error("Unable to remove logo", { description: result.error })
         return
       }
 
       setOrganizationSettings((prev) => (prev ? { ...prev, logoUrl: null } : prev))
-      setOrganizationNotice("Organization logo removed.")
+      setOrganizationNotice(null)
+      toast.success("Organization logo removed")
       if (logoInputRef.current) {
         logoInputRef.current.value = ""
       }
@@ -910,13 +830,13 @@ export function SettingsWindow({
     const supportedTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/svg+xml"])
     if (!supportedTypes.has(file.type)) {
       setProfileError("Use PNG, JPG, WEBP, or SVG.")
-      setProfileNotice(null)
+      toast.error("Unable to upload profile photo", { description: "Use PNG, JPG, WEBP, or SVG." })
       return
     }
 
     if (file.size > 5 * 1024 * 1024) {
       setProfileError("Profile photo must be 5MB or smaller.")
-      setProfileNotice(null)
+      toast.error("Unable to upload profile photo", { description: "Profile photo must be 5MB or smaller." })
       return
     }
 
@@ -927,7 +847,28 @@ export function SettingsWindow({
     const nextPreviewUrl = URL.createObjectURL(file)
     setProfilePhotoPreviewUrl(nextPreviewUrl)
     setProfileError(null)
-    setProfileNotice("Photo selected.")
+
+    startProfilePhotoUpdate(async () => {
+      const payload = new FormData()
+      payload.set("avatar", file)
+      const result = await updateUserAvatarAction(payload)
+
+      if (result?.error) {
+        setProfileError(result.error)
+        setProfilePhotoPreviewUrl(null)
+        URL.revokeObjectURL(nextPreviewUrl)
+        toast.error("Unable to upload profile photo", { description: result.error })
+        return
+      }
+
+      setProfilePhotoUrl(result.avatarUrl ?? null)
+      setProfilePhotoPreviewUrl(null)
+      URL.revokeObjectURL(nextPreviewUrl)
+      toast.success("Profile photo updated")
+      if (profilePhotoInputRef.current) {
+        profilePhotoInputRef.current.value = ""
+      }
+    })
   }
 
   const handleProfilePhotoRemove = () => {
@@ -936,7 +877,6 @@ export function SettingsWindow({
     }
     setProfilePhotoPreviewUrl(null)
     setProfileError(null)
-    setProfileNotice(null)
     if (profilePhotoInputRef.current) {
       profilePhotoInputRef.current.value = ""
     }
@@ -944,46 +884,8 @@ export function SettingsWindow({
 
   return (
     <Tabs value={tab} onValueChange={handleTabChange} className="h-full min-h-0 gap-0">
-      <div className={cn(containerHeight, "relative min-h-0 overflow-hidden bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85", variant === "dialog" && "border border-border/80 shadow-[0_28px_80px_-46px_rgba(15,23,42,0.45)]")}>
+      <div className={cn(containerHeight, "relative min-h-0 overflow-hidden bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85")}>
         <div className="pointer-events-none absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-primary/[0.07] to-transparent" />
-        {variant === "dialog" && !isMobile && (
-          <div className="flex min-h-0 w-80 flex-col border-r border-border/70 bg-muted/20 p-4">
-            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto pr-1">
-              <button type="button" onClick={() => handleTabChange("profile")} className={cn("flex w-full items-center gap-3 border px-4 py-3 text-left transition-all", tab === "profile" ? "border-primary/30 bg-primary/5 ring-1 ring-primary/30" : "border-border/70 bg-background/80 hover:border-border/80 hover:bg-background")}>
-                <Avatar className="h-12 w-12 border border-border/50">
-                  <AvatarImage src={user?.avatar_url ?? undefined} alt={user?.full_name} />
-                  <AvatarFallback className="text-base font-semibold">{initials}</AvatarFallback>
-                </Avatar>
-                <div className="flex-1 overflow-hidden">
-                  <p className="truncate font-semibold leading-tight">{user?.full_name ?? "Account"}</p>
-                  <p className="truncate text-xs text-muted-foreground">{user?.email ?? "—"}</p>
-                </div>
-              </button>
-
-              <div className="mt-5">
-                <p className="mb-3 px-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Workspace settings</p>
-                <TabsPrimitive.List className="flex w-full flex-col gap-1.5 bg-transparent p-0">
-                  {sections
-                    .filter((section) => section.value !== "profile")
-                    .map((section) => (
-                      <TabsPrimitive.Trigger key={section.value} value={section.value} className="group w-full min-h-[64px] justify-start gap-3 border border-transparent bg-background/40 px-3.5 py-3 text-left transition-all hover:border-border/80 hover:bg-background/85 data-[state=active]:border-primary/30 data-[state=active]:bg-primary/5">
-                        <div className="flex items-start gap-3">
-                          <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center border border-border/70 bg-background/70 text-muted-foreground transition-colors group-data-[state=active]:border-primary/40 group-data-[state=active]:bg-primary/10 group-data-[state=active]:text-primary">
-                            <section.icon className="h-4 w-4" />
-                          </div>
-                          <div className="space-y-0.5">
-                            <p className="text-sm font-medium leading-tight">{section.label}</p>
-                            <p className="text-xs leading-tight text-muted-foreground">{section.description}</p>
-                          </div>
-                        </div>
-                      </TabsPrimitive.Trigger>
-                    ))}
-                </TabsPrimitive.List>
-              </div>
-            </div>
-          </div>
-        )}
-
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className="shrink-0 border-b border-border bg-background/95 px-2 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/80">
             <div className="flex h-10 items-center gap-3 px-2 lg:px-4">
@@ -1077,21 +979,6 @@ export function SettingsWindow({
                       </div>
                     </div>
 
-                    <div className="border-t border-border/70 px-5 py-6 lg:px-8">
-                      <div>
-                        <h3 className="text-sm font-medium text-foreground">Included with your subscription</h3>
-                      </div>
-                      <div className="mt-5 overflow-hidden border border-border/70">
-                        {includedFeatures.map((feature) => (
-                          <div key={feature} className="flex gap-3 border-b border-border/70 bg-background px-4 py-4 last:border-b-0">
-                            <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center border border-primary/25 bg-primary/[0.04] text-primary">
-                              <Check className="h-3.5 w-3.5" />
-                            </div>
-                            <p className="text-sm leading-6 text-foreground/85">{feature}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
                   </div>
 
                   {/* Inline alerts */}
@@ -1138,20 +1025,18 @@ export function SettingsWindow({
                             <span className="text-sm">Loading plans…</span>
                           </div>
                         ) : plans.length === 0 ? (
-                          <div className="border border-border/70 bg-muted/20 px-4 py-6 text-sm text-muted-foreground">No active plans are available. Please contact support.</div>
+                          <div className="border border-border/70 bg-muted/20 px-4 py-6 text-sm text-muted-foreground">No active plans are available.</div>
                         ) : (
                           <>
                             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                              {plans.map((plan, idx) => {
+                              {plans.map((plan) => {
                                 const code = plan.code.toLowerCase()
                                 const isSelected = selectedPlanCode === plan.code
                                 const TierIcon = code.includes("business") || code.includes("enterprise") ? Building2 : code.includes("pro") ? Zap : Sparkles
                                 const planAmount = plan.amountCents != null ? `$${(plan.amountCents / 100).toFixed(0)}` : "Custom"
                                 const planSuffix = plan.amountCents != null && plan.interval ? `/${plan.interval === "monthly" ? "mo" : plan.interval === "yearly" ? "yr" : plan.interval}` : ""
-                                const isFeatured = idx === Math.min(1, plans.length - 1) && plans.length > 1
                                 return (
                                   <button key={plan.code} type="button" onClick={() => setSelectedPlanCode(plan.code)} className={cn("group relative overflow-hidden border px-5 py-6 text-left transition-all", isSelected ? "border-primary bg-primary/[0.04] shadow-[0_0_0_1px_var(--primary)]" : "border-border/70 bg-background/60 hover:border-primary/40 hover:bg-background")}>
-                                    {isFeatured && <span className="absolute right-3 top-3 inline-flex items-center bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-primary">Popular</span>}
                                     <div className="flex size-10 items-center justify-center border border-border/70 bg-background text-muted-foreground transition-colors group-hover:border-primary/40 group-hover:text-primary">
                                       <TierIcon className="h-4 w-4" />
                                     </div>
@@ -1200,7 +1085,7 @@ export function SettingsWindow({
                     <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
                       <div className="flex items-center gap-4">
                         <Avatar className="h-20 w-20 border border-border/80">
-                          <AvatarImage src={profilePhotoPreviewUrl ?? user?.avatar_url ?? undefined} alt={user?.full_name} />
+                          <AvatarImage src={profilePhotoPreviewUrl ?? profilePhotoUrl ?? undefined} alt={user?.full_name} />
                           <AvatarFallback className="text-xl font-semibold">{initials}</AvatarFallback>
                         </Avatar>
                         <div className="space-y-1">
@@ -1214,15 +1099,15 @@ export function SettingsWindow({
                           </div>
                           <p className="text-sm text-muted-foreground">{user?.email ?? "—"}</p>
                           <div className="flex items-center gap-2 pt-2">
-                            <input ref={profilePhotoInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" className="hidden" onChange={(event) => handleProfilePhotoSelection(event.target.files?.[0] ?? null)} />
-                            <Button type="button" variant="outline" size="sm" onClick={() => profilePhotoInputRef.current?.click()}>
-                              Change photo
+                            <input ref={profilePhotoInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" className="hidden" onChange={(event) => handleProfilePhotoSelection(event.target.files?.[0] ?? null)} disabled={isUpdatingProfilePhoto} />
+                            <Button type="button" variant="outline" size="sm" onClick={() => profilePhotoInputRef.current?.click()} disabled={isUpdatingProfilePhoto}>
+                              {isUpdatingProfilePhoto ? "Uploading..." : "Change photo"}
                             </Button>
                           </div>
                         </div>
                       </div>
                     </div>
-                    {(profileError || profileNotice) && <div className={cn("mt-4 rounded-md border px-3 py-2 text-sm", profileError ? "border-destructive/30 bg-destructive/5 text-destructive" : "border-primary/30 bg-primary/5 text-primary")}>{profileError ?? profileNotice}</div>}
+                    {profileError && <div className="mt-4 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">{profileError}</div>}
                   </div>
 
                   <MfaSettingsCard />
@@ -1293,6 +1178,8 @@ export function SettingsWindow({
                           <Textarea id="proposal-terms-template" value={organizationForm.proposalTermsTemplate} onChange={(event) => handleOrganizationFieldChange("proposalTermsTemplate", event.target.value)} placeholder={"Payment schedule, scope of work, warranty, and change-order terms…"} className="min-h-[120px]" disabled={!organizationSettings?.canManageOrganization} />
                         </div>
                       </div>
+
+                      <ContractTemplateSettings canManage={Boolean(organizationSettings?.canManageOrganization)} />
 
                       <div className="space-y-5 border-t border-border/70 pt-6">
                         <div>
@@ -1408,7 +1295,7 @@ export function SettingsWindow({
                       </div>
 
                       <div className="flex justify-start">
-                        <Button size="sm" onClick={handleOrganizationSave} disabled={!organizationSettings?.canManageOrganization || isSavingOrganization || loadingOrganization}>
+                        <Button size="sm" onClick={() => handleOrganizationSave("organization")} disabled={!organizationSettings?.canManageOrganization || isSavingOrganization || loadingOrganization}>
                           {isSavingOrganization ? "Saving..." : "Save changes"}
                         </Button>
                       </div>
@@ -1494,7 +1381,7 @@ export function SettingsWindow({
                       </section>
 
                       <div className="flex justify-start">
-                        <Button size="sm" onClick={handleOrganizationSave} disabled={!organizationSettings?.canManageOrganization || isSavingOrganization || loadingOrganization}>
+                        <Button size="sm" onClick={() => handleOrganizationSave("invoicing")} disabled={!organizationSettings?.canManageOrganization || isSavingOrganization || loadingOrganization}>
                           {isSavingOrganization ? "Saving..." : "Save invoicing settings"}
                         </Button>
                       </div>
@@ -1531,14 +1418,6 @@ export function SettingsWindow({
                           <QBOConnectionCard connection={qboConnection} onConnectionChange={setQboConnection} />
                         </div>
 
-                        <div className="mt-3 border-y border-dashed border-border/70 bg-muted/20 px-4 py-3 text-center">
-                          <p className="text-sm font-medium text-muted-foreground">
-                            Looking for another integration?
-                            <a href="mailto:support@arc.build" className="ml-1 text-primary hover:underline">
-                              Let us know
-                            </a>
-                          </p>
-                        </div>
                       </div>
                     )}
                   </div>
@@ -1661,9 +1540,6 @@ export function SettingsWindow({
                         </Link>
                         <Link href={appInfo.privacyUrl} className="text-muted-foreground/80 transition-all hover:text-primary hover:scale-105">
                           Privacy
-                        </Link>
-                        <Link href="/settings/support" className="text-muted-foreground/80 transition-all hover:text-primary hover:scale-105">
-                          Support
                         </Link>
                       </nav>
 

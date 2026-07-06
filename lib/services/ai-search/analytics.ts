@@ -3,14 +3,10 @@ import "server-only"
 import { ANALYTICS_ENTITY_CONFIGS, ENTITY_INTENTS, ENTITY_STATUS_VALUES } from "@/lib/services/ai-search/config"
 import { resolveProjectFromHints, type ProjectRef } from "@/lib/services/ai-search/projects"
 import { retrieveHybridResults } from "@/lib/services/ai-search/retrieval"
-import { buildTextSearchOrCondition } from "@/lib/services/ai-search/sql"
 import type { requireOrgContext } from "@/lib/services/context"
 import type { SearchEntityType, SearchResult } from "@/lib/services/search"
 
 type ResolvedOrgContext = Awaited<ReturnType<typeof requireOrgContext>>
-
-const ANALYTICS_BATCH_SIZE = 1_000
-const MAX_ANALYTICS_ROWS_SOFT_LIMIT = 100_000
 
 export type AnalyticsMetric = "count" | "sum_amount" | "avg_amount"
 export type AnalyticsGroupBy = "none" | "status" | "project" | "month" | "aging"
@@ -26,16 +22,6 @@ export type AnalyticsIntent = {
   projectName?: string
   dateRangeDays?: number
   limit: number
-}
-
-type AnalyticsRow = {
-  id: string
-  title: string
-  status?: string
-  amountCents?: number
-  projectId?: string
-  createdAt?: string
-  dueDate?: string
 }
 
 export type AnalyticsBucket = {
@@ -54,6 +40,12 @@ export type AnalyticsExecution = {
   groupBy: AnalyticsGroupBy
   buckets: AnalyticsBucket[]
   relatedResults: SearchResult[]
+}
+
+type AnalyticsAggregateRow = {
+  label: unknown
+  row_count: unknown
+  amount_cents: unknown
 }
 
 function dedupeResults(results: SearchResult[]) {
@@ -75,10 +67,6 @@ function formatEntityType(type: SearchEntityType) {
     .split("_")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ")
-}
-
-function toStatusLabel(status: string) {
-  return status.replace(/_/g, " ")
 }
 
 function pluralize(word: string, count: number) {
@@ -180,22 +168,23 @@ function buildAnalyticsFallbackAnswer({
   return `I analyzed ${rowCount.toLocaleString()} ${pluralize(entityLabel, rowCount)}${scope} in the ${range} window. Top ${groupLabel} breakdown: ${topGroups}.`
 }
 
-// Canonical AR aging buckets, in display order.
 const AGING_BUCKET_ORDER: string[] = ["Current", "1–30", "31–60", "61–90", "90+"]
-// Statuses that mean an invoice is no longer owing — excluded from aging.
-const AR_SETTLED_STATUSES = new Set(["paid", "void", "voided", "cancelled", "canceled", "written_off", "refunded", "closed"])
 
-// Buckets a due date into an AR aging band by days past due (relative to today).
-function agingBucketLabel(dueDate?: string): string | null {
-  if (!dueDate) return null
-  const due = new Date(dueDate)
-  if (!Number.isFinite(due.getTime())) return null
-  const days = Math.floor((Date.now() - due.getTime()) / (24 * 60 * 60 * 1000))
-  if (days <= 0) return "Current"
-  if (days <= 30) return "1–30"
-  if (days <= 60) return "31–60"
-  if (days <= 90) return "61–90"
-  return "90+"
+function normalizeAgingLabel(label: string) {
+  return label.replace("1-30", "1–30").replace("31-60", "31–60").replace("61-90", "61–90")
+}
+
+function normalizeAggregateRow(row: AnalyticsAggregateRow): AnalyticsBucket | null {
+  const label = typeof row.label === "string" && row.label.trim().length > 0 ? normalizeAgingLabel(row.label.trim()) : "Unknown"
+  const count = Math.max(0, Math.round(toFiniteNumber(row.row_count)))
+  const amountCents = Math.round(toFiniteNumber(row.amount_cents))
+  if (count === 0) return null
+  return {
+    label,
+    count,
+    amountCents,
+    metricValue: 0,
+  }
 }
 
 export async function executeAnalyticsToolLayer(
@@ -219,93 +208,44 @@ export async function executeAnalyticsToolLayer(
   }
 
   const resolvedProject = await resolveProjectFromHints(context, intent.projectName, intent.textQuery)
-  const selectFields = Array.from(
-    new Set([
-      "id",
-      config.titleField,
-      config.statusField,
-      config.amountField,
-      config.projectIdField,
-      config.createdAtField,
-      config.dueDateField,
-    ].filter((field): field is string => Boolean(field))),
-  )
+  const normalizedGroupBy = normalizeAnalyticsGroupBy(intent.groupBy, intent.entityType)
+  const since = intent.dateRangeDays && config.createdAtField
+    ? new Date(Date.now() - intent.dateRangeDays * 24 * 60 * 60 * 1000).toISOString()
+    : undefined
+  const rpcLimit =
+    normalizedGroupBy === "none"
+      ? 1
+      : normalizedGroupBy === "aging"
+        ? AGING_BUCKET_ORDER.length
+        : Math.max(8, Math.min(intent.limit, 50))
 
-  const toAnalyticsRow = (entry: unknown): AnalyticsRow => {
-    const value = entry as Record<string, unknown>
-    const id = typeof value.id === "string" ? value.id : ""
-    const titleValue = value[config.titleField]
-    const statusValue = config.statusField ? value[config.statusField] : undefined
-    const amountValue = config.amountField ? value[config.amountField] : undefined
-    const projectIdValue = config.projectIdField ? value[config.projectIdField] : undefined
-    const createdAtValue = config.createdAtField ? value[config.createdAtField] : undefined
-    const dueDateValue = config.dueDateField ? value[config.dueDateField] : undefined
+  const runAnalyticsAggregate = async (textQuery: string): Promise<{ buckets: AnalyticsBucket[]; error: unknown | null }> => {
+    const { data, error } = await context.supabase.rpc("ai_search_analytics_aggregate", {
+      p_org_id: context.orgId,
+      p_entity_type: intent.entityType,
+      p_group_by: normalizedGroupBy,
+      p_statuses: intent.statuses.length > 0 && config.statusField ? intent.statuses : null,
+      p_text_query: textQuery.trim().length > 0 && config.searchableFields.length > 0 ? textQuery.trim() : null,
+      p_project_id: resolvedProject?.id ?? null,
+      p_since: since ?? null,
+      p_limit: rpcLimit,
+    })
 
+    if (error) return { buckets: [], error }
+    const rows = Array.isArray(data) ? (data as AnalyticsAggregateRow[]) : []
     return {
-      id,
-      title: typeof titleValue === "string" && titleValue.trim().length > 0 ? titleValue : id || "Untitled",
-      status: typeof statusValue === "string" ? statusValue : undefined,
-      amountCents: config.amountField ? toFiniteNumber(amountValue) : undefined,
-      projectId: typeof projectIdValue === "string" ? projectIdValue : undefined,
-      createdAt: typeof createdAtValue === "string" ? createdAtValue : undefined,
-      dueDate: typeof dueDateValue === "string" ? dueDateValue : undefined,
+      buckets: rows
+        .map(normalizeAggregateRow)
+        .filter((bucket): bucket is AnalyticsBucket => bucket !== null),
+      error: null,
     }
   }
 
-  const runAnalyticsQuery = async (textQuery: string): Promise<{ rows: AnalyticsRow[]; error: unknown | null }> => {
-    const rows: AnalyticsRow[] = []
-    let offset = 0
-
-    while (offset < MAX_ANALYTICS_ROWS_SOFT_LIMIT) {
-      let queryBuilder = context.supabase
-        .from(config.table)
-        .select(selectFields.join(","))
-        .eq("org_id", context.orgId)
-        .range(offset, offset + ANALYTICS_BATCH_SIZE - 1)
-
-      if (resolvedProject?.id && config.projectIdField) {
-        queryBuilder = queryBuilder.eq(config.projectIdField, resolvedProject.id)
-      }
-
-      if (intent.statuses.length > 0 && config.statusField) {
-        queryBuilder = queryBuilder.in(config.statusField, intent.statuses)
-      }
-
-      if (intent.dateRangeDays && config.createdAtField) {
-        const since = new Date(Date.now() - intent.dateRangeDays * 24 * 60 * 60 * 1000).toISOString()
-        queryBuilder = queryBuilder.gte(config.createdAtField, since)
-      }
-
-      if (textQuery && config.searchableFields.length > 0) {
-        const condition = buildTextSearchOrCondition(config.searchableFields, textQuery)
-        if (condition) {
-          queryBuilder = queryBuilder.or(condition)
-        }
-      }
-
-      if (config.createdAtField) {
-        queryBuilder = queryBuilder.order(config.createdAtField, { ascending: false })
-      }
-
-      const { data, error } = await queryBuilder
-      if (error) return { rows: [], error }
-
-      const batch = Array.isArray(data) ? data : []
-      if (batch.length === 0) break
-      rows.push(...batch.map(toAnalyticsRow))
-      if (batch.length < ANALYTICS_BATCH_SIZE) break
-
-      offset += ANALYTICS_BATCH_SIZE
-    }
-
-    return { rows, error: null }
-  }
-
-  let analyticsResult = await runAnalyticsQuery(intent.textQuery)
+  let analyticsResult = await runAnalyticsAggregate(intent.textQuery)
 
   // If text filtering likely over-constrained results, retry without text filter.
-  if (analyticsResult.rows.length === 0 && intent.textQuery.trim().length > 0) {
-    analyticsResult = await runAnalyticsQuery("")
+  if (analyticsResult.buckets.length === 0 && intent.textQuery.trim().length > 0) {
+    analyticsResult = await runAnalyticsAggregate("")
   }
   if (analyticsResult.error) {
     console.error("Analytics query failed", {
@@ -329,83 +269,34 @@ export async function executeAnalyticsToolLayer(
     }
   }
 
-  const rows = analyticsResult.rows
+  const buckets = analyticsResult.buckets.map((bucket) => ({
+    ...bucket,
+    metricValue: toAnalyticsMetricValue(intent.metric, bucket),
+  }))
 
-  const projectNameMap = new Map<string, string>()
-  if (intent.groupBy === "project" && config.projectIdField) {
-    const projectIds = Array.from(new Set(rows.map((row) => row.projectId).filter((id): id is string => Boolean(id)))).slice(0, 200)
-    if (projectIds.length > 0) {
-      const { data: projectsData, error: projectsError } = await context.supabase
-        .from("projects")
-        .select("id,name")
-        .eq("org_id", context.orgId)
-        .in("id", projectIds)
-
-      if (projectsError) {
-        console.error("Failed to resolve project names for analytics", projectsError)
-      } else if (Array.isArray(projectsData)) {
-        for (const project of projectsData) {
-          const id = typeof project.id === "string" ? project.id : null
-          const name = typeof project.name === "string" ? project.name : null
-          if (id && name) projectNameMap.set(id, name)
-        }
-      }
-    }
-  }
-
-  const bucketMap = new Map<string, { label: string; count: number; amountCents: number }>()
-  if (intent.groupBy === "aging") {
+  if (normalizedGroupBy === "aging") {
+    const byLabel = new Map(buckets.map((bucket) => [bucket.label, bucket]))
     for (const label of AGING_BUCKET_ORDER) {
-      bucketMap.set(label, { label, count: 0, amountCents: 0 })
-    }
-  }
-  for (const row of rows) {
-    let label = "Total"
-    if (intent.groupBy === "status") {
-      label = row.status ? toStatusLabel(row.status) : "Unknown"
-    } else if (intent.groupBy === "project") {
-      label = row.projectId ? projectNameMap.get(row.projectId) ?? "Unknown project" : "No project"
-    } else if (intent.groupBy === "month") {
-      const date = row.createdAt ? new Date(row.createdAt) : null
-      if (date && Number.isFinite(date.getTime())) {
-        const year = date.getUTCFullYear()
-        const month = `${date.getUTCMonth() + 1}`.padStart(2, "0")
-        label = `${year}-${month}`
-      } else {
-        label = "Unknown month"
+      if (!byLabel.has(label)) {
+        byLabel.set(label, {
+          label,
+          count: 0,
+          amountCents: 0,
+          metricValue: 0,
+        })
       }
-    } else if (intent.groupBy === "aging") {
-      // Aging covers only invoices that are still owing.
-      if (row.status && AR_SETTLED_STATUSES.has(row.status.toLowerCase())) continue
-      const agingLabel = agingBucketLabel(row.dueDate)
-      if (!agingLabel) continue
-      label = agingLabel
     }
-
-    const current = bucketMap.get(label) ?? { label, count: 0, amountCents: 0 }
-    current.count += 1
-    current.amountCents += row.amountCents ?? 0
-    bucketMap.set(label, current)
+    buckets.splice(0, buckets.length, ...Array.from(byLabel.values()))
   }
 
-  const buckets = Array.from(bucketMap.values())
-    .map((bucket) => ({
-      label: bucket.label,
-      count: bucket.count,
-      amountCents: bucket.amountCents,
-      metricValue: toAnalyticsMetricValue(intent.metric, bucket),
-    }))
-    .filter((bucket) => intent.groupBy === "aging" || bucket.count > 0)
-
-  if (intent.groupBy === "month") {
+  if (normalizedGroupBy === "month") {
     buckets.sort((a, b) => a.label.localeCompare(b.label))
-  } else if (intent.groupBy === "aging") {
+  } else if (normalizedGroupBy === "aging") {
     buckets.sort((a, b) => AGING_BUCKET_ORDER.indexOf(a.label) - AGING_BUCKET_ORDER.indexOf(b.label))
   } else {
     buckets.sort((a, b) => b.metricValue - a.metricValue)
   }
 
-  const normalizedGroupBy = normalizeAnalyticsGroupBy(intent.groupBy, intent.entityType)
   const filters: { projectId?: string; status?: string[] } = {}
   if (resolvedProject?.id) {
     filters.projectId = resolvedProject.id
@@ -428,7 +319,7 @@ export async function executeAnalyticsToolLayer(
     answer: "",
     entityLabel,
     project: resolvedProject,
-    rowCount: intent.groupBy === "aging" ? buckets.reduce((sum, bucket) => sum + bucket.count, 0) : rows.length,
+    rowCount: buckets.reduce((sum, bucket) => sum + bucket.count, 0),
     metric: intent.metric,
     groupBy: normalizedGroupBy,
     buckets,

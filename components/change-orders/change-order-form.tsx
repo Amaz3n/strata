@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react"
 import type { FormEvent } from "react"
 
-import type { ChangeOrder } from "@/lib/types"
+import type { BudgetLineOption, ChangeOrder, CostCode } from "@/lib/types"
 import type { ChangeOrderInput } from "@/lib/validation/change-orders"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -22,12 +22,17 @@ interface ChangeOrderFormProps {
   onSubmit: (values: ChangeOrderInput, publish: boolean) => Promise<void>
   isSubmitting?: boolean
   isGmpProject?: boolean
+  costCodes?: CostCode[]
+  budgetLines?: BudgetLineOption[]
+  costCodesEnabled?: boolean
   changeOrder?: ChangeOrder | null
 }
 
 type LineDraft = {
   id: string
   description: string
+  costCodeId: string
+  budgetLineId: string
   quantity: string
   unit: string
   unitCost: string
@@ -41,6 +46,8 @@ function newLineDraft(partial: Partial<LineDraft> = {}): LineDraft {
   return {
     id: crypto.randomUUID(),
     description: "",
+    costCodeId: "",
+    budgetLineId: "",
     quantity: "1",
     unit: "ea",
     unitCost: "",
@@ -56,7 +63,7 @@ function parseMoney(value: string) {
   const normalized = value.replace(/,/g, "").trim()
   if (!normalized) return 0
   const parsed = Number(normalized)
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
+  return Number.isFinite(parsed) ? parsed : 0
 }
 
 function parseQuantity(value: string) {
@@ -68,6 +75,21 @@ function formatMoneyFromCents(cents: number) {
   return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
 }
 
+function parsePercent(value: string, max = 100) {
+  const parsed = Number(value.replace(/,/g, "").trim())
+  if (!Number.isFinite(parsed)) return 0
+  return Math.min(max, Math.max(0, parsed))
+}
+
+function costCodeLabel(code: CostCode) {
+  return [code.code, code.name].filter(Boolean).join(" - ") || "Cost code"
+}
+
+function budgetLineLabel(line: BudgetLineOption) {
+  const amount = typeof line.amount_cents === "number" ? ` (${formatMoneyFromCents(line.amount_cents)})` : ""
+  return `${line.description || "Budget line"}${amount}`
+}
+
 export function ChangeOrderForm({
   open,
   onOpenChange,
@@ -75,12 +97,18 @@ export function ChangeOrderForm({
   onSubmit,
   isSubmitting,
   isGmpProject = false,
+  costCodes = [],
+  budgetLines = [],
+  costCodesEnabled = true,
   changeOrder,
 }: ChangeOrderFormProps) {
   const [title, setTitle] = useState("")
   const [daysImpact, setDaysImpact] = useState("")
   const [notes, setNotes] = useState("")
   const [terms, setTerms] = useState("")
+  const [pricingDisplay, setPricingDisplay] = useState<NonNullable<ChangeOrderInput["pricing_display"]>>("itemized")
+  const [taxRate, setTaxRate] = useState("")
+  const [markupPercent, setMarkupPercent] = useState("")
   const [status, setStatus] = useState<ChangeOrderInput["status"]>("draft")
   const [lines, setLines] = useState<LineDraft[]>(() => [newLineDraft()])
 
@@ -89,14 +117,29 @@ export function ChangeOrderForm({
   const [notesError, setNotesError] = useState<string | null>(null)
   const [linesError, setLinesError] = useState<string | null>(null)
 
-  const totalCents = useMemo(() => {
-    return lines.reduce((sum, line) => {
+  const totals = useMemo(() => {
+    const subtotalCents = lines.reduce((sum, line) => {
       const quantity = parseQuantity(line.quantity)
       const unitCost = parseMoney(line.unitCost)
       const allowance = parseMoney(line.allowance)
       return sum + Math.round((quantity * unitCost + allowance) * 100)
     }, 0)
-  }, [lines])
+    const taxableBaseCents = lines.reduce((sum, line) => {
+      if (!line.taxable) return sum
+      const quantity = parseQuantity(line.quantity)
+      const unitCost = parseMoney(line.unitCost)
+      const allowance = parseMoney(line.allowance)
+      return sum + Math.round((quantity * unitCost + allowance) * 100)
+    }, 0)
+    const markupCents = Math.round(subtotalCents * (parsePercent(markupPercent) / 100))
+    const taxCents = Math.round(taxableBaseCents * (parsePercent(taxRate, 20) / 100))
+    return {
+      subtotalCents,
+      markupCents,
+      taxCents,
+      totalCents: subtotalCents + markupCents + taxCents,
+    }
+  }, [lines, markupPercent, taxRate])
   const canSubmit = Boolean(projectId && title.trim() && lines.length > 0)
 
   const reset = () => {
@@ -104,6 +147,9 @@ export function ChangeOrderForm({
     setDaysImpact("")
     setNotes("")
     setTerms("")
+    setPricingDisplay("itemized")
+    setTaxRate("")
+    setMarkupPercent("")
     setStatus("draft")
     setLines([newLineDraft()])
     setTitleError(null)
@@ -118,6 +164,13 @@ export function ChangeOrderForm({
       setDaysImpact(changeOrder.days_impact != null ? changeOrder.days_impact.toString() : "")
       setNotes(changeOrder.summary ?? changeOrder.description ?? "")
       setTerms(typeof changeOrder.metadata?.terms === "string" ? changeOrder.metadata.terms : "")
+      setPricingDisplay(
+        changeOrder.metadata?.display?.pricing === "subtotals" || changeOrder.metadata?.display?.pricing === "lump_sum"
+          ? changeOrder.metadata.display.pricing
+          : "itemized",
+      )
+      setTaxRate(changeOrder.totals?.tax_rate ? String(changeOrder.totals.tax_rate) : "")
+      setMarkupPercent(changeOrder.totals?.markup_percent ? String(changeOrder.totals.markup_percent) : "")
       setStatus((changeOrder.status === "sent" ? "pending" : changeOrder.status) as ChangeOrderInput["status"])
 
       setLines(
@@ -125,6 +178,8 @@ export function ChangeOrderForm({
           ? changeOrder.lines.map((line) =>
               newLineDraft({
                 description: line.description ?? "",
+                costCodeId: line.cost_code_id ?? "",
+                budgetLineId: line.budget_line_id ?? "",
                 quantity: String(line.quantity ?? 1),
                 unit: line.unit ?? "ea",
                 unitCost: ((line.unit_cost_cents ?? 0) / 100).toFixed(2),
@@ -163,8 +218,8 @@ export function ChangeOrderForm({
     }
 
     const impact = daysImpact.trim() === "" ? null : Number(daysImpact)
-    if (impact !== null && (isNaN(impact) || impact < 0 || impact > 365)) {
-      setDaysImpactError("Schedule impact must be between 0 and 365 days")
+    if (impact !== null && (isNaN(impact) || impact < -365 || impact > 365)) {
+      setDaysImpactError("Schedule impact must be between -365 and 365 days")
       hasError = true
     }
 
@@ -178,7 +233,7 @@ export function ChangeOrderForm({
         unitCost: parseMoney(line.unitCost),
         allowance: parseMoney(line.allowance),
       }))
-      .filter((line) => line.description.length > 0 || line.unitCost > 0 || line.allowance > 0)
+      .filter((line) => line.description.length > 0 || line.unitCost !== 0 || line.allowance !== 0)
 
     if (normalizedLines.length === 0) {
       setLinesError("Add at least one priced line item")
@@ -196,14 +251,16 @@ export function ChangeOrderForm({
       description: cleanNotes || undefined,
       intro: undefined,
       terms: terms.trim() || undefined,
-      pricing_display: "itemized",
+      pricing_display: pricingDisplay,
       days_impact: impact,
       requires_signature: changeOrder ? changeOrder.requires_signature ?? true : true,
-      tax_rate: changeOrder ? changeOrder.totals?.tax_rate ?? 0 : 0,
-      markup_percent: changeOrder ? changeOrder.totals?.markup_percent ?? 0 : 0,
+      tax_rate: parsePercent(taxRate, 20),
+      markup_percent: parsePercent(markupPercent),
       status,
       client_visible: changeOrder ? changeOrder.client_visible ?? false : false,
       lines: normalizedLines.map((line) => ({
+        cost_code_id: costCodesEnabled ? line.costCodeId || undefined : undefined,
+        budget_line_id: costCodesEnabled ? undefined : line.budgetLineId || undefined,
         description: line.description,
         quantity: line.quantity,
         unit: line.unit.trim() || "ea",
@@ -311,6 +368,58 @@ export function ChangeOrderForm({
                           <span className="sr-only">Remove item</span>
                         </Button>
                       </div>
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-muted-foreground">
+                          {costCodesEnabled ? "Cost code" : "Budget line"}
+                        </Label>
+                        {costCodesEnabled ? (
+                          <Select
+                            value={line.costCodeId || "__none__"}
+                            onValueChange={(value) =>
+                              setLines((current) =>
+                                current.map((item) =>
+                                  item.id === line.id ? { ...item, costCodeId: value === "__none__" ? "" : value } : item,
+                                ),
+                              )
+                            }
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select cost code" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__none__">Tracking only</SelectItem>
+                              {costCodes.map((code) => (
+                                <SelectItem key={code.id} value={code.id}>
+                                  {costCodeLabel(code)}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <Select
+                            value={line.budgetLineId || "__none__"}
+                            onValueChange={(value) =>
+                              setLines((current) =>
+                                current.map((item) =>
+                                  item.id === line.id ? { ...item, budgetLineId: value === "__none__" ? "" : value } : item,
+                                ),
+                              )
+                            }
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select budget line" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__none__">Tracking only</SelectItem>
+                              {budgetLines.map((lineOption) => (
+                                <SelectItem key={lineOption.id} value={lineOption.id}>
+                                  {budgetLineLabel(lineOption)}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        )}
+                      </div>
                       <div className="grid grid-cols-2 gap-2 sm:grid-cols-[80px_80px_1fr_1fr]">
                         <Input
                           value={line.quantity}
@@ -335,7 +444,7 @@ export function ChangeOrderForm({
                             value={line.unitCost}
                             onChange={(event) => {
                               const nextValue = event.target.value.replace(",", ".")
-                              if (!/^\d*\.?\d{0,2}$/.test(nextValue)) return
+                              if (!/^-?\d*\.?\d{0,2}$/.test(nextValue)) return
                               setLines((current) => current.map((item) => (item.id === line.id ? { ...item, unitCost: nextValue } : item)))
                             }}
                             inputMode="decimal"
@@ -349,7 +458,7 @@ export function ChangeOrderForm({
                             value={line.allowance}
                             onChange={(event) => {
                               const nextValue = event.target.value.replace(",", ".")
-                              if (!/^\d*\.?\d{0,2}$/.test(nextValue)) return
+                              if (!/^-?\d*\.?\d{0,2}$/.test(nextValue)) return
                               setLines((current) => current.map((item) => (item.id === line.id ? { ...item, allowance: nextValue } : item)))
                             }}
                             inputMode="decimal"
@@ -422,13 +531,57 @@ export function ChangeOrderForm({
                 {linesError ? <p className="text-xs text-destructive">{linesError}</p> : null}
               </div>
 
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="space-y-2">
+                  <Label>Pricing display</Label>
+                  <Select value={pricingDisplay} onValueChange={(value) => setPricingDisplay(value as NonNullable<ChangeOrderInput["pricing_display"]>)}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="itemized">Itemized</SelectItem>
+                      <SelectItem value="subtotals">Subtotals</SelectItem>
+                      <SelectItem value="lump_sum">Lump sum</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Markup %</Label>
+                  <Input
+                    value={markupPercent}
+                    onChange={(event) => {
+                      const nextValue = event.target.value.replace(",", ".")
+                      if (!/^\d*\.?\d{0,3}$/.test(nextValue)) return
+                      if (nextValue && Number(nextValue) > 100) return
+                      setMarkupPercent(nextValue)
+                    }}
+                    inputMode="decimal"
+                    placeholder="0"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Tax %</Label>
+                  <Input
+                    value={taxRate}
+                    onChange={(event) => {
+                      const nextValue = event.target.value.replace(",", ".")
+                      if (!/^\d*\.?\d{0,3}$/.test(nextValue)) return
+                      if (nextValue && Number(nextValue) > 20) return
+                      setTaxRate(nextValue)
+                    }}
+                    inputMode="decimal"
+                    placeholder="0"
+                  />
+                </div>
+              </div>
+
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label className={daysImpactError ? "text-destructive" : ""}>Schedule impact</Label>
                   <Input
                     value={daysImpact}
                     onChange={(event) => {
-                      if (!/^\d*$/.test(event.target.value)) return
+                      if (!/^-?\d*$/.test(event.target.value)) return
                       setDaysImpact(event.target.value)
                       if (daysImpactError) setDaysImpactError(null)
                     }}
@@ -443,9 +596,27 @@ export function ChangeOrderForm({
               </div>
 
               <div className="rounded-lg border bg-muted/30 p-4">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Change order total</span>
-                  <span className="font-semibold">{formatMoneyFromCents(totalCents)}</span>
+                <div className="space-y-2 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">Subtotal</span>
+                    <span className="tabular-nums">{formatMoneyFromCents(totals.subtotalCents)}</span>
+                  </div>
+                  {totals.markupCents !== 0 ? (
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Markup</span>
+                      <span className="tabular-nums">{formatMoneyFromCents(totals.markupCents)}</span>
+                    </div>
+                  ) : null}
+                  {totals.taxCents !== 0 ? (
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">Tax</span>
+                      <span className="tabular-nums">{formatMoneyFromCents(totals.taxCents)}</span>
+                    </div>
+                  ) : null}
+                  <div className="flex items-center justify-between border-t pt-2">
+                    <span className="text-muted-foreground">Change order total</span>
+                    <span className="font-semibold tabular-nums">{formatMoneyFromCents(totals.totalCents)}</span>
+                  </div>
                 </div>
               </div>
 
@@ -460,11 +631,10 @@ export function ChangeOrderForm({
                       <SelectItem value="draft">Draft</SelectItem>
                       <SelectItem value="pending">Awaiting approval</SelectItem>
                       <SelectItem value="requested_changes">Needs changes</SelectItem>
-                      <SelectItem value="approved">Approved</SelectItem>
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-muted-foreground">
-                    Only approved change orders can be invoiced. Selecting Approved records an approval completed outside Arc.
+                    Approval is recorded from the detail sheet once the client or offline signer has approved the change.
                   </p>
                 </div>
               ) : null}

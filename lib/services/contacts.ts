@@ -13,7 +13,7 @@ import {
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
-import { hasPermission, requireAnyPermission } from "@/lib/services/permissions"
+import { requireAnyPermission } from "@/lib/services/permissions"
 
 function mapCompany(row: any): Company {
   const metadata = row?.metadata ?? {}
@@ -383,13 +383,7 @@ export async function updateContact({
 
 export async function archiveContact(contactId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  const canArchive =
-    (await hasPermission("org.admin", { supabase, orgId: resolvedOrgId, userId })) ||
-    (await hasPermission("members.manage", { supabase, orgId: resolvedOrgId, userId }))
-
-  if (!canArchive) {
-    throw new Error("Missing permission: org.admin")
-  }
+  await requireAnyPermission(["org.member", "directory.write"], { supabase, orgId: resolvedOrgId, userId })
 
   const [{ count: scheduleCount, error: scheduleError }, { count: taskCount, error: taskError }] = await Promise.all([
     supabase
@@ -431,6 +425,49 @@ export async function archiveContact(contactId: string, orgId?: string) {
 
   if (error || !data) {
     throw new Error(`Failed to archive contact: ${error?.message}`)
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "contact",
+    entityId: data.id as string,
+    before: existing,
+    after: data,
+  })
+
+  return true
+}
+
+export async function restoreContact(contactId: string, orgId?: string) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["org.member", "directory.write"], { supabase, orgId: resolvedOrgId, userId })
+
+  const { data: existing, error: existingError } = await supabase
+    .from("contacts")
+    .select("id, org_id, full_name, metadata")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", contactId)
+    .maybeSingle()
+
+  if (existingError || !existing) {
+    throw new Error("Contact not found")
+  }
+
+  const metadata = { ...(existing.metadata ?? {}) }
+  delete metadata.archived_at
+
+  const { data, error } = await supabase
+    .from("contacts")
+    .update({ metadata })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", contactId)
+    .select("id, org_id, full_name, metadata")
+    .maybeSingle()
+
+  if (error || !data) {
+    throw new Error(`Failed to restore contact: ${error?.message}`)
   }
 
   await recordAudit({
@@ -537,6 +574,37 @@ export async function getContactAssignments(contactId: string, orgId?: string) {
     throw new Error(`Failed to load task assignments: ${taskAssignments.error.message}`)
   }
 
+  const projectIds = Array.from(
+    new Set(
+      [
+        ...(scheduleAssignments.data ?? []).map((row: any) => row.project_id),
+        ...(taskAssignments.data ?? []).map((row: any) =>
+          (Array.isArray(row.tasks) ? row.tasks[0] : row.tasks)?.project_id,
+        ),
+      ].filter(Boolean),
+    ),
+  )
+
+  const projectById = new Map<string, { id: string; name: string }>()
+  if (projectIds.length > 0) {
+    const { data: projects, error: projectsError } = await supabase
+      .from("projects")
+      .select("id, name")
+      .eq("org_id", resolvedOrgId)
+      .in("id", projectIds as string[])
+
+    if (projectsError) {
+      throw new Error(`Failed to load assignment projects: ${projectsError.message}`)
+    }
+
+    for (const project of projects ?? []) {
+      projectById.set(project.id as string, {
+        id: project.id as string,
+        name: project.name as string,
+      })
+    }
+  }
+
   return {
     schedule: (scheduleAssignments.data ?? []).map((row: any) => ({
       id: row.id,
@@ -549,6 +617,7 @@ export async function getContactAssignments(contactId: string, orgId?: string) {
       confirmed_at: row.confirmed_at ?? undefined,
       notes: row.notes ?? undefined,
       created_at: row.created_at,
+      project: row.project_id ? projectById.get(row.project_id) : undefined,
       schedule_item: Array.isArray(row.schedule_items) ? row.schedule_items[0] : row.schedule_items,
     })),
     tasks: (taskAssignments.data ?? []).map((row: any) => ({
@@ -557,6 +626,9 @@ export async function getContactAssignments(contactId: string, orgId?: string) {
       role: row.role ?? undefined,
       due_date: row.due_date ?? undefined,
       created_at: row.created_at,
+      project: (Array.isArray(row.tasks) ? row.tasks[0] : row.tasks)?.project_id
+        ? projectById.get((Array.isArray(row.tasks) ? row.tasks[0] : row.tasks).project_id)
+        : undefined,
       task: Array.isArray(row.tasks) ? row.tasks[0] : row.tasks,
     })),
   }

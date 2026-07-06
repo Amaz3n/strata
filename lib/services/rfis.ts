@@ -345,6 +345,7 @@ export async function sendRfi({
 export async function createPortalRfi({
   orgId,
   projectId,
+  bidPackageId,
   companyId,
   contactId,
   subject,
@@ -354,6 +355,7 @@ export async function createPortalRfi({
 }: {
   orgId: string
   projectId: string
+  bidPackageId?: string | null
   companyId?: string | null
   contactId?: string | null
   subject: string
@@ -366,6 +368,7 @@ export async function createPortalRfi({
   const payload = {
     org_id: orgId,
     project_id: projectId,
+    bid_package_id: bidPackageId ?? null,
     subject,
     question,
     status: "open",
@@ -904,9 +907,10 @@ async function ensurePortalLink({
       `
       token, expires_at, scoped_rfi_id,
       can_view_schedule, can_view_photos, can_view_documents, can_download_files, can_view_daily_logs, can_view_budget,
-      can_approve_change_orders, can_submit_selections, can_create_punch_items, can_message,
+      can_approve_change_orders, can_submit_selections, can_create_punch_items,
       can_view_invoices, can_pay_invoices, can_view_rfis, can_view_submittals, can_respond_rfis, can_submit_submittals,
-      can_view_commitments, can_view_bills, can_submit_invoices, can_upload_compliance_docs
+      can_view_commitments, can_view_bills, can_submit_invoices, can_submit_time, can_submit_expenses, can_upload_compliance_docs,
+      can_view_warranty
       `,
     )
     .eq("org_id", orgId)
@@ -940,7 +944,6 @@ async function ensurePortalLink({
       candidate.can_approve_change_orders === false &&
       candidate.can_submit_selections === false &&
       candidate.can_create_punch_items === false &&
-      candidate.can_message === true &&
       candidate.can_view_invoices === false &&
       candidate.can_pay_invoices === false &&
       candidate.can_view_rfis === true &&
@@ -950,6 +953,9 @@ async function ensurePortalLink({
       candidate.can_view_commitments === false &&
       candidate.can_view_bills === false &&
       candidate.can_submit_invoices === false &&
+      candidate.can_submit_time === false &&
+      candidate.can_submit_expenses === false &&
+      candidate.can_view_warranty === false &&
       candidate.can_upload_compliance_docs === false
     )
   })
@@ -972,7 +978,7 @@ async function ensurePortalLink({
     can_approve_change_orders: false,
     can_submit_selections: false,
     can_create_punch_items: false,
-    can_message: true,
+    can_view_warranty: false,
     can_view_invoices: false,
     can_pay_invoices: false,
     can_view_rfis: true,
@@ -982,6 +988,8 @@ async function ensurePortalLink({
     can_view_commitments: false,
     can_view_bills: false,
     can_submit_invoices: false,
+    can_submit_time: false,
+    can_submit_expenses: false,
     can_upload_compliance_docs: false,
   }
 

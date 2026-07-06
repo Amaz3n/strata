@@ -1,14 +1,23 @@
 "use server"
 
-import { validatePortalToken } from "@/lib/services/portal-access"
-import { listSubmittals } from "@/lib/services/submittals"
+import { assertPortalActionAccess, loadSubPortalData } from "@/lib/services/portal-access"
 
 export async function loadSubmittalsAction(token: string) {
-  const access = await validatePortalToken(token)
-  if (!access) throw new Error("Access denied")
-  return listSubmittals(access.org_id, access.project_id)
-}
+  const access = await assertPortalActionAccess(token, {
+    portalType: "sub",
+    requireCompany: true,
+    permission: "can_view_submittals",
+  })
+  if (!access.company_id) throw new Error("Access denied")
 
+  const data = await loadSubPortalData({
+    orgId: access.org_id,
+    projectId: access.project_id,
+    companyId: access.company_id,
+    permissions: access.permissions,
+  })
+  return data.submittals
+}
 
 
 

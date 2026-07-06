@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation"
-import { validatePortalToken } from "@/lib/services/portal-access"
+import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { loadSubmittalsAction } from "./actions"
 import { SubmittalsPortalClient } from "./submittals-client"
 
@@ -11,10 +11,16 @@ export const revalidate = 0
 
 export default async function SubmittalsPortalPage({ params }: Params) {
   const { token } = await params
-  const access = await validatePortalToken(token)
-  if (!access) notFound()
+  try {
+    await assertPortalActionAccess(token, {
+      portalType: "sub",
+      requireCompany: true,
+      permission: "can_view_submittals",
+    })
+  } catch {
+    notFound()
+  }
 
   const submittals = await loadSubmittalsAction(token)
   return <SubmittalsPortalClient submittals={submittals} token={token} />
 }
-

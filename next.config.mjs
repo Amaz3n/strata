@@ -48,6 +48,7 @@ const nextConfig = {
     serverActions: {
       bodySizeLimit: '100mb',
     },
+    webpackMemoryOptimizations: true,
   },
   async headers() {
     return [
@@ -79,6 +80,9 @@ export default withSentryConfig(nextConfig, {
   authToken: process.env.SENTRY_AUTH_TOKEN,
   silent: !process.env.CI,
   widenClientFileUpload: true,
+  // Disable Sentry plugins in development to save memory and speed up builds
+  disableServerWebpackPlugin: process.env.NODE_ENV !== "production",
+  disableClientWebpackPlugin: process.env.NODE_ENV !== "production",
   webpack: {
     automaticVercelMonitors: true,
     treeshake: {

@@ -10,16 +10,10 @@ import { generateExecutedPdf } from "@/lib/pdfs/esign"
 import { SignatureEmail } from "@/lib/emails/signature-email"
 import { recordESignEvent } from "@/lib/services/esign-events"
 import { recordEvent } from "@/lib/services/events"
+import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { createExecutedFileAccessToken } from "@/lib/services/esign-executed-links"
 import { renderEmailTemplate, sendEmail, getOrgSenderEmail } from "@/lib/services/mailer"
-import { acceptProposalFromEnvelopeExecution } from "@/lib/services/proposals"
-import { approveChangeOrderFromEnvelopeExecution } from "@/lib/services/change-orders"
-import { markCommitmentExecutedFromEnvelope } from "@/lib/services/commitments"
-import { confirmSelectionFromEnvelopeExecution } from "@/lib/services/selections"
-import {
-  executeEstimateFromEnvelopeExecution,
-  submitEstimateBuilderSignatureBySigningToken,
-} from "@/lib/services/estimate-portal"
+import { submitEstimateBuilderSignatureBySigningToken } from "@/lib/services/estimate-portal"
 import {
   buildOrgScopedPath,
   downloadFilesObject,
@@ -231,50 +225,43 @@ export async function submitDocumentSignatureAction(input: {
     throw new Error(`Source file missing: ${sourceError?.message ?? "missing"}`)
   }
 
-  const { error: insertError } = await supabase.from("document_signatures").insert({
-    org_id: signingRequest.org_id,
-    signing_request_id: signingRequest.id,
-    document_id: signingRequest.document_id,
-    revision: signingRequest.revision,
-    signer_name: input.signerName.trim(),
-    signer_email: submittedSignerEmail,
-    signer_ip: signerIp,
+  const nowIso = now.toISOString()
+  const auditData = {
+    consent_version: "esign-consent-2026-05-24",
+    consent_presented_at: nowIso,
+    signed_at: nowIso,
+    signer_role: signerRole,
+    signer_email_on_request: signingRequest.sent_to_email ?? null,
+    submitted_signer_email: submittedSignerEmail,
+    identity_mismatch:
+      !!signingRequest.sent_to_email &&
+      signingRequest.sent_to_email.trim().toLowerCase() !== submittedSignerEmail.toLowerCase(),
+    ip_address: signerIp,
     user_agent: userAgent,
-    consent_text: input.consentText,
-    values: input.values ?? {},
-    audit_data: {
-      consent_version: "esign-consent-2026-05-24",
-      consent_presented_at: now.toISOString(),
-      signed_at: now.toISOString(),
-      signer_role: signerRole,
-      signer_email_on_request: signingRequest.sent_to_email ?? null,
-      submitted_signer_email: submittedSignerEmail,
-      ip_address: signerIp,
-      user_agent: userAgent,
-      token_hash_prefix: tokenHash.slice(0, 16),
-      document_id: signingRequest.document_id,
-      document_revision: signingRequest.revision,
-      envelope_id: envelopeId,
-      source_file_id: sourceFile.id,
-    },
-  })
-
-  if (insertError) {
-    throw new Error(`Failed to record signature: ${insertError.message}`)
+    token_hash_prefix: tokenHash.slice(0, 16),
+    document_id: signingRequest.document_id,
+    document_revision: signingRequest.revision,
+    envelope_id: envelopeId,
+    source_file_id: sourceFile.id,
   }
 
-  const nowIso = now.toISOString()
-  const { error: updateError } = await supabase
-    .from("document_signing_requests")
-    .update({
-      status: "signed",
-      signed_at: nowIso,
-      used_count: (signingRequest.used_count ?? 0) + 1,
-    })
-    .eq("id", signingRequest.id)
+  const { error: recordSignatureError } = await supabase.rpc("record_document_signature_atomic", {
+    p_org_id: signingRequest.org_id,
+    p_signing_request_id: signingRequest.id,
+    p_document_id: signingRequest.document_id,
+    p_revision: signingRequest.revision,
+    p_signer_name: input.signerName.trim(),
+    p_signer_email: submittedSignerEmail,
+    p_signer_ip: signerIp,
+    p_user_agent: userAgent,
+    p_consent_text: input.consentText,
+    p_values: input.values ?? {},
+    p_audit_data: auditData,
+    p_signed_at: nowIso,
+  })
 
-  if (updateError) {
-    throw new Error(`Failed to update signing request: ${updateError.message}`)
+  if (recordSignatureError) {
+    throw new Error(`Failed to record signature: ${recordSignatureError.message}`)
   }
 
   await recordESignEvent({
@@ -290,6 +277,7 @@ export async function submitDocumentSignatureAction(input: {
       signer_name: input.signerName.trim(),
       signer_email_on_request: signingRequest.sent_to_email ?? null,
       submitted_signer_email: submittedSignerEmail,
+      identity_mismatch: auditData.identity_mismatch,
       signer_ip: signerIp,
       user_agent: userAgent,
       consent_text: input.consentText,
@@ -533,95 +521,19 @@ export async function submitDocumentSignatureAction(input: {
       },
     })
 
-    const proposalId =
-      document.source_entity_type === "proposal"
-        ? document.source_entity_id
-        : (document.metadata?.proposal_id as string | undefined)
-
-    if (proposalId) {
-      await acceptProposalFromEnvelopeExecution({
-        orgId: signingRequest.org_id,
-        proposalId,
-        documentId: document.id,
-        envelopeId,
-        executedFileId: executedFile.id,
-        signerName: input.signerName.trim(),
-        signerEmail: submittedSignerEmail,
-        signerIp,
-      })
-    }
-
-    const estimateId =
-      document.source_entity_type === "estimate"
-        ? document.source_entity_id
-        : (document.metadata?.estimate_id as string | undefined)
-
-    if (estimateId) {
-      await executeEstimateFromEnvelopeExecution({
-        orgId: signingRequest.org_id,
-        estimateId,
-        documentId: document.id,
-        envelopeId,
-        executedFileId: executedFile.id,
-        signerName: input.signerName.trim(),
-        signerEmail: submittedSignerEmail,
-        signerIp,
-      })
-    }
-
-    const changeOrderId =
-      document.source_entity_type === "change_order"
-        ? document.source_entity_id
-        : (document.metadata?.change_order_id as string | undefined)
-
-    if (changeOrderId) {
-      await approveChangeOrderFromEnvelopeExecution({
-        orgId: signingRequest.org_id,
-        changeOrderId,
-        envelopeId,
-        documentId: document.id,
-        executedFileId: executedFile.id,
-        signerName: input.signerName.trim(),
-        signerEmail: submittedSignerEmail,
-        signerIp,
-      })
-    }
-
-    const commitmentId =
-      document.source_entity_type === "subcontract"
-        ? document.source_entity_id
-        : (document.metadata?.subcontract_id as string | undefined)
-
-    if (commitmentId) {
-      await markCommitmentExecutedFromEnvelope({
-        orgId: signingRequest.org_id,
-        commitmentId,
-        envelopeId,
-        documentId: document.id,
-        executedFileId: executedFile.id,
-        signerName: input.signerName.trim(),
-        signerEmail: submittedSignerEmail,
-        signerIp,
-      })
-    }
-
-    const selectionId =
-      document.source_entity_type === "selection"
-        ? document.source_entity_id
-        : (document.metadata?.selection_id as string | undefined)
-
-    if (selectionId) {
-      await confirmSelectionFromEnvelopeExecution({
-        orgId: signingRequest.org_id,
-        selectionId,
-        envelopeId,
-        documentId: document.id,
-        executedFileId: executedFile.id,
-        signerName: input.signerName.trim(),
-        signerEmail: submittedSignerEmail,
-        signerIp,
-      })
-    }
+    await enqueueOutboxJob({
+      orgId: signingRequest.org_id,
+      jobType: "process_esign_execution_side_effects",
+      payload: {
+        document_id: document.id,
+        envelope_id: envelopeId,
+        executed_file_id: executedFile.id,
+        signer_name: input.signerName.trim(),
+        signer_email: submittedSignerEmail,
+        signer_ip: signerIp,
+      },
+      dedupeByPayloadKeys: ["executed_file_id"],
+    })
 
     const executedToken = createExecutedFileAccessToken(executedFile.id)
     const executedUrl = buildExecutedDocumentUrl(executedToken)
@@ -652,38 +564,27 @@ export async function submitDocumentSignatureAction(input: {
             }))
             .filter((recipient) => recipient.email.length > 0)
 
-    const attachmentContent = Buffer.from(executedBytes).toString("base64")
     await Promise.all(
       fallbackRecipients.map(async (recipient) => {
-        const html = await renderEmailTemplate(
-          SignatureEmail({
-            documentTitle: document.title,
-            signingLink: executedUrl,
-            recipientName: recipient.name,
-            orgName: org?.name ?? null,
-            orgLogoUrl: org?.logo_url ?? null,
-            eventLabel: "Document Executed",
-            headline: "Document fully executed",
-            bodyText: `${document.title} has been fully executed.`,
-            detailLabel: "Executed Copy",
-            detailText: "Open the executed PDF to review the completed document. A copy is also attached to this email.",
-            buttonText: "Open Executed PDF",
-            previewText: `Document executed: ${document.title}`,
-          }),
-        )
-        await sendEmail({
-          to: [recipient.email],
-          subject: `Document executed: ${document.title}`,
-          html,
-          from: getOrgSenderEmail(org?.slug, org?.name),
-          attachments: [
-            {
-              filename: executedName,
-              content: attachmentContent,
-              contentType: "application/pdf",
-            },
-          ],
+        const result = await enqueueOutboxJob({
+          orgId: signingRequest.org_id,
+          jobType: "send_esign_executed_email",
+          payload: {
+            document_id: document.id,
+            document_title: document.title,
+            executed_file_id: executedFile.id,
+            executed_file_name: executedName,
+            recipient_name: recipient.name,
+            recipient_email: recipient.email,
+          },
+          dedupeByPayloadKeys: ["executed_file_id", "recipient_email"],
         })
+        if (!result.enqueued && result.reason !== "duplicate") {
+          console.error("Failed to enqueue executed document email", {
+            documentId: document.id,
+            recipientEmail: recipient.email,
+          })
+        }
       }),
     )
   } else {
@@ -748,6 +649,123 @@ export async function submitDocumentSignatureAction(input: {
 
   revalidatePath(`/d/${input.token}`)
   return { success: true, executedDocumentUrl }
+}
+
+export async function declineDocumentSignatureAction(input: { token: string; reason?: string | null }) {
+  if (!input.token) throw new Error("Missing signing token")
+
+  const supabase = createServiceSupabaseClient()
+  const tokenHash = createHmac("sha256", requireDocumentSigningSecret()).update(input.token).digest("hex")
+  const { data: signingRequest, error } = await supabase
+    .from("document_signing_requests")
+    .select("id, org_id, document_id, group_id, envelope_id, sequence, required, status, sent_to_email, signer_role, expires_at")
+    .eq("token_hash", tokenHash)
+    .maybeSingle()
+
+  if (error || !signingRequest) {
+    throw new Error(`Signing request not found: ${error?.message ?? "Invalid link"}`)
+  }
+  if (signingRequest.status === "signed") throw new Error("This request has already been signed")
+  if (signingRequest.status === "voided" || signingRequest.status === "expired") {
+    throw new Error("This signing request is no longer active")
+  }
+  if (signingRequest.expires_at && new Date(signingRequest.expires_at) < new Date()) {
+    throw new Error("Signing link has expired")
+  }
+
+  const envelopeId = signingRequest.envelope_id ?? signingRequest.group_id ?? signingRequest.id
+  const reason = input.reason?.trim() || null
+  const nowIso = new Date().toISOString()
+  const forwardedFor = (await headers()).get("x-forwarded-for")
+  const signerIp = forwardedFor?.split(",")?.[0]?.trim() ?? null
+  const userAgent = (await headers()).get("user-agent") ?? null
+
+  const { data: document } = await supabase
+    .from("documents")
+    .select("id, metadata")
+    .eq("org_id", signingRequest.org_id)
+    .eq("id", signingRequest.document_id)
+    .maybeSingle()
+
+  if (signingRequest.envelope_id) {
+    const { data: envelope } = await supabase
+      .from("envelopes")
+      .select("metadata")
+      .eq("org_id", signingRequest.org_id)
+      .eq("id", signingRequest.envelope_id)
+      .maybeSingle()
+
+    const { error: envelopeError } = await supabase
+      .from("envelopes")
+      .update({
+        status: "voided",
+        voided_at: nowIso,
+        updated_at: nowIso,
+        metadata: {
+          ...(envelope?.metadata ?? {}),
+          declined_by_request_id: signingRequest.id,
+          declined_by_email: signingRequest.sent_to_email ?? null,
+          decline_reason: reason,
+          declined_at: nowIso,
+        },
+      })
+      .eq("org_id", signingRequest.org_id)
+      .eq("id", signingRequest.envelope_id)
+
+    if (envelopeError) throw new Error(`Failed to decline envelope: ${envelopeError.message}`)
+  }
+
+  let requestsUpdateQuery = supabase
+    .from("document_signing_requests")
+    .update({ status: "voided" })
+    .eq("org_id", signingRequest.org_id)
+    .in("status", ["draft", "sent", "viewed"])
+
+  requestsUpdateQuery = signingRequest.envelope_id
+    ? requestsUpdateQuery.eq("envelope_id", signingRequest.envelope_id)
+    : requestsUpdateQuery.eq("group_id", signingRequest.group_id ?? signingRequest.id)
+
+  const { error: requestError } = await requestsUpdateQuery
+
+  if (requestError) throw new Error(`Failed to void signing requests: ${requestError.message}`)
+
+  await supabase
+    .from("documents")
+    .update({
+      status: "voided",
+      updated_at: nowIso,
+      metadata: {
+        ...(document?.metadata ?? {}),
+        declined_signature_request: {
+          signing_request_id: signingRequest.id,
+          signer_email: signingRequest.sent_to_email ?? null,
+          reason,
+          declined_at: nowIso,
+        },
+      },
+    })
+    .eq("org_id", signingRequest.org_id)
+    .eq("id", signingRequest.document_id)
+    .in("status", ["draft", "sent", "expired", "voided"])
+
+  await recordESignEvent({
+    supabase,
+    orgId: signingRequest.org_id,
+    eventType: "recipient_declined",
+    envelopeId,
+    documentId: signingRequest.document_id,
+    payload: {
+      signing_request_id: signingRequest.id,
+      signer_email: signingRequest.sent_to_email ?? null,
+      signer_role: signingRequest.signer_role ?? null,
+      reason,
+      signer_ip: signerIp,
+      user_agent: userAgent,
+    },
+  })
+
+  revalidatePath(`/d/${input.token}`)
+  return { success: true }
 }
 
 export async function submitEstimateBuilderSignatureAction(input: {

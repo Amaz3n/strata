@@ -284,12 +284,7 @@ export function ProjectOverviewActions({
     <>
       <header className="border-b">
         <div className="px-5 sm:px-8 lg:px-12 py-5 flex items-center gap-4">
-          <ProjectAvatar
-            projectId={project.id}
-            size="xl"
-            animated
-            className="h-12 w-12 rounded-none"
-          />
+          <ProjectAvatar projectId={project.id} size="xl" className="h-12 w-12" />
 
           <div className="min-w-0 flex-1">
             <h1 className="text-xl sm:text-2xl font-semibold tracking-tight truncate leading-tight">

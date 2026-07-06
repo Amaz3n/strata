@@ -1,19 +1,7 @@
-import { PageLayout } from "@/components/layout/page-layout"
+import { redirect } from "next/navigation"
+
 export const dynamic = 'force-dynamic'
-import { NoProjectSelected } from "@/components/projects/no-project-selected"
 
-export default async function SelectionsPage() {
-
-  return (
-    <PageLayout title="Selections">
-      <div className="space-y-6">
-        <NoProjectSelected />
-      </div>
-    </PageLayout>
-  )
+export default function SelectionsPage() {
+  redirect("/projects")
 }
-
-
-
-
-

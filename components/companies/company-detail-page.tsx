@@ -9,7 +9,8 @@ import {
   type ReactNode,
 } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { AnimatePresence, motion } from "framer-motion";
 
 import type {
   Company,
@@ -18,7 +19,22 @@ import type {
   Project,
 } from "@/lib/types";
 import type { CommitmentSummary } from "@/lib/services/commitments";
+import type { ClientCompanyReceivablesSummary } from "@/lib/services/companies";
 import type { VendorBillSummary } from "@/lib/services/vendor-bills";
+import type {
+  VendorScorecardSummary,
+  VendorTaxReadinessSummary,
+} from "@/lib/services/directory-intelligence";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -51,16 +67,27 @@ import {
 import { CompanyForm } from "@/components/companies/company-form";
 import { ContactForm } from "@/components/contacts/contact-form";
 import { ContactDetailSheet } from "@/components/contacts/contact-detail-sheet";
-import { CompanyContractsTab } from "@/components/companies/company-contracts-tab";
-import { CompanyInvoicesTab } from "@/components/companies/company-invoices-tab";
+import { PortalInviteDialog } from "@/components/contacts/portal-invite-dialog";
+import { CompanyCommitments } from "@/components/companies/company-commitments";
+import { CompanyPayables } from "@/components/companies/company-payables";
 import { CompanyComplianceTab } from "@/components/companies/company-compliance-tab";
+import {
+  EmptyState,
+  Section,
+  TABLE_EDGE,
+  formatDate,
+  formatMoneyFromCents,
+} from "@/components/companies/company-detail-ui";
 import {
   archiveCompanyAction,
   getCompanyComplianceStatusAction,
+  restoreCompanyAction,
 } from "@/app/(app)/companies/actions";
 import {
-  AlertCircle,
+  AlertTriangle,
+  Archive,
   CheckCircle2,
+  ChevronRight,
   Edit,
   ExternalLink,
   Mail,
@@ -68,19 +95,10 @@ import {
   MoreHorizontal,
   Phone,
   Plus,
-  Trash2,
 } from "@/components/icons";
+import { ToastAction } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
-
-function formatMoneyFromCents(cents?: number | null) {
-  const dollars = (cents ?? 0) / 100;
-  return dollars.toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  });
-}
 
 function formatType(value?: string) {
   if (!value) return "Other";
@@ -88,13 +106,6 @@ function formatType(value?: string) {
     .split("_")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
-}
-
-function formatDate(value?: string | null) {
-  if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleDateString();
 }
 
 function formatAddress(company: Company) {
@@ -134,54 +145,10 @@ function companyNeedsCompliance(company: Company) {
   );
 }
 
-function Section({
-  title,
-  action,
-  children,
-  className,
-  bodyClassName,
-}: {
-  title: string;
-  action?: ReactNode;
-  children: ReactNode;
-  className?: string;
-  bodyClassName?: string;
-}) {
-  return (
-    <section className={cn("flex flex-col border bg-card", className)}>
-      <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b px-4">
-        <h2 className="text-sm font-semibold text-foreground">{title}</h2>
-        {action}
-      </div>
-      <div className={cn("min-h-0 flex-1", bodyClassName)}>{children}</div>
-    </section>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  emphasis,
-}: {
-  label: string;
-  value: string;
-  emphasis?: boolean;
-}) {
-  return (
-    <div className="bg-card px-4 py-3">
-      <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-        {label}
-      </div>
-      <div
-        className={cn(
-          "mt-0.5 truncate text-lg font-semibold tabular-nums",
-          emphasis ? "text-foreground" : "text-foreground/90",
-        )}
-      >
-        {value}
-      </div>
-    </div>
-  );
+function scrollToSection(id: string) {
+  document
+    .getElementById(id)
+    ?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function DetailRow({ label, value }: { label: string; value: ReactNode }) {
@@ -228,21 +195,124 @@ function ContactChip({
   );
 }
 
-function EmptyState({ children }: { children: ReactNode }) {
+function W9Value({
+  readiness,
+}: {
+  readiness?: VendorTaxReadinessSummary | null;
+}) {
+  if (!readiness || !readiness.requires_1099) {
+    return <span className="text-muted-foreground">Not required</span>;
+  }
+  const map: Record<
+    VendorTaxReadinessSummary["w9_status"],
+    { label: string; className: string }
+  > = {
+    ready: { label: "On file", className: "text-success" },
+    pending_review: { label: "Pending review", className: "text-warning" },
+    missing: { label: "Missing", className: "text-warning" },
+    rejected: { label: "Rejected", className: "text-destructive" },
+    not_required: { label: "Not required", className: "text-muted-foreground" },
+  };
+  const status = map[readiness.w9_status] ?? map.missing;
+  return <span className={status.className}>{status.label}</span>;
+}
+
+function ClientReceivables({
+  summary,
+  stagger,
+  fill = false,
+  className,
+}: {
+  summary?: ClientCompanyReceivablesSummary | null;
+  stagger: number;
+  fill?: boolean;
+  className?: string;
+}) {
+  const rows = summary?.projects ?? [];
   return (
-    <div className="px-4 py-12 text-center text-sm text-muted-foreground">
-      {children}
-    </div>
+    <Section
+      title="Receivables"
+      count={rows.length}
+      stagger={stagger}
+      fill={fill}
+      className={className}
+      bodyClassName="overflow-x-auto"
+    >
+      {summary && !summary.can_view_invoices ? (
+        <div className="border-b px-4 py-3 text-sm text-muted-foreground">
+          Invoice totals require invoice access. Contract values and client
+          projects are still shown.
+        </div>
+      ) : null}
+      {rows.length > 0 ? (
+        <Table className={cn("min-w-[760px]", TABLE_EDGE)}>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="min-w-48">Project</TableHead>
+              <TableHead className="text-right">Contract</TableHead>
+              <TableHead className="text-right">Invoiced</TableHead>
+              <TableHead className="text-right">Collected</TableHead>
+              <TableHead className="text-right">Outstanding</TableHead>
+              <TableHead className="text-right">Last activity</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((row) => (
+              <TableRow key={row.project_id} className="group relative">
+                <TableCell>
+                  <Link
+                    href={`/projects/${row.project_id}`}
+                    className="font-medium underline-offset-4 after:absolute after:inset-0 group-hover:underline"
+                  >
+                    {row.project_name}
+                  </Link>
+                </TableCell>
+                <TableCell className="text-right font-mono tabular-nums">
+                  {formatMoneyFromCents(row.contract_value_cents)}
+                </TableCell>
+                <TableCell className="text-right font-mono tabular-nums">
+                  {formatMoneyFromCents(row.invoiced_cents)}
+                </TableCell>
+                <TableCell className="text-right font-mono tabular-nums text-muted-foreground">
+                  {formatMoneyFromCents(row.collected_cents)}
+                </TableCell>
+                <TableCell className="text-right font-mono font-medium tabular-nums">
+                  {formatMoneyFromCents(row.outstanding_cents)}
+                </TableCell>
+                <TableCell className="text-right text-muted-foreground">
+                  {formatDate(row.last_activity)}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      ) : (
+        <EmptyState>No client projects yet.</EmptyState>
+      )}
+    </Section>
   );
 }
 
-type DetailView = "overview" | "contracts" | "invoices" | "compliance";
+const EXPAND_TRANSITION = { duration: 0.3, ease: [0.22, 1, 0.36, 1] } as const;
+
+type AttentionTone = "warning" | "destructive";
+
+interface AttentionItem {
+  key: string;
+  tone: AttentionTone;
+  label: string;
+  detail?: string;
+  onClick?: () => void;
+}
 
 export function CompanyDetailPage({
   company,
   projectHistory,
   commitments,
   vendorBills,
+  clientReceivables,
+  vendorScorecard = null,
+  vendorTaxReadiness = null,
   projects,
   canEdit,
   canArchive,
@@ -251,122 +321,114 @@ export function CompanyDetailPage({
   projectHistory: { id: string; name: string }[];
   commitments: CommitmentSummary[];
   vendorBills: VendorBillSummary[];
+  clientReceivables?: ClientCompanyReceivablesSummary | null;
+  vendorScorecard?: VendorScorecardSummary | null;
+  vendorTaxReadiness?: VendorTaxReadinessSummary | null;
   projects: Project[];
   canEdit: boolean;
   canArchive: boolean;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { toast } = useToast();
   const [isPending, startTransition] = useTransition();
   const [editOpen, setEditOpen] = useState(false);
   const [contactCreateOpen, setContactCreateOpen] = useState(false);
   const [contactDetailId, setContactDetailId] = useState<string | undefined>();
   const [contactDetailOpen, setContactDetailOpen] = useState(false);
-  const [view, setView] = useState<DetailView>("overview");
+  const [inviteContact, setInviteContact] = useState<Contact | undefined>();
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
+  const [complianceSheetOpen, setComplianceSheetOpen] = useState(false);
+  const [expandedPanel, setExpandedPanel] = useState<"commitments" | null>(null);
   const [complianceStatus, setComplianceStatus] =
     useState<ComplianceStatusSummary | null>(null);
 
-  const totals = useMemo(() => {
-    const committed = commitments.reduce(
-      (sum, c) => sum + (c.total_cents ?? 0),
-      0,
-    );
-    const billed = vendorBills.reduce(
-      (sum, b) => sum + (b.total_cents ?? 0),
-      0,
-    );
-    const paid = vendorBills.reduce(
-      (sum, b) =>
-        sum +
-        (b.paid_cents ?? (b.status === "paid" ? (b.total_cents ?? 0) : 0)),
-      0,
-    );
-    return {
-      committed,
-      billed,
-      paid,
-      remaining: Math.max(0, committed - billed),
-    };
-  }, [commitments, vendorBills]);
-
-  const address = formatAddress(company);
+  const isClientCompany = company.company_type === "client";
+  const isVendorCompany =
+    company.company_type === "subcontractor" ||
+    company.company_type === "supplier";
   const showCompliance = companyNeedsCompliance(company);
+  const address = formatAddress(company);
 
-  const workRows = useMemo(() => {
-    const rows = new Map<
-      string,
-      {
-        id: string;
-        name: string;
-        committed: number;
-        billed: number;
-        paid: number;
-        lastActivity?: string;
-      }
-    >();
+  const projectCount = useMemo(() => {
+    const ids = new Set<string>();
+    projectHistory.forEach((p) => ids.add(p.id));
+    commitments.forEach((c) => ids.add(c.project_id));
+    vendorBills.forEach((b) => ids.add(b.project_id));
+    (clientReceivables?.projects ?? []).forEach((p) => ids.add(p.project_id));
+    return ids.size;
+  }, [clientReceivables, commitments, projectHistory, vendorBills]);
 
-    for (const project of projectHistory) {
-      rows.set(project.id, {
-        id: project.id,
-        name: project.name,
-        committed: 0,
-        billed: 0,
-        paid: 0,
+  const overdueBills = useMemo(() => {
+    if (isClientCompany) return [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return vendorBills.filter((bill) => {
+      if (bill.status === "paid" || !bill.due_date) return false;
+      const paid = bill.paid_cents ?? 0;
+      if ((bill.total_cents ?? 0) - paid <= 0) return false;
+      return new Date(`${bill.due_date}T00:00:00`) < today;
+    });
+  }, [isClientCompany, vendorBills]);
+
+  const attention = useMemo<AttentionItem[]>(() => {
+    if (!isVendorCompany) return [];
+    const items: AttentionItem[] = [];
+
+    if (overdueBills.length > 0) {
+      const cents = overdueBills.reduce(
+        (sum, b) => sum + ((b.total_cents ?? 0) - (b.paid_cents ?? 0)),
+        0,
+      );
+      items.push({
+        key: "overdue",
+        tone: "destructive",
+        label: `${overdueBills.length} overdue ${overdueBills.length === 1 ? "bill" : "bills"}`,
+        detail: formatMoneyFromCents(cents),
+        onClick: () => scrollToSection("payables"),
       });
     }
 
-    for (const commitment of commitments) {
-      const current = rows.get(commitment.project_id) ?? {
-        id: commitment.project_id,
-        name: commitment.project_name ?? "Untitled project",
-        committed: 0,
-        billed: 0,
-        paid: 0,
-      };
-      current.committed += commitment.total_cents ?? 0;
-      current.billed += commitment.billed_cents ?? 0;
-      current.paid += commitment.paid_cents ?? 0;
-      current.lastActivity = [
-        current.lastActivity,
-        commitment.updated_at,
-        commitment.created_at,
-      ]
-        .filter(Boolean)
-        .sort()
-        .at(-1);
-      rows.set(commitment.project_id, current);
+    if (complianceStatus && !complianceStatus.is_compliant) {
+      const missing = complianceStatus.missing.length;
+      const expired = complianceStatus.expired.length;
+      const expiring = complianceStatus.expiring_soon.length;
+      const parts = [
+        missing > 0 ? `${missing} missing` : null,
+        expired > 0 ? `${expired} expired` : null,
+        expiring > 0 ? `${expiring} expiring` : null,
+      ].filter(Boolean);
+      items.push({
+        key: "compliance",
+        tone: missing > 0 || expired > 0 ? "destructive" : "warning",
+        label: "Compliance action required",
+        detail: parts.join(" · ") || undefined,
+        onClick: () => setComplianceSheetOpen(true),
+      });
     }
 
-    for (const bill of vendorBills) {
-      const current = rows.get(bill.project_id) ?? {
-        id: bill.project_id,
-        name: bill.project_name ?? "Untitled project",
-        committed: 0,
-        billed: 0,
-        paid: 0,
-      };
-      current.billed += bill.total_cents ?? 0;
-      current.paid +=
-        bill.paid_cents ??
-        (bill.status === "paid" ? (bill.total_cents ?? 0) : 0);
-      current.lastActivity = [
-        current.lastActivity,
-        bill.updated_at,
-        bill.bill_date,
-        bill.created_at,
-      ]
-        .filter(Boolean)
-        .sort()
-        .at(-1);
-      rows.set(bill.project_id, current);
+    if (
+      vendorTaxReadiness?.requires_1099 &&
+      (vendorTaxReadiness.w9_status === "missing" ||
+        vendorTaxReadiness.w9_status === "rejected")
+    ) {
+      items.push({
+        key: "w9",
+        tone: vendorTaxReadiness.w9_status === "rejected" ? "destructive" : "warning",
+        label: `W-9 ${vendorTaxReadiness.w9_status} for ${vendorTaxReadiness.tax_year}`,
+        onClick: () => scrollToSection("profile"),
+      });
     }
 
-    return Array.from(rows.values()).sort((a, b) =>
-      (b.lastActivity ?? "").localeCompare(a.lastActivity ?? ""),
-    );
-  }, [commitments, projectHistory, vendorBills]);
+    return items;
+  }, [complianceStatus, isVendorCompany, overdueBills, vendorTaxReadiness]);
 
   useEffect(() => {
+    if (!showCompliance) {
+      setComplianceStatus(null);
+      return;
+    }
     let cancelled = false;
     getCompanyComplianceStatusAction(company.id)
       .then((status) => {
@@ -378,20 +440,61 @@ export function CompanyDetailPage({
     return () => {
       cancelled = true;
     };
-  }, [company.id]);
+  }, [company.id, showCompliance]);
 
-  const archive = () => {
+  // Deep-link from the directory compliance review sheet.
+  useEffect(() => {
+    if (searchParams.get("tab") === "compliance" && showCompliance) {
+      setComplianceSheetOpen(true);
+    }
+  }, [searchParams, showCompliance]);
+
+  const refreshComplianceStatus = () => {
+    if (!showCompliance) return;
+    getCompanyComplianceStatusAction(company.id)
+      .then(setComplianceStatus)
+      .catch(() => {});
+  };
+
+  const complianceReady = complianceStatus?.is_compliant ?? null;
+
+  const restoreArchivedCompany = async () => {
+    try {
+      await restoreCompanyAction(company.id);
+      toast({ title: "Company restored" });
+      router.push(`/companies/${company.id}`);
+      router.refresh();
+    } catch (error) {
+      toast({
+        title: "Unable to restore company",
+        description: (error as Error).message,
+      });
+    }
+  };
+
+  const confirmArchive = () => {
     startTransition(async () => {
       try {
         if (!canArchive) {
           toast({
             title: "Permission required",
-            description: "You need admin or member management access.",
+            description: "You need directory write access.",
           });
           return;
         }
         await archiveCompanyAction(company.id);
-        toast({ title: "Company archived" });
+        setArchiveDialogOpen(false);
+        toast({
+          title: "Company archived",
+          action: (
+            <ToastAction
+              altText="Undo archive"
+              onClick={() => void restoreArchivedCompany()}
+            >
+              Undo
+            </ToastAction>
+          ),
+        });
         router.push("/directory?view=companies");
       } catch (error) {
         toast({
@@ -407,339 +510,376 @@ export function CompanyDetailPage({
     setContactDetailOpen(true);
   };
 
-  const complianceReady = complianceStatus?.is_compliant ?? null;
+  const openPortalInvite = (contact: Contact) => {
+    setInviteContact(contact);
+    setInviteOpen(true);
+  };
 
-  const navItems: Array<{ value: DetailView; label: string }> = [
-    { value: "overview", label: "Overview" },
-    { value: "contracts", label: "Commitments" },
-    { value: "invoices", label: "Invoices" },
-    ...(showCompliance
-      ? [{ value: "compliance" as const, label: "Compliance" }]
-      : []),
-  ];
+  const renderProfile = (placement: string, stagger: number) => (
+    <Section
+      id="profile"
+      title="Profile"
+      stagger={stagger}
+      fill
+      className={placement}
+    >
+      <div className="px-4 py-2">
+        <DetailRow
+          label="Payment terms"
+          value={company.default_payment_terms || "—"}
+        />
+        <DetailRow label="License" value={company.license_number || "—"} />
+        <DetailRow
+          label="Rating"
+          value={company.rating ? `${company.rating}/5` : "—"}
+        />
+        <DetailRow label="Projects" value={projectCount} />
+        {isVendorCompany ? (
+          <>
+            <button
+              type="button"
+              onClick={() => setComplianceSheetOpen(true)}
+              className="flex w-full items-baseline justify-between gap-4 py-2 text-sm"
+            >
+              <span className="shrink-0 text-muted-foreground">Compliance</span>
+              <span className="flex min-w-0 items-center gap-1.5 font-medium">
+                {complianceReady === null ? (
+                  <span className="text-muted-foreground">View</span>
+                ) : complianceReady ? (
+                  <>
+                    <CheckCircle2 className="h-3.5 w-3.5 text-success" />
+                    <span className="text-success">Compliant</span>
+                  </>
+                ) : (
+                  <>
+                    <AlertTriangle className="h-3.5 w-3.5 text-warning" />
+                    <span className="text-warning">Action required</span>
+                  </>
+                )}
+                <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+              </span>
+            </button>
+            <DetailRow
+              label="Performance score"
+              value={
+                vendorScorecard &&
+                vendorScorecard.rating_label !== "Needs data"
+                  ? `${Math.round(vendorScorecard.score)} · ${vendorScorecard.rating_label}`
+                  : "Not enough data yet"
+              }
+            />
+            <DetailRow
+              label={`W-9 (${vendorTaxReadiness?.tax_year ?? new Date().getFullYear()})`}
+              value={<W9Value readiness={vendorTaxReadiness} />}
+            />
+          </>
+        ) : null}
+      </div>
+      {company.internal_notes || company.notes ? (
+        <div className="space-y-3 border-t px-4 py-3 text-sm">
+          {company.internal_notes ? (
+            <div>
+              <div className="mb-1 microlabel">Internal notes</div>
+              <p className="whitespace-pre-wrap text-foreground/90">
+                {company.internal_notes}
+              </p>
+            </div>
+          ) : null}
+          {company.notes ? (
+            <div>
+              <div className="mb-1 microlabel">Shared notes</div>
+              <p className="whitespace-pre-wrap text-foreground/90">
+                {company.notes}
+              </p>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </Section>
+  );
+
+  const renderContacts = (placement: string, stagger: number) => (
+    <Section
+      title="Contacts"
+      count={company.contacts.length}
+      stagger={stagger}
+      fill
+      className={placement}
+      action={
+        canEdit ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="-mr-2 h-8"
+            onClick={() => setContactCreateOpen(true)}
+          >
+            <Plus className="mr-1.5 h-4 w-4" />
+            Add
+          </Button>
+        ) : null
+      }
+    >
+      {company.contacts.length > 0 ? (
+        <ul className="divide-y">
+          {company.contacts.map((contact, index) => (
+            <li key={contact.id}>
+              <button
+                type="button"
+                className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40"
+                onClick={() => openContact(contact.id)}
+              >
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center border bg-muted/40 text-xs font-semibold text-muted-foreground">
+                  {initialsFor(contact.full_name)}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate text-sm font-medium text-foreground">
+                      {contact.full_name}
+                    </span>
+                    {index === 0 ? (
+                      <Badge variant="secondary">Primary</Badge>
+                    ) : null}
+                  </div>
+                  <div className="truncate text-xs text-muted-foreground">
+                    {contact.role || formatType(contact.contact_type)}
+                  </div>
+                </div>
+                <div className="hidden min-w-0 shrink-0 text-right sm:block">
+                  {contact.email ? (
+                    <div className="truncate text-xs text-muted-foreground">
+                      {contact.email}
+                    </div>
+                  ) : null}
+                  {contact.phone ? (
+                    <div className="truncate text-xs text-muted-foreground">
+                      {contact.phone}
+                    </div>
+                  ) : null}
+                </div>
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <EmptyState>No contacts linked yet.</EmptyState>
+      )}
+    </Section>
+  );
+
+  const dimmed = expandedPanel === "commitments";
+  const dimClass =
+    "lg:transition-opacity lg:duration-300" +
+    (dimmed ? " lg:pointer-events-none lg:opacity-0" : "");
 
   return (
-    <div className="flex min-h-full flex-col bg-muted/20">
-      {/* Header */}
-      <div className="border-b bg-card">
-        <div className="flex flex-col gap-4 px-6 pt-6 sm:flex-row sm:items-start sm:justify-between">
-          <div className="flex min-w-0 items-center gap-4">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center border bg-muted/40 text-base font-semibold text-muted-foreground">
-              {initialsFor(company.name)}
-            </div>
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h1 className="truncate text-xl font-semibold tracking-tight text-foreground">
-                  {company.name}
-                </h1>
-                <Badge variant="secondary">
-                  {formatType(company.company_type)}
-                </Badge>
-                {company.trade ? (
-                  <Badge variant="outline">{company.trade}</Badge>
-                ) : null}
-                {showCompliance && complianceReady !== null ? (
-                  <button
-                    type="button"
-                    onClick={() => setView("compliance")}
-                    className={cn(
-                      "inline-flex items-center gap-1.5 border px-2 py-0.5 text-xs font-medium transition-colors",
-                      complianceReady
-                        ? "border-emerald-600/30 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-400"
-                        : "border-amber-600/30 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:bg-amber-950/40 dark:text-amber-400",
-                    )}
+    <div className="flex min-h-full flex-col bg-background lg:h-full lg:min-h-0">
+      {/* ── Header: identity + what needs attention ─────────────────────── */}
+      <section className="desk-rise shrink-0 border-b bg-card">
+        <div className="mx-auto w-full max-w-7xl px-4 py-5 sm:px-6 lg:px-8">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex min-w-0 items-start gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center border bg-muted/40 text-sm font-semibold text-muted-foreground">
+                {initialsFor(company.name)}
+              </div>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h1 className="truncate text-lg font-semibold tracking-tight text-foreground">
+                    {company.name}
+                  </h1>
+                  <Badge variant="secondary">
+                    {formatType(company.company_type)}
+                  </Badge>
+                  {company.trade ? (
+                    <Badge variant="outline">{company.trade}</Badge>
+                  ) : null}
+                  {showCompliance && complianceReady !== null ? (
+                    <button
+                      type="button"
+                      onClick={() => setComplianceSheetOpen(true)}
+                      className={cn(
+                        "inline-flex items-center gap-1.5 border px-2 py-0.5 text-xs font-medium transition-colors",
+                        complianceReady
+                          ? "border-success/40 text-success hover:bg-success/10"
+                          : "border-warning/40 text-warning hover:bg-warning/10",
+                      )}
+                    >
+                      {complianceReady ? (
+                        <CheckCircle2 className="h-3 w-3" />
+                      ) : (
+                        <AlertTriangle className="h-3 w-3" />
+                      )}
+                      {complianceReady ? "Ready to work" : "Action required"}
+                    </button>
+                  ) : null}
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+                  <ContactChip
+                    icon={<Mail className="h-3.5 w-3.5" />}
+                    href={company.email ? `mailto:${company.email}` : undefined}
                   >
-                    {complianceReady ? (
-                      <CheckCircle2 className="h-3 w-3" />
-                    ) : (
-                      <AlertCircle className="h-3 w-3" />
-                    )}
-                    {complianceReady ? "Ready to work" : "Action required"}
-                  </button>
-                ) : null}
-              </div>
-              <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
-                <ContactChip
-                  icon={<Mail className="h-3.5 w-3.5" />}
-                  href={company.email ? `mailto:${company.email}` : undefined}
-                >
-                  {company.email}
-                </ContactChip>
-                <ContactChip
-                  icon={<Phone className="h-3.5 w-3.5" />}
-                  href={company.phone ? `tel:${company.phone}` : undefined}
-                >
-                  {company.phone}
-                </ContactChip>
-                <ContactChip
-                  icon={<ExternalLink className="h-3.5 w-3.5" />}
-                  href={company.website || undefined}
-                  external
-                >
-                  {company.website?.replace(/^https?:\/\//, "")}
-                </ContactChip>
-                <ContactChip icon={<MapPin className="h-3.5 w-3.5" />}>
-                  {address}
-                </ContactChip>
+                    {company.email}
+                  </ContactChip>
+                  <ContactChip
+                    icon={<Phone className="h-3.5 w-3.5" />}
+                    href={company.phone ? `tel:${company.phone}` : undefined}
+                  >
+                    {company.phone}
+                  </ContactChip>
+                  <ContactChip
+                    icon={<ExternalLink className="h-3.5 w-3.5" />}
+                    href={company.website || undefined}
+                    external
+                  >
+                    {company.website?.replace(/^https?:\/\//, "")}
+                  </ContactChip>
+                  <ContactChip icon={<MapPin className="h-3.5 w-3.5" />}>
+                    {address}
+                  </ContactChip>
+                </div>
               </div>
             </div>
-          </div>
 
-          <div className="flex shrink-0 items-center gap-2">
-            {canEdit ? (
-              <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
-                <Edit className="mr-2 h-4 w-4" />
-                Edit
-              </Button>
-            ) : null}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="icon" className="h-9 w-9">
-                  <MoreHorizontal className="h-4 w-4" />
-                  <span className="sr-only">Company actions</span>
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-40">
-                <DropdownMenuItem
-                  onSelect={() => setEditOpen(true)}
-                  disabled={!canEdit}
-                >
+            <div className="flex shrink-0 items-center gap-2">
+              {canEdit ? (
+                <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
                   <Edit className="mr-2 h-4 w-4" />
                   Edit
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  className="text-destructive focus:text-destructive"
-                  onSelect={archive}
-                  disabled={isPending || !canArchive}
-                >
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  Archive
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </div>
-
-        {/* Financial KPI strip — symmetric, single source of truth */}
-        <div className="mt-5 grid grid-cols-2 gap-px border-t bg-border sm:grid-cols-4">
-          <Stat label="Committed" value={formatMoneyFromCents(totals.committed)} emphasis />
-          <Stat label="Billed" value={formatMoneyFromCents(totals.billed)} />
-          <Stat label="Paid" value={formatMoneyFromCents(totals.paid)} />
-          <Stat label="Remaining" value={formatMoneyFromCents(totals.remaining)} emphasis />
-        </div>
-
-        {/* Tabs */}
-        <div className="flex items-center gap-1 overflow-x-auto border-t px-4">
-          {navItems.map((item) => (
-            <button
-              key={item.value}
-              type="button"
-              onClick={() => setView(item.value)}
-              className={cn(
-                "relative h-11 shrink-0 px-3 text-sm font-medium transition-colors",
-                view === item.value
-                  ? "text-foreground after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:bg-primary"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Overview */}
-      {view === "overview" ? (
-        <div className="flex-1 space-y-4 p-4 sm:p-6">
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Section
-              title="Contacts"
-              action={
-                canEdit ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="-mr-2 h-8"
-                    onClick={() => setContactCreateOpen(true)}
-                  >
-                    <Plus className="mr-1.5 h-4 w-4" />
-                    Add
-                  </Button>
-                ) : null
-              }
-            >
-              {company.contacts.length > 0 ? (
-                <div className="divide-y">
-                  {company.contacts.map((contact, index) => (
-                    <button
-                      key={contact.id}
-                      type="button"
-                      className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40"
-                      onClick={() => openContact(contact.id)}
-                    >
-                      <div className="flex h-9 w-9 shrink-0 items-center justify-center border bg-muted/40 text-xs font-semibold text-muted-foreground">
-                        {initialsFor(contact.full_name)}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span className="truncate text-sm font-medium text-foreground">
-                            {contact.full_name}
-                          </span>
-                          {index === 0 ? (
-                            <Badge variant="secondary">Primary</Badge>
-                          ) : null}
-                        </div>
-                        <div className="truncate text-xs text-muted-foreground">
-                          {contact.role || formatType(contact.contact_type)}
-                        </div>
-                      </div>
-                      <div className="hidden min-w-0 shrink-0 text-right sm:block">
-                        {contact.email ? (
-                          <div className="truncate text-xs text-muted-foreground">
-                            {contact.email}
-                          </div>
-                        ) : null}
-                        {contact.phone ? (
-                          <div className="truncate text-xs text-muted-foreground">
-                            {contact.phone}
-                          </div>
-                        ) : null}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <EmptyState>No contacts linked yet.</EmptyState>
-              )}
-            </Section>
-
-            <Section title="Details">
-              <div className="px-4 py-2">
-                <DetailRow
-                  label="Payment terms"
-                  value={company.default_payment_terms || "—"}
-                />
-                <DetailRow
-                  label="License"
-                  value={company.license_number || "—"}
-                />
-                <DetailRow
-                  label="Rating"
-                  value={company.rating ? `${company.rating}/5` : "—"}
-                />
-                <DetailRow label="Projects" value={projectHistory.length} />
-                <DetailRow label="Contacts" value={company.contacts.length} />
-              </div>
-              {company.internal_notes || company.notes ? (
-                <div className="space-y-3 border-t px-4 py-3 text-sm">
-                  {company.internal_notes ? (
-                    <div>
-                      <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                        Internal notes
-                      </div>
-                      <p className="whitespace-pre-wrap text-foreground/90">
-                        {company.internal_notes}
-                      </p>
-                    </div>
-                  ) : null}
-                  {company.notes ? (
-                    <div>
-                      <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                        Shared notes
-                      </div>
-                      <p className="whitespace-pre-wrap text-foreground/90">
-                        {company.notes}
-                      </p>
-                    </div>
-                  ) : null}
-                </div>
+                </Button>
               ) : null}
-            </Section>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="icon" className="h-9 w-9">
+                    <MoreHorizontal className="h-4 w-4" />
+                    <span className="sr-only">Company actions</span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-40">
+                  <DropdownMenuItem
+                    onSelect={() => setEditOpen(true)}
+                    disabled={!canEdit}
+                  >
+                    <Edit className="mr-2 h-4 w-4" />
+                    Edit
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    className="text-destructive focus:text-destructive"
+                    onSelect={() => setArchiveDialogOpen(true)}
+                    disabled={isPending || !canArchive}
+                  >
+                    <Archive className="mr-2 h-4 w-4" />
+                    Archive
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
 
-          <Section title="Work history" bodyClassName="overflow-x-auto">
-            {workRows.length > 0 ? (
-              <Table className="min-w-[760px]">
-                <TableHeader>
-                  <TableRow className="bg-muted/30 hover:bg-muted/30">
-                    <TableHead className="pl-4">Project</TableHead>
-                    <TableHead className="text-right">Contracted</TableHead>
-                    <TableHead className="text-right">Billed</TableHead>
-                    <TableHead className="text-right">Paid</TableHead>
-                    <TableHead className="text-right">Remaining</TableHead>
-                    <TableHead className="pr-4 text-right">Last activity</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {workRows.map((row) => (
-                    <TableRow
-                      key={row.id}
-                      className="cursor-pointer hover:bg-muted/30"
-                      onClick={() => router.push(`/projects/${row.id}`)}
-                    >
-                      <TableCell className="pl-4 font-medium">
-                        <Link
-                          href={`/projects/${row.id}`}
-                          onClick={(event) => event.stopPropagation()}
-                          className="hover:text-primary"
-                        >
-                          {row.name}
-                        </Link>
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {formatMoneyFromCents(row.committed)}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {formatMoneyFromCents(row.billed)}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {formatMoneyFromCents(row.paid)}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {formatMoneyFromCents(Math.max(0, row.committed - row.billed))}
-                      </TableCell>
-                      <TableCell className="pr-4 text-right text-muted-foreground">
-                        {formatDate(row.lastActivity)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            ) : (
-              <EmptyState>No project history yet.</EmptyState>
-            )}
-          </Section>
+          {/* What needs attention — only when there is something */}
+          {attention.length > 0 ? (
+            <div className="mt-4 flex flex-col gap-2 border-t pt-4">
+              {attention.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={item.onClick}
+                  className={cn(
+                    "flex items-center gap-3 border px-3 py-2 text-left transition-colors",
+                    item.tone === "destructive"
+                      ? "border-destructive/30 bg-destructive/10 hover:bg-destructive/15"
+                      : "border-warning/30 bg-warning/10 hover:bg-warning/15",
+                  )}
+                >
+                  <AlertTriangle
+                    className={cn(
+                      "h-4 w-4 shrink-0",
+                      item.tone === "destructive" ? "text-destructive" : "text-warning",
+                    )}
+                  />
+                  <span className="min-w-0 flex-1 text-sm font-medium text-foreground">
+                    {item.label}
+                  </span>
+                  {item.detail ? (
+                    <span className="shrink-0 font-mono text-sm tabular-nums text-muted-foreground">
+                      {item.detail}
+                    </span>
+                  ) : null}
+                  {item.onClick ? (
+                    <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
-      ) : null}
+      </section>
 
-      {/* Contracts */}
-      {view === "contracts" ? (
-        <div className="flex-1 p-4 sm:p-6">
-          <CompanyContractsTab
-            companyId={company.id}
-            commitments={commitments}
-            projects={projects}
-          />
-        </div>
-      ) : null}
+      {/* ── Working area: fixed 2×2 dashboard on lg, stacked on mobile ───── */}
+      <div className="mx-auto flex w-full max-w-7xl flex-col px-4 py-6 sm:px-6 lg:min-h-0 lg:flex-1 lg:px-8 lg:py-5">
+        {isClientCompany ? (
+          <div className="grid grid-cols-1 gap-5 lg:min-h-0 lg:flex-1 lg:grid-cols-2 lg:grid-rows-2">
+            <ClientReceivables
+              summary={clientReceivables}
+              stagger={1}
+              fill
+              className="lg:col-span-2 lg:row-start-1"
+            />
+            {renderProfile("lg:col-start-1 lg:row-start-2", 2)}
+            {renderContacts("lg:col-start-2 lg:row-start-2", 3)}
+          </div>
+        ) : (
+          <div className="relative grid grid-cols-1 gap-5 lg:min-h-0 lg:flex-1 lg:grid-cols-2 lg:grid-rows-2 lg:overflow-hidden">
+            <CompanyCommitments
+              companyId={company.id}
+              commitments={commitments}
+              projects={projects}
+              canEdit={canEdit}
+              stagger={1}
+              fill
+              expanded={false}
+              onToggleExpand={(next) =>
+                setExpandedPanel(next ? "commitments" : null)
+              }
+              className={cn("lg:col-start-1 lg:row-start-1", dimClass)}
+            />
+            <CompanyPayables
+              companyId={company.id}
+              vendorBills={vendorBills}
+              canEdit={canEdit}
+              stagger={2}
+              fill
+              className={cn("lg:col-start-2 lg:row-start-1", dimClass)}
+            />
+            {renderProfile(cn("lg:col-start-1 lg:row-start-2", dimClass), 3)}
+            {renderContacts(cn("lg:col-start-2 lg:row-start-2", dimClass), 4)}
 
-      {/* Invoices */}
-      {view === "invoices" ? (
-        <div className="flex-1 p-4 sm:p-6">
-          <CompanyInvoicesTab
-            companyId={company.id}
-            commitments={commitments}
-            vendorBills={vendorBills}
-          />
-        </div>
-      ) : null}
-
-      {/* Compliance */}
-      {view === "compliance" && showCompliance ? (
-        <div className="flex-1 bg-card">
-          <CompanyComplianceTab company={company} />
-        </div>
-      ) : null}
+            <AnimatePresence>
+              {expandedPanel === "commitments" ? (
+                <motion.div
+                  key="commitments-overlay"
+                  className="absolute inset-0 z-20 hidden origin-top-left lg:block"
+                  initial={{ opacity: 0, scale: 0.6 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.6 }}
+                  transition={EXPAND_TRANSITION}
+                >
+                  <CompanyCommitments
+                    companyId={company.id}
+                    commitments={commitments}
+                    projects={projects}
+                    canEdit={canEdit}
+                    fill
+                    expanded
+                    onToggleExpand={(next) =>
+                      setExpandedPanel(next ? "commitments" : null)
+                    }
+                    className="lg:h-full"
+                  />
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
+          </div>
+        )}
+      </div>
 
       <Sheet open={editOpen} onOpenChange={setEditOpen}>
         <SheetContent
@@ -771,8 +911,7 @@ export function CompanyDetailPage({
           <DialogHeader>
             <DialogTitle>Add contact</DialogTitle>
             <DialogDescription>
-              New contacts will default to this company as their primary
-              company.
+              New contacts will default to this company as their primary company.
             </DialogDescription>
           </DialogHeader>
           <ContactForm
@@ -789,7 +928,69 @@ export function CompanyDetailPage({
         contactId={contactDetailId}
         open={contactDetailOpen}
         onOpenChange={setContactDetailOpen}
+        onInvitePortal={canEdit ? openPortalInvite : undefined}
       />
+
+      <PortalInviteDialog
+        contact={inviteContact}
+        projects={projects}
+        open={inviteOpen}
+        onOpenChange={(open) => {
+          setInviteOpen(open);
+          if (!open) setInviteContact(undefined);
+        }}
+      />
+
+      {showCompliance ? (
+        <Sheet
+          open={complianceSheetOpen}
+          onOpenChange={(open) => {
+            setComplianceSheetOpen(open);
+            if (!open) refreshComplianceStatus();
+          }}
+        >
+          <SheetContent
+            side="right"
+            mobileFullscreen
+            className="gap-0 p-0 sm:max-w-3xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col fast-sheet-animation"
+            style={{ animationDuration: "150ms", transitionDuration: "150ms" } as CSSProperties}
+          >
+            <div className="border-b px-6 pt-6 pb-4">
+              <SheetTitle className="text-lg font-semibold leading-none tracking-tight">
+                Compliance
+              </SheetTitle>
+              <SheetDescription className="mt-1.5 text-sm text-muted-foreground">
+                {company.name} — required documents, review, and waivers.
+              </SheetDescription>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <CompanyComplianceTab company={company} />
+            </div>
+          </SheetContent>
+        </Sheet>
+      ) : null}
+
+      <AlertDialog open={archiveDialogOpen} onOpenChange={setArchiveDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Archive company?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {company.name} will be hidden from the directory. You can restore
+              it with Undo after archiving.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={confirmArchive}
+            >
+              Archive
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

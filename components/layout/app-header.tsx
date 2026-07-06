@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation"
 
 import Link from "next/link"
 
-import { CommandSearch } from "@/components/layout/command-search"
+import { CommandSearch } from "@/components/layout/command-search-lazy"
 import { GlobalTasksSheet } from "@/components/tasks/global-tasks-sheet"
 import { Separator } from "@/components/ui/separator"
 import { SidebarTrigger } from "@/components/ui/sidebar"

@@ -9,10 +9,37 @@ import { Skeleton } from "@/components/ui/skeleton"
 
 interface ProjectBidsPageProps {
   params: Promise<{ id: string }>
+  searchParams?: Promise<Record<string, string | string[] | undefined>>
 }
 
-export default async function ProjectBidsPage({ params }: ProjectBidsPageProps) {
+function firstParam(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] : value
+}
+
+function numberParam(value: string | string[] | undefined) {
+  const raw = firstParam(value)
+  if (!raw) return null
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+export default async function ProjectBidsPage({ params, searchParams }: ProjectBidsPageProps) {
   const { id } = await params
+  const query = (await searchParams) ?? {}
+  const initialDraft = {
+    title: firstParam(query.title) ?? null,
+    scope: firstParam(query.scope) ?? null,
+    cost_code_id: firstParam(query.cost_code_id) ?? null,
+    budget_line_id: firstParam(query.budget_line_id) ?? null,
+    amount_cents: numberParam(query.amount_cents),
+  }
+  const hasInitialDraft = Boolean(
+    initialDraft.title ||
+      initialDraft.scope ||
+      initialDraft.cost_code_id ||
+      initialDraft.budget_line_id ||
+      initialDraft.amount_cents,
+  )
 
   return (
     <>
@@ -33,13 +60,25 @@ export default async function ProjectBidsPage({ params }: ProjectBidsPageProps) 
           </div>
         </div>
       }>
-        <ProjectBidsData id={id} />
+        <ProjectBidsData id={id} initialDraft={hasInitialDraft ? initialDraft : null} />
       </Suspense>
     </>
   )
 }
 
-async function ProjectBidsData({ id }: { id: string }) {
+async function ProjectBidsData({
+  id,
+  initialDraft,
+}: {
+  id: string
+  initialDraft: {
+    title?: string | null
+    scope?: string | null
+    cost_code_id?: string | null
+    budget_line_id?: string | null
+    amount_cents?: number | null
+  } | null
+}) {
   const project = await getProjectAction(id)
 
   if (!project) {
@@ -69,6 +108,7 @@ async function ProjectBidsData({ id }: { id: string }) {
       packages={packages}
       tradeOptions={tradeOptions}
       costCodes={costCodes}
+      initialDraft={initialDraft}
     />
   )
 }

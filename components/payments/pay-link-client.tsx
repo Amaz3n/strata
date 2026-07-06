@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useMemo, useState, useTransition } from "react"
 import { format } from "date-fns"
 import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-stripe-js"
 import { loadStripe } from "@stripe/stripe-js"
@@ -9,13 +9,12 @@ import type { Invoice } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
+import { createPayLinkPaymentIntentAction } from "@/app/p/pay/[token]/actions"
 
 interface PayLinkClientProps {
   token: string
   invoice: Invoice
   publishableKey: string
-  clientSecret: string
-  connectedAccountId?: string | null
 }
 
 function formatMoney(cents?: number | null, currency = "USD") {
@@ -118,14 +117,106 @@ function PaymentForm({ invoice, token }: { invoice: Invoice; token: string }) {
   )
 }
 
-export function PayLinkClient({ token, invoice, publishableKey, clientSecret, connectedAccountId }: PayLinkClientProps) {
+function PayLinkStart({
+  invoice,
+  onStart,
+  isPending,
+  error,
+}: {
+  invoice: Invoice
+  onStart: () => void
+  isPending: boolean
+  error: string | null
+}) {
+  const totalCents = invoice.totals?.total_cents ?? invoice.total_cents ?? 0
+  const balanceCents = invoice.totals?.balance_due_cents ?? invoice.balance_due_cents ?? totalCents
+  const isPaid = balanceCents <= 0 || invoice.status === "paid" || invoice.status === "void"
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-background to-muted px-4 py-10">
+      <div className="mx-auto max-w-2xl space-y-4">
+        <div className="space-y-1 text-center">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Invoice Payment</p>
+          <h1 className="text-2xl font-bold">{invoice.title}</h1>
+          <p className="text-sm text-muted-foreground">Invoice #{invoice.invoice_number}</p>
+          {invoice.due_date && (
+            <p className="text-sm text-muted-foreground">
+              Due {format(new Date(invoice.due_date), "MMM d, yyyy")}
+            </p>
+          )}
+        </div>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Balance</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">Total</span>
+              <span className="font-semibold">{formatMoney(totalCents)}</span>
+            </div>
+            <Separator />
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">Balance due</span>
+              <span className="text-lg font-bold">{formatMoney(balanceCents)}</span>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Pay securely</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {error && <p className="text-sm text-red-600">{error}</p>}
+            <Button className="w-full" disabled={isPending || isPaid} onClick={onStart}>
+              {isPaid ? "Already paid" : isPending ? "Preparing checkout..." : "Continue to secure payment"}
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              ACH-first checkout. Your payment is processed by Stripe; we do not store your bank details.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  )
+}
+
+export function PayLinkClient({ token, invoice, publishableKey }: PayLinkClientProps) {
+  const [clientSecret, setClientSecret] = useState("")
+  const [connectedAccountId, setConnectedAccountId] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [isPending, startTransition] = useTransition()
+
   const stripePromise = useMemo(
     () => loadStripe(publishableKey, connectedAccountId ? { stripeAccount: connectedAccountId } : undefined),
     [publishableKey, connectedAccountId],
   )
 
   if (!clientSecret) {
-    return <div className="p-4 text-sm text-red-600">Unable to start payment: missing client secret.</div>
+    return (
+      <PayLinkStart
+        invoice={invoice}
+        error={error}
+        isPending={isPending}
+        onStart={() => {
+          setError(null)
+          startTransition(async () => {
+            try {
+              const intent = await createPayLinkPaymentIntentAction(token)
+              if (!intent.clientSecret) {
+                setError("Unable to start payment.")
+                return
+              }
+              setConnectedAccountId(intent.connectedAccountId)
+              setClientSecret(intent.clientSecret)
+            } catch (err) {
+              setError(err instanceof Error ? err.message : "Unable to start payment.")
+            }
+          })
+        }}
+      />
+    )
   }
 
   return (
@@ -140,7 +231,6 @@ export function PayLinkClient({ token, invoice, publishableKey, clientSecret, co
     </Elements>
   )
 }
-
 
 
 

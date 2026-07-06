@@ -44,14 +44,17 @@ async function SettingsData({ searchParams }: SettingsPageProps) {
   const complianceRules = isLocked ? {
     require_lien_waiver: false,
     block_payment_on_missing_docs: true,
+    warn_subcontract_execution_on_missing_docs: true,
+    block_subcontract_execution_on_missing_docs: false,
   } : await getComplianceRules().catch(() => ({
     require_lien_waiver: false,
     block_payment_on_missing_docs: true,
+    warn_subcontract_execution_on_missing_docs: true,
+    block_subcontract_execution_on_missing_docs: false,
   }))
   const canManageCompliance =
     permissions.includes("org.admin") ||
-    permissions.includes("billing.manage") ||
-    permissions.includes("org.member")
+    permissions.includes("billing.manage")
   const complianceRequirementDefaults = isLocked
     ? []
     : await getDefaultComplianceRequirements().catch(() => [])

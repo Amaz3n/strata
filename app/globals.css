@@ -1,12 +1,36 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-
 @custom-variant dark (&:is(.dark *));
 
-/* Arc — Deep Blue theme */
+/* =====================================================================
+   ARC DESIGN STANDARD — operational software for construction.
+
+   The look: a precision instrument. Paper-white surfaces, graphite ink,
+   hairline rules, mono tabular figures, sharp corners. Authority comes
+   from density and alignment, never from decoration.
+
+   Rules (enforced — violating these is a bug):
+   1. Tokens only. Every color in the app resolves to a variable defined
+      here. No hex/rgb/oklch literals in components, no new grays.
+   2. Radius is 0. Surfaces are square. 999px pills are allowed only for
+      small status chips.
+   3. Color is state. Blue = primary/active, amber = warning/aging,
+      red = late/destructive, green = success. Color is never decoration.
+   4. No gradients, no glassmorphism, no glows, no hero/marquee panels.
+      Pages open with the work: a title row, then the data.
+   5. Motion policy: one orchestrated entrance per page load (.desk-rise),
+      hover transitions ≤ 200ms, and NO infinite animation except a live
+      progress indicator for work actually happening (.skeleton-shimmer,
+      .receipt-scan-sweep).
+   6. Component-specific CSS lives next to the component (see
+      components/schedule/gantt.css), not in this file. This file holds
+      tokens, base styles, and the small shared library below — keep it
+      under ~500 lines.
+   ===================================================================== */
+
 :root {
-  /* Cool blue-tinted neutrals */
+  /* Cool blue-tinted neutrals — paper and graphite ink */
   --background: oklch(0.98 0.004 260);
   --foreground: oklch(0.14 0.02 260);
   --card: oklch(1 0 0);
@@ -14,36 +38,38 @@
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.14 0.02 260);
 
-  /* Deep indigo-blue — richer than generic SaaS blue */
+  /* Deep indigo-blue — the one brand color */
   --primary: oklch(0.48 0.22 264);
   --primary-foreground: oklch(0.99 0 0);
 
-  /* Slate secondary */
   --secondary: oklch(0.95 0.006 260);
   --secondary-foreground: oklch(0.25 0.02 260);
   --muted: oklch(0.95 0.006 260);
   --muted-foreground: oklch(0.48 0.01 260);
 
-  /* Soft blue accent */
   --accent: oklch(0.92 0.03 255);
   --accent-foreground: oklch(0.30 0.08 260);
 
   --destructive: oklch(0.53 0.22 25);
   --destructive-foreground: oklch(0.99 0 0);
 
+  /* Hairlines: --border for rules inside surfaces, --line-strong for
+     baselines and axis lines that must read at a glance */
   --border: oklch(0.91 0.006 260);
   --input: oklch(0.91 0.006 260);
+  --line-strong: oklch(0.84 0.008 260);
   --ring: oklch(0.48 0.22 264);
 
+  /* Categorical chart ramp — five distinguishable hues, blue leads */
   --chart-1: oklch(0.48 0.22 264);
-  --chart-2: oklch(0.62 0.16 250);
-  --chart-3: oklch(0.56 0.18 275);
-  --chart-4: oklch(0.70 0.12 235);
-  --chart-5: oklch(0.40 0.16 260);
+  --chart-2: oklch(0.60 0.11 200);
+  --chart-3: oklch(0.66 0.15 60);
+  --chart-4: oklch(0.55 0.14 150);
+  --chart-5: oklch(0.50 0.17 300);
 
   --radius: 0rem;
 
-  /* Dark navy sidebar */
+  /* Dark navy sidebar — the app's frame */
   --sidebar: oklch(0.16 0.03 264);
   --sidebar-foreground: oklch(0.88 0.01 260);
   --sidebar-primary: oklch(0.58 0.20 264);
@@ -53,13 +79,19 @@
   --sidebar-border: oklch(0.26 0.025 264);
   --sidebar-ring: oklch(0.58 0.20 264);
 
-  /* Semantic */
+  /* Semantic state */
   --success: oklch(0.62 0.18 145);
   --success-foreground: oklch(0.99 0 0);
-  --warning: oklch(0.74 0.12 245);
-  --warning-foreground: oklch(0.22 0.04 255);
+  --warning: oklch(0.66 0.15 60);
+  --warning-foreground: oklch(0.99 0 0);
 
-  /* eSign signer colors */
+  /* Aging ramp — fresh → aging → stale. Used by receivables/payables
+     aging bands and anywhere time-pressure is visualized. */
+  --age-0: oklch(0.62 0.16 250);
+  --age-1: oklch(0.76 0.13 78);
+  --age-2: oklch(0.60 0.19 33);
+
+  /* eSign signer identities */
   --signer-1: oklch(0.50 0.20 260);
   --signer-1-bg: oklch(0.94 0.03 260);
   --signer-1-border: oklch(0.65 0.16 260);
@@ -75,152 +107,6 @@
   --signer-5: oklch(0.52 0.20 15);
   --signer-5-bg: oklch(0.94 0.03 15);
   --signer-5-border: oklch(0.65 0.16 15);
-}
-
-@layer components {
-  .help-article-body {
-    @apply flex flex-col gap-5 text-base leading-8 text-foreground/85;
-  }
-
-  .help-article-body h2 {
-    @apply mt-8 text-2xl font-semibold tracking-tight text-foreground;
-  }
-
-  .help-article-body h3 {
-    @apply mt-6 text-xl font-semibold tracking-tight text-foreground;
-  }
-
-  .help-article-body ul {
-    @apply ml-5 list-disc;
-  }
-
-  .help-article-body ol {
-    @apply ml-5 list-decimal;
-  }
-
-  .help-article-body li {
-    @apply pl-1;
-  }
-
-  .help-article-body a {
-    @apply text-[#8fb5ff] underline underline-offset-4;
-  }
-
-  .help-article-body blockquote {
-    @apply border-l-2 border-primary pl-5 text-muted-foreground;
-  }
-
-  .help-article-body code {
-    @apply bg-muted px-1.5 py-0.5 font-mono text-sm text-foreground;
-  }
-
-  .help-hero-gradient {
-    isolation: isolate;
-    background:
-      radial-gradient(circle at 78% 18%, rgba(79, 159, 255, 0.78), transparent 30%),
-      radial-gradient(circle at 20% 82%, rgba(31, 76, 211, 0.72), transparent 36%),
-      radial-gradient(circle at 52% 48%, rgba(40, 105, 239, 0.55), transparent 42%),
-      linear-gradient(125deg, #07142e 0%, #0b2e78 48%, #07152f 100%);
-    background-size: 140% 140%;
-    animation: help-gradient-shift 16s ease-in-out infinite alternate;
-  }
-
-  .help-hero-gradient::before,
-  .help-hero-gradient::after {
-    position: absolute;
-    z-index: 0;
-    border-radius: 9999px;
-    content: "";
-    filter: blur(70px);
-    opacity: 0.48;
-    pointer-events: none;
-  }
-
-  .help-hero-gradient::before {
-    top: -28%;
-    right: 2%;
-    width: 34rem;
-    height: 34rem;
-    background: rgba(64, 163, 255, 0.65);
-    animation: help-orb-drift 14s ease-in-out infinite alternate;
-  }
-
-  .help-hero-gradient::after {
-    bottom: -42%;
-    left: 12%;
-    width: 30rem;
-    height: 30rem;
-    background: rgba(39, 64, 210, 0.72);
-    animation: help-orb-drift 18s ease-in-out infinite alternate-reverse;
-  }
-
-  .help-hero-grid {
-    z-index: 0;
-    opacity: 0.15;
-    background-image:
-      linear-gradient(rgba(255, 255, 255, 0.12) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(255, 255, 255, 0.12) 1px, transparent 1px);
-    background-size: 64px 64px;
-    mask-image: linear-gradient(to bottom, transparent, black 20%, black 80%, transparent);
-  }
-
-  .help-hero-arc {
-    z-index: 0;
-    stroke: rgba(218, 235, 255, 0.22);
-    stroke-width: 1.55;
-    opacity: 0.86;
-    pointer-events: none;
-    filter: drop-shadow(0 0 28px rgba(92, 163, 255, 0.14));
-    animation: help-arc-drift 20s ease-in-out infinite alternate;
-  }
-
-  @keyframes help-gradient-shift {
-    from {
-      background-position: 0% 20%;
-    }
-    to {
-      background-position: 100% 80%;
-    }
-  }
-
-  @keyframes help-orb-drift {
-    from {
-      transform: translate3d(-5%, -4%, 0) scale(0.92);
-    }
-    to {
-      transform: translate3d(8%, 7%, 0) scale(1.08);
-    }
-  }
-
-  @keyframes help-arc-drift {
-    from {
-      transform: translate3d(0, 0, 0) scale(1);
-    }
-    to {
-      transform: translate3d(-1.5%, -1%, 0) scale(1.025);
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .help-hero-gradient,
-    .help-hero-gradient::before,
-    .help-hero-gradient::after,
-    .help-hero-arc {
-      animation: none;
-    }
-  }
-}
-
-html {
-  font-size: 16px;
-}
-
-html[data-ui-size="compact"] {
-  font-size: 14px;
-}
-
-html[data-ui-size="comfortable"] {
-  font-size: 18px;
 }
 
 .dark {
@@ -247,13 +133,14 @@ html[data-ui-size="comfortable"] {
 
   --border: oklch(0.27 0.018 264);
   --input: oklch(0.27 0.018 264);
+  --line-strong: oklch(0.36 0.02 264);
   --ring: oklch(0.58 0.20 264);
 
   --chart-1: oklch(0.58 0.20 264);
-  --chart-2: oklch(0.68 0.16 248);
-  --chart-3: oklch(0.62 0.18 275);
-  --chart-4: oklch(0.74 0.12 235);
-  --chart-5: oklch(0.52 0.16 260);
+  --chart-2: oklch(0.70 0.11 200);
+  --chart-3: oklch(0.75 0.14 70);
+  --chart-4: oklch(0.66 0.14 150);
+  --chart-5: oklch(0.62 0.16 300);
 
   --sidebar: oklch(0.12 0.02 264);
   --sidebar-foreground: oklch(0.88 0.01 260);
@@ -266,10 +153,13 @@ html[data-ui-size="comfortable"] {
 
   --success: oklch(0.68 0.18 145);
   --success-foreground: oklch(0.12 0.02 145);
-  --warning: oklch(0.72 0.12 245);
-  --warning-foreground: oklch(0.18 0.03 250);
+  --warning: oklch(0.75 0.14 70);
+  --warning-foreground: oklch(0.20 0.05 70);
 
-  /* eSign signer colors */
+  --age-0: oklch(0.68 0.15 250);
+  --age-1: oklch(0.78 0.13 78);
+  --age-2: oklch(0.66 0.18 33);
+
   --signer-1: oklch(0.55 0.20 260);
   --signer-1-bg: oklch(0.93 0.04 260);
   --signer-1-border: oklch(0.70 0.14 260);
@@ -308,6 +198,7 @@ html[data-ui-size="comfortable"] {
   --color-destructive-foreground: var(--destructive-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
+  --color-line-strong: var(--line-strong);
   --color-ring: var(--ring);
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
@@ -318,6 +209,9 @@ html[data-ui-size="comfortable"] {
   --color-success-foreground: var(--success-foreground);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
+  --color-age-0: var(--age-0);
+  --color-age-1: var(--age-1);
+  --color-age-2: var(--age-2);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -341,85 +235,87 @@ html[data-ui-size="comfortable"] {
   }
 }
 
-/* Schedule/Gantt Chart Styles */
+html {
+  font-size: 16px;
+}
+
+html[data-ui-size="compact"] {
+  font-size: 14px;
+}
+
+html[data-ui-size="comfortable"] {
+  font-size: 18px;
+}
+
+/* =====================================================================
+   Shared library — the ONLY page-facing classes this file defines.
+   ===================================================================== */
 @layer components {
-  /* Gantt bar animations */
-  .gantt-bar {
-    transition: all 0.2s ease;
+  /* Micro-label: the app's one official label style. Uppercase, tracked,
+     quiet. Use for eyebrows, table headers, and axis labels. */
+  .microlabel {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
   }
-  
-  .gantt-bar:hover {
-    filter: brightness(1.1);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+
+  /* Spectrum: a proportional strata band (e.g. aging fresh→stale).
+     Segments are inline <span>s with width + background set by the
+     consumer from tokens; hairline-separated. */
+  .spectrum {
+    display: flex;
+    width: 100%;
+    overflow: hidden;
+    background: color-mix(in oklab, var(--foreground) 8%, transparent);
   }
-  
-  /* Gantt row hover effect */
-  .gantt-row:hover {
-    background-color: var(--muted);
+
+  .spectrum > span {
+    display: block;
+    height: 100%;
   }
-  
-  /* Today marker pulse animation */
-  @keyframes pulse-subtle {
-    0%, 100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.7;
-    }
+
+  .spectrum > span + span {
+    box-shadow: inset 1px 0 0 var(--background);
   }
-  
-  .today-marker {
-    animation: pulse-subtle 2s ease-in-out infinite;
+
+  /* One-time entrance wipe for a page's lead spectrum */
+  .spectrum-wipe {
+    transform-origin: left center;
+    animation: spectrum-wipe 0.9s cubic-bezier(0.22, 1, 0.36, 1) 0.25s both;
   }
-  
-  /* Dependency line animation */
-  @keyframes draw-line {
+
+  @keyframes spectrum-wipe {
     from {
-      stroke-dashoffset: 100;
+      transform: scaleX(0.001);
+      opacity: 0.4;
     }
     to {
-      stroke-dashoffset: 0;
-    }
-  }
-  
-  .dependency-line {
-    stroke-dasharray: 100;
-    animation: draw-line 0.5s ease-out forwards;
-  }
-  
-  /* Smooth scrollbar for schedule views */
-  .schedule-scroll {
-    scrollbar-width: thin;
-    scrollbar-color: var(--muted-foreground) transparent;
-  }
-  
-  .schedule-scroll::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-  }
-  
-  .schedule-scroll::-webkit-scrollbar-track {
-    background: transparent;
-  }
-  
-  @keyframes drawing-shimmer {
-    0% {
-      transform: translateX(-8rem);
-    }
-    100% {
-      transform: translateX(110vw);
+      transform: scaleX(1);
+      opacity: 1;
     }
   }
 
-  @keyframes skeleton-slide {
-    0% {
-      transform: translateX(-100%);
+  /* Orchestrated page entrance. Set --desk-stagger per section (0, 1, 2…).
+     This is the ONE entrance animation pages get. */
+  @keyframes desk-rise {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
     }
-    100% {
-      transform: translateX(100%);
+    to {
+      opacity: 1;
+      transform: translateY(0);
     }
   }
 
+  .desk-rise {
+    animation: desk-rise 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation-delay: calc(var(--desk-stagger, 0) * 80ms);
+  }
+
+  /* Live-progress indicators — the only permitted infinite animations. */
   .skeleton-shimmer {
     position: relative;
     overflow: hidden;
@@ -433,49 +329,82 @@ html[data-ui-size="comfortable"] {
     background: linear-gradient(
       90deg,
       transparent,
-      rgba(255, 255, 255, 0.35),
+      color-mix(in oklab, var(--background) 55%, transparent),
       transparent
     );
     animation: skeleton-slide 0.6s linear infinite;
   }
 
+  @keyframes skeleton-slide {
+    0% {
+      transform: translateX(-100%);
+    }
+    100% {
+      transform: translateX(100%);
+    }
+  }
+
+  /* Consumed via animate-[drawing-shimmer…] while drawing tiles load */
+  @keyframes drawing-shimmer {
+    0% {
+      transform: translateX(-8rem);
+    }
+    100% {
+      transform: translateX(110vw);
+    }
+  }
+
+  /* Sweeps across a receipt while AI extraction is running */
+  .receipt-scan-sweep::before {
+    content: "";
+    position: absolute;
+    inset: -30% auto -30% 0;
+    width: 42%;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in oklab, var(--primary) 10%, transparent),
+      color-mix(in oklab, var(--primary) 24%, transparent),
+      transparent
+    );
+    animation: receipt-scan-sweep 1.35s ease-in-out infinite;
+  }
+
+  @keyframes receipt-scan-sweep {
+    0% {
+      transform: translateX(-120%) skewX(-14deg);
+      opacity: 0;
+    }
+    18% {
+      opacity: 0.9;
+    }
+    82% {
+      opacity: 0.9;
+    }
+    100% {
+      transform: translateX(120%) skewX(-14deg);
+      opacity: 0;
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
-    .skeleton-shimmer::after {
+    .desk-rise,
+    .spectrum-wipe,
+    .skeleton-shimmer::after,
+    .receipt-scan-sweep::before {
       animation: none;
     }
   }
 
-  .schedule-scroll::-webkit-scrollbar-thumb {
-    background-color: var(--muted-foreground);
-    border-radius: 4px;
-    opacity: 0.5;
-  }
-  
-  .schedule-scroll::-webkit-scrollbar-thumb:hover {
-    background-color: var(--foreground);
+  /* AI mode indicator (command panel). A crisp accent hairline and a
+     faint ring — a mode change, not a light show. */
+  [data-ai-glow] {
+    border-color: color-mix(in oklab, var(--primary) 55%, var(--border)) !important;
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 10%, transparent);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
   }
 
-  /* Portfolio health pulse for red severity */
-  @keyframes health-dot-pulse {
-    0%, 100% {
-      box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5);
-    }
-    50% {
-      box-shadow: 0 0 0 4px rgba(239, 68, 68, 0);
-    }
-  }
-
-  .health-pulse {
-    animation: health-dot-pulse 2s ease-in-out infinite;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .health-pulse {
-      animation: none;
-    }
-  }
-
-  /* Hide scrollbar utility */
+  /* Hide scrollbar while keeping scroll */
   .hide-scrollbar {
     -ms-overflow-style: none;
     scrollbar-width: none;
@@ -485,817 +414,44 @@ html[data-ui-size="comfortable"] {
     display: none;
   }
 
-  /* Drag ghost styling */
-  .dragging {
-    opacity: 0.8;
-    cursor: grabbing !important;
+  /* Help-center article prose */
+  .help-article-body {
+    @apply flex flex-col gap-5 text-base leading-8 text-foreground/85;
   }
-  
-  /* Progress bar gradient */
-  .progress-gradient {
-    background: linear-gradient(
-      90deg,
-      oklch(0.65 0.18 145) 0%,
-      oklch(0.7 0.18 145) 100%
-    );
-  }
-  
-  /* Critical path highlight */
-  .critical-path {
-    box-shadow: 0 0 0 2px oklch(0.75 0.15 45 / 0.5);
-  }
-  
-  /* At-risk indicator pulse */
-  @keyframes risk-pulse {
-    0%, 100% {
-      box-shadow: 0 0 0 0 oklch(0.75 0.15 65 / 0.4);
-    }
-    50% {
-      box-shadow: 0 0 0 4px oklch(0.75 0.15 65 / 0);
-    }
-  }
-  
-  .at-risk-indicator {
-    animation: risk-pulse 2s ease-in-out infinite;
-  }
-  
-  /* Milestone diamond shape */
-  .milestone-diamond {
-    clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
-  }
-  
-  /* Glass morphism effect for schedule toolbar */
-  .schedule-toolbar-glass {
-    backdrop-filter: blur(8px);
-    background: oklch(var(--background) / 0.8);
-  }
-  
-  /* View transition animations */
-  .view-transition-enter {
-    animation: fade-in 0.2s ease-out;
-  }
-  
-  .view-transition-exit {
-    animation: fade-out 0.15s ease-in;
-  }
-  
-  @keyframes fade-in {
-    from {
-      opacity: 0;
-      transform: translateY(4px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-  
-  @keyframes fade-out {
-    from {
-      opacity: 1;
-      transform: translateY(0);
-    }
-    to {
-      opacity: 0;
-      transform: translateY(-4px);
-    }
-  }
-
-  /* ===== Premium Gantt Bar Styles =====
-     Two-tone bar: opaque tinted shell + solid saturated progress.
-     Consumers set --bar-color AND an inline backgroundColor fallback. */
-  .gantt-task-bar {
-    position: relative;
-    border-radius: 7px;
-    background: var(--bar-color, #3b82f6);
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.28),
-      inset 0 -1px 0 rgba(0, 0, 0, 0.18),
-      0 1px 2px rgba(15, 23, 42, 0.1);
-    transition:
-      box-shadow 0.18s ease,
-      transform 0.18s ease,
-      filter 0.18s ease;
-  }
-
-  .dark .gantt-task-bar {
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.18),
-      inset 0 -1px 0 rgba(0, 0, 0, 0.3),
-      0 1px 2px rgba(0, 0, 0, 0.4);
-  }
-
-  .gantt-task-bar:hover {
-    box-shadow:
-      inset 0 0 0 1px color-mix(in srgb, var(--bar-color, #3b82f6) 75%, transparent),
-      inset 0 1px 0 rgba(255, 255, 255, 0.35),
-      0 4px 12px -2px color-mix(in srgb, var(--bar-color, #3b82f6) 40%, transparent),
-      0 2px 4px rgba(15, 23, 42, 0.08);
-    transform: translateY(-0.5px);
-  }
-
-  .gantt-task-bar.is-selected {
-    box-shadow:
-      inset 0 0 0 1px color-mix(in srgb, var(--bar-color, #3b82f6) 85%, transparent),
-      inset 0 1px 0 rgba(255, 255, 255, 0.35),
-      0 0 0 2px var(--primary),
-      0 6px 16px -4px color-mix(in srgb, var(--bar-color, #3b82f6) 50%, transparent);
-  }
-
-  .gantt-task-bar.is-dragging {
-    box-shadow:
-      inset 0 0 0 1px color-mix(in srgb, var(--bar-color, #3b82f6) 85%, transparent),
-      inset 0 1px 0 rgba(255, 255, 255, 0.35),
-      0 10px 24px -6px color-mix(in srgb, var(--bar-color, #3b82f6) 60%, transparent),
-      0 4px 10px rgba(15, 23, 42, 0.15);
-    z-index: 100;
-    transform: translateY(-1px);
-  }
-
-  .gantt-task-bar.is-critical {
-    box-shadow:
-      inset 0 0 0 1.5px rgba(249, 115, 22, 0.75),
-      inset 0 1px 0 rgba(255, 255, 255, 0.35),
-      0 1px 2px rgba(15, 23, 42, 0.06);
-  }
-
-  .gantt-task-bar.is-critical.is-selected {
-    box-shadow:
-      inset 0 0 0 1.5px rgba(249, 115, 22, 0.85),
-      inset 0 1px 0 rgba(255, 255, 255, 0.35),
-      0 0 0 2px var(--primary),
-      0 6px 16px -4px rgba(249, 115, 22, 0.4);
-  }
-
-  /* Progress section clips the remainder overlay to the bar's rounded corners */
-  .gantt-progress-section {
-    position: absolute;
-    inset: 0;
-    border-radius: inherit;
-    overflow: hidden;
-    pointer-events: none;
-  }
-
-  /* Remainder overlay — covers the NOT-YET-DONE portion on the right.
-     Hatched translucent white dims the unfinished area, leaving the
-     saturated bar to visually represent completed progress on the left. */
-  .gantt-bar-remainder {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    background-color: rgba(15, 23, 42, 0.28);
-    background-image: repeating-linear-gradient(
-      -45deg,
-      rgba(255, 255, 255, 0.14) 0 4px,
-      rgba(255, 255, 255, 0) 4px 8px
-    );
-    box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.35);
-  }
-
-  .dark .gantt-bar-remainder {
-    background-color: rgba(0, 0, 0, 0.4);
-    background-image: repeating-linear-gradient(
-      -45deg,
-      rgba(255, 255, 255, 0.08) 0 4px,
-      rgba(255, 255, 255, 0) 4px 8px
-    );
-    box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.22);
-  }
-
-  /* Bright "now" tick at the progress boundary — on the remainder's left edge */
-  .gantt-bar-remainder::before {
-    content: "";
-    position: absolute;
-    left: -1px;
-    top: 3px;
-    bottom: 3px;
-    width: 2px;
-    border-radius: 1px;
-    background: rgba(255, 255, 255, 0.95);
-    box-shadow:
-      0 0 0 1px rgba(0, 0, 0, 0.2),
-      0 0 8px rgba(255, 255, 255, 0.5);
-  }
-
-  .gantt-task-bar.is-completed {
-    opacity: 0.75;
-    filter: saturate(0.85);
-  }
-
-  /* Label lives INSIDE the bar — readable on both tint and solid regions */
-  .gantt-bar-content {
-    position: relative;
-    z-index: 2;
-    height: 100%;
-    display: flex;
-    align-items: center;
-    padding: 0 10px;
-    gap: 6px;
-    overflow: hidden;
-    pointer-events: none;
-  }
-
-  .gantt-bar-label {
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: -0.003em;
-    color: #fff;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    flex: 1;
-  }
-
-  .gantt-bar-progress-text {
-    font-variant-numeric: tabular-nums;
-    font-size: 10.5px;
-    font-weight: 700;
-    padding: 1px 6px;
-    border-radius: 999px;
-    color: var(--bar-color, #3b82f6);
-    background: rgba(255, 255, 255, 0.95);
-    flex-shrink: 0;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
-  }
-
-  /* Resize handles */
-  .gantt-resize-handle {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    width: 8px;
-    cursor: ew-resize;
-    opacity: 0;
-    transition: opacity 0.15s ease;
-    z-index: 3;
-  }
-
-  .gantt-resize-handle-left {
-    left: -2px;
-    border-radius: 7px 0 0 7px;
-  }
-
-  .gantt-resize-handle-right {
-    right: -2px;
-    border-radius: 0 7px 7px 0;
-  }
-
-  .gantt-resize-handle::before {
-    content: "";
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: 3px;
-    height: 14px;
-    border-radius: 2px;
-    background: var(--bar-color, #3b82f6);
-    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
-  }
-
-  .dark .gantt-resize-handle::before {
-    box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.9);
-  }
-
-  .gantt-task-bar:hover .gantt-resize-handle,
-  .gantt-task-bar.is-selected .gantt-resize-handle {
-    opacity: 1;
-  }
-
-  /* ===== Milestone: disc with flag icon ===== */
-  .gantt-milestone {
-    position: absolute;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 999px;
-    background: var(--bar-color, #3b82f6);
-    color: white;
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.25),
-      0 0 0 2px color-mix(in srgb, var(--bar-color, #3b82f6) 15%, var(--background)),
-      0 2px 6px color-mix(in srgb, var(--bar-color, #3b82f6) 40%, transparent);
-    transition: transform 0.15s ease, box-shadow 0.15s ease;
-  }
-
-  .gantt-milestone::before {
-    content: "";
-    position: absolute;
-    top: 100%;
-    left: 50%;
-    width: 1px;
-    height: 14px;
-    background: linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--bar-color, #3b82f6) 60%, transparent) 0%,
-      transparent 100%
-    );
-    transform: translateX(-50%);
-    pointer-events: none;
-  }
-
-  .gantt-milestone:hover {
-    transform: scale(1.12);
-  }
-
-  .gantt-milestone.is-selected {
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.25),
-      0 0 0 2px var(--primary),
-      0 0 0 4px color-mix(in srgb, var(--primary) 20%, transparent),
-      0 2px 8px color-mix(in srgb, var(--bar-color, #3b82f6) 50%, transparent);
-  }
-
-  /* ===== Today marker: glow column + crisp line + pill ===== */
-  .gantt-today-glow {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    pointer-events: none;
-    z-index: 1;
-    background: radial-gradient(
-      ellipse 50% 100% at 50% 50%,
-      color-mix(in srgb, var(--primary) 14%, transparent) 0%,
-      color-mix(in srgb, var(--primary) 6%, transparent) 35%,
-      transparent 70%
-    );
-  }
-
-  .gantt-today-line {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    width: 1px;
-    z-index: 20;
-    pointer-events: none;
-    background: linear-gradient(
-      180deg,
-      var(--primary) 0%,
-      color-mix(in srgb, var(--primary) 70%, transparent) 100%
-    );
-    box-shadow: 0 0 8px color-mix(in srgb, var(--primary) 40%, transparent);
-  }
-
-  .gantt-today-pill {
-    position: absolute;
-    top: 4px;
-    transform: translateX(-50%);
-    z-index: 21;
-    padding: 2px 8px 2px 6px;
-    border-radius: 999px;
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    color: var(--primary-foreground);
-    background: var(--primary);
-    box-shadow:
-      0 0 0 2px var(--background),
-      0 2px 6px color-mix(in srgb, var(--primary) 35%, transparent);
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    pointer-events: none;
-    white-space: nowrap;
-  }
-
-  .gantt-today-pill::before {
-    content: "";
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--primary-foreground);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-foreground) 40%, transparent);
-    animation: pulse-subtle 2s ease-in-out infinite;
-  }
-
-  /* ===== Row swim-lane tint (phase-colored background) ===== */
-  .gantt-row-bg {
-    --row-tint: transparent;
-    background: color-mix(in srgb, var(--row-tint) 4%, transparent);
-  }
-
-  .dark .gantt-row-bg {
-    background: color-mix(in srgb, var(--row-tint) 7%, transparent);
-  }
-
-  .gantt-row-bg.is-selected {
-    background: color-mix(in srgb, var(--primary) 7%, color-mix(in srgb, var(--row-tint) 4%, transparent));
-  }
-
-  /* ===== Weekend diagonal hatch ===== */
-  .gantt-weekend-col {
-    background-image: repeating-linear-gradient(
-      -45deg,
-      transparent 0 3px,
-      color-mix(in srgb, var(--foreground) 6%, transparent) 3px 4px
-    );
-  }
-
-  .dark .gantt-weekend-col {
-    background-image: repeating-linear-gradient(
-      -45deg,
-      transparent 0 3px,
-      color-mix(in srgb, var(--foreground) 8%, transparent) 3px 4px
-    );
-  }
-
-  /* ===== Dependency lines (critical path animated flow) ===== */
-  @keyframes gantt-dash-flow {
-    to {
-      stroke-dashoffset: -12;
-    }
-  }
-
-  .gantt-dep-critical {
-    stroke-dasharray: 6 4;
-    animation: gantt-dash-flow 1.2s linear infinite;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .gantt-dep-critical {
-      animation: none;
-      stroke-dasharray: none;
-    }
-  }
-
-  /* Status indicator dot */
-  .gantt-status-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex-shrink: 0;
-    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.3);
-  }
-
-  .gantt-status-dot.status-completed {
-    background: #22c55e;
-  }
-
-  .gantt-status-dot.status-in-progress {
-    background: #3b82f6;
-  }
-
-  .gantt-status-dot.status-at-risk {
-    background: #f59e0b;
-  }
-
-  .gantt-status-dot.status-blocked {
-    background: #ef4444;
-  }
-
-  /* Dark mode bar shadow */
-  .dark .gantt-task-bar {
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-  }
-
-  .dark .gantt-task-bar:hover {
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
-  }
-
-  /* ===== Date Selection Styling ===== */
-
-  .gantt-date-selection {
-    animation: selection-fade-in 0.15s ease-out;
-    overflow: hidden;
-  }
-
-  @keyframes selection-fade-in {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
-  }
-
-  .gantt-selection-badge {
-    animation: badge-pop-in 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
-    backdrop-filter: blur(8px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-  }
-
-  @keyframes badge-pop-in {
-    from {
-      opacity: 0;
-      transform: scale(0.9);
-    }
-    to {
-      opacity: 1;
-      transform: scale(1);
-    }
-  }
-
-  /* Subtle shimmer effect on selection area */
-  .gantt-date-selection::before {
-    content: "";
-    position: absolute;
-    top: 0;
-    left: -100%;
-    width: 100%;
-    height: 100%;
-    background: linear-gradient(
-      90deg,
-      transparent 0%,
-      rgba(255, 255, 255, 0.08) 50%,
-      transparent 100%
-    );
-    animation: shimmer-sweep 1.5s ease-in-out infinite;
-  }
-
-  @keyframes shimmer-sweep {
-    0% {
-      left: -100%;
-    }
-    100% {
-      left: 100%;
-    }
-  }
-
-
-  /* ===== Project avatar — molten gradient on hover ===== */
-
-  .project-avatar-animated {
-    background-size: 220% 220%;
-    background-position: 0% 0%;
-    transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1),
-                filter 0.3s ease;
-    will-change: background-position, transform;
-  }
-
-  .project-avatar-animated:hover {
-    animation: project-avatar-flow 3.2s ease-in-out infinite;
-    transform: scale(1.06);
-    filter: saturate(1.15) brightness(1.05);
-  }
-
-  @keyframes project-avatar-flow {
-    0%   { background-position: 0% 0%; }
-    25%  { background-position: 100% 50%; }
-    50%  { background-position: 100% 100%; }
-    75%  { background-position: 0% 50%; }
-    100% { background-position: 0% 0%; }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .project-avatar-animated:hover {
-      animation: none;
-      transform: none;
-      filter: none;
-    }
-  }
-
-
-  /* ===== AI Glow — steady aura around command panel ===== */
-
-  @keyframes ai-breathe {
-    0%, 100% { opacity: 0.55; }
-    50%      { opacity: 0.85; }
-  }
-
-  @keyframes ai-drift {
-    0%, 100% { filter: blur(24px) hue-rotate(0deg); }
-    50%      { filter: blur(28px) hue-rotate(14deg); }
-  }
-
-  @keyframes ai-breathe-focus {
-    0%, 100% { opacity: 0.65; }
-    50%      { opacity: 0.95; }
-  }
-
-  @keyframes ai-drift-focus {
-    0%, 100% { filter: blur(20px) hue-rotate(0deg); }
-    50%      { filter: blur(24px) hue-rotate(10deg); }
-  }
-
-  /* Panel: allow pseudo overflow */
-  [data-ai-glow] {
-    position: relative;
-    isolation: isolate;
-    overflow: visible !important;
-    border-color: oklch(0.58 0.14 224 / 0.42) !important;
-    box-shadow:
-      0 0 24px 3px oklch(0.56 0.14 225 / 0.28),
-      0 0 56px 12px oklch(0.52 0.14 232 / 0.2);
-    transition: border-color 0.6s ease-out, box-shadow 0.6s ease-out;
-  }
-
-  /* Steady-state glow (::before pseudo) */
-  [data-ai-glow]::before {
-    content: "";
-    position: absolute;
-    inset: -14px;
-    z-index: -1;
-    border-radius: 4px;
-    pointer-events: none;
-    background:
-      radial-gradient(
-        ellipse 118% 118% at 50% 50%,
-        transparent 0%,
-        transparent 46%,
-        oklch(0.60 0.17 220 / 0.34) 66%,
-        oklch(0.53 0.18 235 / 0.22) 82%,
-        transparent 100%
-      ),
-      radial-gradient(
-        ellipse 78% 28% at 50% -8%,
-        oklch(0.68 0.16 212 / 0.32) 0%,
-        transparent 72%
-      );
-    box-shadow:
-      0 0 40px 10px oklch(0.58 0.16 220 / 0.28),
-      0 0 110px 34px oklch(0.52 0.14 232 / 0.22);
-    animation:
-      ai-breathe 8s ease-in-out infinite,
-      ai-drift  18s ease-in-out infinite;
-  }
-
-  [data-ai-glow]:focus-within::before {
-    animation:
-      ai-breathe-focus 8s ease-in-out infinite,
-      ai-drift-focus  18s ease-in-out infinite;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    [data-ai-glow]::before {
-      animation: none;
-      opacity: 0.7;
-      filter: blur(24px);
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .gantt-date-selection,
-    .gantt-selection-badge,
-    .gantt-date-selection::before {
-      animation: none;
-    }
-  }
-
-  /* ===== Sidebar Task Row Styling ===== */
-
-  .gantt-sidebar-row {
-    position: relative;
-    display: flex;
-    align-items: center;
-    padding: 0 10px 0 2px;
-    border-bottom: 1px solid color-mix(in oklab, var(--border) 35%, transparent);
-    cursor: pointer;
-    transition: background-color 0.12s ease;
-  }
-
-  .gantt-sidebar-row:hover {
-    background-color: color-mix(in oklab, var(--muted) 55%, transparent);
-  }
-
-  .gantt-sidebar-row.is-selected {
-    background-color: color-mix(in oklab, var(--primary) 7%, transparent);
-  }
-
-  .gantt-sidebar-row.is-selected:hover {
-    background-color: color-mix(in oklab, var(--primary) 10%, transparent);
-  }
-
-  .gantt-sidebar-row.is-dragging {
-    background-color: var(--background);
-    box-shadow:
-      0 8px 24px -8px rgba(0, 0, 0, 0.18),
-      0 2px 6px -2px rgba(0, 0, 0, 0.08),
-      0 0 0 1px color-mix(in oklab, var(--border) 80%, transparent);
-    border-radius: 8px;
-    border-bottom-color: transparent;
-  }
-
-  /* Drag handle */
-  .gantt-drag-handle {
-    opacity: 0.4;
-    transition: opacity 0.15s ease, color 0.15s ease;
-  }
-
-  .gantt-sidebar-row:hover .gantt-drag-handle {
-    opacity: 0.7;
-  }
-
-  .gantt-drag-handle:hover {
-    opacity: 1 !important;
-    color: var(--foreground);
-  }
-
-  /* Status icon container */
-  .gantt-status-icon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 26px;
-    height: 26px;
-    border-radius: 6px;
-    flex-shrink: 0;
-    transition: transform 0.15s ease;
-  }
-
-  .gantt-sidebar-row:hover .gantt-status-icon {
-    transform: scale(1.05);
-  }
-
-  /* Task info */
-  .gantt-task-info {
-    flex: 1;
-    min-width: 0;
-    padding: 6px 0;
-  }
-
-  .gantt-task-name {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--foreground);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    line-height: 1.3;
-  }
-
-  .gantt-task-meta {
-    font-size: 11px;
-    color: var(--muted-foreground);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    text-transform: capitalize;
-    margin-top: 1px;
-  }
-
-  /* Indicator icons */
-  .gantt-row-indicators {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex-shrink: 0;
-  }
-
-  .gantt-indicator-icon {
-    color: var(--muted-foreground);
-    opacity: 0.7;
-    transition: opacity 0.15s ease;
-  }
 
-  .gantt-sidebar-row:hover .gantt-indicator-icon {
-    opacity: 1;
+  .help-article-body h2 {
+    @apply mt-8 text-2xl font-semibold tracking-tight text-foreground;
   }
 
-  .gantt-indicator-icon.is-critical {
-    color: #f97316;
-    opacity: 1;
+  .help-article-body h3 {
+    @apply mt-6 text-xl font-semibold tracking-tight text-foreground;
   }
 
-  /* Group header styling — flat, quiet, uppercase section label */
-  .gantt-group-header {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 0 10px 0 10px;
-    background: color-mix(in oklab, var(--muted) 35%, transparent);
-    border-top: 1px solid color-mix(in oklab, var(--border) 40%, transparent);
-    border-bottom: 1px solid color-mix(in oklab, var(--border) 40%, transparent);
-    cursor: pointer;
-    transition: background-color 0.12s ease;
-    user-select: none;
+  .help-article-body ul {
+    @apply ml-5 list-disc;
   }
 
-  .gantt-group-header:first-child {
-    border-top: none;
+  .help-article-body ol {
+    @apply ml-5 list-decimal;
   }
 
-  .gantt-group-header:hover {
-    background: color-mix(in oklab, var(--muted) 55%, transparent);
+  .help-article-body li {
+    @apply pl-1;
   }
 
-  .gantt-group-chip {
-    width: 8px;
-    height: 8px;
-    border-radius: 2px;
-    flex-shrink: 0;
+  .help-article-body a {
+    @apply text-primary underline underline-offset-4;
   }
 
-  .gantt-group-name {
-    font-size: 10.5px;
-    font-weight: 600;
-    color: var(--muted-foreground);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .help-article-body blockquote {
+    @apply border-l-2 border-primary pl-5 text-muted-foreground;
   }
 
-  .gantt-group-count {
-    font-size: 10.5px;
-    font-weight: 600;
-    color: var(--muted-foreground);
-    font-variant-numeric: tabular-nums;
-    opacity: 0.7;
+  .help-article-body code {
+    @apply bg-muted px-1.5 py-0.5 font-mono text-sm text-foreground;
   }
 
-  /* ===== eSign Field Styles ===== */
+  /* eSign signer token plumbing */
   .esign-field-signer-1 {
     --esign-color: var(--signer-1);
     --esign-bg: var(--signer-1-bg);
@@ -1320,38 +476,5 @@ html[data-ui-size="comfortable"] {
     --esign-color: var(--signer-5);
     --esign-bg: var(--signer-5-bg);
     --esign-border: var(--signer-5-border);
-  }
-
-  @keyframes receipt-scan-sweep {
-    0% {
-      transform: translateX(-120%) skewX(-14deg);
-      opacity: 0;
-    }
-    18% {
-      opacity: 0.9;
-    }
-    82% {
-      opacity: 0.9;
-    }
-    100% {
-      transform: translateX(120%) skewX(-14deg);
-      opacity: 0;
-    }
-  }
-
-  .receipt-scan-sweep::before {
-    content: "";
-    position: absolute;
-    inset: -30% auto -30% 0;
-    width: 42%;
-    background: linear-gradient(
-      90deg,
-      transparent,
-      color-mix(in oklab, var(--primary) 10%, transparent),
-      color-mix(in oklab, var(--primary) 26%, white 18%),
-      transparent
-    );
-    filter: blur(1px);
-    animation: receipt-scan-sweep 1.35s ease-in-out infinite;
   }
 }

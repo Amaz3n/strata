@@ -538,6 +538,7 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
     : socialPreflight
       ? "general"
       : routedMode ?? await resolveAssistantMode(options.mode, runtimeFlags, normalizedQuery, aiConfig.provider, aiConfig.model)
+  const allowGeneralRescue = options.mode !== "org"
   const limit = clampLimit(options.limit)
   const sessionId = await ensureAiSearchSession(context, assistantMode, options.sessionId)
   const sessionContext = runtimeFlags.conversationMemory
@@ -1397,9 +1398,7 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
             result,
           }))
 
-        if (
-          assistantMode === "org" && toolExecution.rows === 0 && isLikelyGeneralNonOrgQuery(normalizedQuery)
-        ) {
+        if (allowGeneralRescue && assistantMode === "org" && toolExecution.rows === 0 && isLikelyGeneralNonOrgQuery(normalizedQuery)) {
           await emitTrace(options, {
             id: "general-rescue",
             status: "running",
@@ -1595,9 +1594,7 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
       .filter((line) => line.trim().length > 0)
       .join("\n")
 
-    if (
-      assistantMode === "org" && relatedResults.length === 0 && isLikelyGeneralNonOrgQuery(normalizedQuery)
-    ) {
+    if (allowGeneralRescue && assistantMode === "org" && relatedResults.length === 0 && isLikelyGeneralNonOrgQuery(normalizedQuery)) {
       await emitTrace(options, {
         id: "general-rescue",
         status: "running",
@@ -1772,9 +1769,7 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
       result,
     }))
 
-  if (
-    assistantMode === "org" && relatedResults.length === 0 && isLikelyGeneralNonOrgQuery(normalizedQuery)
-  ) {
+  if (allowGeneralRescue && assistantMode === "org" && relatedResults.length === 0 && isLikelyGeneralNonOrgQuery(normalizedQuery)) {
     await emitTrace(options, {
       id: "general-rescue",
       status: "running",

@@ -393,3 +393,10 @@ export async function updateReleaseNote(id: string, input: ReleaseNoteInput) {
   if (error) throw new Error(`Unable to update release note: ${error.message}`)
   return mapAdminReleaseNote(data as ReleaseNoteRow)
 }
+
+export async function deleteReleaseNote(id: string) {
+  const supabase = createServiceSupabaseClient()
+  const { error } = await supabase.from("release_notes").delete().eq("id", id)
+
+  if (error) throw new Error(`Unable to delete release note: ${error.message}`)
+}

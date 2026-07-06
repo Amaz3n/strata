@@ -145,7 +145,7 @@ export function FileViewer({
       try {
         const { Document, Page, pdfjs } = await import("react-pdf")
         if (cancelled) return
-        pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
+        pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs"
         setPdfComponents({ Document, Page, pdfjs })
       } catch (error) {
         console.error("Failed to load PDF components", error)

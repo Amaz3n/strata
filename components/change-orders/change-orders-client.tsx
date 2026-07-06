@@ -7,12 +7,11 @@ import { toast } from "sonner"
 
 import { cn } from "@/lib/utils"
 import { useIsMobile } from "@/hooks/use-mobile"
-import type { ChangeOrder, Invoice, Project } from "@/lib/types"
+import type { BudgetLineOption, ChangeOrder, CostCode, Invoice, Project } from "@/lib/types"
 import type { ChangeOrderInput } from "@/lib/validation/change-orders"
 import type { InvoiceInput } from "@/lib/validation/invoices"
 import { resolveProjectBillingModel } from "@/lib/financials/billing-model"
 import {
-  approveChangeOrderAction,
   createChangeOrderAction,
   updateChangeOrderAction,
   deleteChangeOrderAction,
@@ -20,6 +19,7 @@ import {
   publishChangeOrderAction,
 } from "@/app/(app)/change-orders/actions"
 import { createInvoiceAction } from "@/app/(app)/invoices/actions"
+import { unwrapAction } from "@/lib/action-result"
 import { ArrowDown, ArrowUp, Ban, ChevronsUpDown, FileCheck2, FileText, Pencil, Receipt, Trash2 } from "lucide-react"
 import { ChangeOrderForm } from "@/components/change-orders/change-order-form"
 import { ChangeOrderDetailSheet } from "@/components/change-orders/change-order-detail-sheet"
@@ -111,6 +111,34 @@ function formatMoneyFromCents(cents?: number | null) {
 
 function changeOrderTotalCents(changeOrder: ChangeOrder) {
   return changeOrder.total_cents ?? changeOrder.totals?.total_cents ?? 0
+}
+
+function formatSignedMoneyFromCents(cents: number) {
+  if (cents === 0) return formatMoneyFromCents(0)
+  const absolute = formatMoneyFromCents(Math.abs(cents))
+  return cents > 0 ? `+${absolute}` : `-${absolute}`
+}
+
+function formatSignedDays(days: number) {
+  if (days === 0) return "0 days"
+  const abs = Math.abs(days)
+  return `${days > 0 ? "+" : "-"}${abs} ${abs === 1 ? "day" : "days"}`
+}
+
+function revisedContractCentsForProject(project?: Project | null) {
+  const snapshot = project?.billing_contract?.snapshot
+  const revisedFromSnapshot = snapshot?.revised_total_cents
+  if (typeof revisedFromSnapshot === "number") return revisedFromSnapshot
+  if (typeof project?.billing_contract?.total_cents === "number") return project.billing_contract.total_cents
+  if (typeof project?.total_contract_value_cents === "number") return project.total_contract_value_cents
+  return null
+}
+
+function baseContractCentsForProject(project: Project | null | undefined, approvedChangeOrdersCents: number) {
+  const snapshot = project?.billing_contract?.snapshot
+  if (typeof snapshot?.base_total_cents === "number") return snapshot.base_total_cents
+  const revised = revisedContractCentsForProject(project)
+  return typeof revised === "number" ? revised - approvedChangeOrdersCents : null
 }
 
 function formatCoNumber(changeOrder: ChangeOrder): string | null {
@@ -227,9 +255,40 @@ function InvoiceLinkedIcon({ linkedInvoice }: {
   )
 }
 
+function SummaryMetric({
+  label,
+  value,
+  detail,
+  tone = "default",
+}: {
+  label: string
+  value: string
+  detail?: string
+  tone?: "default" | "positive" | "warning"
+}) {
+  return (
+    <div className="min-w-0">
+      <p className="truncate text-[11px] font-medium uppercase text-muted-foreground">{label}</p>
+      <p
+        className={cn(
+          "mt-0.5 truncate text-sm font-semibold tabular-nums text-foreground",
+          tone === "positive" && "text-emerald-700 dark:text-emerald-300",
+          tone === "warning" && "text-amber-700 dark:text-amber-300",
+        )}
+      >
+        {value}
+      </p>
+      {detail ? <p className="mt-0.5 truncate text-xs text-muted-foreground">{detail}</p> : null}
+    </div>
+  )
+}
+
 interface ChangeOrdersClientProps {
   changeOrders: ChangeOrder[]
   projects: Project[]
+  costCodes?: CostCode[]
+  budgetLines?: BudgetLineOption[]
+  costCodesEnabled?: boolean
   hideProjectFilter?: boolean
   builderInfo?: {
     name?: string | null
@@ -238,7 +297,15 @@ interface ChangeOrdersClientProps {
   }
 }
 
-export function ChangeOrdersClient({ changeOrders, projects, hideProjectFilter, builderInfo }: ChangeOrdersClientProps) {
+export function ChangeOrdersClient({
+  changeOrders,
+  projects,
+  costCodes = [],
+  budgetLines = [],
+  costCodesEnabled = true,
+  hideProjectFilter,
+  builderInfo,
+}: ChangeOrdersClientProps) {
   const isMobile = useIsMobile()
   const [items, setItems] = useState<ChangeOrder[]>(changeOrders)
   const [filterProjectId, setFilterProjectId] = useState<string>(() =>
@@ -302,7 +369,7 @@ const [sheetOpen, setSheetOpen] = useState(false)
   ): Promise<Invoice> => {
     setCreatingInvoice(true)
     try {
-      const created = await createInvoiceAction(values)
+      const created = unwrapAction(await createInvoiceAction(values))
       const linkedInvoice = {
         id: created.id,
         invoice_number: created.invoice_number,
@@ -371,6 +438,34 @@ const [sheetOpen, setSheetOpen] = useState(false)
     return sorted
   }, [filterProjectId, items, projectLookup, searchTerm, sortColumn, sortDir, statusFilter])
 
+  const summaryProject = filterProjectId !== "all" ? projectLookup[filterProjectId] : hideProjectFilter ? projects[0] ?? null : null
+  const summaryStats = useMemo(() => {
+    const scopedItems = summaryProject ? items.filter((item) => item.project_id === summaryProject.id) : items
+    const approvedItems = scopedItems.filter((item) => resolveStatusKey(item) === "approved")
+    const pendingItems = scopedItems.filter((item) => {
+      const status = resolveStatusKey(item)
+      return status === "awaiting_approval" || status === "requested_changes"
+    })
+    const approvedCents = approvedItems.reduce((sum, item) => sum + changeOrderTotalCents(item), 0)
+    const pendingCents = pendingItems.reduce((sum, item) => sum + changeOrderTotalCents(item), 0)
+    const approvedDays = approvedItems.reduce((sum, item) => sum + (item.days_impact ?? 0), 0)
+    const pendingDays = pendingItems.reduce((sum, item) => sum + (item.days_impact ?? 0), 0)
+    const baseContractCents = summaryProject ? baseContractCentsForProject(summaryProject, approvedCents) : null
+    const revisedContractCents =
+      summaryProject
+        ? revisedContractCentsForProject(summaryProject) ?? (baseContractCents != null ? baseContractCents + approvedCents : null)
+        : null
+
+    return {
+      approvedCents,
+      pendingCents,
+      approvedDays,
+      pendingDays,
+      baseContractCents,
+      revisedContractCents,
+    }
+  }, [items, summaryProject])
+
   const handleSort = (column: SortColumn) => {
     if (column === sortColumn) {
       setSortDir((prev) => (prev === "asc" ? "desc" : "asc"))
@@ -400,21 +495,7 @@ const [sheetOpen, setSheetOpen] = useState(false)
     startTransition(async () => {
       try {
         if (editingChangeOrder) {
-          const shouldRecordOfflineApproval = values.status === "approved" && editingChangeOrder.status !== "approved"
-          if (shouldRecordOfflineApproval) {
-            const confirmed = window.confirm(
-              "Record this change order as approved without an Arc executed document? Use this only when approval happened outside Arc.",
-            )
-            if (!confirmed) return
-          }
-
-          const updatedDetails = await updateChangeOrderAction(editingChangeOrder.id, {
-            ...values,
-            status: shouldRecordOfflineApproval ? editingChangeOrder.status as ChangeOrderInput["status"] : values.status,
-          })
-          const updated = shouldRecordOfflineApproval
-            ? await approveChangeOrderAction(editingChangeOrder.id)
-            : updatedDetails
+          const updated = await updateChangeOrderAction(editingChangeOrder.id, values)
           const mergedUpdated = { ...editingChangeOrder, ...updated }
           setItems((prev) => prev.map((item) => (item.id === mergedUpdated.id ? mergedUpdated : item)))
           if (selectedChangeOrder?.id === updated.id) {
@@ -540,6 +621,34 @@ const [sheetOpen, setSheetOpen] = useState(false)
             </Button>
           </div>
         </div>
+
+        {summaryProject ? (
+          <div className="grid shrink-0 gap-x-4 gap-y-3 border-b bg-muted/20 px-4 py-3 sm:grid-cols-5">
+            <SummaryMetric
+              label="Original contract"
+              value={summaryStats.baseContractCents == null ? "Not set" : formatMoneyFromCents(summaryStats.baseContractCents)}
+            />
+            <SummaryMetric
+              label="Approved COs"
+              value={formatSignedMoneyFromCents(summaryStats.approvedCents)}
+              tone={summaryStats.approvedCents < 0 ? "positive" : "default"}
+            />
+            <SummaryMetric
+              label="Revised contract"
+              value={summaryStats.revisedContractCents == null ? "Not set" : formatMoneyFromCents(summaryStats.revisedContractCents)}
+            />
+            <SummaryMetric
+              label="Pending exposure"
+              value={formatSignedMoneyFromCents(summaryStats.pendingCents)}
+              tone={summaryStats.pendingCents !== 0 ? "warning" : "default"}
+            />
+            <SummaryMetric
+              label="Schedule"
+              value={formatSignedDays(summaryStats.approvedDays)}
+              detail={`${formatSignedDays(summaryStats.pendingDays)} pending`}
+            />
+          </div>
+        ) : null}
 
         {isMobile ? (
           <div className="min-h-0 flex-1 overflow-auto p-4">
@@ -871,6 +980,9 @@ const [sheetOpen, setSheetOpen] = useState(false)
         onSubmit={handleSubmit}
         isSubmitting={isPending}
         isGmpProject={isGmpProject}
+        costCodes={costCodes}
+        budgetLines={budgetLines}
+        costCodesEnabled={costCodesEnabled}
         changeOrder={editingChangeOrder}
       />
 

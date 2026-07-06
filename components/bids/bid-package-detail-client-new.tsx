@@ -4,8 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from
 import { format, formatDistanceToNow, isPast } from "date-fns"
 import { toast } from "sonner"
 
-import type { Company, CostCode, ProjectVendor } from "@/lib/types"
-import type { BidAddendum, BidInvite, BidPackage, BidSubmission } from "@/lib/services/bids"
+import type { Company, CostCode, ProjectVendor, Rfi } from "@/lib/types"
+import type { BidActivityItem, BidAddendum, BidInvite, BidPackage, BidSubmission } from "@/lib/services/bids"
 import type { BidPackageStatus } from "@/lib/validation/bids"
 import { cn } from "@/lib/utils"
 
@@ -70,6 +70,7 @@ import {
   createBidAddendumAction,
   bulkCreateBidInvitesAction,
   generateBidInviteLinkAction,
+  resendBidInviteAction,
   pauseBidInviteAccessAction,
   resumeBidInviteAccessAction,
   revokeBidInviteAccessAction,
@@ -78,6 +79,12 @@ import {
   resumeBidInviteAccountGrantsAction,
   revokeBidInviteAccountGrantsAction,
   listBidInvitesAction,
+  listBidSubmissionsAction,
+  createManualBidSubmissionAction,
+  updateBidSubmissionLevelingAction,
+  listBidPackageRfisAction,
+  answerBidPackageRfiAction,
+  listBidPackageActivityAction,
   awardBidSubmissionAction,
   updateBidPackageAction,
 } from "@/app/(app)/projects/[id]/bids/actions"
@@ -88,6 +95,7 @@ import {
   Ban,
   Building2,
   CheckCircle2,
+  Clock3,
   Copy,
   Download,
   Edit,
@@ -95,16 +103,18 @@ import {
   FileText,
   Loader2,
   Mail,
+  MessageSquare,
   MoreHorizontal,
   FolderOpen,
   Plus,
   Search,
+  Send,
   Shield,
   Settings,
   Sparkles,
+  TableProperties,
   Trash2,
   TrendingDown,
-  TrendingUp,
   Trophy,
   Upload,
   Users,
@@ -236,6 +246,36 @@ function mapAttachments(links: any[]): BidPackageAttachment[] {
 function formatCurrency(cents: number | null | undefined): string {
   if (cents == null) return "—"
   return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
+}
+
+function parseCurrencyToCents(value: string): number {
+  const normalized = value.replace(/[$,\s]/g, "")
+  if (!normalized) return 0
+  const amount = Number.parseFloat(normalized)
+  if (!Number.isFinite(amount)) return Number.NaN
+  return Math.round(amount * 100)
+}
+
+function parseLineItems(value: string) {
+  return value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [descriptionRaw, amountRaw, ...notesParts] = line.split("|").map((part) => part.trim())
+      const amount = parseCurrencyToCents(amountRaw ?? "")
+      return {
+        description: descriptionRaw,
+        amount_cents: amount,
+        notes: notesParts.join(" | ") || null,
+      }
+    })
+}
+
+function escapeCsv(value: string | number | null | undefined): string {
+  const text = value == null ? "" : String(value)
+  if (!/[",\n]/.test(text)) return text
+  return `"${text.replace(/"/g, '""')}"`
 }
 
 function getVendorStatusInfo(invite: BidInvite, submission?: BidSubmission | null): {
@@ -499,6 +539,19 @@ export function BidPackageDetailClientNew({
   const [addendumTitle, setAddendumTitle] = useState("")
   const [addendumMessage, setAddendumMessage] = useState("")
 
+  // Manual bid and leveling state
+  const [manualBidDialogOpen, setManualBidDialogOpen] = useState(false)
+  const [manualBidTarget, setManualBidTarget] = useState("")
+  const [manualBidTotal, setManualBidTotal] = useState("")
+  const [manualBidSubmittedBy, setManualBidSubmittedBy] = useState("")
+  const [manualBidEmail, setManualBidEmail] = useState("")
+  const [manualBidExclusions, setManualBidExclusions] = useState("")
+  const [manualBidClarifications, setManualBidClarifications] = useState("")
+  const [manualBidNotes, setManualBidNotes] = useState("")
+  const [manualBidLineItems, setManualBidLineItems] = useState("")
+  const [levelingDrafts, setLevelingDrafts] = useState<Record<string, { adjustment: string; notes: string }>>({})
+  const [savingLevelingId, setSavingLevelingId] = useState<string | null>(null)
+
   // Attachments state
   const [packageAttachments, setPackageAttachments] = useState<BidPackageAttachment[]>([])
   const [addendumAttachments, setAddendumAttachments] = useState<Record<string, AttachedFile[]>>({})
@@ -520,6 +573,11 @@ export function BidPackageDetailClientNew({
   const [submissionSheetOpen, setSubmissionSheetOpen] = useState(false)
   const [detailSubmission, setDetailSubmission] = useState<BidSubmission | null>(null)
   const [projectFilesSheetOpen, setProjectFilesSheetOpen] = useState(false)
+  const [bidRfis, setBidRfis] = useState<Rfi[]>([])
+  const [activityItems, setActivityItems] = useState<BidActivityItem[]>([])
+  const [rfiAnswerDrafts, setRfiAnswerDrafts] = useState<Record<string, string>>({})
+  const [rfiBroadcastDrafts, setRfiBroadcastDrafts] = useState<Record<string, boolean>>({})
+  const [answeringRfiId, setAnsweringRfiId] = useState<string | null>(null)
 
   // File upload state
   const [isUploading, setIsUploading] = useState(false)
@@ -533,8 +591,10 @@ export function BidPackageDetailClientNew({
   const [isSaving, startSaving] = useTransition()
   const [isInviting, startInviting] = useTransition()
   const [isAddingAddendum, startAddingAddendum] = useTransition()
+  const [isEnteringManualBid, startEnteringManualBid] = useTransition()
   const [isAwarding, startAwarding] = useTransition()
   const [isLinkingFiles, startLinkingFiles] = useTransition()
+  const [isUpdatingStatus, startUpdatingStatus] = useTransition()
 
   // Derived state
   const vendorCompanyIds = useMemo(
@@ -566,6 +626,40 @@ export function BidPackageDetailClientNew({
     }
     return map
   }, [submissionList])
+
+  useEffect(() => {
+    setLevelingDrafts((prev) => {
+      const next = { ...prev }
+      for (const submission of submissionList) {
+        if (!submission.is_current || next[submission.id]) continue
+        next[submission.id] = {
+          adjustment: submission.leveled_adjustment_cents ? (submission.leveled_adjustment_cents / 100).toFixed(2) : "",
+          notes: submission.leveling_notes ?? "",
+        }
+      }
+      return next
+    })
+  }, [submissionList])
+
+  const manualBidTargets = useMemo(() => {
+    const inviteTargets = inviteList.map((invite) => ({
+      value: `invite:${invite.id}`,
+      label: `${invite.company?.name ?? "Unknown company"}${submissionByInviteId.has(invite.id) ? " (revision)" : ""}`,
+      invite,
+      company: null as Company | null,
+    }))
+
+    const companyTargets = companies
+      .filter((company) => !invitedCompanyIds.has(company.id))
+      .map((company) => ({
+        value: `company:${company.id}`,
+        label: company.name,
+        invite: null as BidInvite | null,
+        company,
+      }))
+
+    return [...inviteTargets, ...companyTargets].sort((a, b) => a.label.localeCompare(b.label))
+  }, [companies, invitedCompanyIds, inviteList, submissionByInviteId])
 
   const tradeOptions = useMemo(() => {
     const tradeMap = new Map<string, string>()
@@ -689,6 +783,36 @@ export function BidPackageDetailClientNew({
   useEffect(() => {
     loadAddendumAttachments()
   }, [loadAddendumAttachments])
+
+  const loadBidRfis = useCallback(async () => {
+    try {
+      const rfis = await listBidPackageRfisAction(bidPackage.id)
+      setBidRfis(rfis)
+      setRfiBroadcastDrafts((prev) => {
+        const next = { ...prev }
+        for (const rfi of rfis) {
+          if (next[rfi.id] === undefined) next[rfi.id] = true
+        }
+        return next
+      })
+    } catch {
+      toast.error("Failed to load bid RFIs")
+    }
+  }, [bidPackage.id])
+
+  const loadBidActivity = useCallback(async () => {
+    try {
+      const activity = await listBidPackageActivityAction(bidPackage.id)
+      setActivityItems(activity)
+    } catch {
+      toast.error("Failed to load bid activity")
+    }
+  }, [bidPackage.id])
+
+  useEffect(() => {
+    loadBidRfis()
+    loadBidActivity()
+  }, [loadBidActivity, loadBidRfis])
 
   const loadProjectFiles = useCallback(async () => {
     setIsLoadingProjectFiles(true)
@@ -957,6 +1081,21 @@ export function BidPackageDetailClientNew({
     })
   }
 
+  const handleQuickStatusChange = (nextStatus: BidPackageStatus) => {
+    if (nextStatus === current.status || nextStatus === "awarded") return
+    startUpdatingStatus(async () => {
+      try {
+        const updated = await updateBidPackageAction(bidPackage.id, projectId, { status: nextStatus })
+        setCurrent(updated)
+        setStatus(updated.status)
+        toast.success(`Bid package marked ${nextStatus}`)
+        await loadBidActivity()
+      } catch (error: any) {
+        toast.error("Failed to update status", { description: error?.message ?? "Please try again." })
+      }
+    })
+  }
+
   const totalInviteCount = selectedCompanyIds.size + emailInvites.length
 
   const handleBulkInvite = () => {
@@ -1090,6 +1229,181 @@ export function BidPackageDetailClientNew({
       toast.success("Bid link copied to clipboard")
     } catch (error: any) {
       toast.error("Failed to generate link", { description: error?.message ?? "Please try again." })
+    }
+  }
+
+  const handleResendInvite = async (invite: BidInvite) => {
+    try {
+      await resendBidInviteAction(projectId, bidPackage.id, invite.id)
+      const refreshed = await listBidInvitesAction(bidPackage.id)
+      setInviteList(refreshed)
+      await loadBidActivity()
+      toast.success("Reminder queued")
+    } catch (error: any) {
+      toast.error("Failed to resend invite", { description: error?.message ?? "Please try again." })
+    }
+  }
+
+  const resetManualBidForm = () => {
+    setManualBidTarget("")
+    setManualBidTotal("")
+    setManualBidSubmittedBy("")
+    setManualBidEmail("")
+    setManualBidExclusions("")
+    setManualBidClarifications("")
+    setManualBidNotes("")
+    setManualBidLineItems("")
+  }
+
+  const handleManualBidSubmit = () => {
+    const target = manualBidTargets.find((item) => item.value === manualBidTarget)
+    if (!target) {
+      toast.error("Select a vendor")
+      return
+    }
+
+    const totalCents = parseCurrencyToCents(manualBidTotal)
+    if (!Number.isFinite(totalCents) || totalCents < 0) {
+      toast.error("Enter a valid bid amount")
+      return
+    }
+
+    const lineItems = parseLineItems(manualBidLineItems)
+    if (lineItems.some((item) => !item.description || !Number.isFinite(item.amount_cents))) {
+      toast.error("Line items need a description and amount")
+      return
+    }
+
+    startEnteringManualBid(async () => {
+      try {
+        const submission = await createManualBidSubmissionAction(projectId, bidPackage.id, {
+          bid_package_id: bidPackage.id,
+          bid_invite_id: target.invite?.id ?? null,
+          company_id: target.invite?.company_id ?? target.company?.id ?? null,
+          contact_id: target.invite?.contact_id ?? null,
+          invite_email: target.invite?.invite_email ?? target.invite?.contact?.email ?? target.company?.email ?? null,
+          total_cents: totalCents,
+          submitted_by_name: manualBidSubmittedBy.trim() || null,
+          submitted_by_email: manualBidEmail.trim() || null,
+          exclusions: manualBidExclusions.trim() || null,
+          clarifications: manualBidClarifications.trim() || null,
+          notes: manualBidNotes.trim() || null,
+          line_items: lineItems,
+        })
+
+        const [refreshedInvites, refreshedSubmissions] = await Promise.all([
+          listBidInvitesAction(bidPackage.id),
+          listBidSubmissionsAction(bidPackage.id),
+        ])
+        setInviteList(refreshedInvites)
+        setSubmissionList(refreshedSubmissions)
+        setDetailSubmission(submission)
+        setManualBidDialogOpen(false)
+        resetManualBidForm()
+        await loadBidActivity()
+        toast.success("Manual bid recorded")
+      } catch (error: any) {
+        toast.error("Failed to record manual bid", { description: error?.message ?? "Please try again." })
+      }
+    })
+  }
+
+  const handleLevelingDraftChange = (submissionId: string, patch: Partial<{ adjustment: string; notes: string }>) => {
+    setLevelingDrafts((prev) => ({
+      ...prev,
+      [submissionId]: {
+        adjustment: prev[submissionId]?.adjustment ?? "",
+        notes: prev[submissionId]?.notes ?? "",
+        ...patch,
+      },
+    }))
+  }
+
+  const handleSaveLeveling = async (submission: BidSubmission) => {
+    const draft = levelingDrafts[submission.id] ?? { adjustment: "", notes: "" }
+    const adjustmentCents = parseCurrencyToCents(draft.adjustment)
+    if (!Number.isFinite(adjustmentCents)) {
+      toast.error("Enter a valid adjustment")
+      return
+    }
+
+    setSavingLevelingId(submission.id)
+    try {
+      const updated = await updateBidSubmissionLevelingAction(projectId, bidPackage.id, {
+        bid_submission_id: submission.id,
+        leveled_adjustment_cents: adjustmentCents,
+        leveling_notes: draft.notes.trim() || null,
+      })
+      setSubmissionList((prev) => prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)))
+      setDetailSubmission((prev) => (prev?.id === updated.id ? { ...prev, ...updated } : prev))
+      await loadBidActivity()
+      toast.success("Leveling saved")
+    } catch (error: any) {
+      toast.error("Failed to save leveling", { description: error?.message ?? "Please try again." })
+    } finally {
+      setSavingLevelingId(null)
+    }
+  }
+
+  const handleExportBidTabCsv = () => {
+    const rows = Array.from(submissionByInviteId.values()).map((submission) => {
+      const invite = submission.invite ?? inviteList.find((item) => item.id === submission.bid_invite_id)
+      const adjustment = submission.leveled_adjustment_cents ?? 0
+      const total = submission.total_cents ?? 0
+      return [
+        invite?.company?.name ?? "Unknown company",
+        invite?.contact?.full_name ?? "",
+        invite?.invite_email ?? invite?.contact?.email ?? "",
+        formatCurrency(total),
+        formatCurrency(adjustment),
+        formatCurrency(total + adjustment),
+        submission.exclusions ?? "",
+        submission.clarifications ?? "",
+        submission.leveling_notes ?? "",
+      ]
+    })
+
+    const csv = [
+      ["Company", "Contact", "Email", "Bid", "Adjustment", "Leveled total", "Exclusions", "Clarifications", "Leveling notes"],
+      ...rows,
+    ]
+      .map((row) => row.map(escapeCsv).join(","))
+      .join("\n")
+
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = `${current.title.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase() || "bid-tab"}.csv`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const handleAnswerRfi = async (rfi: Rfi) => {
+    const body = rfiAnswerDrafts[rfi.id]?.trim()
+    if (!body) {
+      toast.error("Answer is required")
+      return
+    }
+
+    setAnsweringRfiId(rfi.id)
+    try {
+      const result = await answerBidPackageRfiAction(projectId, bidPackage.id, {
+        bid_package_id: bidPackage.id,
+        rfi_id: rfi.id,
+        body,
+        broadcast_as_addendum: rfiBroadcastDrafts[rfi.id] ?? true,
+      })
+      if (result.addendum) {
+        setAddendumList((prev) => [...prev, result.addendum!])
+      }
+      setRfiAnswerDrafts((prev) => ({ ...prev, [rfi.id]: "" }))
+      await Promise.all([loadBidRfis(), loadBidActivity()])
+      toast.success(result.addendum ? "RFI answered and addendum issued" : "RFI answered")
+    } catch (error: any) {
+      toast.error("Failed to answer RFI", { description: error?.message ?? "Please try again." })
+    } finally {
+      setAnsweringRfiId(null)
     }
   }
 
@@ -1323,12 +1637,27 @@ export function BidPackageDetailClientNew({
     const amounts = Array.from(submissionByInviteId.values())
       .filter((s) => s.total_cents != null)
       .map((s) => s.total_cents!)
+    const lowest = amounts.length > 0 ? Math.min(...amounts) : null
+    const highest = amounts.length > 0 ? Math.max(...amounts) : null
     return {
       count: amounts.length,
-      lowest: amounts.length > 0 ? Math.min(...amounts) : null,
-      highest: amounts.length > 0 ? Math.max(...amounts) : null,
+      lowest,
+      highest,
+      spread: lowest != null && highest != null ? highest - lowest : null,
+      responseLabel: `${amounts.length}/${inviteList.length}`,
+      budgetVariance: current.budget_cents != null && lowest != null ? lowest - current.budget_cents : null,
     }
-  }, [submissionByInviteId])
+  }, [current.budget_cents, inviteList.length, submissionByInviteId])
+
+  const currentSubmissions = useMemo(
+    () =>
+      Array.from(submissionByInviteId.values()).sort((a, b) => {
+        const aTotal = (a.total_cents ?? 0) + (a.leveled_adjustment_cents ?? 0)
+        const bTotal = (b.total_cents ?? 0) + (b.leveled_adjustment_cents ?? 0)
+        return aTotal - bTotal
+      }),
+    [submissionByInviteId],
+  )
 
   const chartData = useMemo(() => {
     const bids: Array<{
@@ -1778,6 +2107,18 @@ export function BidPackageDetailClientNew({
                         <span>{detailSubmission.duration_days}d duration</span>
                       )}
                     </div>
+                    {(detailSubmission.source || detailSubmission.leveled_adjustment_cents || detailSubmission.leveling_notes) && (
+                      <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                        {detailSubmission.source && (
+                          <Badge variant="outline" className="capitalize">{detailSubmission.source.replace("_", " ")}</Badge>
+                        )}
+                        {detailSubmission.leveled_adjustment_cents ? (
+                          <Badge variant="outline">
+                            Adjustment {formatCurrency(detailSubmission.leveled_adjustment_cents)}
+                          </Badge>
+                        ) : null}
+                      </div>
+                    )}
                   </div>
 
                   <div className="px-6 py-5 space-y-5">
@@ -1843,6 +2184,23 @@ export function BidPackageDetailClientNew({
                         <p className="text-muted-foreground">{detailContactEmail}</p>
                       </div>
                     </div>
+
+                    {(detailSubmission.line_items?.length ?? 0) > 0 && (
+                      <div className="space-y-2">
+                        <p className="text-xs font-medium text-muted-foreground">Line items</p>
+                        <div className="rounded-md border">
+                          {detailSubmission.line_items?.map((item, index) => (
+                            <div key={`${item.description}-${index}`} className="flex items-start justify-between gap-3 border-b px-3 py-2 last:border-b-0">
+                              <div className="min-w-0">
+                                <p className="text-sm font-medium">{item.description}</p>
+                                {item.notes && <p className="text-xs text-muted-foreground">{item.notes}</p>}
+                              </div>
+                              <p className="shrink-0 text-sm font-semibold tabular-nums">{formatCurrency(item.amount_cents)}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
                     {/* Notes & Clarifications */}
                     {showDetailNotes && (
@@ -2095,6 +2453,30 @@ export function BidPackageDetailClientNew({
               <span className="text-border">|</span>
               <span className={cn(isOverdue && "text-rose-600 font-medium")}>{dueRelativeLabel}</span>
             </div>
+            <div className="flex flex-wrap items-center gap-1.5 pt-2">
+              {(["draft", "sent", "open", "closed"] as BidPackageStatus[]).map((option) => (
+                <Button
+                  key={option}
+                  type="button"
+                  variant={current.status === option ? "default" : "outline"}
+                  size="sm"
+                  className="h-7 px-2.5 text-xs capitalize"
+                  disabled={isUpdatingStatus || current.status === "awarded"}
+                  onClick={() => handleQuickStatusChange(option)}
+                >
+                  {option}
+                </Button>
+              ))}
+              <Button
+                type="button"
+                variant={current.status === "awarded" ? "default" : "outline"}
+                size="sm"
+                className="h-7 px-2.5 text-xs capitalize"
+                disabled
+              >
+                awarded
+              </Button>
+            </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <Button variant="outline" size="sm" className="h-8" onClick={() => setEditSheetOpen(true)}>
@@ -2118,9 +2500,9 @@ export function BidPackageDetailClientNew({
           <div className="rounded-lg border bg-card px-4 py-3">
             <div className="flex items-center gap-2 text-muted-foreground mb-1">
               <FileText className="h-3.5 w-3.5" />
-              <p className="text-xs font-medium">Submitted</p>
+              <p className="text-xs font-medium">Responses</p>
             </div>
-            <p className="text-2xl font-bold tabular-nums">{bidStats.count}</p>
+            <p className="text-2xl font-bold tabular-nums">{bidStats.responseLabel}</p>
           </div>
           <div className="rounded-lg border bg-card px-4 py-3">
             <div className="flex items-center gap-2 text-muted-foreground mb-1">
@@ -2131,10 +2513,22 @@ export function BidPackageDetailClientNew({
           </div>
           <div className="rounded-lg border bg-card px-4 py-3">
             <div className="flex items-center gap-2 text-muted-foreground mb-1">
-              <TrendingUp className="h-3.5 w-3.5" />
-              <p className="text-xs font-medium">Highest</p>
+              <TableProperties className="h-3.5 w-3.5" />
+              <p className="text-xs font-medium">{current.budget_cents != null ? "Budget variance" : "Spread"}</p>
             </div>
-            <p className="text-2xl font-bold tabular-nums">{bidStats.highest != null ? formatCurrency(bidStats.highest) : "—"}</p>
+            <p
+              className={cn(
+                "text-2xl font-bold tabular-nums",
+                bidStats.budgetVariance != null && bidStats.budgetVariance > 0 && "text-rose-600",
+                bidStats.budgetVariance != null && bidStats.budgetVariance <= 0 && "text-emerald-600",
+              )}
+            >
+              {current.budget_cents != null
+                ? formatCurrency(bidStats.budgetVariance)
+                : bidStats.spread != null
+                  ? formatCurrency(bidStats.spread)
+                  : "—"}
+            </p>
           </div>
         </div>
 
@@ -2271,6 +2665,196 @@ export function BidPackageDetailClientNew({
           </div>
         )}
 
+        {/* === BID TAB / LEVELING === */}
+        {currentSubmissions.length > 0 && (
+          <div className="rounded-lg border bg-card">
+            <div className="flex flex-col gap-3 border-b px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h3 className="text-sm font-semibold">Bid tab</h3>
+                <p className="text-xs text-muted-foreground">
+                  {current.budget_cents != null
+                    ? `Budget ${formatCurrency(current.budget_cents)}`
+                    : "Compare current bids and level scope gaps."}
+                </p>
+              </div>
+              <Button variant="outline" size="sm" className="h-8" onClick={handleExportBidTabCsv}>
+                <Download className="mr-1.5 h-3.5 w-3.5" />
+                CSV
+              </Button>
+            </div>
+            <div className="overflow-x-auto">
+              <div className="min-w-[840px] divide-y">
+                <div className="grid grid-cols-[minmax(180px,1.4fr)_120px_130px_130px_minmax(180px,1fr)_88px] gap-3 px-4 py-2 text-[11px] font-medium uppercase text-muted-foreground">
+                  <span>Vendor</span>
+                  <span className="text-right">Bid</span>
+                  <span className="text-right">Adjustment</span>
+                  <span className="text-right">Leveled</span>
+                  <span>Notes</span>
+                  <span className="text-right">Save</span>
+                </div>
+                {currentSubmissions.map((submission) => {
+                  const invite = submission.invite ?? inviteList.find((item) => item.id === submission.bid_invite_id)
+                  const draft = levelingDrafts[submission.id] ?? { adjustment: "", notes: "" }
+                  const adjustmentCents = parseCurrencyToCents(draft.adjustment)
+                  const safeAdjustment = Number.isFinite(adjustmentCents) ? adjustmentCents : 0
+                  const leveledTotal = (submission.total_cents ?? 0) + safeAdjustment
+                  const variance = current.budget_cents != null ? leveledTotal - current.budget_cents : null
+
+                  return (
+                    <div key={submission.id} className="grid grid-cols-[minmax(180px,1.4fr)_120px_130px_130px_minmax(180px,1fr)_88px] items-center gap-3 px-4 py-3">
+                      <div className="min-w-0">
+                        <button
+                          type="button"
+                          className="truncate text-left text-sm font-medium hover:underline"
+                          onClick={() => openSubmissionSheet(submission)}
+                        >
+                          {invite?.company?.name ?? "Unknown company"}
+                        </button>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {submission.source === "manual" && (
+                            <Badge variant="outline" className="text-[10px] px-1 py-0">Manual</Badge>
+                          )}
+                          {submission.is_awarded && (
+                            <Badge variant="outline" className="border-amber-500/30 bg-amber-500/15 text-amber-600 text-[10px] px-1 py-0">Awarded</Badge>
+                          )}
+                        </div>
+                      </div>
+                      <div className="text-right text-sm font-semibold tabular-nums">
+                        {formatCurrency(submission.total_cents)}
+                      </div>
+                      <Input
+                        value={draft.adjustment}
+                        onChange={(e) => handleLevelingDraftChange(submission.id, { adjustment: e.target.value })}
+                        inputMode="decimal"
+                        className="h-8 text-right"
+                        placeholder="0.00"
+                      />
+                      <div className="text-right">
+                        <p className="text-sm font-semibold tabular-nums">{formatCurrency(leveledTotal)}</p>
+                        {variance != null && (
+                          <p className={cn("text-[11px] tabular-nums", variance > 0 ? "text-rose-600" : "text-emerald-600")}>
+                            {variance > 0 ? "+" : ""}
+                            {formatCurrency(variance)}
+                          </p>
+                        )}
+                      </div>
+                      <Input
+                        value={draft.notes}
+                        onChange={(e) => handleLevelingDraftChange(submission.id, { notes: e.target.value })}
+                        className="h-8"
+                        placeholder="Scope notes"
+                      />
+                      <div className="text-right">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-8"
+                          disabled={savingLevelingId === submission.id}
+                          onClick={() => handleSaveLeveling(submission)}
+                        >
+                          {savingLevelingId === submission.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save"}
+                        </Button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* === RFIS + ACTIVITY === */}
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded-lg border bg-card">
+            <div className="flex items-center justify-between border-b px-4 py-3">
+              <div className="flex items-center gap-2">
+                <MessageSquare className="h-4 w-4 text-muted-foreground" />
+                <h3 className="text-sm font-semibold">Bid RFIs</h3>
+              </div>
+              <Badge variant="secondary">{bidRfis.length}</Badge>
+            </div>
+            <div className="divide-y">
+              {bidRfis.length === 0 ? (
+                <p className="px-4 py-8 text-center text-sm text-muted-foreground">No bid RFIs yet.</p>
+              ) : (
+                bidRfis.map((rfi) => {
+                  const isAnswered = ["answered", "closed"].includes(rfi.status)
+                  return (
+                    <div key={rfi.id} className="space-y-3 px-4 py-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium">
+                            RFI #{rfi.rfi_number}: {rfi.subject}
+                          </p>
+                          <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{rfi.question}</p>
+                        </div>
+                        <Badge variant="outline" className="capitalize text-[10px]">{rfi.status}</Badge>
+                      </div>
+                      {!isAnswered && (
+                        <div className="space-y-2">
+                          <Textarea
+                            value={rfiAnswerDrafts[rfi.id] ?? ""}
+                            onChange={(e) => setRfiAnswerDrafts((prev) => ({ ...prev, [rfi.id]: e.target.value }))}
+                            rows={3}
+                            placeholder="Answer"
+                          />
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <Checkbox
+                                checked={rfiBroadcastDrafts[rfi.id] ?? true}
+                                onCheckedChange={(checked) => setRfiBroadcastDrafts((prev) => ({ ...prev, [rfi.id]: checked === true }))}
+                              />
+                              Broadcast as addendum
+                            </label>
+                            <Button size="sm" className="h-8" disabled={answeringRfiId === rfi.id} onClick={() => handleAnswerRfi(rfi)}>
+                              {answeringRfiId === rfi.id ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Send className="mr-1.5 h-3.5 w-3.5" />}
+                              Answer
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-lg border bg-card">
+            <div className="flex items-center justify-between border-b px-4 py-3">
+              <div className="flex items-center gap-2">
+                <Clock3 className="h-4 w-4 text-muted-foreground" />
+                <h3 className="text-sm font-semibold">Activity</h3>
+              </div>
+              <Badge variant="secondary">{activityItems.length}</Badge>
+            </div>
+            <div className="max-h-[360px] overflow-y-auto">
+              {activityItems.length === 0 ? (
+                <p className="px-4 py-8 text-center text-sm text-muted-foreground">No package activity yet.</p>
+              ) : (
+                <div className="divide-y">
+                  {activityItems.map((item) => (
+                    <div key={item.id} className="px-4 py-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="truncate text-sm font-medium">
+                          {item.event_type.replace(/_/g, " ")}
+                        </p>
+                        <span className="shrink-0 text-xs text-muted-foreground">
+                          {formatDistanceToNow(new Date(item.created_at), { addSuffix: true })}
+                        </span>
+                      </div>
+                      {typeof item.payload?.company_id === "string" && (
+                        <p className="mt-1 text-xs text-muted-foreground">Company {item.payload.company_id}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
         {/* === MAIN CONTENT: Vendors + Documents === */}
         <div className="grid gap-6 lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,340px)]">
           {/* Vendors */}
@@ -2279,23 +2863,101 @@ export function BidPackageDetailClientNew({
               <h3 className="text-sm font-medium text-muted-foreground">
                 Vendors ({inviteList.length})
               </h3>
-              <Dialog open={inviteDialogOpen} onOpenChange={(open) => {
-                setInviteDialogOpen(open)
-                if (!open) {
-                  setSelectedCompanyIds(new Set())
-                  setCompanySearch("")
-                  setEmailInvites([])
-                  setNewEmailInput("")
-                  setNewCompanyNameInput("")
-                  setTradeFilter(normalizeTrade(current.trade) || "all")
-                }
-              }}>
-                <DialogTrigger asChild>
-                  <Button size="sm" className="h-8">
-                    <Plus className="mr-1.5 h-3.5 w-3.5" />Invite
-                  </Button>
-                </DialogTrigger>
-                <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center gap-2">
+                <Dialog open={manualBidDialogOpen} onOpenChange={(open) => {
+                  setManualBidDialogOpen(open)
+                  if (!open) resetManualBidForm()
+                }}>
+                  <DialogTrigger asChild>
+                    <Button size="sm" variant="outline" className="h-8">
+                      <FileText className="mr-1.5 h-3.5 w-3.5" />Manual bid
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="sm:max-w-xl max-h-[90vh] overflow-y-auto">
+                    <DialogHeader>
+                      <DialogTitle>Record manual bid</DialogTitle>
+                      <DialogDescription>Add a bid received outside the portal.</DialogDescription>
+                    </DialogHeader>
+                    <div className="grid gap-4 py-4">
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <div className="space-y-2 sm:col-span-2">
+                          <Label>Vendor</Label>
+                          <Select value={manualBidTarget} onValueChange={setManualBidTarget}>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select vendor" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {manualBidTargets.map((target) => (
+                                <SelectItem key={target.value} value={target.value}>
+                                  {target.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Total bid</Label>
+                          <Input value={manualBidTotal} onChange={(e) => setManualBidTotal(e.target.value)} inputMode="decimal" placeholder="$0.00" />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Submitted by</Label>
+                          <Input value={manualBidSubmittedBy} onChange={(e) => setManualBidSubmittedBy(e.target.value)} placeholder="Name" />
+                        </div>
+                        <div className="space-y-2 sm:col-span-2">
+                          <Label>Email</Label>
+                          <Input value={manualBidEmail} onChange={(e) => setManualBidEmail(e.target.value)} type="email" placeholder="name@company.com" />
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Line items</Label>
+                        <Textarea
+                          value={manualBidLineItems}
+                          onChange={(e) => setManualBidLineItems(e.target.value)}
+                          placeholder="Description | Amount | Notes"
+                          rows={3}
+                        />
+                      </div>
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label>Exclusions</Label>
+                          <Textarea value={manualBidExclusions} onChange={(e) => setManualBidExclusions(e.target.value)} rows={3} />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Clarifications</Label>
+                          <Textarea value={manualBidClarifications} onChange={(e) => setManualBidClarifications(e.target.value)} rows={3} />
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Internal notes</Label>
+                        <Textarea value={manualBidNotes} onChange={(e) => setManualBidNotes(e.target.value)} rows={3} />
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <DialogClose asChild><Button variant="outline">Cancel</Button></DialogClose>
+                      <Button onClick={handleManualBidSubmit} disabled={isEnteringManualBid || !manualBidTarget || !manualBidTotal.trim()}>
+                        {isEnteringManualBid && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        Record bid
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+                <Dialog open={inviteDialogOpen} onOpenChange={(open) => {
+                  setInviteDialogOpen(open)
+                  if (!open) {
+                    setSelectedCompanyIds(new Set())
+                    setCompanySearch("")
+                    setEmailInvites([])
+                    setNewEmailInput("")
+                    setNewCompanyNameInput("")
+                    setTradeFilter(normalizeTrade(current.trade) || "all")
+                  }
+                }}>
+                  <DialogTrigger asChild>
+                    <Button size="sm" className="h-8">
+                      <Plus className="mr-1.5 h-3.5 w-3.5" />Invite
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
                   <DialogHeader>
                     <DialogTitle>Invite vendors</DialogTitle>
                     <DialogDescription>Select companies to invite or add new vendors by email.</DialogDescription>
@@ -2405,7 +3067,8 @@ export function BidPackageDetailClientNew({
                     </Button>
                   </DialogFooter>
                 </DialogContent>
-              </Dialog>
+                </Dialog>
+              </div>
             </div>
 
             {inviteList.length === 0 ? (
@@ -2490,7 +3153,7 @@ export function BidPackageDetailClientNew({
                       </div>
 
                       {/* Actions */}
-                      <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex items-center gap-1 shrink-0">
                         {submission && current.status !== "awarded" && submission.is_current && submission.total_cents != null && (
                           <Button size="sm" variant="outline" onClick={() => openAwardDialog(submission)} className="h-7 text-xs">Award</Button>
                         )}
@@ -2501,7 +3164,11 @@ export function BidPackageDetailClientNew({
                           <DropdownMenuContent align="end">
                             {submission && <DropdownMenuItem onSelect={() => openSubmissionSheet(submission)}><Eye className="mr-2 h-4 w-4" />View submission</DropdownMenuItem>}
                             <DropdownMenuItem onClick={() => handleGenerateLink(invite)}><Copy className="mr-2 h-4 w-4" />Copy link</DropdownMenuItem>
-                            {(invite.invite_email || invite.contact?.email) && <DropdownMenuItem><Mail className="mr-2 h-4 w-4" />Resend</DropdownMenuItem>}
+                            {(invite.invite_email || invite.contact?.email) && (
+                              <DropdownMenuItem onClick={() => handleResendInvite(invite)}>
+                                <Mail className="mr-2 h-4 w-4" />Resend
+                              </DropdownMenuItem>
+                            )}
                             <DropdownMenuSeparator />
                             {(invite.active_access_count ?? 0) > 0 && (
                               <DropdownMenuItem onClick={() => handlePauseInviteAccess(invite)}><Ban className="mr-2 h-4 w-4" />Pause access</DropdownMenuItem>
@@ -2656,6 +3323,17 @@ export function BidPackageDetailClientNew({
               <AlertDialogTitle>Award this bid?</AlertDialogTitle>
               <AlertDialogDescription>
                 This will award the bid to <span className="font-medium text-foreground">{selectedSubmission?.invite?.company?.name}</span> for <span className="font-medium text-foreground">{formatCurrency(selectedSubmission?.total_cents)}</span>. A commitment will be created automatically{current.cost_code_code ? <> and allocated to <span className="font-medium text-foreground">{current.cost_code_code}</span></> : ""}.
+                {current.budget_cents != null && selectedSubmission?.total_cents != null && (
+                  <span className="mt-3 block rounded-md border bg-muted/30 p-3 text-sm">
+                    Budget: <span className="font-medium text-foreground">{formatCurrency(current.budget_cents)}</span>
+                    <span className="mx-2 text-border">|</span>
+                    Variance:{" "}
+                    <span className={cn("font-medium", selectedSubmission.total_cents > current.budget_cents ? "text-rose-600" : "text-emerald-600")}>
+                      {selectedSubmission.total_cents > current.budget_cents ? "+" : ""}
+                      {formatCurrency(selectedSubmission.total_cents - current.budget_cents)}
+                    </span>
+                  </span>
+                )}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>

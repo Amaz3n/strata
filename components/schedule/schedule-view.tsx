@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect, useRef } from "react"
 import { cn } from "@/lib/utils"
 import type { ScheduleItem, ScheduleDependency, ScheduleAssignment, ScheduleBaseline } from "@/lib/types"
 import type { ScheduleBulkItemUpdate } from "./types"
@@ -12,10 +12,31 @@ import { LookaheadView } from "./lookahead-view"
 import { useSchedule } from "./schedule-context"
 
 // Inner component that uses the schedule context
-function ScheduleViewInner({ projectId, className }: { projectId: string; className?: string }) {
-  const { viewState, selectedItem, setSelectedItem } = useSchedule()
+function ScheduleViewInner({
+  projectId,
+  className,
+  focusItemId,
+}: {
+  projectId: string
+  className?: string
+  focusItemId?: string | null
+}) {
+  const { viewState, items, selectedItem, setSelectedItem } = useSchedule()
   const [sheetOpen, setSheetOpen] = useState(false)
   const [quickAddDates, setQuickAddDates] = useState<{ start: Date; end: Date } | null>(null)
+
+  // Deep link: /projects/[id]/schedule?item=<id> opens that item on arrival,
+  // so the org Schedule Gantt can click straight through to it. Runs once.
+  const focusedRef = useRef(false)
+  useEffect(() => {
+    if (focusedRef.current || !focusItemId) return
+    const target = items.find((item) => item.id === focusItemId)
+    if (target) {
+      setSelectedItem(target)
+      setSheetOpen(true)
+      focusedRef.current = true
+    }
+  }, [focusItemId, items, setSelectedItem])
 
   const handleAddItem = useCallback(() => {
     setSelectedItem(null)
@@ -78,6 +99,7 @@ function ScheduleViewInner({ projectId, className }: { projectId: string; classN
 interface ScheduleViewProps {
   className?: string
   projectId: string
+  focusItemId?: string | null
   items: ScheduleItem[]
   dependencies?: ScheduleDependency[]
   assignments?: ScheduleAssignment[]
@@ -93,6 +115,7 @@ interface ScheduleViewProps {
 export function ScheduleView({
   className,
   projectId,
+  focusItemId,
   items,
   dependencies = [],
   assignments = [],
@@ -117,7 +140,7 @@ export function ScheduleView({
       onDependencyCreate={onDependencyCreate}
       onDependencyDelete={onDependencyDelete}
     >
-      <ScheduleViewInner projectId={projectId} className={className} />
+      <ScheduleViewInner projectId={projectId} className={className} focusItemId={focusItemId} />
     </ScheduleProvider>
   )
 }

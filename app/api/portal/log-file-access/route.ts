@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { logPortalFileAccessAction } from "@/app/(app)/documents/actions"
+import { assertPortalActionAccess } from "@/lib/services/portal-access"
 
 export async function POST(request: NextRequest) {
   try {
@@ -21,7 +22,9 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    await logPortalFileAccessAction(fileId, portalToken, action, metadata || {})
+    const access = await assertPortalActionAccess(portalToken, { permission: "can_view_documents" })
+
+    await logPortalFileAccessAction(fileId, access.id, action, metadata || {})
 
     return NextResponse.json({ success: true })
   } catch (error: any) {
@@ -32,6 +35,5 @@ export async function POST(request: NextRequest) {
     )
   }
 }
-
 
 

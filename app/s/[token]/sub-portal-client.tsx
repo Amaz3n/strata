@@ -3,7 +3,7 @@
 import { useState, useCallback, useTransition, type ReactNode } from "react"
 import { useIsMobile } from "@/components/ui/use-mobile"
 import { PortalPinGate } from "@/components/portal/portal-pin-gate"
-import { LayoutDashboard, FileText, HelpCircle, ShieldCheck, MessageCircle } from "lucide-react"
+import { LayoutDashboard, FileText, HelpCircle, ShieldCheck } from "lucide-react"
 import { ExternalPortalShell } from "@/components/portal/external-portal-shell"
 import {
   SubBottomNav,
@@ -24,8 +24,9 @@ import type {
 interface SubPortalClientProps {
   data: SubPortalData
   token: string
-  canMessage?: boolean
   canSubmitInvoices?: boolean
+  canSubmitTime?: boolean
+  canSubmitExpenses?: boolean
   canDownloadFiles?: boolean
   canUploadComplianceDocs?: boolean
   pinRequired?: boolean
@@ -39,6 +40,8 @@ export function SubPortalClient({
   data: initialData,
   token,
   canSubmitInvoices = true,
+  canSubmitTime = true,
+  canSubmitExpenses = true,
   canDownloadFiles = true,
   canUploadComplianceDocs = true,
   pinRequired = false,
@@ -108,6 +111,8 @@ export function SubPortalClient({
           data={data}
           token={token}
           canSubmitInvoices={canSubmitInvoices}
+          canSubmitTime={canSubmitTime}
+          canSubmitExpenses={canSubmitExpenses}
           complianceStatus={complianceStatus}
         />
       )

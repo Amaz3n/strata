@@ -21,7 +21,8 @@ interface TasksPreviewProps {
 export function TasksPreview({ tasks, projects }: TasksPreviewProps) {
   const pendingTasks = tasks.filter((t) => t.status !== "done").slice(0, 5)
 
-  const getProjectName = (projectId: string) => {
+  const getProjectName = (projectId: string | null) => {
+    if (!projectId) return "Personal"
     return projects.find((p) => p.id === projectId)?.name || "Unknown Project"
   }
 

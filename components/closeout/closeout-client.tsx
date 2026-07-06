@@ -5,6 +5,7 @@ import { format, isBefore, parseISO, startOfToday } from "date-fns"
 import { toast } from "sonner"
 
 import type { CloseoutItem, CloseoutPackage } from "@/lib/types"
+import type { CloseReadinessCategory, CloseReadinessSection, ProjectCloseReadiness } from "@/lib/services/project-close-readiness"
 import { createCloseoutItemAction, updateCloseoutItemAction } from "@/app/(app)/closeout/actions"
 import { listAttachmentsAction, detachFileLinkAction, uploadFileAction, attachFileAction } from "@/app/(app)/documents/actions"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
@@ -19,7 +20,23 @@ import { Progress } from "@/components/ui/progress"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
-import { Calendar, CheckCircle2, Download, FileText, Link2, Plus, Search, XCircle } from "@/components/icons"
+import {
+  AlertTriangle,
+  Calendar,
+  CalendarDays,
+  CheckCircle2,
+  ClipboardCheck,
+  DollarSign,
+  Download,
+  FileText,
+  Hammer,
+  Link2,
+  Plus,
+  Search,
+  Truck,
+  XCircle,
+  type LucideIcon,
+} from "@/components/icons"
 
 const statusLabels: Record<string, string> = {
   missing: "Missing",
@@ -34,6 +51,36 @@ const statusStyles: Record<string, string> = {
 }
 
 type StatusFilter = "all" | "missing" | "in_progress" | "complete"
+
+const readinessTone = {
+  ready: {
+    label: "Ready",
+    badge: "border-success/30 bg-success/10 text-success",
+    text: "text-success",
+  },
+  warning: {
+    label: "Needs review",
+    badge: "border-warning/30 bg-warning/10 text-warning",
+    text: "text-warning",
+  },
+  blocked: {
+    label: "Blocked",
+    badge: "border-destructive/30 bg-destructive/10 text-destructive",
+    text: "text-destructive",
+  },
+}
+
+const categoryIcons: Record<CloseReadinessCategory, LucideIcon> = {
+  financial: DollarSign,
+  vendors: Truck,
+  schedule: CalendarDays,
+  field: Hammer,
+  closeout: ClipboardCheck,
+}
+
+function formatMoney(cents?: number | null) {
+  return ((cents ?? 0) / 100).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
+}
 
 function formatDate(date?: string | null) {
   if (!date) return "No due date"
@@ -67,14 +114,162 @@ function mapAttachments(links: Awaited<ReturnType<typeof listAttachmentsAction>>
   }))
 }
 
+function ReadinessSectionCard({ section }: { section: CloseReadinessSection }) {
+  const Icon = categoryIcons[section.key]
+  const tone = readinessTone[section.state]
+  const primaryIssue = section.issues[0]
+
+  return (
+    <div className="min-h-[132px] border bg-background p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center border bg-muted/40">
+            <Icon className="h-4 w-4 text-muted-foreground" />
+          </span>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold">{section.title}</p>
+            <p className="text-xs text-muted-foreground">
+              {section.blockerCount} blockers · {section.warningCount} warnings
+            </p>
+          </div>
+        </div>
+        <Badge variant="outline" className={cn("shrink-0 text-[10px] uppercase", tone.badge)}>
+          {tone.label}
+        </Badge>
+      </div>
+      <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+        <div>
+          <p className="text-xs text-muted-foreground">Exposure</p>
+          <p className="font-semibold tabular-nums">{formatMoney(section.amountCents)}</p>
+        </div>
+        <div>
+          <p className="text-xs text-muted-foreground">Open items</p>
+          <p className="font-semibold tabular-nums">{section.issues.length}</p>
+        </div>
+      </div>
+      <p className="mt-3 line-clamp-2 text-xs text-muted-foreground">
+        {primaryIssue ? primaryIssue.title : "No close blockers detected in this area."}
+      </p>
+    </div>
+  )
+}
+
+function ReadinessPanel({ readiness }: { readiness: ProjectCloseReadiness }) {
+  const tone = readinessTone[readiness.state]
+  const topIssues = readiness.sections.flatMap((section) => section.issues).slice(0, 6)
+
+  return (
+    <div className="space-y-4 px-4 sm:px-0">
+      <div className="border bg-card p-4 sm:p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline" className={cn("text-[11px] uppercase", tone.badge)}>
+                {tone.label}
+              </Badge>
+              <span className="text-xs text-muted-foreground">Project close readiness</span>
+            </div>
+            <h2 className="mt-3 text-xl font-semibold tracking-tight">
+              {readiness.state === "ready"
+                ? "This project is clear to close"
+                : readiness.state === "blocked"
+                  ? "This project is not ready to close"
+                  : "This project needs closeout review"}
+            </h2>
+            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
+              Closeout now checks the operational and financial loops around the job, not just the packet checklist.
+            </p>
+          </div>
+          <div className="grid grid-cols-3 gap-px overflow-hidden border bg-border text-sm lg:w-[420px]">
+            <div className="bg-background p-3">
+              <p className="text-xs text-muted-foreground">Blockers</p>
+              <p className={cn("mt-1 text-lg font-semibold tabular-nums", readiness.blockerCount > 0 && "text-destructive")}>
+                {readiness.blockerCount}
+              </p>
+            </div>
+            <div className="bg-background p-3">
+              <p className="text-xs text-muted-foreground">Warnings</p>
+              <p className={cn("mt-1 text-lg font-semibold tabular-nums", readiness.warningCount > 0 && "text-warning")}>
+                {readiness.warningCount}
+              </p>
+            </div>
+            <div className="bg-background p-3">
+              <p className="text-xs text-muted-foreground">At stake</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums">{formatMoney(readiness.blockingAmountCents)}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        {readiness.sections.map((section) => (
+          <ReadinessSectionCard key={section.key} section={section} />
+        ))}
+      </div>
+
+      <div className="border bg-background">
+        <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+          <div>
+            <p className="text-sm font-semibold">Action list</p>
+            <p className="text-xs text-muted-foreground">Resolve these before final handoff.</p>
+          </div>
+          {topIssues.length > 0 && <AlertTriangle className="h-4 w-4 text-warning" />}
+        </div>
+        {topIssues.length > 0 ? (
+          <div className="divide-y">
+            {topIssues.map((issue) => {
+              const Icon = categoryIcons[issue.category]
+              return (
+                <a key={issue.id} href={issue.href} className="flex items-start gap-3 px-4 py-3 transition-colors hover:bg-muted/40">
+                  <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center border bg-muted/40">
+                    <Icon className="h-4 w-4 text-muted-foreground" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium">{issue.title}</span>
+                      <Badge
+                        variant="outline"
+                        className={cn(
+                          "text-[10px] uppercase",
+                          issue.severity === "blocker"
+                            ? "border-destructive/30 bg-destructive/10 text-destructive"
+                            : "border-warning/30 bg-warning/10 text-warning",
+                        )}
+                      >
+                        {issue.severity}
+                      </Badge>
+                    </span>
+                    <span className="mt-1 block text-xs text-muted-foreground">
+                      {issue.detail}
+                      {issue.amountCents ? ` · ${formatMoney(issue.amountCents)}` : ""}
+                    </span>
+                  </span>
+                </a>
+              )
+            })}
+          </div>
+        ) : (
+          <div className="px-4 py-8 text-center">
+            <CheckCircle2 className="mx-auto h-8 w-8 text-success" />
+            <p className="mt-3 text-sm font-medium">No close blockers detected</p>
+            <p className="text-xs text-muted-foreground">The financial, vendor, schedule, field, and packet checks are clear.</p>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export function CloseoutClient({
   projectId,
   closeoutPackage,
   items,
+  readiness,
 }: {
   projectId: string
   closeoutPackage: CloseoutPackage
   items: CloseoutItem[]
+  readiness: ProjectCloseReadiness
 }) {
   const isMobile = useIsMobile()
   const [isPending, startTransition] = useTransition()
@@ -231,7 +426,9 @@ export function CloseoutClient({
 
   return (
     <>
-      <div className="-mx-4 -mb-4 -mt-6 flex h-[calc(100svh-3.5rem)] min-h-0 flex-col overflow-hidden bg-background">
+      <ReadinessPanel readiness={readiness} />
+
+      <div className="-mx-4 -mb-4 flex min-h-[620px] flex-col overflow-hidden border-t bg-background">
         <div className="sticky top-0 z-20 shrink-0 border-b bg-background">
           <div className="flex flex-col gap-3 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center">

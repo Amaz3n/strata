@@ -40,6 +40,7 @@ import { InvoiceDetailSheet } from "@/components/invoices/invoice-detail-sheet"
 import {
   createProjectDrawAction,
   deleteProjectDrawAction,
+  generateDrawPayApplicationAction,
   generateInvoiceFromDrawAction,
   linkInvoiceToDrawAction,
   listLinkableInvoicesForDrawAction,
@@ -49,6 +50,7 @@ import {
   updateProjectDrawAction,
 } from "@/app/(app)/projects/[id]/actions"
 import { getInvoiceDetailAction, manualResyncInvoiceAction } from "@/app/(app)/invoices/actions"
+import { unwrapAction } from "@/lib/action-result"
 
 const statusMap: Record<string, { label: string; tone: string }> = {
   pending: { label: "Pending", tone: "bg-amber-100 text-amber-700" },
@@ -120,6 +122,7 @@ export function DrawScheduleManager({
   const [draws, setDraws] = useState<DrawSchedule[]>(initialDraws)
   const [saving, startSaving] = useTransition()
   const [generatingInvoiceDrawId, setGeneratingInvoiceDrawId] = useState<string | null>(null)
+  const [generatingPayAppDrawId, setGeneratingPayAppDrawId] = useState<string | null>(null)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [editing, setEditing] = useState<DrawSchedule | null>(null)
   const [selectedDraw, setSelectedDraw] = useState<DrawSchedule | null>(null)
@@ -195,11 +198,11 @@ export function DrawScheduleManager({
   const loadLinkedInvoice = useCallback(async (invoiceId: string) => {
     setLinkedInvoiceLoading(true)
     try {
-      const result = await getInvoiceDetailAction(invoiceId)
+      const result = unwrapAction(await getInvoiceDetailAction(invoiceId))
       setLinkedInvoice(result.invoice)
       setLinkedInvoiceLink(result.link)
-      setLinkedInvoiceViews(result.views as InvoiceView[])
-      setLinkedInvoiceSyncHistory(result.syncHistory as any)
+      setLinkedInvoiceViews(result.views)
+      setLinkedInvoiceSyncHistory(result.syncHistory)
       return result.invoice
     } catch (err: any) {
       toast.error("Could not load linked invoice", { description: err?.message ?? "Please try again." })
@@ -357,6 +360,30 @@ export function DrawScheduleManager({
       toast.error("Could not generate invoice", { description: err?.message ?? "Please try again." })
     } finally {
       setGeneratingInvoiceDrawId(null)
+    }
+  }
+
+  async function handleGeneratePayApplication(draw: DrawSchedule) {
+    setGeneratingPayAppDrawId(draw.id)
+    try {
+      const result = await generateDrawPayApplicationAction(projectId, draw.id)
+      const bytes = Uint8Array.from(atob(result.pdfBase64), (char) => char.charCodeAt(0))
+      const blob = new Blob([bytes], { type: "application/pdf" })
+      const url = URL.createObjectURL(blob)
+      const popup = window.open(url, "_blank", "noopener,noreferrer")
+      if (!popup) {
+        const link = document.createElement("a")
+        link.href = url
+        link.download = result.fileName
+        document.body.appendChild(link)
+        link.click()
+        link.remove()
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch (err: any) {
+      toast.error("Could not generate pay application", { description: err?.message ?? "Please try again." })
+    } finally {
+      setGeneratingPayAppDrawId(null)
     }
   }
 
@@ -608,6 +635,10 @@ export function DrawScheduleManager({
                           {generatingInvoiceDrawId === draw.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ReceiptText className="mr-2 h-4 w-4" />}
                           {generatingInvoiceDrawId === draw.id ? "Creating invoice" : "Generate invoice"}
                         </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => handleGeneratePayApplication(draw)} disabled={Boolean(generatingPayAppDrawId)}>
+                          {generatingPayAppDrawId === draw.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
+                          {generatingPayAppDrawId === draw.id ? "Generating…" : "Pay application (G702)"}
+                        </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => handleDelete(draw)} disabled={saving || !canDelete}>
                           <Trash2 className="mr-2 h-4 w-4" />
@@ -675,7 +706,7 @@ export function DrawScheduleManager({
           if (!linkedInvoice) return
           setInvoiceResyncing(true)
           try {
-            await manualResyncInvoiceAction(linkedInvoice.id)
+            unwrapAction(await manualResyncInvoiceAction(linkedInvoice.id))
             toast.success("Resync enqueued")
             await loadLinkedInvoice(linkedInvoice.id)
           } catch (err: any) {

@@ -5,6 +5,7 @@ import { listSubmittalsAction } from "./actions"
 import { listProjectsAction } from "@/app/(app)/projects/actions"
 import { Skeleton } from "@/components/ui/skeleton"
 
+// desk-rule: reachable via dashboard/search/feature flows only, not workspace nav.
 export const dynamic = 'force-dynamic'
 
 async function SubmittalsData() {

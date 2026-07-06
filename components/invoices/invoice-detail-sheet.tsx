@@ -5,7 +5,8 @@ import { useMemo, useEffect, useState } from "react"
 import { format } from "date-fns"
 import { Copy, ExternalLink, Download, RefreshCw } from "lucide-react"
 
-import type { Invoice, InvoiceView, Payment, PaymentReversal } from "@/lib/types"
+import type { Invoice, InvoiceLienWaiver, InvoiceLienWaiverType, InvoiceView, Payment, PaymentReversal } from "@/lib/types"
+import { INVOICE_WAIVER_TYPES, INVOICE_WAIVER_TYPE_LABELS } from "@/lib/types"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
@@ -24,9 +25,58 @@ import {
   uploadFileAction,
   attachFileAction,
 } from "@/app/(app)/documents/actions"
-import { generateInvoicePdfAction } from "@/app/(app)/invoices/actions"
+import {
+  createInvoiceLienWaiverAction,
+  generateInvoicePdfAction,
+  updateInvoiceNotesAction,
+  voidInvoiceLienWaiverAction,
+} from "@/app/(app)/invoices/actions"
 import { recordPaymentAction } from "@/app/(app)/payments/actions"
+import { unwrapAction } from "@/lib/action-result"
 import { toast } from "sonner"
+
+type AttachmentLink = Awaited<ReturnType<typeof listAttachmentsAction>>[number]
+
+function mapAttachmentLinks(links: AttachmentLink[]): AttachedFile[] {
+  return links.map((link) => ({
+    id: link.file.id,
+    linkId: link.id,
+    file_name: link.file.file_name,
+    mime_type: link.file.mime_type,
+    size_bytes: link.file.size_bytes,
+    download_url: link.file.download_url,
+    thumbnail_url: link.file.thumbnail_url,
+    created_at: link.created_at,
+    link_role: link.link_role,
+  }))
+}
+
+/** Turn a raw user-agent string into something a builder can read at a glance. */
+function describeUserAgent(ua?: string | null): string | null {
+  if (!ua) return null
+  const device = /iphone/i.test(ua)
+    ? "iPhone"
+    : /ipad/i.test(ua)
+      ? "iPad"
+      : /android/i.test(ua)
+        ? "Android"
+        : /macintosh|mac os x/i.test(ua)
+          ? "Mac"
+          : /windows/i.test(ua)
+            ? "Windows"
+            : null
+  const browser = /edg\//i.test(ua)
+    ? "Edge"
+    : /chrome|crios/i.test(ua)
+      ? "Chrome"
+      : /firefox|fxios/i.test(ua)
+        ? "Firefox"
+        : /safari/i.test(ua)
+          ? "Safari"
+          : null
+  const parts = [device, browser].filter(Boolean)
+  return parts.length > 0 ? parts.join(" · ") : null
+}
 
 type Props = {
   trigger?: React.ReactNode
@@ -38,6 +88,7 @@ type Props = {
   syncHistory?: Array<{ id: string; status: string; last_synced_at: string; error_message?: string | null; qbo_id?: string | null }>
   payments?: Payment[]
   reversals?: PaymentReversal[]
+  lienWaivers?: InvoiceLienWaiver[]
   loading?: boolean
   onCopyLink?: () => void
   onManualResync?: () => Promise<void>
@@ -45,6 +96,7 @@ type Props = {
   onEdit?: () => void
   onRevise?: () => void
   onPaymentRecorded?: () => Promise<void> | void
+  onWaiversChanged?: () => Promise<void> | void
 }
 
 function formatMoneyFromCents(cents?: number | null) {
@@ -149,6 +201,7 @@ export function InvoiceDetailSheet({
   syncHistory,
   payments,
   reversals,
+  lienWaivers,
   loading,
   onCopyLink,
   onManualResync,
@@ -156,6 +209,7 @@ export function InvoiceDetailSheet({
   onEdit,
   onRevise,
   onPaymentRecorded,
+  onWaiversChanged,
 }: Props) {
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [attachmentsLoading, setAttachmentsLoading] = useState(false)
@@ -164,27 +218,23 @@ export function InvoiceDetailSheet({
   const [paymentAmount, setPaymentAmount] = useState("")
   const [paymentMethod, setPaymentMethod] = useState<"ach" | "card" | "wire" | "check">("ach")
   const [paymentReference, setPaymentReference] = useState("")
+  const [paymentDate, setPaymentDate] = useState("")
   const [recordingPayment, setRecordingPayment] = useState(false)
+  const [notesDraft, setNotesDraft] = useState("")
+  const [savingNotes, setSavingNotes] = useState(false)
+  const [waiverType, setWaiverType] = useState<InvoiceLienWaiverType>("conditional_progress")
+  const [creatingWaiver, setCreatingWaiver] = useState(false)
+  const [voidingWaiverId, setVoidingWaiverId] = useState<string | null>(null)
+
+  useEffect(() => {
+    setNotesDraft(invoice?.notes ?? "")
+  }, [invoice?.id, invoice?.notes])
 
   useEffect(() => {
     if (!open || !invoice?.id) return
     setAttachmentsLoading(true)
     listAttachmentsAction("invoice", invoice.id)
-      .then((links) =>
-        setAttachments(
-          links.map((link) => ({
-            id: link.file.id,
-            linkId: link.id,
-            file_name: link.file.file_name,
-            mime_type: link.file.mime_type,
-            size_bytes: link.file.size_bytes,
-            download_url: link.file.download_url,
-            thumbnail_url: link.file.thumbnail_url,
-            created_at: link.created_at,
-            link_role: link.link_role,
-          }))
-        )
-      )
+      .then((links) => setAttachments(mapAttachmentLinks(links)))
       .catch((error) => console.error("Failed to load invoice attachments", error))
       .finally(() => setAttachmentsLoading(false))
   }, [open, invoice?.id])
@@ -204,38 +254,58 @@ export function InvoiceDetailSheet({
     }
 
     const links = await listAttachmentsAction("invoice", invoice.id)
-    setAttachments(
-      links.map((link) => ({
-        id: link.file.id,
-        linkId: link.id,
-        file_name: link.file.file_name,
-        mime_type: link.file.mime_type,
-        size_bytes: link.file.size_bytes,
-        download_url: link.file.download_url,
-        thumbnail_url: link.file.thumbnail_url,
-        created_at: link.created_at,
-        link_role: link.link_role,
-      }))
-    )
+    setAttachments(mapAttachmentLinks(links))
   }
 
   const handleDetach = async (linkId: string) => {
     if (!invoice) return
     await detachFileLinkAction(linkId)
     const links = await listAttachmentsAction("invoice", invoice.id)
-    setAttachments(
-      links.map((link) => ({
-        id: link.file.id,
-        linkId: link.id,
-        file_name: link.file.file_name,
-        mime_type: link.file.mime_type,
-        size_bytes: link.file.size_bytes,
-        download_url: link.file.download_url,
-        thumbnail_url: link.file.thumbnail_url,
-        created_at: link.created_at,
-        link_role: link.link_role,
-      }))
-    )
+    setAttachments(mapAttachmentLinks(links))
+  }
+
+  const handleCreateWaiver = async () => {
+    if (!invoice?.id) return
+    setCreatingWaiver(true)
+    try {
+      unwrapAction(await createInvoiceLienWaiverAction({ invoiceId: invoice.id, waiverType }))
+      toast.success("Lien waiver attached", {
+        description: waiverType.startsWith("conditional")
+          ? "The client can view it now; it releases automatically when the invoice is paid."
+          : "It will be available to the client once the invoice is paid.",
+      })
+      await onWaiversChanged?.()
+    } catch (error: any) {
+      toast.error("Could not create lien waiver", { description: error?.message ?? "Please try again." })
+    } finally {
+      setCreatingWaiver(false)
+    }
+  }
+
+  const handleVoidWaiver = async (waiverId: string) => {
+    setVoidingWaiverId(waiverId)
+    try {
+      unwrapAction(await voidInvoiceLienWaiverAction(waiverId))
+      toast.success("Lien waiver voided")
+      await onWaiversChanged?.()
+    } catch (error: any) {
+      toast.error("Could not void lien waiver", { description: error?.message ?? "Please try again." })
+    } finally {
+      setVoidingWaiverId(null)
+    }
+  }
+
+  const handleSaveNotes = async () => {
+    if (!invoice?.id) return
+    setSavingNotes(true)
+    try {
+      unwrapAction(await updateInvoiceNotesAction(invoice.id, notesDraft))
+      toast.success("Notes saved")
+    } catch (error: any) {
+      toast.error("Could not save notes", { description: error?.message ?? "Please try again." })
+    } finally {
+      setSavingNotes(false)
+    }
   }
 
   const loadingView = (
@@ -290,15 +360,6 @@ export function InvoiceDetailSheet({
         ? sentToArray.filter(Boolean).join(", ")
         : undefined
 
-  const activity = useMemo(() => {
-    return (views ?? []).map((v) => ({
-      id: v.id,
-      viewed_at: v.viewed_at,
-      ip: v.ip_address,
-      ua: v.user_agent,
-    }))
-  }, [views])
-
   const isClientDeposit = metadata.source === "client_deposit"
 
   const reversalsByPayment = useMemo(() => {
@@ -324,6 +385,43 @@ export function InvoiceDetailSheet({
     [appliedPayments, reversalsByPayment],
   )
 
+  // One chronological story of the invoice: created → sent → viewed → paid/reversed.
+  const timeline = useMemo(() => {
+    type TimelineEntry = { id: string; at: string; label: string; detail?: string | null; tone?: "default" | "positive" | "destructive" }
+    const entries: TimelineEntry[] = []
+    if (invoice?.created_at) {
+      entries.push({ id: "created", at: invoice.created_at, label: "Invoice created" })
+    }
+    if (sentAtValue) {
+      entries.push({ id: "sent", at: String(sentAtValue), label: "Sent to client", detail: sentToValue ?? null })
+    }
+    for (const view of views ?? []) {
+      entries.push({ id: `view-${view.id}`, at: view.viewed_at, label: "Viewed by client", detail: describeUserAgent(view.user_agent) })
+    }
+    for (const payment of appliedPayments) {
+      entries.push({
+        id: `payment-${payment.id}`,
+        at: payment.received_at,
+        label: `Payment · ${formatMoneyFromCents(payment.amount_cents)}`,
+        detail: paymentSourceLabel(payment),
+        tone: "positive",
+      })
+    }
+    for (const reversal of reversals ?? []) {
+      if (reversal.status === "failed") continue
+      entries.push({
+        id: `reversal-${reversal.id}`,
+        at: reversal.occurred_at ?? reversal.created_at ?? "",
+        label: `${REVERSAL_TYPE_LABEL[reversal.reversal_type] ?? reversal.reversal_type} · −${formatMoneyFromCents(reversal.amount_cents)}`,
+        detail: reversal.reason ?? null,
+        tone: "destructive",
+      })
+    }
+    return entries
+      .filter((entry) => entry.at)
+      .sort((a, b) => String(b.at).localeCompare(String(a.at)))
+  }, [invoice?.created_at, sentAtValue, sentToValue, views, appliedPayments, reversals])
+
   const syncLogs = useMemo(() => {
     return (syncHistory ?? []).map((item) => ({
       id: item.id,
@@ -338,7 +436,7 @@ export function InvoiceDetailSheet({
     if (!invoice?.id) return
     setPdfLoading(true)
     try {
-      const result = await generateInvoicePdfAction(invoice.id, { persistToArc: true })
+      const result = unwrapAction(await generateInvoicePdfAction(invoice.id, { persistToArc: true }))
       if (result.downloadUrl && typeof window !== "undefined") {
         await openPdfUrl(result.downloadUrl, result.fileName)
       }
@@ -354,6 +452,7 @@ export function InvoiceDetailSheet({
     setPaymentAmount(((balanceDue ?? 0) / 100).toFixed(2))
     setPaymentMethod("ach")
     setPaymentReference("")
+    setPaymentDate(format(new Date(), "yyyy-MM-dd"))
     setPaymentDialogOpen(true)
   }
 
@@ -369,6 +468,16 @@ export function InvoiceDetailSheet({
       return
     }
 
+    const receivedAt = paymentDate ? new Date(`${paymentDate}T12:00:00`) : null
+    if (receivedAt && Number.isNaN(receivedAt.getTime())) {
+      toast.error("Enter a valid payment date")
+      return
+    }
+    if (receivedAt && receivedAt.getTime() > Date.now() + 24 * 60 * 60 * 1000) {
+      toast.error("Payment date cannot be in the future")
+      return
+    }
+
     setRecordingPayment(true)
     try {
       await recordPaymentAction({
@@ -380,6 +489,7 @@ export function InvoiceDetailSheet({
         method: paymentMethod,
         status: "succeeded",
         reference: paymentReference.trim() || undefined,
+        received_at: receivedAt ? receivedAt.toISOString() : undefined,
         metadata: {
           source: "arc_manual_invoice_payment",
         },
@@ -436,18 +546,37 @@ export function InvoiceDetailSheet({
                 </div>
 
                 <div className="flex flex-col gap-4">
-                  <span className="text-4xl font-semibold leading-none select-text">{formatMoneyFromCents(total)}</span>
+                  <div className="flex flex-col gap-1">
+                    <span className="text-4xl font-semibold leading-none select-text">
+                      {formatMoneyFromCents(balanceDue > 0 && balanceDue < total ? balanceDue : total)}
+                    </span>
+                    {balanceDue > 0 && balanceDue < total ? (
+                      <span className="text-sm text-muted-foreground">
+                        balance due of {formatMoneyFromCents(total)} total
+                      </span>
+                    ) : null}
+                  </div>
                   <div className="grid grid-cols-2 gap-3">
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      className="w-full justify-center"
-                      onClick={openRecordPaymentDialog}
-                      disabled={!canRecordPayment}
+                    <span
+                      title={
+                        canRecordPayment
+                          ? undefined
+                          : invoice?.status === "void"
+                            ? "Voided invoices cannot take payments"
+                            : "This invoice has no outstanding balance"
+                      }
                     >
-                      Mark paid
-                    </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="w-full justify-center"
+                        onClick={openRecordPaymentDialog}
+                        disabled={!canRecordPayment}
+                      >
+                        Record payment
+                      </Button>
+                    </span>
                     <Button
                       type="button"
                       variant="outline"
@@ -664,7 +793,53 @@ export function InvoiceDetailSheet({
           )}
 
           {!loading && (
-            <Accordion type="multiple" className="px-5 pb-8" defaultValue={[]}>
+            <Accordion type="multiple" className="px-5 pb-8" defaultValue={["line-items"]}>
+              <AccordionItem value="line-items">
+                <AccordionTrigger>Line items</AccordionTrigger>
+                <AccordionContent>
+                  {(invoice?.lines ?? []).length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No line items on this invoice.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        {(invoice?.lines ?? []).map((line, index) => {
+                          const lineTotal = Math.round((line.quantity ?? 1) * (line.unit_cost_cents ?? 0))
+                          return (
+                            <div key={line.id ?? index} className="flex items-start justify-between gap-3 text-sm">
+                              <div className="min-w-0">
+                                <p className="line-clamp-2">{line.description || "—"}</p>
+                                {(line.quantity ?? 1) !== 1 && (
+                                  <p className="text-xs text-muted-foreground">
+                                    {line.quantity} {line.unit ?? ""} × {formatMoneyFromCents(line.unit_cost_cents)}
+                                  </p>
+                                )}
+                              </div>
+                              <span className="shrink-0 font-mono">{formatMoneyFromCents(lineTotal)}</span>
+                            </div>
+                          )
+                        })}
+                      </div>
+                      <Separator />
+                      <div className="space-y-1 text-sm">
+                        <div className="flex items-center justify-between text-muted-foreground">
+                          <span>Subtotal</span>
+                          <span className="font-mono">{formatMoneyFromCents(subtotal)}</span>
+                        </div>
+                        {tax > 0 && (
+                          <div className="flex items-center justify-between text-muted-foreground">
+                            <span>Tax</span>
+                            <span className="font-mono">{formatMoneyFromCents(tax)}</span>
+                          </div>
+                        )}
+                        <div className="flex items-center justify-between font-medium">
+                          <span>Total</span>
+                          <span className="font-mono">{formatMoneyFromCents(total)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </AccordionContent>
+              </AccordionItem>
               <AccordionItem value="attachments">
                 <AccordionTrigger>Attachments</AccordionTrigger>
                 <AccordionContent>
@@ -680,16 +855,132 @@ export function InvoiceDetailSheet({
                   />
                 </AccordionContent>
               </AccordionItem>
+              <AccordionItem value="lien-waivers">
+                <AccordionTrigger>
+                  <span className="flex items-center gap-2">
+                    Lien waivers
+                    {(lienWaivers ?? []).length > 0 && (
+                      <Badge variant="secondary" className="h-5 rounded-sm px-1.5 text-[10px]">
+                        {(lienWaivers ?? []).length}
+                      </Badge>
+                    )}
+                  </span>
+                </AccordionTrigger>
+                <AccordionContent>
+                  <div className="space-y-3">
+                    {(lienWaivers ?? []).length > 0 && (
+                      <div className="space-y-2">
+                        {(lienWaivers ?? []).map((waiver) => (
+                          <div key={waiver.id} className="rounded-md border px-3 py-2 text-sm">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="min-w-0 truncate font-medium">
+                                {INVOICE_WAIVER_TYPE_LABELS[waiver.waiver_type] ?? waiver.waiver_type}
+                              </span>
+                              <Badge
+                                variant="outline"
+                                className={
+                                  waiver.status === "released"
+                                    ? "shrink-0 border-success/30 bg-success/10 text-success"
+                                    : "shrink-0 border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300"
+                                }
+                              >
+                                {waiver.status === "released" ? "Released" : "Pending payment"}
+                              </Badge>
+                            </div>
+                            <div className="mt-1 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                              <span>
+                                {formatMoneyFromCents(waiver.amount_cents)}
+                                {waiver.through_date ? ` · through ${format(new Date(waiver.through_date), "MMM d, yyyy")}` : ""}
+                              </span>
+                              <span className="flex shrink-0 items-center gap-2">
+                                {link && (
+                                  <a
+                                    href={`${link}/waiver/${waiver.id}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="underline underline-offset-2 hover:text-foreground"
+                                  >
+                                    View PDF
+                                  </a>
+                                )}
+                                {waiver.status === "pending_payment" && (
+                                  <button
+                                    type="button"
+                                    className="text-destructive underline underline-offset-2 disabled:opacity-50"
+                                    disabled={voidingWaiverId === waiver.id}
+                                    onClick={() => handleVoidWaiver(waiver.id)}
+                                  >
+                                    {voidingWaiverId === waiver.id ? "Voiding…" : "Void"}
+                                  </button>
+                                )}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-[1fr_auto] gap-2">
+                        <Select value={waiverType} onValueChange={(value) => setWaiverType(value as InvoiceLienWaiverType)}>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {INVOICE_WAIVER_TYPES.map((type) => (
+                              <SelectItem
+                                key={type}
+                                value={type}
+                                disabled={(lienWaivers ?? []).some((w) => w.waiver_type === type)}
+                              >
+                                {INVOICE_WAIVER_TYPE_LABELS[type]}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={
+                            creatingWaiver ||
+                            !invoice?.id ||
+                            invoice?.status === "void" ||
+                            (lienWaivers ?? []).some((w) => w.waiver_type === waiverType)
+                          }
+                          onClick={handleCreateWaiver}
+                        >
+                          {creatingWaiver ? "Attaching…" : "Attach"}
+                        </Button>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Conditional waivers are visible to the client immediately and release automatically when the invoice is
+                        paid in full. Unconditional waivers become available only after payment.
+                      </p>
+                    </div>
+                  </div>
+                </AccordionContent>
+              </AccordionItem>
               <AccordionItem value="internal-notes">
                 <AccordionTrigger>Internal notes</AccordionTrigger>
                 <AccordionContent>
                   <div className="space-y-2">
                     <Textarea
                       placeholder="Add internal notes for your team"
-                      defaultValue={invoice?.notes ?? ""}
+                      value={notesDraft}
+                      onChange={(event) => setNotesDraft(event.target.value)}
                       className="min-h-[120px]"
                     />
-                    <p className="text-xs text-muted-foreground">Clients will not see these notes.</p>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs text-muted-foreground">Clients will not see these notes.</p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={handleSaveNotes}
+                        disabled={savingNotes || (notesDraft === (invoice?.notes ?? ""))}
+                      >
+                        {savingNotes ? "Saving…" : "Save notes"}
+                      </Button>
+                    </div>
                   </div>
                 </AccordionContent>
               </AccordionItem>
@@ -697,16 +988,26 @@ export function InvoiceDetailSheet({
                 <AccordionTrigger>Activity</AccordionTrigger>
                 <AccordionContent>
                   <div className="space-y-3 text-sm">
-                    {activity.length === 0 && <p className="text-muted-foreground">No views yet.</p>}
-                    {activity.map((a) => (
-                      <div key={a.id} className="border-b pb-2 last:border-b-0 last:pb-0">
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium">
-                            {format(new Date(a.viewed_at), "MMM d, yyyy, h:mm a")}
+                    {timeline.length === 0 && <p className="text-muted-foreground">No activity yet.</p>}
+                    {timeline.map((entry) => (
+                      <div key={entry.id} className="flex items-start justify-between gap-3 border-b pb-2 last:border-b-0 last:pb-0">
+                        <div className="min-w-0">
+                          <span
+                            className={
+                              entry.tone === "positive"
+                                ? "font-medium text-success"
+                                : entry.tone === "destructive"
+                                  ? "font-medium text-destructive"
+                                  : "font-medium"
+                            }
+                          >
+                            {entry.label}
                           </span>
-                          {a.ip && <span className="text-xs text-muted-foreground">{a.ip}</span>}
+                          {entry.detail && <p className="mt-0.5 truncate text-xs text-muted-foreground">{entry.detail}</p>}
                         </div>
-                        {a.ua && <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{a.ua}</p>}
+                        <span className="shrink-0 text-xs text-muted-foreground">
+                          {format(new Date(entry.at), "MMM d, yyyy, h:mm a")}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -733,6 +1034,16 @@ export function InvoiceDetailSheet({
                   step="0.01"
                   value={paymentAmount}
                   onChange={(event) => setPaymentAmount(event.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium" htmlFor="invoice-payment-date">Payment date</label>
+                <Input
+                  id="invoice-payment-date"
+                  type="date"
+                  max={format(new Date(), "yyyy-MM-dd")}
+                  value={paymentDate}
+                  onChange={(event) => setPaymentDate(event.target.value)}
                 />
               </div>
               <div className="space-y-2">

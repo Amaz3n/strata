@@ -1,0 +1,59 @@
+/* Portfolio Gantt — org /schedule desk.
+   VISUAL marks (bars, milestones, today line, group headers, sidebar rows) are
+   shared with the project Gantt via components/schedule/gantt.css so the two
+   read the same and change together. This file holds ONLY the extra scaffolding
+   the portfolio view needs: a fixed day-level pixel timeline with a sticky label
+   column, plus firmer separators so project rows are easy to tell apart. Tokens
+   only, square corners (app/globals.css doctrine). */
+
+.pg-track {
+  position: relative;
+  min-width: 0;
+}
+
+/* Month rules (firm) and week rules (faint), drawn once behind every row and
+   offset past the sticky label column. */
+.pg-gridline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in oklab, var(--border) 70%, transparent);
+  z-index: 0;
+}
+.pg-gridline-week {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in oklab, var(--border) 32%, transparent);
+  z-index: 0;
+}
+/* Per-day rules, only at Day zoom (where columns are wide enough to read) */
+.pg-gridline-day {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in oklab, var(--border) 16%, transparent);
+  z-index: 0;
+}
+
+/* Sticky label column: stays put while the timeline scrolls, and carries firm
+   right + bottom rules so one project row never blurs into the next. */
+.pg-label {
+  position: sticky;
+  left: 0;
+  z-index: 20;
+  background: var(--background);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+/* Row bottom rule on the timeline side too, so separators run edge to edge. */
+.pg-track {
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+}
+.pg-row:hover > .pg-label,
+.pg-row:hover > .pg-track {
+  background: color-mix(in oklab, var(--muted) 45%, var(--background));
+}

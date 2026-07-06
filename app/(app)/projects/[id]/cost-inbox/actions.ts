@@ -14,11 +14,13 @@ import {
 } from "@/lib/services/cost-plus"
 import { updateVendorBillStatus } from "@/lib/services/vendor-bills"
 import { getProjectFinancialSettings } from "@/lib/services/project-financial-setup"
+import { APPROVAL_GATE_REASONS } from "@/lib/financials/approval-gates"
 
 function revalidateProjectMoney(projectId: string) {
   revalidatePath(`/projects/${projectId}`)
   revalidatePath(`/projects/${projectId}/cost-inbox`)
   revalidatePath(`/projects/${projectId}/financials`)
+  revalidatePath(`/projects/${projectId}/financials/review`)
   revalidatePath(`/projects/${projectId}/financials/budget`)
   revalidatePath(`/projects/${projectId}/financials/payables`)
   revalidatePath(`/projects/${projectId}/financials/receivables`)
@@ -32,6 +34,7 @@ export interface CategorizeTimeEntryInput {
   baseRateDollars?: number
   isBillable?: boolean
   isOvertime?: boolean
+  otMultiplier?: number
 }
 
 async function assertInboxTimeEntryEditable(projectId: string, entryId: string) {
@@ -68,6 +71,7 @@ export async function categorizeInboxTimeEntryAction(
         : undefined,
     isBillable: input.isBillable,
     isOvertime: input.isOvertime,
+    otMultiplier: input.otMultiplier,
   })
   revalidateProjectMoney(projectId)
 }
@@ -86,6 +90,7 @@ export async function categorizeAndApproveInboxTimeEntryAction(
         : undefined,
     isBillable: input.isBillable,
     isOvertime: input.isOvertime,
+    otMultiplier: input.otMultiplier,
   })
   await approveTimeEntry(entryId)
   revalidateProjectMoney(projectId)
@@ -103,6 +108,7 @@ export async function approveInboxTimeEntryAction(projectId: string, entryId: st
           : undefined,
       isBillable: input.isBillable,
       isOvertime: input.isOvertime,
+      otMultiplier: input.otMultiplier,
     })
   }
   await approveTimeEntry(entryId)
@@ -195,7 +201,7 @@ export async function approveInboxVendorBillAction(projectId: string, billId: st
     throw new Error("Multi-line vendor bills must be coded line-by-line from Payables before approval")
   }
   if (costCodesEnabled && (billLines ?? []).length > 1 && (billLines ?? []).some((line) => !line.cost_code_id)) {
-    throw new Error("Every vendor bill line needs a cost code before approval")
+    throw new Error(APPROVAL_GATE_REASONS.vendorBillLineMissingCostCode)
   }
   await updateVendorBillStatus({
     billId,

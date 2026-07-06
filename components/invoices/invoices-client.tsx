@@ -1,13 +1,13 @@
 "use client"
 
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { addDays, format } from "date-fns"
+import { addDays, format, parseISO } from "date-fns"
 import { toast } from "sonner"
 import { AnimatePresence } from "framer-motion"
 
-import { useRouter, useSearchParams, usePathname } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 
-import type { Contact, CostCode, Invoice, Project, InvoiceView, Payment, PaymentReversal } from "@/lib/types"
+import type { Contact, CostCode, Invoice, InvoiceLienWaiver, Project, InvoiceView, Payment, PaymentReversal } from "@/lib/types"
 import type { OwnerBillingPackageSummary } from "@/lib/services/owner-billing-packages"
 import type { InvoiceInput } from "@/lib/validation/invoices"
 import {
@@ -29,6 +29,8 @@ import {
   shareOwnerBillingPackageAction,
 } from "@/app/(app)/projects/[id]/financials/actions"
 import { InvoiceComposerSheet } from "@/components/invoices/invoice-composer-sheet"
+import { InvoiceSchedulesDialog, MakeRecurringDialog } from "@/components/invoices/invoice-schedules"
+import { unwrapAction } from "@/lib/action-result"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -66,7 +68,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Ban, Plus, Building2, Calendar, Filter, FolderOpen, List, MoreHorizontal, RefreshCcw, Search, Trash2 } from "@/components/icons"
+import { Ban, Plus, Building2, Calendar, Copy, Filter, FolderOpen, List, MoreHorizontal, RefreshCcw, Search, Trash2 } from "@/components/icons"
+import { ChevronDown, ChevronUp, Repeat, X } from "lucide-react"
 import { InvoiceDetailSheet } from "@/components/invoices/invoice-detail-sheet"
 import { InvoiceBottomBar } from "@/components/invoices/invoice-bottom-bar"
 import { QboSyncSheet } from "@/components/integrations/qbo-sync-sheet"
@@ -89,8 +92,8 @@ const statusLabels: Record<StatusKey, string> = {
 const statusStyles: Record<StatusKey, string> = {
   draft: "bg-muted text-muted-foreground border-muted",
   saved: "bg-muted text-muted-foreground border-muted",
-  sent: "bg-blue-500/15 text-blue-600 border-blue-500/30",
-  partial: "bg-purple-500/15 text-purple-700 border-purple-500/30",
+  sent: "bg-primary/10 text-primary border-primary/30",
+  partial: "bg-warning/15 text-warning border-warning/30",
   paid: "bg-success/20 text-success border-success/30",
   overdue: "bg-destructive/20 text-destructive border-destructive/30",
   void: "bg-muted text-muted-foreground border-muted",
@@ -109,6 +112,89 @@ function resolveStatusKey(status?: string | null): StatusKey {
   const allowed: StatusKey[] = ["draft", "saved", "sent", "partial", "paid", "overdue", "void"]
   return allowed.includes(status as StatusKey) ? (status as StatusKey) : "draft"
 }
+
+function balanceCentsOf(invoice: Invoice): number {
+  return (
+    invoice.balance_due_cents ??
+    invoice.totals?.balance_due_cents ??
+    invoice.total_cents ??
+    invoice.totals?.total_cents ??
+    0
+  )
+}
+
+function totalCentsOf(invoice: Invoice): number {
+  return invoice.total_cents ?? invoice.totals?.total_cents ?? 0
+}
+
+function customerNameOf(invoice: Invoice): string {
+  return (
+    invoice.customer_name ??
+    (invoice.metadata as Record<string, any> | undefined)?.customer_name ??
+    invoice.sent_to_emails?.[0] ??
+    ""
+  )
+}
+
+function startOfToday(): Date {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return today
+}
+
+/**
+ * Invoice dates are date-only strings ("yyyy-MM-dd"). `new Date(str)` parses them as UTC
+ * midnight, which shifts them a day early for anyone west of UTC — parseISO keeps them local.
+ */
+function parseDateOnly(value: string): Date {
+  const date = parseISO(value)
+  date.setHours(0, 0, 0, 0)
+  return date
+}
+
+function daysPastDue(invoice: Invoice): number {
+  if (!invoice.due_date) return 0
+  const due = parseDateOnly(invoice.due_date)
+  const diff = startOfToday().getTime() - due.getTime()
+  return diff > 0 ? Math.floor(diff / (1000 * 60 * 60 * 24)) : 0
+}
+
+/**
+ * Single source of truth for "overdue" in this view: a sent/partial invoice with an
+ * outstanding balance past its due date shows as overdue even if the stored status
+ * hasn't been rolled forward yet.
+ */
+function displayStatusKey(invoice: Invoice): StatusKey {
+  const base = resolveStatusKey(invoice.status)
+  if ((base === "sent" || base === "partial") && balanceCentsOf(invoice) > 0 && daysPastDue(invoice) > 0) {
+    return "overdue"
+  }
+  return base
+}
+
+const OPEN_STATUSES: StatusKey[] = ["sent", "partial", "overdue"]
+
+const INVOICE_PAGE_SIZE = 100
+
+const AGING_BUCKET_LABELS = ["1–30 days", "31–60 days", "61–90 days", "90+ days"] as const
+
+type AgingBucket = 0 | 1 | 2 | 3
+
+function agingBucketOf(days: number): AgingBucket | null {
+  if (days <= 0) return null
+  if (days <= 30) return 0
+  if (days <= 60) return 1
+  if (days <= 90) return 2
+  return 3
+}
+
+export interface InvoiceArSummary {
+  outstandingCents: number
+  overdueCents: number
+  buckets: [number, number, number, number]
+}
+
+type SortKey = "number" | "customer" | "issue_date" | "due_date" | "amount" | "balance" | "status"
 
 function BackupPackageBadge({
   summary,
@@ -142,9 +228,9 @@ function BackupPackageBadge({
     voided: "Voided",
   }
   const styles: Record<string, string> = {
-    generated: "border-amber-500/30 bg-amber-500/10 text-amber-700",
-    shared: "border-blue-500/30 bg-blue-500/10 text-blue-700",
-    downloaded: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700",
+    generated: "border-warning/30 bg-warning/10 text-warning",
+    shared: "border-primary/30 bg-primary/10 text-primary",
+    downloaded: "border-success/30 bg-success/10 text-success",
     accepted: "border-success/30 bg-success/15 text-success",
     draft: "border-muted bg-muted/40 text-muted-foreground",
     voided: "border-muted bg-muted/40 text-muted-foreground",
@@ -164,6 +250,7 @@ function BackupPackageBadge({
 
 interface InvoicesClientProps {
   invoices: Invoice[]
+  /** The single project this workbench is scoped to (composer + QBO sheet context). */
   projects: Project[]
   initialOpenInvoiceId?: string
   onInitialOpenInvoiceHandled?: () => void
@@ -178,8 +265,8 @@ interface InvoicesClientProps {
   ownerBillingPackages?: OwnerBillingPackageSummary[]
   enableApprovedCostsSource?: boolean
   toolbarLeading?: ReactNode
-  fullBleed?: boolean
-  projectScoped?: boolean
+  /** Server-computed aging over the whole book — correct even when only a page of rows is loaded. */
+  arSummary?: InvoiceArSummary | null
 }
 
 export function InvoicesClient({
@@ -194,21 +281,24 @@ export function InvoicesClient({
   ownerBillingPackages = [],
   enableApprovedCostsSource,
   toolbarLeading,
-  fullBleed = false,
-  projectScoped = false,
+  arSummary: serverArSummary = null,
 }: InvoicesClientProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const pathname = usePathname()
   const urlInvoiceId = searchParams.get("invoice") || searchParams.get("invoiceId")
 
   const [items, setItems] = useState<Invoice[]>(invoices)
   const [packageSummaries, setPackageSummaries] = useState<OwnerBillingPackageSummary[]>(ownerBillingPackages)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
-  const [filterProjectId, setFilterProjectId] = useState<string>("all")
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all")
   const [dueFilter, setDueFilter] = useState<DueFilter>("any")
+  const [agingFilter, setAgingFilter] = useState<AgingBucket | null>(null)
   const [searchTerm, setSearchTerm] = useState("")
+  const [sortKey, setSortKey] = useState<SortKey | null>(null)
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
+  const [sendingBulkReminders, setSendingBulkReminders] = useState(false)
+  const [hasMore, setHasMore] = useState(invoices.length >= INVOICE_PAGE_SIZE)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [sheetOpen, setSheetOpen] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
   const [isUpdating, setIsUpdating] = useState(false)
@@ -229,11 +319,16 @@ export function InvoicesClient({
   >()
   const [detailPayments, setDetailPayments] = useState<Payment[] | undefined>(undefined)
   const [detailReversals, setDetailReversals] = useState<PaymentReversal[] | undefined>(undefined)
+  const [detailLienWaivers, setDetailLienWaivers] = useState<InvoiceLienWaiver[] | undefined>(undefined)
   const [isResyncing, setIsResyncing] = useState(false)
   const [queueOpen, setQueueOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null)
+  const [duplicatingInvoice, setDuplicatingInvoice] = useState<Invoice | null>(null)
+  const [recurringSourceInvoice, setRecurringSourceInvoice] = useState<Invoice | null>(null)
+  const [schedulesOpen, setSchedulesOpen] = useState(false)
   const [sendingReminderId, setSendingReminderId] = useState<string | null>(null)
+  const [sharingDraftInvoice, setSharingDraftInvoice] = useState<Invoice | null>(null)
   const [voidingInvoice, setVoidingInvoice] = useState<Invoice | null>(null)
   const [revisingInvoice, setRevisingInvoice] = useState<Invoice | null>(null)
   const [deletingInvoice, setDeletingInvoice] = useState<Invoice | null>(null)
@@ -247,11 +342,15 @@ export function InvoicesClient({
   const [packageActionInvoiceId, setPackageActionInvoiceId] = useState<string | null>(null)
   const [packageActionKind, setPackageActionKind] = useState<"generate" | "share" | null>(null)
   const lastAutoOpenedInvoiceId = useRef<string | undefined>(undefined)
+  // The invoice id currently being opened/loaded. Guards the URL-watcher effect from firing a
+  // second fetch for an open that handleOpenDetail itself triggered via router.replace.
+  const openingInvoiceIdRef = useRef<string | null>(null)
   const invoiceReleaseDescription = enableApprovedCostsSource
     ? "linked draws, billable costs, or retainage"
     : "linked draws, change orders, or retainage"
 
   const handleOpenDetail = useCallback(async (invoiceId: string) => {
+    openingInvoiceIdRef.current = invoiceId
     setDetailOpen(true)
     setDetailLoading(true)
     setDetailInvoice(null)
@@ -260,6 +359,7 @@ export function InvoicesClient({
     setDetailSyncHistory(undefined)
     setDetailPayments(undefined)
     setDetailReversals(undefined)
+    setDetailLienWaivers(undefined)
 
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search)
@@ -268,13 +368,14 @@ export function InvoicesClient({
     }
 
     try {
-      const result = await getInvoiceDetailAction(invoiceId)
+      const result = unwrapAction(await getInvoiceDetailAction(invoiceId))
       setDetailInvoice(result.invoice)
       setDetailLink(result.link)
-      setDetailViews(result.views as InvoiceView[])
-      setDetailSyncHistory(result.syncHistory as any)
-      setDetailPayments((result.payments as Payment[]) ?? [])
-      setDetailReversals((result.reversals as PaymentReversal[]) ?? [])
+      setDetailViews(result.views)
+      setDetailSyncHistory(result.syncHistory)
+      setDetailPayments(result.payments ?? [])
+      setDetailReversals(result.reversals ?? [])
+      setDetailLienWaivers(result.lienWaivers ?? [])
     } catch (error: any) {
       console.error(error)
       toast.error("Could not load invoice", {
@@ -287,6 +388,7 @@ export function InvoicesClient({
 
   useEffect(() => {
     setItems(invoices)
+    setHasMore(invoices.length >= INVOICE_PAGE_SIZE)
   }, [invoices])
 
   useEffect(() => {
@@ -301,8 +403,11 @@ export function InvoicesClient({
   }, [initialOpenInvoiceId, onInitialOpenInvoiceHandled, handleOpenDetail])
 
   useEffect(() => {
-    if (urlInvoiceId && urlInvoiceId !== detailInvoice?.id) {
+    if (urlInvoiceId && urlInvoiceId !== detailInvoice?.id && urlInvoiceId !== openingInvoiceIdRef.current) {
       void handleOpenDetail(urlInvoiceId)
+    }
+    if (!urlInvoiceId) {
+      openingInvoiceIdRef.current = null
     }
   }, [urlInvoiceId, detailInvoice?.id, handleOpenDetail])
 
@@ -318,6 +423,7 @@ export function InvoicesClient({
       setDetailSyncHistory(undefined)
       setDetailPayments(undefined)
       setDetailReversals(undefined)
+      setDetailLienWaivers(undefined)
     } else if (
       prevPendingLabelRef.current &&
       !pendingOpenInvoiceLabel &&
@@ -331,26 +437,44 @@ export function InvoicesClient({
     prevPendingLabelRef.current = pendingOpenInvoiceLabel
   }, [detailInvoice, detailLoading, initialOpenInvoiceId, pendingOpenInvoiceLabel])
 
-  const projectLookup = useMemo(() => {
-    return projects.reduce<Record<string, Project>>((acc, project) => {
-      acc[project.id] = project
-      return acc
-    }, {})
-  }, [projects])
+  // When the project has more invoices than are loaded, client-side search would silently miss
+  // unloaded rows — fall through to a debounced server search over the whole book instead.
+  const [serverSearchResults, setServerSearchResults] = useState<Invoice[] | null>(null)
+  const scopedProjectId = projects.length === 1 ? projects[0]?.id : undefined
+  useEffect(() => {
+    const term = searchTerm.trim()
+    if (!term || !hasMore) {
+      setServerSearchResults(null)
+      return
+    }
+    let cancelled = false
+    const handle = setTimeout(() => {
+      listInvoicesAction(scopedProjectId, { limit: INVOICE_PAGE_SIZE, search: term })
+        .then((result) => {
+          if (!cancelled) setServerSearchResults(unwrapAction(result))
+        })
+        .catch(() => {
+          if (!cancelled) setServerSearchResults(null)
+        })
+    }, 300)
+    return () => {
+      cancelled = true
+      clearTimeout(handle)
+    }
+  }, [searchTerm, hasMore, scopedProjectId])
 
   const filtered = useMemo(() => {
     const term = searchTerm.trim().toLowerCase()
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
+    const today = startOfToday()
     const soon = addDays(today, 7)
+    const searchBase = serverSearchResults ?? items
 
-    return items.filter((item) => {
-      const matchesProject = filterProjectId === "all" || item.project_id === filterProjectId
-      const resolvedStatus = resolveStatusKey(item.status)
+    return searchBase.filter((item) => {
+      const resolvedStatus = displayStatusKey(item)
       const matchesStatus = statusFilter === "all" || resolvedStatus === statusFilter
 
-      const dueDate = item.due_date ? new Date(item.due_date) : null
-      if (dueDate) dueDate.setHours(0, 0, 0, 0)
+      const dueDate = item.due_date ? parseDateOnly(item.due_date) : null
+      const isOpen = OPEN_STATUSES.includes(resolvedStatus) && balanceCentsOf(item) > 0
       const matchesDue =
         dueFilter === "any"
           ? true
@@ -358,19 +482,109 @@ export function InvoicesClient({
             ? !dueDate
             : dueDate
               ? dueFilter === "overdue"
-                ? dueDate < today
+                ? // "Overdue" means money actually owed past its date — paid/void invoices don't qualify.
+                  isOpen && dueDate < today
                 : dueDate >= today && dueDate <= soon
               : false
 
+      const matchesAging = agingFilter === null || (isOpen && agingBucketOf(daysPastDue(item)) === agingFilter)
+
       const matchesSearch =
         term.length === 0 ||
-        [item.title ?? "", item.invoice_number ?? "", (item.project_id ? projectLookup[item.project_id]?.name : "") ?? ""].some((value) =>
+        [item.title ?? "", item.invoice_number ?? "", customerNameOf(item)].some((value) =>
           value.toLowerCase().includes(term),
         )
 
-      return matchesProject && matchesStatus && matchesDue && matchesSearch
+      return matchesStatus && matchesDue && matchesAging && matchesSearch
     })
-  }, [dueFilter, filterProjectId, items, projectLookup, searchTerm, statusFilter])
+  }, [agingFilter, dueFilter, items, searchTerm, serverSearchResults, statusFilter])
+
+  const sorted = useMemo(() => {
+    if (!sortKey) return filtered
+    const dir = sortDir === "asc" ? 1 : -1
+    const value = (invoice: Invoice): string | number => {
+      switch (sortKey) {
+        case "number":
+          return invoice.invoice_number ?? invoice.title ?? ""
+        case "customer":
+          return customerNameOf(invoice).toLowerCase()
+        case "issue_date":
+          return invoice.issue_date ?? ""
+        case "due_date":
+          return invoice.due_date ?? ""
+        case "amount":
+          return totalCentsOf(invoice)
+        case "balance":
+          return balanceCentsOf(invoice)
+        case "status":
+          return displayStatusKey(invoice)
+      }
+    }
+    return [...filtered].sort((a, b) => {
+      const av = value(a)
+      const bv = value(b)
+      if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir
+      return String(av).localeCompare(String(bv)) * dir
+    })
+  }, [filtered, sortKey, sortDir])
+
+  // Prefer the server-computed aging (whole book); fall back to a local pass over loaded rows.
+  const arSummary = useMemo<InvoiceArSummary>(() => {
+    if (serverArSummary) return serverArSummary
+    const open = items.filter((item) => OPEN_STATUSES.includes(displayStatusKey(item)))
+    const summary: InvoiceArSummary = {
+      outstandingCents: 0,
+      overdueCents: 0,
+      buckets: [0, 0, 0, 0],
+    }
+    for (const invoice of open) {
+      const balance = balanceCentsOf(invoice)
+      if (balance <= 0) continue
+      summary.outstandingCents += balance
+      const bucket = agingBucketOf(daysPastDue(invoice))
+      if (bucket === null) continue
+      summary.overdueCents += balance
+      summary.buckets[bucket] += balance
+    }
+    return summary
+  }, [items, serverArSummary])
+
+  const activeFilterChips = useMemo(() => {
+    const chips: Array<{ key: string; label: string; clear: () => void }> = []
+    if (statusFilter !== "all") {
+      chips.push({ key: "status", label: statusLabels[statusFilter], clear: () => setStatusFilter("all") })
+    }
+    if (dueFilter !== "any") {
+      const dueLabels: Record<Exclude<DueFilter, "any">, string> = {
+        due_soon: "Due in next 7 days",
+        overdue: "Past due date",
+        no_due: "No due date",
+      }
+      chips.push({ key: "due", label: dueLabels[dueFilter], clear: () => setDueFilter("any") })
+    }
+    if (agingFilter !== null) {
+      chips.push({
+        key: "aging",
+        label: `Aging ${AGING_BUCKET_LABELS[agingFilter]}`,
+        clear: () => setAgingFilter(null),
+      })
+    }
+    return chips
+  }, [agingFilter, dueFilter, statusFilter])
+
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      if (sortDir === "desc") {
+        setSortDir("asc")
+      } else {
+        setSortKey(null)
+        setSortDir("desc")
+      }
+    } else {
+      setSortKey(key)
+      setSortDir("desc")
+    }
+  }
 
   const visibleIds = useMemo(() => filtered.map((item) => item.id), [filtered])
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id))
@@ -380,13 +594,14 @@ export function InvoicesClient({
   const packageByInvoiceId = useMemo(() => {
     return new Map(packageSummaries.map((summary) => [summary.invoice_id, summary]))
   }, [packageSummaries])
-  const isProjectScoped = projectScoped
-  const scopedProject = isProjectScoped && projects.length === 1 ? projects[0] : null
+  const scopedProject = projects.length === 1 ? projects[0] : null
 
   async function refreshInvoices() {
     try {
-      const scopedProjectId = projects.length === 1 ? projects[0]?.id : undefined
-      const fresh = await listInvoicesAction(scopedProjectId)
+      // Refetch at least as many rows as are currently loaded so pagination state holds.
+      const fresh = unwrapAction(
+        await listInvoicesAction(scopedProject?.id, { limit: Math.max(items.length, INVOICE_PAGE_SIZE) }),
+      )
       setItems(fresh)
     } catch (error: any) {
       console.error(error)
@@ -396,12 +611,34 @@ export function InvoicesClient({
     }
   }
 
+  async function handleLoadMore() {
+    setLoadingMore(true)
+    try {
+      const next = unwrapAction(
+        await listInvoicesAction(scopedProject?.id, { limit: INVOICE_PAGE_SIZE, offset: items.length }),
+      )
+      setItems((prev) => {
+        const known = new Set(prev.map((invoice) => invoice.id))
+        return [...prev, ...next.filter((invoice) => !known.has(invoice.id))]
+      })
+      setHasMore(next.length === INVOICE_PAGE_SIZE)
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Could not load more invoices", {
+        description: error?.message ?? "Please try again.",
+      })
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
   async function handleCreate(values: InvoiceInput, sendToClient: boolean, options?: { silent?: boolean }) {
     setIsCreating(true)
     try {
-      const created = await createInvoiceAction(values)
+      const created = unwrapAction(await createInvoiceAction(values))
       setItems((prev) => [created, ...prev])
       setSheetOpen(false)
+      setDuplicatingInvoice(null)
       router.refresh()
       if (!options?.silent) {
         toast.success(sendToClient ? "Invoice sent" : "Invoice saved", {
@@ -426,7 +663,7 @@ export function InvoicesClient({
     }
     setIsUpdating(true)
     try {
-      const updated = await updateInvoiceAction(editingInvoice.id, values)
+      const updated = unwrapAction(await updateInvoiceAction(editingInvoice.id, values))
       setItems((prev) => prev.map((inv) => (inv.id === updated.id ? updated : inv)))
       router.refresh()
       if (!options?.silent) {
@@ -448,10 +685,22 @@ export function InvoicesClient({
     }
   }
 
+  // Draft/unsent invoices route through a confirmation first — generating a link makes the
+  // invoice publicly viewable by anyone holding the URL.
+  function handleShareRequest(invoice: Invoice) {
+    const status = resolveStatusKey(invoice.status)
+    const neverShared = ["draft", "saved"].includes(status) && !invoice.client_visible && !invoice.sent_at
+    if (neverShared) {
+      setSharingDraftInvoice(invoice)
+      return
+    }
+    void handleShare(invoice.id)
+  }
+
   async function handleShare(invoiceId: string) {
     setLinkingId(invoiceId)
     try {
-      const result = await generateInvoiceLinkAction(invoiceId)
+      const result = unwrapAction(await generateInvoiceLinkAction(invoiceId))
       setItems((prev) => prev.map((inv) => (inv.id === invoiceId ? { ...inv, token: result.token } : inv)))
 
       if (typeof navigator !== "undefined" && navigator.clipboard) {
@@ -473,7 +722,7 @@ export function InvoicesClient({
   async function handleSendReminder(invoice: Invoice) {
     setSendingReminderId(invoice.id)
     try {
-      await sendInvoiceReminderAction(invoice.id)
+      unwrapAction(await sendInvoiceReminderAction(invoice.id))
       toast.success("Reminder sent", {
         description: `Payment reminder sent for invoice ${invoice.invoice_number}`,
       })
@@ -485,6 +734,77 @@ export function InvoicesClient({
     } finally {
       setSendingReminderId(null)
     }
+  }
+
+  const selectedInvoices = useMemo(() => items.filter((item) => selectedIds.includes(item.id)), [items, selectedIds])
+  const reminderEligibleSelection = useMemo(
+    () => selectedInvoices.filter((item) => OPEN_STATUSES.includes(displayStatusKey(item)) && balanceCentsOf(item) > 0),
+    [selectedInvoices],
+  )
+
+  async function handleBulkSendReminders() {
+    if (reminderEligibleSelection.length === 0) return
+    setSendingBulkReminders(true)
+    let sent = 0
+    const failures: string[] = []
+    for (const invoice of reminderEligibleSelection) {
+      try {
+        unwrapAction(await sendInvoiceReminderAction(invoice.id))
+        sent++
+      } catch (error: any) {
+        console.error(error)
+        failures.push(invoice.invoice_number ?? invoice.title ?? invoice.id)
+      }
+    }
+    setSendingBulkReminders(false)
+    if (sent > 0) {
+      toast.success(`Sent ${sent} reminder${sent === 1 ? "" : "s"}`)
+    }
+    if (failures.length > 0) {
+      toast.error(`Could not send ${failures.length} reminder${failures.length === 1 ? "" : "s"}`, {
+        description: failures.join(", "),
+      })
+    }
+    if (sent > 0 && failures.length === 0) {
+      setSelectedIds([])
+    }
+  }
+
+  function handleExportCsv() {
+    const rows = selectedInvoices.length > 0 ? selectedInvoices : filtered
+    if (rows.length === 0) return
+    const escape = (value: string | number) => {
+      // Neutralize spreadsheet formula injection (=, +, -, @ leads) before CSV quoting.
+      const raw = String(value)
+      const str = /^[=+\-@]/.test(raw) ? `'${raw}` : raw
+      return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str
+    }
+    const header = ["Invoice No.", "Title", "Billed to", "Status", "Issue date", "Due date", "Total", "Balance"]
+    const lines = rows.map((invoice) =>
+      [
+        invoice.invoice_number ?? "",
+        invoice.title ?? "",
+        customerNameOf(invoice),
+        statusLabels[displayStatusKey(invoice)],
+        invoice.issue_date ?? "",
+        invoice.due_date ?? "",
+        (totalCentsOf(invoice) / 100).toFixed(2),
+        (balanceCentsOf(invoice) / 100).toFixed(2),
+      ]
+        .map(escape)
+        .join(","),
+    )
+    const csv = [header.map(escape).join(","), ...lines].join("\n")
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = `invoices-${format(new Date(), "yyyy-MM-dd")}.csv`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+    toast.success(`Exported ${rows.length} invoice${rows.length === 1 ? "" : "s"} to CSV`)
   }
 
   async function handleGenerateBackupPackage(invoice: Invoice) {
@@ -541,7 +861,7 @@ export function InvoicesClient({
     if (!voidingInvoice) return
     setDestructiveActionLoading(true)
     try {
-      const updated = await voidInvoiceAction(voidingInvoice.id)
+      const updated = unwrapAction(await voidInvoiceAction(voidingInvoice.id))
       setItems((prev) => prev.map((invoice) => (invoice.id === updated.id ? updated : invoice)))
       setVoidingInvoice(null)
       toast.success("Invoice voided")
@@ -559,7 +879,7 @@ export function InvoicesClient({
     if (!revisingInvoice) return
     setDestructiveActionLoading(true)
     try {
-      const replacement = await reviseInvoiceAction(revisingInvoice.id)
+      const replacement = unwrapAction(await reviseInvoiceAction(revisingInvoice.id))
       setItems((prev) => [
         replacement,
         ...prev.map((invoice) =>
@@ -589,7 +909,7 @@ export function InvoicesClient({
     if (!deletingInvoice) return
     setDestructiveActionLoading(true)
     try {
-      await deleteInvoiceAction(deletingInvoice.id)
+      unwrapAction(await deleteInvoiceAction(deletingInvoice.id))
       setItems((prev) => prev.filter((invoice) => invoice.id !== deletingInvoice.id))
       setSelectedIds((prev) => prev.filter((id) => id !== deletingInvoice.id))
       setDeletingInvoice(null)
@@ -610,7 +930,7 @@ export function InvoicesClient({
     setMoveSearch("")
     setMoveProjectsLoading(true)
     try {
-      const list = await listMovableProjectsAction()
+      const list = unwrapAction(await listMovableProjectsAction())
       setMoveProjects(list.filter((project) => project.id !== invoice.project_id))
     } catch (error: any) {
       console.error(error)
@@ -626,13 +946,9 @@ export function InvoicesClient({
     if (!movingInvoice || !moveTargetId) return
     setMoveLoading(true)
     try {
-      const updated = await moveInvoiceToProjectAction(movingInvoice.id, moveTargetId)
+      const updated = unwrapAction(await moveInvoiceToProjectAction(movingInvoice.id, moveTargetId))
       // The invoice now belongs to another project — drop it from this project-scoped list.
-      setItems((prev) =>
-        isProjectScoped
-          ? prev.filter((invoice) => invoice.id !== updated.id)
-          : prev.map((invoice) => (invoice.id === updated.id ? updated : invoice)),
-      )
+      setItems((prev) => prev.filter((invoice) => invoice.id !== updated.id))
       setSelectedIds((prev) => prev.filter((id) => id !== updated.id))
       const targetName = moveProjects.find((project) => project.id === moveTargetId)?.name
       setMovingInvoice(null)
@@ -668,15 +984,28 @@ export function InvoicesClient({
     }
   }
 
+  const renderSortHeader = (label: string, key: SortKey) => (
+    <button
+      type="button"
+      onClick={() => toggleSort(key)}
+      className={`inline-flex items-center gap-1 transition-colors hover:text-foreground ${sortKey === key ? "text-foreground" : ""}`}
+    >
+      {label}
+      {sortKey === key ? (
+        sortDir === "desc" ? (
+          <ChevronDown className="h-3.5 w-3.5" />
+        ) : (
+          <ChevronUp className="h-3.5 w-3.5" />
+        )
+      ) : null}
+    </button>
+  )
+
+  const columnCount = 9 + (enableApprovedCostsSource ? 1 : 0)
+
   return (
-    <div className={fullBleed ? "w-full" : "space-y-4 lg:space-y-6"}>
-      <div
-        className={
-          fullBleed
-            ? "sticky top-0 z-20 flex min-h-14 w-full flex-col border-b bg-background/95 shadow-[0_1px_0_rgba(0,0,0,0.02)] backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:flex-row sm:items-stretch"
-            : "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
-        }
-      >
+    <div className="w-full">
+      <div className="sticky top-0 z-20 flex min-h-14 w-full flex-col border-b bg-background/95 shadow-[0_1px_0_rgba(0,0,0,0.02)] backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:flex-row sm:items-stretch">
         {toolbarLeading && <div className="flex min-w-0 items-stretch px-4 sm:border-r sm:px-6 lg:px-8">{toolbarLeading}</div>}
         <div
           className={
@@ -696,29 +1025,15 @@ export function InvoicesClient({
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="icon" className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2 border-0 shadow-none hover:bg-background">
                     <Filter className="h-4 w-4" />
+                    {activeFilterChips.length > 0 && (
+                      <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-primary px-0.5 text-[9px] font-medium text-primary-foreground">
+                        {activeFilterChips.length}
+                      </span>
+                    )}
                     <span className="sr-only">Filters</span>
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-64">
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger>
-                      <Building2 className="mr-2 h-4 w-4" />
-                      By project
-                    </DropdownMenuSubTrigger>
-                    <DropdownMenuPortal>
-                      <DropdownMenuSubContent className="w-56" sideOffset={8}>
-                        <DropdownMenuRadioGroup value={filterProjectId} onValueChange={setFilterProjectId}>
-                          <DropdownMenuRadioItem value="all">All projects</DropdownMenuRadioItem>
-                          {projects.map((project) => (
-                            <DropdownMenuRadioItem key={project.id} value={project.id}>
-                              {project.name}
-                            </DropdownMenuRadioItem>
-                          ))}
-                        </DropdownMenuRadioGroup>
-                      </DropdownMenuSubContent>
-                    </DropdownMenuPortal>
-                  </DropdownMenuSub>
-                  <DropdownMenuSeparator />
                   <DropdownMenuSub>
                     <DropdownMenuSubTrigger>
                       <Calendar className="mr-2 h-4 w-4" />
@@ -760,15 +1075,25 @@ export function InvoicesClient({
           </div>
 
           <div className="flex flex-row gap-2">
-            <Button onClick={() => setSheetOpen(true)} size={fullBleed ? "sm" : "default"} className="h-9 flex-1 whitespace-nowrap sm:flex-none">
+            <Button onClick={() => setSheetOpen(true)} size="sm" className="h-9 flex-1 whitespace-nowrap sm:flex-none">
               <Plus className="h-4 w-4 mr-2" />
               New invoice
             </Button>
             <Button
               variant="outline"
               size="icon"
+              onClick={() => setSchedulesOpen(true)}
+              className="h-9 w-9 shrink-0 bg-background"
+              title="Recurring invoices"
+              aria-label="Open recurring invoices"
+            >
+              <Repeat className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
               onClick={() => setQueueOpen(true)}
-              className={fullBleed ? "relative h-9 w-9 shrink-0 bg-background" : "relative shrink-0"}
+              className="relative h-9 w-9 shrink-0 bg-background"
               title={`QuickBooks: ${qboPendingCount} waiting, ${qboErrorCount} failed`}
               aria-label={`Open QuickBooks sheet. ${qboPendingCount} waiting, ${qboErrorCount} failed`}
             >
@@ -783,11 +1108,88 @@ export function InvoicesClient({
         </div>
       </div>
 
+      {items.length > 0 && (
+        <div className="border-b">
+          <div className="grid grid-cols-2 divide-y sm:grid-cols-3 sm:divide-y-0 lg:grid-cols-6 lg:divide-x">
+            <div className="p-3 sm:border-r lg:border-r-0">
+              <div className="text-[11px] font-medium uppercase text-muted-foreground">Outstanding</div>
+              <div className="mt-1 font-mono text-sm font-semibold">{formatMoneyFromCents(arSummary.outstandingCents)}</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setAgingFilter(null)
+                setStatusFilter((current) => (current === "overdue" ? "all" : "overdue"))
+              }}
+              aria-pressed={statusFilter === "overdue"}
+              className={`p-3 text-left transition-colors hover:bg-muted/40 ${statusFilter === "overdue" ? "bg-muted/40" : ""}`}
+            >
+              <div className="text-[11px] font-medium uppercase text-muted-foreground">Overdue</div>
+              <div className={`mt-1 font-mono text-sm font-semibold ${arSummary.overdueCents > 0 ? "text-destructive" : ""}`}>
+                {formatMoneyFromCents(arSummary.overdueCents)}
+              </div>
+            </button>
+            {AGING_BUCKET_LABELS.map((label, index) => (
+              <button
+                key={label}
+                type="button"
+                onClick={() => setAgingFilter((current) => (current === index ? null : (index as AgingBucket)))}
+                aria-pressed={agingFilter === index}
+                className={`p-3 text-left transition-colors hover:bg-muted/40 ${agingFilter === index ? "bg-muted/40" : ""}`}
+              >
+                <div className="text-[11px] font-medium uppercase text-muted-foreground">{label}</div>
+                <div
+                  className={`mt-1 font-mono text-sm ${
+                    arSummary.buckets[index] > 0 ? (index >= 2 ? "font-semibold text-destructive" : "font-medium") : "text-muted-foreground"
+                  }`}
+                >
+                  {formatMoneyFromCents(arSummary.buckets[index])}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {activeFilterChips.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 border-b bg-muted/20 px-4 py-2 sm:px-6 lg:px-8">
+          <span className="text-xs text-muted-foreground">Filtered by</span>
+          {activeFilterChips.map((chip) => (
+            <Badge key={chip.key} variant="secondary" className="gap-1 pr-1 font-normal">
+              {chip.label}
+              <button
+                type="button"
+                onClick={chip.clear}
+                className="rounded-sm p-0.5 hover:bg-background/80"
+                aria-label={`Clear ${chip.key} filter`}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </Badge>
+          ))}
+          <button
+            type="button"
+            className="text-xs text-muted-foreground underline-offset-2 hover:underline"
+            onClick={() => {
+              setStatusFilter("all")
+              setDueFilter("any")
+              setAgingFilter(null)
+            }}
+          >
+            Clear all
+          </button>
+        </div>
+      )}
+
       <InvoiceComposerSheet
         open={sheetOpen}
-        onOpenChange={setSheetOpen}
+        onOpenChange={(open) => {
+          setSheetOpen(open)
+          if (!open) setDuplicatingInvoice(null)
+        }}
         projects={projects}
-        defaultProjectId={filterProjectId !== "all" ? filterProjectId : projects[0]?.id}
+        defaultProjectId={projects[0]?.id}
+        duplicateFrom={duplicatingInvoice}
         onSubmit={handleCreate}
         isSubmitting={isCreating}
         builderInfo={builderInfo}
@@ -802,7 +1204,7 @@ export function InvoicesClient({
           if (!open) setEditingInvoice(null)
         }}
         projects={projects}
-        defaultProjectId={editingInvoice?.project_id ?? (filterProjectId !== "all" ? filterProjectId : projects[0]?.id)}
+        defaultProjectId={editingInvoice?.project_id ?? projects[0]?.id}
         onSubmit={handleUpdate}
         isSubmitting={isUpdating}
         builderInfo={builderInfo}
@@ -819,9 +1221,15 @@ export function InvoicesClient({
         projectName={scopedProject?.name}
         onOpenInvoice={handleOpenDetail}
       />
+      <MakeRecurringDialog
+        invoice={recurringSourceInvoice}
+        open={Boolean(recurringSourceInvoice)}
+        onOpenChange={(open) => !open && setRecurringSourceInvoice(null)}
+      />
+      <InvoiceSchedulesDialog open={schedulesOpen} onOpenChange={setSchedulesOpen} projectId={scopedProject?.id} />
 
       <AnimatePresence>
-        <div className={fullBleed ? "overflow-hidden border-b" : "rounded-lg border overflow-hidden"}>
+        <div className="overflow-hidden border-b">
           <Table>
             <TableHeader>
               <TableRow className="divide-x">
@@ -834,27 +1242,41 @@ export function InvoicesClient({
                     />
                   </div>
                 </TableHead>
-                <TableHead className="min-w-[90px] px-4 py-4">Invoice No.</TableHead>
-                {!isProjectScoped && <TableHead className="px-4 py-4">Project</TableHead>}
-                <TableHead className="px-4 py-4 text-center">Issue date</TableHead>
-                <TableHead className="px-4 py-4 text-center">Due date</TableHead>
-                <TableHead className="text-right px-4 py-4">Amount</TableHead>
-                {isProjectScoped && <TableHead className="text-right px-4 py-4">Balance</TableHead>}
+                <TableHead className="min-w-[90px] px-4 py-4">{renderSortHeader("Invoice No.", "number")}</TableHead>
+                <TableHead className="px-4 py-4">{renderSortHeader("Billed to", "customer")}</TableHead>
+                <TableHead className="px-4 py-4 text-center">{renderSortHeader("Issue date", "issue_date")}</TableHead>
+                <TableHead className="px-4 py-4 text-center">{renderSortHeader("Due date", "due_date")}</TableHead>
+                <TableHead className="text-right px-4 py-4">{renderSortHeader("Amount", "amount")}</TableHead>
+                <TableHead className="text-right px-4 py-4">{renderSortHeader("Balance", "balance")}</TableHead>
                 {enableApprovedCostsSource && <TableHead className="px-4 py-4 text-center">Backup</TableHead>}
-                <TableHead className="px-4 py-4 text-center">Status</TableHead>
-                <TableHead className="text-center w-12 px-4 py-4">‎</TableHead>
+                <TableHead className="px-4 py-4 text-center">{renderSortHeader("Status", "status")}</TableHead>
+                <TableHead className="text-center w-12 px-4 py-4">
+                  <span className="sr-only">Actions</span>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filtered.map((invoice) => {
-                const projectName = (invoice.project_id ? projectLookup[invoice.project_id]?.name : "") ?? "Unknown project"
-                const total = formatMoneyFromCents(invoice.total_cents ?? invoice.totals?.total_cents)
-                const balance = formatMoneyFromCents(invoice.balance_due_cents ?? invoice.totals?.balance_due_cents ?? invoice.total_cents ?? invoice.totals?.total_cents)
+              {sorted.map((invoice) => {
+                const total = formatMoneyFromCents(totalCentsOf(invoice))
+                const balanceCents = displayStatusKey(invoice) === "paid" || displayStatusKey(invoice) === "void" ? 0 : balanceCentsOf(invoice)
+                const balance = formatMoneyFromCents(balanceCents)
+                const customerName = customerNameOf(invoice)
+                const overdueDays = daysPastDue(invoice)
                 const invoiceLabel = invoice.invoice_number || invoice.title || "Untitled invoice"
                 const backupPackage = packageByInvoiceId.get(invoice.id)
                 const packageBusy = packageActionInvoiceId === invoice.id
                 return (
-                  <TableRow key={invoice.id} className="align-top divide-x">
+                  <TableRow
+                    key={invoice.id}
+                    className="align-top divide-x cursor-pointer"
+                    onClick={(event) => {
+                      // The whole row opens the detail sheet, except clicks on interactive
+                      // controls (checkbox, menus, buttons) which keep their own behavior.
+                      const target = event.target as HTMLElement
+                      if (target.closest("button, a, input, [role='checkbox'], [role='menu'], [data-row-noclick]")) return
+                      void handleOpenDetail(invoice.id)
+                    }}
+                  >
                     <TableCell className="w-12 text-center align-middle py-4 relative">
                       <div className="absolute inset-0 flex items-center justify-center">
                         <Checkbox
@@ -876,21 +1298,26 @@ export function InvoicesClient({
                         </button>
                       </div>
                     </TableCell>
-                    {!isProjectScoped && <TableCell className="px-4 py-4 text-muted-foreground">{projectName}</TableCell>}
-                    <TableCell className="px-4 py-4 text-muted-foreground text-sm text-center">
-                      {invoice.issue_date ? format(new Date(invoice.issue_date), "MMM d, yyyy") : "—"}
+                    <TableCell className="px-4 py-4 text-sm">
+                      <span className="line-clamp-1">{customerName || "—"}</span>
                     </TableCell>
                     <TableCell className="px-4 py-4 text-muted-foreground text-sm text-center">
-                      {invoice.due_date ? format(new Date(invoice.due_date), "MMM d, yyyy") : "—"}
+                      {invoice.issue_date ? format(parseDateOnly(invoice.issue_date), "MMM d, yyyy") : "—"}
+                    </TableCell>
+                    <TableCell className="px-4 py-4 text-sm text-center">
+                      <span className={balanceCents > 0 && overdueDays > 0 ? "font-medium text-destructive" : "text-muted-foreground"}>
+                        {invoice.due_date ? format(parseDateOnly(invoice.due_date), "MMM d, yyyy") : "—"}
+                      </span>
+                      {balanceCents > 0 && overdueDays > 0 && (
+                        <div className="text-[11px] text-destructive/80">{overdueDays}d past due</div>
+                      )}
                     </TableCell>
                     <TableCell className="px-4 py-4 text-right">
                       <div className="font-semibold">{total}</div>
                     </TableCell>
-                    {isProjectScoped && (
-                      <TableCell className="px-4 py-4 text-right">
-                        <div className="font-semibold">{balance}</div>
-                      </TableCell>
-                    )}
+                    <TableCell className="px-4 py-4 text-right">
+                      <div className={balanceCents > 0 ? "font-semibold" : "text-muted-foreground"}>{balance}</div>
+                    </TableCell>
                     {enableApprovedCostsSource && (
                       <TableCell className="px-4 py-4 text-center">
                         <BackupPackageBadge summary={backupPackage} busy={packageBusy ? packageActionKind : null} />
@@ -898,8 +1325,8 @@ export function InvoicesClient({
                     )}
                     <TableCell className="px-4 py-4 text-center">
                       <div className="flex items-center justify-center gap-2">
-                        <Badge variant="secondary" className={`capitalize border ${statusStyles[resolveStatusKey(invoice.status)]}`}>
-                          {statusLabels[resolveStatusKey(invoice.status)]}
+                        <Badge variant="secondary" className={`capitalize border ${statusStyles[displayStatusKey(invoice)]}`}>
+                          {statusLabels[displayStatusKey(invoice)]}
                         </Badge>
                         <QBOSyncBadge
                           status={invoice.qbo_sync_status}
@@ -945,10 +1372,30 @@ export function InvoicesClient({
                               Revise and reissue
                             </DropdownMenuItem>
                             <DropdownMenuItem
+                              onSelect={(event) => {
+                                event.preventDefault()
+                                setDuplicatingInvoice(invoice)
+                                setSheetOpen(true)
+                              }}
+                            >
+                              <Copy className="mr-2 h-4 w-4" />
+                              Duplicate invoice
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              disabled={resolveStatusKey(invoice.status) === "void"}
+                              onSelect={(event) => {
+                                event.preventDefault()
+                                setRecurringSourceInvoice(invoice)
+                              }}
+                            >
+                              <Repeat className="mr-2 h-4 w-4" />
+                              Make recurring…
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
                               disabled={linkingId === invoice.id}
                               onSelect={(event) => {
                                 event.preventDefault()
-                                handleShare(invoice.id)
+                                handleShareRequest(invoice)
                               }}
                             >
                               {linkingId === invoice.id ? "Copying…" : "Copy link"}
@@ -964,7 +1411,14 @@ export function InvoicesClient({
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
-                              disabled={invoice.status === "paid" || invoice.status === "partial" || invoice.status === "void"}
+                              disabled={
+                                ["paid", "partial", "void"].includes(resolveStatusKey(invoice.status)) ||
+                                // An unsent, unsynced draft should be deleted, not voided.
+                                (["draft", "saved"].includes(resolveStatusKey(invoice.status)) &&
+                                  !invoice.client_visible &&
+                                  !invoice.sent_at &&
+                                  !invoice.qbo_id)
+                              }
                               onSelect={(event) => {
                                 event.preventDefault()
                                 setVoidingInvoice(invoice)
@@ -991,12 +1445,16 @@ export function InvoicesClient({
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
-                              disabled={invoice.status === "paid" || invoice.status === "void" || sendingReminderId === invoice.id}
+                              disabled={
+                                // Reminders only make sense for sent invoices with money still owed.
+                                !OPEN_STATUSES.includes(displayStatusKey(invoice)) ||
+                                balanceCentsOf(invoice) <= 0 ||
+                                sendingReminderId === invoice.id
+                              }
                               onSelect={(event) => {
                                 event.preventDefault()
                                 handleSendReminder(invoice)
                               }}
-                              className={invoice.status === "paid" || invoice.status === "void" ? "text-muted-foreground" : ""}
                             >
                               {sendingReminderId === invoice.id ? "Sending…" : "Send reminder"}
                             </DropdownMenuItem>
@@ -1041,39 +1499,74 @@ export function InvoicesClient({
               })}
               {filtered.length === 0 && !isCreating && (
                 <TableRow className="divide-x">
-                  <TableCell colSpan={enableApprovedCostsSource ? 9 : 8} className="py-10 text-center text-muted-foreground">
-                    <div className="flex flex-col items-center gap-4">
-                      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
-                        <FolderOpen className="h-6 w-6" />
+                  <TableCell colSpan={columnCount} className="py-10 text-center text-muted-foreground">
+                    {items.length === 0 ? (
+                      <div className="flex flex-col items-center gap-4">
+                        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
+                          <FolderOpen className="h-6 w-6" />
+                        </div>
+                        <div>
+                          <p className="font-medium">No invoices yet</p>
+                          <p className="text-sm">Create your first invoice to get started.</p>
+                        </div>
+                        <Button onClick={() => setSheetOpen(true)}>
+                          <Plus className="mr-2 h-4 w-4" />
+                          Create invoice
+                        </Button>
                       </div>
-                      <div>
-                        <p className="font-medium">No invoices yet</p>
-                        <p className="text-sm">Create your first invoice to get started.</p>
+                    ) : (
+                      <div className="flex flex-col items-center gap-3">
+                        <div>
+                          <p className="font-medium">No invoices match</p>
+                          <p className="text-sm">Adjust the search or clear the active filters.</p>
+                        </div>
+                        {(activeFilterChips.length > 0 || searchTerm.trim().length > 0) && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setSearchTerm("")
+                              setStatusFilter("all")
+                              setDueFilter("any")
+                              setAgingFilter(null)
+                            }}
+                          >
+                            Clear search and filters
+                          </Button>
+                        )}
                       </div>
-                      <Button onClick={() => setSheetOpen(true)}>
-                        <Plus className="mr-2 h-4 w-4" />
-                        Create invoice
-                      </Button>
-                    </div>
+                    )}
                   </TableCell>
                 </TableRow>
               )}
               {isCreating && filtered.length === 0 && (
                 <TableRow className="divide-x">
-                  <TableCell colSpan={enableApprovedCostsSource ? 9 : 8}>
-                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                      {[...Array(3)].map((_, idx) => (
-                        <Skeleton key={idx} className="h-24 w-full rounded-md" />
-                      ))}
-                    </div>
+                  <TableCell colSpan={columnCount} className="px-4 py-4">
+                    <Skeleton className="h-8 w-full" />
                   </TableCell>
                 </TableRow>
               )}
             </TableBody>
           </Table>
+          {hasMore && !serverSearchResults && (
+            <div className="flex justify-center border-t py-3">
+              <Button variant="ghost" size="sm" onClick={handleLoadMore} disabled={loadingMore}>
+                {loadingMore ? "Loading…" : `Load more (${items.length} loaded)`}
+              </Button>
+            </div>
+          )}
         </div>
 
-        {selectedIds.length > 0 && <InvoiceBottomBar selectedCount={selectedIds.length} onDeselectAll={() => setSelectedIds([])} />}
+        {selectedIds.length > 0 && (
+          <InvoiceBottomBar
+            selectedCount={selectedIds.length}
+            onDeselectAll={() => setSelectedIds([])}
+            onExportCsv={handleExportCsv}
+            onSendReminders={handleBulkSendReminders}
+            reminderEligibleCount={reminderEligibleSelection.length}
+            sendingReminders={sendingBulkReminders}
+          />
+        )}
       </AnimatePresence>
 
       <InvoiceDetailSheet
@@ -1095,6 +1588,7 @@ export function InvoicesClient({
         syncHistory={detailSyncHistory}
         payments={detailPayments}
         reversals={detailReversals}
+        lienWaivers={detailLienWaivers}
         loading={detailLoading}
         manualResyncing={isResyncing}
         onCopyLink={async () => {
@@ -1107,7 +1601,7 @@ export function InvoicesClient({
           if (!detailInvoice) return
           setIsResyncing(true)
           try {
-            await manualResyncInvoiceAction(detailInvoice.id)
+            unwrapAction(await manualResyncInvoiceAction(detailInvoice.id))
             toast.success("Resync enqueued")
             await handleOpenDetail(detailInvoice.id)
           } catch (error: any) {
@@ -1123,6 +1617,12 @@ export function InvoicesClient({
           await refreshInvoices()
           if (detailInvoice) {
             await handleOpenDetail(detailInvoice.id)
+          }
+        }}
+        onWaiversChanged={async () => {
+          if (detailInvoice) {
+            const result = unwrapAction(await getInvoiceDetailAction(detailInvoice.id))
+            setDetailLienWaivers(result.lienWaivers ?? [])
           }
         }}
         onEdit={
@@ -1144,6 +1644,30 @@ export function InvoicesClient({
             : undefined
         }
       />
+
+      <AlertDialog open={Boolean(sharingDraftInvoice)} onOpenChange={(open) => !open && setSharingDraftInvoice(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Share an unsent invoice?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {sharingDraftInvoice?.invoice_number ?? "This invoice"} hasn&apos;t been sent yet. Creating a link makes it
+              viewable by anyone who has the URL.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const invoice = sharingDraftInvoice
+                setSharingDraftInvoice(null)
+                if (invoice) void handleShare(invoice.id)
+              }}
+            >
+              Create link
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={Boolean(voidingInvoice)} onOpenChange={(open) => !open && setVoidingInvoice(null)}>
         <AlertDialogContent>

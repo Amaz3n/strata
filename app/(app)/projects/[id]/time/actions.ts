@@ -9,7 +9,7 @@ import {
   approveTimeEntry,
   createTimeEntry,
   createTimeEntryApprovalLink,
-  listCostPlusTabData,
+  listProjectTimeEntries,
   rejectTimeEntry,
 } from "@/lib/services/cost-plus"
 
@@ -28,6 +28,9 @@ export interface CreateTimeEntriesInput {
   burdenMultiplier: number
   isBillable: boolean
   isOvertime: boolean
+  otMultiplier?: number
+  isDoubleTime?: boolean
+  dtMultiplier?: number
   notes?: string | null
   crew: CrewLineInput[]
 }
@@ -35,7 +38,19 @@ export interface CreateTimeEntriesInput {
 export interface CreateMyTimeEntryInput {
   workDate: string
   hours: number
+  isOvertime?: boolean
+  otMultiplier?: number
+  isDoubleTime?: boolean
+  dtMultiplier?: number
   notes?: string | null
+}
+
+function revalidateProjectTimeFinancials(projectId: string) {
+  revalidatePath(`/projects/${projectId}/time`)
+  revalidatePath(`/projects/${projectId}/cost-inbox`)
+  revalidatePath(`/projects/${projectId}/financials`)
+  revalidatePath(`/projects/${projectId}/financials/review`)
+  revalidatePath(`/projects/${projectId}/financials/receivables`)
 }
 
 export async function createTimeEntriesAction(projectId: string, formData: FormData) {
@@ -68,16 +83,17 @@ export async function createTimeEntriesAction(projectId: string, formData: FormD
       burdenMultiplier: line.burdenMultiplier || payload.burdenMultiplier || 1,
       isBillable: line.isBillable ?? payload.isBillable,
       isOvertime: payload.isOvertime,
+      otMultiplier: payload.otMultiplier ?? 1.5,
+      isDoubleTime: payload.isDoubleTime ?? false,
+      dtMultiplier: payload.dtMultiplier ?? 2,
       notes: payload.notes ?? null,
       attachedFileIds,
     })
   }
 
-  revalidatePath(`/projects/${projectId}/time`)
-  revalidatePath(`/projects/${projectId}/financials`)
+  revalidateProjectTimeFinancials(projectId)
 
-  const data = await listCostPlusTabData(projectId).catch(() => ({ timeEntries: [] as any[] }))
-  return data.timeEntries ?? []
+  return listProjectTimeEntries(projectId).catch(() => [] as any[])
 }
 
 export async function createMyTimeEntryAction(projectId: string, formData: FormData) {
@@ -101,43 +117,39 @@ export async function createMyTimeEntryAction(projectId: string, formData: FormD
     baseRateCents: 0,
     burdenMultiplier: 1,
     isBillable: true,
-    isOvertime: false,
+    isOvertime: payload.isOvertime ?? false,
+    otMultiplier: payload.otMultiplier ?? 1.5,
+    isDoubleTime: payload.isDoubleTime ?? false,
+    dtMultiplier: payload.dtMultiplier ?? 2,
     notes: payload.notes ?? null,
     attachedFileIds: attachmentId ? [attachmentId] : [],
   })
 
-  revalidatePath(`/projects/${projectId}/time`)
-  revalidatePath(`/projects/${projectId}/cost-inbox`)
-  revalidatePath(`/projects/${projectId}/financials`)
+  revalidateProjectTimeFinancials(projectId)
 
-  const data = await listCostPlusTabData(projectId).catch(() => ({ timeEntries: [] as any[] }))
-  return data.timeEntries ?? []
+  return listProjectTimeEntries(projectId).catch(() => [] as any[])
 }
 
 export async function listProjectTimeEntriesAction(projectId: string) {
-  const data = await listCostPlusTabData(projectId).catch(() => ({ timeEntries: [] as any[] }))
-  return data.timeEntries ?? []
+  return listProjectTimeEntries(projectId).catch(() => [] as any[])
 }
 
 export async function canManageCrewTimeAction() {
-  return hasPermission("bill.approve")
+  return hasPermission("time.write")
 }
 
 export async function approveTimeEntryFormAction(projectId: string, timeEntryId: string) {
   await approveTimeEntry(timeEntryId)
-  revalidatePath(`/projects/${projectId}/time`)
-  revalidatePath(`/projects/${projectId}/financials`)
+  revalidateProjectTimeFinancials(projectId)
 }
 
 export async function rejectTimeEntryFormAction(projectId: string, timeEntryId: string) {
   await rejectTimeEntry(timeEntryId)
-  revalidatePath(`/projects/${projectId}/time`)
-  revalidatePath(`/projects/${projectId}/financials`)
+  revalidateProjectTimeFinancials(projectId)
 }
 
 export async function createTimeEntryApprovalLinkFormAction(projectId: string, timeEntryId: string) {
   const link = await createTimeEntryApprovalLink(timeEntryId)
-  revalidatePath(`/projects/${projectId}/time`)
-  revalidatePath(`/projects/${projectId}/financials`)
+  revalidateProjectTimeFinancials(projectId)
   return link
 }

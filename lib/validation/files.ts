@@ -32,6 +32,7 @@ export const fileInputSchema = z.object({
   storage_path: z.string().min(1),
   mime_type: z.string().optional(),
   size_bytes: z.number().int().nonnegative().optional(),
+  checksum: z.string().optional(),
   visibility: z.enum(["private", "public"]).default("public"),
   // Phase 1 additions
   category: fileCategorySchema.optional(),
@@ -41,6 +42,7 @@ export const fileInputSchema = z.object({
   source: fileSourceSchema.optional(),
   share_with_clients: z.boolean().optional(),
   share_with_subs: z.boolean().optional(),
+  metadata: z.record(z.any()).optional(),
 })
 
 export type FileInput = z.infer<typeof fileInputSchema>
@@ -69,12 +71,15 @@ export const fileListFiltersSchema = z.object({
   search: z.string().optional(),
   status: z.string().optional(),
   signature_status: z.string().optional(),
+  due_after: z.string().optional(),
+  due_before: z.string().optional(),
   source_entity_type: z.string().optional(),
   sort: z.enum(["name", "workflow", "updated_at", "created_at", "size"]).optional(),
   direction: z.enum(["asc", "desc"]).optional(),
   share_with_clients: z.boolean().optional(),
   share_with_subs: z.boolean().optional(),
   include_archived: z.boolean().default(false),
+  archived_only: z.boolean().default(false),
   limit: z.number().int().positive().max(200).default(100),
   offset: z.number().int().nonnegative().default(0),
 })

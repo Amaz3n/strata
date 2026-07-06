@@ -60,6 +60,7 @@ import {
   getRevisionDiffAction,
   publishRevisionAction,
   discardRevisionAction,
+  retryDraftRevisionAction,
 } from "@/app/(app)/drawings/actions"
 import type {
   RevisionDiff,
@@ -110,6 +111,7 @@ export function RevisionReviewDialog({
   const [edits, setEdits] = useState<Record<string, SheetEdit>>({})
   const [decisions, setDecisions] = useState<Record<string, boolean>>({})
   const [publishing, setPublishing] = useState(false)
+  const [retryNonce, setRetryNonce] = useState(0)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [unchangedOpen, setUnchangedOpen] = useState(false)
   const [previewRetries, setPreviewRetries] = useState(0)
@@ -203,7 +205,7 @@ export function RevisionReviewDialog({
       cancelled = true
       if (timer) clearTimeout(timer)
     }
-  }, [open, revisionId, loadDiff])
+  }, [open, revisionId, loadDiff, retryNonce])
 
   const setEdit = (sheetId: string, patch: SheetEdit) =>
     setEdits((prev) => ({ ...prev, [sheetId]: { ...prev[sheetId], ...patch } }))
@@ -238,6 +240,22 @@ export function RevisionReviewDialog({
     } catch (err) {
       console.error("Failed to publish issuance:", err)
       toast.error(err instanceof Error ? err.message : "Failed to publish issuance")
+    } finally {
+      setPublishing(false)
+    }
+  }
+
+  const handleRetry = async () => {
+    setPublishing(true)
+    try {
+      await retryDraftRevisionAction(revisionId)
+      toast.success("Reprocessing started")
+      setFailed(null)
+      setProcessing(true)
+      setRetryNonce((prev) => prev + 1)
+    } catch (err) {
+      console.error("Failed to retry revision:", err)
+      toast.error(err instanceof Error ? err.message : "Failed to retry processing")
     } finally {
       setPublishing(false)
     }
@@ -456,8 +474,19 @@ export function RevisionReviewDialog({
                 variant="outline"
                 className="text-destructive"
                 onClick={() => setConfirmDiscard(true)}
+                disabled={publishing}
               >
                 Discard draft
+              </Button>
+              <Button onClick={handleRetry} disabled={publishing}>
+                {publishing ? (
+                  <>
+                    <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                    Retrying…
+                  </>
+                ) : (
+                  "Retry processing"
+                )}
               </Button>
             </DialogFooter>
           )}

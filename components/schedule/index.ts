@@ -1,6 +1,5 @@
 // Main schedule view exports
 export { ScheduleView } from "./schedule-view"
-export { ScheduleOverviewClient } from "./schedule-overview-client"
 
 // Individual view components
 export { GanttChart } from "./gantt-chart"
@@ -12,7 +11,7 @@ export { ScheduleItemSheet } from "./schedule-item-sheet"
 
 // Loading and empty states
 export { GanttChartSkeleton, LookaheadSkeleton, SchedulePageSkeleton } from "./schedule-skeleton"
-export { ScheduleEmptyState, ScheduleEmptyStateCompact, ScheduleOverviewEmptyState } from "./schedule-empty-state"
+export { ScheduleEmptyState, ScheduleEmptyStateCompact } from "./schedule-empty-state"
 
 // CO/Draw integration components
 export { ChangeOrderImpactBadge, ChangeOrderImpactIndicator } from "./change-order-impact-badge"

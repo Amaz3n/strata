@@ -16,7 +16,17 @@ import { getProjectAccountingCustomerPreviewAction } from "@/app/(app)/projects/
 import { listProjectsAction } from "@/app/(app)/projects/actions"
 
 import { cn } from "@/lib/utils"
-import { isVendorCredit } from "@/lib/financials/payables-rules"
+import { getPayableSyncBlockReason, isVendorCredit } from "@/lib/financials/payables-rules"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { PayablesExplorer } from "./payables-explorer"
 import { AddPayableSheet } from "./add-payable-sheet"
 import { PayablesWorkspace } from "./payables-workspace"
@@ -25,16 +35,6 @@ import { QboSyncSheet } from "@/components/integrations/qbo-sync-sheet"
 type QBOAccountOption = { id: string; name: string; fullyQualifiedName?: string; account_type?: string; account_sub_type?: string }
 type ProjectBillingModel = "fixed_price" | "cost_plus_percent" | "cost_plus_fixed_fee" | "cost_plus_gmp" | "time_and_materials"
 type ProjectOption = { id: string; name: string; billingModel: ProjectBillingModel }
-
-function getPayableSyncBlockReason(bill: VendorBillSummary) {
-  if (isVendorCredit(bill)) return "Imported vendor credits are read-only in QuickBooks."
-  if (bill.status === "pending") return "Approve the payable before syncing it to QuickBooks."
-  if (!bill.qbo_vendor_id) return "Link this Arc vendor to QuickBooks before syncing."
-  const hasLineExpenseCoding =
-    (bill.actual_lines?.length ?? 0) > 0 && bill.actual_lines!.every((line) => Boolean(line.qbo_expense_account_id))
-  if (!bill.qbo_expense_account_id && !hasLineExpenseCoding) return "Choose a QuickBooks account before syncing this payable."
-  return null
-}
 
 export function ProjectPayablesClient({
   projectId,
@@ -73,6 +73,7 @@ export function ProjectPayablesClient({
   const [qboApAccounts, setQboApAccounts] = useState<QBOAccountOption[]>([])
   const [qboDefaults, setQboDefaults] = useState<{ expenseAccountId?: string; apAccountId?: string }>({})
   const [projects, setProjects] = useState<ProjectOption[]>([])
+  const [deleteBill, setDeleteBill] = useState<VendorBillSummary | null>(null)
 
   const [workspaceBillId, setWorkspaceBillId] = useState<string | null>(searchParams.get("bill"))
 
@@ -149,13 +150,18 @@ export function ProjectPayablesClient({
       try {
         const updated = await updateProjectVendorBillStatusAction(projectId, bill.id, {
           status: "approved",
+          expected_updated_at: bill.updated_at,
           cost_code_id: costCodesEnabled ? bill.actual_cost_code_id ?? undefined : undefined,
           qbo_expense_account_id: bill.qbo_expense_account_id ?? qboDefaults.expenseAccountId,
           qbo_expense_account_name: bill.qbo_expense_account_name ?? getExpenseAccountName(qboDefaults.expenseAccountId),
         })
-        if (updated.qbo_sync_status === "needs_review") {
+        if (!updated.success) {
+          toast.error(updated.error)
+          return
+        }
+        if (updated.data.qbo_sync_status === "needs_review") {
           toast.warning("Bill approved, but QuickBooks needs coding", {
-            description: updated.qbo_sync_error ?? "Choose a QuickBooks account before syncing.",
+            description: updated.data.qbo_sync_error ?? "Choose a QuickBooks account before syncing.",
           })
         } else {
           toast.success("Bill approved")
@@ -198,6 +204,7 @@ export function ProjectPayablesClient({
           vendorBills={vendorBills}
           costCodes={costCodes}
           costCodesEnabled={costCodesEnabled}
+          accountingEnabled={accountingEnabled}
           qboExpenseAccounts={qboExpenseAccounts}
           complianceRules={complianceRules}
           complianceStatusByCompanyId={complianceStatusByCompanyId}
@@ -209,11 +216,16 @@ export function ProjectPayablesClient({
           onSelectQboExpenseAccount={(bill, accountId) => {
             startTransition(async () => {
               try {
-                await updateProjectVendorBillStatusAction(projectId, bill.id, {
+                const result = await updateProjectVendorBillStatusAction(projectId, bill.id, {
                   status: bill.status as any,
+                  expected_updated_at: bill.updated_at,
                   qbo_expense_account_id: accountId || undefined,
                   qbo_expense_account_name: getExpenseAccountName(accountId),
                 })
+                if (!result.success) {
+                  toast.error(result.error)
+                  return
+                }
                 toast.success("QuickBooks account updated")
                 router.refresh()
               } catch (error) {
@@ -224,12 +236,17 @@ export function ProjectPayablesClient({
           onSelectCostCode={costCodesEnabled ? (bill, costCodeId) => {
             startTransition(async () => {
               try {
-                await updateProjectVendorBillStatusAction(projectId, bill.id, {
+                const result = await updateProjectVendorBillStatusAction(projectId, bill.id, {
                   status: bill.status as any,
+                  expected_updated_at: bill.updated_at,
                   cost_code_id: costCodeId,
                   qbo_expense_account_id: bill.qbo_expense_account_id ?? qboDefaults.expenseAccountId,
                   qbo_expense_account_name: bill.qbo_expense_account_name ?? getExpenseAccountName(qboDefaults.expenseAccountId),
                 })
+                if (!result.success) {
+                  toast.error(result.error)
+                  return
+                }
                 toast.success("Cost code updated")
                 router.refresh()
               } catch (error) {
@@ -241,6 +258,41 @@ export function ProjectPayablesClient({
           onViewFiles={(bill) => openBill(bill.id)}
           onRecordPayment={(bill) => openBill(bill.id)}
           onApprove={approveBill}
+          onBulkApprove={(bills) => {
+            startTransition(async () => {
+              let approved = 0
+              for (const bill of bills) {
+                const result = await updateProjectVendorBillStatusAction(projectId, bill.id, {
+                  status: "approved",
+                  expected_updated_at: bill.updated_at,
+                  cost_code_id: costCodesEnabled ? bill.actual_cost_code_id ?? undefined : undefined,
+                  qbo_expense_account_id: bill.qbo_expense_account_id ?? qboDefaults.expenseAccountId,
+                  qbo_expense_account_name: bill.qbo_expense_account_name ?? getExpenseAccountName(qboDefaults.expenseAccountId),
+                })
+                if (result.success) approved += 1
+                else toast.error(result.error, { description: bill.bill_number ?? undefined })
+              }
+              if (approved > 0) toast.success(`${approved} payable${approved === 1 ? "" : "s"} approved`)
+              router.refresh()
+            })
+          }}
+          onBulkSyncQbo={(bills) => {
+            startTransition(async () => {
+              let synced = 0
+              for (const bill of bills) {
+                const blockReason = getPayableSyncBlockReason(bill)
+                if (blockReason) {
+                  toast.error(blockReason, { description: bill.bill_number ?? undefined })
+                  continue
+                }
+                const result = await syncProjectVendorBillToQBOAction(projectId, bill.id)
+                if (result.success) synced += 1
+                else toast.error(result.error ?? "QuickBooks sync failed", { description: bill.bill_number ?? undefined })
+              }
+              if (synced > 0) toast.success(`${synced} payable${synced === 1 ? "" : "s"} synced`)
+              router.refresh()
+            })
+          }}
           onSyncQbo={(bill) => {
             startTransition(async () => {
               const blockReason = getPayableSyncBlockReason(bill)
@@ -259,20 +311,7 @@ export function ProjectPayablesClient({
               }
             })
           }}
-          onDelete={(bill) => {
-            if (!window.confirm(`Are you sure you want to delete payable ${bill.bill_number ? `#${bill.bill_number}` : ""} for ${bill.company_name ?? "unknown vendor"}?`)) {
-              return
-            }
-            startTransition(async () => {
-              const result = await deleteProjectVendorBillAction(projectId, bill.id)
-              if (result.success) {
-                toast.success("Payable deleted")
-                router.refresh()
-              } else {
-                toast.error(result.error)
-              }
-            })
-          }}
+          onDelete={setDeleteBill}
         />
       </div>
 
@@ -297,6 +336,39 @@ export function ProjectPayablesClient({
         complianceStatusByCompanyId={complianceStatusByCompanyId}
         onChanged={() => router.refresh()}
       />
+
+      <AlertDialog open={Boolean(deleteBill)} onOpenChange={(open) => !open && setDeleteBill(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete payable?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes {deleteBill?.bill_number ? `#${deleteBill.bill_number}` : "this payable"} for{" "}
+              {deleteBill?.company_name ?? deleteBill?.qbo_vendor_name ?? "unknown vendor"}. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                if (!deleteBill) return
+                startTransition(async () => {
+                  const result = await deleteProjectVendorBillAction(projectId, deleteBill.id)
+                  if (result.success) {
+                    toast.success("Payable deleted")
+                    setDeleteBill(null)
+                    router.refresh()
+                  } else {
+                    toast.error(result.error)
+                  }
+                })
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

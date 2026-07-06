@@ -14,6 +14,8 @@ export const createPaymentIntentInputSchema = z.object({
 export const createPublicInvoicePaymentIntentInputSchema = z.object({
   token: z.string().min(1, "Invoice link is required"),
   method: z.enum(["ach", "card"]),
+  // Optional partial payment; server clamps to the outstanding balance.
+  amount_cents: z.number().int().min(100, "Minimum online payment is $1.00").optional(),
 })
 
 export const generatePayLinkInputSchema = z.object({
@@ -35,6 +37,7 @@ export const recordPaymentInputSchema = z.object({
   provider: z.string().optional(),
   pay_link_token: z.string().optional(),
   idempotency_key: z.string().optional(),
+  received_at: z.string().datetime({ offset: true }).optional(),
   metadata: z.record(z.any()).optional(),
 })
 

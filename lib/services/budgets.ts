@@ -2,12 +2,14 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { z } from "zod"
 
 import { recordAudit } from "@/lib/services/audit"
+import { requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { getProjectJobCostActualsByCostCode } from "@/lib/services/job-cost-actuals"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 const budgetLineSchema = z.object({
+  id: z.string().uuid().nullable().optional(),
   cost_code_id: z.string().uuid().optional(),
   description: z.string().min(1),
   amount_cents: z.number().int().min(0),
@@ -20,9 +22,45 @@ const createBudgetSchema = z.object({
   status: z.enum(["draft", "approved", "locked"]).default("draft"),
 })
 
+async function requireBudgetAuth({
+  permission,
+  userId,
+  orgId,
+  projectId,
+  supabase,
+  resourceType = "project",
+  resourceId = projectId,
+}: {
+  permission: "budget.read" | "budget.write"
+  userId: string
+  orgId: string
+  projectId: string
+  supabase: SupabaseClient
+  resourceType?: string
+  resourceId?: string
+}) {
+  await requireAuthorization({
+    permission,
+    userId,
+    orgId,
+    projectId,
+    supabase,
+    logDecision: true,
+    resourceType,
+    resourceId,
+  })
+}
+
 export async function createBudget(input: z.infer<typeof createBudgetSchema>, orgId?: string) {
   const parsed = createBudgetSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireBudgetAuth({
+    permission: "budget.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: parsed.project_id,
+    supabase,
+  })
 
   const { data: latestBudget, error: latestError } = await supabase
     .from("budgets")
@@ -58,6 +96,7 @@ export async function createBudget(input: z.infer<typeof createBudgetSchema>, or
 
   if (parsed.lines.length > 0) {
     const linesToInsert = parsed.lines.map((line, idx) => ({
+      id: line.id ?? undefined,
       org_id: resolvedOrgId,
       budget_id: budget.id,
       cost_code_id: line.cost_code_id ?? null,
@@ -102,6 +141,13 @@ export async function duplicateBudgetVersion({
   orgId?: string
 }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireBudgetAuth({
+    permission: "budget.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId,
+    supabase,
+  })
 
   const { data: latestBudget, error: latestError } = await supabase
     .from("budgets")
@@ -217,6 +263,16 @@ export async function updateBudgetStatus({
     throw new Error("Budget not found")
   }
 
+  await requireBudgetAuth({
+    permission: "budget.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: existing.project_id,
+    supabase,
+    resourceType: "budget",
+    resourceId: budgetId,
+  })
+
   const nextMetadata = {
     ...(existing.metadata ?? {}),
     approved_at: status === "approved" ? (existing.metadata?.approved_at ?? new Date().toISOString()) : existing.metadata?.approved_at,
@@ -264,7 +320,7 @@ export async function replaceBudgetLines({
   orgId,
 }: {
   budgetId: string
-  lines: Array<{ cost_code_id?: string | null; description: string; amount_cents: number; metadata?: Record<string, any> }>
+  lines: Array<{ id?: string | null; cost_code_id?: string | null; description: string; amount_cents: number; metadata?: Record<string, any> }>
   orgId?: string
 }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
@@ -280,24 +336,69 @@ export async function replaceBudgetLines({
     throw new Error("Budget not found")
   }
 
+  await requireBudgetAuth({
+    permission: "budget.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: budget.project_id,
+    supabase,
+    resourceType: "budget",
+    resourceId: budgetId,
+  })
+
   if (budget.status === "locked") {
     throw new Error("Budget is locked and cannot be edited")
   }
 
   const totalCents = lines.reduce((sum, line) => sum + (line.amount_cents ?? 0), 0)
 
-  const { error: deleteError } = await supabase
+  const { data: existingLines, error: existingLinesError } = await supabase
     .from("budget_lines")
-    .delete()
+    .select("id")
     .eq("org_id", resolvedOrgId)
     .eq("budget_id", budgetId)
 
-  if (deleteError) {
-    throw new Error(`Failed to replace budget lines: ${deleteError.message}`)
+  if (existingLinesError) {
+    throw new Error(`Failed to load budget lines: ${existingLinesError.message}`)
+  }
+
+  const existingIds = new Set((existingLines ?? []).map((line) => line.id as string))
+  const incomingIds = new Set(lines.map((line) => line.id).filter((id): id is string => Boolean(id)))
+  if (incomingIds.size > 0) {
+    const { data: matchingIncoming, error: matchingIncomingError } = await supabase
+      .from("budget_lines")
+      .select("id, budget_id, org_id")
+      .in("id", Array.from(incomingIds))
+
+    if (matchingIncomingError) {
+      throw new Error(`Failed to validate budget lines: ${matchingIncomingError.message}`)
+    }
+
+    const foreignLine = (matchingIncoming ?? []).find(
+      (line) => line.org_id !== resolvedOrgId || line.budget_id !== budgetId,
+    )
+    if (foreignLine) {
+      throw new Error("Budget line does not belong to this budget")
+    }
+  }
+
+  const removedIds = Array.from(existingIds).filter((id) => !incomingIds.has(id))
+  if (removedIds.length > 0) {
+    const { error: deleteError } = await supabase
+      .from("budget_lines")
+      .delete()
+      .eq("org_id", resolvedOrgId)
+      .eq("budget_id", budgetId)
+      .in("id", removedIds)
+
+    if (deleteError) {
+      throw new Error(`Failed to remove deleted budget lines: ${deleteError.message}`)
+    }
   }
 
   if (lines.length > 0) {
-    const toInsert = lines.map((line, idx) => ({
+    const rows = lines.map((line, idx) => ({
+      id: line.id ?? undefined,
       org_id: resolvedOrgId,
       budget_id: budgetId,
       cost_code_id: line.cost_code_id ?? null,
@@ -307,9 +408,19 @@ export async function replaceBudgetLines({
       metadata: line.metadata ?? {},
     }))
 
-    const { error: insertError } = await supabase.from("budget_lines").insert(toInsert)
-    if (insertError) {
-      throw new Error(`Failed to replace budget lines: ${insertError.message}`)
+    const rowsWithIds = rows.filter((row) => row.id)
+    const rowsWithoutIds = rows.filter((row) => !row.id)
+    if (rowsWithIds.length > 0) {
+      const { error: upsertError } = await supabase.from("budget_lines").upsert(rowsWithIds, { onConflict: "id" })
+      if (upsertError) {
+        throw new Error(`Failed to save budget lines: ${upsertError.message}`)
+      }
+    }
+    if (rowsWithoutIds.length > 0) {
+      const { error: insertError } = await supabase.from("budget_lines").insert(rowsWithoutIds)
+      if (insertError) {
+        throw new Error(`Failed to save budget lines: ${insertError.message}`)
+      }
     }
   }
 
@@ -355,7 +466,7 @@ export async function lockBudgetBaseline(projectId: string, orgId?: string) {
 
   const { data: budget, error: budgetError } = await supabase
     .from("budgets")
-    .select("id, project_id, lines:budget_lines(cost_code_id, description, amount_cents)")
+    .select("id, project_id, lines:budget_lines(id, cost_code_id, description, amount_cents)")
     .eq("org_id", resolvedOrgId)
     .eq("project_id", projectId)
     .order("version", { ascending: false })
@@ -365,7 +476,18 @@ export async function lockBudgetBaseline(projectId: string, orgId?: string) {
   if (budgetError) throw new Error(`Failed to load budget: ${budgetError.message}`)
   if (!budget) throw new Error("Create a budget before locking a baseline")
 
+  await requireBudgetAuth({
+    permission: "budget.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId,
+    supabase,
+    resourceType: "budget",
+    resourceId: budget.id as string,
+  })
+
   const baselineLines = (budget.lines ?? []).map((line: any) => ({
+    id: line.id ?? null,
     cost_code_id: line.cost_code_id ?? null,
     description: line.description ?? "",
     amount_cents: line.amount_cents ?? 0,
@@ -395,11 +517,18 @@ export async function lockBudgetBaseline(projectId: string, orgId?: string) {
 }
 
 export async function listVarianceAlertsForProject(projectId: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireBudgetAuth({
+    permission: "budget.read",
+    userId,
+    orgId: resolvedOrgId,
+    projectId,
+    supabase,
+  })
 
   const { data, error } = await supabase
     .from("variance_alerts")
-    .select("id, project_id, cost_code_id, alert_type, threshold_percent, current_percent, budget_cents, actual_cents, variance_cents, status, acknowledged_by, acknowledged_at, metadata, created_at")
+    .select("id, project_id, cost_code_id, budget_line_id, alert_type, threshold_percent, current_percent, budget_cents, actual_cents, variance_cents, status, acknowledged_by, acknowledged_at, metadata, created_at")
     .eq("org_id", resolvedOrgId)
     .eq("project_id", projectId)
     .order("status", { ascending: true })
@@ -413,7 +542,14 @@ export async function listVarianceAlertsForProject(projectId: string, orgId?: st
 }
 
 export async function getBudgetWithActuals(projectId: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireBudgetAuth({
+    permission: "budget.read",
+    userId,
+    orgId: resolvedOrgId,
+    projectId,
+    supabase,
+  })
   return getBudgetWithActualsInternal(supabase, projectId, resolvedOrgId)
 }
 
@@ -437,7 +573,14 @@ export async function listBudgetBucketChangeOrders(
   groupBy: "cost_code" | "budget_line",
   orgId?: string,
 ): Promise<BudgetBucketChangeOrder[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireBudgetAuth({
+    permission: "budget.read",
+    userId,
+    orgId: resolvedOrgId,
+    projectId,
+    supabase,
+  })
   if (!bucketKey) return []
 
   const { data: cos, error: coError } = await supabase
@@ -496,7 +639,14 @@ export async function listProjectBudgetLines(
   projectId: string,
   orgId?: string,
 ): Promise<Array<{ id: string; description: string | null; amount_cents: number | null }>> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireBudgetAuth({
+    permission: "budget.read",
+    userId,
+    orgId: resolvedOrgId,
+    projectId,
+    supabase,
+  })
   const { data: budget } = await supabase
     .from("budgets")
     .select("id")
@@ -517,6 +667,20 @@ export async function listProjectBudgetLines(
     description: (line.description as string | null) ?? null,
     amount_cents: (line.amount_cents as number | null) ?? null,
   }))
+}
+
+function emptyBudgetBucket() {
+  return {
+    budget_cents: 0,
+    committed_cents: 0,
+    committed_billed_cents: 0,
+    pending_cost_cents: 0,
+    actual_cents: 0,
+    invoiced_cents: 0,
+    co_adjustment_cents: 0,
+    percent_complete: null as number | null,
+    estimate_remaining_cents: null as number | null,
+  }
 }
 
 async function getBudgetWithActualsInternal(
@@ -592,6 +756,47 @@ async function getBudgetWithActualsInternal(
     "change orders",
   )
 
+  const pendingBillIds = await selectIds(
+    supabase
+      .from("vendor_bills")
+      .select("id")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .eq("status", "pending"),
+    "pending vendor bills",
+  )
+
+  const approvedCommitmentBillIds = await selectIds(
+    supabase
+      .from("vendor_bills")
+      .select("id")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .in("status", ["approved", "partial", "paid"])
+      .not("commitment_id", "is", null),
+    "approved commitment bills",
+  )
+
+  const approvedCommitmentChangeOrderIds = await selectIds(
+    supabase
+      .from("commitment_change_orders")
+      .select("id")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .eq("status", "approved"),
+    "approved commitment change orders",
+  )
+
+  const pendingCommitmentChangeOrderIds = await selectIds(
+    supabase
+      .from("commitment_change_orders")
+      .select("id")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .eq("status", "sent"),
+    "pending commitment change orders",
+  )
+
   const { data: commitments, error: commitmentsError } =
     commitmentIds.length === 0
       ? { data: [], error: null }
@@ -612,12 +817,64 @@ async function getBudgetWithActualsInternal(
       ? { data: [], error: null }
       : await supabase
           .from("invoice_lines")
-          .select("cost_code_id, unit_price_cents, quantity")
+          .select("cost_code_id, budget_line_id, unit_price_cents, quantity")
           .eq("org_id", orgId)
           .in("invoice_id", invoiceIds)
 
   if (invoiceLinesError) {
     throw new Error(`Failed to load invoice lines: ${invoiceLinesError.message}`)
+  }
+
+  const { data: pendingBillLines, error: pendingBillLinesError } =
+    pendingBillIds.length === 0
+      ? { data: [], error: null }
+      : await supabase
+          .from("bill_lines")
+          .select("cost_code_id, budget_line_id, unit_cost_cents, quantity")
+          .eq("org_id", orgId)
+          .in("bill_id", pendingBillIds)
+
+  if (pendingBillLinesError) {
+    throw new Error(`Failed to load pending bill exposure: ${pendingBillLinesError.message}`)
+  }
+
+  const { data: approvedCommitmentBillLines, error: approvedCommitmentBillLinesError } =
+    approvedCommitmentBillIds.length === 0
+      ? { data: [], error: null }
+      : await supabase
+          .from("bill_lines")
+          .select("cost_code_id, budget_line_id, unit_cost_cents, quantity")
+          .eq("org_id", orgId)
+          .in("bill_id", approvedCommitmentBillIds)
+
+  if (approvedCommitmentBillLinesError) {
+    throw new Error(`Failed to load commitment bill burn-down: ${approvedCommitmentBillLinesError.message}`)
+  }
+
+  const { data: approvedCommitmentCoLines, error: approvedCommitmentCoLinesError } =
+    approvedCommitmentChangeOrderIds.length === 0
+      ? { data: [], error: null }
+      : await supabase
+          .from("commitment_change_order_lines")
+          .select("cost_code_id, budget_line_id, amount_cents, unit_cost_cents, quantity")
+          .eq("org_id", orgId)
+          .in("commitment_change_order_id", approvedCommitmentChangeOrderIds)
+
+  if (approvedCommitmentCoLinesError) {
+    throw new Error(`Failed to load commitment change orders: ${approvedCommitmentCoLinesError.message}`)
+  }
+
+  const { data: pendingCommitmentCoLines, error: pendingCommitmentCoLinesError } =
+    pendingCommitmentChangeOrderIds.length === 0
+      ? { data: [], error: null }
+      : await supabase
+          .from("commitment_change_order_lines")
+          .select("cost_code_id, budget_line_id, amount_cents, unit_cost_cents, quantity")
+          .eq("org_id", orgId)
+          .in("commitment_change_order_id", pendingCommitmentChangeOrderIds)
+
+  if (pendingCommitmentCoLinesError) {
+    throw new Error(`Failed to load pending commitment exposure: ${pendingCommitmentCoLinesError.message}`)
   }
 
   const { data: coLines, error: coLinesError } =
@@ -652,79 +909,63 @@ async function getBudgetWithActualsInternal(
 
   const byCostCode = new Map<
     string,
-    {
-      budget_cents: number
-      committed_cents: number
-      actual_cents: number
-      invoiced_cents: number
-      co_adjustment_cents: number
-      percent_complete: number | null
-      estimate_remaining_cents: number | null
-    }
+    ReturnType<typeof emptyBudgetBucket>
   >()
 
   for (const line of budget.lines ?? []) {
     // In code-off mode each budget line is its own bucket (keyed by its row id).
     const key = costCodesEnabled ? line.cost_code_id ?? "uncoded" : line.id
-    const existing =
-      byCostCode.get(key) ?? {
-        budget_cents: 0,
-        committed_cents: 0,
-        actual_cents: 0,
-        invoiced_cents: 0,
-        co_adjustment_cents: 0,
-        percent_complete: null,
-        estimate_remaining_cents: null,
-      }
+    const existing = byCostCode.get(key) ?? emptyBudgetBucket()
     existing.budget_cents += line.amount_cents ?? 0
     byCostCode.set(key, existing)
   }
 
   for (const line of commitments ?? []) {
     const key = bucketKey(line)
-    const existing =
-      byCostCode.get(key) ?? {
-        budget_cents: 0,
-        committed_cents: 0,
-        actual_cents: 0,
-        invoiced_cents: 0,
-        co_adjustment_cents: 0,
-        percent_complete: null,
-        estimate_remaining_cents: null,
-      }
+    const existing = byCostCode.get(key) ?? emptyBudgetBucket()
     existing.committed_cents += (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
+    byCostCode.set(key, existing)
+  }
+
+  for (const line of approvedCommitmentCoLines ?? []) {
+    const key = bucketKey(line)
+    const existing = byCostCode.get(key) ?? emptyBudgetBucket()
+    existing.committed_cents += line.amount_cents ?? (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
     byCostCode.set(key, existing)
   }
 
   for (const actual of jobCostActuals) {
     const key = bucketKey(actual)
-    const existing =
-      byCostCode.get(key) ?? {
-        budget_cents: 0,
-        committed_cents: 0,
-        actual_cents: 0,
-        invoiced_cents: 0,
-        co_adjustment_cents: 0,
-        percent_complete: null,
-        estimate_remaining_cents: null,
-      }
+    const existing = byCostCode.get(key) ?? emptyBudgetBucket()
     existing.actual_cents += actual.actual_cents
     byCostCode.set(key, existing)
   }
 
   for (const line of invoiceLines ?? []) {
-    const key = line.cost_code_id ?? "uncoded"
-    const existing =
-      byCostCode.get(key) ?? {
-        budget_cents: 0,
-        committed_cents: 0,
-        actual_cents: 0,
-        invoiced_cents: 0,
-        co_adjustment_cents: 0,
-        percent_complete: null,
-        estimate_remaining_cents: null,
-      }
+    const key = bucketKey(line)
+    const existing = byCostCode.get(key) ?? emptyBudgetBucket()
     existing.invoiced_cents += (line.unit_price_cents ?? 0) * (line.quantity ?? 1)
+    byCostCode.set(key, existing)
+  }
+
+  for (const line of pendingBillLines ?? []) {
+    const key = bucketKey(line)
+    const existing = byCostCode.get(key) ?? emptyBudgetBucket()
+    existing.pending_cost_cents += (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
+    byCostCode.set(key, existing)
+  }
+
+  for (const line of approvedCommitmentBillLines ?? []) {
+    const key = bucketKey(line)
+    const existing = byCostCode.get(key) ?? emptyBudgetBucket()
+    existing.committed_billed_cents += (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
+    byCostCode.set(key, existing)
+  }
+
+  for (const line of pendingCommitmentCoLines ?? []) {
+    const key = bucketKey(line)
+    const existing = byCostCode.get(key) ?? emptyBudgetBucket()
+    existing.pending_cost_cents += line.amount_cents ?? (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
     byCostCode.set(key, existing)
   }
 
@@ -733,16 +974,7 @@ async function getBudgetWithActualsInternal(
 
   for (const line of coAdjustmentSource) {
     const key = bucketKey(line)
-    const existing =
-      byCostCode.get(key) ?? {
-        budget_cents: 0,
-        committed_cents: 0,
-        actual_cents: 0,
-        invoiced_cents: 0,
-        co_adjustment_cents: 0,
-        percent_complete: null,
-        estimate_remaining_cents: null,
-      }
+    const existing = byCostCode.get(key) ?? emptyBudgetBucket()
     const sourceLine = line as any
     const metadata = (sourceLine.metadata ?? {}) as Record<string, any>
     if ("amount_cents" in sourceLine) {
@@ -760,33 +992,27 @@ async function getBudgetWithActualsInternal(
 
   for (const prog of progressList ?? []) {
     const key = prog.cost_code_id ?? "uncoded"
-    const existing =
-      byCostCode.get(key) ?? {
-        budget_cents: 0,
-        committed_cents: 0,
-        actual_cents: 0,
-        invoiced_cents: 0,
-        co_adjustment_cents: 0,
-        percent_complete: null,
-        estimate_remaining_cents: null,
-      }
+    const existing = byCostCode.get(key) ?? emptyBudgetBucket()
     existing.percent_complete = prog.percent_complete
     existing.estimate_remaining_cents = prog.estimate_remaining_cents
     byCostCode.set(key, existing)
   }
 
   // Baseline (frozen "Original" budget) is stored on the budget row. Match by
-  // cost_code_id when codes are on; by description otherwise (line ids change on
-  // every save). When no baseline is locked, baseline_cents stays null and the
-  // UI falls back to the live base amount.
+  // cost_code_id when codes are on; by budget_line id when codes are off, with
+  // description as a legacy fallback for baselines captured before line ids were stored.
   const baselineLines = (Array.isArray((budget as any).baseline_lines)
     ? (budget as any).baseline_lines
-    : []) as Array<{ cost_code_id?: string | null; description?: string | null; amount_cents?: number | null }>
+    : []) as Array<{ id?: string | null; cost_code_id?: string | null; description?: string | null; amount_cents?: number | null }>
   const hasBaseline = baselineLines.length > 0
   const baselineByCostCode = new Map<string, number>()
+  const baselineByLineId = new Map<string, number>()
   const baselineByDescription = new Map<string, number>()
   for (const bl of baselineLines) {
     const amount = bl.amount_cents ?? 0
+    if (bl.id) {
+      baselineByLineId.set(bl.id, (baselineByLineId.get(bl.id) ?? 0) + amount)
+    }
     if (bl.cost_code_id) {
       baselineByCostCode.set(bl.cost_code_id, (baselineByCostCode.get(bl.cost_code_id) ?? 0) + amount)
     }
@@ -800,6 +1026,8 @@ async function getBudgetWithActualsInternal(
 
   let totalBudget = 0
   let totalCommitted = 0
+  let totalCommittedBilled = 0
+  let totalPendingCost = 0
   let totalActual = 0
   let totalInvoiced = 0
   let totalCOAdjustment = 0
@@ -814,6 +1042,8 @@ async function getBudgetWithActualsInternal(
     const budgetLineId = costCodesEnabled ? null : resolvedId
     totalBudget += values.budget_cents
     totalCommitted += values.committed_cents
+    totalCommittedBilled += values.committed_billed_cents
+    totalPendingCost += values.pending_cost_cents
     totalActual += values.actual_cents
     totalInvoiced += values.invoiced_cents
     totalCOAdjustment += values.co_adjustment_cents
@@ -823,8 +1053,9 @@ async function getBudgetWithActualsInternal(
       if (costCodesEnabled) {
         baseline_cents = resolvedId ? baselineByCostCode.get(resolvedId) ?? 0 : 0
       } else {
+        const byLineId = resolvedId ? baselineByLineId.get(resolvedId) : undefined
         const desc = lineDescById.get(bucketId)
-        baseline_cents = desc ? baselineByDescription.get(desc) ?? 0 : 0
+        baseline_cents = byLineId ?? (desc ? baselineByDescription.get(desc) ?? 0 : 0)
       }
       totalBaseline += baseline_cents ?? 0
     }
@@ -832,6 +1063,9 @@ async function getBudgetWithActualsInternal(
     const adjustedBudget = values.budget_cents + values.co_adjustment_cents
     const variance = adjustedBudget - values.actual_cents
     const variancePercent = adjustedBudget > 0 ? Math.round((values.actual_cents / adjustedBudget) * 100) : 0
+    const exposure_cents = values.actual_cents + values.pending_cost_cents
+    const remaining_commitment_cents = values.committed_cents - values.committed_billed_cents
+    const isOverbilled = values.committed_cents > 0 && values.committed_billed_cents > values.committed_cents
 
     const eac_cents = values.estimate_remaining_cents != null
       ? values.actual_cents + values.estimate_remaining_cents
@@ -851,6 +1085,10 @@ async function getBudgetWithActualsInternal(
       co_adjustment_cents: values.co_adjustment_cents,
       adjusted_budget_cents: adjustedBudget,
       committed_cents: values.committed_cents,
+      committed_billed_cents: values.committed_billed_cents,
+      remaining_commitment_cents,
+      pending_cost_cents: values.pending_cost_cents,
+      exposure_cents,
       actual_cents: values.actual_cents,
       invoiced_cents: values.invoiced_cents,
       variance_cents: variance,
@@ -859,7 +1097,12 @@ async function getBudgetWithActualsInternal(
       eac_cents,
       cost_to_complete_cents,
       variance_at_completion_cents,
-      status: variancePercent > 100 ? "over" : variancePercent > 90 ? "warning" : "ok",
+      status:
+        variance_at_completion_cents < 0 || isOverbilled
+          ? "over"
+          : values.percent_complete != null && variancePercent > values.percent_complete + 15
+            ? "warning"
+            : "ok",
     }
   })
 
@@ -876,6 +1119,10 @@ async function getBudgetWithActualsInternal(
       total_co_adjustment_cents: totalCOAdjustment,
       adjusted_budget_cents: adjustedTotalBudget,
       total_committed_cents: totalCommitted,
+      total_committed_billed_cents: totalCommittedBilled,
+      total_remaining_commitment_cents: totalCommitted - totalCommittedBilled,
+      total_pending_cost_cents: totalPendingCost,
+      total_exposure_cents: totalActual + totalPendingCost,
       total_actual_cents: totalActual,
       total_invoiced_cents: totalInvoiced,
       total_variance_cents: adjustedTotalBudget - totalActual,
@@ -926,27 +1173,52 @@ export async function takeBudgetSnapshot(projectId: string, orgId: string) {
   return snapshot
 }
 
-export async function checkVarianceAlerts(projectId: string, orgId: string, thresholds = [25, 50, 100]) {
+export async function checkVarianceAlerts(projectId: string, orgId: string, thresholds = [15], actorUserId?: string) {
   const supabase = createServiceSupabaseClient()
+  if (actorUserId) {
+    await requireBudgetAuth({
+      permission: "budget.write",
+      userId: actorUserId,
+      orgId,
+      projectId,
+      supabase,
+    })
+  }
   const data = await getBudgetWithActualsInternal(supabase, projectId, orgId)
   if (!data?.budget) return []
 
   const alerts: any[] = []
 
   for (const line of data.breakdown) {
-    // variance_alerts is keyed on cost_code_id; for cost-code-disabled projects
-    // (budget-line buckets) we can't dedupe per line yet, so skip per-line alerts
-    // here — the inline over-budget status still renders. Margin warning below
-    // still fires project-wide.
-    if (!line.cost_code_id && (line as any).budget_line_id) continue
-    if (line.variance_percent >= thresholds[0]) {
-      const { data: existing, error } = await supabase
+    const projectedOverrun = line.variance_at_completion_cents < 0
+    const spendPaceDelta =
+      line.percent_complete != null ? line.variance_percent - line.percent_complete : 0
+    const isSpendOutpacingProgress = spendPaceDelta >= thresholds[0]
+    if (projectedOverrun || isSpendOutpacingProgress) {
+      const alertType = projectedOverrun ? "over_budget" : "threshold_exceeded"
+      const currentPercent =
+        projectedOverrun && line.adjusted_budget_cents > 0
+          ? Math.round((Math.abs(line.variance_at_completion_cents) / line.adjusted_budget_cents) * 100)
+          : Math.round(spendPaceDelta)
+      const matchedThreshold = thresholds.find((t) => currentPercent >= t) ?? thresholds[0] ?? 0
+
+      let existingQuery = supabase
         .from("variance_alerts")
         .select("id")
+        .eq("org_id", orgId)
         .eq("project_id", projectId)
-        .eq("cost_code_id", line.cost_code_id)
+        .eq("alert_type", alertType)
         .eq("status", "active")
-        .maybeSingle()
+
+      if (line.cost_code_id) {
+        existingQuery = existingQuery.eq("cost_code_id", line.cost_code_id).is("budget_line_id", null)
+      } else if (line.budget_line_id) {
+        existingQuery = existingQuery.eq("budget_line_id", line.budget_line_id).is("cost_code_id", null)
+      } else {
+        existingQuery = existingQuery.is("cost_code_id", null).is("budget_line_id", null)
+      }
+
+      const { data: existing, error } = await existingQuery.maybeSingle()
 
       if (error) {
         throw new Error(`Failed to check existing variance alerts: ${error.message}`)
@@ -960,12 +1232,20 @@ export async function checkVarianceAlerts(projectId: string, orgId: string, thre
             project_id: projectId,
             budget_id: data.budget.id,
             cost_code_id: line.cost_code_id,
-            alert_type: line.variance_percent >= 100 ? "over_budget" : "threshold_exceeded",
-            threshold_percent: thresholds.find((t) => line.variance_percent >= t),
-            current_percent: line.variance_percent,
+            budget_line_id: line.budget_line_id,
+            alert_type: alertType,
+            threshold_percent: matchedThreshold,
+            current_percent: currentPercent,
             budget_cents: line.adjusted_budget_cents,
             actual_cents: line.actual_cents,
-            variance_cents: line.variance_cents,
+            variance_cents: projectedOverrun ? line.variance_at_completion_cents : line.variance_cents,
+            metadata: {
+              reason: projectedOverrun ? "projected_overrun" : "spent_outpacing_progress",
+              percent_complete: line.percent_complete,
+              percent_spent: line.variance_percent,
+              eac_cents: line.eac_cents,
+              vac_cents: line.variance_at_completion_cents,
+            },
           })
           .select("*")
           .single()
@@ -1049,6 +1329,7 @@ async function selectIds(
 
 export async function updateCostCodeProgress({
   orgId,
+  userId,
   projectId,
   costCodeId,
   percentComplete,
@@ -1056,6 +1337,7 @@ export async function updateCostCodeProgress({
   notes,
 }: {
   orgId: string
+  userId: string
   projectId: string
   costCodeId: string
   percentComplete: number | null
@@ -1063,10 +1345,13 @@ export async function updateCostCodeProgress({
   notes: string | null
 }) {
   const supabase = createServiceSupabaseClient()
-
-  // For server action calls we need the user session to know who recorded this.
-  // Assuming this is only called from authorized server actions:
-  const { data: userResponse } = await supabase.auth.getUser()
+  await requireBudgetAuth({
+    permission: "budget.write",
+    userId,
+    orgId,
+    projectId,
+    supabase,
+  })
 
   const { error } = await supabase
     .from("project_cost_code_progress")
@@ -1077,7 +1362,7 @@ export async function updateCostCodeProgress({
       percent_complete: percentComplete,
       estimate_remaining_cents: estimateRemainingCents,
       notes: notes,
-      recorded_by_user_id: userResponse.user?.id ?? "00000000-0000-0000-0000-000000000000",
+      recorded_by_user_id: userId,
     }, {
       onConflict: "org_id, project_id, cost_code_id"
     })

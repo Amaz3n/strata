@@ -35,6 +35,7 @@ import {
   ArrowUpDown,
   ChevronDown,
   ChevronUp,
+  Undo2,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -136,9 +137,79 @@ function getDisplaySheetNumber(sheet: DrawingSheet): string {
   return rawNumber || "UNNAMED"
 }
 
+function getDueBadge(file: FileWithUrls) {
+  if (!file.due_at) return null
+
+  const dueDate = new Date(file.due_at)
+  if (Number.isNaN(dueDate.getTime())) return null
+
+  const now = new Date()
+  const diffDays = Math.ceil((dueDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+  const formattedDate = dueDate.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  })
+
+  if (diffDays < 0) {
+    return {
+      label: "Overdue",
+      detail: `Due ${formattedDate}`,
+      variantClass: "text-rose-600 border-rose-200 bg-rose-50 dark:bg-rose-950/30 dark:text-rose-400 dark:border-rose-900",
+      Icon: AlertCircle,
+    }
+  }
+
+  if (diffDays === 0) {
+    return {
+      label: "Due today",
+      detail: `Due ${formattedDate}`,
+      variantClass: "text-amber-600 border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-900",
+      Icon: Clock,
+    }
+  }
+
+  if (diffDays <= 30) {
+    return {
+      label: `${diffDays}d`,
+      detail: `Due ${formattedDate}`,
+      variantClass: "text-amber-600 border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-900",
+      Icon: Clock,
+    }
+  }
+
+  return null
+}
+
 function getPrimarySourceContext(file: FileWithUrls) {
   const contexts = file.source_contexts ?? []
   return contexts.find((context) => context.type !== "manual_upload") ?? contexts[0] ?? null
+}
+
+function getFolderSharingState(
+  folderPermissions: Array<{ path: string; share_with_clients: boolean; share_with_subs: boolean }>,
+  path: string,
+) {
+  const normalizedPath = path.replace(/\/+/g, "/").replace(/\/$/, "")
+  let bestMatch: { share_with_clients: boolean; share_with_subs: boolean; inherited: boolean } | null = null
+  let bestMatchLength = -1
+
+  for (const permission of folderPermissions) {
+    const permissionPath = permission.path.replace(/\/+/g, "/").replace(/\/$/, "")
+    const applies =
+      normalizedPath === permissionPath ||
+      normalizedPath.startsWith(`${permissionPath}/`)
+    if (!applies) continue
+    if (permissionPath.length > bestMatchLength) {
+      bestMatchLength = permissionPath.length
+      bestMatch = {
+        share_with_clients: permission.share_with_clients,
+        share_with_subs: permission.share_with_subs,
+        inherited: normalizedPath !== permissionPath,
+      }
+    }
+  }
+
+  return bestMatch ?? { share_with_clients: false, share_with_subs: false, inherited: false }
 }
 
 // ---------------------------------------------------------------------------
@@ -162,11 +233,15 @@ export interface DocumentsFileTableProps {
   onFileClick: (fileId: string) => void
   onDownloadFile: (fileId: string) => void
   onFolderClick: (path: string) => void
+  onRenameFolder?: (path: string) => void
+  onShareFolder?: (path: string) => void
+  onDeleteFolder?: (path: string) => void
   onUploadClick: () => void
   onDropOnFolder: (path: string, files?: File[]) => void
   onRenameFile: (fileId: string) => void
   onMoveFile: (fileId: string) => void
   onDeleteFile: (fileId: string) => void
+  onRestoreFile?: (fileId: string) => void
   onViewActivity: (fileId: string) => void
   onShareFile: (fileId: string) => void
   onUploadNewVersion: (fileId: string) => void
@@ -243,11 +318,15 @@ export function DocumentsFileTable({
   onFileClick,
   onDownloadFile,
   onFolderClick,
+  onRenameFolder,
+  onShareFolder,
+  onDeleteFolder,
   onUploadClick,
   onDropOnFolder,
   onRenameFile,
   onMoveFile,
   onDeleteFile,
+  onRestoreFile,
   onViewActivity,
   onShareFile,
   onUploadNewVersion,
@@ -337,6 +416,9 @@ export function DocumentsFileTable({
                 onSelectionChange={onFolderSelectionChange}
                 onFolderClick={onFolderClick}
                 onDropOnFolder={onDropOnFolder}
+                onRenameFolder={onRenameFolder}
+                onShareFolder={onShareFolder}
+                onDeleteFolder={onDeleteFolder}
               />
             )
           }
@@ -351,6 +433,7 @@ export function DocumentsFileTable({
               onRenameFile={onRenameFile}
               onMoveFile={onMoveFile}
               onDeleteFile={onDeleteFile}
+              onRestoreFile={onRestoreFile}
               onViewActivity={onViewActivity}
               onShareFile={onShareFile}
               onUploadNewVersion={onUploadNewVersion}
@@ -425,13 +508,23 @@ const FolderRow = memo(function FolderRow({
   onSelectionChange,
   onFolderClick,
   onDropOnFolder,
+  onRenameFolder,
+  onShareFolder,
+  onDeleteFolder,
 }: {
   item: Extract<DocumentTableItem, { type: "folder" }>
   isSelected: boolean
   onSelectionChange: (path: string, selected: boolean) => void
   onFolderClick: (path: string) => void
   onDropOnFolder: (path: string, files?: File[]) => void
+  onRenameFolder?: (path: string) => void
+  onShareFolder?: (path: string) => void
+  onDeleteFolder?: (path: string) => void
 }) {
+  const { folderPermissions } = useDocuments()
+  const folderSharing = getFolderSharingState(folderPermissions, item.path)
+  const isShared = folderSharing.share_with_clients || folderSharing.share_with_subs
+
   return (
     <TableRow
       className={cn("group cursor-pointer hover:bg-muted/30", isSelected && "bg-primary/5")}
@@ -477,7 +570,58 @@ const FolderRow = memo(function FolderRow({
         </span>
       </TableCell>
       <TableCell className="hidden lg:table-cell w-[128px]">
-        <span className="text-xs text-muted-foreground">-</span>
+        {!isShared ? (
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Badge variant="secondary" className="bg-muted text-muted-foreground hover:bg-muted text-[10px] px-1 py-0 h-4 font-normal">
+                  <Lock className="h-2.5 w-2.5 mr-1" />
+                  Private
+                </Badge>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p className="text-xs">New files in this folder default to internal visibility</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        ) : (
+          <div className="flex min-w-0 flex-wrap items-center gap-1">
+            {folderSharing.share_with_clients && (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:text-blue-400 dark:border-blue-900 text-[10px] px-1 py-0 h-4 font-normal">
+                      <Users className="h-2.5 w-2.5 mr-1" />
+                      Clients
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p className="text-xs">
+                      {folderSharing.inherited ? "Inherited client sharing default" : "New files default to Client Portal visibility"}
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
+            {folderSharing.share_with_subs && (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge variant="outline" className="text-indigo-600 border-indigo-200 bg-indigo-50 dark:bg-indigo-950/30 dark:text-indigo-400 dark:border-indigo-900 text-[10px] px-1 py-0 h-4 font-normal">
+                      <HardHat className="h-2.5 w-2.5 mr-1" />
+                      Subs
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p className="text-xs">
+                      {folderSharing.inherited ? "Inherited subcontractor sharing default" : "New files default to Subcontractor Portal visibility"}
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
+          </div>
+        )}
       </TableCell>
       <TableCell className="hidden md:table-cell w-[112px]">
         <span className="text-xs text-muted-foreground">-</span>
@@ -506,8 +650,19 @@ const FolderRow = memo(function FolderRow({
                 <FolderOpenDot className="h-4 w-4 mr-2" />
                 Open
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onRenameFolder?.(item.path)}>
+                <Pencil className="h-4 w-4 mr-2" />
+                Rename
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onShareFolder?.(item.path)}>
+                <Share2 className="h-4 w-4 mr-2" />
+                Sharing defaults
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem className="text-destructive focus:text-destructive" disabled>
+              <DropdownMenuItem
+                className="text-destructive focus:text-destructive"
+                onClick={() => onDeleteFolder?.(item.path)}
+              >
                 <Trash2 className="h-4 w-4 mr-2" />
                 Delete folder
               </DropdownMenuItem>
@@ -528,6 +683,7 @@ const FileRow = memo(function FileRow({
   onRenameFile,
   onMoveFile,
   onDeleteFile,
+  onRestoreFile,
   onViewActivity,
   onShareFile,
   onUploadNewVersion,
@@ -544,6 +700,7 @@ const FileRow = memo(function FileRow({
   onRenameFile: (fileId: string) => void
   onMoveFile: (fileId: string) => void
   onDeleteFile: (fileId: string) => void
+  onRestoreFile?: (fileId: string) => void
   onViewActivity: (fileId: string) => void
   onShareFile: (fileId: string) => void
   onUploadNewVersion: (fileId: string) => void
@@ -558,6 +715,9 @@ const FileRow = memo(function FileRow({
   const thumbnailUrl = file.thumbnail_url ?? (isImage ? file.download_url : undefined)
   const primarySource = getPrimarySourceContext(file)
   const hasSourceHref = Boolean(primarySource?.href)
+  const isArchived = Boolean(file.archived_at)
+  const dueBadge = getDueBadge(file)
+  const DueIcon = dueBadge?.Icon
 
   const isShared = file.share_with_clients || file.share_with_subs
   
@@ -694,7 +854,25 @@ const FileRow = memo(function FileRow({
               </Tooltip>
             </TooltipProvider>
           )}
-          {!file.status && !file.signature_status && !file.version_number && (
+          {dueBadge && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge
+                    variant="outline"
+                    className={cn("text-[10px] px-1 py-0 h-4 font-normal", dueBadge.variantClass)}
+                  >
+                    {DueIcon && <DueIcon className="h-2.5 w-2.5 mr-1" />}
+                    {dueBadge.label}
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p className="text-xs">{dueBadge.detail}</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+          {!file.status && !file.signature_status && !file.version_number && !dueBadge && (
             <span className="text-xs text-muted-foreground">-</span>
           )}
           </div>
@@ -788,11 +966,13 @@ const FileRow = memo(function FileRow({
                 <Download className="h-4 w-4 mr-2" />
                 Download
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => onUploadNewVersion(file.id)}>
-                <FilePlus2 className="h-4 w-4 mr-2" />
-                Upload new version...
-              </DropdownMenuItem>
-              {file.mime_type === "application/pdf" && (
+              {!isArchived && (
+                <DropdownMenuItem onClick={() => onUploadNewVersion(file.id)}>
+                  <FilePlus2 className="h-4 w-4 mr-2" />
+                  Upload new version...
+                </DropdownMenuItem>
+              )}
+              {!isArchived && file.mime_type === "application/pdf" && (
                 <DropdownMenuItem onClick={() => onSendForSignature?.(file.id)}>
                   <FileSignature className="h-4 w-4 mr-2" />
                   Sign...
@@ -815,26 +995,39 @@ const FileRow = memo(function FileRow({
                 <Activity className="h-4 w-4 mr-2" />
                 Timeline
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => onRenameFile(file.id)}>
-                <Pencil className="h-4 w-4 mr-2" />
-                Rename
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => onMoveFile(file.id)}>
-                <FolderInput className="h-4 w-4 mr-2" />
-                Move
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => onShareFile(file.id)}>
-                <Share2 className="h-4 w-4 mr-2" />
-                Share
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                className="text-destructive focus:text-destructive"
-                onClick={() => onDeleteFile(file.id)}
-              >
-                <Trash2 className="h-4 w-4 mr-2" />
-                Delete
-              </DropdownMenuItem>
+              {isArchived ? (
+                <DropdownMenuItem onClick={() => onRestoreFile?.(file.id)}>
+                  <Undo2 className="h-4 w-4 mr-2" />
+                  Restore
+                </DropdownMenuItem>
+              ) : (
+                <>
+                  <DropdownMenuItem onClick={() => onRenameFile(file.id)}>
+                    <Pencil className="h-4 w-4 mr-2" />
+                    Rename
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => onMoveFile(file.id)}>
+                    <FolderInput className="h-4 w-4 mr-2" />
+                    Move
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => onShareFile(file.id)}>
+                    <Share2 className="h-4 w-4 mr-2" />
+                    Share
+                  </DropdownMenuItem>
+                </>
+              )}
+              {!isArchived && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    className="text-destructive focus:text-destructive"
+                    onClick={() => onDeleteFile(file.id)}
+                  >
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Move to trash
+                  </DropdownMenuItem>
+                </>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>

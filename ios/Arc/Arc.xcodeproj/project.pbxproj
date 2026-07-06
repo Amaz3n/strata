@@ -1,0 +1,793 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* ArcApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* ArcApp.swift */; };
+		A10000000000000000000002 /* AppDependencies.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* AppDependencies.swift */; };
+		A10000000000000000000003 /* AppRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* AppRouter.swift */; };
+		A10000000000000000000004 /* AppTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000004 /* AppTab.swift */; };
+		A10000000000000000000005 /* AppView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000005 /* AppView.swift */; };
+		A10000000000000000000070 /* ProjectSwitcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000070 /* ProjectSwitcher.swift */; };
+		A10000000000000000000071 /* WorkView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000071 /* WorkView.swift */; };
+		A10000000000000000000072 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000072 /* LibraryView.swift */; };
+		A10000000000000000000006 /* SessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000006 /* SessionStore.swift */; };
+		A10000000000000000000007 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000007 /* APIClient.swift */; };
+		A10000000000000000000008 /* SyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000008 /* SyncEngine.swift */; };
+		A10000000000000000000009 /* AccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000009 /* AccountView.swift */; };
+		A1000000000000000000000A /* FieldView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000A /* FieldView.swift */; };
+		A1000000000000000000000B /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000B /* HomeView.swift */; };
+		A1000000000000000000000C /* InboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000C /* InboxView.swift */; };
+		A1000000000000000000000D /* ProjectsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000D /* ProjectsView.swift */; };
+		A1000000000000000000000E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000E /* Assets.xcassets */; };
+		A1000000000000000000000F /* AppRouterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000F /* AppRouterTests.swift */; };
+		A10000000000000000000010 /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012 /* AppEnvironment.swift */; };
+		A10000000000000000000011 /* APIError.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000013 /* APIError.swift */; };
+		A10000000000000000000012 /* NetworkMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000014 /* NetworkMonitor.swift */; };
+		A10000000000000000000013 /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000015 /* AppLogger.swift */; };
+		A10000000000000000000014 /* Observability.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000016 /* Observability.swift */; };
+		A10000000000000000000015 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000017 /* KeychainStore.swift */; };
+		A10000000000000000000030 /* BrandTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000030 /* BrandTheme.swift */; };
+		A100000000000000000000E9 /* GlassKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000000000000000000E9 /* GlassKit.swift */; };
+		A10000000000000000000016 /* FoundationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000018 /* FoundationTests.swift */; };
+		A10000000000000000000018 /* SupabaseAuthClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000019 /* SupabaseAuthClient.swift */; };
+		A10000000000000000000019 /* MobileModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001A /* MobileModels.swift */; };
+		A1000000000000000000001A /* MobileAPIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001B /* MobileAPIService.swift */; };
+		A1000000000000000000001B /* WorkspaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001C /* WorkspaceStore.swift */; };
+		A1000000000000000000001C /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001D /* RootView.swift */; };
+		A1000000000000000000001D /* SignInView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001E /* SignInView.swift */; };
+		A1000000000000000000001E /* OfflineModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001F /* OfflineModels.swift */; };
+		A1000000000000000000001F /* OfflineStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000020 /* OfflineStore.swift */; };
+		A10000000000000000000020 /* BackgroundUploadCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000021 /* BackgroundUploadCoordinator.swift */; };
+		A10000000000000000000021 /* DailyLogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000022 /* DailyLogStore.swift */; };
+		A10000000000000000000022 /* DailyLogsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000023 /* DailyLogsView.swift */; };
+		A10000000000000000000040 /* DrawingModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000040 /* DrawingModels.swift */; };
+		A10000000000000000000041 /* DrawingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000041 /* DrawingsStore.swift */; };
+		A10000000000000000000042 /* DrawingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000042 /* DrawingsView.swift */; };
+		A10000000000000000000043 /* DrawingSheetViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000043 /* DrawingSheetViewerView.swift */; };
+		A10000000000000000000050 /* ScheduleStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000050 /* ScheduleStore.swift */; };
+		A10000000000000000000051 /* ScheduleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000051 /* ScheduleView.swift */; };
+		A10000000000000000000052 /* FieldStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000052 /* FieldStore.swift */; };
+		A10000000000000000000053 /* ExpenseStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000053 /* ExpenseStore.swift */; };
+		A10000000000000000000054 /* ExpensesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000054 /* ExpensesView.swift */; };
+		A10000000000000000000055 /* DocumentsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000055 /* DocumentsStore.swift */; };
+		A10000000000000000000056 /* DocumentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000056 /* DocumentsView.swift */; };
+		A10000000000000000000057 /* NotificationsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000057 /* NotificationsStore.swift */; };
+		A10000000000000000000058 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000058 /* Components.swift */; };
+		A10000000000000000000059 /* ProjectInfoStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000059 /* ProjectInfoStore.swift */; };
+		A1000000000000000000005A /* RfisView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000005A /* RfisView.swift */; };
+		A1000000000000000000005B /* TeamView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000005B /* TeamView.swift */; };
+		A1000000000000000000005C /* PushManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000005C /* PushManager.swift */; };
+		A10000000000000000000060 /* PlatformStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000060 /* PlatformStore.swift */; };
+		A10000000000000000000061 /* PlatformView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000061 /* PlatformView.swift */; };
+		AF533DFA2FEB7FFB00DED0BC /* Arc-iOS.icon in Resources */ = {isa = PBXBuildFile; fileRef = AF533DF92FEB7FFB00DED0BC /* Arc-iOS.icon */; };
+		AF533DFB2FEB7FFB00DED0BC /* Arc-iOS.icon in Resources */ = {isa = PBXBuildFile; fileRef = AF533DF92FEB7FFB00DED0BC /* Arc-iOS.icon */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		C10000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = D10000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E10000000000000000000001;
+			remoteInfo = Arc;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		AF533DF92FEB7FFB00DED0BC /* Arc-iOS.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; path = "Arc-iOS.icon"; sourceTree = "<group>"; };
+		BF0000000000000000000001 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Debug.xcconfig; sourceTree = SOURCE_ROOT; };
+		BF0000000000000000000002 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Release.xcconfig; sourceTree = SOURCE_ROOT; };
+		BF0000000000000000000003 /* Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Shared.xcconfig; sourceTree = SOURCE_ROOT; };
+		BF0000000000000000000004 /* Secrets.example.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Secrets.example.xcconfig; sourceTree = SOURCE_ROOT; };
+		BF0000000000000000000005 /* Arc.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Arc.entitlements; sourceTree = "<group>"; };
+		B10000000000000000000001 /* ArcApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArcApp.swift; sourceTree = "<group>"; };
+		B10000000000000000000002 /* AppDependencies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDependencies.swift; sourceTree = "<group>"; };
+		B10000000000000000000003 /* AppRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRouter.swift; sourceTree = "<group>"; };
+		B10000000000000000000004 /* AppTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTab.swift; sourceTree = "<group>"; };
+		B10000000000000000000005 /* AppView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppView.swift; sourceTree = "<group>"; };
+		B10000000000000000000070 /* ProjectSwitcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectSwitcher.swift; sourceTree = "<group>"; };
+		B10000000000000000000071 /* WorkView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkView.swift; sourceTree = "<group>"; };
+		B10000000000000000000072 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
+		B10000000000000000000006 /* SessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000007 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		B10000000000000000000008 /* SyncEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncEngine.swift; sourceTree = "<group>"; };
+		B10000000000000000000009 /* AccountView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountView.swift; sourceTree = "<group>"; };
+		B1000000000000000000000A /* FieldView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FieldView.swift; sourceTree = "<group>"; };
+		B1000000000000000000000B /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		B1000000000000000000000C /* InboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxView.swift; sourceTree = "<group>"; };
+		B1000000000000000000000D /* ProjectsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectsView.swift; sourceTree = "<group>"; };
+		B1000000000000000000000E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B1000000000000000000000F /* AppRouterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRouterTests.swift; sourceTree = "<group>"; };
+		B10000000000000000000010 /* Arc.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Arc.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B10000000000000000000011 /* ArcTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ArcTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B10000000000000000000012 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
+		B10000000000000000000013 /* APIError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIError.swift; sourceTree = "<group>"; };
+		B10000000000000000000014 /* NetworkMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkMonitor.swift; sourceTree = "<group>"; };
+		B10000000000000000000015 /* AppLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogger.swift; sourceTree = "<group>"; };
+		B10000000000000000000016 /* Observability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Observability.swift; sourceTree = "<group>"; };
+		B10000000000000000000017 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000030 /* BrandTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrandTheme.swift; sourceTree = "<group>"; };
+		B100000000000000000000E9 /* GlassKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassKit.swift; sourceTree = "<group>"; };
+		B10000000000000000000018 /* FoundationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoundationTests.swift; sourceTree = "<group>"; };
+		B10000000000000000000019 /* SupabaseAuthClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseAuthClient.swift; sourceTree = "<group>"; };
+		B1000000000000000000001A /* MobileModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileModels.swift; sourceTree = "<group>"; };
+		B1000000000000000000001B /* MobileAPIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileAPIService.swift; sourceTree = "<group>"; };
+		B1000000000000000000001C /* WorkspaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceStore.swift; sourceTree = "<group>"; };
+		B1000000000000000000001D /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		B1000000000000000000001E /* SignInView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignInView.swift; sourceTree = "<group>"; };
+		B1000000000000000000001F /* OfflineModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineModels.swift; sourceTree = "<group>"; };
+		B10000000000000000000020 /* OfflineStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000021 /* BackgroundUploadCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundUploadCoordinator.swift; sourceTree = "<group>"; };
+		B10000000000000000000022 /* DailyLogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DailyLogStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000023 /* DailyLogsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DailyLogsView.swift; sourceTree = "<group>"; };
+		B10000000000000000000040 /* DrawingModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrawingModels.swift; sourceTree = "<group>"; };
+		B10000000000000000000041 /* DrawingsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrawingsStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000042 /* DrawingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrawingsView.swift; sourceTree = "<group>"; };
+		B10000000000000000000043 /* DrawingSheetViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrawingSheetViewerView.swift; sourceTree = "<group>"; };
+		B10000000000000000000050 /* ScheduleStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScheduleStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000051 /* ScheduleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScheduleView.swift; sourceTree = "<group>"; };
+		B10000000000000000000052 /* FieldStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FieldStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000053 /* ExpenseStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExpenseStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000054 /* ExpensesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExpensesView.swift; sourceTree = "<group>"; };
+		B10000000000000000000055 /* DocumentsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentsStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000056 /* DocumentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentsView.swift; sourceTree = "<group>"; };
+		B10000000000000000000057 /* NotificationsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000058 /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
+		B10000000000000000000059 /* ProjectInfoStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectInfoStore.swift; sourceTree = "<group>"; };
+		B1000000000000000000005A /* RfisView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RfisView.swift; sourceTree = "<group>"; };
+		B1000000000000000000005B /* TeamView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeamView.swift; sourceTree = "<group>"; };
+		B1000000000000000000005C /* PushManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushManager.swift; sourceTree = "<group>"; };
+		B10000000000000000000060 /* PlatformStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000061 /* PlatformView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		F10000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+		F10000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		110000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				AF533DF92FEB7FFB00DED0BC /* Arc-iOS.icon */,
+				BF0000000000000000000006 /* Config */,
+				110000000000000000000002 /* Arc */,
+				11000000000000000000000D /* ArcTests */,
+				11000000000000000000000E /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		110000000000000000000002 /* Arc */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000001 /* ArcApp.swift */,
+				110000000000000000000003 /* App */,
+				110000000000000000000004 /* Core */,
+				110000000000000000000008 /* Features */,
+				11000000000000000000000F /* Resources */,
+			);
+			path = Arc;
+			sourceTree = "<group>";
+		};
+		110000000000000000000003 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000002 /* AppDependencies.swift */,
+				B10000000000000000000012 /* AppEnvironment.swift */,
+				B10000000000000000000003 /* AppRouter.swift */,
+				B10000000000000000000004 /* AppTab.swift */,
+				B10000000000000000000005 /* AppView.swift */,
+				B10000000000000000000070 /* ProjectSwitcher.swift */,
+				B1000000000000000000001D /* RootView.swift */,
+				B1000000000000000000001C /* WorkspaceStore.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		110000000000000000000004 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				110000000000000000000005 /* Authentication */,
+				110000000000000000000031 /* DesignSystem */,
+				110000000000000000000013 /* Models */,
+				110000000000000000000006 /* Networking */,
+				110000000000000000000011 /* Observability */,
+				110000000000000000000007 /* Persistence */,
+				110000000000000000000054 /* Push */,
+				110000000000000000000012 /* Security */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		110000000000000000000005 /* Authentication */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000006 /* SessionStore.swift */,
+				B10000000000000000000019 /* SupabaseAuthClient.swift */,
+			);
+			path = Authentication;
+			sourceTree = "<group>";
+		};
+		110000000000000000000006 /* Networking */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000007 /* APIClient.swift */,
+				B10000000000000000000013 /* APIError.swift */,
+				B1000000000000000000001B /* MobileAPIService.swift */,
+				B10000000000000000000014 /* NetworkMonitor.swift */,
+			);
+			path = Networking;
+			sourceTree = "<group>";
+		};
+		110000000000000000000007 /* Persistence */ = {
+			isa = PBXGroup;
+			children = (
+				B1000000000000000000001F /* OfflineModels.swift */,
+				B10000000000000000000020 /* OfflineStore.swift */,
+				B10000000000000000000008 /* SyncEngine.swift */,
+				B10000000000000000000021 /* BackgroundUploadCoordinator.swift */,
+			);
+			path = Persistence;
+			sourceTree = "<group>";
+		};
+		110000000000000000000008 /* Features */ = {
+			isa = PBXGroup;
+			children = (
+				110000000000000000000009 /* Account */,
+				110000000000000000000014 /* Authentication */,
+				110000000000000000000015 /* DailyLogs */,
+				110000000000000000000052 /* Documents */,
+				110000000000000000000040 /* Drawings */,
+				110000000000000000000051 /* Expenses */,
+				11000000000000000000000A /* Field */,
+				11000000000000000000000B /* Home */,
+				11000000000000000000000C /* Inbox */,
+				110000000000000000000060 /* Platform */,
+				110000000000000000000053 /* ProjectInfo */,
+				110000000000000000000010 /* Projects */,
+				110000000000000000000050 /* Schedule */,
+			);
+			path = Features;
+			sourceTree = "<group>";
+		};
+		110000000000000000000009 /* Account */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000009 /* AccountView.swift */,
+			);
+			path = Account;
+			sourceTree = "<group>";
+		};
+		11000000000000000000000A /* Field */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000052 /* FieldStore.swift */,
+				B1000000000000000000000A /* FieldView.swift */,
+				B10000000000000000000071 /* WorkView.swift */,
+			);
+			path = Field;
+			sourceTree = "<group>";
+		};
+		11000000000000000000000B /* Home */ = {
+			isa = PBXGroup;
+			children = (
+				B1000000000000000000000B /* HomeView.swift */,
+			);
+			path = Home;
+			sourceTree = "<group>";
+		};
+		11000000000000000000000C /* Inbox */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000057 /* NotificationsStore.swift */,
+				B1000000000000000000000C /* InboxView.swift */,
+			);
+			path = Inbox;
+			sourceTree = "<group>";
+		};
+		11000000000000000000000D /* ArcTests */ = {
+			isa = PBXGroup;
+			children = (
+				B1000000000000000000000F /* AppRouterTests.swift */,
+				B10000000000000000000018 /* FoundationTests.swift */,
+			);
+			path = ArcTests;
+			sourceTree = "<group>";
+		};
+		110000000000000000000060 /* Platform */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000060 /* PlatformStore.swift */,
+				B10000000000000000000061 /* PlatformView.swift */,
+			);
+			path = Platform;
+			sourceTree = "<group>";
+		};
+		11000000000000000000000E /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000010 /* Arc.app */,
+				B10000000000000000000011 /* ArcTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		11000000000000000000000F /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				BF0000000000000000000005 /* Arc.entitlements */,
+				B1000000000000000000000E /* Assets.xcassets */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		BF0000000000000000000006 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				BF0000000000000000000001 /* Debug.xcconfig */,
+				BF0000000000000000000002 /* Release.xcconfig */,
+				BF0000000000000000000003 /* Shared.xcconfig */,
+				BF0000000000000000000004 /* Secrets.example.xcconfig */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
+		110000000000000000000010 /* Projects */ = {
+			isa = PBXGroup;
+			children = (
+				B1000000000000000000000D /* ProjectsView.swift */,
+			);
+			path = Projects;
+			sourceTree = "<group>";
+		};
+		110000000000000000000011 /* Observability */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000015 /* AppLogger.swift */,
+				B10000000000000000000016 /* Observability.swift */,
+			);
+			path = Observability;
+			sourceTree = "<group>";
+		};
+		110000000000000000000012 /* Security */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000017 /* KeychainStore.swift */,
+			);
+			path = Security;
+			sourceTree = "<group>";
+		};
+		110000000000000000000031 /* DesignSystem */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000030 /* BrandTheme.swift */,
+				B10000000000000000000058 /* Components.swift */,
+				B100000000000000000000E9 /* GlassKit.swift */,
+			);
+			path = DesignSystem;
+			sourceTree = "<group>";
+		};
+		110000000000000000000013 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				B1000000000000000000001A /* MobileModels.swift */,
+				B10000000000000000000040 /* DrawingModels.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		110000000000000000000040 /* Drawings */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000041 /* DrawingsStore.swift */,
+				B10000000000000000000042 /* DrawingsView.swift */,
+				B10000000000000000000043 /* DrawingSheetViewerView.swift */,
+			);
+			path = Drawings;
+			sourceTree = "<group>";
+		};
+		110000000000000000000050 /* Schedule */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000050 /* ScheduleStore.swift */,
+				B10000000000000000000051 /* ScheduleView.swift */,
+			);
+			path = Schedule;
+			sourceTree = "<group>";
+		};
+		110000000000000000000051 /* Expenses */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000053 /* ExpenseStore.swift */,
+				B10000000000000000000054 /* ExpensesView.swift */,
+			);
+			path = Expenses;
+			sourceTree = "<group>";
+		};
+		110000000000000000000052 /* Documents */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000055 /* DocumentsStore.swift */,
+				B10000000000000000000056 /* DocumentsView.swift */,
+				B10000000000000000000072 /* LibraryView.swift */,
+			);
+			path = Documents;
+			sourceTree = "<group>";
+		};
+		110000000000000000000053 /* ProjectInfo */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000059 /* ProjectInfoStore.swift */,
+				B1000000000000000000005A /* RfisView.swift */,
+				B1000000000000000000005B /* TeamView.swift */,
+			);
+			path = ProjectInfo;
+			sourceTree = "<group>";
+		};
+		110000000000000000000054 /* Push */ = {
+			isa = PBXGroup;
+			children = (
+				B1000000000000000000005C /* PushManager.swift */,
+			);
+			path = Push;
+			sourceTree = "<group>";
+		};
+		110000000000000000000014 /* Authentication */ = {
+			isa = PBXGroup;
+			children = (
+				B1000000000000000000001E /* SignInView.swift */,
+			);
+			path = Authentication;
+			sourceTree = "<group>";
+		};
+		110000000000000000000015 /* DailyLogs */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000022 /* DailyLogStore.swift */,
+				B10000000000000000000023 /* DailyLogsView.swift */,
+			);
+			path = DailyLogs;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		E10000000000000000000001 /* Arc */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 210000000000000000000002 /* Build configuration list for PBXNativeTarget "Arc" */;
+			buildPhases = (
+				310000000000000000000001 /* Sources */,
+				F10000000000000000000001 /* Frameworks */,
+				310000000000000000000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			name = Arc;
+			productName = Arc;
+			productReference = B10000000000000000000010 /* Arc.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E10000000000000000000002 /* ArcTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 210000000000000000000003 /* Build configuration list for PBXNativeTarget "ArcTests" */;
+			buildPhases = (
+				310000000000000000000003 /* Sources */,
+				F10000000000000000000002 /* Frameworks */,
+				310000000000000000000004 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				410000000000000000000001 /* PBXTargetDependency */,
+			);
+			name = ArcTests;
+			productName = ArcTests;
+			productReference = B10000000000000000000011 /* ArcTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		D10000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2650;
+				LastUpgradeCheck = 2650;
+				TargetAttributes = {
+					E10000000000000000000001 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+					E10000000000000000000002 = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = E10000000000000000000001;
+					};
+				};
+			};
+			buildConfigurationList = 210000000000000000000001 /* Build configuration list for PBXProject "Arc" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 110000000000000000000001;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 11000000000000000000000E /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				E10000000000000000000001 /* Arc */,
+				E10000000000000000000002 /* ArcTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		310000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+				A1000000000000000000000E /* Assets.xcassets in Resources */,
+				AF533DFA2FEB7FFB00DED0BC /* Arc-iOS.icon in Resources */,
+			);
+		};
+		310000000000000000000004 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+				AF533DFB2FEB7FFB00DED0BC /* Arc-iOS.icon in Resources */,
+			);
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		310000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+				A10000000000000000000001 /* ArcApp.swift in Sources */,
+				A10000000000000000000002 /* AppDependencies.swift in Sources */,
+				A10000000000000000000010 /* AppEnvironment.swift in Sources */,
+				A10000000000000000000003 /* AppRouter.swift in Sources */,
+				A10000000000000000000004 /* AppTab.swift in Sources */,
+				A10000000000000000000005 /* AppView.swift in Sources */,
+				A10000000000000000000070 /* ProjectSwitcher.swift in Sources */,
+				A10000000000000000000071 /* WorkView.swift in Sources */,
+				A10000000000000000000072 /* LibraryView.swift in Sources */,
+				A1000000000000000000001C /* RootView.swift in Sources */,
+				A1000000000000000000001B /* WorkspaceStore.swift in Sources */,
+				A10000000000000000000006 /* SessionStore.swift in Sources */,
+				A10000000000000000000018 /* SupabaseAuthClient.swift in Sources */,
+				A10000000000000000000019 /* MobileModels.swift in Sources */,
+				A10000000000000000000007 /* APIClient.swift in Sources */,
+				A10000000000000000000011 /* APIError.swift in Sources */,
+				A1000000000000000000001A /* MobileAPIService.swift in Sources */,
+				A10000000000000000000012 /* NetworkMonitor.swift in Sources */,
+				A10000000000000000000013 /* AppLogger.swift in Sources */,
+				A10000000000000000000014 /* Observability.swift in Sources */,
+				A1000000000000000000001E /* OfflineModels.swift in Sources */,
+				A1000000000000000000001F /* OfflineStore.swift in Sources */,
+				A10000000000000000000008 /* SyncEngine.swift in Sources */,
+				A10000000000000000000020 /* BackgroundUploadCoordinator.swift in Sources */,
+				A10000000000000000000021 /* DailyLogStore.swift in Sources */,
+				A10000000000000000000022 /* DailyLogsView.swift in Sources */,
+				A10000000000000000000040 /* DrawingModels.swift in Sources */,
+				A10000000000000000000041 /* DrawingsStore.swift in Sources */,
+				A10000000000000000000042 /* DrawingsView.swift in Sources */,
+				A10000000000000000000043 /* DrawingSheetViewerView.swift in Sources */,
+				A10000000000000000000050 /* ScheduleStore.swift in Sources */,
+				A10000000000000000000051 /* ScheduleView.swift in Sources */,
+				A10000000000000000000052 /* FieldStore.swift in Sources */,
+				A10000000000000000000053 /* ExpenseStore.swift in Sources */,
+				A10000000000000000000054 /* ExpensesView.swift in Sources */,
+				A10000000000000000000055 /* DocumentsStore.swift in Sources */,
+				A10000000000000000000056 /* DocumentsView.swift in Sources */,
+				A10000000000000000000057 /* NotificationsStore.swift in Sources */,
+				A10000000000000000000058 /* Components.swift in Sources */,
+				A10000000000000000000059 /* ProjectInfoStore.swift in Sources */,
+				A1000000000000000000005A /* RfisView.swift in Sources */,
+				A1000000000000000000005B /* TeamView.swift in Sources */,
+				A1000000000000000000005C /* PushManager.swift in Sources */,
+				A10000000000000000000060 /* PlatformStore.swift in Sources */,
+				A10000000000000000000061 /* PlatformView.swift in Sources */,
+				A10000000000000000000015 /* KeychainStore.swift in Sources */,
+				A10000000000000000000030 /* BrandTheme.swift in Sources */,
+				A100000000000000000000E9 /* GlassKit.swift in Sources */,
+				A10000000000000000000009 /* AccountView.swift in Sources */,
+				A1000000000000000000001D /* SignInView.swift in Sources */,
+				A1000000000000000000000A /* FieldView.swift in Sources */,
+				A1000000000000000000000B /* HomeView.swift in Sources */,
+				A1000000000000000000000C /* InboxView.swift in Sources */,
+				A1000000000000000000000D /* ProjectsView.swift in Sources */,
+			);
+		};
+		310000000000000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+				A1000000000000000000000F /* AppRouterTests.swift in Sources */,
+				A10000000000000000000016 /* FoundationTests.swift in Sources */,
+			);
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		410000000000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E10000000000000000000001 /* Arc */;
+			targetProxy = C10000000000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		510000000000000000000001 /* Debug configuration for PBXProject "Arc" */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = BF0000000000000000000001 /* Debug.xcconfig */;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		510000000000000000000002 /* Release configuration for PBXProject "Arc" */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = BF0000000000000000000002 /* Release.xcconfig */;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		510000000000000000000003 /* Debug configuration for PBXNativeTarget "Arc" */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = BF0000000000000000000001 /* Debug.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "Arc-iOS";
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = L2PS6KCB8C;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_ArcAPIBaseURL = "$(ARC_API_BASE_URL)";
+				INFOPLIST_KEY_ArcPushEnabled = "$(ARC_PUSH_ENABLED)";
+				INFOPLIST_KEY_ArcSentryDSN = "$(ARC_SENTRY_DSN)";
+				INFOPLIST_KEY_ArcSupabasePublishableKey = "$(ARC_SUPABASE_PUBLISHABLE_KEY)";
+				INFOPLIST_KEY_ArcSupabaseURL = "$(ARC_SUPABASE_URL)";
+				INFOPLIST_KEY_CFBundleDisplayName = Arc;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
+				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Arc uses the camera to attach jobsite photos and receipts.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Arc attaches photos and receipts from your library.";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.arcprojects.mobile;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		510000000000000000000004 /* Release configuration for PBXNativeTarget "Arc" */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = BF0000000000000000000002 /* Release.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "Arc-iOS";
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Arc/Resources/Arc.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = L2PS6KCB8C;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_ArcAPIBaseURL = "$(ARC_API_BASE_URL)";
+				INFOPLIST_KEY_ArcPushEnabled = "$(ARC_PUSH_ENABLED)";
+				INFOPLIST_KEY_ArcSentryDSN = "$(ARC_SENTRY_DSN)";
+				INFOPLIST_KEY_ArcSupabasePublishableKey = "$(ARC_SUPABASE_PUBLISHABLE_KEY)";
+				INFOPLIST_KEY_ArcSupabaseURL = "$(ARC_SUPABASE_URL)";
+				INFOPLIST_KEY_CFBundleDisplayName = Arc;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Arc uses the camera to attach jobsite photos and receipts.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Arc attaches photos and receipts from your library.";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.arcprojects.mobile;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		510000000000000000000005 /* Debug configuration for PBXNativeTarget "ArcTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.arc.mobile.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Arc.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Arc";
+			};
+			name = Debug;
+		};
+		510000000000000000000006 /* Release configuration for PBXNativeTarget "ArcTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.arc.mobile.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Arc.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Arc";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		210000000000000000000001 /* Build configuration list for PBXProject "Arc" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				510000000000000000000001 /* Debug configuration for PBXProject "Arc" */,
+				510000000000000000000002 /* Release configuration for PBXProject "Arc" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		210000000000000000000002 /* Build configuration list for PBXNativeTarget "Arc" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				510000000000000000000003 /* Debug configuration for PBXNativeTarget "Arc" */,
+				510000000000000000000004 /* Release configuration for PBXNativeTarget "Arc" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		210000000000000000000003 /* Build configuration list for PBXNativeTarget "ArcTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				510000000000000000000005 /* Debug configuration for PBXNativeTarget "ArcTests" */,
+				510000000000000000000006 /* Release configuration for PBXNativeTarget "ArcTests" */,
+			);
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = D10000000000000000000001 /* Project object */;
+}

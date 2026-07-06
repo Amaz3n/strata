@@ -15,6 +15,7 @@ export const createBidPackageInputSchema = z
     prospect_id: z.string().uuid().optional().nullable(),
     title: z.string().min(1, "Title is required"),
     cost_code_id: z.string().uuid().optional().nullable(),
+    budget_line_id: z.string().uuid().optional().nullable(),
     trade: z.string().optional().nullable(),
     scope: z.string().optional().nullable(),
     instructions: z.string().optional().nullable(),
@@ -28,6 +29,7 @@ export const createBidPackageInputSchema = z
 export const updateBidPackageInputSchema = z.object({
   title: z.string().min(1).optional(),
   cost_code_id: z.string().uuid().optional().nullable(),
+  budget_line_id: z.string().uuid().optional().nullable(),
   trade: z.string().optional().nullable(),
   scope: z.string().optional().nullable(),
   instructions: z.string().optional().nullable(),
@@ -69,4 +71,49 @@ export const createBidAddendumInputSchema = z.object({
 export const awardBidSubmissionInputSchema = z.object({
   bid_submission_id: z.string().uuid(),
   notes: z.string().optional().nullable(),
+})
+
+export const bidSubmissionLineItemSchema = z.object({
+  description: z.string().trim().min(1, "Line item description is required"),
+  amount_cents: z.number().int(),
+  notes: z.string().trim().optional().nullable(),
+})
+
+export const manualBidSubmissionInputSchema = z.object({
+  bid_package_id: z.string().uuid(),
+  bid_invite_id: z.string().uuid().optional().nullable(),
+  company_id: z.string().uuid().optional().nullable(),
+  contact_id: z.string().uuid().optional().nullable(),
+  invite_email: z.string().email().optional().nullable(),
+  total_cents: z.number().int().min(0),
+  currency: z.string().trim().min(1).default("usd"),
+  valid_until: z.string().optional().nullable(),
+  lead_time_days: z.number().int().nonnegative().optional().nullable(),
+  duration_days: z.number().int().nonnegative().optional().nullable(),
+  start_available_on: z.string().optional().nullable(),
+  exclusions: z.string().optional().nullable(),
+  clarifications: z.string().optional().nullable(),
+  notes: z.string().optional().nullable(),
+  submitted_by_name: z.string().trim().optional().nullable(),
+  submitted_by_email: z.string().trim().email().optional().nullable(),
+  leveled_adjustment_cents: z.number().int().default(0),
+  leveling_notes: z.string().optional().nullable(),
+  line_items: z.array(bidSubmissionLineItemSchema).default([]),
+}).refine(
+  (data) => data.bid_invite_id || data.company_id,
+  { message: "Select an existing invite or company for the manual bid" },
+)
+
+export const updateBidSubmissionLevelingInputSchema = z.object({
+  bid_submission_id: z.string().uuid(),
+  leveled_adjustment_cents: z.number().int().default(0),
+  leveling_notes: z.string().optional().nullable(),
+  line_items: z.array(bidSubmissionLineItemSchema).optional(),
+})
+
+export const answerBidPackageRfiInputSchema = z.object({
+  bid_package_id: z.string().uuid(),
+  rfi_id: z.string().uuid(),
+  body: z.string().trim().min(1, "Answer is required"),
+  broadcast_as_addendum: z.boolean().default(true),
 })

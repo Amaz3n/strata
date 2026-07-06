@@ -5,32 +5,32 @@ import { FinancialSetupStatusBanner } from "@/components/financials/financial-se
 import { ReceivablesTab } from "@/components/financials/receivables-tab"
 import { PageLayout } from "@/components/layout/page-layout"
 import { Skeleton } from "@/components/ui/skeleton"
-import { getProjectFinancialSetupStatusForProject } from "@/lib/services/project-financial-setup"
 import { loadFinancialsReceivablesData } from "../page-data"
 
 export const dynamic = "force-dynamic"
 
 interface PageProps {
   params: Promise<{ id: string }>
+  searchParams?: Promise<{ period?: string }>
 }
 
-export default async function FinancialsReceivablesPage({ params }: PageProps) {
+export default async function FinancialsReceivablesPage({ params, searchParams }: PageProps) {
   const { id } = await params
+  const { period } = (await searchParams) ?? {}
 
   return (
     <Suspense fallback={<FinancialsChildSkeleton title="Receivables" />}>
-      <FinancialsReceivablesData id={id} />
+      <FinancialsReceivablesData id={id} periodId={period ?? null} />
     </Suspense>
   )
 }
 
-async function FinancialsReceivablesData({ id }: { id: string }) {
-  const [financialsData, receivablesData, setupStatus] = await Promise.all([
-    loadFinancialsReceivablesData(id),
+async function FinancialsReceivablesData({ id, periodId }: { id: string; periodId: string | null }) {
+  const [financialsData, receivablesData] = await Promise.all([
+    loadFinancialsReceivablesData(id, periodId),
     fetchReceivablesTabDataAction(id),
-    getProjectFinancialSetupStatusForProject(id),
   ])
-  const { project, scheduleItems, contract, draws, retainage, builderInfo } = financialsData
+  const { project, scheduleItems, contract, draws, retainage, builderInfo, featureConfig, setupStatus } = financialsData
 
   return (
     <PageLayout
@@ -46,6 +46,22 @@ async function FinancialsReceivablesData({ id }: { id: string }) {
       <ReceivablesTab
         projectId={project.id}
         project={project}
+        billingModel={featureConfig.billingModel}
+        showDraws={featureConfig.showDraws}
+        showRetainage={financialsData.showRetainage}
+        closeWorkflow={
+          financialsData.costDriven
+            ? {
+                periods: financialsData.billingPeriods,
+                selectedPeriod: financialsData.selectedPeriod,
+                summary: financialsData.closeSummary,
+                feeSummary: financialsData.feeSummary,
+                gmpSummary: financialsData.gmpSummary,
+                autopilot: financialsData.autopilot,
+                loadErrors: financialsData.loadErrors,
+              }
+            : null
+        }
         invoices={receivablesData.invoices}
         draws={draws}
         retainage={retainage}
@@ -54,8 +70,7 @@ async function FinancialsReceivablesData({ id }: { id: string }) {
         costCodesEnabled={setupStatus.settings?.cost_codes_enabled ?? true}
         ownerBillingPackages={receivablesData.ownerBillingPackages}
         feeSummary={receivablesData.feeSummary}
-        gmpSummary={receivablesData.gmpSummary}
-        autopilot={receivablesData.autopilot}
+        arSummary={receivablesData.arSummary}
         contract={contract}
         scheduleItems={scheduleItems}
         builderInfo={builderInfo}

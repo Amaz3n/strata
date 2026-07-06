@@ -1,5 +1,6 @@
 import "server-only"
 
+import { cache } from "react"
 import { cookies } from "next/headers"
 import type { SupabaseClient, User } from "@supabase/supabase-js"
 import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -109,7 +110,9 @@ async function fetchMembershipWithServiceRole(orgId: string, userId: string): Pr
   }
 }
 
-async function hasActivePlatformMembership(userId: string) {
+// Request-cached: several callers per request (org context, lock bypass, access state)
+// need the same answer, and it never changes mid-request.
+export const hasActivePlatformMembership = cache(async (userId: string) => {
   try {
     const supabase = createServiceSupabaseClient()
     const nowIso = new Date().toISOString()
@@ -132,7 +135,7 @@ async function hasActivePlatformMembership(userId: string) {
     console.error("Unable to resolve platform membership", error)
     return false
   }
-}
+})
 
 async function touchMembershipActivity(orgId: string, userId: string, lastActiveAt?: string | null) {
   const now = new Date()
@@ -155,7 +158,10 @@ async function touchMembershipActivity(orgId: string, userId: string, lastActive
   }
 }
 
-export async function getAuthContext(): Promise<AuthContext> {
+// Request-cached: getUser() is a network call to Supabase Auth and every service
+// re-resolves this context; without the cache a single page render repeats the
+// whole chain dozens of times.
+export const getAuthContext = cache(async (): Promise<AuthContext> => {
   const supabase = await createServerSupabaseClient()
   const {
     data: { user },
@@ -165,7 +171,7 @@ export async function getAuthContext(): Promise<AuthContext> {
   const membership = user && orgId ? await fetchMembership(supabase, orgId, user.id) : null
 
   return { supabase, user, orgId, membership }
-}
+})
 
 export async function requireAuth(): Promise<AuthContext & { user: User }> {
   const context = await getAuthContext()
@@ -175,9 +181,11 @@ export async function requireAuth(): Promise<AuthContext & { user: User }> {
   return context as AuthContext & { user: User }
 }
 
-export async function requireOrgMembership(
+// Request-cached per orgId argument: dedupes the membership/platform lookups
+// (and the org-cookie side effect) across the many service calls in one render.
+export const requireOrgMembership = cache(async (
   orgId?: string,
-): Promise<AuthContext & { user: User; orgId: string; membership: OrgMembership }> {
+): Promise<AuthContext & { user: User; orgId: string; membership: OrgMembership }> => {
   const context = await requireAuth()
   const isPlatformAdmin =
     isPlatformAdminUser(context.user) || (await hasActivePlatformMembership(context.user.id))
@@ -275,4 +283,4 @@ export async function requireOrgMembership(
   }
 
   return { ...context, orgId: resolvedOrgId, membership }
-}
+})

@@ -216,7 +216,7 @@ export function NavUser({
                 onSelect={() => setSupportOpen(true)}
               >
                 <Mail />
-                Contact Support
+                Submit request
               </DropdownMenuItem>
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
@@ -271,7 +271,7 @@ function SupportRequestDialog({
           return
         }
 
-        toast.success("Support request sent")
+        toast.success("Request submitted")
         setMessage("")
         setTopic("technical")
         onOpenChange(false)
@@ -288,9 +288,9 @@ function SupportRequestDialog({
       <DialogContent className="sm:max-w-md">
         <form onSubmit={handleSubmit} className="grid gap-5">
           <DialogHeader>
-            <DialogTitle>Contact Support</DialogTitle>
+            <DialogTitle>Submit request</DialogTitle>
             <DialogDescription>
-              Send a message to Arc support and include what you were working on.
+              Add a support question, bug, or feature request to Arc&apos;s issue queue.
             </DialogDescription>
           </DialogHeader>
 
@@ -334,7 +334,7 @@ function SupportRequestDialog({
             </Button>
             <Button type="submit" disabled={pending || message.trim().length < 10}>
               <Send className="size-4" />
-              {pending ? "Sending..." : "Send message"}
+              {pending ? "Submitting..." : "Submit request"}
             </Button>
           </DialogFooter>
         </form>

@@ -1,0 +1,13 @@
+// Debug.xcconfig — values used for local development (Simulator / DEBUG builds).
+#include "Shared.xcconfig"
+
+// Point at your local Next.js dev server (Simulator can reach 127.0.0.1).
+// Note the "$()" trick that protects the "//" in the URL.
+ARC_API_BASE_URL = http:/$()/127.0.0.1:3000/api/mobile/v1
+APS_ENVIRONMENT = development
+ARC_PUSH_ENABLED = NO
+
+// Public values only. ARC_SUPABASE_URL / ARC_SUPABASE_PUBLISHABLE_KEY /
+// ARC_SENTRY_DSN are pulled in from Secrets.xcconfig via Shared.xcconfig.
+// (The publishable/anon key is safe to ship; never put service-role or any
+//  server secret here — the app binary is not private.)

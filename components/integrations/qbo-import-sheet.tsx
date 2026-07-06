@@ -8,6 +8,7 @@ import { toast } from "sonner"
 import {
   importQboRecordsAction,
   linkExistingQboImportRecordAction,
+  listCostCodesForImportAction,
   listProjectsForImportAction,
   listQboCustomersForImportAction,
   listQboImportRecordsAction,
@@ -93,6 +94,9 @@ const EMPTY_COUNTS: Record<QboImportEntityType, number> = {
 }
 
 type TypeFilter = "all" | QboImportEntityType
+
+type ImportProject = { id: string; name: string; costCodesEnabled: boolean }
+type ImportCostCode = { id: string; code: string | null; name: string | null }
 
 type ImportSummary = {
   imported: number
@@ -202,6 +206,7 @@ function sinceDateFor(value: string): string | null {
 export function QboImportPanel({ active = true, projectId, onCancel }: QboImportPanelProps) {
   const [records, setRecords] = useState<QboImportRecord[]>([])
   const [alreadyImportedCounts, setAlreadyImportedCounts] = useState<Partial<Record<QboImportEntityType, number>>>({})
+  const [loadErrors, setLoadErrors] = useState<{ entityType: QboImportEntityType; message: string }[]>([])
   const [connected, setConnected] = useState(true)
   const [loading, setLoading] = useState(false)
   const [importing, setImporting] = useState(false)
@@ -223,8 +228,10 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
   const loadRequestId = useRef(0)
   const contextRequestId = useRef(0)
   // Arc projects for the destination pickers, and the per-record line→project + record→project overrides.
-  const [projects, setProjects] = useState<{ id: string; name: string }[]>([])
+  const [projects, setProjects] = useState<ImportProject[]>([])
+  const [costCodes, setCostCodes] = useState<ImportCostCode[]>([])
   const [allocations, setAllocations] = useState<Record<string, Record<string, string>>>({})
+  const [lineCostCodes, setLineCostCodes] = useState<Record<string, Record<string, string>>>({})
   const [destinations, setDestinations] = useState<Record<string, string>>({})
   const [ignoredKeys, setIgnoredKeys] = useState<Set<string>>(new Set())
   const [linkingKey, setLinkingKey] = useState<string | null>(null)
@@ -238,6 +245,7 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
       setRecords(listing.records)
       setAlreadyImportedCounts(listing.alreadyImportedCounts ?? {})
       setConnected(listing.connected)
+      setLoadErrors(listing.loadErrors ?? [])
       setSelected(new Set())
       setIgnoredKeys(new Set())
       // A QBO query for one entity type can fail while the rest succeed. Warn rather than silently
@@ -252,6 +260,7 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
       }
     } catch (error: any) {
       if (requestId !== loadRequestId.current) return
+      setLoadErrors([{ entityType: "invoice", message: error?.message ?? "Try again." }])
       toast.error("Couldn't load QuickBooks records", { description: error?.message ?? "Try again." })
     } finally {
       if (requestId === loadRequestId.current) setLoading(false)
@@ -272,7 +281,9 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
     setQboLink(null)
     setQboCustomers([])
     setProjects([])
+    setCostCodes([])
     setAllocations({})
+    setLineCostCodes({})
     setDestinations({})
     setExpanded(new Set())
     getProjectQboLinkAction({ projectId })
@@ -283,6 +294,11 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
     listProjectsForImportAction()
       .then((listing) => {
         if (requestId === contextRequestId.current) setProjects(listing)
+      })
+      .catch(() => {})
+    listCostCodesForImportAction()
+      .then((listing) => {
+        if (requestId === contextRequestId.current) setCostCodes(listing)
       })
       .catch(() => {})
     listQboCustomersForImportAction()
@@ -309,6 +325,30 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
       return result
     },
     [allocations],
+  )
+
+  const projectCostCodesEnabled = useCallback(
+    (projectId: string | undefined | null) => {
+      if (!projectId) return true
+      return projects.find((project) => project.id === projectId)?.costCodesEnabled ?? true
+    },
+    [projects],
+  )
+
+  const recordCostCodes = useCallback(
+    (record: QboImportRecord): Record<string, string> => {
+      const chosen = lineCostCodes[rowKey(record)] ?? {}
+      const effectiveProjects = recordAllocations(record)
+      const result: Record<string, string> = {}
+      for (const line of record.lines ?? []) {
+        const lineProjectId = effectiveProjects[line.lineId] ?? line.suggestedProjectId ?? projectId
+        if (!projectCostCodesEnabled(lineProjectId)) continue
+        const target = chosen[line.lineId] ?? line.suggestedCostCodeId ?? ""
+        if (target) result[line.lineId] = target
+      }
+      return result
+    },
+    [lineCostCodes, projectCostCodesEnabled, projectId, recordAllocations],
   )
 
   // A record is importable once every one of its lines has a destination project (chosen or suggested).
@@ -352,6 +392,13 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
 
   const setLineAllocation = (record: QboImportRecord, lineId: string, target: string) => {
     setAllocations((prev) => ({
+      ...prev,
+      [rowKey(record)]: { ...(prev[rowKey(record)] ?? {}), [lineId]: target },
+    }))
+  }
+
+  const setLineCostCode = (record: QboImportRecord, lineId: string, target: string) => {
+    setLineCostCodes((prev) => ({
       ...prev,
       [rowKey(record)]: { ...(prev[rowKey(record)] ?? {}), [lineId]: target },
     }))
@@ -583,11 +630,12 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
     const key = rowKey(record)
     setLinkingKey(key)
     try {
-      await linkExistingQboImportRecordAction({
+      const result = await linkExistingQboImportRecordAction({
         qboId: record.qboId,
         entityType: entity,
         existingEntityId: record.possibleMatchId,
       })
+      if (!result.linked) throw new Error(result.error)
       toast.success("Linked existing Arc record", { description: record.possibleMatch ?? recordLabel(record) })
       setSelected((prev) => {
         const next = new Set(prev)
@@ -636,11 +684,13 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
       const result = await importQboRecordsAction({
         items: selectedItems.map((item) => {
           const alloc = recordAllocations(item)
+          const codes = recordCostCodes(item)
           return {
             qboId: item.qboId,
             entityType: item.entityType,
             projectId: importProjectIdFor(item),
             allocations: Object.keys(alloc).length > 0 ? alloc : undefined,
+            costCodes: Object.keys(codes).length > 0 ? codes : undefined,
           }
         }),
       })
@@ -812,6 +862,31 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
             ) : null}
           </div>
 
+          {loadErrors.length > 0 ? (
+            <div className="shrink-0 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-800 dark:text-amber-300">
+              <div className="flex flex-wrap items-center gap-2">
+                <AlertTriangle className="size-4 shrink-0" />
+                <span className="font-medium">
+                  Some QuickBooks records could not load:{" "}
+                  {loadErrors.map((error) => SECTION_LABEL[error.entityType] ?? error.entityType).join(", ")}
+                </span>
+                <span className="text-amber-800/80 dark:text-amber-300/80">
+                  {loadErrors[0]?.message ?? "Try reloading or narrowing the date range."}
+                </span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="ml-auto h-7 border-amber-500/40 bg-background/80 text-xs"
+                  onClick={() => void load(lookback)}
+                  disabled={loading || importing}
+                >
+                  Retry
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
           {selectedItems.length > 0 ? <ImportPreview impact={selectedImpact} selectedCount={selectedItems.length} /> : null}
 
           {lastImport && lastImportSummary && (
@@ -886,12 +961,13 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
                   const open = !collapsedSections.has(section.key)
                   const allSelected = section.items.every((item) => selected.has(rowKey(item)))
                   const selectedCount = section.items.filter((item) => selected.has(rowKey(item))).length
+                  const sectionChecked = selectedCount > 0 && !allSelected ? "indeterminate" : allSelected
                   const subtotal = section.items.reduce((sum, item) => sum + item.amountCents, 0)
                   return (
                     <section key={section.key} className="border-b">
                       <div className="flex items-center gap-3 bg-muted/40 px-4 py-2">
                         <Checkbox
-                          checked={allSelected}
+                          checked={sectionChecked}
                           onCheckedChange={() => toggleSection(section.items, allSelected)}
                           disabled={importing}
                           aria-label={`Select all ${section.label}`}
@@ -919,6 +995,7 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
                                 <ImportGridRow
                                   record={item}
                                   projects={projects}
+                                  costCodes={costCodes}
                                   selected={selected.has(key)}
                                   expanded={expanded.has(key)}
                                   disabled={importing}
@@ -926,12 +1003,15 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
                                   needsAssignment={needsAssignment(item)}
                                   invoiceDestination={invoiceDestination(item)}
                                   lineValues={allocations[key] ?? {}}
+                                  lineCostCodeValues={lineCostCodes[key] ?? {}}
                                   recordAllocations={recordAllocations(item)}
+                                  recordCostCodes={recordCostCodes(item)}
                                   linking={linkingKey === key}
                                   onToggleSelect={() => toggle(key)}
                                   onToggleExpand={() => toggleExpand(key)}
                                   onSetInvoiceDestination={(target) => setInvoiceDestination(item, target)}
                                   onSetLine={(lineId, target) => setLineAllocation(item, lineId, target)}
+                                  onSetLineCostCode={(lineId, target) => setLineCostCode(item, lineId, target)}
                                   onSkip={() => skipRecord(item)}
                                   onImportAnyway={() => {
                                     if (!selected.has(key) && canImportRecord(item)) toggle(key)
@@ -1012,6 +1092,7 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
 function ImportGridRow({
   record,
   projects,
+  costCodes,
   selected,
   expanded,
   disabled,
@@ -1019,18 +1100,22 @@ function ImportGridRow({
   needsAssignment,
   invoiceDestination,
   lineValues,
+  lineCostCodeValues,
   recordAllocations,
+  recordCostCodes,
   linking,
   onToggleSelect,
   onToggleExpand,
   onSetInvoiceDestination,
   onSetLine,
+  onSetLineCostCode,
   onSkip,
   onImportAnyway,
   onLinkExisting,
 }: {
   record: QboImportRecord
-  projects: { id: string; name: string }[]
+  projects: ImportProject[]
+  costCodes: ImportCostCode[]
   selected: boolean
   expanded: boolean
   disabled: boolean
@@ -1038,12 +1123,15 @@ function ImportGridRow({
   needsAssignment: boolean
   invoiceDestination: string
   lineValues: Record<string, string>
+  lineCostCodeValues: Record<string, string>
   recordAllocations: Record<string, string>
+  recordCostCodes: Record<string, string>
   linking: boolean
   onToggleSelect: () => void
   onToggleExpand: () => void
   onSetInvoiceDestination: (projectId: string) => void
   onSetLine: (lineId: string, projectId: string) => void
+  onSetLineCostCode: (lineId: string, costCodeId: string) => void
   onSkip: () => void
   onImportAnyway: () => void
   onLinkExisting: () => void
@@ -1051,6 +1139,7 @@ function ImportGridRow({
   const isPayment = isPaymentType(record.entityType)
   const hasLines = hasAllocatableLines(record)
   const projectName = (id: string) => projects.find((p) => p.id === id)?.name
+  const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects])
   const canLinkExisting = Boolean(matchActionEntity(record) && record.possibleMatchId)
 
   return (
@@ -1151,9 +1240,13 @@ function ImportGridRow({
                 key={line.lineId}
                 line={line}
                 projects={projects}
+                costCodes={costCodes}
+                projectById={projectById}
                 current={lineValues[line.lineId] ?? line.suggestedProjectId ?? ""}
+                currentCostCode={lineCostCodeValues[line.lineId] ?? line.suggestedCostCodeId ?? ""}
                 disabled={disabled}
                 onChange={(target) => onSetLine(line.lineId, target)}
+                onCostCodeChange={(target) => onSetLineCostCode(line.lineId, target)}
               />
             ))}
           </ul>
@@ -1166,7 +1259,16 @@ function ImportGridRow({
       ) : null}
       {expanded ? (
         <div className="border-t bg-muted/10 px-4 py-3 pl-11">
-          <ImportRecordDebug record={record} recordAllocations={recordAllocations} projectName={projectName} />
+          <ImportRecordDebug
+            record={record}
+            recordAllocations={recordAllocations}
+            recordCostCodes={recordCostCodes}
+            projectName={projectName}
+            costCodeName={(id) => {
+              const code = costCodes.find((item) => item.id === id)
+              return code ? [code.code, code.name].filter(Boolean).join(" ") : undefined
+            }}
+          />
         </div>
       ) : null}
     </div>
@@ -1255,15 +1357,18 @@ function ImportSummaryDetails({ summary }: { summary: ImportSummary }) {
 function ImportRecordDebug({
   record,
   recordAllocations,
+  recordCostCodes,
   projectName,
+  costCodeName,
 }: {
   record: QboImportRecord
   recordAllocations: Record<string, string>
+  recordCostCodes: Record<string, string>
   projectName: (id: string) => string | undefined
+  costCodeName: (id: string) => string | undefined
 }) {
   const facts = [
-    ["QBO type", SECTION_LABEL[record.entityType]],
-    ["QBO id", record.qboId],
+    ["Type", SECTION_LABEL[record.entityType]],
     ["QBO project", record.qboCustomerName ?? record.qboCustomerId ?? "None"],
     ["Date", formatDate(record.date)],
     ["Signed amount", formatMoney(signedImpactCents(record))],
@@ -1285,12 +1390,14 @@ function ImportRecordDebug({
           <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Line mapping</div>
           {record.lines.map((line) => {
             const target = recordAllocations[line.lineId] ?? line.suggestedProjectId ?? ""
+            const costCodeId = recordCostCodes[line.lineId] ?? ""
             return (
               <div key={line.lineId} className="flex flex-wrap items-center gap-2 rounded border bg-background px-2 py-1 text-[11px]">
-                <span className="font-medium">Line {line.lineId}</span>
                 <span className="text-muted-foreground">{formatMoney(line.amountCents)}</span>
+                <span className="truncate text-muted-foreground">{line.qboCostRef?.name ?? "No QBO account"}</span>
                 <span className="truncate text-muted-foreground">{line.qboCustomerName ?? line.qboCustomerId ?? "No QBO project"}</span>
                 <span className="truncate text-foreground">{target ? projectName(target) ?? target : "Unassigned"}</span>
+                <span className="truncate text-foreground">{costCodeId ? costCodeName(costCodeId) ?? "Mapped cost code" : "Uncoded"}</span>
               </div>
             )
           })}
@@ -1400,22 +1507,32 @@ function LinkedDocsBreakdown({ record }: { record: QboImportRecord }) {
 function LineAllocationRow({
   line,
   projects,
+  costCodes,
+  projectById,
   current,
+  currentCostCode,
   disabled,
   onChange,
+  onCostCodeChange,
 }: {
   line: QboImportLine
-  projects: { id: string; name: string }[]
+  projects: ImportProject[]
+  costCodes: ImportCostCode[]
+  projectById: Map<string, ImportProject>
   current: string
+  currentCostCode: string
   disabled: boolean
   onChange: (projectId: string) => void
+  onCostCodeChange: (costCodeId: string) => void
 }) {
+  const costCodesEnabled = current ? projectById.get(current)?.costCodesEnabled ?? true : true
   return (
-    <li className="flex items-center gap-3">
+    <li className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_14rem_14rem] sm:items-center">
       <div className="min-w-0 flex-1">
         <div className="truncate text-xs text-foreground">{line.description}</div>
         <div className="truncate text-[11px] text-muted-foreground">
           {line.qboCustomerName ?? "No QBO customer"} · {formatMoney(line.amountCents)}
+          {line.qboCostRef ? ` · ${line.qboCostRef.name ?? line.qboCostRef.id}` : ""}
         </div>
       </div>
       <ProjectPicker
@@ -1424,9 +1541,22 @@ function LineAllocationRow({
         disabled={disabled}
         placeholder="Choose project…"
         onChange={onChange}
-        className="h-8 w-56 shrink-0"
+        className="h-8 w-full shrink-0"
         invalidWhenEmpty
       />
+      {costCodesEnabled ? (
+        <CostCodePicker
+          costCodes={costCodes}
+          current={currentCostCode}
+          disabled={disabled}
+          placeholder={line.suggestedCostCodeId ? "Mapped cost code" : "Choose cost code…"}
+          onChange={onCostCodeChange}
+        />
+      ) : (
+        <div className="h-8 rounded-md border bg-muted/40 px-2 py-1.5 text-xs text-muted-foreground">
+          Cost codes off
+        </div>
+      )}
     </li>
   )
 }
@@ -1441,7 +1571,7 @@ function ProjectPicker({
   className,
   invalidWhenEmpty,
 }: {
-  projects: { id: string; name: string }[]
+  projects: ImportProject[]
   current: string
   disabled: boolean
   placeholder: string
@@ -1500,6 +1630,39 @@ function ProjectPicker({
         </Command>
       </PopoverContent>
     </Popover>
+  )
+}
+
+function CostCodePicker({
+  costCodes,
+  current,
+  disabled,
+  placeholder,
+  onChange,
+}: {
+  costCodes: ImportCostCode[]
+  current: string
+  disabled: boolean
+  placeholder: string
+  onChange: (costCodeId: string) => void
+}) {
+  const labelFor = (code: ImportCostCode) => [code.code, code.name].filter(Boolean).join(" ") || "Unnamed cost code"
+
+  return (
+    <Select value={current || "__none__"} onValueChange={(value) => onChange(value === "__none__" ? "" : value)} disabled={disabled}>
+      <SelectTrigger className="h-8 w-full text-xs">
+        <SelectValue placeholder={placeholder} />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="__none__">Uncoded</SelectItem>
+        <SelectSeparator />
+        {costCodes.map((code) => (
+          <SelectItem key={code.id} value={code.id}>
+            {labelFor(code)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   )
 }
 

@@ -1,7 +1,7 @@
 "use server"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { validatePortalToken } from "@/lib/services/portal-access"
+import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { createVendorBillFromPortal } from "@/lib/services/vendor-bills"
 import { vendorBillCreateSchema, type VendorBillCreate } from "@/lib/validation/vendor-bills"
 import { deleteFilesObjects, uploadFilesObject } from "@/lib/storage/files-storage"
@@ -28,21 +28,12 @@ export async function submitInvoiceAction({
   input: VendorBillCreate
 }): Promise<SubmitInvoiceResult> {
   try {
-    // Validate the portal token
-    const portalToken = await validatePortalToken(token)
-    if (!portalToken) {
-      return { success: false, error: "Invalid or expired portal access" }
-    }
-
-    // Ensure this is a sub portal with company_id
-    if (portalToken.portal_type !== "sub" || !portalToken.company_id) {
-      return { success: false, error: "Invalid portal type" }
-    }
-
-    // Check permission
-    if (!portalToken.permissions.can_submit_invoices) {
-      return { success: false, error: "You do not have permission to submit invoices" }
-    }
+    const portalToken = await assertPortalActionAccess(token, {
+      portalType: "sub",
+      requireCompany: true,
+      permission: "can_submit_invoices",
+    })
+    if (!portalToken.company_id) return { success: false, error: "Invalid portal type" }
 
     // Validate input
     const parsed = vendorBillCreateSchema.safeParse(input)
@@ -94,21 +85,12 @@ export async function uploadInvoiceFileAction({
   formData: FormData
 }): Promise<UploadInvoiceFileResult> {
   try {
-    // Validate the portal token
-    const portalToken = await validatePortalToken(token)
-    if (!portalToken) {
-      return { success: false, error: "Invalid or expired portal access" }
-    }
-
-    // Ensure this is a sub portal with company_id
-    if (portalToken.portal_type !== "sub" || !portalToken.company_id) {
-      return { success: false, error: "Invalid portal type" }
-    }
-
-    // Check permission
-    if (!portalToken.permissions.can_submit_invoices) {
-      return { success: false, error: "You do not have permission to upload files" }
-    }
+    const portalToken = await assertPortalActionAccess(token, {
+      portalType: "sub",
+      requireCompany: true,
+      permission: "can_submit_invoices",
+    })
+    if (!portalToken.company_id) return { success: false, error: "Invalid portal type" }
 
     const file = formData.get("file") as File
     if (!file) {

@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server"
 
 import { logger } from "@/lib/logging/logger"
-import { askAiSearch, type AiSearchTraceEvent } from "@/lib/services/ai-search"
+import { streamAiAssistant } from "@/lib/services/ai-assistant/harness"
+import { aiAssistantSseEventSchema } from "@/lib/validation/ai-assistant"
 
 export const runtime = "nodejs"
 const MAX_QUERY_CHARS = 1_200
@@ -15,6 +16,7 @@ type StreamPayload = {
 }
 
 function toSseEvent(event: string, data: unknown) {
+  aiAssistantSseEventSchema.parse({ event, data })
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
 }
 
@@ -77,15 +79,6 @@ function buildStreamResponse(request: NextRequest, payload: StreamPayload) {
       request.signal.addEventListener("abort", onAbort, { once: true })
 
       try {
-        send("trace", {
-          id: "stream-open",
-          status: "started",
-          label: "Session started",
-          detail: "Secure stream is active and waiting for your org query plan.",
-          thought: "Opening a secure stream and preparing to plan your request.",
-          timestamp: new Date().toISOString(),
-        } satisfies AiSearchTraceEvent)
-
         if (payload.query.length > MAX_QUERY_CHARS) {
           send("error", {
             message: `Query is too long. Keep it under ${MAX_QUERY_CHARS} characters.`,
@@ -93,17 +86,11 @@ function buildStreamResponse(request: NextRequest, payload: StreamPayload) {
           return
         }
 
-        const response = await askAiSearch(payload.query, {
-          limit: payload.limit,
-          sessionId: payload.sessionId,
-          mode: payload.mode,
-          currentProjectId: payload.currentProjectId,
-          onTrace: (event) => {
-            send("trace", event)
-          },
+        await streamAiAssistant({
+          payload,
+          emit: send,
+          abortSignal: request.signal,
         })
-
-        send("result", response)
       } catch (error: any) {
         logger.error("ai_search.stream.failed", {
           domain: "ai-search",
@@ -134,15 +121,19 @@ function buildStreamResponse(request: NextRequest, payload: StreamPayload) {
   })
 }
 
-export async function GET(request: NextRequest) {
-  const query = request.nextUrl.searchParams.get("q")?.trim() ?? ""
-  return buildStreamResponse(request, {
-    query,
-    limit: parseLimit(request.nextUrl.searchParams.get("limit")),
-    sessionId: parseSessionId(request.nextUrl.searchParams.get("sessionId")),
-    mode: parseMode(request.nextUrl.searchParams.get("mode")),
-    currentProjectId: parseProjectId(request.nextUrl.searchParams.get("currentProjectId")),
-  })
+export async function GET() {
+  return new Response(
+    JSON.stringify({
+      error: "AI search streaming requires POST so prompts are not sent in URLs.",
+    }),
+    {
+      status: 405,
+      headers: {
+        "Content-Type": "application/json",
+        Allow: "POST",
+      },
+    },
+  )
 }
 
 export async function POST(request: NextRequest) {

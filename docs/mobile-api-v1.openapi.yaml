@@ -1,0 +1,603 @@
+openapi: 3.1.0
+info:
+  title: Arc Mobile API
+  version: 1.0.0
+servers:
+  - url: https://app.arcnaples.com/api/mobile/v1
+security:
+  - bearerAuth: []
+paths:
+  /session:
+    get:
+      summary: Resolve the current user, organizations, and preferred organization
+      responses:
+        "200":
+          description: Current mobile session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionEnvelope"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /organizations:
+    get:
+      summary: List organizations available to the current user
+      responses:
+        "200":
+          description: Organization list
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /projects:
+    get:
+      summary: List permission-filtered projects for the selected organization
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Project page
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /projects/{projectId}:
+    get:
+      summary: Get one permission-filtered project
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - name: projectId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Project }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Project not found }
+  /projects/{projectId}/daily-logs:
+    get:
+      summary: List a project's daily-log timeline with entries, comments, and photo counts
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200": { description: Daily-log timeline }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Project not found }
+    post:
+      summary: Create an idempotent daily log and structured entries
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DailyLogInput" }
+      responses:
+        "201": { description: Daily log created }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { description: Invalid daily log }
+  /projects/{projectId}/daily-logs/context:
+    get:
+      summary: Load schedule, task, punch, and project-team options for daily-log entry
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200": { description: Daily-log supporting context }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /projects/{projectId}/daily-logs/{dailyLogId}:
+    patch:
+      summary: Update a daily log summary, weather, and mentions
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/DailyLogId"
+      responses:
+        "200": { description: Updated daily log }
+    delete:
+      summary: Delete a daily log
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/DailyLogId"
+      responses:
+        "200": { description: Daily log deleted }
+  /projects/{projectId}/daily-logs/{dailyLogId}/comments:
+    post:
+      summary: Add an idempotent comment with mentions
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/DailyLogId"
+      responses:
+        "201": { description: Comment created }
+  /projects/{projectId}/daily-logs/{dailyLogId}/photos:
+    post:
+      summary: Upload an idempotent daily-log photo
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/DailyLogId"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [client_id, file]
+              properties:
+                client_id: { type: string, format: uuid }
+                file: { type: string, format: binary }
+      responses:
+        "201": { description: Photo uploaded }
+  /projects/{projectId}/drawings/sets:
+    get:
+      summary: List a project's drawing sets (register) with sheet counts
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200": { description: Drawing sets }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Project not found }
+  /projects/{projectId}/drawings/sheets:
+    get:
+      summary: List a project's published drawing sheets with thumbnails and pin counts
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200": { description: Drawing sheets }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Project not found }
+  /projects/{projectId}/drawings/sheets/{sheetId}:
+    get:
+      summary: Get a drawing sheet with full image, version history, and pins
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/SheetId"
+      responses:
+        "200": { description: Drawing sheet detail }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Drawing sheet not found }
+  /projects/{projectId}/schedule:
+    get:
+      summary: List a project's schedule items (agenda) with progress and assignees
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200": { description: Schedule items }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Project not found }
+  /projects/{projectId}/tasks:
+    get:
+      summary: List a project's tasks with assignees and status
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200": { description: Tasks }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Project not found }
+  /projects/{projectId}/tasks/{taskId}:
+    patch:
+      summary: Update a task's status (e.g. mark done)
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+        - { name: taskId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [todo, in_progress, blocked, done] }
+      responses:
+        "200": { description: Updated task }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Task not found }
+        "422": { description: Invalid status }
+  /projects/{projectId}/punch-items:
+    get:
+      summary: List a project's punch-list items
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200": { description: Punch items }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Project not found }
+  /projects/{projectId}/punch-items/{punchItemId}:
+    patch:
+      summary: Update a punch item's status (e.g. close)
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+        - { name: punchItemId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [open, in_progress, ready_for_review, closed] }
+      responses:
+        "200": { description: Updated punch item }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Punch item not found }
+        "422": { description: Invalid status }
+  /projects/{projectId}/expenses:
+    get:
+      summary: List a project's submitted expenses with signed receipt URLs
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200": { description: Expenses }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Project not found }
+    post:
+      summary: Submit an expense with an optional receipt photo (multipart)
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                payload:
+                  type: string
+                  description: JSON with client_id, expense_date, amount_dollars, tax_dollars, vendor_name, payment_method, description
+                receipt: { type: string, format: binary }
+      responses:
+        "201": { description: Created expense }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Project not found }
+        "422": { description: Invalid expense }
+  /projects/{projectId}/expenses/scan:
+    post:
+      summary: Extract structured fields from a receipt image with AI (multipart)
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [receipt]
+              properties:
+                receipt: { type: string, format: binary }
+      responses:
+        "200": { description: Extracted receipt fields }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { description: Receipt could not be scanned }
+  /projects/{projectId}/files:
+    get:
+      summary: Browse a project's documents folder with signed download URLs
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+        - { name: folder, in: query, required: false, schema: { type: string, default: "/" } }
+      responses:
+        "200": { description: Folders and files }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Project not found }
+    post:
+      summary: Upload a document to a project folder (multipart)
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, client_id]
+              properties:
+                file: { type: string, format: binary }
+                client_id: { type: string, description: Client-generated UUID for idempotency }
+                folder: { type: string, default: "/" }
+                category: { type: string, description: "One of plans|contracts|permits|submittals|photos|rfis|safety|financials|other" }
+      responses:
+        "201": { description: Created file }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Project not found }
+        "422": { description: Invalid file }
+  /projects/{projectId}/files/{fileId}:
+    delete:
+      summary: Archive (soft-delete) a project document
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+        - { name: fileId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: File not found }
+        "409": { description: File belongs to a daily log }
+  /notifications:
+    get:
+      summary: List the signed-in user's notifications for the selected org
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+      responses:
+        "200": { description: Notifications with unread count }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /notifications/{notificationId}/read:
+    post:
+      summary: Mark a single notification as read
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - { name: notificationId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Updated notification }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: Notification not found }
+  /notifications/read-all:
+    post:
+      summary: Mark all of the user's notifications as read
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+      responses:
+        "200": { description: Count of notifications updated }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /platform/audit-log:
+    get:
+      summary: List recent platform authorization audit events
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100 } }
+      responses:
+        "200": { description: Recent platform audit entries }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /platform/issues:
+    get:
+      summary: List platform issues
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100 } }
+      responses:
+        "200": { description: Platform issues }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      summary: Create a platform issue
+      responses:
+        "201": { description: Platform issue created }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { description: Invalid issue payload }
+  /projects/{projectId}/rfis:
+    get:
+      summary: List a project's RFIs with status, priority, and assignee
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200": { description: RFIs }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Project not found }
+  /projects/{projectId}/team:
+    get:
+      summary: List a project's active team members
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200": { description: Team members }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Project not found }
+  /devices:
+    post:
+      summary: Register an APNs device token for push notifications
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+                platform: { type: string }
+                app_version: { type: string }
+                environment: { type: string, enum: [production, sandbox] }
+      responses:
+        "201": { description: Device registered }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { description: Invalid device token }
+    delete:
+      summary: Unregister an APNs device token (e.g. on sign-out)
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        "200": { description: Device unregistered }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Supabase JWT
+  parameters:
+    OrganizationHeader:
+      name: X-Arc-Organization-ID
+      in: header
+      required: true
+      schema: { type: string, format: uuid }
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    DailyLogId:
+      name: dailyLogId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SheetId:
+      name: sheetId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    Unauthorized:
+      description: Missing, invalid, or expired Supabase access token
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    Forbidden:
+      description: User is not an active member of the selected organization
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+  schemas:
+    User:
+      type: object
+      required: [id, email, display_name, avatar_url]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        display_name: { type: [string, "null"] }
+        avatar_url: { type: [string, "null"], format: uri }
+    Organization:
+      type: object
+      required: [id, name, slug, logo_url, role]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: [string, "null"] }
+        logo_url: { type: [string, "null"], format: uri }
+        role: { type: [string, "null"] }
+    Project:
+      type: object
+      required: [id, organization_id, name, status, address, start_date, end_date, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        organization_id: { type: string, format: uuid }
+        name: { type: string }
+        status: { type: string }
+        address: { type: [string, "null"] }
+        start_date: { type: [string, "null"], format: date }
+        end_date: { type: [string, "null"], format: date }
+        updated_at: { type: string, format: date-time }
+    DailyLogEntryInput:
+      type: object
+      required: [entry_type]
+      properties:
+        entry_type:
+          type: string
+          enum: [work, constraint, inspection, safety, delivery, note, task_update, punch_update]
+        description: { type: string }
+        quantity: { type: number, minimum: 0 }
+        hours: { type: number, minimum: 0, maximum: 24 }
+        progress: { type: number, minimum: 0, maximum: 100 }
+        schedule_item_id: { type: string, format: uuid }
+        task_id: { type: string, format: uuid }
+        punch_item_id: { type: string, format: uuid }
+        location: { type: string }
+        trade: { type: string }
+        inspection_result: { type: string, enum: [pass, fail, partial, n_a] }
+        metadata:
+          type: object
+          additionalProperties: { type: boolean }
+    DailyLogInput:
+      type: object
+      required: [client_id, date, entries, mentioned_user_ids]
+      properties:
+        client_id: { type: string, format: uuid }
+        date: { type: string, format: date }
+        summary: { type: string }
+        weather: { type: string }
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/DailyLogEntryInput" }
+        mentioned_user_ids:
+          type: array
+          items: { type: string, format: uuid }
+    Session:
+      type: object
+      required: [user, organizations, selected_organization_id]
+      properties:
+        user: { $ref: "#/components/schemas/User" }
+        organizations:
+          type: array
+          items: { $ref: "#/components/schemas/Organization" }
+        selected_organization_id: { type: [string, "null"], format: uuid }
+    Meta:
+      type: object
+      required: [request_id]
+      properties:
+        request_id: { type: string }
+        next_cursor: { type: [string, "null"] }
+    SessionEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data: { $ref: "#/components/schemas/Session" }
+        meta: { $ref: "#/components/schemas/Meta" }
+    ErrorEnvelope:
+      type: object
+      required: [error, request_id]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details:
+              type: object
+              additionalProperties: { type: string }
+        request_id: { type: string }

@@ -23,6 +23,8 @@ export type InvoicePdfData = {
   taxCents: number
   totalCents: number
   taxRate?: number
+  discountCents?: number
+  discountPercent?: number
   lines: InvoicePdfLine[]
 }
 
@@ -345,6 +347,14 @@ function InvoicePdfDocument({ data }: { data: InvoicePdfData }) {
               <Text style={styles.totalLabel}>Subtotal</Text>
               <Text style={styles.totalValue}>{money(data.subtotalCents)}</Text>
             </View>
+            {data.discountCents && data.discountCents > 0 ? (
+              <View style={styles.totalRow}>
+                <Text style={styles.totalLabel}>
+                  Discount{typeof data.discountPercent === "number" ? ` (${data.discountPercent}%)` : ""}
+                </Text>
+                <Text style={styles.totalValue}>-{money(data.discountCents)}</Text>
+              </View>
+            ) : null}
             <View style={styles.totalRow}>
               <Text style={styles.totalLabel}>Tax{typeof data.taxRate === "number" ? ` (${data.taxRate}%)` : ""}</Text>
               <Text style={styles.totalValue}>{money(data.taxCents)}</Text>

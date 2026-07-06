@@ -16,6 +16,9 @@ export const timeEntryInputSchema = z.object({
   burdenMultiplier: z.number().min(1).default(1),
   isBillable: z.boolean().default(true),
   isOvertime: z.boolean().default(false),
+  otMultiplier: z.number().min(1).max(4).default(1.5),
+  isDoubleTime: z.boolean().default(false),
+  dtMultiplier: z.number().min(1).max(4).default(2),
   notes: z.string().max(2000).optional().nullable(),
   attachedFileIds: z.array(z.string().uuid()).default([]),
 })
@@ -26,6 +29,9 @@ export const timeEntryUpdateSchema = z.object({
   burdenMultiplier: z.number().min(1).optional(),
   isBillable: z.boolean().optional(),
   isOvertime: z.boolean().optional(),
+  otMultiplier: z.number().min(1).max(4).optional(),
+  isDoubleTime: z.boolean().optional(),
+  dtMultiplier: z.number().min(1).max(4).optional(),
   workerName: z.string().min(1).optional(),
   notes: z.string().max(2000).optional().nullable(),
 })
@@ -75,6 +81,8 @@ export const generateInvoiceFromCostsInputSchema = z.object({
   costCodeIds: z.array(z.string().uuid()).optional(),
   groupBy: z.enum(["cost_code", "detail"]).default("cost_code"),
   includeAllowanceVariances: z.boolean().default(false),
+  includeEarnedFee: z.boolean().default(false),
+  overrideGmpCap: z.boolean().default(false),
   dryRun: z.boolean().default(false),
   idempotencyKey: z.string().min(8).max(200).optional(),
 })

@@ -1,30 +1,15 @@
 "use client"
 
 import { useState, useMemo, useEffect, type CSSProperties } from "react"
+import type React from "react"
 import { format, parseISO, isPast, isToday, isTomorrow, differenceInDays } from "date-fns"
-import { useForm } from "react-hook-form"
-import { zodResolver } from "@hookform/resolvers/zod"
 import { toast } from "sonner"
-import {
-  DndContext,
-  closestCenter,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-  type DragStartEvent,
-  DragOverlay,
-  type DragOverEvent,
-} from "@dnd-kit/core"
-import { useSortable, SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable"
-import { useDroppable } from "@dnd-kit/core"
-import { CSS } from "@dnd-kit/utilities"
 
 import type { Task, TaskStatus, TaskPriority, TaskChecklistItem, TaskTrade } from "@/lib/types"
-import { taskInputSchema, type TaskInput } from "@/lib/validation/tasks"
+import { type TaskInput } from "@/lib/validation/tasks"
 import { cn } from "@/lib/utils"
-import { getProjectAssignableResourcesAction, type AssignableResource } from "@/app/(app)/projects/[id]/actions"
+import { listOrgAssignableResourcesAction } from "@/app/(app)/tasks/actions"
+import type { AssignableResource } from "@/app/(app)/projects/[id]/actions"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
 import { LinkedDrawings } from "@/components/drawings"
 import {
@@ -36,7 +21,6 @@ import {
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -47,13 +31,14 @@ import { Separator } from "@/components/ui/separator"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Calendar } from "@/components/ui/calendar"
 import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetDescription,
-} from "@/components/ui/sheet"
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form"
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Sheet, SheetContent } from "@/components/ui/sheet"
 import {
   Select,
   SelectContent,
@@ -69,10 +54,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuPortal,
 } from "@/components/ui/dropdown-menu"
 import {
   AlertDialog,
@@ -84,46 +65,43 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import {
   Plus,
   Search,
   MoreHorizontal,
   CalendarDays,
+  Bell,
   Clock,
-  AlertCircle,
-  CheckCircle,
   CheckCircle2,
-  Circle,
   Timer,
   Ban,
-  ChevronRight,
-  Filter,
-  LayoutGrid,
-  List,
-  Calendar as CalendarIcon,
+  ChevronDown,
+  SlidersHorizontal,
+  FolderOpen,
   MapPin,
   Wrench,
-  Tag,
   User,
-  ArrowUpRight,
   Trash2,
   Edit,
-  Flag,
-  Square,
-  SquareCheck,
+  Check,
   X,
-  GripVertical,
 } from "@/components/icons"
 
 // ============================================
 // TYPES & CONSTANTS
 // ============================================
 
+interface TaskProjectOption {
+  id: string
+  name: string
+}
+
 interface TasksTabProps {
-  projectId: string
   tasks: Task[]
+  /** Projects the task can be attached to. Empty = personal-only. */
+  projects: TaskProjectOption[]
+  /** Preselect the project filter (e.g. arriving from a project's Tasks nav). */
+  initialProjectFilter?: string
   team: Array<{
     id: string
     user_id: string
@@ -135,34 +113,13 @@ interface TasksTabProps {
   onTaskDelete: (taskId: string) => Promise<void>
 }
 
-type ViewMode = "board" | "list"
-type GroupBy = "status" | "priority" | "assignee" | "trade" | "due_date"
+const NO_PROJECT = "none"
 
-const STATUS_CONFIG: Record<TaskStatus, { label: string; icon: React.ReactNode; color: string; bgColor: string }> = {
-  todo: {
-    label: "To Do",
-    icon: <Circle className="h-4 w-4" />,
-    color: "text-muted-foreground",
-    bgColor: "bg-muted",
-  },
-  in_progress: {
-    label: "In Progress",
-    icon: <Timer className="h-4 w-4" />,
-    color: "text-blue-600 dark:text-blue-400",
-    bgColor: "bg-blue-500/10",
-  },
-  blocked: {
-    label: "Blocked",
-    icon: <Ban className="h-4 w-4" />,
-    color: "text-destructive",
-    bgColor: "bg-destructive/10",
-  },
-  done: {
-    label: "Done",
-    icon: <CheckCircle2 className="h-4 w-4" />,
-    color: "text-emerald-600 dark:text-emerald-400",
-    bgColor: "bg-emerald-500/10",
-  },
+const STATUS_CONFIG: Record<TaskStatus, { label: string; color: string; bgColor: string }> = {
+  todo: { label: "To Do", color: "text-muted-foreground", bgColor: "bg-muted" },
+  in_progress: { label: "In Progress", color: "text-blue-600 dark:text-blue-400", bgColor: "bg-blue-500/10" },
+  blocked: { label: "Blocked", color: "text-destructive", bgColor: "bg-destructive/10" },
+  done: { label: "Done", color: "text-emerald-600 dark:text-emerald-400", bgColor: "bg-emerald-500/10" },
 }
 
 const PRIORITY_CONFIG: Record<TaskPriority, { label: string; color: string; bgColor: string; dotColor: string }> = {
@@ -193,6 +150,8 @@ const TRADE_CONFIG: Record<TaskTrade, { label: string; color: string }> = {
 
 const STATUS_ORDER: TaskStatus[] = ["todo", "in_progress", "blocked", "done"]
 const PRIORITY_ORDER: TaskPriority[] = ["urgent", "high", "normal", "low"]
+// Order the grouped sections appear in the list (active work first, done last).
+const STATUS_SECTION_ORDER: TaskStatus[] = ["in_progress", "todo", "blocked", "done"]
 
 // ============================================
 // HELPER FUNCTIONS
@@ -227,18 +186,18 @@ function taskAssigneeName(task: Task): string | undefined {
 
 function formatDueDate(dateStr?: string): { label: string; isOverdue: boolean; isPriority: boolean } {
   if (!dateStr) return { label: "No due date", isOverdue: false, isPriority: false }
-  
+
   const date = parseISO(dateStr)
   const today = new Date()
   today.setHours(0, 0, 0, 0)
-  
+
   if (isToday(date)) return { label: "Today", isOverdue: false, isPriority: true }
   if (isTomorrow(date)) return { label: "Tomorrow", isOverdue: false, isPriority: true }
   if (isPast(date)) return { label: format(date, "MMM d"), isOverdue: true, isPriority: true }
-  
+
   const daysAway = differenceInDays(date, today)
   if (daysAway <= 7) return { label: format(date, "EEE, MMM d"), isOverdue: false, isPriority: true }
-  
+
   return { label: format(date, "MMM d"), isOverdue: false, isPriority: false }
 }
 
@@ -248,191 +207,184 @@ function getChecklistProgress(checklist?: TaskChecklistItem[]): { completed: num
   return { completed, total: checklist.length, percent: Math.round((completed / checklist.length) * 100) }
 }
 
+// Linear-style status glyph: empty ring for to-do, a half-filled pie for in
+// progress, a slashed circle for blocked, and a green check when done.
+function StatusCircle({ status, className }: { status: TaskStatus; className?: string }) {
+  if (status === "done") return <CheckCircle2 className={cn("size-4 text-emerald-600 dark:text-emerald-400", className)} />
+  if (status === "blocked") return <Ban className={cn("size-4 text-destructive", className)} />
+
+  const fraction = status === "in_progress" ? 0.5 : 0
+  const color = status === "in_progress" ? "text-blue-500" : "text-muted-foreground"
+  const pieR = 2.5
+  const circ = 2 * Math.PI * pieR
+  return (
+    <svg viewBox="0 0 16 16" fill="none" className={cn("size-4", color, className)} aria-hidden>
+      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5" />
+      {fraction > 0 && (
+        <circle
+          cx="8"
+          cy="8"
+          r={pieR}
+          stroke="currentColor"
+          strokeWidth={pieR * 2}
+          strokeDasharray={`${circ * fraction} ${circ}`}
+          transform="rotate(-90 8 8)"
+        />
+      )}
+    </svg>
+  )
+}
+
+function StatusMenu({
+  status,
+  onChange,
+  children,
+}: {
+  status: TaskStatus
+  onChange: (status: TaskStatus) => void
+  children: React.ReactNode
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-44">
+        {STATUS_ORDER.map((item) => (
+          <DropdownMenuItem key={item} onSelect={() => onChange(item)} className="gap-2">
+            <StatusCircle status={item} />
+            {STATUS_CONFIG[item].label}
+            {item === status && <Check className="ml-auto size-3.5" />}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
 // ============================================
 // MAIN COMPONENT
 // ============================================
 
 export function TasksTab({
-  projectId,
   tasks: initialTasks,
+  projects,
+  initialProjectFilter,
   team,
   onTaskCreate,
   onTaskUpdate,
   onTaskDelete,
 }: TasksTabProps) {
-  // State
   const [tasks, setTasks] = useState<Task[]>(initialTasks)
-  const [viewMode, setViewMode] = useState<ViewMode>("board")
   const [searchQuery, setSearchQuery] = useState("")
-  const [statusFilter, setStatusFilter] = useState<TaskStatus | "all">("all")
   const [priorityFilter, setPriorityFilter] = useState<TaskPriority | "all">("all")
   const [assigneeFilter, setAssigneeFilter] = useState<string | "all">("all")
+  const [projectFilter, setProjectFilter] = useState<string | "all">(initialProjectFilter ?? "all")
   const [tradeFilter, setTradeFilter] = useState<TaskTrade | "all">("all")
-  const [showCompleted, setShowCompleted] = useState(true)
+  const [collapsedStatuses, setCollapsedStatuses] = useState<TaskStatus[]>(["done"])
 
-  // Sheet states
-  const [createSheetOpen, setCreateSheetOpen] = useState(false)
-  const [detailSheetOpen, setDetailSheetOpen] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [detailOpen, setDetailOpen] = useState(false)
   const [selectedTask, setSelectedTask] = useState<Task | null>(null)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [taskToDelete, setTaskToDelete] = useState<Task | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [assignableResources, setAssignableResources] = useState<AssignableResource[]>([])
-  const [loadingResources, setLoadingResources] = useState(false)
-  const [recentAssignees, setRecentAssignees] = useState<string[]>([])
 
-  // Form
-  const createForm = useForm<TaskInput>({
-    resolver: zodResolver(taskInputSchema),
-    defaultValues: {
-      project_id: projectId,
-      title: "",
-      description: "",
-      status: "todo",
-      priority: "normal",
-      location: "",
-      trade: undefined,
-      estimated_hours: undefined,
-      tags: [],
-      checklist: [],
-    },
-  })
+  useEffect(() => {
+    setTasks(initialTasks)
+  }, [initialTasks])
+
+  useEffect(() => {
+    listOrgAssignableResourcesAction()
+      .then((res) => setAssignableResources(res))
+      .catch((err) => console.error("Failed to load assignable resources", err))
+  }, [])
 
   // ============================================
   // COMPUTED VALUES
   // ============================================
 
   const filteredTasks = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase()
     return tasks.filter((task) => {
-      // Search filter
-      if (searchQuery) {
-        const query = searchQuery.toLowerCase()
-        const matchesTitle = task.title.toLowerCase().includes(query)
-        const matchesDesc = task.description?.toLowerCase().includes(query)
-        const matchesLocation = task.location?.toLowerCase().includes(query)
-        if (!matchesTitle && !matchesDesc && !matchesLocation) return false
+      if (query) {
+        const matches =
+          task.title.toLowerCase().includes(query) ||
+          task.description?.toLowerCase().includes(query) ||
+          task.location?.toLowerCase().includes(query)
+        if (!matches) return false
       }
-
-      // Status filter
-      if (statusFilter !== "all" && task.status !== statusFilter) return false
-
-      // Priority filter
       if (priorityFilter !== "all" && task.priority !== priorityFilter) return false
-
-      // Assignee filter
       if (assigneeFilter !== "all") {
         const value = taskAssigneeValue(task)
         if (assigneeFilter === "unassigned" && value !== "unassigned") return false
         if (assigneeFilter !== "unassigned" && assigneeFilter !== value) return false
       }
-
-      // Trade filter
       if (tradeFilter !== "all" && task.trade !== tradeFilter) return false
-
-      // Show completed filter
-      if (!showCompleted && task.status === "done") return false
-
+      if (projectFilter !== "all") {
+        if (projectFilter === NO_PROJECT && task.project_id) return false
+        if (projectFilter !== NO_PROJECT && task.project_id !== projectFilter) return false
+      }
       return true
     })
-  }, [tasks, searchQuery, statusFilter, priorityFilter, assigneeFilter, tradeFilter, showCompleted])
+  }, [tasks, searchQuery, priorityFilter, assigneeFilter, tradeFilter, projectFilter])
 
-  const tasksByStatus = useMemo(() => {
-    const grouped: Record<TaskStatus, Task[]> = {
-      todo: [],
-      in_progress: [],
-      blocked: [],
-      done: [],
-    }
-
-    filteredTasks.forEach((task) => {
-      grouped[task.status].push(task)
-    })
-
-    // Sort each group by priority
-    Object.keys(grouped).forEach((status) => {
-      grouped[status as TaskStatus].sort((a, b) => {
-        const priorityA = PRIORITY_ORDER.indexOf(a.priority)
-        const priorityB = PRIORITY_ORDER.indexOf(b.priority)
-        return priorityA - priorityB
-      })
-    })
-
-    return grouped
+  const grouped = useMemo(() => {
+    return STATUS_SECTION_ORDER.map((status) => ({
+      status,
+      tasks: filteredTasks
+        .filter((task) => task.status === status)
+        .sort((a, b) => PRIORITY_ORDER.indexOf(a.priority) - PRIORITY_ORDER.indexOf(b.priority)),
+    })).filter((group) => group.tasks.length > 0)
   }, [filteredTasks])
 
-  const stats = useMemo(() => {
-    const total = tasks.length
-    const completed = tasks.filter((t) => t.status === "done").length
-    const overdue = tasks.filter((t) => {
-      if (!t.due_date || t.status === "done") return false
-      return isPast(parseISO(t.due_date))
-    }).length
-    const blocked = tasks.filter((t) => t.status === "blocked").length
-    const inProgress = tasks.filter((t) => t.status === "in_progress").length
+  const assignableUsers = useMemo(
+    () => assignableResources.filter((r) => r.type === "user"),
+    [assignableResources],
+  )
+  const assignableContacts = useMemo(
+    () => assignableResources.filter((r) => r.type === "contact"),
+    [assignableResources],
+  )
 
-    return { total, completed, overdue, blocked, inProgress }
-  }, [tasks])
-
-  const activeFiltersCount = useMemo(() => {
+  const activeFilterCount = useMemo(() => {
     let count = 0
-    if (statusFilter !== "all") count++
     if (priorityFilter !== "all") count++
     if (assigneeFilter !== "all") count++
     if (tradeFilter !== "all") count++
-    if (!showCompleted) count++
+    if (projectFilter !== "all") count++
     return count
-  }, [statusFilter, priorityFilter, assigneeFilter, tradeFilter, showCompleted])
+  }, [priorityFilter, assigneeFilter, tradeFilter, projectFilter])
 
-  const groupedResources = useMemo(() => {
-    const recencyMap = new Map<string, number>()
-    recentAssignees.forEach((id, idx) => recencyMap.set(id, recentAssignees.length - idx))
-    const sortByRecency = (a: AssignableResource, b: AssignableResource) =>
-      (recencyMap.get(encodeAssignee(a.type, a.id)) ?? 0) > (recencyMap.get(encodeAssignee(b.type, b.id)) ?? 0)
-        ? -1
-        : 1
+  const projectName = (id: string | null | undefined) =>
+    id ? projects.find((p) => p.id === id)?.name : undefined
 
-    const resources = assignableResources ?? []
-    return {
-      users: [...resources.filter((r) => r.type === "user")].sort(sortByRecency),
-      contacts: [...resources.filter((r) => r.type === "contact")].sort(sortByRecency),
-      companies: [...resources.filter((r) => r.type === "company")].sort(sortByRecency),
-    }
-  }, [assignableResources, recentAssignees])
-
-  const findResource = (value?: string) => {
-    if (!value || value === "unassigned") return null
-    const [type, id] = value.split(":")
-    return assignableResources.find((r) => r.id === id && r.type === type)
-  }
-
-  useEffect(() => {
-    setLoadingResources(true)
-    getProjectAssignableResourcesAction(projectId)
-      .then((res) => setAssignableResources(res))
-      .catch((err) => console.error("Failed to load assignable resources", err))
-      .finally(() => setLoadingResources(false))
-  }, [projectId])
+  const defaultCreateProjectId =
+    projectFilter !== "all" && projectFilter !== NO_PROJECT && projects.some((p) => p.id === projectFilter)
+      ? projectFilter
+      : undefined
 
   // ============================================
   // HANDLERS
   // ============================================
 
-  const handleCreateTask = async (values: TaskInput) => {
+  const handleCreateTask = async (values: {
+    title: string
+    description?: string
+    project_id?: string
+    reminder_at?: string
+  }) => {
     setIsSubmitting(true)
     try {
-      const { assignee_id, ...rest } = values
-      let payload: TaskInput = { ...rest }
-      if (assignee_id && assignee_id !== "unassigned") {
-        const [kind, id] = assignee_id.split(":")
-        payload = { ...rest, assignee_id: id, assignee_kind: kind as any }
-      }
-      const created = await onTaskCreate(payload)
-      if (payload.assignee_id) {
-        setRecentAssignees((prev) => [encodeAssignee(payload.assignee_kind as any, payload.assignee_id as string), ...prev].slice(0, 5))
-      }
+      const created = await onTaskCreate({
+        title: values.title,
+        description: values.description,
+        project_id: values.project_id,
+        reminder_at: values.reminder_at,
+        status: "todo",
+        priority: "normal",
+      })
       setTasks((prev) => [created, ...prev])
-      createForm.reset()
-      setCreateSheetOpen(false)
+      setCreateOpen(false)
       toast.success("Task created", { description: created.title })
     } catch (error) {
       console.error(error)
@@ -444,22 +396,9 @@ export function TasksTab({
 
   const handleUpdateTask = async (taskId: string, updates: Partial<TaskInput>) => {
     try {
-      const { assignee_id, ...rest } = updates
-      let payload: Partial<TaskInput> = { ...rest }
-      if (assignee_id && assignee_id !== "unassigned") {
-        const [kind, id] = assignee_id.split(":")
-        payload = { ...rest, assignee_id: id, assignee_kind: kind as any }
-      } else if (assignee_id === "unassigned") {
-        payload = { ...rest, assignee_id: undefined, assignee_kind: undefined }
-      }
-      const updated = await onTaskUpdate(taskId, payload)
-      if (payload.assignee_id && payload.assignee_kind) {
-        setRecentAssignees((prev) => [encodeAssignee(payload.assignee_kind as any, payload.assignee_id as string), ...prev].slice(0, 5))
-      }
+      const updated = await onTaskUpdate(taskId, updates)
       setTasks((prev) => prev.map((t) => (t.id === taskId ? updated : t)))
-      if (selectedTask?.id === taskId) {
-        setSelectedTask(updated)
-      }
+      if (selectedTask?.id === taskId) setSelectedTask(updated)
       return updated
     } catch (error) {
       console.error(error)
@@ -468,54 +407,34 @@ export function TasksTab({
     }
   }
 
-  const handleQuickStatusChange = async (task: Task, newStatus: TaskStatus, isOptimistic = false) => {
-    if (isOptimistic) {
-      // Optimistic update: update UI immediately
-      setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status: newStatus } : t)))
-      if (selectedTask?.id === task.id) {
-        setSelectedTask({ ...selectedTask, status: newStatus })
-      }
-
-      // Update server in background
-      try {
-        await onTaskUpdate(task.id, { status: newStatus })
-        if (newStatus === "done") {
-          toast.success("Task completed! 🎉", { description: task.title })
-        }
-      } catch (error) {
-        // Revert on failure
-        setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status: task.status } : t)))
-        if (selectedTask?.id === task.id) {
-          setSelectedTask({ ...selectedTask, status: task.status })
-        }
-        toast.error("Failed to update task")
-      }
-    } else {
-      // Normal update: wait for server
-      try {
-        await handleUpdateTask(task.id, { status: newStatus })
-        if (newStatus === "done") {
-          toast.success("Task completed! 🎉", { description: task.title })
-        }
-      } catch {
-        // Error already handled
-      }
+  const handleQuickStatusChange = async (task: Task, newStatus: TaskStatus) => {
+    if (task.status === newStatus) return
+    const previous = task.status
+    setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status: newStatus } : t)))
+    if (selectedTask?.id === task.id) setSelectedTask({ ...selectedTask, status: newStatus })
+    try {
+      await onTaskUpdate(task.id, { status: newStatus })
+      if (newStatus === "done") toast.success("Task completed", { description: task.title })
+    } catch (error) {
+      console.error(error)
+      setTasks((prev) => prev.map((t) => (t.id === task.id ? { ...t, status: previous } : t)))
+      if (selectedTask?.id === task.id) setSelectedTask({ ...selectedTask, status: previous })
+      toast.error("Failed to update task")
     }
   }
 
   const handleDeleteTask = async () => {
     if (!taskToDelete) return
-    
     setIsSubmitting(true)
     try {
       await onTaskDelete(taskToDelete.id)
       setTasks((prev) => prev.filter((t) => t.id !== taskToDelete.id))
       setDeleteDialogOpen(false)
-      setTaskToDelete(null)
       if (selectedTask?.id === taskToDelete.id) {
-        setDetailSheetOpen(false)
+        setDetailOpen(false)
         setSelectedTask(null)
       }
+      setTaskToDelete(null)
       toast.success("Task deleted")
     } catch (error) {
       console.error(error)
@@ -527,238 +446,346 @@ export function TasksTab({
 
   const openTaskDetail = (task: Task) => {
     setSelectedTask(task)
-    setDetailSheetOpen(true)
+    setDetailOpen(true)
   }
 
   const clearFilters = () => {
-    setStatusFilter("all")
     setPriorityFilter("all")
     setAssigneeFilter("all")
     setTradeFilter("all")
-    setShowCompleted(true)
-    setSearchQuery("")
+    setProjectFilter("all")
   }
+
+  const toggleStatusCollapsed = (status: TaskStatus) => {
+    setCollapsedStatuses((current) =>
+      current.includes(status) ? current.filter((item) => item !== status) : [...current, status],
+    )
+  }
+
+  const hasFiltersActive = activeFilterCount > 0 || searchQuery.trim().length > 0
 
   // ============================================
   // RENDER
   // ============================================
 
   return (
-    <div className="flex flex-col h-full space-y-4">
-      {/* Unified Toolbar */}
-      <div className="flex items-center gap-2 flex-wrap">
-        {/* Search */}
-        <div className="relative w-[200px]">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Search tasks..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-9 h-9"
-          />
-        </div>
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground">
+      {/* Toolbar */}
+      <div className="shrink-0 border-b bg-background/95 px-3 py-2 backdrop-blur">
+        <div className="flex items-center gap-2">
+          <div className="relative w-[220px]">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search tasks"
+              className="h-8 pl-8 text-sm"
+            />
+          </div>
 
-        {/* Status Filter */}
-        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as TaskStatus | "all")}>
-          <SelectTrigger className="h-9 w-[120px]">
-            <SelectValue placeholder="Status" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Status</SelectItem>
-            {STATUS_ORDER.map((status) => (
-              <SelectItem key={status} value={status}>
-                <div className="flex items-center gap-2">
-                  <span className={STATUS_CONFIG[status].color}>{STATUS_CONFIG[status].icon}</span>
-                  {STATUS_CONFIG[status].label}
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="sm" className="h-8">
+                <SlidersHorizontal className="size-4" />
+                Filter
+                {activeFilterCount > 0 && (
+                  <Badge className="ml-1 h-4 min-w-4 justify-center rounded-none px-1 text-[10px] tabular-nums">
+                    {activeFilterCount}
+                  </Badge>
+                )}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-64 space-y-3 p-3">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Filters</p>
+                {activeFilterCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={clearFilters}
+                    className="text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    Clear all
+                  </button>
+                )}
+              </div>
+
+              <div className="space-y-1.5">
+                <p className="text-xs text-muted-foreground">Priority</p>
+                <Select value={priorityFilter} onValueChange={(value) => setPriorityFilter(value as TaskPriority | "all")}>
+                  <SelectTrigger size="sm" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All priorities</SelectItem>
+                    {PRIORITY_ORDER.map((priority) => (
+                      <SelectItem key={priority} value={priority}>
+                        <span className={cn("size-2 rounded-none", PRIORITY_CONFIG[priority].dotColor)} />
+                        {PRIORITY_CONFIG[priority].label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <p className="text-xs text-muted-foreground">Assignee</p>
+                <Select value={assigneeFilter} onValueChange={setAssigneeFilter}>
+                  <SelectTrigger size="sm" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All assignees</SelectItem>
+                    <SelectItem value="unassigned">Unassigned</SelectItem>
+                    {assignableUsers.length > 0 && (
+                      <SelectGroup>
+                        <SelectLabel>Team</SelectLabel>
+                        {assignableUsers.map((member) => (
+                          <SelectItem key={member.id} value={encodeAssignee("user", member.id)}>
+                            {member.name}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    )}
+                    {assignableContacts.length > 0 && (
+                      <SelectGroup>
+                        <SelectLabel>Contacts</SelectLabel>
+                        {assignableContacts.map((contact) => (
+                          <SelectItem key={contact.id} value={encodeAssignee("contact", contact.id)}>
+                            {contact.name}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <p className="text-xs text-muted-foreground">Trade</p>
+                <Select value={tradeFilter} onValueChange={(value) => setTradeFilter(value as TaskTrade | "all")}>
+                  <SelectTrigger size="sm" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All trades</SelectItem>
+                    {Object.entries(TRADE_CONFIG).map(([trade, config]) => (
+                      <SelectItem key={trade} value={trade}>
+                        <span className={cn("size-2 rounded-none", config.color)} />
+                        {config.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {projects.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="text-xs text-muted-foreground">Project</p>
+                  <Select value={projectFilter} onValueChange={setProjectFilter}>
+                    <SelectTrigger size="sm" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All projects</SelectItem>
+                      <SelectItem value={NO_PROJECT}>Personal (no project)</SelectItem>
+                      <SelectGroup>
+                        <SelectLabel>Projects</SelectLabel>
+                        {projects.map((project) => (
+                          <SelectItem key={project.id} value={project.id}>
+                            {project.name}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
                 </div>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+              )}
+            </PopoverContent>
+          </Popover>
 
-        {/* Priority Filter */}
-        <Select value={priorityFilter} onValueChange={(v) => setPriorityFilter(v as TaskPriority | "all")}>
-          <SelectTrigger className="h-9 w-[120px]">
-            <SelectValue placeholder="Priority" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Priority</SelectItem>
-            {PRIORITY_ORDER.map((priority) => (
-              <SelectItem key={priority} value={priority}>
-                <div className="flex items-center gap-2">
-                  <span className={cn("h-2 w-2 rounded-full", PRIORITY_CONFIG[priority].dotColor)} />
-                  {PRIORITY_CONFIG[priority].label}
-                </div>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          <div className="flex-1" />
 
-        {/* Assignee Filter */}
-        <Select value={assigneeFilter} onValueChange={setAssigneeFilter}>
-          <SelectTrigger className="h-9 w-[140px]">
-            <SelectValue placeholder="Assignee" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Assignees</SelectItem>
-            <SelectItem value="unassigned">Unassigned</SelectItem>
-            {groupedResources.users.length > 0 && (
-              <SelectGroup>
-                <SelectLabel>Team</SelectLabel>
-                {groupedResources.users.map((member) => (
-                  <SelectItem key={member.id} value={encodeAssignee("user", member.id)}>
-                    <div className="flex items-center gap-2">
-                      <Avatar className="h-5 w-5">
-                        <AvatarImage src={member.avatar_url} />
-                        <AvatarFallback className="text-[10px]">{getInitials(member.name)}</AvatarFallback>
-                      </Avatar>
-                      <span className="truncate">{member.name}</span>
-                    </div>
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            )}
-            {groupedResources.contacts.length > 0 && (
-              <SelectGroup>
-                <SelectLabel>Contacts</SelectLabel>
-                {groupedResources.contacts.map((contact) => (
-                  <SelectItem key={contact.id} value={encodeAssignee("contact", contact.id)}>
-                    <div className="flex items-center gap-2">
-                      <Avatar className="h-5 w-5">
-                        <AvatarFallback className="text-[10px]">{getInitials(contact.name)}</AvatarFallback>
-                      </Avatar>
-                      <span className="truncate">{contact.name}</span>
-                    </div>
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            )}
-            {groupedResources.companies.length > 0 && (
-              <SelectGroup>
-                <SelectLabel>Companies</SelectLabel>
-                {groupedResources.companies.map((company) => (
-                  <SelectItem key={company.id} value={encodeAssignee("company", company.id)}>
-                    <div className="flex items-center gap-2">
-                      <Avatar className="h-5 w-5">
-                        <AvatarFallback className="text-[10px]">Co</AvatarFallback>
-                      </Avatar>
-                      <span className="truncate">{company.name}</span>
-                    </div>
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            )}
-          </SelectContent>
-        </Select>
-
-        {/* Trade Filter */}
-        <Select value={tradeFilter} onValueChange={(v) => setTradeFilter(v as TaskTrade | "all")}>
-          <SelectTrigger className="h-9 w-[120px]">
-            <SelectValue placeholder="Trade" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Trades</SelectItem>
-            {Object.entries(TRADE_CONFIG).map(([trade, config]) => (
-              <SelectItem key={trade} value={trade}>
-                <div className="flex items-center gap-2">
-                  <span className={cn("h-2 w-2 rounded-full", config.color)} />
-                  {config.label}
-                </div>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        {/* Show Completed Toggle */}
-        <Button
-          variant={showCompleted ? "secondary" : "outline"}
-          size="sm"
-          className="h-9"
-          onClick={() => setShowCompleted(!showCompleted)}
-        >
-          <CheckCircle2 className="mr-1.5 h-4 w-4" />
-          Done
-        </Button>
-
-        {/* Clear Filters */}
-        {activeFiltersCount > 0 && (
-          <Button variant="ghost" size="sm" className="h-9" onClick={clearFilters}>
-            <X className="mr-1.5 h-4 w-4" />
-            Clear ({activeFiltersCount})
-          </Button>
-        )}
-
-        {/* Spacer */}
-        <div className="flex-1" />
-
-        {/* View Toggle */}
-        <div className="flex items-center rounded-lg border p-0.5">
-          <Button
-            variant={viewMode === "board" ? "secondary" : "ghost"}
-            size="sm"
-            className="h-7 px-2.5"
-            onClick={() => setViewMode("board")}
-          >
-            <LayoutGrid className="h-4 w-4" />
-          </Button>
-          <Button
-            variant={viewMode === "list" ? "secondary" : "ghost"}
-            size="sm"
-            className="h-7 px-2.5"
-            onClick={() => setViewMode("list")}
-          >
-            <List className="h-4 w-4" />
+          <Button size="sm" className="h-8" onClick={() => setCreateOpen(true)}>
+            <Plus className="size-4" />
+            Add task
           </Button>
         </div>
-
-        {/* Add Task */}
-        <Button onClick={() => setCreateSheetOpen(true)} size="sm" className="h-9">
-          <Plus className="mr-1.5 h-4 w-4" />
-          Add Task
-        </Button>
       </div>
 
-      {/* Main Content */}
-      <div className="flex-1 min-h-0 overflow-hidden">
-        {viewMode === "board" ? (
-          <BoardView
-            tasksByStatus={tasksByStatus}
-            onTaskClick={openTaskDetail}
-            onStatusChange={handleQuickStatusChange}
-            onAddTask={() => setCreateSheetOpen(true)}
-          />
+      {/* Grouped list */}
+      <div className="min-h-0 flex-1 overflow-auto">
+        {grouped.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center px-6 text-center">
+            <div className="flex size-12 items-center justify-center rounded-none bg-muted">
+              <CheckCircle2 className="size-6 text-muted-foreground" />
+            </div>
+            <p className="mt-4 text-sm font-medium">
+              {hasFiltersActive ? "No tasks match these filters" : "No tasks yet"}
+            </p>
+            <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+              {hasFiltersActive ? (
+                <button type="button" onClick={clearFilters} className="underline underline-offset-2 hover:text-foreground">
+                  Clear filters
+                </button>
+              ) : (
+                "Add your first task to start tracking your work across projects."
+              )}
+            </p>
+          </div>
         ) : (
-          <ListView
-            tasks={filteredTasks}
-            onTaskClick={openTaskDetail}
-            onStatusChange={handleQuickStatusChange}
-            onDeleteClick={(task) => {
-              setTaskToDelete(task)
-              setDeleteDialogOpen(true)
-            }}
-          />
+          grouped.map((group) => {
+            const isCollapsed = collapsedStatuses.includes(group.status)
+            return (
+              <section key={group.status} className="border-b">
+                <button
+                  type="button"
+                  onClick={() => toggleStatusCollapsed(group.status)}
+                  className="sticky top-0 z-10 flex h-10 w-full items-center justify-between border-b bg-muted/40 px-4 text-left backdrop-blur transition-colors hover:bg-muted/60"
+                  aria-expanded={!isCollapsed}
+                >
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <ChevronDown className={cn("size-4 text-muted-foreground transition-transform", isCollapsed && "-rotate-90")} />
+                    <StatusCircle status={group.status} />
+                    {STATUS_CONFIG[group.status].label}
+                    <span className="text-muted-foreground">{group.tasks.length}</span>
+                  </div>
+                </button>
+                {!isCollapsed && (
+                  <div>
+                    {group.tasks.map((task) => {
+                      // Prefer the self-reminder date; fall back to a legacy due date.
+                      const dateStr = task.reminder_at ?? task.due_date
+                      const dateInfo = formatDueDate(dateStr ?? undefined)
+                      const isReminder = Boolean(task.reminder_at)
+                      const project = task.project_name ?? projectName(task.project_id)
+                      return (
+                        <div
+                          key={task.id}
+                          className={cn(
+                            "group flex min-h-12 w-full items-center gap-3 border-b px-4 text-sm transition-colors last:border-b-0 hover:bg-accent/45",
+                            selectedTask?.id === task.id && detailOpen && "bg-accent/70",
+                          )}
+                        >
+                          <StatusMenu status={task.status} onChange={(value) => handleQuickStatusChange(task, value)}>
+                            <button
+                              type="button"
+                              onClick={(event) => event.stopPropagation()}
+                              className="flex size-6 shrink-0 items-center justify-center rounded-none hover:bg-accent"
+                              aria-label={`Status: ${STATUS_CONFIG[task.status].label}`}
+                            >
+                              <StatusCircle status={task.status} />
+                            </button>
+                          </StatusMenu>
+
+                          <button
+                            type="button"
+                            onClick={() => openTaskDetail(task)}
+                            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                          >
+                            <span className={cn("truncate font-medium", task.status === "done" && "text-muted-foreground line-through")}>
+                              {task.title}
+                            </span>
+                            <span className={cn("flex shrink-0 items-center gap-1.5 text-xs font-medium", PRIORITY_CONFIG[task.priority].color)}>
+                              <span className={cn("size-2 shrink-0 rounded-none", PRIORITY_CONFIG[task.priority].dotColor)} />
+                              {PRIORITY_CONFIG[task.priority].label}
+                            </span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => openTaskDetail(task)}
+                            className="flex shrink-0 items-center gap-3 text-xs text-muted-foreground"
+                          >
+                            <span className="hidden max-w-36 items-center gap-1 truncate md:flex">
+                              <MapPin className="size-3 shrink-0" />
+                              {project ?? "Personal"}
+                            </span>
+                            {task.assignee || task.assignee_contact || task.assignee_company ? (
+                              <Avatar className="size-5 rounded-none">
+                                <AvatarImage src={task.assignee?.avatar_url} />
+                                <AvatarFallback className="rounded-none text-[9px]">
+                                  {getInitials(taskAssigneeName(task) ?? "A")}
+                                </AvatarFallback>
+                              </Avatar>
+                            ) : (
+                              <User className="size-4" />
+                            )}
+                            {dateStr && (
+                              <span
+                                className={cn(
+                                  "flex items-center gap-1 tabular-nums",
+                                  dateInfo.isOverdue
+                                    ? "text-destructive"
+                                    : dateInfo.isPriority
+                                      ? "text-amber-600 dark:text-amber-400"
+                                      : "text-muted-foreground",
+                                )}
+                                title={isReminder ? "Reminder" : "Due date"}
+                              >
+                                {isReminder ? <Bell className="size-3 shrink-0" /> : <CalendarDays className="size-3 shrink-0" />}
+                                {dateInfo.label}
+                              </span>
+                            )}
+                          </button>
+
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <button
+                                type="button"
+                                onClick={(event) => event.stopPropagation()}
+                                className="flex size-6 shrink-0 items-center justify-center rounded-none text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 data-[state=open]:opacity-100"
+                                aria-label="Task actions"
+                              >
+                                <MoreHorizontal className="size-4" />
+                              </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-40">
+                              <DropdownMenuItem onSelect={() => openTaskDetail(task)}>
+                                <Edit className="size-4" />
+                                Open
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                variant="destructive"
+                                onSelect={() => {
+                                  setTaskToDelete(task)
+                                  setDeleteDialogOpen(true)
+                                }}
+                              >
+                                <Trash2 className="size-4" />
+                                Delete
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </section>
+            )
+          })
         )}
       </div>
 
-      {/* Create Task Sheet */}
-      <CreateTaskSheet
-        open={createSheetOpen}
-        onOpenChange={setCreateSheetOpen}
-        form={createForm}
-        team={team}
-        onSubmit={handleCreateTask}
+      {/* Create Task Dialog */}
+      <CreateTaskDialog
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        projects={projects}
+        defaultProjectId={defaultCreateProjectId}
+        onCreate={handleCreateTask}
         isSubmitting={isSubmitting}
-        groupedResources={groupedResources}
-        loadingResources={loadingResources}
       />
 
       {/* Task Detail Sheet */}
       {selectedTask && (
         <TaskDetailSheet
-          open={detailSheetOpen}
-          onOpenChange={setDetailSheetOpen}
+          open={detailOpen}
+          onOpenChange={setDetailOpen}
           task={selectedTask}
           team={team}
+          projects={projects}
           onUpdate={handleUpdateTask}
           onDelete={() => {
             setTaskToDelete(selectedTask)
@@ -771,9 +798,9 @@ export function TasksTab({
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Task</AlertDialogTitle>
+            <AlertDialogTitle>Delete task</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete "{taskToDelete?.title}"? This action cannot be undone.
+              Are you sure you want to delete &ldquo;{taskToDelete?.title}&rdquo;? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -792,1004 +819,199 @@ export function TasksTab({
 }
 
 // ============================================
-// BOARD VIEW COMPONENT
+// CREATE TASK DIALOG
 // ============================================
 
-interface BoardViewProps {
-  tasksByStatus: Record<TaskStatus, Task[]>
-  onTaskClick: (task: Task) => void
-  onStatusChange: (task: Task, status: TaskStatus, isOptimistic?: boolean) => void
-  onAddTask: () => void
-}
-
-function BoardView({ tasksByStatus, onTaskClick, onStatusChange, onAddTask }: BoardViewProps) {
-  const [activeTask, setActiveTask] = useState<Task | null>(null)
-
-  const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: {
-        distance: 8,
-      },
-    }),
-    useSensor(KeyboardSensor)
-  )
-
-  const handleDragStart = (event: DragStartEvent) => {
-    const { active } = event
-    const taskId = active.id as string
-    // Find the task across all columns
-    for (const status of STATUS_ORDER) {
-      const task = tasksByStatus[status].find(t => t.id === taskId)
-      if (task) {
-        setActiveTask(task)
-        break
-      }
-    }
-  }
-
-  const handleDragEnd = (event: DragEndEvent) => {
-    const { active, over } = event
-    setActiveTask(null)
-
-    if (!over) return
-
-    const activeId = active.id as string
-    const overId = over.id as string
-
-    // Check if dropped on a column
-    if (STATUS_ORDER.includes(overId as TaskStatus)) {
-      const newStatus = overId as TaskStatus
-      // Find the task
-      for (const status of STATUS_ORDER) {
-        const task = tasksByStatus[status].find(t => t.id === activeId)
-        if (task && task.status !== newStatus) {
-          onStatusChange(task, newStatus, true) // Use optimistic update
-          break
-        }
-      }
-    } else {
-      // Dropped on another task - get that task's status
-      for (const status of STATUS_ORDER) {
-        const targetTask = tasksByStatus[status].find(t => t.id === overId)
-        if (targetTask) {
-          const sourceTask = Object.values(tasksByStatus).flat().find(t => t.id === activeId)
-          if (sourceTask && sourceTask.status !== status) {
-            onStatusChange(sourceTask, status, true) // Use optimistic update
-          }
-          break
-        }
-      }
-    }
-  }
-
-  // Get all task IDs for sortable context
-  const allTaskIds = useMemo(() => {
-    return STATUS_ORDER.flatMap(status => tasksByStatus[status].map(t => t.id))
-  }, [tasksByStatus])
-
-  return (
-    <DndContext
-      sensors={sensors}
-      collisionDetection={closestCenter}
-      onDragStart={handleDragStart}
-      onDragEnd={handleDragEnd}
-    >
-      <div className="grid h-full grid-cols-4 overflow-x-auto">
-        {STATUS_ORDER.map((status, index) => (
-          <DroppableColumn
-            key={status}
-            status={status}
-            tasks={tasksByStatus[status]}
-            onTaskClick={onTaskClick}
-            onStatusChange={onStatusChange}
-            onAddTask={onAddTask}
-            isFirst={index === 0}
-            isLast={index === STATUS_ORDER.length - 1}
-          />
-        ))}
-      </div>
-
-      <DragOverlay>
-        {activeTask ? (
-          <div className="opacity-90 rotate-2">
-            <TaskCard
-              task={activeTask}
-              onClick={() => {}}
-              onStatusChange={() => {}}
-              isDragging
-            />
-          </div>
-        ) : null}
-      </DragOverlay>
-    </DndContext>
-  )
-}
-
-// ============================================
-// DROPPABLE COLUMN COMPONENT
-// ============================================
-
-interface DroppableColumnProps {
-  status: TaskStatus
-  tasks: Task[]
-  onTaskClick: (task: Task) => void
-  onStatusChange: (task: Task, status: TaskStatus, isOptimistic?: boolean) => void
-  onAddTask: () => void
-  isFirst: boolean
-  isLast: boolean
-}
-
-function DroppableColumn({ status, tasks, onTaskClick, onStatusChange, onAddTask, isFirst, isLast }: DroppableColumnProps) {
-  const taskIds = useMemo(() => (tasks ?? []).map(t => t.id), [tasks])
-
-  const { setNodeRef, isOver } = useDroppable({
-    id: status,
-  })
-
-  return (
-    <div
-      className={cn(
-        "flex flex-col min-w-[260px] h-full",
-        !isFirst && "border-l border-border"
-      )}
-    >
-      {/* Column Header */}
-      <div className="flex items-center justify-between py-3 px-3 border-b border-border">
-        <div className="flex items-center gap-2">
-          <span className={cn("flex items-center gap-1.5", STATUS_CONFIG[status].color)}>
-            {STATUS_CONFIG[status].icon}
-            <span className="font-medium text-sm text-foreground">
-              {STATUS_CONFIG[status].label}
-            </span>
-          </span>
-          <Badge variant="secondary" className="text-xs h-5 px-1.5 min-w-[24px] justify-center">
-            {tasks.length}
-          </Badge>
-        </div>
-      </div>
-
-      {/* Cards Container */}
-      <SortableContext items={taskIds} strategy={verticalListSortingStrategy} id={status}>
-        <div
-          ref={setNodeRef}
-          className={cn(
-            "flex-1 overflow-y-auto",
-            isOver && "bg-muted/50"
-          )}
-        >
-          <div className="p-2 space-y-2 min-h-[100px]" data-status={status}>
-            {(tasks ?? []).map((task) => (
-              <DraggableTaskCard
-                key={task.id}
-                task={task}
-                onClick={() => onTaskClick(task)}
-                onStatusChange={onStatusChange}
-              />
-            ))}
-
-            {tasks.length === 0 && (
-              <div className="flex flex-col items-center justify-center py-8 text-center">
-                <div className={cn("flex h-10 w-10 items-center justify-center rounded-full mb-2", STATUS_CONFIG[status].bgColor)}>
-                  <span className={STATUS_CONFIG[status].color}>
-                    {STATUS_CONFIG[status].icon}
-                  </span>
-                </div>
-                <p className="text-xs text-muted-foreground">No tasks</p>
-              </div>
-            )}
-
-            {/* Add Task Button */}
-            <Button
-              variant="ghost"
-              className="w-full justify-start text-muted-foreground h-8 mt-1"
-              onClick={onAddTask}
-            >
-              <Plus className="mr-2 h-4 w-4" />
-              Add task
-            </Button>
-          </div>
-        </div>
-      </SortableContext>
-    </div>
-  )
-}
-
-// ============================================
-// DRAGGABLE TASK CARD COMPONENT
-// ============================================
-
-interface DraggableTaskCardProps {
-  task: Task
-  onClick: () => void
-  onStatusChange: (task: Task, status: TaskStatus, isOptimistic?: boolean) => void
-}
-
-function DraggableTaskCard({ task, onClick, onStatusChange }: DraggableTaskCardProps) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: task.id })
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-  }
-
-  return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
-      <TaskCard
-        task={task}
-        onClick={onClick}
-        onStatusChange={onStatusChange}
-        isDragging={isDragging}
-      />
-    </div>
-  )
-}
-
-// ============================================
-// TASK CARD COMPONENT
-// ============================================
-
-interface TaskCardProps {
-  task: Task
-  onClick: () => void
-  onStatusChange: (task: Task, status: TaskStatus, isOptimistic?: boolean) => void
-  isDragging?: boolean
-}
-
-function TaskCard({ task, onClick, onStatusChange, isDragging }: TaskCardProps) {
-  const dueInfo = formatDueDate(task.due_date)
-
-  return (
-    <Card
-      className={cn(
-        "group cursor-pointer transition-all hover:border-primary/50 hover:shadow-sm",
-        isDragging && "shadow-lg border-primary/50 bg-background"
-      )}
-      onClick={onClick}
-    >
-      <CardContent className="p-2">
-        {/* Single Row: Priority + Title + Due Date + Assignee + Menu */}
-        <div className="flex items-center gap-2">
-          {/* Priority Dot */}
-          <span className={cn("h-2 w-2 rounded-full flex-shrink-0", PRIORITY_CONFIG[task.priority].dotColor)} />
-
-          {/* Task Title */}
-          <p
-            className={cn(
-              "text-sm font-medium leading-tight flex-1 min-w-0 truncate",
-              task.status === "done" && "line-through text-muted-foreground"
-            )}
-          >
-            {task.title}
-          </p>
-
-          {/* Due Date */}
-          {task.due_date && (
-            <span
-              className={cn(
-                "text-xs flex items-center gap-1 flex-shrink-0",
-                dueInfo.isOverdue ? "text-destructive" : dueInfo.isPriority ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"
-              )}
-            >
-              <CalendarDays className="h-3.5 w-3.5" />
-              {dueInfo.label}
-            </span>
-          )}
-
-          {/* Assignee Avatar */}
-          {task.assignee || task.assignee_contact || task.assignee_company ? (
-            <Avatar className="h-5 w-5 flex-shrink-0">
-              <AvatarImage src={task.assignee?.avatar_url} alt={task.assignee?.full_name} />
-              <AvatarFallback className="text-[9px]">
-                {getInitials(taskAssigneeName(task) ?? "A")}
-              </AvatarFallback>
-            </Avatar>
-          ) : null}
-
-          {/* More Menu */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-              <Button variant="ghost" size="icon" className="h-5 w-5 -mr-1 flex-shrink-0 opacity-0 group-hover:opacity-100 hover:opacity-100 focus:opacity-100">
-                <MoreHorizontal className="h-3.5 w-3.5" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <Flag className="mr-2 h-4 w-4" />
-                  Change Status
-                </DropdownMenuSubTrigger>
-                <DropdownMenuPortal>
-                  <DropdownMenuSubContent>
-                    {STATUS_ORDER.map((status) => (
-                      <DropdownMenuItem
-                        key={status}
-                        onClick={() => onStatusChange(task, status)}
-                        disabled={task.status === status}
-                      >
-                        <span className={cn("mr-2", STATUS_CONFIG[status].color)}>
-                          {STATUS_CONFIG[status].icon}
-                        </span>
-                        {STATUS_CONFIG[status].label}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuSubContent>
-                </DropdownMenuPortal>
-              </DropdownMenuSub>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-// ============================================
-// LIST VIEW COMPONENT
-// ============================================
-
-interface ListViewProps {
-  tasks: Task[]
-  onTaskClick: (task: Task) => void
-  onStatusChange: (task: Task, status: TaskStatus, isOptimistic?: boolean) => void
-  onDeleteClick: (task: Task) => void
-}
-
-function ListView({ tasks, onTaskClick, onStatusChange, onDeleteClick }: ListViewProps) {
-  const sortedTasks = useMemo(() => {
-    return [...(tasks ?? [])].sort((a, b) => {
-      // First sort by status
-      const statusA = STATUS_ORDER.indexOf(a.status)
-      const statusB = STATUS_ORDER.indexOf(b.status)
-      if (statusA !== statusB) return statusA - statusB
-
-      // Then by priority
-      const priorityA = PRIORITY_ORDER.indexOf(a.priority)
-      const priorityB = PRIORITY_ORDER.indexOf(b.priority)
-      if (priorityA !== priorityB) return priorityA - priorityB
-
-      // Then by due date
-      if (a.due_date && b.due_date) {
-        return parseISO(a.due_date).getTime() - parseISO(b.due_date).getTime()
-      }
-      if (a.due_date) return -1
-      if (b.due_date) return 1
-
-      return 0
-    })
-  }, [tasks])
-
-  return (
-    <div className="rounded-lg border shadow-sm overflow-hidden h-full bg-card">
-      <ScrollArea className="h-full">
-        <Table>
-          <TableHeader className="sticky top-0 bg-muted/40 backdrop-blur z-10">
-            <TableRow className="divide-x">
-              <TableHead className="w-[52px] px-4 py-3" />
-              <TableHead className="min-w-[260px] px-4 py-3 text-left">Task</TableHead>
-              <TableHead className="w-[140px] px-4 py-3 text-left">Status</TableHead>
-              <TableHead className="w-[120px] px-4 py-3 text-left">Priority</TableHead>
-              <TableHead className="w-[140px] px-4 py-3 text-left">Trade</TableHead>
-              <TableHead className="w-[140px] px-4 py-3 text-left">Due Date</TableHead>
-              <TableHead className="w-[200px] px-4 py-3 text-left">Assignee</TableHead>
-              <TableHead className="w-[150px] px-4 py-3 text-left">Progress</TableHead>
-              <TableHead className="w-[64px] px-2 py-3" />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {sortedTasks.length > 0 ? (
-              sortedTasks.map((task) => {
-                const dueInfo = formatDueDate(task.due_date)
-                const checklistProgress = getChecklistProgress(task.checklist)
-
-                return (
-                  <TableRow
-                    key={task.id}
-                    className="cursor-pointer hover:bg-muted/40 transition-colors divide-x"
-                    onClick={() => onTaskClick(task)}
-                  >
-                    <TableCell className="px-4 py-3 align-middle" onClick={(e) => e.stopPropagation()}>
-                      <Checkbox
-                        checked={task.status === "done"}
-                        onCheckedChange={(checked) =>
-                          onStatusChange(task, checked ? "done" : "todo")
-                        }
-                      />
-                    </TableCell>
-                    <TableCell className="px-4 py-3 align-middle">
-                      <div className="space-y-0.5">
-                        <p
-                          className={cn(
-                            "font-medium",
-                            task.status === "done" && "line-through text-muted-foreground"
-                          )}
-                        >
-                          {task.title}
-                        </p>
-                        {task.location && (
-                          <p className="text-xs text-muted-foreground flex items-center gap-1">
-                            <MapPin className="h-3 w-3" />
-                            {task.location}
-                          </p>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell className="px-4 py-3 align-middle">
-                      <Badge
-                        variant="secondary"
-                        className={cn("text-xs", STATUS_CONFIG[task.status].bgColor, STATUS_CONFIG[task.status].color)}
-                      >
-                        {STATUS_CONFIG[task.status].label}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="px-4 py-3 align-middle">
-                      <div className="flex items-center gap-1.5">
-                        <span className={cn("h-2 w-2 rounded-full", PRIORITY_CONFIG[task.priority].dotColor)} />
-                        <span className="text-sm">{PRIORITY_CONFIG[task.priority].label}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell className="px-4 py-3 align-middle">
-                      {task.trade ? (
-                        <Badge variant="outline" className="text-xs">
-                          {TRADE_CONFIG[task.trade as TaskTrade]?.label ?? task.trade}
-                        </Badge>
-                      ) : (
-                        <span className="text-muted-foreground text-sm">—</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="px-4 py-3 align-middle">
-                      {task.due_date ? (
-                        <span
-                          className={cn(
-                            "text-sm",
-                            dueInfo.isOverdue && "text-destructive",
-                            dueInfo.isPriority && !dueInfo.isOverdue && "text-amber-600 dark:text-amber-400"
-                          )}
-                        >
-                          {dueInfo.label}
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground text-sm">—</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="px-4 py-3 align-middle">
-                      {task.assignee || task.assignee_contact || task.assignee_company ? (
-                        <div className="flex items-center gap-2 min-w-0">
-                          <Avatar className="h-6 w-6 flex-shrink-0">
-                            <AvatarImage src={task.assignee?.avatar_url} />
-                            <AvatarFallback className="text-[10px]">
-                              {getInitials(taskAssigneeName(task) ?? "A")}
-                            </AvatarFallback>
-                          </Avatar>
-                          <span className="text-sm truncate">{taskAssigneeName(task)}</span>
-                        </div>
-                      ) : (
-                        <span className="text-muted-foreground text-sm">Unassigned</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="px-4 py-3 align-middle">
-                      {checklistProgress.total > 0 ? (
-                        <div className="flex items-center gap-2">
-                          <Progress value={checklistProgress.percent} className="w-16 h-1.5" />
-                          <span className="text-xs text-muted-foreground">
-                            {checklistProgress.completed}/{checklistProgress.total}
-                          </span>
-                        </div>
-                      ) : (
-                        <span className="text-muted-foreground text-sm">—</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="px-2 py-3 align-middle" onClick={(e) => e.stopPropagation()}>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8">
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => onTaskClick(task)}>
-                            <Edit className="mr-2 h-4 w-4" />
-                            Edit
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            className="text-destructive"
-                            onClick={() => onDeleteClick(task)}
-                          >
-                            <Trash2 className="mr-2 h-4 w-4" />
-                            Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </TableCell>
-                  </TableRow>
-                )
-              })
-            ) : (
-              <TableRow>
-                <TableCell colSpan={9} className="px-6 py-10">
-                  <div className="flex flex-col items-center justify-center py-12 text-center">
-                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted mb-4">
-                      <CheckCircle2 className="h-6 w-6 text-muted-foreground" />
-                    </div>
-                    <p className="font-medium">No tasks found</p>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      Try adjusting your filters or create a new task.
-                    </p>
-                  </div>
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-      </ScrollArea>
-    </div>
-  )
-}
-
-// ============================================
-// CREATE TASK SHEET
-// ============================================
-
-interface CreateTaskSheetProps {
+interface CreateTaskDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  form: ReturnType<typeof useForm<TaskInput>>
-  team: TasksTabProps["team"]
-  onSubmit: (values: TaskInput) => void
+  projects: TaskProjectOption[]
+  defaultProjectId?: string
+  onCreate: (values: { title: string; description?: string; project_id?: string; reminder_at?: string }) => void
   isSubmitting: boolean
-  groupedResources: {
-    users: AssignableResource[]
-    contacts: AssignableResource[]
-    companies: AssignableResource[]
-  }
-  loadingResources: boolean
 }
 
-function CreateTaskSheet({
-  open,
-  onOpenChange,
-  form,
-  team,
-  onSubmit,
-  isSubmitting,
-  groupedResources,
-  loadingResources,
-}: CreateTaskSheetProps) {
-  const [newChecklistItem, setNewChecklistItem] = useState("")
+function CreateTaskDialog({ open, onOpenChange, projects, defaultProjectId, onCreate, isSubmitting }: CreateTaskDialogProps) {
+  const [title, setTitle] = useState("")
+  const [description, setDescription] = useState("")
+  const [projectId, setProjectId] = useState<string>(defaultProjectId ?? NO_PROJECT)
+  const [reminderAt, setReminderAt] = useState<Date | undefined>()
 
-  const handleAddChecklistItem = () => {
-    if (!newChecklistItem.trim()) return
-    const current = form.getValues("checklist") ?? []
-    form.setValue("checklist", [
-      ...current,
-      { id: crypto.randomUUID(), text: newChecklistItem.trim(), completed: false },
-    ])
-    setNewChecklistItem("")
-  }
+  // Reset the composer each time it opens so it stays a fast capture surface.
+  useEffect(() => {
+    if (open) {
+      setTitle("")
+      setDescription("")
+      setProjectId(defaultProjectId ?? NO_PROJECT)
+      setReminderAt(undefined)
+    }
+  }, [open, defaultProjectId])
 
-  const handleRemoveChecklistItem = (id: string) => {
-    const current = form.getValues("checklist") ?? []
-    form.setValue(
-      "checklist",
-      current.filter((item) => item.id !== id)
-    )
+  const submit = () => {
+    if (!title.trim() || isSubmitting) return
+    onCreate({
+      title: title.trim(),
+      description: description.trim() || undefined,
+      project_id: projectId === NO_PROJECT ? undefined : projectId,
+      reminder_at: reminderAt ? reminderAt.toISOString() : undefined,
+    })
   }
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        side="right"
-        mobileFullscreen
-        className="sm:max-w-lg sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 fast-sheet-animation"
-        style={
-          {
-            animationDuration: "150ms",
-            transitionDuration: "150ms",
-          } satisfies CSSProperties
-        }
-      >
-        <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">
-          <SheetTitle className="flex items-center gap-2">
-            <SquareCheck className="h-5 w-5" />
-            New Task
-          </SheetTitle>
-          <SheetDescription>
-            Use trades, dates, and assignment to keep tasks aligned with the schedule.
-          </SheetDescription>
-        </SheetHeader>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent showCloseButton={false} className="overflow-hidden p-0 sm:max-w-2xl">
+        <form
+          onSubmit={(event) => {
+            event.preventDefault()
+            submit()
+          }}
+          onKeyDown={(event) => {
+            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+              event.preventDefault()
+              submit()
+            }
+          }}
+          className="flex flex-col"
+        >
+          <DialogHeader className="space-y-0 px-5 pt-5">
+            <DialogTitle className="sr-only">New task</DialogTitle>
+            <DialogDescription className="sr-only">
+              Capture a task with a title, an optional description, whether it&rsquo;s personal or tied to a project, and a due date.
+            </DialogDescription>
+            <Input
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              placeholder="Task name"
+              required
+              autoFocus
+              className="h-auto border-0 px-0 py-0 text-2xl font-semibold shadow-none focus-visible:ring-0 md:text-2xl"
+            />
+          </DialogHeader>
 
-        <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="flex-1 flex flex-col overflow-hidden">
-            <ScrollArea className="flex-1">
-              <div className="px-6 py-4 space-y-6">
-                <div className="space-y-3">
-                  <FormField
-                    control={form.control}
-                    name="title"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Title *</FormLabel>
-                        <FormControl>
-                          <Input placeholder="Install kitchen backsplash" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+          <div className="px-5 pb-2 pt-2">
+            <Textarea
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="Add a description…"
+              className="min-h-24 resize-none border-0 px-0 text-sm shadow-none focus-visible:ring-0"
+            />
 
-                  <FormField
-                    control={form.control}
-                    name="description"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Description</FormLabel>
-                        <FormControl>
-                          <Textarea
-                            placeholder="Add details about this task..."
-                            className="min-h-[80px] resize-none"
-                            {...field}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </div>
-
-                <Separator />
-
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-sm font-medium text-muted-foreground">Planning</h4>
-                    <Badge variant="secondary" className="text-xs">
-                      Status & priority
-                    </Badge>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <FormField
-                      control={form.control}
-                      name="status"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Status</FormLabel>
-                          <Select onValueChange={field.onChange} value={field.value}>
-                            <FormControl>
-                              <SelectTrigger className="w-full">
-                                <SelectValue placeholder="Select status" />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              {STATUS_ORDER.map((status) => (
-                                <SelectItem key={status} value={status}>
-                                  <div className="flex items-center gap-2">
-                                    <span className={STATUS_CONFIG[status].color}>
-                                      {STATUS_CONFIG[status].icon}
-                                    </span>
-                                    {STATUS_CONFIG[status].label}
-                                  </div>
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-
-                    <FormField
-                      control={form.control}
-                      name="priority"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Priority</FormLabel>
-                          <Select onValueChange={field.onChange} value={field.value}>
-                            <FormControl>
-                              <SelectTrigger className="w-full">
-                                <SelectValue placeholder="Select priority" />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              {PRIORITY_ORDER.map((priority) => (
-                                <SelectItem key={priority} value={priority}>
-                                  <div className="flex items-center gap-2">
-                                    <span className={cn("h-2 w-2 rounded-full", PRIORITY_CONFIG[priority].dotColor)} />
-                                    {PRIORITY_CONFIG[priority].label}
-                                  </div>
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <FormField
-                    control={form.control}
-                    name="start_date"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Start Date</FormLabel>
-                        <FormControl>
-                          <Input type="date" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormField
-                    control={form.control}
-                    name="due_date"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Due Date</FormLabel>
-                        <FormControl>
-                          <Input type="date" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <FormField
-                    control={form.control}
-                    name="assignee_id"
-                    render={({ field }) => (
-                      <FormItem className="col-span-2">
-                        <FormLabel>Assignee</FormLabel>
-                        <Select onValueChange={field.onChange} value={field.value ?? "unassigned"}>
-                          <FormControl>
-                            <SelectTrigger className="w-full">
-                              <SelectValue placeholder="Select assignee" />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            <SelectItem value="unassigned">Unassigned</SelectItem>
-                            {groupedResources.users.length > 0 && (
-                              <SelectGroup>
-                                <SelectLabel>Team</SelectLabel>
-                                {groupedResources.users.map((member) => (
-                                  <SelectItem key={member.id} value={encodeAssignee("user", member.id)}>
-                                    <div className="flex items-center gap-2">
-                                      <Avatar className="h-5 w-5">
-                                        <AvatarImage src={member.avatar_url} />
-                                        <AvatarFallback className="text-[10px]">
-                                          {getInitials(member.name)}
-                                        </AvatarFallback>
-                                      </Avatar>
-                                      <div className="flex flex-col">
-                                        <span>{member.name}</span>
-                                        {member.role && <span className="text-[10px] text-muted-foreground">{member.role}</span>}
-                                      </div>
-                                    </div>
-                                  </SelectItem>
-                                ))}
-                              </SelectGroup>
-                            )}
-                            {groupedResources.contacts.length > 0 && (
-                              <SelectGroup>
-                                <SelectLabel>Contacts</SelectLabel>
-                                {groupedResources.contacts.map((contact) => (
-                                  <SelectItem key={contact.id} value={encodeAssignee("contact", contact.id)}>
-                                    <div className="flex items-center gap-2">
-                                      <Avatar className="h-5 w-5">
-                                        <AvatarFallback className="text-[10px]">{getInitials(contact.name)}</AvatarFallback>
-                                      </Avatar>
-                                      <div className="flex flex-col">
-                                        <span>{contact.name}</span>
-                                        {contact.company_name && (
-                                          <span className="text-[10px] text-muted-foreground">{contact.company_name}</span>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </SelectItem>
-                                ))}
-                              </SelectGroup>
-                            )}
-                            {groupedResources.companies.length > 0 && (
-                              <SelectGroup>
-                                <SelectLabel>Companies</SelectLabel>
-                                {groupedResources.companies.map((company) => (
-                                  <SelectItem key={company.id} value={encodeAssignee("company", company.id)}>
-                                    <div className="flex items-center gap-2">
-                                      <Avatar className="h-5 w-5">
-                                        <AvatarFallback className="text-[10px]">Co</AvatarFallback>
-                                      </Avatar>
-                                      <div className="flex flex-col">
-                                        <span>{company.name}</span>
-                                        {company.role && (
-                                          <span className="text-[10px] text-muted-foreground">{company.role}</span>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </SelectItem>
-                                ))}
-                              </SelectGroup>
-                            )}
-                            {loadingResources && (
-                              <div className="p-2 text-center text-sm text-muted-foreground">Loading assignees...</div>
-                            )}
-                          </SelectContent>
-                        </Select>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </div>
-
-                <Separator />
-
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-sm font-medium text-muted-foreground">Construction details</h4>
-                    <Badge variant="outline" className="text-[11px]">
-                      Optional
-                    </Badge>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <FormField
-                      control={form.control}
-                      name="location"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Location</FormLabel>
-                          <FormControl>
-                            <Input placeholder="e.g., Kitchen, 2nd Floor" {...field} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-
-                    <FormField
-                      control={form.control}
-                      name="trade"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Trade</FormLabel>
-                        <Select onValueChange={field.onChange} value={field.value ?? "none"}>
-                          <FormControl>
-                            <SelectTrigger className="w-full">
-                              <SelectValue placeholder="Select trade" />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            <SelectItem value="none">None</SelectItem>
-                              {Object.entries(TRADE_CONFIG).map(([trade, config]) => (
-                                <SelectItem key={trade} value={trade}>
-                                  <div className="flex items-center gap-2">
-                                    <span className={cn("h-2 w-2 rounded-full", config.color)} />
-                                    {config.label}
-                                  </div>
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </div>
-
-                  <FormField
-                    control={form.control}
-                    name="estimated_hours"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Estimated Hours</FormLabel>
-                        <FormControl>
-                          <Input
-                            type="number"
-                            min="0"
-                            step="0.5"
-                            placeholder="e.g., 4"
-                            {...field}
-                            onChange={(e) =>
-                              field.onChange(e.target.value ? parseFloat(e.target.value) : undefined)
-                            }
-                            value={field.value ?? ""}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </div>
-
-                <Separator />
-
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-sm font-medium text-muted-foreground">Checklist</h4>
-                    {(form.watch("checklist") ?? []).length > 0 && (
-                      <Badge variant="secondary" className="text-[11px]">
-                        {(form.watch("checklist") ?? []).length} items
-                      </Badge>
-                    )}
-                  </div>
-
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder="Add checklist item..."
-                      value={newChecklistItem}
-                      onChange={(e) => setNewChecklistItem(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault()
-                          handleAddChecklistItem()
-                        }
-                      }}
-                    />
-                    <Button type="button" variant="outline" onClick={handleAddChecklistItem}>
-                      <Plus className="h-4 w-4" />
-                    </Button>
-                  </div>
-
-                  {(form.watch("checklist") ?? []).length > 0 && (
-                    <div className="space-y-2">
-                      {form.watch("checklist")?.map((item) => (
-                        <div key={item.id} className="flex items-center gap-2 rounded-md border px-3 py-2">
-                          <Checkbox checked={item.completed} disabled />
-                          <span className="flex-1 text-sm">{item.text}</span>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="h-6 w-6"
-                            onClick={() => handleRemoveChecklistItem(item.id)}
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </Button>
-                        </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Select value={projectId} onValueChange={setProjectId}>
+                <SelectTrigger className="w-fit justify-start rounded-none bg-muted/50 px-3">
+                  <FolderOpen className="size-4" />
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_PROJECT}>Personal task</SelectItem>
+                  {projects.length > 0 && (
+                    <SelectGroup>
+                      <SelectLabel>Projects</SelectLabel>
+                      {projects.map((project) => (
+                        <SelectItem key={project.id} value={project.id}>
+                          {project.name}
+                        </SelectItem>
                       ))}
-                    </div>
+                    </SelectGroup>
                   )}
+                </SelectContent>
+              </Select>
 
-                  {(form.watch("checklist") ?? []).length === 0 && (
-                    <p className="text-sm text-muted-foreground">
-                      Break the task down into smaller steps to track progress.
-                    </p>
-                  )}
-                </div>
-              </div>
-            </ScrollArea>
-
-            <div className="flex-shrink-0 border-t bg-muted/30 px-6 py-4">
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    form.reset()
-                    onOpenChange(false)
-                  }}
-                  className="flex-1"
-                >
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={isSubmitting} className="flex-1">
-                  {isSubmitting ? "Creating..." : "Create Task"}
-                </Button>
-              </div>
+              <ReminderPicker
+                value={reminderAt}
+                onChange={setReminderAt}
+                triggerClassName="w-fit justify-start rounded-none bg-muted/50 px-3"
+                placeholder="Reminder"
+              />
             </div>
-          </form>
-        </Form>
-      </SheetContent>
-    </Sheet>
+          </div>
+
+          <DialogFooter className="items-center justify-end border-t px-5 py-3">
+            <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={isSubmitting || !title.trim()} className="gap-2">
+              {isSubmitting ? "Creating…" : "Create task"}
+              <kbd className="inline-flex items-center rounded-none border border-primary-foreground/40 px-1.5 py-0.5 text-xs font-medium text-primary-foreground">
+                ⌘↵
+              </kbd>
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ============================================
+// REMINDER PICKER (date + time)
+// ============================================
+
+interface ReminderPickerProps {
+  value?: Date
+  onChange: (date: Date | undefined) => void
+  triggerClassName?: string
+  placeholder?: string
+}
+
+// Date + time-of-day picker for a self-reminder. Time defaults to 9:00 AM when a
+// day is chosen without one; picking a time before a day uses today. Values are
+// plain Date objects (local time); callers serialize with toISOString().
+function ReminderPicker({ value, onChange, triggerClassName, placeholder = "Reminder" }: ReminderPickerProps) {
+  const timeValue = value ? format(value, "HH:mm") : "09:00"
+
+  const handleDaySelect = (day: Date | undefined) => {
+    if (!day) {
+      onChange(undefined)
+      return
+    }
+    const [hours, minutes] = timeValue.split(":").map(Number)
+    const next = new Date(day)
+    next.setHours(hours ?? 9, minutes ?? 0, 0, 0)
+    onChange(next)
+  }
+
+  const handleTimeChange = (time: string) => {
+    if (!time) return
+    const [hours, minutes] = time.split(":").map(Number)
+    const base = value ? new Date(value) : new Date()
+    base.setHours(hours ?? 0, minutes ?? 0, 0, 0)
+    onChange(base)
+  }
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button type="button" variant="outline" size="sm" className={triggerClassName}>
+          <Bell className="size-4" />
+          {value ? format(value, "MMM d, p") : <span className="text-muted-foreground">{placeholder}</span>}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-auto p-0">
+        <Calendar mode="single" selected={value} onSelect={handleDaySelect} autoFocus />
+        <div className="flex items-center justify-between gap-3 border-t p-3">
+          <label className="flex items-center gap-2 text-sm">
+            <Clock className="size-4 text-muted-foreground" />
+            <input
+              type="time"
+              value={timeValue}
+              onChange={(event) => handleTimeChange(event.target.value)}
+              className="h-8 rounded-none border bg-background px-2 text-sm [color-scheme:light] dark:[color-scheme:dark]"
+              aria-label="Reminder time"
+            />
+          </label>
+          {value && (
+            <button
+              type="button"
+              onClick={() => onChange(undefined)}
+              className="text-xs text-muted-foreground hover:text-foreground"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
   )
 }
 
@@ -1802,11 +1024,12 @@ interface TaskDetailSheetProps {
   onOpenChange: (open: boolean) => void
   task: Task
   team: TasksTabProps["team"]
+  projects: TaskProjectOption[]
   onUpdate: (taskId: string, updates: Partial<TaskInput>) => Promise<Task>
   onDelete: () => void
 }
 
-function TaskDetailSheet({ open, onOpenChange, task, team, onUpdate, onDelete }: TaskDetailSheetProps) {
+function TaskDetailSheet({ open, onOpenChange, task, team, projects, onUpdate, onDelete }: TaskDetailSheetProps) {
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [attachmentsLoading, setAttachmentsLoading] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
@@ -1815,7 +1038,6 @@ function TaskDetailSheet({ open, onOpenChange, task, team, onUpdate, onDelete }:
   const [newChecklistItem, setNewChecklistItem] = useState("")
   const [isSaving, setIsSaving] = useState(false)
 
-  const dueInfo = formatDueDate(task.due_date)
   const checklistProgress = getChecklistProgress(task.checklist)
 
   const handleSaveBasicInfo = async () => {
@@ -1965,11 +1187,11 @@ function TaskDetailSheet({ open, onOpenChange, task, team, onUpdate, onDelete }:
                 variant="secondary"
                 className={cn(STATUS_CONFIG[task.status].bgColor, STATUS_CONFIG[task.status].color)}
               >
-                {STATUS_CONFIG[task.status].icon}
+                <StatusCircle status={task.status} className="size-3.5" />
                 <span className="ml-1">{STATUS_CONFIG[task.status].label}</span>
               </Badge>
               <Badge variant="outline" className={PRIORITY_CONFIG[task.priority].color}>
-                <span className={cn("h-2 w-2 rounded-full mr-1.5", PRIORITY_CONFIG[task.priority].dotColor)} />
+                <span className={cn("h-2 w-2 rounded-none mr-1.5", PRIORITY_CONFIG[task.priority].dotColor)} />
                 {PRIORITY_CONFIG[task.priority].label}
               </Badge>
               {task.trade && (
@@ -2022,7 +1244,7 @@ function TaskDetailSheet({ open, onOpenChange, task, team, onUpdate, onDelete }:
                 <h4 className="text-sm font-medium text-muted-foreground">Quick updates</h4>
                 <Badge variant="secondary" className="text-[11px]">Status, priority, owner</Badge>
               </div>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 gap-3">
                 <Select
                   value={task.status}
                   onValueChange={(value) => onUpdate(task.id, { status: value as TaskStatus })}
@@ -2033,10 +1255,8 @@ function TaskDetailSheet({ open, onOpenChange, task, team, onUpdate, onDelete }:
                   <SelectContent>
                     {STATUS_ORDER.map((status) => (
                       <SelectItem key={status} value={status}>
-                        <div className="flex items-center gap-2">
-                          <span className={STATUS_CONFIG[status].color}>{STATUS_CONFIG[status].icon}</span>
-                          {STATUS_CONFIG[status].label}
-                        </div>
+                        <StatusCircle status={status} className="size-3.5" />
+                        {STATUS_CONFIG[status].label}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -2052,19 +1272,22 @@ function TaskDetailSheet({ open, onOpenChange, task, team, onUpdate, onDelete }:
                   <SelectContent>
                     {PRIORITY_ORDER.map((priority) => (
                       <SelectItem key={priority} value={priority}>
-                        <div className="flex items-center gap-2">
-                          <span className={cn("h-2 w-2 rounded-full", PRIORITY_CONFIG[priority].dotColor)} />
-                          {PRIORITY_CONFIG[priority].label}
-                        </div>
+                        <span className={cn("h-2 w-2 rounded-none", PRIORITY_CONFIG[priority].dotColor)} />
+                        {PRIORITY_CONFIG[priority].label}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
 
                 <Select
-                  value={task.assignee_id ?? "unassigned"}
+                  value={task.assignee_kind === "user" ? task.assignee_id ?? "unassigned" : "unassigned"}
                   onValueChange={(value) =>
-                    onUpdate(task.id, { assignee_id: value === "unassigned" ? undefined : value })
+                    onUpdate(
+                      task.id,
+                      value === "unassigned"
+                        ? { assignee_id: undefined, assignee_kind: undefined }
+                        : { assignee_id: value, assignee_kind: "user" },
+                    )
                   }
                 >
                   <SelectTrigger className="w-full h-9">
@@ -2083,6 +1306,25 @@ function TaskDetailSheet({ open, onOpenChange, task, team, onUpdate, onDelete }:
                           </Avatar>
                           {member.full_name}
                         </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+
+                <Select
+                  value={task.project_id ?? NO_PROJECT}
+                  onValueChange={(value) =>
+                    onUpdate(task.id, { project_id: value === NO_PROJECT ? undefined : value })
+                  }
+                >
+                  <SelectTrigger className="w-full h-9">
+                    <SelectValue placeholder="Personal" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_PROJECT}>Personal (no project)</SelectItem>
+                    {projects.map((project) => (
+                      <SelectItem key={project.id} value={project.id}>
+                        {project.name}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -2120,16 +1362,22 @@ function TaskDetailSheet({ open, onOpenChange, task, team, onUpdate, onDelete }:
               </div>
               <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1">
-                <p className="text-xs font-medium text-muted-foreground">Due Date</p>
-                <p
-                  className={cn(
-                    "text-sm flex items-center gap-1.5",
-                    dueInfo.isOverdue && "text-destructive"
-                  )}
-                >
-                  <CalendarDays className="h-4 w-4" />
-                  {dueInfo.label}
-                </p>
+                <p className="text-xs font-medium text-muted-foreground">Reminder</p>
+                <ReminderPicker
+                  value={task.reminder_at ? parseISO(task.reminder_at) : undefined}
+                  onChange={(date) => onUpdate(task.id, { reminder_at: date ? date.toISOString() : "" })}
+                  triggerClassName="h-8 justify-start gap-1.5 px-2 font-normal"
+                  placeholder="Set reminder"
+                />
+                {task.reminder_at && (
+                  <p className="text-xs text-muted-foreground">
+                    {task.reminder_sent_at
+                      ? `Emailed ${format(parseISO(task.reminder_sent_at), "MMM d 'at' p")}`
+                      : task.status === "done"
+                        ? "Task done — no email will be sent"
+                        : `We'll email you ${format(parseISO(task.reminder_at), "MMM d 'at' p")}`}
+                  </p>
+                )}
               </div>
 
               <div className="space-y-1">

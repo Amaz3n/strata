@@ -51,7 +51,7 @@ export function HelpSearch({
         className={cn(
           "justify-start rounded-none",
           variant === "hero"
-            ? "h-16 w-full border-white/30 bg-[#0a0f16]/95 px-5 text-base text-white hover:bg-[#101827] hover:text-white sm:px-6 sm:text-lg"
+            ? "h-12 w-full px-5 text-base text-muted-foreground"
             : "h-10 w-full border-border bg-transparent px-3 text-muted-foreground",
         )}
       >
@@ -65,7 +65,7 @@ export function HelpSearch({
         onOpenChange={setOpen}
         title="Search the Arc Help Center"
         description="Search topics, collections, and articles."
-        className="dark border-border bg-popover sm:max-w-2xl"
+        className="border-border bg-popover sm:max-w-2xl"
       >
         <CommandInput placeholder="Search topics and articles..." />
         <CommandList className="max-h-[min(28rem,70svh)]">

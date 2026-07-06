@@ -36,6 +36,13 @@ export default async function ProjectReportsPage({ params }: PageProps) {
       href: `${base}/profitability`,
     },
     {
+      key: "wip",
+      title: "WIP / Over-Under",
+      description: "Cost-to-cost earned revenue, billed revenue, and over-under billing position.",
+      icon: BarChart3,
+      href: `${base}/wip`,
+    },
+    {
       key: "ctc",
       title: "Cost-to-Complete Forecast",
       description: "Committed and actual costs projected to final, with variance at completion by cost code.",

@@ -1,10 +1,13 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { z } from "zod"
 
-import type { ProjectBillingModel } from "@/lib/financials/billing-model"
 import {
   assertApprovedCostInvoiceBillingModelAllowed,
+  defaultFeePresentationForBillingModel,
   isCostDrivenBillingModel,
+  normalizeFeePresentation,
+  type FeePresentation,
+  type ProjectBillingModel,
   resolveProjectBillingModel,
 } from "@/lib/financials/billing-model"
 import type { ProjectInput } from "@/lib/validation/projects"
@@ -46,10 +49,13 @@ export interface ProjectFinancialSetupStatusResult {
     total_cents?: number | null
     markup_percent?: number | null
     gmp_cents?: number | null
+    contingency_cents?: number | null
     fixed_fee_cents?: number | null
+    fee_presentation?: FeePresentation | null
     savings_split_owner_pct?: number | null
     savings_split_builder_pct?: number | null
     labor_burden_multiplier?: number | null
+    rate_schedule_id?: string | null
     retainage_percent?: number | null
   } | null
   issues: ProjectFinancialSetupIssue[]
@@ -63,12 +69,17 @@ type ContractLike = {
   currency?: string | null
   markup_percent?: number | null
   gmp_cents?: number | null
+  contingency_cents?: number | null
+  fixed_fee_cents?: number | null
+  fee_presentation?: FeePresentation | string | null
   savings_split_owner_pct?: number | null
   savings_split_builder_pct?: number | null
   labor_burden_multiplier?: number | null
+  rate_schedule_id?: string | null
   retainage_percent?: number | null
   open_book?: boolean | null
   requires_client_cost_approval?: boolean | null
+  parent_contract_id?: string | null
   snapshot?: Record<string, any> | null
 }
 
@@ -87,10 +98,13 @@ const financialSetupInputSchema = z.object({
   retainagePercent: z.number().min(0).max(100).optional().nullable(),
   markupPercent: z.number().min(0).max(200).optional().nullable(),
   gmpCents: z.number().int().nonnegative().optional().nullable(),
+  contingencyCents: z.number().int().nonnegative().optional().nullable(),
   fixedFeeCents: z.number().int().nonnegative().optional().nullable(),
+  feePresentation: z.enum(["embedded", "separate_total", "separate_by_code"]).optional().nullable(),
   savingsSplitOwnerPct: z.number().min(0).max(100).optional().nullable(),
   savingsSplitBuilderPct: z.number().min(0).max(100).optional().nullable(),
   laborBurdenMultiplier: z.number().min(1).optional().nullable(),
+  rateScheduleId: z.string().uuid().optional().nullable(),
   paidCostsRequired: z.boolean().default(false),
   proofRequired: z.boolean().default(false),
   clientCostApprovalRequired: z.boolean().default(false),
@@ -108,6 +122,281 @@ function contractTypeForBillingModel(model: ProjectBillingModel): "fixed" | "cos
   if (model === "time_and_materials") return "time_materials"
   if (model === "fixed_price") return "fixed"
   return "cost_plus"
+}
+
+const MATERIAL_CONTRACT_TERM_KEYS = [
+  "billing_model",
+  "contract_type",
+  "total_cents",
+  "markup_percent",
+  "gmp_cents",
+  "contingency_cents",
+  "fixed_fee_cents",
+  "fee_presentation",
+  "savings_split_owner_pct",
+  "savings_split_builder_pct",
+  "labor_burden_multiplier",
+  "rate_schedule_id",
+  "retainage_percent",
+] as const
+
+type MaterialContractTermKey = (typeof MATERIAL_CONTRACT_TERM_KEYS)[number]
+
+const MATERIAL_CONTRACT_TERM_DEFAULTS: Partial<Record<MaterialContractTermKey, unknown>> = {
+  total_cents: null,
+  markup_percent: null,
+  gmp_cents: null,
+  contingency_cents: null,
+  fixed_fee_cents: null,
+  fee_presentation: "embedded",
+  savings_split_owner_pct: 0,
+  savings_split_builder_pct: 0,
+  labor_burden_multiplier: 1,
+  rate_schedule_id: null,
+  retainage_percent: 0,
+}
+
+function fixedFeeCentsFrom(contract?: ContractLike | null, settings?: ProjectFinancialSettings | null) {
+  const value = contract?.fixed_fee_cents ?? contract?.snapshot?.fixed_fee_cents ?? settings?.metadata?.fixed_fee_cents ?? null
+  const cents = Number(value ?? 0)
+  return Number.isFinite(cents) && cents > 0 ? cents : null
+}
+
+function feePresentationFrom(contract?: ContractLike | null) {
+  return (
+    normalizeFeePresentation(contract?.fee_presentation) ??
+    normalizeFeePresentation(contract?.snapshot?.fee_presentation) ??
+    "embedded"
+  )
+}
+
+function normalizeContractTermValue(key: MaterialContractTermKey, value: unknown) {
+  if (value == null || value === "") return MATERIAL_CONTRACT_TERM_DEFAULTS[key] ?? null
+  if (typeof value === "number") return Number.isFinite(value) ? value : (MATERIAL_CONTRACT_TERM_DEFAULTS[key] ?? null)
+  if (typeof value === "string") {
+    const trimmed = value.trim()
+    if (!trimmed) return MATERIAL_CONTRACT_TERM_DEFAULTS[key] ?? null
+    const numeric = Number(trimmed)
+    return Number.isFinite(numeric) && /^-?\d+(\.\d+)?$/.test(trimmed) ? numeric : trimmed
+  }
+  return value
+}
+
+function contractTermSnapshot(args: {
+  contract: ContractLike | Record<string, any>
+  billingModel?: ProjectBillingModel | null
+  settings?: ProjectFinancialSettings | null
+}) {
+  const contract = args.contract
+  return {
+    billing_model: args.billingModel ?? null,
+    contract_type: contract.contract_type ?? null,
+    total_cents: contract.total_cents ?? null,
+    markup_percent: contract.markup_percent ?? null,
+    gmp_cents: contract.gmp_cents ?? null,
+    contingency_cents: contract.contingency_cents ?? contract.snapshot?.contingency_cents ?? null,
+    fixed_fee_cents: fixedFeeCentsFrom(contract as ContractLike, args.settings),
+    fee_presentation: feePresentationFrom(contract as ContractLike),
+    savings_split_owner_pct: contract.savings_split_owner_pct ?? 0,
+    savings_split_builder_pct: contract.savings_split_builder_pct ?? 0,
+    labor_burden_multiplier: contract.labor_burden_multiplier ?? 1,
+    rate_schedule_id: contract.rate_schedule_id ?? contract.snapshot?.rate_schedule_id ?? null,
+    retainage_percent: contract.retainage_percent ?? 0,
+  } satisfies Record<MaterialContractTermKey, unknown>
+}
+
+function diffMaterialContractTerms(args: {
+  before: ContractLike
+  after: Record<string, any>
+  beforeBillingModel?: ProjectBillingModel | null
+  afterBillingModel: ProjectBillingModel
+  beforeSettings?: ProjectFinancialSettings | null
+}) {
+  const beforeTerms = contractTermSnapshot({
+    contract: args.before,
+    billingModel: args.beforeBillingModel ?? null,
+    settings: args.beforeSettings ?? null,
+  })
+  const afterTerms = contractTermSnapshot({
+    contract: args.after,
+    billingModel: args.afterBillingModel,
+  })
+  const changes: Record<string, { before: unknown; after: unknown }> = {}
+
+  for (const key of MATERIAL_CONTRACT_TERM_KEYS) {
+    const before = normalizeContractTermValue(key, beforeTerms[key])
+    const after = normalizeContractTermValue(key, afterTerms[key])
+    if (before !== after) changes[key] = { before, after }
+  }
+
+  return changes
+}
+
+async function projectHasProtectedBillingActivity(args: {
+  supabase: SupabaseClient
+  orgId: string
+  projectId: string
+}) {
+  const [invoiceResult, costResult] = await Promise.all([
+    args.supabase
+      .from("invoices")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", args.orgId)
+      .eq("project_id", args.projectId)
+      .neq("status", "draft"),
+    args.supabase
+      .from("billable_costs")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", args.orgId)
+      .eq("project_id", args.projectId)
+      .neq("status", "voided"),
+  ])
+
+  if (invoiceResult.error) throw new Error(`Failed to inspect project invoices before contract update: ${invoiceResult.error.message}`)
+  if (costResult.error) throw new Error(`Failed to inspect billable costs before contract update: ${costResult.error.message}`)
+
+  return Number(invoiceResult.count ?? 0) > 0 || Number(costResult.count ?? 0) > 0
+}
+
+export async function saveBillingContractWithAmendment(args: {
+  supabase: SupabaseClient
+  orgId: string
+  userId: string
+  projectId: string
+  existingContract?: ContractLike | null
+  existingSettings?: ProjectFinancialSettings | null
+  nextBillingModel: ProjectBillingModel
+  contractPayload: Record<string, any>
+  auditSource: string
+}) {
+  const existing = args.existingContract
+  if (!existing?.id) {
+    const { data, error } = await args.supabase.from("contracts").insert(args.contractPayload).select("*").single()
+    if (error || !data) throw new Error(`Failed to create billing contract: ${error?.message}`)
+
+    await recordAudit({
+      orgId: args.orgId,
+      actorId: args.userId,
+      action: "insert",
+      entityType: "contract",
+      entityId: data.id,
+      after: data,
+      source: args.auditSource,
+    })
+
+    return { contract: data, contractId: data.id, action: "insert" as const, materialChanges: {} }
+  }
+
+  const beforeBillingModel = args.existingSettings?.billing_model ?? resolveProjectBillingModel(existing as any)
+  const materialChanges = diffMaterialContractTerms({
+    before: existing,
+    after: args.contractPayload,
+    beforeBillingModel,
+    afterBillingModel: args.nextBillingModel,
+    beforeSettings: args.existingSettings ?? null,
+  })
+  const shouldAmend =
+    Object.keys(materialChanges).length > 0 &&
+    (await projectHasProtectedBillingActivity({
+      supabase: args.supabase,
+      orgId: args.orgId,
+      projectId: args.projectId,
+    }))
+
+  if (shouldAmend) {
+    const now = new Date().toISOString()
+    const amendmentPayload = {
+      ...args.contractPayload,
+      status: "active",
+      parent_contract_id: existing.id,
+      snapshot: {
+        ...(args.contractPayload.snapshot ?? {}),
+        amended_from_contract_id: existing.id,
+        amended_at: now,
+      },
+    }
+    const { data: amendedContract, error: insertError } = await args.supabase
+      .from("contracts")
+      .insert(amendmentPayload)
+      .select("*")
+      .single()
+
+    if (insertError || !amendedContract) throw new Error(`Failed to create contract amendment: ${insertError?.message}`)
+
+    const { data: supersededContract, error: supersedeError } = await args.supabase
+      .from("contracts")
+      .update({ status: "superseded" })
+      .eq("org_id", args.orgId)
+      .eq("id", existing.id)
+      .select("*")
+      .single()
+
+    if (supersedeError || !supersededContract) {
+      throw new Error(`Failed to supersede previous billing contract: ${supersedeError?.message}`)
+    }
+
+    await recordAudit({
+      orgId: args.orgId,
+      actorId: args.userId,
+      action: "insert",
+      entityType: "contract",
+      entityId: amendedContract.id,
+      after: {
+        ...amendedContract,
+        amendment: {
+          parent_contract_id: existing.id,
+          material_changes: materialChanges,
+        },
+      },
+      source: args.auditSource,
+    })
+
+    await recordAudit({
+      orgId: args.orgId,
+      actorId: args.userId,
+      action: "update",
+      entityType: "contract",
+      entityId: existing.id,
+      before: existing as Record<string, unknown>,
+      after: {
+        ...supersededContract,
+        superseded_by_contract_id: amendedContract.id,
+        material_changes: materialChanges,
+      },
+      source: args.auditSource,
+    })
+
+    return {
+      contract: amendedContract,
+      contractId: amendedContract.id,
+      action: "amend" as const,
+      materialChanges,
+      supersededContract,
+    }
+  }
+
+  const { data, error } = await args.supabase
+    .from("contracts")
+    .update(args.contractPayload)
+    .eq("org_id", args.orgId)
+    .eq("id", existing.id)
+    .select("*")
+    .single()
+
+  if (error || !data) throw new Error(`Failed to update billing contract: ${error?.message}`)
+
+  await recordAudit({
+    orgId: args.orgId,
+    actorId: args.userId,
+    action: "update",
+    entityType: "contract",
+    entityId: existing.id,
+    before: existing as Record<string, unknown>,
+    after: data,
+    source: args.auditSource,
+  })
+
+  return { contract: data, contractId: data.id, action: "update" as const, materialChanges }
 }
 
 function mapSettings(row: any): ProjectFinancialSettings {
@@ -153,7 +442,7 @@ export async function getProjectFinancialSettings({
 async function getActiveContract(params: { supabase: SupabaseClient; orgId: string; projectId: string }): Promise<ContractLike | null> {
   const { data, error } = await params.supabase
     .from("contracts")
-    .select("id, title, contract_type, total_cents, currency, markup_percent, gmp_cents, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, retainage_percent, open_book, requires_client_cost_approval, snapshot")
+    .select("id, title, contract_type, total_cents, currency, markup_percent, gmp_cents, contingency_cents, fixed_fee_cents, fee_presentation, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, rate_schedule_id, retainage_percent, open_book, requires_client_cost_approval, parent_contract_id, snapshot")
     .eq("org_id", params.orgId)
     .eq("project_id", params.projectId)
     .eq("status", "active")
@@ -184,7 +473,6 @@ export async function getProjectFinancialSetupStatus({
 
   const billingModel = settings?.billing_model ?? resolveProjectBillingModel(contract as any)
   const issues: ProjectFinancialSetupIssue[] = []
-  const contractBillingModel = contract ? resolveProjectBillingModel(contract as any) : null
 
   if (!settings) {
     issues.push({
@@ -199,14 +487,6 @@ export async function getProjectFinancialSetupStatus({
       code: "active_contract_missing",
       severity: "blocking",
       message: "An active billing contract is required before financial actions can run.",
-    })
-  }
-
-  if (settings && contractBillingModel && settings.billing_model !== contractBillingModel) {
-    issues.push({
-      code: "billing_model_contract_mismatch",
-      severity: "blocking",
-      message: "Project financial setup does not match the active billing contract. Re-save the project billing setup before running financial actions.",
     })
   }
 
@@ -235,7 +515,7 @@ export async function getProjectFinancialSetupStatus({
   }
 
   if (billingModel === "cost_plus_fixed_fee") {
-    const fixedFeeCents = Number(contract?.snapshot?.fixed_fee_cents ?? settings?.metadata?.fixed_fee_cents ?? 0)
+    const fixedFeeCents = fixedFeeCentsFrom(contract, settings)
     if (!fixedFeeCents) {
       issues.push({
         code: "fixed_fee_schedule_missing",
@@ -263,10 +543,13 @@ export async function getProjectFinancialSetupStatus({
           total_cents: contract.total_cents ?? null,
           markup_percent: contract.markup_percent ?? null,
           gmp_cents: contract.gmp_cents ?? null,
-          fixed_fee_cents: Number(contract.snapshot?.fixed_fee_cents ?? settings?.metadata?.fixed_fee_cents ?? 0) || null,
+          contingency_cents: contract.contingency_cents ?? contract.snapshot?.contingency_cents ?? null,
+          fixed_fee_cents: fixedFeeCentsFrom(contract, settings),
+          fee_presentation: feePresentationFrom(contract),
           savings_split_owner_pct: contract.savings_split_owner_pct ?? null,
           savings_split_builder_pct: contract.savings_split_builder_pct ?? null,
           labor_burden_multiplier: contract.labor_burden_multiplier ?? null,
+          rate_schedule_id: contract.rate_schedule_id ?? contract.snapshot?.rate_schedule_id ?? null,
           retainage_percent: contract.retainage_percent ?? null,
         }
       : null,
@@ -283,22 +566,20 @@ export async function upsertProjectFinancialSettingsFromProjectInput(args: {
   input: Partial<ProjectInput>
   existingContract?: ContractLike | null
 }) {
-  const billingModel = normalizeBillingModel(args.input.billing_model) ?? resolveProjectBillingModel(args.existingContract as any)
-  const isCostPlus = billingModel === "cost_plus_percent" || billingModel === "cost_plus_fixed_fee" || billingModel === "cost_plus_gmp"
   const existingSettings = await getProjectFinancialSettings({
     supabase: args.supabase,
     orgId: args.orgId,
     projectId: args.projectId,
   }).catch(() => null)
+  const billingModel =
+    normalizeBillingModel(args.input.billing_model) ??
+    existingSettings?.billing_model ??
+    resolveProjectBillingModel(args.existingContract as any)
+  const isCostPlus = billingModel === "cost_plus_percent" || billingModel === "cost_plus_fixed_fee" || billingModel === "cost_plus_gmp"
   const now = new Date().toISOString()
-  const fixedFeeCents =
-    billingModel === "cost_plus_fixed_fee"
-      ? args.input.fixed_fee_cents ?? (args.existingContract?.snapshot as any)?.fixed_fee_cents ?? null
-      : null
   const metadata = {
     source: "project_settings",
     updated_from_project_form_at: now,
-    fixed_fee_cents: fixedFeeCents,
   }
 
   const payload = {
@@ -363,7 +644,21 @@ export async function saveProjectFinancialSetup(input: FinancialSetupInput, orgI
     throw new Error("Project not found")
   }
 
-  const existingContract = await getActiveContract({ supabase, orgId: resolvedOrgId, projectId: parsed.projectId })
+  const [existingContract, existingSettings] = await Promise.all([
+    getActiveContract({ supabase, orgId: resolvedOrgId, projectId: parsed.projectId }),
+    getProjectFinancialSettings({ supabase, orgId: resolvedOrgId, projectId: parsed.projectId }).catch(() => null),
+  ])
+  const feePresentation =
+    normalizeFeePresentation(parsed.feePresentation) ??
+    normalizeFeePresentation(existingContract?.fee_presentation) ??
+    normalizeFeePresentation(existingContract?.snapshot?.fee_presentation) ??
+    (existingContract ? "embedded" : defaultFeePresentationForBillingModel(parsed.billingModel))
+  const {
+    billing_model: _legacySnapshotBillingModel,
+    fixed_fee_cents: _legacySnapshotFixedFeeCents,
+    fee_presentation: _legacySnapshotFeePresentation,
+    ...existingContractSnapshot
+  } = existingContract?.snapshot ?? {}
   const contractPayload = {
     org_id: resolvedOrgId,
     project_id: parsed.projectId,
@@ -379,40 +674,38 @@ export async function saveProjectFinancialSetup(input: FinancialSetupInput, orgI
         ? parsed.markupPercent ?? 0
         : null,
     gmp_cents: parsed.billingModel === "cost_plus_gmp" ? parsed.gmpCents ?? null : null,
+    contingency_cents: parsed.billingModel === "cost_plus_gmp" ? parsed.contingencyCents ?? null : null,
+    fixed_fee_cents: parsed.billingModel === "cost_plus_fixed_fee" ? parsed.fixedFeeCents ?? null : null,
+    fee_presentation: feePresentation,
     savings_split_owner_pct: parsed.billingModel === "cost_plus_gmp" ? ownerPct : 0,
     savings_split_builder_pct: parsed.billingModel === "cost_plus_gmp" ? builderPct : 0,
     labor_burden_multiplier: parsed.laborBurdenMultiplier ?? 1,
+    rate_schedule_id: parsed.billingModel === "time_and_materials" ? parsed.rateScheduleId ?? existingContract?.rate_schedule_id ?? null : null,
     requires_client_cost_approval: parsed.clientCostApprovalRequired,
     open_book: parsed.openBookRequired,
     retainage_percent: parsed.retainagePercent ?? 0,
     snapshot: {
-      ...(existingContract?.snapshot ?? {}),
+      ...existingContractSnapshot,
       billing_setup_source: "financial_setup_wizard",
-      billing_model: parsed.billingModel,
+      fee_presentation: feePresentation,
+      rate_schedule_id: parsed.billingModel === "time_and_materials" ? parsed.rateScheduleId ?? existingContract?.rate_schedule_id ?? null : null,
       paid_costs_required: parsed.paidCostsRequired,
       proof_required: parsed.proofRequired,
-      fixed_fee_cents: parsed.billingModel === "cost_plus_fixed_fee" ? parsed.fixedFeeCents ?? null : null,
     },
   }
 
-  let contractId = existingContract?.id ?? undefined
-  let savedContract: any
-  if (contractId) {
-    const { data, error } = await supabase
-      .from("contracts")
-      .update(contractPayload)
-      .eq("org_id", resolvedOrgId)
-      .eq("id", contractId)
-      .select("*")
-      .single()
-    if (error || !data) throw new Error(`Failed to update billing contract: ${error?.message}`)
-    savedContract = data
-  } else {
-    const { data, error } = await supabase.from("contracts").insert(contractPayload).select("*").single()
-    if (error || !data) throw new Error(`Failed to create billing contract: ${error?.message}`)
-    savedContract = data
-    contractId = data.id
-  }
+  const contractSave = await saveBillingContractWithAmendment({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    projectId: parsed.projectId,
+    existingContract,
+    existingSettings,
+    nextBillingModel: parsed.billingModel,
+    contractPayload,
+    auditSource: "financial_setup_wizard",
+  })
+  const contractId = contractSave.contractId
 
   const settingsPayload = {
     org_id: resolvedOrgId,
@@ -430,7 +723,6 @@ export async function saveProjectFinancialSetup(input: FinancialSetupInput, orgI
     metadata: {
       source: "financial_setup_wizard",
       contract_id: contractId,
-      fixed_fee_cents: parsed.billingModel === "cost_plus_fixed_fee" ? parsed.fixedFeeCents ?? null : null,
       updated_at: new Date().toISOString(),
     },
   }
@@ -444,16 +736,6 @@ export async function saveProjectFinancialSetup(input: FinancialSetupInput, orgI
   if (settingsError || !settings) {
     throw new Error(`Failed to save project financial settings: ${settingsError?.message}`)
   }
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: existingContract ? "update" : "insert",
-    entityType: "contract",
-    entityId: contractId,
-    before: existingContract ?? null,
-    after: savedContract,
-  })
 
   await recordAudit({
     orgId: resolvedOrgId,
@@ -476,6 +758,9 @@ export async function saveProjectFinancialSetup(input: FinancialSetupInput, orgI
       client_cost_approval_required: parsed.clientCostApprovalRequired,
       open_book_required: parsed.openBookRequired,
       cost_codes_enabled: parsed.costCodesEnabled,
+      contract_action: contractSave.action,
+      contract_id: contractId,
+      material_contract_changes: contractSave.materialChanges,
     },
   })
 

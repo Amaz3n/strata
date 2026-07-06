@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation"
 
-import { validatePortalToken } from "@/lib/services/portal-access"
+import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { loadSelectionsAction } from "./actions"
 import { SelectionsPortalClient } from "./selections-client"
 
@@ -12,8 +12,12 @@ export const revalidate = 0
 
 export default async function SelectionsPortalPage({ params }: Params) {
   const { token } = await params
-  const access = await validatePortalToken(token)
-  if (!access || !access.permissions.can_submit_selections) {
+  try {
+    await assertPortalActionAccess(token, {
+      portalType: "client",
+      permission: "can_submit_selections",
+    })
+  } catch {
     notFound()
   }
 
@@ -21,4 +25,3 @@ export default async function SelectionsPortalPage({ params }: Params) {
 
   return <SelectionsPortalClient token={token} data={data} />
 }
-

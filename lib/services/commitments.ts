@@ -35,6 +35,8 @@ export interface CommitmentSummary {
   updated_at?: string
   billed_cents?: number
   paid_cents?: number
+  approved_change_orders_cents?: number
+  revised_total_cents?: number
 }
 
 export interface CommitmentLine {
@@ -56,6 +58,8 @@ export interface CommitmentLine {
 }
 
 function mapCommitment(row: any): CommitmentSummary {
+  const totalCents = row.total_cents ?? undefined
+  const approvedChangeOrdersCents = row.approved_change_orders_cents ?? 0
   return {
     id: row.id,
     org_id: row.org_id,
@@ -65,7 +69,7 @@ function mapCommitment(row: any): CommitmentSummary {
     company_name: row.company?.name ?? undefined,
     title: row.title,
     status: row.status ?? "draft",
-    total_cents: row.total_cents ?? undefined,
+    total_cents: totalCents,
     currency: row.currency ?? "usd",
     contract_number: row.contract_number ?? undefined,
     scope: row.scope ?? undefined,
@@ -80,6 +84,98 @@ function mapCommitment(row: any): CommitmentSummary {
     issued_at: row.issued_at ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at ?? undefined,
+    approved_change_orders_cents: approvedChangeOrdersCents,
+    revised_total_cents:
+      typeof totalCents === "number" ? totalCents + approvedChangeOrdersCents : approvedChangeOrdersCents,
+  }
+}
+
+async function loadApprovedCommitmentChangeOrderTotals(
+  supabase: SupabaseClient,
+  orgId: string,
+  commitmentIds: string[],
+) {
+  const ids = Array.from(new Set(commitmentIds.filter(Boolean)))
+  const totals = new Map<string, number>()
+  if (ids.length === 0) return totals
+
+  const { data, error } = await supabase
+    .from("commitment_change_orders")
+    .select("commitment_id, total_cents")
+    .eq("org_id", orgId)
+    .eq("status", "approved")
+    .in("commitment_id", ids)
+
+  if (error) {
+    throw new Error(`Failed to load commitment change order totals: ${error.message}`)
+  }
+
+  for (const row of data ?? []) {
+    const commitmentId = row.commitment_id as string | null
+    if (!commitmentId) continue
+    totals.set(commitmentId, (totals.get(commitmentId) ?? 0) + (row.total_cents ?? 0))
+  }
+
+  return totals
+}
+
+async function ensureProjectVendorForCommitment({
+  supabase,
+  orgId,
+  projectId,
+  companyId,
+  scope,
+}: {
+  supabase: SupabaseClient
+  orgId: string
+  projectId: string
+  companyId: string
+  scope?: string | null
+}) {
+  const { data: existing, error: existingError } = await supabase
+    .from("project_vendors")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("company_id", companyId)
+    .limit(1)
+
+  if (existingError) {
+    throw new Error(`Failed to check project vendor roster: ${existingError.message}`)
+  }
+  if ((existing ?? []).length > 0) return
+
+  const { data: company, error: companyError } = await supabase
+    .from("companies")
+    .select("company_type")
+    .eq("org_id", orgId)
+    .eq("id", companyId)
+    .maybeSingle()
+
+  if (companyError) {
+    throw new Error(`Failed to load commitment company: ${companyError.message}`)
+  }
+
+  const companyType = (company?.company_type ?? "subcontractor") as string
+  const role =
+    companyType === "supplier" ||
+    companyType === "client" ||
+    companyType === "architect" ||
+    companyType === "engineer"
+      ? companyType
+      : "subcontractor"
+
+  const { error } = await supabase.from("project_vendors").insert({
+    org_id: orgId,
+    project_id: projectId,
+    company_id: companyId,
+    role,
+    status: "active",
+    scope: scope ?? null,
+  })
+
+  if (error && !String(error.message ?? "").toLowerCase().includes("duplicate")) {
+    throw new Error(`Failed to add commitment company to project vendors: ${error.message}`)
   }
 }
 
@@ -140,12 +236,21 @@ export async function listCompanyCommitments(companyId: string, orgId?: string):
     billedByCommitment.set(commitmentId, current)
   }
 
+  const approvedChangeOrdersByCommitment = await loadApprovedCommitmentChangeOrderTotals(
+    supabase,
+    resolvedOrgId,
+    commitmentIds,
+  )
+
   return commitments.map((c) => {
     const totals = billedByCommitment.get(c.id)
+    const approvedChangeOrdersCents = approvedChangeOrdersByCommitment.get(c.id) ?? 0
     return {
       ...c,
       billed_cents: totals?.billed ?? 0,
       paid_cents: totals?.paid ?? 0,
+      approved_change_orders_cents: approvedChangeOrdersCents,
+      revised_total_cents: (c.total_cents ?? 0) + approvedChangeOrdersCents,
     }
   })
 }
@@ -208,12 +313,21 @@ export async function listProjectCommitments(projectId: string, orgId?: string):
     billedByCommitment.set(commitmentId, current)
   }
 
+  const approvedChangeOrdersByCommitment = await loadApprovedCommitmentChangeOrderTotals(
+    supabase,
+    resolvedOrgId,
+    commitmentIds,
+  )
+
   return commitments.map((c) => {
     const totals = billedByCommitment.get(c.id)
+    const approvedChangeOrdersCents = approvedChangeOrdersByCommitment.get(c.id) ?? 0
     return {
       ...c,
       billed_cents: totals?.billed ?? 0,
       paid_cents: totals?.paid ?? 0,
+      approved_change_orders_cents: approvedChangeOrdersCents,
+      revised_total_cents: (c.total_cents ?? 0) + approvedChangeOrdersCents,
     }
   })
 }
@@ -260,6 +374,14 @@ export async function createCommitment({ input, orgId }: { input: CommitmentInpu
   if (error || !data) {
     throw new Error(`Failed to create commitment: ${error?.message}`)
   }
+
+  await ensureProjectVendorForCommitment({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: parsed.project_id,
+    companyId: parsed.company_id,
+    scope: parsed.scope,
+  })
 
   await recordEvent({
     orgId: resolvedOrgId,

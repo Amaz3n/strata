@@ -14,6 +14,12 @@ import { EstimateBuilderSigningClient } from "@/components/portal/estimate-build
 import { DocumentSigningClient } from "./document-signing-client"
 
 export const revalidate = 0
+export const metadata = {
+  robots: {
+    index: false,
+    follow: false,
+  },
+}
 
 interface Params {
   params: Promise<{ token: string }>
@@ -112,7 +118,31 @@ export default async function DocumentSigningPage({ params }: Params) {
       <StatusPanel
         tone="warning"
         title="Signing link expired"
-        description={`This signing request is no longer valid. It expired on ${new Date(signingRequest.expires_at).toLocaleDateString()}.`}
+        description={`This signing request is no longer valid. It expired on ${new Date(signingRequest.expires_at).toLocaleDateString()}. Please contact the sender if you need a new link.`}
+        documentTitle={signingRequest.document.title}
+        icon={<AlertTriangle className="h-7 w-7 text-warning-foreground" />}
+      />
+    )
+  }
+
+  if (signingRequest.status === "voided") {
+    return (
+      <StatusPanel
+        tone="warning"
+        title="Signing request withdrawn"
+        description="This signing request was withdrawn by the sender. Please contact them if you need a new link."
+        documentTitle={signingRequest.document.title}
+        icon={<AlertTriangle className="h-7 w-7 text-warning-foreground" />}
+      />
+    )
+  }
+
+  if (signingRequest.status === "expired") {
+    return (
+      <StatusPanel
+        tone="warning"
+        title="Signing link expired"
+        description="This signing request is no longer valid. Please contact the sender if you need a new link."
         documentTitle={signingRequest.document.title}
         icon={<AlertTriangle className="h-7 w-7 text-warning-foreground" />}
       />

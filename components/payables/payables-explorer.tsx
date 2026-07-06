@@ -1,12 +1,10 @@
 "use client"
 
 import { type ReactNode, useMemo, useState } from "react"
-import { format } from "date-fns"
 import {
   Check,
   CheckCircle2,
   ChevronsUpDown,
-  Clock,
   MoreHorizontal,
   Plus,
   Receipt,
@@ -36,6 +34,7 @@ import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import { isVendorCredit, summarizePayables } from "@/lib/financials/payables-rules"
 import type { ComplianceRules, ComplianceStatusSummary, CostCode } from "@/lib/types"
 import { filterPayables, payableQueueCounts, type PayableQueue } from "./payables-filters"
+import { billBadge, dueDateClassName, getDueState, payableTypeBadge, vendorLabel } from "./payables-ui"
 
 type QBOAccountOption = { id: string; name: string; fullyQualifiedName?: string }
 
@@ -44,6 +43,7 @@ interface PayablesExplorerProps {
   vendorBills: VendorBillSummary[]
   costCodes: CostCode[]
   costCodesEnabled?: boolean
+  accountingEnabled?: boolean
   qboExpenseAccounts?: QBOAccountOption[]
   complianceRules: ComplianceRules
   complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>
@@ -54,6 +54,8 @@ interface PayablesExplorerProps {
   onSyncQbo?: (bill: VendorBillSummary) => void
   onOpenSyncSheet?: () => void
   onDelete?: (bill: VendorBillSummary) => void
+  onBulkApprove?: (bills: VendorBillSummary[]) => void
+  onBulkSyncQbo?: (bills: VendorBillSummary[]) => void
   onViewFiles?: (bill: VendorBillSummary) => void
   onEditVendor?: (bill: VendorBillSummary) => void
   onSelectCostCode?: (bill: VendorBillSummary, costCodeId: string | null) => void
@@ -66,6 +68,7 @@ export function PayablesExplorer({
   vendorBills,
   costCodes,
   costCodesEnabled = true,
+  accountingEnabled = true,
   qboExpenseAccounts = [],
   complianceRules,
   complianceStatusByCompanyId,
@@ -76,6 +79,8 @@ export function PayablesExplorer({
   onSyncQbo,
   onOpenSyncSheet,
   onDelete,
+  onBulkApprove,
+  onBulkSyncQbo,
   onViewFiles,
   onEditVendor,
   onSelectCostCode,
@@ -90,15 +95,21 @@ export function PayablesExplorer({
   const [openQboAccountBillId, setOpenQboAccountBillId] = useState<string | null>(null)
 
   const filtered = useMemo(
-    () => filterPayables(vendorBills, { search, queue: queueFilter, costCodesEnabled }),
-    [costCodesEnabled, vendorBills, search, queueFilter],
+    () => filterPayables(vendorBills, { search, queue: queueFilter, costCodesEnabled, accountingEnabled }),
+    [accountingEnabled, costCodesEnabled, vendorBills, search, queueFilter],
   )
 
   const filterCounts = useMemo(
-    () => payableQueueCounts(vendorBills, costCodesEnabled),
-    [costCodesEnabled, vendorBills],
+    () => payableQueueCounts(vendorBills, costCodesEnabled, accountingEnabled),
+    [accountingEnabled, costCodesEnabled, vendorBills],
   )
   const totals = useMemo(() => summarizePayables(vendorBills), [vendorBills])
+  const selectedBills = useMemo(
+    () => vendorBills.filter((bill) => selectedIds.includes(bill.id)),
+    [selectedIds, vendorBills],
+  )
+  const bulkApprovable = selectedBills.filter((bill) => bill.status === "pending" && !isVendorCredit(bill))
+  const bulkSyncable = selectedBills.filter((bill) => bill.qbo_sync_status !== "synced" && !isVendorCredit(bill))
 
   const visibleIds = filtered.map((bill) => bill.id)
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id))
@@ -133,9 +144,11 @@ export function PayablesExplorer({
           <div className="flex w-full overflow-x-auto border bg-muted/20 p-1 sm:w-auto">
             {([
               { key: "all", label: "All" },
+              { key: "overdue", label: "Overdue" },
+              { key: "due_soon", label: "Due soon" },
               { key: "needs_review", label: "Needs review" },
-              { key: "ready", label: "Ready to sync" },
-              { key: "synced", label: "Synced" },
+              { key: "ready", label: accountingEnabled ? "Ready to sync" : "Ready to pay" },
+              { key: "synced", label: accountingEnabled ? "Synced" : "Paid" },
             ] as const).map((filter) => (
               <button
                 key={filter.key}
@@ -155,10 +168,12 @@ export function PayablesExplorer({
           </div>
         </div>
         <div className="flex w-full gap-2 sm:w-auto">
-          <Button type="button" variant="outline" onClick={onOpenSyncSheet} className="w-full sm:w-auto">
-            <ExternalLink className="mr-2 h-4 w-4" />
-            QuickBooks
-          </Button>
+          {accountingEnabled ? (
+            <Button type="button" variant="outline" onClick={onOpenSyncSheet} className="w-full sm:w-auto">
+              <ExternalLink className="mr-2 h-4 w-4" />
+              QuickBooks
+            </Button>
+          ) : null}
           <Button type="button" onClick={onAddPayable} className="w-full sm:w-auto">
             <Plus className="mr-2 h-4 w-4" />
             New payable
@@ -166,8 +181,47 @@ export function PayablesExplorer({
         </div>
       </div>
 
+      {selectedBills.length > 0 ? (
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b bg-muted/20 px-4 py-2 text-sm">
+          <span className="font-medium">{selectedBills.length} selected</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={bulkApprovable.length === 0}
+              onClick={() => {
+                onBulkApprove?.(bulkApprovable)
+                setSelectedIds([])
+              }}
+            >
+              <CheckCircle2 className="mr-2 h-4 w-4" />
+              Approve {bulkApprovable.length || ""}
+            </Button>
+            {accountingEnabled ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={bulkSyncable.length === 0}
+                onClick={() => {
+                  onBulkSyncQbo?.(bulkSyncable)
+                  setSelectedIds([])
+                }}
+              >
+                <ExternalLink className="mr-2 h-4 w-4" />
+                Sync {bulkSyncable.length || ""}
+              </Button>
+            ) : null}
+            <Button type="button" variant="ghost" size="sm" onClick={() => setSelectedIds([])}>
+              Clear
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
       <div className="min-h-0 flex-1 overflow-auto">
-        <Table className={costCodesEnabled ? "min-w-[1540px]" : "min-w-[1320px]"}>
+        <Table className={costCodesEnabled ? "min-w-[1260px]" : "min-w-[1100px]"}>
           <TableHeader>
             <TableRow className="divide-x">
               <TableHead className="relative w-[72px] min-w-[72px] py-3 text-center">
@@ -175,15 +229,13 @@ export function PayablesExplorer({
                   <Checkbox checked={allVisibleSelected ? true : someVisibleSelected ? "indeterminate" : false} onCheckedChange={toggleSelectAll} aria-label="Select all payables" />
                 </div>
               </TableHead>
-              <TableHead className="min-w-[240px] px-4 py-3">Vendor / Company</TableHead>
+              <TableHead className="min-w-[280px] px-4 py-3">Vendor / Bill</TableHead>
               <TableHead className="w-[120px] px-4 py-3 text-center">Status</TableHead>
               <TableHead className="w-[132px] px-4 py-3 text-center">Due Date</TableHead>
               <TableHead className="w-[150px] px-4 py-3 text-right">Amount</TableHead>
               <TableHead className="min-w-[220px] px-4 py-3">Commitment</TableHead>
-              <TableHead className="w-[140px] px-4 py-3">Bill #</TableHead>
-              <TableHead className="w-[96px] px-4 py-3 text-center">Receipt</TableHead>
-              <TableHead className="min-w-[260px] px-4 py-3">Vendor link</TableHead>
-              <TableHead className="min-w-[260px] px-4 py-3">QBO Account</TableHead>
+              {accountingEnabled ? <TableHead className="min-w-[260px] px-4 py-3">Vendor link</TableHead> : null}
+              {accountingEnabled ? <TableHead className="min-w-[260px] px-4 py-3">QBO Account</TableHead> : null}
               {costCodesEnabled ? <TableHead className="min-w-[220px] px-4 py-3">Cost Code</TableHead> : null}
               <TableHead className="sticky right-0 z-10 w-[112px] min-w-[112px] border-l bg-background px-3 py-3 text-center shadow-[-1px_0_0_hsl(var(--border))]">
                 Actions
@@ -204,10 +256,14 @@ export function PayablesExplorer({
                       <AvatarFallback className="rounded-md text-[11px] font-semibold">{initialsFor(vendorLabel(bill))}</AvatarFallback>
                     </Avatar>
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-semibold">{vendorLabel(bill)}</div>
-                      {bill.company_name && bill.qbo_vendor_name && bill.company_name !== bill.qbo_vendor_name ? (
-                        <div className="truncate text-[11px] text-muted-foreground">{bill.company_name}</div>
-                      ) : null}
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="truncate text-sm font-semibold">{vendorLabel(bill)}</span>
+                        {bill.file_id ? <Receipt className="h-3.5 w-3.5 shrink-0 text-primary" /> : null}
+                      </div>
+                      <div className="truncate text-[11px] text-muted-foreground">
+                        {bill.bill_number ? `Bill #${bill.bill_number}` : "No bill number"}
+                        {bill.company_name && bill.qbo_vendor_name && bill.company_name !== bill.qbo_vendor_name ? ` • ${bill.company_name}` : ""}
+                      </div>
                     </div>
                   </div>
                 </TableCell>
@@ -216,7 +272,11 @@ export function PayablesExplorer({
                     {isVendorCredit(bill) ? payableTypeBadge(bill) : billBadge(bill.status)}
                   </div>
                 </TableCell>
-                <TableCell className="px-4 py-2 text-center text-sm tabular-nums text-muted-foreground cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => onViewDetails?.(bill)}>{bill.due_date ? format(new Date(`${bill.due_date}T00:00:00`), "MMM d, yyyy") : "—"}</TableCell>
+                <TableCell className="px-4 py-2 text-center text-sm cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => onViewDetails?.(bill)}>
+                  <span className={dueDateClassName(bill.due_date, bill.status)}>
+                    {bill.due_date ? getDueState(bill.due_date, bill.status).label : "—"}
+                  </span>
+                </TableCell>
                 <TableCell className="px-4 py-2 text-right cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => onViewDetails?.(bill)}>
                   <div className="text-sm font-semibold tabular-nums">{formatCurrency(bill.project_amount_cents ?? bill.total_cents ?? 0)}</div>
                   {bill.is_shared ? (
@@ -227,34 +287,26 @@ export function PayablesExplorer({
                   <div className="max-w-[240px] truncate text-sm text-muted-foreground" title={bill.commitment_title}>
                     {bill.commitment_title ?? "No commitment"}
                   </div>
+                  {bill.over_budget ? (
+                    <div className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-destructive">Over commitment</div>
+                  ) : null}
                 </TableCell>
-                <TableCell className="px-4 py-2">
-                  <code className="text-xs font-mono bg-muted px-1.5 py-0.5 uppercase tracking-wider">{bill.bill_number ?? "—"}</code>
-                </TableCell>
-                <TableCell className="px-4 py-2 text-center cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => onViewDetails?.(bill)}>
-                  {bill.file_id ? (
-                    <Button variant="ghost" size="icon" className="h-9 w-9" onClick={(e) => { e.stopPropagation(); onViewFiles?.(bill); }}>
-                      <Receipt className="h-5 w-5 text-primary" />
-                      <span className="sr-only">Preview receipt</span>
-                    </Button>
-                  ) : (
-                    <span className="inline-flex h-9 w-9 items-center justify-center text-muted-foreground" aria-label="No receipt uploaded">
-                      <Receipt className="h-5 w-5 opacity-40" />
-                    </span>
-                  )}
-                </TableCell>
-                <TableCell className="p-0">
-                  <PayableVendorLinkCell bill={bill} onEditVendor={onEditVendor} />
-                </TableCell>
-                <TableCell className="p-0">
-                  <PayableQboAccountCombobox
-                    bill={bill}
-                    accounts={qboExpenseAccounts}
-                    open={openQboAccountBillId === bill.id}
-                    onOpenChange={(open) => setOpenQboAccountBillId(open ? bill.id : null)}
-                    onSelect={(accountId) => onSelectQboExpenseAccount?.(bill, accountId)}
-                  />
-                </TableCell>
+                {accountingEnabled ? (
+                  <TableCell className="p-0">
+                    <PayableVendorLinkCell bill={bill} onEditVendor={onEditVendor} />
+                  </TableCell>
+                ) : null}
+                {accountingEnabled ? (
+                  <TableCell className="p-0">
+                    <PayableQboAccountCombobox
+                      bill={bill}
+                      accounts={qboExpenseAccounts}
+                      open={openQboAccountBillId === bill.id}
+                      onOpenChange={(open) => setOpenQboAccountBillId(open ? bill.id : null)}
+                      onSelect={(accountId) => onSelectQboExpenseAccount?.(bill, accountId)}
+                    />
+                  </TableCell>
+                ) : null}
                 {costCodesEnabled ? (
                   <TableCell className="p-0">
                     <PayableCostCodeCombobox
@@ -282,14 +334,21 @@ export function PayablesExplorer({
                       <Check className="h-5 w-5" />
                       <span className="sr-only">Approve payable</span>
                     </Button>
-                    <RowActions bill={bill} onEdit={onViewDetails} onViewFiles={onViewFiles} onSyncQbo={onSyncQbo} onDelete={onDelete} />
+                    <RowActions
+                      bill={bill}
+                      accountingEnabled={accountingEnabled}
+                      onEdit={onViewDetails}
+                      onViewFiles={onViewFiles}
+                      onSyncQbo={onSyncQbo}
+                      onDelete={onDelete}
+                    />
                   </div>
                 </TableCell>
               </TableRow>
             ))}
             {filtered.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={costCodesEnabled ? 12 : 11} className="h-48 text-center text-muted-foreground hover:bg-transparent">
+                <TableCell colSpan={(costCodesEnabled ? 8 : 7) + (accountingEnabled ? 2 : 0)} className="h-48 text-center text-muted-foreground hover:bg-transparent">
                   <div className="flex flex-col items-center gap-3">
                     <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                       <Receipt className="h-6 w-6" />
@@ -471,12 +530,14 @@ function PayableCostCodeCombobox({
 
 function RowActions({
   bill,
+  accountingEnabled,
   onEdit,
   onViewFiles,
   onSyncQbo,
   onDelete,
 }: {
   bill: VendorBillSummary
+  accountingEnabled: boolean
   onEdit?: (bill: VendorBillSummary) => void
   onViewFiles?: (bill: VendorBillSummary) => void
   onSyncQbo?: (bill: VendorBillSummary) => void
@@ -495,10 +556,14 @@ function RowActions({
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={() => onEdit?.(bill)}>Edit</DropdownMenuItem>
         <DropdownMenuItem onClick={() => onViewFiles?.(bill)}>View attachments</DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => onSyncQbo?.(bill)} disabled={bill.qbo_sync_status === "synced" || isVendorCredit(bill)}>
-          Sync to QuickBooks
-        </DropdownMenuItem>
+        {accountingEnabled ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => onSyncQbo?.(bill)} disabled={bill.qbo_sync_status === "synced" || isVendorCredit(bill)}>
+              Sync to QuickBooks
+            </DropdownMenuItem>
+          </>
+        ) : null}
         <DropdownMenuSeparator />
         <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => onDelete?.(bill)}>
           <Trash2 className="mr-2 h-4 w-4" />
@@ -507,27 +572,6 @@ function RowActions({
       </DropdownMenuContent>
     </DropdownMenu>
   )
-}
-
-function billBadge(status?: string) {
-  const normalized = (status ?? "pending").toLowerCase()
-  const map: Record<string, { label: string; tone: string }> = {
-    paid: { label: "Paid", tone: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20" },
-    partial: { label: "Partial", tone: "bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20" },
-    approved: { label: "Approved", tone: "bg-indigo-500/10 text-indigo-700 dark:text-indigo-400 border-indigo-500/20" },
-    pending: { label: "Pending", tone: "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20" },
-  }
-  const config = map[normalized] ?? map.pending
-  return <Badge variant="outline" className={`text-[10px] font-bold uppercase tracking-tight ${config.tone}`}>{config.label}</Badge>
-}
-
-function payableTypeBadge(bill: VendorBillSummary) {
-  if (!isVendorCredit(bill)) return null
-  return <Badge variant="outline" className="border-violet-500/20 bg-violet-500/10 text-[10px] font-bold uppercase tracking-tight text-violet-700 dark:text-violet-400">Vendor credit</Badge>
-}
-
-function vendorLabel(bill: VendorBillSummary) {
-  return bill.qbo_vendor_name ?? bill.company_name ?? "No vendor"
 }
 
 function initialsFor(value: string) {

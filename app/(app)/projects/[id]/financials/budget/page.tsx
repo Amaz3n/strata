@@ -51,6 +51,7 @@ async function FinancialsBudgetData({ id }: { id: string }) {
         varianceAlerts={data.varianceAlerts}
         commitments={data.commitments}
         companies={data.companies}
+        buyoutStatus={data.buyoutStatus}
         budgetBucketCompanies={data.budgetBucketCompanies}
         feeSummary={data.feeSummary}
         gmpSummary={data.gmpSummary}

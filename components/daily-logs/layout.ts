@@ -1,0 +1,2 @@
+export const DAILY_LOGS_PANE_HEADER_CLASS = "h-16"
+export const DAILY_LOGS_PANE_SUBHEADER_CLASS = "h-12"

@@ -43,6 +43,17 @@ export type DirectDocumentUploadOptions = Omit<
 const MULTIPART_THRESHOLD = 32 * 1024 * 1024
 const MULTIPART_CONCURRENCY = 6
 const PART_UPLOAD_ATTEMPTS = 3
+const MAX_BROWSER_CHECKSUM_BYTES = 512 * 1024 * 1024
+
+async function calculateFileChecksum(file: File): Promise<string | undefined> {
+  if (!globalThis.crypto?.subtle || file.size > MAX_BROWSER_CHECKSUM_BYTES) {
+    return undefined
+  }
+  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer())
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("")
+}
 
 function detectContentType(file: File): string {
   if (file.type) return file.type
@@ -85,6 +96,10 @@ export async function uploadDocumentFileDirect(
   options: DirectDocumentUploadOptions
 ): Promise<FileWithUrls> {
   const contentType = detectContentType(file)
+  const checksum = await calculateFileChecksum(file).catch((error) => {
+    console.warn("[documents] Failed to checksum file before upload", error)
+    return undefined
+  })
   const storagePath =
     file.size >= MULTIPART_THRESHOLD
       ? await uploadMultipart(file, options, contentType)
@@ -97,6 +112,7 @@ export async function uploadDocumentFileDirect(
     fileName: file.name,
     fileSize: file.size,
     mimeType: contentType,
+    checksum,
     storagePath,
   })
 }

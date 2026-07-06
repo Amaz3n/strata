@@ -2,6 +2,9 @@ import { Suspense } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageLayout } from "@/components/layout/page-layout";
 import { getCurrentUserPermissions } from "@/lib/services/permissions";
+import { getCompaniesComplianceStatus } from "@/lib/services/compliance-documents";
+import { listCompanies } from "@/lib/services/companies";
+import { listProjects } from "@/lib/services/projects";
 import { DirectoryClient } from "@/components/directory/directory-client";
 import {
   listDirectoryPage,
@@ -34,9 +37,7 @@ function resolveView(value?: string): DirectoryView {
 }
 
 function resolveSort(value?: string): DirectorySortKey {
-  return value === "type" || value === "detail" || value === "contact"
-    ? value
-    : "name";
+  return value === "type" || value === "detail" ? value : "name";
 }
 
 function resolveDirection(value?: string): DirectorySortDirection {
@@ -68,7 +69,14 @@ async function DirectoryData({ searchParams }: DirectoryPageProps) {
   const direction = resolveDirection(resolvedSearchParams?.direction);
   const page = resolvePage(resolvedSearchParams?.page);
 
-  const [directoryPage, trades, permissionResult] = await Promise.all([
+  const [
+    directoryPage,
+    trades,
+    permissionResult,
+    projects,
+    subcontractors,
+    suppliers,
+  ] = await Promise.all([
     listDirectoryPage({
       view,
       page,
@@ -81,22 +89,47 @@ async function DirectoryData({ searchParams }: DirectoryPageProps) {
     }),
     listDirectoryTrades(),
     getCurrentUserPermissions(),
+    listProjects().catch(() => []),
+    listCompanies(undefined, { company_type: "subcontractor" }).catch(
+      () => [],
+    ),
+    listCompanies(undefined, { company_type: "supplier" }).catch(() => []),
   ]);
 
   const permissions = permissionResult?.permissions ?? [];
   const canEdit =
     permissions.includes("org.member") ||
     permissions.includes("directory.write");
-  const canDelete =
-    permissions.includes("org.admin") || permissions.includes("members.manage");
+  const canArchive = canEdit;
+  const watchCompanies = [...subcontractors, ...suppliers];
+  const complianceCompanyIds = Array.from(
+    new Set([
+      ...watchCompanies.map((company) => company.id),
+      ...directoryPage.entries
+        .filter(
+          (entry) =>
+            entry.type === "company" &&
+            (entry.company.company_type === "subcontractor" ||
+              entry.company.company_type === "supplier"),
+        )
+        .map((entry) => entry.id),
+    ]),
+  );
+  const complianceStatusByCompanyId = await getCompaniesComplianceStatus(
+    complianceCompanyIds,
+  ).catch(() => ({}));
 
   return (
     <DirectoryClient
       key={orgId}
       companies={directoryPage.companies}
       contacts={directoryPage.contacts}
+      entries={directoryPage.entries}
+      complianceStatusByCompanyId={complianceStatusByCompanyId}
+      complianceWatchCompanies={watchCompanies}
+      projects={projects}
       canCreate={canEdit}
-      canDelete={canDelete}
+      canArchive={canArchive}
       view={view}
       search={search}
       typeFilter={typeFilter}

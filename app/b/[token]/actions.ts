@@ -5,6 +5,7 @@ import { portalRfiInputSchema, rfiResponseInputSchema } from "@/lib/validation/r
 import {
   assertBidPortalActionAccess,
   acknowledgeBidAddendum,
+  declineBidFromPortal,
   markBidPortalPinVerified,
   submitBidFromPortal,
   validateBidPortalPin,
@@ -212,6 +213,7 @@ export async function createBidPortalRfiAction({ token, input }: { token: string
     const created = await createPortalRfi({
       orgId: access.org_id,
       projectId: access.project.id,
+      bidPackageId: access.bidPackage.id,
       companyId: access.invite.company?.id ?? null,
       contactId: access.invite.contact?.id ?? null,
       subject: parsed.data.subject,
@@ -222,6 +224,25 @@ export async function createBidPortalRfiAction({ token, input }: { token: string
     return { success: true, rfi: created }
   } catch (error) {
     return { success: false, error: (error as Error)?.message ?? "Failed to create RFI" as const }
+  }
+}
+
+export async function declineBidAction({
+  token,
+  reason,
+}: {
+  token: string
+  reason?: string | null
+}) {
+  try {
+    const access = await assertBidPortalActionAccess(token)
+    const result = await declineBidFromPortal({ access, reason: reason ?? null })
+    return { success: true, declined_at: result.declined_at }
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : "Failed to decline bid",
+    }
   }
 }
 

@@ -20,6 +20,7 @@ import { getCurrentPlatformAccess } from "@/lib/services/platform-access"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { getPlatformSessionState } from "@/lib/services/platform-session"
 import { getReleaseNotesSummary } from "@/lib/services/release-notes"
+import { getNavigationBadgeCounts } from "@/lib/services/navigation-badges"
 
 export const dynamic = "force-dynamic"
 
@@ -29,7 +30,7 @@ export default async function AppLayout({
   children: React.ReactNode
 }) {
   // Fetch user data once at the layout level for the persistent shell
-  const [currentUser, crmStats, access, platformAccess, permissionResult, platformSessionState, releaseNotesSummary] = await Promise.all([
+  const [currentUser, crmStats, access, platformAccess, permissionResult, platformSessionState, releaseNotesSummary, navigationBadgeCounts] = await Promise.all([
     getCurrentUserAction(),
     getCrmDashboardStats().catch(() => null),
     getOrgAccessState().catch(() => ({ status: "unknown", locked: false })),
@@ -40,6 +41,11 @@ export default async function AppLayout({
       impersonation: { active: false, targetUserId: null, targetName: null, targetEmail: null, expiresAt: null }
     })),
     getReleaseNotesSummary().catch(() => ({ unreadCount: 0, announcement: null })),
+    getNavigationBadgeCounts().catch(() => ({
+      myWorkBadgeCount: 0,
+      readyToBillBadgeCount: 0,
+      projectReviewBadgeCounts: {} as Record<string, number>,
+    })),
   ])
 
   const pipelineBadgeCount = crmStats ? crmStats.followUpsOverdue + crmStats.followUpsDueToday : 0
@@ -56,6 +62,9 @@ export default async function AppLayout({
         <AppSidebar
           user={currentUser}
           pipelineBadgeCount={pipelineBadgeCount}
+          myWorkBadgeCount={navigationBadgeCounts.myWorkBadgeCount}
+          readyToBillBadgeCount={navigationBadgeCounts.readyToBillBadgeCount}
+          projectReviewBadgeCounts={navigationBadgeCounts.projectReviewBadgeCounts}
           canAccessPlatform={platformAccess.canAccessPlatform}
           permissions={permissionResult.permissions}
           whatsNewUnreadCount={releaseNotesSummary.unreadCount}
@@ -73,6 +82,9 @@ export default async function AppLayout({
           <MobileBottomNav
             user={currentUser}
             pipelineBadgeCount={pipelineBadgeCount}
+            myWorkBadgeCount={navigationBadgeCounts.myWorkBadgeCount}
+            readyToBillBadgeCount={navigationBadgeCounts.readyToBillBadgeCount}
+            projectReviewBadgeCounts={navigationBadgeCounts.projectReviewBadgeCounts}
             canAccessPlatform={platformAccess.canAccessPlatform}
             permissions={permissionResult.permissions}
             whatsNewUnreadCount={releaseNotesSummary.unreadCount}

@@ -67,7 +67,7 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     titleField: 'file_name',
     subtitleFields: ['category', 'size_bytes'],
     descriptionFields: ['description'],
-    searchableFields: ['file_name', 'description'],
+    searchableFields: ['file_name', 'description', 'tags', 'metadata'],
     hrefTemplate: '/files/{id}',
     joins: ['LEFT JOIN projects p ON f.project_id = p.id'],
   },
@@ -292,6 +292,7 @@ export function buildEntitySelectClause(
   if (includeProject) fields.add("project_id")
   for (const field of config.subtitleFields ?? []) fields.add(field)
   for (const field of config.descriptionFields ?? []) fields.add(field)
+  for (const field of config.searchableFields ?? []) fields.add(field)
 
   const baseSelect = Array.from(fields).join(",")
   return includeProject && entityType !== "project" ? `${baseSelect},projects(name)` : baseSelect

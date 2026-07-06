@@ -13,7 +13,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import type { Company, Contact } from "@/lib/types"
 import { getContactAction } from "@/app/(app)/contacts/actions"
 import { trackInCrmAction } from "@/app/(app)/pipeline/actions"
-import { Mail, Phone, Loader2, Contact as ContactIcon } from "@/components/icons"
+import { Mail, Phone, Loader2, Contact as ContactIcon, Send } from "@/components/icons"
 import { useToast } from "@/hooks/use-toast"
 
 interface ContactDetail {
@@ -26,9 +26,10 @@ interface ContactDetailSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onEditContact?: (contact: Contact) => void
+  onInvitePortal?: (contact: Contact) => void
 }
 
-export function ContactDetailSheet({ contactId, open, onOpenChange, onEditContact }: ContactDetailSheetProps) {
+export function ContactDetailSheet({ contactId, open, onOpenChange, onEditContact, onInvitePortal }: ContactDetailSheetProps) {
   const [data, setData] = useState<ContactDetail | null>(null)
   const [isPending, startTransition] = useTransition()
   const [isTrackingCrm, setIsTrackingCrm] = useState(false)
@@ -152,7 +153,7 @@ export function ContactDetailSheet({ contactId, open, onOpenChange, onEditContac
                           <div>
                             <div className="font-medium text-foreground">{item.schedule_item?.name ?? "Schedule item"}</div>
                             <div className="text-xs text-muted-foreground">
-                              {item.project_id} · {item.role ?? "Assigned"}
+                              {item.project?.name ?? "Project"} · {item.role ?? "Assigned"}
                             </div>
                           </div>
                           {item.confirmed_at && <Badge variant="outline">Confirmed</Badge>}
@@ -162,7 +163,10 @@ export function ContactDetailSheet({ contactId, open, onOpenChange, onEditContac
                         <div key={item.id} className="flex items-center justify-between">
                           <div>
                             <div className="font-medium text-foreground">{item.task?.title ?? "Task"}</div>
-                            <div className="text-xs text-muted-foreground">{item.role ?? "Assigned"}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {item.project?.name ? `${item.project.name} · ` : ""}
+                              {item.role ?? "Assigned"}
+                            </div>
                           </div>
                           {item.due_date && <Badge variant="outline">Due {item.due_date}</Badge>}
                         </div>
@@ -183,6 +187,18 @@ export function ContactDetailSheet({ contactId, open, onOpenChange, onEditContac
                   {isTrackingCrm ? "Tracking..." : "Track in Pipeline"}
                 </Button>
                 <div className="flex gap-2">
+                  {onInvitePortal ? (
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        if (!contact) return
+                        onInvitePortal(contact)
+                      }}
+                    >
+                      <Send className="h-4 w-4 mr-2" />
+                      Portal invite
+                    </Button>
+                  ) : null}
                   <Button
                     variant="outline"
                     onClick={() => {
@@ -207,6 +223,5 @@ export function ContactDetailSheet({ contactId, open, onOpenChange, onEditContac
     </Sheet>
   )
 }
-
 
 

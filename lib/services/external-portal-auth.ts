@@ -12,6 +12,9 @@ import type { ExternalPortalAccount, ExternalPortalWorkspaceContext, ExternalPor
 const EXTERNAL_PORTAL_SESSION_COOKIE = "external_portal_session"
 const EXTERNAL_PORTAL_SESSION_TTL_SECONDS = 60 * 60 * 24 * 30
 const PASSWORD_SALT_ROUNDS = 10
+const MAX_PASSWORD_ATTEMPTS = 5
+const PASSWORD_LOCKOUT_DURATION_MS = 15 * 60 * 1000
+const INVALID_CREDENTIALS_MESSAGE = "Invalid email or password"
 
 type ExternalTokenType = "portal" | "bid"
 type ExternalGrantStatus = "active" | "paused" | "revoked"
@@ -29,6 +32,8 @@ interface ExternalPortalAccountRow {
   full_name?: string | null
   password_hash: string
   status: "active" | "paused" | "revoked"
+  password_attempts?: number | null
+  password_locked_until?: string | null
   last_login_at?: string | null
   paused_at?: string | null
   revoked_at?: string | null
@@ -158,6 +163,44 @@ async function touchExternalPortalAccountLogin(accountId: string) {
     .eq("id", accountId)
 }
 
+function isPasswordLocked(account: Pick<ExternalPortalAccountRow, "password_locked_until">) {
+  return !!account.password_locked_until && new Date(account.password_locked_until) > new Date()
+}
+
+async function resetExternalPortalPasswordAttempts(accountId: string) {
+  const supabase = createServiceSupabaseClient()
+  await supabase
+    .from("external_portal_accounts")
+    .update({ password_attempts: 0, password_locked_until: null, updated_at: new Date().toISOString() })
+    .eq("id", accountId)
+}
+
+async function recordExternalPortalPasswordFailure(accounts: ExternalPortalAccountRow[]) {
+  if (accounts.length === 0) return
+  const supabase = createServiceSupabaseClient()
+  const nowIso = new Date().toISOString()
+
+  await Promise.all(
+    accounts.map((account) => {
+      if (isPasswordLocked(account)) return Promise.resolve()
+      const nextAttempts = (account.password_attempts ?? 0) + 1
+      const lockedUntil =
+        nextAttempts >= MAX_PASSWORD_ATTEMPTS
+          ? new Date(Date.now() + PASSWORD_LOCKOUT_DURATION_MS).toISOString()
+          : null
+
+      return supabase
+        .from("external_portal_accounts")
+        .update({
+          password_attempts: nextAttempts,
+          password_locked_until: lockedUntil,
+          updated_at: nowIso,
+        })
+        .eq("id", account.id)
+    }),
+  )
+}
+
 async function createExternalPortalSession({
   accountId,
   orgId,
@@ -198,6 +241,8 @@ function mapExternalAccountRow(row: any): ExternalPortalAccountRow {
     full_name: row.full_name ?? null,
     password_hash: row.password_hash,
     status: row.status,
+    password_attempts: row.password_attempts ?? 0,
+    password_locked_until: row.password_locked_until ?? null,
     last_login_at: row.last_login_at ?? null,
     paused_at: row.paused_at ?? null,
     revoked_at: row.revoked_at ?? null,
@@ -403,7 +448,7 @@ export async function signInExternalPortalAccount({
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("external_portal_accounts")
-    .select("id, org_id, email, full_name, password_hash, status, last_login_at, paused_at, revoked_at, created_at")
+    .select("id, org_id, email, full_name, password_hash, status, password_attempts, password_locked_until, last_login_at, paused_at, revoked_at, created_at")
     .ilike("email", normalizedEmail)
     .order("last_login_at", { ascending: false, nullsFirst: false })
     .order("created_at", { ascending: false })
@@ -414,13 +459,14 @@ export async function signInExternalPortalAccount({
 
   const candidates = (data ?? []).map(mapExternalAccountRow)
   if (candidates.length === 0) {
-    throw new Error("Account not found for this email")
+    throw new Error(INVALID_CREDENTIALS_MESSAGE)
   }
 
   let matchedAccount: ExternalPortalAccountRow | null = null
   let matchedPausedAccount = false
 
   for (const account of candidates) {
+    if (isPasswordLocked(account)) continue
     const validPassword = await compare(password, account.password_hash)
     if (!validPassword) continue
     if (account.status === "active") {
@@ -434,9 +480,11 @@ export async function signInExternalPortalAccount({
     if (matchedPausedAccount) {
       throw new Error("This account is paused or revoked. Contact the builder.")
     }
-    throw new Error("Invalid email or password")
+    await recordExternalPortalPasswordFailure(candidates)
+    throw new Error(INVALID_CREDENTIALS_MESSAGE)
   }
 
+  await resetExternalPortalPasswordAttempts(matchedAccount.id)
   await touchExternalPortalAccountLogin(matchedAccount.id)
   await createExternalPortalSession({
     accountId: matchedAccount.id,
@@ -474,7 +522,7 @@ export async function authenticateExternalPortalAccountWithToken({
   const supabase = createServiceSupabaseClient()
   const { data: existing } = await supabase
     .from("external_portal_accounts")
-    .select("id, org_id, email, full_name, password_hash, status, last_login_at, paused_at, revoked_at, created_at")
+    .select("id, org_id, email, full_name, password_hash, status, password_attempts, password_locked_until, last_login_at, paused_at, revoked_at, created_at")
     .eq("org_id", tokenContext.orgId)
     .ilike("email", lookupEmail)
     .maybeSingle()
@@ -500,9 +548,14 @@ export async function authenticateExternalPortalAccountWithToken({
       }
       accountId = created.id as string
     } else {
+      const existingAccount = mapExternalAccountRow(existing)
+      if (isPasswordLocked(existingAccount)) {
+        throw new Error(INVALID_CREDENTIALS_MESSAGE)
+      }
       const validPassword = await compare(password, existing.password_hash as string)
       if (!validPassword) {
-        throw new Error("Incorrect password for this email")
+        await recordExternalPortalPasswordFailure([existingAccount])
+        throw new Error(INVALID_CREDENTIALS_MESSAGE)
       }
       accountId = existing.id as string
       if (!existing.full_name && fullName?.trim()) {
@@ -514,11 +567,16 @@ export async function authenticateExternalPortalAccountWithToken({
     }
   } else {
     if (!existing) {
-      throw new Error("Account not found for this email")
+      throw new Error(INVALID_CREDENTIALS_MESSAGE)
+    }
+    const existingAccount = mapExternalAccountRow(existing)
+    if (isPasswordLocked(existingAccount)) {
+      throw new Error(INVALID_CREDENTIALS_MESSAGE)
     }
     const validPassword = await compare(password, existing.password_hash as string)
     if (!validPassword) {
-      throw new Error("Invalid email or password")
+      await recordExternalPortalPasswordFailure([existingAccount])
+      throw new Error(INVALID_CREDENTIALS_MESSAGE)
     }
     accountId = existing.id as string
   }
@@ -531,6 +589,8 @@ export async function authenticateExternalPortalAccountWithToken({
   if (accountStatus !== "active") {
     throw new Error("This account is paused or revoked. Contact the builder.")
   }
+
+  await resetExternalPortalPasswordAttempts(accountId)
 
   let grantQuery = supabase
     .from("external_portal_account_grants")

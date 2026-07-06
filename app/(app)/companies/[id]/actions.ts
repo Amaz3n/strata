@@ -2,9 +2,10 @@
 
 import { revalidatePath } from "next/cache"
 
-import { commitmentInputSchema, commitmentUpdateSchema } from "@/lib/validation/commitments"
+import { commitmentInputSchema, commitmentLineInputSchema, commitmentUpdateSchema } from "@/lib/validation/commitments"
 import { vendorBillStatusUpdateSchema } from "@/lib/validation/vendor-bills"
-import { createCommitment, listCompanyCommitments, updateCommitment } from "@/lib/services/commitments"
+import { createCommitment, createCommitmentLine, listCompanyCommitments, updateCommitment } from "@/lib/services/commitments"
+import { listCostCodes } from "@/lib/services/cost-codes"
 import { listVendorBillsForCompany, updateVendorBillStatus } from "@/lib/services/vendor-bills"
 import { AuthorizationError } from "@/lib/services/authorization"
 
@@ -30,6 +31,31 @@ export async function createCompanyCommitmentAction(input: unknown) {
     revalidatePath(`/companies/${parsed.company_id}`)
     revalidatePath("/directory")
     return result
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
+}
+
+export async function createCompanyCommitmentWithLineAction(input: unknown) {
+  try {
+    const payload = input as { commitment?: unknown; line?: unknown }
+    const commitmentInput = commitmentInputSchema.parse(payload.commitment)
+    const lineInput = commitmentLineInputSchema.parse(payload.line)
+    const result = await createCommitment({ input: commitmentInput })
+    await createCommitmentLine(result.id, lineInput)
+    revalidatePath(`/companies/${commitmentInput.company_id}`)
+    revalidatePath(`/projects/${commitmentInput.project_id}/financials/budget`)
+    revalidatePath(`/projects/${commitmentInput.project_id}/vendors`)
+    revalidatePath("/directory")
+    return result
+  } catch (error) {
+    rethrowTypedAuthError(error)
+  }
+}
+
+export async function listCompanyCommitmentCostCodesAction() {
+  try {
+    return await listCostCodes()
   } catch (error) {
     rethrowTypedAuthError(error)
   }

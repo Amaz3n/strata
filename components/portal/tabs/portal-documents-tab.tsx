@@ -1,55 +1,23 @@
 "use client"
 
 import { format } from "date-fns"
-import { FileText } from "lucide-react"
+import { Download, Eye, FileText } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { FILE_CATEGORIES } from "@/components/files/types"
+import { logPortalFileAccessClientAction } from "@/app/(app)/documents/actions"
 import type { ClientPortalData } from "@/lib/types"
 
 interface PortalDocumentsTabProps {
   data: ClientPortalData
   token: string
-  portalType: "client" | "sub"
+  canDownload?: boolean
 }
 
-export function PortalDocumentsTab({ data, token, portalType }: PortalDocumentsTabProps) {
-  const basePath = portalType === "client" ? "p" : "s"
-
+export function PortalDocumentsTab({ data, token, canDownload = true }: PortalDocumentsTabProps) {
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">Invoices</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {data.invoices.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No invoices yet</p>
-          ) : (
-            data.invoices.map((inv) => (
-              <a
-                key={inv.id}
-                href={inv.token ? `/i/${inv.token}` : `/${basePath}/${token}/invoices/${inv.id}`}
-                className="flex items-center justify-between py-3 border-b last:border-0 hover:bg-muted/50 -mx-2 px-2 rounded"
-              >
-                <div>
-                  <p className="text-sm font-medium">{inv.invoice_number}</p>
-                  <p className="text-xs text-muted-foreground">{inv.title}</p>
-                </div>
-                <div className="text-right">
-                  <Badge variant="outline" className="capitalize text-xs mb-1">
-                    {inv.status}
-                  </Badge>
-                  {inv.total_cents != null && (
-                    <p className="text-sm font-medium">${(inv.total_cents / 100).toLocaleString()}</p>
-                  )}
-                </div>
-              </a>
-            ))
-          )}
-        </CardContent>
-      </Card>
-
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-base">Shared Files</CardTitle>
@@ -72,6 +40,32 @@ export function PortalDocumentsTab({ data, token, portalType }: PortalDocumentsT
                     </Badge>
                   )}
                 </div>
+                {file.url ? (
+                  <div className="flex shrink-0 gap-1">
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      onClick={() => logPortalFileAccessClientAction(file.id, token, "view")}
+                      asChild
+                    >
+                      <a href={file.url} target="_blank" rel="noopener noreferrer" aria-label={`View ${file.file_name}`}>
+                        <Eye className="h-4 w-4" />
+                      </a>
+                    </Button>
+                    {canDownload ? (
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        onClick={() => logPortalFileAccessClientAction(file.id, token, "download")}
+                        asChild
+                      >
+                        <a href={`${file.url}?download=1`} download={file.file_name} aria-label={`Download ${file.file_name}`}>
+                          <Download className="h-4 w-4" />
+                        </a>
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             ))
           )}

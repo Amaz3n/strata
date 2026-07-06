@@ -86,6 +86,8 @@ export interface Company {
 export type ComplianceRules = {
   require_lien_waiver?: boolean
   block_payment_on_missing_docs?: boolean
+  warn_subcontract_execution_on_missing_docs?: boolean
+  block_subcontract_execution_on_missing_docs?: boolean
 }
 
 export type ComplianceRequirementTemplateItem = {
@@ -197,6 +199,16 @@ export interface Project {
   updated_at: string
 }
 
+export interface ProjectNavigationItem {
+  id: string
+  org_id: string
+  name: string
+  status: ProjectStatus
+  financial_settings?: Pick<ProjectFinancialSettings, "billing_model"> | null
+  created_at: string
+  updated_at: string
+}
+
 // Lightweight, duration-weighted schedule rollup used by the projects list "Progress" column.
 // Computed on the fly from schedule_items (cancelled items excluded); not persisted.
 export interface ProjectScheduleSummary {
@@ -249,15 +261,19 @@ export interface Contract {
   proposal_id?: string
   number?: string
   title: string
-  status: "draft" | "active" | "amended" | "completed" | "terminated"
+  status: "draft" | "active" | "amended" | "completed" | "terminated" | "superseded"
   contract_type?: "fixed" | "fixed_price" | "cost_plus" | "time_materials" | "unit_price"
   total_cents?: number
   currency: string
   markup_percent?: number
   gmp_cents?: number | null
+  contingency_cents?: number | null
+  fixed_fee_cents?: number | null
+  fee_presentation?: "embedded" | "separate_total" | "separate_by_code" | null
   savings_split_owner_pct?: number | null
   savings_split_builder_pct?: number | null
   labor_burden_multiplier?: number | null
+  rate_schedule_id?: string | null
   requires_client_cost_approval?: boolean | null
   open_book?: boolean | null
   retainage_percent?: number
@@ -271,6 +287,7 @@ export interface Contract {
     signer_name?: string
     signer_ip?: string
   }
+  parent_contract_id?: string | null
   snapshot: Record<string, any>
   created_at: string
   updated_at: string
@@ -287,7 +304,8 @@ export interface TaskChecklistItem {
 export interface Task {
   id: string
   org_id: string
-  project_id: string
+  project_id: string | null
+  project_name?: string
   title: string
   description?: string
   status: TaskStatus
@@ -304,6 +322,9 @@ export interface Task {
   assignee_company?: { id: string; name: string; company_type?: string }
   start_date?: string
   due_date?: string
+  // Self-reminder: the date to email the creator, and when that email went out.
+  reminder_at?: string | null
+  reminder_sent_at?: string | null
   completed_at?: string
   // Construction-specific fields stored in metadata
   location?: string // e.g., "Kitchen", "2nd Floor Bathroom"
@@ -350,12 +371,61 @@ export interface DailyLog {
   date: string
   weather?: string
   notes?: string
+  daily_report_id?: string
   created_by?: string
   created_at: string
   updated_at: string
+  author?: {
+    id: string
+    full_name?: string
+    email?: string
+    avatar_url?: string
+  }
   entries?: DailyLogEntry[]
   mentions?: DailyLogMention[]
   comments?: DailyLogComment[]
+}
+
+export type DailyReportStatus = "draft" | "submitted"
+export type DailyReportDayType = "work_day" | "rain_day" | "weekend" | "holiday" | "no_work"
+
+/** The canonical day-document for one project on one date. */
+export interface DailyReport {
+  id: string
+  org_id: string
+  project_id: string
+  date: string
+  status: DailyReportStatus
+  weather?: string
+  day_type?: DailyReportDayType
+  share_with_client?: boolean
+  submitted_at?: string
+  submitted_by?: string
+  submitted_by_user?: {
+    id: string
+    full_name?: string
+    email?: string
+    avatar_url?: string
+  }
+  created_at: string
+  updated_at: string
+  manpower?: DailyReportManpower[]
+}
+
+/** One crew/company present on a day: headcount + hours. */
+export interface DailyReportManpower {
+  id: string
+  org_id: string
+  project_id: string
+  daily_report_id: string
+  company?: string
+  trade?: string
+  workers?: number
+  hours?: number
+  notes?: string
+  created_by?: string
+  created_at: string
+  updated_at: string
 }
 
 export interface DailyLogMention {
@@ -562,7 +632,7 @@ export interface PortalPermissions {
   can_approve_change_orders: boolean
   can_submit_selections: boolean
   can_create_punch_items: boolean
-  can_message: boolean
+  can_view_warranty?: boolean
   can_view_invoices?: boolean
   can_pay_invoices?: boolean
   can_view_rfis?: boolean
@@ -573,6 +643,8 @@ export interface PortalPermissions {
   can_view_commitments?: boolean     // Can see their contracts
   can_view_bills?: boolean           // Can see their submitted invoices
   can_submit_invoices?: boolean      // Can submit new invoices
+  can_submit_time?: boolean
+  can_submit_expenses?: boolean
   can_upload_compliance_docs?: boolean  // Can upload compliance documents
 }
 
@@ -758,6 +830,8 @@ export interface InvoiceLine {
   unit?: string | null
   unit_cost_cents: number
   taxable?: boolean | null
+  /** Per-line tax rate override (%). Null/undefined inherits the invoice-level rate. */
+  tax_rate_percent?: number | null
   qbo_income_account_id?: string | null
   qbo_income_account_name?: string | null
   billable_cost_ids?: string[]
@@ -772,6 +846,10 @@ export interface InvoiceTotals {
   total_cents: number
   balance_due_cents?: number
   tax_rate?: number | null
+  /** Invoice-level discount applied to the subtotal before tax. */
+  discount_cents?: number
+  discount_type?: "percent" | "fixed" | null
+  discount_value?: number | null
 }
 
 export interface Invoice {
@@ -835,6 +913,38 @@ export interface Payment {
   received_at: string
   created_at?: string
   updated_at?: string
+}
+
+export const INVOICE_WAIVER_TYPES = [
+  "conditional_progress",
+  "unconditional_progress",
+  "conditional_final",
+  "unconditional_final",
+] as const
+
+export type InvoiceLienWaiverType = (typeof INVOICE_WAIVER_TYPES)[number]
+
+export const INVOICE_WAIVER_TYPE_LABELS: Record<InvoiceLienWaiverType, string> = {
+  conditional_progress: "Conditional waiver — progress payment",
+  unconditional_progress: "Unconditional waiver — progress payment",
+  conditional_final: "Conditional waiver — final payment",
+  unconditional_final: "Unconditional waiver — final payment",
+}
+
+export interface InvoiceLienWaiver {
+  id: string
+  org_id: string
+  project_id: string | null
+  invoice_id: string
+  waiver_type: InvoiceLienWaiverType
+  status: "pending_payment" | "released" | "void"
+  amount_cents: number
+  through_date: string | null
+  claimant_name: string | null
+  customer_name: string | null
+  property_description: string | null
+  released_at: string | null
+  created_at: string
 }
 
 export type PaymentReversalType = "refund" | "ach_return" | "chargeback" | "dispute" | "correction"
@@ -1095,6 +1205,8 @@ export interface Selection {
   project_id: string
   category_id: string
   selected_option_id?: string | null
+  category?: Pick<SelectionCategory, "id" | "name" | "description"> | null
+  selected_option?: SelectionOption | null
   status: "pending" | "selected" | "confirmed" | "ordered" | "received"
   due_date?: string | null
   selected_at?: string | null
@@ -1169,6 +1281,7 @@ export interface Rfi {
   id: string
   org_id: string
   project_id: string
+  bid_package_id?: string | null
   rfi_number: number
   subject: string
   question: string
@@ -1266,6 +1379,9 @@ export interface PortalFinancialSummary {
     amount_cents: number
     due_date?: string | null
     status: string
+    invoice_id?: string | null
+    invoice_balance_due_cents?: number | null
+    payment_available?: boolean
   }
   draws: DrawSchedule[]
 }
@@ -1302,11 +1418,16 @@ export interface SubPortalCommitment {
   title: string
   status: "draft" | "approved" | "complete" | "canceled"
   total_cents: number
+  approved_change_orders_cents?: number
+  revised_total_cents?: number
   billed_cents: number
   paid_cents: number
   remaining_cents: number
   start_date?: string | null
   end_date?: string | null
+  executed_at?: string | null
+  source_document_id?: string | null
+  signature_envelope_id?: string | null
   project_name: string
 }
 
@@ -1323,6 +1444,8 @@ export interface SubPortalBill {
   submitted_at: string
   paid_at?: string | null
   payment_reference?: string | null
+  lien_waiver_status?: string | null
+  lien_waiver_received_at?: string | null
 }
 
 export interface SubPortalFinancialSummary {

@@ -40,6 +40,10 @@ function normalizeName(value: string) {
   return value.trim().replace(/\s+/g, " ").toLowerCase()
 }
 
+function formatMoney(cents: number) {
+  return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
+}
+
 interface AddPayableSheetProps {
   projectId: string
   open: boolean
@@ -94,6 +98,12 @@ export function AddPayableSheet({
   }, [open, projectId])
 
   const amountCents = Math.round((Number.parseFloat(amountDollars) || 0) * 100)
+  const selectedCommitment =
+    commitmentId !== NO_COMMITMENT ? commitments.find((commitment) => commitment.id === commitmentId) ?? null : null
+  const commitmentBilledCents = selectedCommitment?.billed_cents ?? 0
+  const commitmentTotalCents = selectedCommitment?.total_cents ?? 0
+  const commitmentAfterBillCents = commitmentBilledCents + amountCents
+  const commitmentOverBudget = Boolean(selectedCommitment && commitmentTotalCents > 0 && commitmentAfterBillCents > commitmentTotalCents)
   const selectedCompany = companyId ? companies.find((company) => company.id === companyId) ?? vendorEditorCompany : null
   const visibleCompanies = companies.filter(
     (company) => !vendorName.trim() || normalizeName(company.name).includes(normalizeName(vendorName)),
@@ -223,7 +233,7 @@ export function AddPayableSheet({
           setIsUploading(false)
         }
 
-        await createProjectVendorBillAction(projectId, {
+        const result = await createProjectVendorBillAction(projectId, {
           commitment_id: commitmentId === NO_COMMITMENT ? null : commitmentId,
           company_id: companyId || undefined,
           vendor_name: selectedCompany?.name ?? (vendorName.trim() || undefined),
@@ -234,6 +244,11 @@ export function AddPayableSheet({
           description: description || undefined,
           file_id: fileId,
         })
+        if (!result.success) {
+          toast.error(result.error)
+          setIsUploading(false)
+          return
+        }
 
         toast.success("Payable added successfully")
         onOpenChange(false)
@@ -393,6 +408,24 @@ export function AddPayableSheet({
                   ))}
                 </SelectContent>
               </Select>
+              {selectedCommitment ? (
+                <div
+                  className={cn(
+                    "rounded-md border px-3 py-2 text-xs",
+                    commitmentOverBudget
+                      ? "border-destructive/30 bg-destructive/10 text-destructive"
+                      : "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+                  )}
+                >
+                  <div className="font-medium">
+                    Billed to date {formatMoney(commitmentBilledCents)} of {formatMoney(commitmentTotalCents)}
+                  </div>
+                  <div className="mt-0.5">
+                    This bill takes the commitment to {formatMoney(commitmentAfterBillCents)}
+                    {commitmentTotalCents > 0 ? ` (${Math.round((commitmentAfterBillCents / commitmentTotalCents) * 100)}%)` : ""}.
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">

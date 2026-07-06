@@ -652,8 +652,8 @@ export async function searchEntities(
             limit: perEntityLimit,
           })
           fanoutResults.push(...result)
-        } catch (error) {
-          console.error(`Failed to search ${entityType}:`, error)
+        } catch {
+          // Entity search is best-effort; a single table issue should not break the command bar.
         }
       }),
     )
@@ -777,10 +777,7 @@ async function searchSingleEntity(
 
   const { data, error } = await queryBuilder
 
-  if (error) {
-    console.error(`Search error for ${entityType}:`, error)
-    return []
-  }
+  if (error) return []
 
   if (!Array.isArray(data) || data.length === 0) return []
   const normalizedRows = data as Array<Record<string, any>>

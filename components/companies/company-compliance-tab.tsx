@@ -61,8 +61,9 @@ import {
   uploadComplianceDocumentAction,
   waiveCompanyRequirementAction,
 } from "@/app/(app)/companies/actions"
+import { getFileDownloadUrlAction } from "@/app/(app)/documents/actions"
 import { useToast } from "@/hooks/use-toast"
-import { AlertCircle, CalendarDays, CheckCircle2, Clock, FileText, Loader2, Settings, Upload, XCircle } from "@/components/icons"
+import { AlertCircle, CalendarDays, CheckCircle2, Clock, ExternalLink, FileText, Loader2, Settings, Upload, XCircle } from "@/components/icons"
 import { cn } from "@/lib/utils"
 
 function formatDate(value?: string | null) {
@@ -675,7 +676,7 @@ function UploadDialog({
               onClick={() => fileInputRef.current?.click()}
               className={cn(
                 "w-full border border-dashed px-4 py-5 text-center text-sm transition-colors hover:border-primary",
-                file ? "border-emerald-500 bg-emerald-50 text-emerald-700" : "text-muted-foreground",
+                file ? "border-success bg-success/10 text-success" : "text-muted-foreground",
               )}
             >
               <input
@@ -936,20 +937,17 @@ function ReqStatePill({ state }: { state: ReqState }) {
     ok: {
       label: "On file",
       icon: <CheckCircle2 className="h-3 w-3" />,
-      className:
-        "border-emerald-600/30 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400",
+      className: "border-success/40 bg-success/10 text-success",
     },
     pending: {
       label: "Pending review",
       icon: <Clock className="h-3 w-3" />,
-      className:
-        "border-amber-600/30 bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400",
+      className: "border-warning/40 bg-warning/10 text-warning",
     },
     expired: {
       label: "Expired",
       icon: <AlertCircle className="h-3 w-3" />,
-      className:
-        "border-orange-600/30 bg-orange-50 text-orange-700 dark:bg-orange-950/40 dark:text-orange-400",
+      className: "border-destructive/40 bg-destructive/10 text-destructive",
     },
     missing: {
       label: "Missing",
@@ -959,8 +957,7 @@ function ReqStatePill({ state }: { state: ReqState }) {
     waived: {
       label: "Waived",
       icon: <CheckCircle2 className="h-3 w-3" />,
-      className:
-        "border-sky-600/30 bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-400",
+      className: "border-primary/30 bg-primary/10 text-primary",
     },
   }
   const { label, icon, className } = map[state]
@@ -1014,6 +1011,20 @@ export function CompanyComplianceTab({ company }: { company: Company }) {
   const openReview = (doc: ComplianceDocument) => {
     setReviewDocument(doc)
     setReviewOpen(true)
+  }
+
+  const viewDocument = async (doc?: ComplianceDocument) => {
+    const fileId = doc?.file_id
+    if (!fileId) return
+    try {
+      const url = await getFileDownloadUrlAction(fileId)
+      window.open(url, "_blank", "noopener,noreferrer")
+    } catch (error) {
+      toast({
+        title: "Unable to open document",
+        description: (error as Error).message,
+      })
+    }
   }
 
   const openWaiver = (requirement: ComplianceRequirement) => {
@@ -1135,8 +1146,9 @@ export function CompanyComplianceTab({ company }: { company: Company }) {
         </div>
       ) : (
         <div className="divide-y">
-          {requirementRows.map(({ req, state, approved, pending }) => {
+          {requirementRows.map(({ req, state, approved, pending, expired }) => {
             const messages = deficienciesByRequirementId.get(req.id) ?? []
+            const viewable = approved ?? pending ?? expired
             const subParts: string[] = []
             if (state === "ok" && approved?.expiry_date) {
               subParts.push(`Expires ${formatDate(approved.expiry_date)}`)
@@ -1172,6 +1184,16 @@ export function CompanyComplianceTab({ company }: { company: Company }) {
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     <ReqStatePill state={state} />
+                    {viewable?.file_id ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => viewDocument(viewable)}
+                      >
+                        <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
+                        View
+                      </Button>
+                    ) : null}
                     {pending ? (
                       <Button size="sm" onClick={() => openReview(pending)}>
                         Review
@@ -1194,12 +1216,12 @@ export function CompanyComplianceTab({ company }: { company: Company }) {
                   </div>
                 </div>
                 {req.waiver?.reason ? (
-                  <div className="ml-7 mt-2 border-l-2 border-sky-400 bg-sky-50 px-3 py-2 text-xs text-sky-800 dark:bg-sky-950/30 dark:text-sky-300">
+                  <div className="ml-7 mt-2 border-l-2 border-primary bg-primary/10 px-3 py-2 text-xs text-foreground/80">
                     {req.waiver.reason}
                   </div>
                 ) : null}
                 {messages.length > 0 ? (
-                  <div className="ml-7 mt-2 flex items-start gap-2 border-l-2 border-orange-400 bg-orange-50 px-3 py-2 text-xs text-orange-800 dark:bg-orange-950/30 dark:text-orange-300">
+                  <div className="ml-7 mt-2 flex items-start gap-2 border-l-2 border-warning bg-warning/10 px-3 py-2 text-xs text-warning">
                     <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                     <div className="space-y-0.5">
                       {messages.map((message) => (

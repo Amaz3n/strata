@@ -41,33 +41,17 @@ interface ProjectAvatarProps {
   projectId: string
   className?: string
   size?: "sm" | "md" | "lg" | "xl"
-  animated?: boolean
 }
 
-export function ProjectAvatar({
-  projectId,
-  className,
-  size = "md",
-  animated = false,
-}: ProjectAvatarProps) {
+export function ProjectAvatar({ projectId, className, size = "md" }: ProjectAvatarProps) {
   const gradient = getProjectGradient(projectId)
 
   const sizeClasses = {
-    sm: "size-4 rounded",
-    md: "size-5 rounded-md",
-    lg: "size-6 rounded-md",
-    xl: "size-10 rounded-lg",
+    sm: "size-4",
+    md: "size-5",
+    lg: "size-6",
+    xl: "size-10",
   }
 
-  return (
-    <div
-      className={cn(
-        "bg-gradient-to-br shrink-0",
-        gradient,
-        sizeClasses[size],
-        animated && "project-avatar-animated",
-        className
-      )}
-    />
-  )
+  return <div className={cn("bg-gradient-to-br shrink-0", gradient, sizeClasses[size], className)} />
 }

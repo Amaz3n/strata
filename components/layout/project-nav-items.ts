@@ -1,0 +1,382 @@
+import { Briefcase, Flag, Hammer, LayoutDashboard, Wallet } from "@/components/icons"
+import type { LucideIcon } from "@/components/icons"
+import { getProjectFinancialFeatureConfig } from "@/lib/financials/billing-model"
+import type { Project, ProjectNavigationItem } from "@/lib/types"
+
+export type ProjectSection =
+  | "overview"
+  | "documents"
+  | "drawings"
+  | "bids"
+  | "signatures"
+  | "schedule"
+  | "daily-logs"
+  | "tasks"
+  | "time"
+  | "punch"
+  | "rfis"
+  | "submittals"
+  | "decisions"
+  | "financials"
+  | "financials-review"
+  | "financials-tm-tickets"
+  | "budget"
+  | "commitments"
+  | "payables"
+  | "receivables"
+  | "invoices"
+  | "expenses"
+  | "change-orders"
+  | "reports"
+  | "closeout"
+  | "warranty"
+  | "cost-inbox"
+  | "trust-center"
+
+export type ProjectNavSubItem = {
+  title: string
+  url: string
+  isActive?: boolean
+  badge?: number
+  requiredAny?: string[]
+}
+
+export type ProjectNavItem = {
+  title: string
+  url: string
+  icon?: LucideIcon
+  isActive?: boolean
+  badge?: number
+  disabled?: boolean
+  requiredAny?: string[]
+  items?: ProjectNavSubItem[]
+}
+
+export type ProjectNavGroup = {
+  label?: string
+  items: ProjectNavItem[]
+}
+
+const FINANCIAL_SECTIONS = new Set<ProjectSection>([
+  "financials",
+  "financials-review",
+  "financials-tm-tickets",
+  "budget",
+  "commitments",
+  "payables",
+  "receivables",
+  "invoices",
+  "expenses",
+  "change-orders",
+  "reports",
+  "cost-inbox",
+])
+
+export const BUILD_SECTIONS = new Set<ProjectSection>([
+  "schedule",
+  "daily-logs",
+  "tasks",
+  "time",
+  "punch",
+  "rfis",
+  "submittals",
+  "decisions",
+])
+
+export const PLAN_SECTIONS = new Set<ProjectSection>(["documents", "drawings", "bids", "signatures"])
+
+export function getProjectIdFromPath(pathname: string): string | null {
+  const segments = pathname.split("?")[0]?.split("/").filter(Boolean) ?? []
+  if (segments[0] !== "projects" || !segments[1]) return null
+  return decodeURIComponent(segments[1])
+}
+
+export function getProjectSection(pathname: string): ProjectSection {
+  const segments = pathname.split("?")[0]?.split("/").filter(Boolean) ?? []
+  if (segments[0] !== "projects" || !segments[1]) return "overview"
+
+  const segment = segments[2]
+  const subSegment = segments[3]
+
+  if (!segment) return "overview"
+  if (segment === "financials") {
+    switch (subSegment) {
+      case "review":
+        return "financials-review"
+      case "tm-tickets":
+        return "financials-tm-tickets"
+      case "close":
+        return "receivables"
+      case "budget":
+        return "budget"
+      case "payables":
+        return "payables"
+      case "receivables":
+        return "receivables"
+      case "trust-center":
+        return "trust-center"
+      default:
+        return "financials"
+    }
+  }
+
+  switch (segment) {
+    case "documents":
+    case "drawings":
+    case "bids":
+    case "signatures":
+    case "schedule":
+    case "daily-logs":
+    case "tasks":
+    case "time":
+    case "punch":
+    case "rfis":
+    case "submittals":
+    case "decisions":
+    case "budget":
+    case "commitments":
+    case "payables":
+    case "invoices":
+    case "expenses":
+    case "reports":
+    case "closeout":
+    case "warranty":
+    case "cost-inbox":
+      return segment
+    case "change-orders":
+      return "change-orders"
+    default:
+      return "overview"
+  }
+}
+
+export function getFinancialLandingUrl(projectId: string) {
+  return `/projects/${projectId}/financials/receivables`
+}
+
+function visibleBadge(count?: number) {
+  return count && count > 0 ? count : undefined
+}
+
+function buildFinancialSubs(
+  projectId: string,
+  section: ProjectSection,
+  project?: Project | ProjectNavigationItem,
+  reviewBadgeCount?: number,
+): ProjectNavSubItem[] {
+  const base = `/projects/${projectId}`
+  const url = (suffix = "") => `${base}${suffix}`
+  const config = project
+    ? getProjectFinancialFeatureConfig(
+        project as Project,
+        "billing_contract" in project ? project.billing_contract : null,
+      )
+    : null
+
+  return [
+    config?.showInbox === false
+      ? null
+      : {
+          title: "Review",
+          url: url("/financials/review"),
+          isActive: section === "financials-review" || section === "cost-inbox",
+          badge: visibleBadge(reviewBadgeCount),
+          requiredAny: ["invoice.write", "bill.approve"],
+        },
+    config?.billingModel === "time_and_materials"
+      ? {
+          title: "T&M Tickets",
+          url: url("/financials/tm-tickets"),
+          isActive: section === "financials-tm-tickets",
+          requiredAny: ["invoice.write"],
+        }
+      : null,
+    {
+      title: "Budget",
+      url: url("/financials/budget"),
+      isActive: section === "budget" || section === "commitments",
+      requiredAny: ["budget.read", "commitment.read"],
+    },
+    {
+      title: "Receivables",
+      url: url("/financials/receivables"),
+      isActive: section === "receivables" || section === "invoices",
+      requiredAny: ["invoice.read", "payment.read", "draw.read"],
+    },
+    {
+      title: "Payables",
+      url: url("/financials/payables"),
+      isActive: section === "payables",
+      requiredAny: ["bill.read", "commitment.read"],
+    },
+    {
+      title: "Expenses",
+      url: url("/expenses"),
+      isActive: section === "expenses",
+      requiredAny: ["invoice.read", "invoice.write", "bill.read"],
+    },
+    {
+      title: "Change Orders",
+      url: url("/change-orders"),
+      isActive: section === "change-orders",
+      requiredAny: ["change_order.read"],
+    },
+    {
+      title: "Reports",
+      url: url("/reports"),
+      isActive: section === "reports",
+      requiredAny: ["report.read", "budget.read", "invoice.read"],
+    },
+  ].filter(Boolean) as ProjectNavSubItem[]
+}
+
+export function buildProjectNavGroups({
+  projectId,
+  section,
+  project,
+  reviewBadgeCount,
+}: {
+  projectId: string
+  section: ProjectSection
+  project?: Project | ProjectNavigationItem
+  reviewBadgeCount?: number
+}): ProjectNavGroup[] {
+  const base = `/projects/${projectId}`
+  const url = (suffix = "") => `${base}${suffix}`
+  const config = project
+    ? getProjectFinancialFeatureConfig(
+        project as Project,
+        "billing_contract" in project ? project.billing_contract : null,
+      )
+    : null
+
+  const planSubs: ProjectNavSubItem[] = [
+    {
+      title: "Documents",
+      url: url("/documents"),
+      isActive: section === "documents",
+      requiredAny: ["docs.read"],
+    },
+    {
+      title: "Drawings",
+      url: url("/drawings"),
+      isActive: section === "drawings",
+      requiredAny: ["drawing.read", "docs.read"],
+    },
+    {
+      title: "Bids",
+      url: url("/bids"),
+      isActive: section === "bids",
+      requiredAny: ["bid.read", "bid.write"],
+    },
+    {
+      title: "Signatures",
+      url: url("/signatures"),
+      isActive: section === "signatures",
+      requiredAny: ["signature.read", "signature.send"],
+    },
+  ]
+  const buildSubs: ProjectNavSubItem[] = [
+    {
+      title: "Schedule",
+      url: url("/schedule"),
+      isActive: section === "schedule",
+      requiredAny: ["schedule.read"],
+    },
+    {
+      title: "Daily Logs",
+      url: url("/daily-logs"),
+      isActive: section === "daily-logs",
+      requiredAny: ["daily_log.read"],
+    },
+    config?.showTime === false
+      ? null
+      : {
+          title: "Time",
+          url: url("/time"),
+          isActive: section === "time",
+          requiredAny: ["time.read", "time.write"],
+        },
+    {
+      title: "Punch",
+      url: url("/punch"),
+      isActive: section === "punch",
+      requiredAny: ["punch.read", "punch.write"],
+    },
+    {
+      title: "RFIs",
+      url: url("/rfis"),
+      isActive: section === "rfis",
+      requiredAny: ["rfi.read"],
+    },
+    {
+      title: "Submittals",
+      url: url("/submittals"),
+      isActive: section === "submittals",
+      requiredAny: ["submittal.read"],
+    },
+    {
+      title: "Decisions",
+      url: url("/decisions"),
+      isActive: section === "decisions",
+      requiredAny: ["decision.read", "decision.write"],
+    },
+  ].filter(Boolean) as ProjectNavSubItem[]
+  const financialSubs = buildFinancialSubs(projectId, section, project, reviewBadgeCount)
+  const closeSubs: ProjectNavSubItem[] = [
+    {
+      title: "Closeout",
+      url: url("/closeout"),
+      isActive: section === "closeout",
+      requiredAny: ["closeout.read", "closeout.write"],
+    },
+    {
+      title: "Warranty",
+      url: url("/warranty"),
+      isActive: section === "warranty",
+      requiredAny: ["warranty.read", "warranty.write"],
+    },
+  ]
+
+  return [
+    {
+      items: [
+        {
+          title: "Overview",
+          url: url(),
+          icon: LayoutDashboard,
+          isActive: section === "overview",
+          requiredAny: ["org.member", "project.read"],
+        },
+        {
+          title: "Plan",
+          url: url("/documents"),
+          icon: Briefcase,
+          isActive: planSubs.some((item) => item.isActive),
+          items: planSubs,
+        },
+        {
+          title: "Build",
+          url: url("/schedule"),
+          icon: Hammer,
+          isActive: buildSubs.some((item) => item.isActive) || BUILD_SECTIONS.has(section),
+          items: buildSubs,
+        },
+        {
+          title: "Financials",
+          url: getFinancialLandingUrl(projectId),
+          icon: Wallet,
+          isActive: financialSubs.some((item) => item.isActive) || FINANCIAL_SECTIONS.has(section),
+          items: financialSubs,
+        },
+        {
+          title: "Close",
+          url: url("/closeout"),
+          icon: Flag,
+          isActive: closeSubs.some((item) => item.isActive),
+          items: closeSubs,
+        },
+      ],
+    },
+  ]
+}

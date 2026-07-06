@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation"
 
-import { validatePortalToken } from "@/lib/services/portal-access"
+import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { getInvoiceForPortal } from "@/lib/services/invoices"
 import { listReceiptsForInvoice } from "@/lib/services/receipts"
 import { listOpenBookCostDetailsForInvoice } from "@/lib/services/cost-plus"
@@ -17,8 +17,13 @@ export const revalidate = 0
 
 export default async function InvoicePortalPage({ params }: Params) {
   const { token, id } = await params
-  const access = await validatePortalToken(token)
-  if (!access || !access.permissions.can_view_invoices) {
+  let access
+  try {
+    access = await assertPortalActionAccess(token, {
+      portalType: "client",
+      permission: "can_view_invoices",
+    })
+  } catch {
     notFound()
   }
 

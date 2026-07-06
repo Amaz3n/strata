@@ -1,0 +1,184 @@
+name: Codex bug fix PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      bug_id:
+        required: true
+        type: string
+      fix_id:
+        required: true
+        type: string
+      bug_payload:
+        required: true
+        type: string
+      review_payload:
+        required: true
+        type: string
+      callback_url:
+        required: true
+        type: string
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Prepare fix branch
+        id: branch
+        env:
+          BUG_ID: ${{ inputs.bug_id }}
+        run: |
+          set -euo pipefail
+          branch="codex/bug-${BUG_ID:0:8}-${GITHUB_RUN_ID}"
+          git checkout -b "$branch"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Run Codex fix
+        id: codex
+        uses: openai/codex-action@v1
+        continue-on-error: true
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          model: gpt-5
+          effort: medium
+          sandbox: workspace-write
+          output-file: codex-fix-output.md
+          prompt: |
+            You are fixing a confirmed Arc platform bug. Inspect the repository, make the smallest safe code change, and update or add focused tests when practical.
+
+            Do not deploy. Do not run destructive commands. Do not change unrelated files. Prefer the repository's existing patterns.
+
+            Issue payload:
+            ${{ inputs.bug_payload }}
+
+            Previous read-only Codex review, if available:
+            ${{ inputs.review_payload }}
+
+            At the end, return JSON matching this shape:
+            {
+              "summary": "Short plain-English summary of what changed and why.",
+              "files_changed": ["path/to/file.ts"],
+              "tests_run": ["command or not run"],
+              "risks": ["Any remaining risk or manual verification needed"]
+            }
+
+      - name: Create pull request
+        id: pr
+        if: always() && steps.codex.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH_NAME: ${{ steps.branch.outputs.branch }}
+          BUG_PAYLOAD: ${{ inputs.bug_payload }}
+          CODEX_OUTCOME: ${{ steps.codex.outcome }}
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet; then
+            echo "error=Codex completed without producing a git diff." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          issue_key="$(node -e 'const bug=JSON.parse(process.env.BUG_PAYLOAD); process.stdout.write(String(bug.issue_key || "Arc issue"))')"
+          title="$(node -e 'const bug=JSON.parse(process.env.BUG_PAYLOAD); process.stdout.write(String(bug.title || "Codex bug fix").slice(0, 120))')"
+
+          git config user.name "arc-codex-bot"
+          git config user.email "arc-codex-bot@users.noreply.github.com"
+          git add -A
+          git commit -m "Fix ${issue_key} via Codex" -m "$title"
+          git push origin "$BRANCH_NAME"
+
+          {
+            echo "## Codex fix"
+            echo
+            echo "Issue: ${issue_key}"
+            echo
+            echo "### Summary"
+            echo
+            if [ -s codex-fix-output.md ]; then
+              cat codex-fix-output.md
+            else
+              echo "Codex created a code change for this issue."
+            fi
+            echo
+            echo "### Source issue payload"
+            echo
+            echo '```json'
+            echo "$BUG_PAYLOAD"
+            echo '```'
+          } > codex-pr-body.md
+
+          pr_url="$(gh pr create --base "${GITHUB_REF_NAME}" --head "$BRANCH_NAME" --title "Fix ${issue_key}: ${title}" --body-file codex-pr-body.md)"
+          pr_number="${pr_url##*/}"
+          commit_sha="$(git rev-parse HEAD)"
+
+          echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$commit_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Send fix result back to Arc
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_SECRET: ${{ secrets.ARC_CODEX_REVIEW_CALLBACK_SECRET }}
+          BUG_ID: ${{ inputs.bug_id }}
+          FIX_ID: ${{ inputs.fix_id }}
+          CODEX_OUTCOME: ${{ steps.codex.outcome }}
+          PR_OUTCOME: ${{ steps.pr.outcome }}
+          PR_ERROR: ${{ steps.pr.outputs.error }}
+          BRANCH_NAME: ${{ steps.branch.outputs.branch }}
+          COMMIT_SHA: ${{ steps.pr.outputs.commit_sha }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          PR_URL: ${{ steps.pr.outputs.pr_url }}
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const fs = require("fs")
+
+            const output = fs.existsSync("codex-fix-output.md")
+              ? fs.readFileSync("codex-fix-output.md", "utf8")
+              : ""
+
+            const ok = process.env.CODEX_OUTCOME === "success"
+              && process.env.PR_OUTCOME === "success"
+              && Boolean(process.env.PR_URL)
+
+            const error = ok
+              ? null
+              : process.env.PR_ERROR || `Codex fix workflow finished with Codex outcome ${process.env.CODEX_OUTCOME} and PR outcome ${process.env.PR_OUTCOME || "skipped"}`
+
+            const response = await fetch(process.env.CALLBACK_URL, {
+              method: "POST",
+              redirect: "manual",
+              headers: {
+                "Authorization": `Bearer ${process.env.CALLBACK_SECRET}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                bug_id: process.env.BUG_ID,
+                fix_id: process.env.FIX_ID,
+                status: ok ? "pr_ready" : "failed",
+                output,
+                error,
+                github_run_id: String(context.runId),
+                github_run_url: process.env.GITHUB_RUN_URL,
+                branch_name: process.env.BRANCH_NAME,
+                commit_sha: process.env.COMMIT_SHA,
+                pr_number: process.env.PR_NUMBER,
+                pr_url: process.env.PR_URL,
+              }),
+            })
+
+            if (!response.ok) {
+              const body = await response.text()
+              core.setFailed(`Arc callback failed: ${response.status} ${body}`)
+            }

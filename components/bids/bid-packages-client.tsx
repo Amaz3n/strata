@@ -1,7 +1,8 @@
 "use client"
 
-import { useMemo, useState, useTransition } from "react"
+import { useEffect, useMemo, useState, useTransition } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
@@ -39,9 +40,47 @@ interface BidPackagesClientProps {
   costCodes: CostCode[]
   detailBasePath?: string
   createDescription?: string
+  initialDraft?: {
+    title?: string | null
+    scope?: string | null
+    cost_code_id?: string | null
+    budget_line_id?: string | null
+    amount_cents?: number | null
+  } | null
 }
 
 const NO_TRADE_VALUE = "__none__"
+const ALL_STATUSES = "__all__"
+const sortOptions = [
+  { value: "needs_attention", label: "Needs attention" },
+  { value: "due_soon", label: "Due soon" },
+  { value: "coverage", label: "Lowest coverage" },
+  { value: "lowest_bid", label: "Lowest bid" },
+  { value: "newest", label: "Newest" },
+] as const
+
+type SortOption = (typeof sortOptions)[number]["value"]
+
+function formatCurrency(cents?: number | null): string {
+  if (cents == null) return "-"
+  return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
+}
+
+function getDueInfo(dueAt?: string | null): { label: string; tone: string; weight: number; timestamp: number } {
+  if (!dueAt) return { label: "-", tone: "text-muted-foreground", weight: 3, timestamp: Number.POSITIVE_INFINITY }
+  const dueDate = new Date(dueAt)
+  const now = new Date()
+  const msUntilDue = dueDate.getTime() - now.getTime()
+  const daysUntilDue = Math.ceil(msUntilDue / 86_400_000)
+
+  if (msUntilDue < 0) {
+    return { label: format(dueDate, "MMM d, h:mm a"), tone: "text-rose-600 font-medium", weight: 0, timestamp: dueDate.getTime() }
+  }
+  if (daysUntilDue <= 2) {
+    return { label: format(dueDate, "MMM d, h:mm a"), tone: "text-amber-600 font-medium", weight: 1, timestamp: dueDate.getTime() }
+  }
+  return { label: format(dueDate, "MMM d, h:mm a"), tone: "text-muted-foreground", weight: 2, timestamp: dueDate.getTime() }
+}
 
 function combineDateAndTime(date: Date, time: string): Date {
   const [hoursRaw, minutesRaw] = time.split(":")
@@ -61,31 +100,76 @@ export function BidPackagesClient({
   costCodes,
   detailBasePath,
   createDescription,
+  initialDraft = null,
 }: BidPackagesClientProps) {
+  const router = useRouter()
   const [items, setItems] = useState(packages)
   const [search, setSearch] = useState("")
+  const [statusFilter, setStatusFilter] = useState(ALL_STATUSES)
+  const [sortBy, setSortBy] = useState<SortOption>("needs_attention")
   const [createOpen, setCreateOpen] = useState(false)
   const [isCreating, startCreating] = useTransition()
 
   const [title, setTitle] = useState("")
   const [costCodeId, setCostCodeId] = useState("__none__")
+  const [budgetLineId, setBudgetLineId] = useState<string | null>(null)
   const [trade, setTrade] = useState(NO_TRADE_VALUE)
   const [dueDate, setDueDate] = useState<Date | undefined>(undefined)
   const [dueTime, setDueTime] = useState("17:00")
   const [scope, setScope] = useState("")
   const [instructions, setInstructions] = useState("")
+  const [initialDraftApplied, setInitialDraftApplied] = useState(false)
+
+  useEffect(() => {
+    if (initialDraftApplied || !initialDraft) return
+    if (initialDraft.title) setTitle(initialDraft.title)
+    if (initialDraft.scope) setScope(initialDraft.scope)
+    if (initialDraft.cost_code_id) setCostCodeId(initialDraft.cost_code_id)
+    if (initialDraft.budget_line_id) setBudgetLineId(initialDraft.budget_line_id)
+    if (initialDraft.amount_cents && initialDraft.amount_cents > 0) {
+      setInstructions(`Budget target: ${formatCurrency(initialDraft.amount_cents)}`)
+    }
+    setCreateOpen(true)
+    setInitialDraftApplied(true)
+  }, [initialDraft, initialDraftApplied])
 
   const filtered = useMemo(() => {
     const term = search.toLowerCase()
-    return items.filter((item) => {
-      const haystack = [item.title, item.trade ?? "", item.scope ?? ""].join(" ").toLowerCase()
-      return !term || haystack.includes(term)
+    const visible = items.filter((item) => {
+      const haystack = [item.title, item.trade ?? "", item.scope ?? "", item.cost_code_code ?? "", item.cost_code_name ?? ""]
+        .join(" ")
+        .toLowerCase()
+      if (term && !haystack.includes(term)) return false
+      if (statusFilter !== ALL_STATUSES && item.status !== statusFilter) return false
+      return true
     })
-  }, [items, search])
+
+    return [...visible].sort((a, b) => {
+      const aInvites = a.invite_count ?? 0
+      const bInvites = b.invite_count ?? 0
+      const aResponses = a.response_count ?? 0
+      const bResponses = b.response_count ?? 0
+      const aDue = getDueInfo(a.due_at)
+      const bDue = getDueInfo(b.due_at)
+
+      if (sortBy === "due_soon") return aDue.timestamp - bDue.timestamp
+      if (sortBy === "coverage") return aResponses / Math.max(aInvites, 1) - bResponses / Math.max(bInvites, 1)
+      if (sortBy === "lowest_bid") return (a.lowest_bid_cents ?? Number.POSITIVE_INFINITY) - (b.lowest_bid_cents ?? Number.POSITIVE_INFINITY)
+      if (sortBy === "newest") return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+
+      const aNeedsResponses = aInvites > 0 && aResponses < aInvites
+      const bNeedsResponses = bInvites > 0 && bResponses < bInvites
+      const aAttention = (aNeedsResponses ? 0 : 4) + aDue.weight
+      const bAttention = (bNeedsResponses ? 0 : 4) + bDue.weight
+      if (aAttention !== bAttention) return aAttention - bAttention
+      return aDue.timestamp - bDue.timestamp
+    })
+  }, [items, search, sortBy, statusFilter])
 
   const resetForm = () => {
     setTitle("")
     setCostCodeId("__none__")
+    setBudgetLineId(null)
     setTrade(NO_TRADE_VALUE)
     setDueDate(undefined)
     setDueTime("17:00")
@@ -106,6 +190,7 @@ export function BidPackagesClient({
         const payload = {
           title: title.trim(),
           cost_code_id: costCodeId === "__none__" ? null : costCodeId,
+          budget_line_id: budgetLineId,
           trade: trade === NO_TRADE_VALUE ? null : trade,
           scope: scope.trim() || null,
           instructions: instructions.trim() || null,
@@ -231,13 +316,38 @@ export function BidPackagesClient({
       </Sheet>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-1 items-center gap-2">
+        <div className="grid flex-1 gap-2 sm:grid-cols-[minmax(220px,1fr)_160px_180px]">
           <Input
             placeholder="Search bid packages..."
-            className="w-full sm:w-72"
+            className="w-full"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
+          <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_STATUSES}>All statuses</SelectItem>
+              {["draft", "sent", "open", "closed", "awarded", "cancelled"].map((option) => (
+                <SelectItem key={option} value={option}>
+                  {option[0].toUpperCase() + option.slice(1)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={sortBy} onValueChange={(value) => setSortBy(value as SortOption)}>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Sort" />
+            </SelectTrigger>
+            <SelectContent>
+              {sortOptions.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <Button onClick={() => setCreateOpen(true)}>
           <Plus className="mr-2 h-4 w-4" />
@@ -250,27 +360,39 @@ export function BidPackagesClient({
           <TableHeader>
             <TableRow className="divide-x">
               <TableHead className="px-4 py-4">Package</TableHead>
-                  <TableHead className="px-4 py-4">Trade</TableHead>
-                  <TableHead className="px-4 py-4">Cost code</TableHead>
-                  <TableHead className="px-4 py-4 text-center">Status</TableHead>
-                  <TableHead className="px-4 py-4 text-center">Invites</TableHead>
-                  <TableHead className="px-4 py-4 text-center">Due</TableHead>
+              <TableHead className="px-4 py-4">Trade</TableHead>
+              <TableHead className="px-4 py-4">Cost code</TableHead>
+              <TableHead className="px-4 py-4 text-center">Status</TableHead>
+              <TableHead className="px-4 py-4 text-center">Responses</TableHead>
+              <TableHead className="px-4 py-4 text-right">Low bid</TableHead>
+              <TableHead className="px-4 py-4 text-center">Due</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {filtered.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="py-12 text-center text-muted-foreground">
+                <TableCell colSpan={7} className="py-12 text-center text-muted-foreground">
                   No bid packages yet.
                 </TableCell>
               </TableRow>
             ) : (
-              filtered.map((pkg) => (
-                <TableRow key={pkg.id} className="divide-x hover:bg-muted/40">
+              filtered.map((pkg) => {
+                const href = `${detailBasePath ?? `/projects/${projectId}/bids`}/${pkg.id}`
+                const inviteCount = pkg.invite_count ?? 0
+                const responseCount = pkg.response_count ?? 0
+                const dueInfo = getDueInfo(pkg.due_at)
+
+                return (
+                <TableRow
+                  key={pkg.id}
+                  className="divide-x hover:bg-muted/40 cursor-pointer"
+                  onClick={() => router.push(href)}
+                >
                   <TableCell className="px-4 py-4">
                     <Link
-                      href={`${detailBasePath ?? `/projects/${projectId}/bids`}/${pkg.id}`}
+                      href={href}
                       className="font-medium hover:underline"
+                      onClick={(event) => event.stopPropagation()}
                     >
                       {pkg.title}
                     </Link>
@@ -283,13 +405,18 @@ export function BidPackagesClient({
                     <BidStatusBadge status={pkg.status} />
                   </TableCell>
                   <TableCell className="px-4 py-4 text-center">
-                    <Badge variant="secondary">{pkg.invite_count ?? 0}</Badge>
+                    <Badge variant={inviteCount > 0 && responseCount < inviteCount ? "outline" : "secondary"}>
+                      {responseCount} of {inviteCount}
+                    </Badge>
                   </TableCell>
-                  <TableCell className="px-4 py-4 text-center text-sm text-muted-foreground">
-                    {pkg.due_at ? format(new Date(pkg.due_at), "MMM d, h:mm a") : "—"}
+                  <TableCell className="px-4 py-4 text-right text-sm tabular-nums">
+                    {formatCurrency(pkg.lowest_bid_cents)}
+                  </TableCell>
+                  <TableCell className={cn("px-4 py-4 text-center text-sm", dueInfo.tone)}>
+                    {dueInfo.label}
                   </TableCell>
                 </TableRow>
-              ))
+              )})
             )}
           </TableBody>
         </Table>

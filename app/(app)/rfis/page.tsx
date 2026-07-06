@@ -7,6 +7,7 @@ import { listCompaniesAction } from "@/app/(app)/companies/actions"
 import { listContactsAction } from "@/app/(app)/contacts/actions"
 import { Skeleton } from "@/components/ui/skeleton"
 
+// desk-rule: reachable via dashboard/search/feature flows only, not workspace nav.
 export const dynamic = 'force-dynamic'
 
 async function RfisData() {

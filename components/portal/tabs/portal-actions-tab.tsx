@@ -11,6 +11,18 @@ interface PortalActionsTabProps {
   portalType: "client" | "sub"
 }
 
+function formatSelectionPrice(selection: ClientPortalData["pendingSelections"][number]) {
+  const option = selection.selected_option
+  if (!option) return null
+  if (option.price_type === "included") return "Included"
+  const cents = option.price_delta_cents ?? option.price_cents
+  if (cents == null) return null
+  const amount = `$${Math.abs(cents / 100).toLocaleString()}`
+  if (option.price_type === "upgrade") return `+${amount}`
+  if (option.price_type === "downgrade") return `-${amount}`
+  return amount
+}
+
 export function PortalActionsTab({ data, token, portalType }: PortalActionsTabProps) {
   const basePath = portalType === "client" ? "p" : "s"
 
@@ -64,7 +76,13 @@ export function PortalActionsTab({ data, token, portalType }: PortalActionsTabPr
             data.pendingSelections.slice(0, 3).map((selection) => (
               <div key={selection.id} className="flex items-center justify-between py-2 border-b last:border-0">
                 <div>
-                  <p className="text-sm font-medium">Selection #{selection.id.slice(0, 6)}</p>
+                  <p className="text-sm font-medium">{selection.category?.name ?? "Selection"}</p>
+                  {selection.selected_option && (
+                    <p className="text-xs text-muted-foreground">
+                      {selection.selected_option.name}
+                      {formatSelectionPrice(selection) ? ` · ${formatSelectionPrice(selection)}` : ""}
+                    </p>
+                  )}
                   {selection.due_date && (
                     <p className="text-xs text-muted-foreground">
                       Due {format(new Date(selection.due_date), "MMM d")}

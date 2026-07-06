@@ -15,7 +15,7 @@ import {
   voidInvoice,
 } from "@/lib/services/invoices"
 import { listProjects } from "@/lib/services/projects"
-import { forceSyncInvoiceToQBO, retryFailedQBOSyncJobs, syncInvoiceToQBO } from "@/lib/services/qbo-sync"
+import { forceSyncInvoiceToQBO } from "@/lib/services/qbo-sync"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
 import { invoiceInputSchema } from "@/lib/validation/invoices"
@@ -31,174 +31,191 @@ import { attachFile } from "@/lib/services/file-links"
 import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
 import { recordEvent } from "@/lib/services/events"
 import { getInvoicePaymentActivity } from "@/lib/services/payments"
+import {
+  createInvoiceLienWaiver,
+  listInvoiceLienWaivers,
+  voidInvoiceLienWaiver,
+  type InvoiceLienWaiverType,
+} from "@/lib/services/invoice-lien-waivers"
+import {
+  createInvoiceScheduleFromInvoice,
+  deleteInvoiceSchedule,
+  listInvoiceSchedules,
+  setInvoiceScheduleActive,
+  type InvoiceScheduleFrequency,
+} from "@/lib/services/invoice-schedules"
+import { actionError, type ActionResult } from "@/lib/action-result"
 
 const INVOICE_PDF_TEMPLATE_VERSION = 2
 
-export async function listInvoicesAction(projectId?: string) {
-  return listInvoices({ projectId })
+// Thrown errors are redacted to a digest in prod, so every action returns an ActionResult
+// (see lib/action-result.ts); clients unwrap with unwrapAction().
+async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
+  try {
+    return { success: true, data: await fn() }
+  } catch (error) {
+    console.error("[invoices.action]", error)
+    return actionError(error)
+  }
 }
 
-export async function listInvoiceSyncQueueAction(projectId?: string) {
-  const { orgId } = await requireOrgContext()
-  const invoices = (await listInvoices({ orgId, projectId })).filter((invoice) => invoice.qbo_sync_status === "pending" || invoice.qbo_sync_status === "error")
-  const invoiceIds = invoices.map((invoice) => invoice.id)
-
-  if (invoiceIds.length === 0) {
-    return []
-  }
-
-  const supabase = createServiceSupabaseClient()
-  const { data: syncRecords, error } = await supabase
-    .from("qbo_sync_records")
-    .select("id, entity_id, status, last_synced_at, error_message, qbo_id, created_at")
-    .eq("org_id", orgId)
-    .eq("entity_type", "invoice")
-    .in("entity_id", invoiceIds)
-    .order("last_synced_at", { ascending: false })
-
-  if (error) {
-    throw new Error(`Failed to load QBO sync queue: ${error.message}`)
-  }
-
-  const latestByInvoiceId = new Map<string, (typeof syncRecords)[number]>()
-  for (const record of syncRecords ?? []) {
-    if (!record.entity_id || latestByInvoiceId.has(record.entity_id)) continue
-    latestByInvoiceId.set(record.entity_id, record)
-  }
-
-  return invoices.map((invoice) => ({
-    invoice,
-    latestSync: latestByInvoiceId.get(invoice.id) ?? null,
-  }))
+export async function listInvoicesAction(
+  projectId?: string,
+  options?: { limit?: number; offset?: number; search?: string },
+) {
+  return run(() =>
+    listInvoices({ projectId, limit: options?.limit, offset: options?.offset, search: options?.search }),
+  )
 }
 
 export async function createInvoiceAction(input: unknown) {
-  const startedAt = Date.now()
-  const parsed = invoiceInputSchema.parse(input)
-  const invoice = await createInvoice({ input: parsed })
-  const durationMs = Date.now() - startedAt
-  if (durationMs >= 1500) {
-    console.warn("[invoice.create] Slow create detected", { durationMs, invoiceId: invoice.id })
-    try {
-      await recordEvent({
-        eventType: "invoice_create_slow",
-        entityType: "invoice",
-        entityId: invoice.id,
-        channel: "integration",
-        payload: { duration_ms: durationMs },
-      })
-    } catch {
-      // Non-blocking telemetry.
+  return run(async () => {
+    const startedAt = Date.now()
+    const parsed = invoiceInputSchema.parse(input)
+    const invoice = await createInvoice({ input: parsed })
+    const durationMs = Date.now() - startedAt
+    if (durationMs >= 1500) {
+      console.warn("[invoice.create] Slow create detected", { durationMs, invoiceId: invoice.id })
+      try {
+        await recordEvent({
+          eventType: "invoice_create_slow",
+          entityType: "invoice",
+          entityId: invoice.id,
+          channel: "integration",
+          payload: { duration_ms: durationMs },
+        })
+      } catch {
+        // Non-blocking telemetry.
+      }
     }
-  }
-  revalidatePath("/invoices")
-  return invoice
+    revalidatePath("/invoices")
+    return invoice
+  })
 }
 
 export async function createQBOIncomeAccountAction(name: string) {
-  const normalized = String(name ?? "").trim()
-  if (normalized.length < 2) {
-    throw new Error("Account name must be at least 2 characters")
-  }
-  if (normalized.length > 100) {
-    throw new Error("Account name must be 100 characters or fewer")
-  }
+  return run(async () => {
+    const normalized = String(name ?? "").trim()
+    if (normalized.length < 2) {
+      throw new Error("Account name must be at least 2 characters")
+    }
+    if (normalized.length > 100) {
+      throw new Error("Account name must be 100 characters or fewer")
+    }
 
-  const { orgId } = await requireOrgContext()
-  const client = await QBOClient.forOrg(orgId)
-  if (!client) {
-    throw new Error("No active QuickBooks connection")
-  }
+    const { orgId } = await requireOrgContext()
+    const client = await QBOClient.forOrg(orgId)
+    if (!client) {
+      throw new Error("No active QuickBooks connection")
+    }
 
-  return client.createIncomeAccount(normalized)
+    return client.createIncomeAccount(normalized)
+  })
 }
 
 export async function updateInvoiceAction(invoiceId: string, input: unknown) {
-  if (!invoiceId) throw new Error("Invoice id is required")
-  const startedAt = Date.now()
-  const parsed = invoiceInputSchema.parse(input)
-  const invoice = await updateInvoice({ invoiceId, input: parsed })
-  const durationMs = Date.now() - startedAt
-  if (durationMs >= 1500) {
-    console.warn("[invoice.update] Slow update detected", { durationMs, invoiceId })
-    try {
-      await recordEvent({
-        eventType: "invoice_update_slow",
-        entityType: "invoice",
-        entityId: invoiceId,
-        channel: "integration",
-        payload: { duration_ms: durationMs },
-      })
-    } catch {
-      // Non-blocking telemetry.
+  return run(async () => {
+    if (!invoiceId) throw new Error("Invoice id is required")
+    const startedAt = Date.now()
+    const parsed = invoiceInputSchema.parse(input)
+    const invoice = await updateInvoice({ invoiceId, input: parsed })
+    const durationMs = Date.now() - startedAt
+    if (durationMs >= 1500) {
+      console.warn("[invoice.update] Slow update detected", { durationMs, invoiceId })
+      try {
+        await recordEvent({
+          eventType: "invoice_update_slow",
+          entityType: "invoice",
+          entityId: invoiceId,
+          channel: "integration",
+          payload: { duration_ms: durationMs },
+        })
+      } catch {
+        // Non-blocking telemetry.
+      }
     }
-  }
-  revalidatePath("/invoices")
-  return invoice
+    revalidatePath("/invoices")
+    return invoice
+  })
 }
 
 export async function voidInvoiceAction(invoiceId: string) {
-  if (!invoiceId) throw new Error("Invoice id is required")
-  const invoice = await voidInvoice({ invoiceId })
-  revalidatePath("/invoices")
-  if (invoice.project_id) {
-    revalidatePath(`/projects/${invoice.project_id}/financials/receivables`)
-  }
-  return invoice
+  return run(async () => {
+    if (!invoiceId) throw new Error("Invoice id is required")
+    const invoice = await voidInvoice({ invoiceId })
+    revalidatePath("/invoices")
+    if (invoice.project_id) {
+      revalidatePath(`/projects/${invoice.project_id}/financials/receivables`)
+    }
+    return invoice
+  })
 }
 
 export async function reviseInvoiceAction(invoiceId: string) {
-  if (!invoiceId) throw new Error("Invoice id is required")
-  const invoice = await reviseInvoice({ invoiceId })
-  revalidatePath("/invoices")
-  if (invoice.project_id) {
-    revalidatePath(`/projects/${invoice.project_id}/financials/receivables`)
-  }
-  return invoice
+  return run(async () => {
+    if (!invoiceId) throw new Error("Invoice id is required")
+    const invoice = await reviseInvoice({ invoiceId })
+    revalidatePath("/invoices")
+    if (invoice.project_id) {
+      revalidatePath(`/projects/${invoice.project_id}/financials/receivables`)
+    }
+    return invoice
+  })
 }
 
 export async function deleteInvoiceAction(invoiceId: string) {
-  if (!invoiceId) throw new Error("Invoice id is required")
-  const result = await deleteInvoice({ invoiceId })
-  revalidatePath("/invoices")
-  if (result.projectId) {
-    revalidatePath(`/projects/${result.projectId}/financials/receivables`)
-  }
-  return { success: true }
+  return run(async () => {
+    if (!invoiceId) throw new Error("Invoice id is required")
+    const result = await deleteInvoice({ invoiceId })
+    revalidatePath("/invoices")
+    if (result.projectId) {
+      revalidatePath(`/projects/${result.projectId}/financials/receivables`)
+    }
+  })
 }
 
 export async function listMovableProjectsAction() {
-  const projects = await listProjects()
-  return projects.map((project) => ({ id: project.id, name: project.name }))
+  return run(async () => {
+    const projects = await listProjects()
+    return projects.map((project) => ({ id: project.id, name: project.name }))
+  })
 }
 
 export async function moveInvoiceToProjectAction(invoiceId: string, targetProjectId: string) {
-  if (!invoiceId) throw new Error("Invoice id is required")
-  if (!targetProjectId) throw new Error("A destination project is required")
-  const result = await moveInvoiceToProject({ invoiceId, targetProjectId })
-  revalidatePath("/invoices")
-  if (result.fromProjectId) {
-    revalidatePath(`/projects/${result.fromProjectId}/financials/receivables`)
-  }
-  revalidatePath(`/projects/${result.toProjectId}/financials/receivables`)
-  return result.invoice
+  return run(async () => {
+    if (!invoiceId) throw new Error("Invoice id is required")
+    if (!targetProjectId) throw new Error("A destination project is required")
+    const result = await moveInvoiceToProject({ invoiceId, targetProjectId })
+    revalidatePath("/invoices")
+    if (result.fromProjectId) {
+      revalidatePath(`/projects/${result.fromProjectId}/financials/receivables`)
+    }
+    revalidatePath(`/projects/${result.toProjectId}/financials/receivables`)
+    return result.invoice
+  })
 }
 
 export async function generateInvoiceLinkAction(invoiceId: string) {
-  if (!invoiceId) {
-    throw new Error("Invoice id is required")
-  }
+  return run(async () => {
+    if (!invoiceId) {
+      throw new Error("Invoice id is required")
+    }
 
-  const token = await ensureInvoiceToken(invoiceId)
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || "https://arcnaples.com"
+    const token = await ensureInvoiceToken(invoiceId)
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || "https://arcnaples.com"
 
-  return {
-    token,
-    url: `${appUrl}/i/${token}`,
-  }
+    return {
+      token,
+      url: `${appUrl}/i/${token}`,
+    }
+  })
 }
 
 export async function getInvoiceDetailAction(invoiceId: string) {
+  return run(() => loadInvoiceDetail(invoiceId))
+}
+
+async function loadInvoiceDetail(invoiceId: string) {
   if (!invoiceId) throw new Error("Invoice id is required")
 
   const invoice = await getInvoiceWithLines(invoiceId)
@@ -224,6 +241,11 @@ export async function getInvoiceDetailAction(invoiceId: string) {
     return { payments: [], reversals: [] }
   })
 
+  const lienWaivers = await listInvoiceLienWaivers(invoiceId, invoice.org_id).catch((error) => {
+    console.error("Failed to load invoice lien waivers", error)
+    return []
+  })
+
   return {
     invoice: { ...invoice, token },
     link: token ? `${appUrl}/i/${token}` : undefined,
@@ -231,55 +253,93 @@ export async function getInvoiceDetailAction(invoiceId: string) {
     syncHistory: syncHistory ?? [],
     payments: paymentActivity.payments,
     reversals: paymentActivity.reversals,
+    lienWaivers,
   }
+}
+
+export async function createInvoiceLienWaiverAction(input: {
+  invoiceId: string
+  waiverType: InvoiceLienWaiverType
+  throughDate?: string
+}) {
+  return run(async () => {
+    const waiver = await createInvoiceLienWaiver({
+      invoice_id: input.invoiceId,
+      waiver_type: input.waiverType,
+      through_date: input.throughDate,
+    })
+    revalidatePath("/invoices")
+    return waiver
+  })
+}
+
+export async function voidInvoiceLienWaiverAction(waiverId: string) {
+  return run(async () => {
+    await voidInvoiceLienWaiver(waiverId)
+    revalidatePath("/invoices")
+  })
+}
+
+export async function updateInvoiceNotesAction(invoiceId: string, notes: string) {
+  return run(async () => {
+    if (!invoiceId) throw new Error("Invoice id is required")
+    const { supabase, orgId } = await requireOrgContext()
+    const trimmed = notes.trim()
+    const { error } = await supabase
+      .from("invoices")
+      .update({ notes: trimmed.length > 0 ? trimmed : null })
+      .eq("org_id", orgId)
+      .eq("id", invoiceId)
+    if (error) {
+      throw new Error(`Failed to save notes: ${error.message}`)
+    }
+    revalidatePath("/invoices")
+  })
 }
 
 export async function manualResyncInvoiceAction(invoiceId: string) {
-  if (!invoiceId) throw new Error("Invoice id is required")
-  const { orgId } = await requireOrgContext()
-  const result = await forceSyncInvoiceToQBO(invoiceId, orgId)
-  if (!result.success) {
-    throw new Error(result.error ?? "Unable to sync invoice")
-  }
-  revalidatePath("/invoices")
-  return { success: true }
-}
-
-export async function retryFailedInvoiceSyncsAction() {
-  const { orgId } = await requireOrgContext()
-  const result = await retryFailedQBOSyncJobs(orgId)
-  revalidatePath("/invoices")
-  return result
-}
-
-export async function syncPendingInvoicesNowAction(limit = 15) {
-  const { orgId } = await requireOrgContext()
-  const supabase = createServiceSupabaseClient()
-
-  const { data: pending } = await supabase
-    .from("invoices")
-    .select("id")
-    .eq("org_id", orgId)
-    .eq("qbo_sync_status", "pending")
-    .order("created_at", { ascending: true })
-    .limit(limit)
-
-  if (!pending?.length) {
+  return run(async () => {
+    if (!invoiceId) throw new Error("Invoice id is required")
+    const { orgId } = await requireOrgContext()
+    const result = await forceSyncInvoiceToQBO(invoiceId, orgId)
+    if (!result.success) {
+      throw new Error(result.error ?? "Unable to sync invoice")
+    }
     revalidatePath("/invoices")
-    return { success: true, processed: 0 }
-  }
-
-  let processed = 0
-  for (const row of pending) {
-    const result = await syncInvoiceToQBO(row.id, orgId)
-    if (result.success) processed++
-  }
-
-  revalidatePath("/invoices")
-  return { success: true, processed }
+  })
 }
 
 export async function sendInvoiceReminderAction(invoiceId: string) {
+  return run(() => sendInvoiceReminder(invoiceId))
+}
+
+export async function createInvoiceScheduleAction(input: {
+  invoiceId: string
+  frequency: InvoiceScheduleFrequency
+  startOn: string
+  autoSend: boolean
+  recipientEmail?: string | null
+}) {
+  return run(async () => {
+    const schedule = await createInvoiceScheduleFromInvoice(input)
+    revalidatePath("/invoices")
+    return schedule
+  })
+}
+
+export async function listInvoiceSchedulesAction(projectId?: string) {
+  return run(() => listInvoiceSchedules(projectId))
+}
+
+export async function setInvoiceScheduleActiveAction(scheduleId: string, active: boolean) {
+  return run(() => setInvoiceScheduleActive(scheduleId, active))
+}
+
+export async function deleteInvoiceScheduleAction(scheduleId: string) {
+  return run(() => deleteInvoiceSchedule(scheduleId))
+}
+
+async function sendInvoiceReminder(invoiceId: string) {
   if (!invoiceId) throw new Error("Invoice id is required")
 
   const { orgId, supabase } = await requireOrgContext()
@@ -289,9 +349,13 @@ export async function sendInvoiceReminderAction(invoiceId: string) {
   if (invoice.status === "paid" || invoice.status === "void") {
     throw new Error("Cannot send reminder for paid or void invoices")
   }
+  const wasSent = Boolean(invoice.sent_at) || ["sent", "partial", "overdue"].includes(invoice.status ?? "")
+  if (!wasSent) {
+    throw new Error("This invoice hasn't been sent yet — send the invoice first")
+  }
 
   // Get recipient email from sent_to_emails or metadata
-  const recipientEmail = invoice.sent_to_emails?.[0] ?? (invoice.metadata as any)?.customer_email
+  const recipientEmail = invoice.sent_to_emails?.[0] ?? (invoice.metadata as Record<string, any> | null)?.customer_email
   if (!recipientEmail) {
     throw new Error("No recipient email found for this invoice")
   }
@@ -322,11 +386,13 @@ export async function sendInvoiceReminderAction(invoiceId: string) {
     orgLogoUrl: org?.logo_url ?? null,
     orgSlug: org?.slug ?? null,
   })
-
-  return { success: true }
 }
 
 export async function getInvoiceComposerContextAction(projectId?: string | null) {
+  return run(() => loadInvoiceComposerContext(projectId))
+}
+
+async function loadInvoiceComposerContext(projectId?: string | null) {
   const { supabase, orgId } = await requireOrgContext()
 
   let drawRows: Array<{
@@ -475,16 +541,18 @@ export async function getInvoiceComposerContextAction(projectId?: string | null)
  * keep in sync. Returns [] when QBO isn't connected (the composer falls back to Arc contacts / manual).
  */
 export async function searchQboCustomersAction(term: string) {
-  const { orgId } = await requireOrgContext()
-  const qboClient = await QBOClient.forOrg(orgId).catch(() => null)
-  if (!qboClient) return { connected: false, customers: [] as Awaited<ReturnType<QBOClient["searchCustomers"]>> }
-  try {
-    const customers = await qboClient.searchCustomers(term)
-    return { connected: true, customers }
-  } catch (error) {
-    console.warn("QBO customer search failed", error)
-    return { connected: true, customers: [] as Awaited<ReturnType<QBOClient["searchCustomers"]>> }
-  }
+  return run(async () => {
+    const { orgId } = await requireOrgContext()
+    const qboClient = await QBOClient.forOrg(orgId).catch(() => null)
+    if (!qboClient) return { connected: false, customers: [] as Awaited<ReturnType<QBOClient["searchCustomers"]>> }
+    try {
+      const customers = await qboClient.searchCustomers(term)
+      return { connected: true, customers }
+    } catch (error) {
+      console.warn("QBO customer search failed", error)
+      return { connected: true, customers: [] as Awaited<ReturnType<QBOClient["searchCustomers"]>> }
+    }
+  })
 }
 
 /**
@@ -499,18 +567,20 @@ export async function createQboCustomerAction(input: {
   state?: string | null
   postalCode?: string | null
 }) {
-  const { orgId } = await requireOrgContext()
-  const name = input.name?.trim()
-  if (!name) throw new Error("Customer name is required")
-  const qboClient = await QBOClient.forOrg(orgId)
-  if (!qboClient) throw new Error("QuickBooks is not connected")
-  return qboClient.createCustomerOption({
-    name,
-    email: input.email ?? null,
-    line1: input.line1 ?? null,
-    city: input.city ?? null,
-    state: input.state ?? null,
-    postalCode: input.postalCode ?? null,
+  return run(async () => {
+    const { orgId } = await requireOrgContext()
+    const name = input.name?.trim()
+    if (!name) throw new Error("Customer name is required")
+    const qboClient = await QBOClient.forOrg(orgId)
+    if (!qboClient) throw new Error("QuickBooks is not connected")
+    return qboClient.createCustomerOption({
+      name,
+      email: input.email ?? null,
+      line1: input.line1 ?? null,
+      city: input.city ?? null,
+      state: input.state ?? null,
+      postalCode: input.postalCode ?? null,
+    })
   })
 }
 
@@ -519,6 +589,10 @@ export async function createQboCustomerAction(input: {
  * "Add from → Unbilled costs" picker. Only status "open", billable, and not yet on an invoice.
  */
 export async function listUnbilledCostsAction(projectId: string) {
+  return run(() => loadUnbilledCosts(projectId))
+}
+
+async function loadUnbilledCosts(projectId: string) {
   if (!projectId) return { costs: [] }
   const { supabase, orgId } = await requireOrgContext()
   const contract = await getProjectCostContract(supabase, orgId, projectId)
@@ -563,6 +637,15 @@ export async function listUnbilledCostsAction(projectId: string) {
 }
 
 export async function generateInvoicePdfAction(
+  invoiceId: string,
+  options?: {
+    persistToArc?: boolean
+  },
+) {
+  return run(() => generateInvoicePdf(invoiceId, options))
+}
+
+async function generateInvoicePdf(
   invoiceId: string,
   options?: {
     persistToArc?: boolean

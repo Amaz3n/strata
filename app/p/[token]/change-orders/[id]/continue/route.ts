@@ -2,7 +2,7 @@ import { createHmac, randomBytes } from "crypto"
 import { NextResponse } from "next/server"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { validatePortalToken } from "@/lib/services/portal-access"
+import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { getChangeOrderForPortal } from "@/lib/services/change-orders"
 
 function requireDocumentSigningSecret() {
@@ -46,10 +46,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
   const fallbackUrl = new URL(`/p/${token}/change-orders/${id}`, request.url)
 
   try {
-    const access = await validatePortalToken(token)
-    if (!access || !access.permissions.can_approve_change_orders) {
-      return NextResponse.redirect(fallbackUrl)
-    }
+    const access = await assertPortalActionAccess(token, {
+      portalType: "client",
+      permission: "can_approve_change_orders",
+    })
 
     const changeOrder = await getChangeOrderForPortal(id, access.org_id, access.project_id)
     if (!changeOrder || !changeOrder.client_visible || changeOrder.status === "approved") {

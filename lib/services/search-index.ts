@@ -125,6 +125,20 @@ function buildBody(row: Record<string, unknown>, fields: string[]): string {
     const value = row[field]
     if (typeof value === "string" && value.trim().length > 0) {
       parts.push(value.trim())
+    } else if (Array.isArray(value)) {
+      const arrayText = value
+        .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+        .join(" ")
+      if (arrayText) parts.push(arrayText)
+    } else if (field === "metadata" && value && typeof value === "object") {
+      const metadata = value as Record<string, any>
+      const extractedText =
+        typeof metadata.search?.extracted_text === "string"
+          ? metadata.search.extracted_text
+          : typeof metadata.extracted_text === "string"
+            ? metadata.extracted_text
+            : ""
+      if (extractedText.trim()) parts.push(extractedText.trim())
     }
   }
   return parts.join(" ")

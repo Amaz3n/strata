@@ -1,14 +1,16 @@
 "use server"
 
-import { validatePortalToken } from "@/lib/services/portal-access"
+import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { listRfisForPortal, createPortalRfi, addPortalRfiResponse, listRfiResponses } from "@/lib/services/rfis"
 import { portalRfiInputSchema, rfiResponseInputSchema } from "@/lib/validation/rfis"
 
 export async function loadRfisAction(token: string) {
-  const access = await validatePortalToken(token)
-  if (!access) throw new Error("Access denied")
-  if (!access.permissions.can_view_rfis) throw new Error("Access denied")
+  const access = await assertPortalActionAccess(token, {
+    portalType: "sub",
+    requireCompany: true,
+    permission: "can_view_rfis",
+  })
   return listRfisForPortal({
     orgId: access.org_id,
     projectId: access.project_id,
@@ -18,9 +20,12 @@ export async function loadRfisAction(token: string) {
 }
 
 export async function createSubPortalRfiAction(token: string, input: unknown) {
-  const access = await validatePortalToken(token)
-  if (!access || access.portal_type !== "sub") throw new Error("Access denied")
-  if (!access.permissions.can_view_rfis || !access.permissions.can_respond_rfis) throw new Error("Access denied")
+  const access = await assertPortalActionAccess(token, {
+    portalType: "sub",
+    requireCompany: true,
+    permission: "can_respond_rfis",
+  })
+  if (!access.permissions.can_view_rfis) throw new Error("Access denied")
   if (access.scoped_rfi_id) throw new Error("Access denied")
 
   const parsed = portalRfiInputSchema.parse(input)
@@ -37,9 +42,11 @@ export async function createSubPortalRfiAction(token: string, input: unknown) {
 }
 
 export async function listSubPortalRfiResponsesAction(token: string, rfiId: string) {
-  const access = await validatePortalToken(token)
-  if (!access) throw new Error("Access denied")
-  if (!access.permissions.can_view_rfis) throw new Error("Access denied")
+  const access = await assertPortalActionAccess(token, {
+    portalType: "sub",
+    requireCompany: true,
+    permission: "can_view_rfis",
+  })
 
   const supabase = createServiceSupabaseClient()
   const { data: rfi } = await supabase
@@ -55,7 +62,7 @@ export async function listSubPortalRfiResponsesAction(token: string, rfiId: stri
   if (access.scoped_rfi_id && rfi.id !== access.scoped_rfi_id) {
     throw new Error("Access denied")
   }
-  if (access.portal_type === "sub" && rfi.assigned_company_id && access.company_id && rfi.assigned_company_id !== access.company_id) {
+  if (access.portal_type === "sub" && rfi.assigned_company_id && rfi.assigned_company_id !== access.company_id) {
     throw new Error("Access denied")
   }
 
@@ -63,9 +70,12 @@ export async function listSubPortalRfiResponsesAction(token: string, rfiId: stri
 }
 
 export async function addSubPortalRfiResponseAction(token: string, input: unknown) {
-  const access = await validatePortalToken(token)
-  if (!access) throw new Error("Access denied")
-  if (!access.permissions.can_view_rfis || !access.permissions.can_respond_rfis) throw new Error("Access denied")
+  const access = await assertPortalActionAccess(token, {
+    portalType: "sub",
+    requireCompany: true,
+    permission: "can_respond_rfis",
+  })
+  if (!access.permissions.can_view_rfis) throw new Error("Access denied")
 
   const parsed = rfiResponseInputSchema.parse(input)
 
@@ -83,7 +93,7 @@ export async function addSubPortalRfiResponseAction(token: string, input: unknow
   if (access.scoped_rfi_id && rfi.id !== access.scoped_rfi_id) {
     throw new Error("Access denied")
   }
-  if (access.portal_type === "sub" && rfi.assigned_company_id && access.company_id && rfi.assigned_company_id !== access.company_id) {
+  if (access.portal_type === "sub" && rfi.assigned_company_id && rfi.assigned_company_id !== access.company_id) {
     throw new Error("Access denied")
   }
 
@@ -94,8 +104,6 @@ export async function addSubPortalRfiResponseAction(token: string, input: unknow
     input: parsed,
   })
 }
-
-
 
 
 

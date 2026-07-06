@@ -80,6 +80,7 @@ jobs:
             const ok = process.env.CODEX_OUTCOME === "success"
             const response = await fetch(process.env.CALLBACK_URL, {
               method: "POST",
+              redirect: "manual",
               headers: {
                 "Authorization": `Bearer ${process.env.CALLBACK_SECRET}`,
                 "Content-Type": "application/json",

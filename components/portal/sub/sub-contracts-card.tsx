@@ -4,7 +4,7 @@ import Link from "next/link"
 import { Progress } from "@/components/ui/progress"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Plus } from "lucide-react"
+import { CheckCircle2, FileSignature, Plus } from "lucide-react"
 import type { SubPortalCommitment } from "@/lib/types"
 
 interface SubContractsCardProps {
@@ -28,8 +28,8 @@ export function SubContractsCard({
   canSubmitInvoice = true,
 }: SubContractsCardProps) {
   const billedPercent =
-    commitment.total_cents > 0
-      ? Math.round((commitment.billed_cents / commitment.total_cents) * 100)
+    (commitment.revised_total_cents ?? commitment.total_cents) > 0
+      ? Math.round((commitment.billed_cents / (commitment.revised_total_cents ?? commitment.total_cents)) * 100)
       : 0
 
   const statusColors: Record<string, string> = {
@@ -38,6 +38,8 @@ export function SubContractsCard({
     complete: "bg-primary/20 text-primary border-primary/30",
     canceled: "bg-destructive/20 text-destructive border-destructive/30",
   }
+  const hasSigningDocument = Boolean(commitment.source_document_id || commitment.signature_envelope_id)
+  const needsSignature = hasSigningDocument && !commitment.executed_at
 
   return (
     <div className="rounded-lg border p-3 space-y-3">
@@ -50,11 +52,24 @@ export function SubContractsCard({
           >
             {commitment.status}
           </Badge>
+          {commitment.executed_at && (
+            <Badge variant="outline" className="ml-1 mt-1 border-success/30 text-xs text-success">
+              <CheckCircle2 className="mr-1 h-3 w-3" />
+              Executed
+            </Badge>
+          )}
         </div>
         <p className="text-lg font-semibold shrink-0">
-          {formatCurrency(commitment.total_cents)}
+          {formatCurrency(commitment.revised_total_cents ?? commitment.total_cents)}
         </p>
       </div>
+      {(commitment.approved_change_orders_cents ?? 0) !== 0 ? (
+        <p className="text-xs text-muted-foreground">
+          Original {formatCurrency(commitment.total_cents)} · CCOs{" "}
+          {(commitment.approved_change_orders_cents ?? 0) > 0 ? "+" : ""}
+          {formatCurrency(commitment.approved_change_orders_cents ?? 0)}
+        </p>
+      ) : null}
 
       <div className="space-y-1">
         <div className="flex items-center justify-between text-xs">
@@ -82,6 +97,14 @@ export function SubContractsCard({
             </Link>
           </Button>
         )}
+      {needsSignature && (
+        <Button asChild size="sm" className="w-full">
+          <Link href={`/s/${token}/commitments/${commitment.id}/continue`}>
+            <FileSignature className="h-4 w-4 mr-1" />
+            Sign Subcontract
+          </Link>
+        </Button>
+      )}
     </div>
   )
 }

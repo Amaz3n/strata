@@ -249,7 +249,11 @@ export function PortalLinkCreator({
       can_approve_change_orders: false,
       can_submit_selections: false,
       can_create_punch_items: false,
-      can_message: false,
+      can_view_warranty: false,
+      can_submit_invoices: false,
+      can_submit_time: false,
+      can_submit_expenses: false,
+      can_upload_compliance_docs: false,
     })
   }, [permissionPreset])
 

@@ -4,7 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import type { Invoice, InvoiceLine, InvoiceTotals, InvoiceView } from "@/lib/types"
 import type { InvoiceInput, InvoiceLineInput } from "@/lib/validation/invoices"
 import { createApprovedCostInvoiceFromPreview } from "@/lib/services/approved-cost-invoicing"
-import { requireOrgContext } from "@/lib/services/context"
+import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
@@ -90,6 +90,7 @@ function normalizeLines(lines: InvoiceLineInput[]): InvoiceLine[] {
     unit: line.unit ?? "unit",
     unit_cost_cents: toCents(line.unit_cost),
     taxable: line.taxable ?? true,
+    tax_rate_percent: line.tax_rate_percent ?? null,
     qbo_income_account_id: line.qbo_income_account_id ?? null,
     qbo_income_account_name: line.qbo_income_account_name ?? null,
     billable_cost_ids: line.billable_cost_ids ?? undefined,
@@ -99,18 +100,35 @@ function normalizeLines(lines: InvoiceLineInput[]): InvoiceLine[] {
   }))
 }
 
-function calculateNormalizedTotals(lines: InvoiceLine[], taxRate = 0): InvoiceTotals {
+export type InvoiceDiscountInput = { type: "percent" | "fixed"; value: number } | null
+
+/**
+ * Invoice math, in order: subtotal → invoice-level discount (spread proportionally across
+ * lines) → tax per line (line override rate wins over the invoice rate) → total.
+ */
+function calculateNormalizedTotals(lines: InvoiceLine[], taxRate = 0, discount: InvoiceDiscountInput = null): InvoiceTotals {
   const subtotal_cents = lines.reduce((sum, line) => {
     return sum + Math.round(line.quantity * line.unit_cost_cents)
   }, 0)
 
-  const taxableBase = lines.reduce((sum, line) => {
+  let discount_cents = 0
+  if (discount && discount.value > 0 && subtotal_cents > 0) {
+    discount_cents =
+      discount.type === "percent"
+        ? Math.round(subtotal_cents * (Math.min(discount.value, 100) / 100))
+        : Math.min(Math.round(discount.value * 100), subtotal_cents)
+  }
+  const discountRatio = subtotal_cents > 0 ? discount_cents / subtotal_cents : 0
+
+  const taxExact = lines.reduce((sum, line) => {
+    if (line.taxable === false) return sum
     const lineSubtotal = Math.round(line.quantity * line.unit_cost_cents)
-    return line.taxable === false ? sum : sum + lineSubtotal
+    const effectiveRate = line.tax_rate_percent ?? taxRate
+    return sum + lineSubtotal * (1 - discountRatio) * (effectiveRate / 100)
   }, 0)
 
-  const tax_cents = Math.round(taxableBase * (taxRate / 100))
-  const total_cents = subtotal_cents + tax_cents
+  const tax_cents = Math.round(taxExact)
+  const total_cents = subtotal_cents - discount_cents + tax_cents
 
   return {
     subtotal_cents,
@@ -118,7 +136,15 @@ function calculateNormalizedTotals(lines: InvoiceLine[], taxRate = 0): InvoiceTo
     total_cents,
     balance_due_cents: total_cents,
     tax_rate: taxRate,
+    discount_cents,
+    discount_type: discount?.type ?? null,
+    discount_value: discount?.value ?? null,
   }
+}
+
+function discountFromInput(input: Pick<InvoiceInput, "discount_type" | "discount_value">): InvoiceDiscountInput {
+  if (!input.discount_type || !input.discount_value || input.discount_value <= 0) return null
+  return { type: input.discount_type, value: input.discount_value }
 }
 
 function calculateTotals(lines: InvoiceLineInput[], taxRate = 0): InvoiceTotals {
@@ -149,12 +175,18 @@ export function buildApprovedCostInvoicePreview({
     lines: lines.map((line, index) => ({
       cost_code_id: line.cost_code_id ?? null,
       description: line.description,
+      unit: line.unit ?? null,
       cost_cents: line.cost_cents ?? line.unit_cost_cents,
       markup_cents: line.markup_cents ?? 0,
       billable_cents: Math.round(line.quantity * line.unit_cost_cents),
       markup_percent: line.markup_percent ?? 0,
       billable_cost_ids: line.billable_cost_ids ?? [],
       sort_order: index,
+      metadata: {
+        taxable: line.taxable === false ? false : undefined,
+        qbo_income_account_id: line.qbo_income_account_id ?? undefined,
+        qbo_income_account_name: line.qbo_income_account_name ?? undefined,
+      },
     })),
     totals: {
       cost_cents: lines.reduce((sum, line) => sum + (line.cost_cents ?? line.unit_cost_cents), 0),
@@ -687,6 +719,7 @@ function mapInvoiceWithLines(row: any) {
     cost_code_id: l.cost_code_id ?? null,
     unit_cost_cents: l.unit_price_cents,
     taxable: (l.metadata as any)?.taxable ?? l.taxable ?? undefined,
+    tax_rate_percent: (l.metadata as any)?.tax_rate_percent ?? null,
     qbo_income_account_id: (l.metadata as any)?.qbo_income_account_id ?? null,
     qbo_income_account_name: (l.metadata as any)?.qbo_income_account_name ?? null,
     billable_cost_ids: (l.metadata as any)?.billable_cost_ids ?? undefined,
@@ -722,10 +755,77 @@ async function safeSelect<T>(
 export async function listInvoices({
   orgId,
   projectId,
+  limit,
+  offset,
+  search,
 }: {
   orgId?: string
   projectId?: string
+  limit?: number
+  offset?: number
+  /** Case-insensitive match on invoice number, title, or customer name. */
+  search?: string
 } = {}): Promise<Invoice[]> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireInvoicePermission({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    permission: "invoice.read",
+    projectId,
+  })
+
+  let query = supabase
+    .from("invoices")
+    .select(
+      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, sent_at, sent_to_emails",
+    )
+    .eq("org_id", resolvedOrgId)
+    .order("created_at", { ascending: false })
+
+  if (projectId) {
+    query = query.eq("project_id", projectId)
+  }
+  const term = search?.trim()
+  if (term) {
+    // Escape PostgREST or-filter specials so user input can't break the filter expression.
+    const sanitized = term.replace(/[%_]/g, (match) => `\\${match}`).replace(/[(),.]/g, " ").trim()
+    if (sanitized) {
+      query = query.or(
+        `invoice_number.ilike.%${sanitized}%,title.ilike.%${sanitized}%,metadata->>customer_name.ilike.%${sanitized}%`,
+      )
+    }
+  }
+  if (typeof limit === "number" && limit > 0) {
+    const start = Math.max(0, offset ?? 0)
+    query = query.range(start, start + limit - 1)
+  }
+
+  const { data, error } = await query
+
+  if (error) throw new Error(`Failed to list invoices: ${error.message}`)
+
+  return (data ?? []).map((row: any) => mapInvoiceRow(row as InvoiceRow))
+}
+
+export interface InvoiceArSummary {
+  outstandingCents: number
+  overdueCents: number
+  /** Balance past due by 1–30 / 31–60 / 61–90 / 90+ days. */
+  buckets: [number, number, number, number]
+}
+
+/**
+ * AR aging over the project's whole invoice book — computed server-side so the numbers stay
+ * correct even when the client has only a page of rows loaded.
+ */
+export async function getProjectInvoiceArSummary({
+  projectId,
+  orgId,
+}: {
+  projectId: string
+  orgId?: string
+}): Promise<InvoiceArSummary> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireInvoicePermission({
     supabase,
@@ -737,20 +837,52 @@ export async function listInvoices({
 
   const { data, error } = await supabase
     .from("invoices")
-    .select(
-      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, sent_at, sent_to_emails",
-    )
+    .select("status, balance_due_cents, total_cents, due_date")
     .eq("org_id", resolvedOrgId)
-    .order("created_at", { ascending: false })
+    .eq("project_id", projectId)
+    .in("status", ["sent", "partial", "overdue"])
 
-  if (error) throw new Error(`Failed to list invoices: ${error.message}`)
+  if (error) throw new Error(`Failed to load AR summary: ${error.message}`)
 
-  const filtered = projectId ? (data ?? []).filter((row: any) => row.project_id === projectId) : data ?? []
-  return filtered.map((row: any) => mapInvoiceRow(row as InvoiceRow))
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const summary: InvoiceArSummary = { outstandingCents: 0, overdueCents: 0, buckets: [0, 0, 0, 0] }
+
+  for (const row of data ?? []) {
+    const balance = Number(row.balance_due_cents ?? row.total_cents ?? 0)
+    if (balance <= 0) continue
+    summary.outstandingCents += balance
+    if (!row.due_date) continue
+    // Date-only strings parsed at local midnight to match the client's overdue math.
+    const [year, month, day] = String(row.due_date).split("-").map(Number)
+    if (!year || !month || !day) continue
+    const due = new Date(year, month - 1, day)
+    const days = Math.floor((today.getTime() - due.getTime()) / 86_400_000)
+    if (days <= 0) continue
+    summary.overdueCents += balance
+    if (days <= 30) summary.buckets[0] += balance
+    else if (days <= 60) summary.buckets[1] += balance
+    else if (days <= 90) summary.buckets[2] += balance
+    else summary.buckets[3] += balance
+  }
+
+  return summary
 }
 
-export async function createInvoice({ input, orgId }: { input: InvoiceInput; orgId?: string }) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+export async function createInvoice({
+  input,
+  orgId,
+  context,
+}: {
+  input: InvoiceInput
+  orgId?: string
+  /**
+   * Pre-resolved context for callers without a browser session (recurring-invoice cron).
+   * Runs as context.userId with the provided client — permission checks still apply.
+   */
+  context?: OrgServiceContext
+}) {
+  const { supabase, orgId: resolvedOrgId, userId } = context ?? (await requireOrgContext(orgId))
   const reservationId = input.reservation_id ?? undefined
   await requireInvoicePermission({
     supabase,
@@ -796,7 +928,7 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
   if (sourceType === "from_costs" && !input.project_id) {
     throw new Error("Project is required to invoice approved costs")
   }
-  const totals = calculateNormalizedTotals(lines, input.tax_rate)
+  const totals = calculateNormalizedTotals(lines, input.tax_rate, discountFromInput(input))
   const shouldGenerateToken = input.client_visible === true || input.status === "sent"
   const token = shouldGenerateToken ? randomUUID() : null
 
@@ -982,6 +1114,7 @@ export async function createInvoice({ input, orgId }: { input: InvoiceInput; org
       unit_price_cents: line.unit_cost_cents,
       metadata: {
         taxable: line.taxable ?? true,
+        tax_rate_percent: line.tax_rate_percent ?? null,
         qbo_income_account_id: line.qbo_income_account_id ?? null,
         qbo_income_account_name: line.qbo_income_account_name ?? null,
         system_generated_kind: isSystemGeneratedRetainageLine(line) ? "retainage_hold" : null,
@@ -1149,7 +1282,7 @@ export async function updateInvoice({
     baseLines: normalizeLines(input.lines),
   })
   const lines = applySourceDerivedBillingLines(normalizeLines(input.lines), sourceContext)
-  const totals = calculateNormalizedTotals(lines, input.tax_rate)
+  const totals = calculateNormalizedTotals(lines, input.tax_rate, discountFromInput(input))
   const shouldGenerateToken =
     existing.token != null || existing.client_visible === true || input.client_visible === true || input.status === "sent"
   const token = shouldGenerateToken ? existing.token ?? randomUUID() : existing.token ?? null
@@ -1238,6 +1371,7 @@ export async function updateInvoice({
       unit_price_cents: line.unit_cost_cents,
       metadata: {
         taxable: line.taxable ?? true,
+        tax_rate_percent: line.tax_rate_percent ?? null,
         qbo_income_account_id: line.qbo_income_account_id ?? null,
         qbo_income_account_name: line.qbo_income_account_name ?? null,
         system_generated_kind: isSystemGeneratedRetainageLine(line) ? "retainage_hold" : null,
@@ -1855,6 +1989,11 @@ export async function ensureInvoiceToken(invoiceId: string, orgId?: string) {
   return updated.token
 }
 
+// Email clients and chat apps prefetch links, which would otherwise register phantom
+// "client viewed" activity. Skip anything that self-identifies as automated.
+const BOT_USER_AGENT_PATTERN =
+  /bot|crawl|spider|preview|prerender|headless|facebookexternalhit|slack|whatsapp|telegram|skypeuripreview|discord|twitterbot|linkedinbot|pinterest|embedly|quora link preview|vkshare|outbrain|w3c_validator|googleimageproxy|snapchat|viber|bitlybot/i
+
 export async function recordInvoiceViewed({
   invoiceId,
   orgId,
@@ -1869,6 +2008,7 @@ export async function recordInvoiceViewed({
   ipAddress?: string | null
 }) {
   if (!invoiceId || !orgId) return
+  if (userAgent && BOT_USER_AGENT_PATTERN.test(userAgent)) return
   const supabase = createServiceSupabaseClient()
   try {
     const viewedAt = new Date().toISOString()

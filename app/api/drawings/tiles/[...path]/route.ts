@@ -18,12 +18,18 @@ export async function GET(
   _request: NextRequest,
   context: { params: Promise<{ path: string[] }> }
 ) {
-  await requireOrgMembership()
+  const { orgId } = await requireOrgMembership()
 
   const { path } = await context.params
   const normalizedPath = path.join("/")
   if (!normalizedPath) {
     return NextResponse.json({ error: "Missing tile path" }, { status: 400 })
+  }
+
+  // Tile paths are prefixed with the owning org id — restrict access to the
+  // requester's active org so members of other orgs can't fetch tiles by path.
+  if (!normalizedPath.startsWith(`${orgId}/`)) {
+    return NextResponse.json({ error: "Tile not found" }, { status: 404 })
   }
 
   try {

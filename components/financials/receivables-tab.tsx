@@ -1,31 +1,56 @@
 "use client"
 
-import type { Contact, CostCode, Contract, DrawSchedule, Invoice, Project, Retainage } from "@/lib/types"
+import type { Contact, CostCode, Contract, DrawSchedule, Invoice, Project, Retainage, ScheduleItem } from "@/lib/types"
+import type { InvoiceArSummary } from "@/lib/services/invoices"
 import { InvoicesClient } from "@/components/invoices/invoices-client"
+import { PeriodCloseWorkflow } from "@/components/financials/period-close-workflow"
 import { DrawScheduleManager } from "@/components/projects/draw-schedule-manager"
 import { RetainageTracker } from "@/components/projects/retainage-tracker"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { AlertTriangle, Receipt, Calendar, DollarSign, Percent } from "lucide-react"
+import { AlertTriangle, Receipt, Calendar, DollarSign, PackageCheck, Percent } from "lucide-react"
 import { useEffect, useMemo, useState, useTransition } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { toast } from "sonner"
-import { supportsApprovedCostInvoicing } from "@/lib/financials/billing-model"
+import type { ProjectBillingModel } from "@/lib/financials/billing-model"
+import type { BillingAutopilotState } from "@/lib/services/billing-autopilot"
+import type { ProjectBillingPeriod } from "@/lib/services/billing-periods"
+import type { ProjectGmpControlSummary } from "@/lib/services/gmp-control"
 import type { OwnerBillingPackageSummary } from "@/lib/services/owner-billing-packages"
 import type { ProjectFeeBillingSummary } from "@/lib/services/fee-billing"
-import type { ProjectGmpControlSummary } from "@/lib/services/gmp-control"
-import type { BillingAutopilotState } from "@/lib/services/billing-autopilot"
-import { BillingAutopilotPanel } from "@/components/financials/billing-autopilot-panel"
 import {
   createProjectFeeInvoiceAction,
   updateProjectFeeProgressAction,
 } from "@/app/(app)/projects/[id]/financials/actions"
 
+interface CloseWorkflowData {
+  periods: ProjectBillingPeriod[]
+  selectedPeriod: ProjectBillingPeriod | null
+  summary: {
+    reviewItemCount: number
+    blockedItemCount: number
+    readyCostIds: string[]
+    readyCostCount: number
+    readyCostCents: number
+    lateCostCount: number
+    lateCostCents: number
+    oldestReadyCostDays: number
+  }
+  feeSummary?: ProjectFeeBillingSummary | null
+  gmpSummary?: ProjectGmpControlSummary | null
+  autopilot?: BillingAutopilotState
+  loadErrors?: string[]
+}
+
 interface ReceivablesTabProps {
   projectId: string
   project: Project
+  billingModel: ProjectBillingModel
+  showDraws?: boolean
+  showRetainage?: boolean
+  closeWorkflow?: CloseWorkflowData | null
   invoices: Invoice[]
   draws: DrawSchedule[]
   retainage: Retainage[]
@@ -34,10 +59,9 @@ interface ReceivablesTabProps {
   costCodesEnabled?: boolean
   ownerBillingPackages?: OwnerBillingPackageSummary[]
   feeSummary?: ProjectFeeBillingSummary | null
-  gmpSummary?: ProjectGmpControlSummary | null
-  autopilot?: BillingAutopilotState
+  arSummary?: InvoiceArSummary | null
   contract: Contract | null
-  scheduleItems?: any[]
+  scheduleItems?: ScheduleItem[]
   builderInfo?: {
     name?: string | null
     email?: string | null
@@ -46,9 +70,15 @@ interface ReceivablesTabProps {
   loadErrors?: string[]
 }
 
+type ReceivablesSubTab = "invoices" | "close" | "fee" | "draws" | "retainage"
+
 export function ReceivablesTab({
   projectId,
   project,
+  billingModel,
+  showDraws = false,
+  showRetainage = true,
+  closeWorkflow = null,
   invoices,
   draws,
   retainage,
@@ -57,8 +87,7 @@ export function ReceivablesTab({
   costCodesEnabled = true,
   ownerBillingPackages = [],
   feeSummary: initialFeeSummary = null,
-  gmpSummary = null,
-  autopilot = { enabled: false, run: null },
+  arSummary = null,
   contract,
   scheduleItems,
   builderInfo,
@@ -67,7 +96,34 @@ export function ReceivablesTab({
   const router = useRouter()
   const searchParams = useSearchParams()
   const invoiceParam = searchParams.get("invoice")
-  const [subTab, setSubTab] = useState<"invoices" | "draws" | "retainage" | "fee">("invoices")
+  const tabParam = searchParams.get("tab")
+  const showCloseTab = Boolean(closeWorkflow)
+  const showFeeTab = billingModel === "cost_plus_fixed_fee" || Boolean(initialFeeSummary?.enabled)
+  const visibleTabs = useMemo(() => {
+    const tabs: ReceivablesSubTab[] = ["invoices"]
+    if (showCloseTab) tabs.push("close")
+    if (showFeeTab) tabs.push("fee")
+    if (showDraws) tabs.push("draws")
+    if (showRetainage) tabs.push("retainage")
+    return tabs
+  }, [showCloseTab, showFeeTab, showDraws, showRetainage])
+  const [subTab, setSubTab] = useState<ReceivablesSubTab>(() =>
+    tabParam && visibleTabs.includes(tabParam as ReceivablesSubTab) ? (tabParam as ReceivablesSubTab) : "invoices",
+  )
+
+  // Keep ?tab= in the URL so refreshes and shared links land on the same sub-tab.
+  function changeSubTab(next: ReceivablesSubTab) {
+    setSubTab(next)
+    if (typeof window === "undefined") return
+    const params = new URLSearchParams(window.location.search)
+    if (next === "invoices") {
+      params.delete("tab")
+    } else {
+      params.set("tab", next)
+    }
+    const search = params.toString()
+    router.replace(window.location.pathname + (search ? `?${search}` : ""), { scroll: false })
+  }
   const [localInvoices, setLocalInvoices] = useState<Invoice[]>(invoices)
   const [feeSummary, setFeeSummary] = useState<ProjectFeeBillingSummary | null>(initialFeeSummary)
   const [openInvoiceId, setOpenInvoiceId] = useState<string | undefined>()
@@ -75,13 +131,8 @@ export function ReceivablesTab({
   const [isFeePending, startFeeTransition] = useTransition()
   const safeRetainage = useMemo(() => (Array.isArray(retainage) ? retainage : []), [retainage])
   const safeInvoices = useMemo(() => (Array.isArray(localInvoices) ? localInvoices : []), [localInvoices])
-  const invoiceProject = useMemo(
-    () => ({ ...project, billing_contract: contract }),
-    [project, contract],
-  )
+  const invoiceProject = useMemo(() => ({ ...project, billing_contract: contract }), [project, contract])
   const visibleCostCodes = costCodesEnabled ? costCodes : []
-  const enableApprovedCostsSource = supportsApprovedCostInvoicing(contract)
-  const showFeeTab = feeSummary?.enabled || feeSummary?.billing_model === "cost_plus_fixed_fee"
 
   useEffect(() => {
     setLocalInvoices(invoices)
@@ -98,11 +149,17 @@ export function ReceivablesTab({
     }
   }, [invoiceParam])
 
+  useEffect(() => {
+    if (!invoiceParam && tabParam && visibleTabs.includes(tabParam as ReceivablesSubTab)) {
+      setSubTab(tabParam as ReceivablesSubTab)
+    }
+  }, [invoiceParam, tabParam, visibleTabs])
+
   const tabCounts = {
     invoices: safeInvoices.length,
+    close: closeWorkflow?.summary.readyCostCount ?? 0,
     draws: draws.length,
     retainage: safeRetainage.length,
-    fee: feeSummary?.enabled ? 1 : 0,
   }
 
   function handleFeeProgressSave(input: { scheduleId: string; percentComplete: number; totalFeeCents?: number }) {
@@ -136,9 +193,12 @@ export function ReceivablesTab({
           clientVisible: false,
         })
         setFeeSummary(result.feeSummary)
-        setLocalInvoices((current) => [result.invoice, ...current.filter((invoice) => invoice.id !== result.invoice.id)])
+        setLocalInvoices((current) => [
+          result.invoice,
+          ...current.filter((invoice) => invoice.id !== result.invoice.id),
+        ])
         setOpenInvoiceId(result.invoice.id)
-        setSubTab("invoices")
+        changeSubTab("invoices")
         toast.success("Fee invoice created")
         router.refresh()
       } catch (error) {
@@ -162,6 +222,18 @@ export function ReceivablesTab({
             {tabCounts.invoices}
           </Badge>
         </TabsTrigger>
+        {showCloseTab ? (
+          <TabsTrigger
+            value="close"
+            className="h-14 gap-2 rounded-none border-0 px-3.5 text-muted-foreground shadow-none transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-0 data-[state=active]:bg-transparent data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:shadow-none"
+          >
+            <PackageCheck className="h-4 w-4" />
+            Close &amp; Bill
+            <Badge variant="secondary" className="h-5 rounded-sm px-1.5 text-[10px]">
+              {tabCounts.close}
+            </Badge>
+          </TabsTrigger>
+        ) : null}
         {showFeeTab ? (
           <TabsTrigger
             value="fee"
@@ -169,79 +241,51 @@ export function ReceivablesTab({
           >
             <DollarSign className="h-4 w-4" />
             Fee
+          </TabsTrigger>
+        ) : null}
+        {showDraws ? (
+          <TabsTrigger
+            value="draws"
+            className="h-14 gap-2 rounded-none border-0 px-3.5 text-muted-foreground shadow-none transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-0 data-[state=active]:bg-transparent data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:shadow-none"
+          >
+            <Calendar className="h-4 w-4" />
+            Draw Schedule
             <Badge variant="secondary" className="h-5 rounded-sm px-1.5 text-[10px]">
-              {tabCounts.fee}
+              {tabCounts.draws}
             </Badge>
           </TabsTrigger>
         ) : null}
-        <TabsTrigger
-          value="draws"
-          className="h-14 gap-2 rounded-none border-0 px-3.5 text-muted-foreground shadow-none transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-0 data-[state=active]:bg-transparent data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:shadow-none"
-        >
-          <Calendar className="h-4 w-4" />
-          Draw Schedule
-          <Badge variant="secondary" className="h-5 rounded-sm px-1.5 text-[10px]">
-            {tabCounts.draws}
-          </Badge>
-        </TabsTrigger>
-        <TabsTrigger
-          value="retainage"
-          className="h-14 gap-2 rounded-none border-0 px-3.5 text-muted-foreground shadow-none transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-0 data-[state=active]:bg-transparent data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:shadow-none"
-        >
-          <Percent className="h-4 w-4" />
-          Retainage
-          <Badge variant="secondary" className="h-5 rounded-sm px-1.5 text-[10px]">
-            {tabCounts.retainage}
-          </Badge>
-        </TabsTrigger>
+        {showRetainage ? (
+          <TabsTrigger
+            value="retainage"
+            className="h-14 gap-2 rounded-none border-0 px-3.5 text-muted-foreground shadow-none transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-0 data-[state=active]:bg-transparent data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:shadow-none"
+          >
+            <Percent className="h-4 w-4" />
+            Retainage
+            <Badge variant="secondary" className="h-5 rounded-sm px-1.5 text-[10px]">
+              {tabCounts.retainage}
+            </Badge>
+          </TabsTrigger>
+        ) : null}
       </TabsList>
     )
   }
 
   return (
     <div className="w-full">
-      <BillingAutopilotPanel projectId={projectId} initialState={autopilot} />
       {loadErrors.length > 0 ? (
-        <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 sm:px-6 lg:px-8 dark:border-amber-900/30 dark:bg-amber-950/35 dark:text-amber-200">
+        <div className="border-b border-warning/30 bg-warning/10 px-4 py-3 text-sm text-foreground sm:px-6 lg:px-8">
           <div className="flex items-start gap-2">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
             <div className="flex flex-wrap items-baseline gap-x-2">
               <span className="font-medium">Some receivable data could not load.</span>
-              <span className="text-amber-800/40 dark:text-amber-400/30">•</span>
-              <span className="text-amber-800 dark:text-amber-300">{loadErrors.join(" · ")}</span>
+              <span className="text-muted-foreground/50">•</span>
+              <span className="text-muted-foreground">{loadErrors.join(" · ")}</span>
             </div>
           </div>
         </div>
       ) : null}
-      {gmpSummary?.enabled ? (
-        <div
-          className={`border-b px-4 py-3 text-sm sm:px-6 lg:px-8 ${
-            gmpSummary.status === "overrun"
-              ? "border-destructive/30 bg-destructive/5 text-destructive"
-              : gmpSummary.status === "watch"
-                ? "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900/30 dark:bg-amber-950/35 dark:text-amber-200"
-                : "bg-muted/30 text-muted-foreground"
-          }`}
-        >
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-            <div className="font-medium text-foreground">GMP: {formatMoney(gmpSummary.revised_gmp_cents)}</div>
-            <div>Inside EAC {formatMoney(gmpSummary.inside_gmp_eac_cents)}</div>
-            <div>Outside GMP {formatMoney(gmpSummary.outside_gmp_eac_cents)}</div>
-            <div>
-              {gmpSummary.overrun_cents > 0
-                ? `Overrun ${formatMoney(gmpSummary.overrun_cents)}`
-                : `Savings ${formatMoney(gmpSummary.savings_cents)}`}
-            </div>
-            {gmpSummary.warnings[0] ? (
-              <div className="flex min-w-0 items-center gap-1">
-                <AlertTriangle className="h-4 w-4 shrink-0" />
-                <span className="truncate">{gmpSummary.warnings[0].message}</span>
-              </div>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
-      <Tabs value={subTab} onValueChange={(v) => setSubTab(v as "invoices" | "draws" | "retainage" | "fee")} className="w-full gap-0">
+      <Tabs value={subTab} onValueChange={(v) => changeSubTab(v as ReceivablesSubTab)} className="w-full gap-0">
         <TabsContent value="invoices" className="m-0">
           <InvoicesClient
             invoices={safeInvoices}
@@ -253,12 +297,28 @@ export function ReceivablesTab({
             contacts={contacts}
             costCodes={visibleCostCodes}
             ownerBillingPackages={ownerBillingPackages}
-            enableApprovedCostsSource={enableApprovedCostsSource}
+            enableApprovedCostsSource={Boolean(closeWorkflow)}
             toolbarLeading={renderTabList()}
-            fullBleed
-            projectScoped
+            arSummary={arSummary}
           />
         </TabsContent>
+
+        {showCloseTab && closeWorkflow ? (
+          <TabsContent value="close" className="m-0">
+            <div className="border-b bg-background/95 px-4 sm:px-6 lg:px-8">{renderTabList()}</div>
+            <PeriodCloseWorkflow
+              projectId={projectId}
+              billingModel={billingModel}
+              periods={closeWorkflow.periods}
+              selectedPeriod={closeWorkflow.selectedPeriod}
+              summary={closeWorkflow.summary}
+              feeSummary={closeWorkflow.feeSummary}
+              gmpSummary={closeWorkflow.gmpSummary}
+              autopilot={closeWorkflow.autopilot}
+              loadErrors={closeWorkflow.loadErrors}
+            />
+          </TabsContent>
+        ) : null}
 
         {showFeeTab ? (
           <TabsContent value="fee" className="m-0">
@@ -272,43 +332,47 @@ export function ReceivablesTab({
           </TabsContent>
         ) : null}
 
-        <TabsContent value="draws" className="m-0">
-          <div className="border-b bg-background/95 px-4 sm:px-6 lg:px-8">{renderTabList()}</div>
-          <div>
-            <DrawScheduleManager
-              projectId={projectId}
-              initialDraws={draws}
-              contract={contract}
-              scheduleItems={scheduleItems}
-              costCodes={visibleCostCodes}
-              onInvoiceGenerationStart={(draw) => {
-                setOpenInvoiceId(undefined)
-                setPendingInvoiceLabel(`Draw ${draw.draw_number}: ${draw.title}`)
-                setSubTab("invoices")
-              }}
-              onInvoiceGenerated={(result) => {
-                setLocalInvoices((current) => {
-                  const withoutDuplicate = current.filter((invoice) => invoice.id !== result.invoice.id)
-                  return [result.invoice, ...withoutDuplicate]
-                })
-                setPendingInvoiceLabel(undefined)
-                setOpenInvoiceId(result.invoice_id)
-                setSubTab("invoices")
-                router.refresh()
-              }}
-              onInvoiceGenerationFailed={() => {
-                setPendingInvoiceLabel(undefined)
-              }}
-            />
-          </div>
-        </TabsContent>
+        {showDraws ? (
+          <TabsContent value="draws" className="m-0">
+            <div className="border-b bg-background/95 px-4 sm:px-6 lg:px-8">{renderTabList()}</div>
+            <div>
+              <DrawScheduleManager
+                projectId={projectId}
+                initialDraws={draws}
+                contract={contract}
+                scheduleItems={scheduleItems}
+                costCodes={visibleCostCodes}
+                onInvoiceGenerationStart={(draw) => {
+                  setOpenInvoiceId(undefined)
+                  setPendingInvoiceLabel(`Draw ${draw.draw_number}: ${draw.title}`)
+                  changeSubTab("invoices")
+                }}
+                onInvoiceGenerated={(result) => {
+                  setLocalInvoices((current) => {
+                    const withoutDuplicate = current.filter((invoice) => invoice.id !== result.invoice.id)
+                    return [result.invoice, ...withoutDuplicate]
+                  })
+                  setPendingInvoiceLabel(undefined)
+                  setOpenInvoiceId(result.invoice_id)
+                  changeSubTab("invoices")
+                  router.refresh()
+                }}
+                onInvoiceGenerationFailed={() => {
+                  setPendingInvoiceLabel(undefined)
+                }}
+              />
+            </div>
+          </TabsContent>
+        ) : null}
 
-        <TabsContent value="retainage" className="m-0">
-          <div className="border-b bg-background/95 px-4 sm:px-6 lg:px-8">{renderTabList()}</div>
-          <div className="p-4 sm:p-6 lg:p-8">
-            <RetainageTracker projectId={projectId} retainage={safeRetainage} />
-          </div>
-        </TabsContent>
+        {showRetainage ? (
+          <TabsContent value="retainage" className="m-0">
+            <div className="border-b bg-background/95 px-4 sm:px-6 lg:px-8">{renderTabList()}</div>
+            <div className="p-4 sm:p-6 lg:p-8">
+              <RetainageTracker projectId={projectId} retainage={safeRetainage} />
+            </div>
+          </TabsContent>
+        ) : null}
       </Tabs>
     </div>
   )
@@ -341,7 +405,9 @@ function FeeBillingPanel({
 }) {
   const schedule = summary?.schedule ?? null
   const firstLine = summary?.lines[0]
-  const [percentComplete, setPercentComplete] = useState(() => String(firstLine?.percent_complete ?? Math.round(summary?.project_percent_complete ?? 0)))
+  const [percentComplete, setPercentComplete] = useState(() =>
+    String(firstLine?.percent_complete ?? Math.round(summary?.project_percent_complete ?? 0)),
+  )
   const [invoiceAmount, setInvoiceAmount] = useState(() => ((summary?.billable_fee_cents ?? 0) / 100).toFixed(2))
 
   useEffect(() => {
@@ -360,7 +426,7 @@ function FeeBillingPanel({
   if (!summary.enabled || !schedule) {
     return (
       <div className="p-4 sm:p-6 lg:p-8">
-        <div className="border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900/30 dark:bg-amber-950/35 dark:text-amber-200">
+        <div className="border border-warning/30 bg-warning/10 p-4 text-sm text-foreground">
           {summary.reason ?? "Fee billing is not enabled for this project."}
         </div>
       </div>
@@ -397,7 +463,9 @@ function FeeBillingPanel({
                 <div className="text-xs text-muted-foreground">{line.percent_complete.toFixed(1)}% complete</div>
               </div>
               <div className="text-right font-mono">{formatMoney(line.scheduled_fee_cents)}</div>
-              <div className="text-right font-mono">{formatMoney(line.effective_earned_fee_cents ?? line.earned_fee_cents)}</div>
+              <div className="text-right font-mono">
+                {formatMoney(line.effective_earned_fee_cents ?? line.earned_fee_cents)}
+              </div>
               <div className="text-right font-mono">{formatMoney(line.billed_fee_cents)}</div>
             </div>
           ))}
@@ -406,7 +474,9 @@ function FeeBillingPanel({
         <div className="space-y-4 border p-4">
           <div>
             <div className="text-sm font-medium">Fee progress</div>
-            <div className="mt-1 text-xs text-muted-foreground">Project WIP currently estimates {summary.project_percent_complete.toFixed(1)}% complete.</div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              Project WIP currently estimates {summary.project_percent_complete.toFixed(1)}% complete.
+            </div>
           </div>
           <div className="grid grid-cols-[1fr_auto] gap-2">
             <Input
@@ -419,7 +489,12 @@ function FeeBillingPanel({
               type="button"
               variant="outline"
               disabled={!canSaveProgress || isPending}
-              onClick={() => onSaveProgress({ scheduleId: schedule.id, percentComplete: percent })}
+              onClick={() =>
+                onSaveProgress({
+                  scheduleId: schedule.id,
+                  percentComplete: percent,
+                })
+              }
             >
               Save
             </Button>

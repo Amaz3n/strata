@@ -26,7 +26,16 @@ export async function createDocument(
     document_type: "estimate" | "proposal" | "contract" | "change_order" | "other"
     title: string
     source_file_id: string
-    source_entity_type?: "estimate" | "proposal" | "change_order" | "lien_waiver" | "selection" | "subcontract" | "closeout" | "other"
+    source_entity_type?:
+      | "estimate"
+      | "proposal"
+      | "change_order"
+      | "lien_waiver"
+      | "selection"
+      | "subcontract"
+      | "subcontract_change_order"
+      | "closeout"
+      | "other"
     source_entity_id?: string
     metadata?: Record<string, any>
   },

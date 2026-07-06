@@ -10,6 +10,7 @@ import {
   createPlatformBugFromFormAction,
   deletePlatformBugAction,
   listPlatformBugProjectsAction,
+  startPlatformBugAiFixAction,
   startPlatformBugAiReviewAction,
   updatePlatformBugAction,
 } from "@/app/(app)/platform/bugs/actions"
@@ -26,6 +27,7 @@ import {
   ExternalLink,
   FileText,
   FolderOpen,
+  GitPullRequest,
   Loader2,
   MoreHorizontal,
   Paperclip,
@@ -72,6 +74,7 @@ import {
   PLATFORM_BUG_PRIORITIES,
   PLATFORM_BUG_STATUSES,
   type PlatformBug,
+  type PlatformBugAiFix,
   type PlatformBugAiReview,
   type PlatformBugEvent,
   type PlatformBugPerson,
@@ -84,6 +87,7 @@ type Props = {
   initialBugs: PlatformBug[]
   initialEvents: PlatformBugEvent[]
   initialAiReviews: PlatformBugAiReview[]
+  initialAiFixes: PlatformBugAiFix[]
   owners: PlatformBugPerson[]
   orgs: { id: string; name: string }[]
 }
@@ -225,6 +229,22 @@ function getReviewStatusLabel(status: PlatformBugAiReview["status"]) {
   return "Queued"
 }
 
+function getFixStatusLabel(status: PlatformBugAiFix["status"]) {
+  if (status === "pr_ready") return "PR ready"
+  if (status === "failed") return "Failed"
+  if (status === "cancelled") return "Cancelled"
+  if (status === "running") return "Running"
+  if (status === "dispatched") return "Dispatched"
+  return "Queued"
+}
+
+function canRequestCodexFix(bug: PlatformBug) {
+  const source = bug.source.toLowerCase()
+  const title = bug.title.toLowerCase()
+  if (source === "support:feedback" || title.startsWith("feature request:")) return false
+  return bug.status !== "triage" && bug.status !== "done" && bug.status !== "wont_fix"
+}
+
 function stringArray(value: unknown) {
   if (!Array.isArray(value)) return []
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
@@ -238,11 +258,12 @@ function proposalText(proposal: Record<string, unknown>, keys: string[]) {
   return null
 }
 
-export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReviews, owners, orgs }: Props) {
+export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReviews, initialAiFixes, owners, orgs }: Props) {
   const router = useRouter()
   const [bugs, setBugs] = useState(initialBugs)
   const [events, setEvents] = useState(initialEvents)
   const [aiReviews, setAiReviews] = useState(initialAiReviews)
+  const [aiFixes, setAiFixes] = useState(initialAiFixes)
   const [selectedId, setSelectedId] = useState("")
   const [detailOpen, setDetailOpen] = useState(false)
   const [collapsedStatuses, setCollapsedStatuses] = useState<PlatformBugStatus[]>([])
@@ -265,7 +286,8 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
     setBugs(initialBugs)
     setEvents(initialEvents)
     setAiReviews(initialAiReviews)
-  }, [initialBugs, initialEvents, initialAiReviews])
+    setAiFixes(initialAiFixes)
+  }, [initialBugs, initialEvents, initialAiReviews, initialAiFixes])
 
   useEffect(() => {
     return () => {
@@ -319,6 +341,8 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
   const panelBug = selectedBug ?? lastBugRef.current
   const panelEvents = panelBug ? events.filter((event) => event.bug_id === panelBug.id) : []
   const panelReview = panelBug ? aiReviews.find((review) => review.bug_id === panelBug.id) ?? null : null
+  const panelFix = panelBug ? aiFixes.find((fix) => fix.bug_id === panelBug.id) ?? null : null
+  const fixAllowed = panelBug ? canRequestCodexFix(panelBug) : false
   const panelOrg = panelBug?.org ?? null
   const panelProject = panelBug?.project ?? null
 
@@ -412,6 +436,25 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
         setAiReviews((current) => [
           result.review,
           ...current.filter((review) => review.bug_id !== result.review.bug_id),
+        ])
+        router.refresh()
+      }
+    })
+  }
+
+  const startAiFix = () => {
+    if (!selectedBug) return
+    setError(null)
+    startTransition(async () => {
+      const result = await startPlatformBugAiFixAction(selectedBug.id)
+      if (result.error) {
+        setError(result.error)
+        return
+      }
+      if (result.fix) {
+        setAiFixes((current) => [
+          result.fix,
+          ...current.filter((fix) => fix.bug_id !== result.fix.bug_id),
         ])
         router.refresh()
       }
@@ -835,6 +878,82 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
                       )}
 
                       <AiReviewProposal review={panelReview} />
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-4 border-t pt-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <GitPullRequest className="size-4 text-muted-foreground" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium">Codex fix PR</p>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {panelFix ? getFixStatusLabel(panelFix.status) : fixAllowed ? "No PR request yet" : "Move out of triage first"}
+                        </p>
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant={panelFix ? "outline" : "default"}
+                      onClick={startAiFix}
+                      disabled={
+                        isPending ||
+                        !fixAllowed ||
+                        panelFix?.status === "queued" ||
+                        panelFix?.status === "dispatched" ||
+                        panelFix?.status === "running"
+                      }
+                    >
+                      {isPending ? <Loader2 className="size-4 animate-spin" /> : <GitPullRequest className="size-4" />}
+                      {panelFix ? "Run again" : "Create PR"}
+                    </Button>
+                  </div>
+
+                  {panelFix && (
+                    <div className="mt-3 space-y-3 border bg-muted/25 p-3 text-sm">
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                        <Badge variant={panelFix.status === "failed" ? "destructive" : "outline"}>
+                          {getFixStatusLabel(panelFix.status)}
+                        </Badge>
+                        <span>Updated {formatDate(panelFix.updated_at)}</span>
+                        {panelFix.github_run_url && (
+                          <a
+                            href={panelFix.github_run_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 hover:text-foreground"
+                          >
+                            GitHub run
+                            <ExternalLink className="size-3" />
+                          </a>
+                        )}
+                        {panelFix.pr_url && (
+                          <a
+                            href={panelFix.pr_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 hover:text-foreground"
+                          >
+                            Pull request
+                            <ExternalLink className="size-3" />
+                          </a>
+                        )}
+                      </div>
+
+                      {panelFix.error ? (
+                        <p className="whitespace-pre-wrap text-destructive">{panelFix.error}</p>
+                      ) : panelFix.summary ? (
+                        <p className="whitespace-pre-wrap leading-6">{panelFix.summary}</p>
+                      ) : (
+                        <p className="text-muted-foreground">Codex is preparing a fix branch.</p>
+                      )}
+
+                      {panelFix.branch_name && (
+                        <p className="text-xs text-muted-foreground">
+                          Branch <code className="border bg-background px-1 py-0.5">{panelFix.branch_name}</code>
+                        </p>
+                      )}
                     </div>
                   )}
                 </div>

@@ -118,6 +118,53 @@ export interface DueWorkItem {
   href: string;
 }
 
+export type OperationsLookaheadKind =
+  | "schedule_start"
+  | "schedule_finish"
+  | "task_due";
+
+export interface OperationsLookaheadItem {
+  id: string;
+  title: string;
+  projectName: string | null;
+  date: string;
+  kind: OperationsLookaheadKind;
+  itemType?: string | null;
+  trade?: string | null;
+  status?: string | null;
+  isOverdue: boolean;
+  isCriticalPath: boolean;
+  href: string;
+}
+
+export interface OperationsLookaheadConflict {
+  id: string;
+  title: string;
+  detail: string;
+  date: string;
+  tone: "warning" | "destructive";
+  projectCount: number;
+}
+
+export interface OperationsLookaheadDay {
+  key: string;
+  label: string;
+  date: string;
+  isToday: boolean;
+  items: OperationsLookaheadItem[];
+  conflicts: OperationsLookaheadConflict[];
+}
+
+export interface OperationsLookahead {
+  windowStart: string;
+  windowEnd: string;
+  totalItems: number;
+  overdueCount: number;
+  conflictCount: number;
+  heavyDays: number;
+  days: OperationsLookaheadDay[];
+}
+
 export interface BudgetHealthItem {
   projectId: string;
   projectName: string;
@@ -193,6 +240,7 @@ export interface ControlTowerData {
     tasks: DueWorkItem[];
     scheduleItems: DueWorkItem[];
   };
+  operationsLookahead: OperationsLookahead;
   budgetHealth: BudgetHealth;
   schedule: {
     totalItems: number;
@@ -223,6 +271,47 @@ function monthLabel(key: string): string {
   return new Date(year, month - 1, 1).toLocaleDateString("en-US", {
     month: "short",
   });
+}
+
+function startOfLocalDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function addLocalDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function parseLocalDate(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const [datePart] = value.split("T");
+  const parts = datePart.split("-").map(Number);
+  if (parts.length !== 3 || parts.some((part) => Number.isNaN(part))) {
+    const fallback = new Date(value);
+    return Number.isNaN(fallback.getTime()) ? null : startOfLocalDay(fallback);
+  }
+  return new Date(parts[0], parts[1] - 1, parts[2]);
+}
+
+function dateKey(date: Date): string {
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function formatDayLabel(date: Date, today: Date): string {
+  const diffDays = Math.round((date.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Tomorrow";
+  return date.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+}
+
+function humanizeToken(value: string | null | undefined): string {
+  if (!value) return "";
+  return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 function buildRevenueSeries(
@@ -377,7 +466,7 @@ export async function getControlTowerData(
       .in("status", ["open", "in_progress"]),
     supabase
       .from("schedule_items")
-      .select("id, project_id, status, is_critical_path, progress, end_date, name, project:projects(name)")
+      .select("id, project_id, status, is_critical_path, progress, start_date, end_date, name, item_type, trade, assigned_to, phase, project:projects(name)")
       .eq("org_id", resolvedOrgId)
       .neq("status", "cancelled"),
     supabase
@@ -673,6 +762,236 @@ export async function getControlTowerData(
     .sort((a, b) => (a.date ?? "").localeCompare(b.date ?? ""))
     .slice(0, 8);
 
+  const today = startOfLocalDay(now);
+  const lookaheadEnd = addLocalDays(today, 6);
+  const lookaheadDays = Array.from({ length: 7 }, (_, index) => {
+    const date = addLocalDays(today, index);
+    const key = dateKey(date);
+    return {
+      key,
+      label: formatDayLabel(date, today),
+      date: key,
+      isToday: index === 0,
+      items: [] as OperationsLookaheadItem[],
+      conflicts: [] as OperationsLookaheadConflict[],
+    };
+  });
+  const lookaheadByDay = new Map(lookaheadDays.map((day) => [day.key, day]));
+  const activeProjectSet = new Set(activeProjects.map((project) => project.id));
+
+  const addLookaheadItem = (item: OperationsLookaheadItem) => {
+    const day = lookaheadByDay.get(item.date);
+    if (!day) return;
+    day.items.push(item);
+  };
+
+  const isInLookahead = (date: Date | null) =>
+    !!date && date >= today && date <= lookaheadEnd;
+
+  const overdueScheduleItems = scheduleItems.filter((s) => {
+    if (s.status === "completed") return false;
+    const end = parseLocalDate((s as { end_date?: string | null }).end_date);
+    return !!end && end < today;
+  }).length;
+
+  for (const s of scheduleItems) {
+    if (!activeProjectSet.has((s as { project_id?: string | null }).project_id ?? "")) continue;
+    if (s.status === "completed" || s.status === "cancelled") continue;
+
+    const row = s as typeof s & {
+      project_id?: string | null;
+      name?: string | null;
+      start_date?: string | null;
+      end_date?: string | null;
+      item_type?: string | null;
+      trade?: string | null;
+      is_critical_path?: boolean | null;
+      project?: { name?: string | null } | null;
+    };
+    const projectName = row.project?.name ?? null;
+    const start = parseLocalDate(row.start_date);
+    const end = parseLocalDate(row.end_date);
+    const title = row.name ?? "Schedule item";
+    const href = row.project_id ? `/projects/${row.project_id}/schedule` : "/schedule";
+
+    if (isInLookahead(start)) {
+      addLookaheadItem({
+        id: `${s.id}:start`,
+        title,
+        projectName,
+        date: dateKey(start!),
+        kind: "schedule_start",
+        itemType: row.item_type ?? null,
+        trade: row.trade ?? null,
+        status: s.status,
+        isOverdue: false,
+        isCriticalPath: !!row.is_critical_path,
+        href,
+      });
+    }
+
+    if (isInLookahead(end) && (!start || dateKey(start) !== dateKey(end!))) {
+      addLookaheadItem({
+        id: `${s.id}:finish`,
+        title,
+        projectName,
+        date: dateKey(end!),
+        kind: "schedule_finish",
+        itemType: row.item_type ?? null,
+        trade: row.trade ?? null,
+        status: s.status,
+        isOverdue: false,
+        isCriticalPath: !!row.is_critical_path,
+        href,
+      });
+    }
+  }
+
+  const overdueTasksForLookahead = tasks.filter((t) => {
+    if (!t.due_date || t.status === "done") return false;
+    const due = parseLocalDate(t.due_date);
+    return !!due && due < today;
+  }).length;
+
+  for (const t of tasks) {
+    if (!t.due_date || t.status === "done") continue;
+    const due = parseLocalDate(t.due_date);
+    if (!isInLookahead(due)) continue;
+    const row = t as typeof t & {
+      title?: string | null;
+      project_id?: string | null;
+      project?: { name?: string | null } | null;
+    };
+    if (row.project_id && !activeProjectSet.has(row.project_id)) continue;
+    addLookaheadItem({
+      id: `${t.id}:task`,
+      title: row.title ?? "Task",
+      projectName: row.project?.name ?? null,
+      date: dateKey(due!),
+      kind: "task_due",
+      status: t.status,
+      isOverdue: false,
+      isCriticalPath: false,
+      href: row.project_id ? `/projects/${row.project_id}/tasks` : "/tasks",
+    });
+  }
+
+  const scheduledByDay = new Map<string, Array<{
+    id: string;
+    projectId: string;
+    projectName: string | null;
+    trade: string | null;
+    assignedTo: string | null;
+  }>>();
+
+  for (const s of scheduleItems) {
+    const row = s as typeof s & {
+      project_id?: string | null;
+      start_date?: string | null;
+      end_date?: string | null;
+      trade?: string | null;
+      assigned_to?: string | null;
+      project?: { name?: string | null } | null;
+    };
+    if (!row.project_id || !activeProjectSet.has(row.project_id)) continue;
+    if (s.status === "completed" || s.status === "cancelled") continue;
+    const start = parseLocalDate(row.start_date);
+    const end = parseLocalDate(row.end_date) ?? start;
+    if (!start || !end || end < today || start > lookaheadEnd) continue;
+
+    for (const day of lookaheadDays) {
+      const dayDate = parseLocalDate(day.date);
+      if (!dayDate || dayDate < start || dayDate > end) continue;
+      const rows = scheduledByDay.get(day.key) ?? [];
+      rows.push({
+        id: s.id,
+        projectId: row.project_id,
+        projectName: row.project?.name ?? null,
+        trade: row.trade ?? null,
+        assignedTo: row.assigned_to ?? null,
+      });
+      scheduledByDay.set(day.key, rows);
+    }
+  }
+
+  for (const day of lookaheadDays) {
+    const scheduled = scheduledByDay.get(day.key) ?? [];
+    if (scheduled.length >= 8) {
+      day.conflicts.push({
+        id: `${day.key}:heavy`,
+        title: "Heavy field day",
+        detail: `${scheduled.length} active schedule items across ${new Set(scheduled.map((item) => item.projectId)).size} projects`,
+        date: day.key,
+        tone: scheduled.length >= 12 ? "destructive" : "warning",
+        projectCount: new Set(scheduled.map((item) => item.projectId)).size,
+      });
+    }
+
+    const byTrade = new Map<string, typeof scheduled>();
+    for (const item of scheduled) {
+      const trade = item.trade?.trim();
+      if (!trade) continue;
+      const rows = byTrade.get(trade) ?? [];
+      rows.push(item);
+      byTrade.set(trade, rows);
+    }
+    for (const [trade, rows] of byTrade) {
+      const projectCount = new Set(rows.map((item) => item.projectId)).size;
+      if (projectCount < 2) continue;
+      day.conflicts.push({
+        id: `${day.key}:trade:${trade}`,
+        title: `${humanizeToken(trade)} overlap`,
+        detail: `${projectCount} projects need this trade on the same day`,
+        date: day.key,
+        tone: projectCount >= 3 ? "destructive" : "warning",
+        projectCount,
+      });
+    }
+
+    const byAssignee = new Map<string, typeof scheduled>();
+    for (const item of scheduled) {
+      const assignedTo = item.assignedTo?.trim();
+      if (!assignedTo) continue;
+      const rows = byAssignee.get(assignedTo) ?? [];
+      rows.push(item);
+      byAssignee.set(assignedTo, rows);
+    }
+    for (const [assignedTo, rows] of byAssignee) {
+      const projectCount = new Set(rows.map((item) => item.projectId)).size;
+      if (projectCount < 2) continue;
+      day.conflicts.push({
+        id: `${day.key}:assignee:${assignedTo}`,
+        title: "Assignee overlap",
+        detail: `${projectCount} projects have work assigned to the same person`,
+        date: day.key,
+        tone: "destructive",
+        projectCount,
+      });
+    }
+  }
+
+  for (const day of lookaheadDays) {
+    day.items.sort((a, b) => {
+      const priority = (item: OperationsLookaheadItem) =>
+        item.isCriticalPath ? 0 : item.kind === "schedule_finish" ? 1 : item.kind === "schedule_start" ? 2 : 3;
+      return priority(a) - priority(b) || a.title.localeCompare(b.title);
+    });
+    day.conflicts.sort((a, b) => {
+      const toneWeight = (tone: OperationsLookaheadConflict["tone"]) => tone === "destructive" ? 0 : 1;
+      return toneWeight(a.tone) - toneWeight(b.tone) || b.projectCount - a.projectCount;
+    });
+  }
+
+  const operationsLookahead: OperationsLookahead = {
+    windowStart: dateKey(today),
+    windowEnd: dateKey(lookaheadEnd),
+    totalItems: lookaheadDays.reduce((sum, day) => sum + day.items.length, 0),
+    overdueCount: overdueScheduleItems + overdueTasksForLookahead,
+    conflictCount: lookaheadDays.reduce((sum, day) => sum + day.conflicts.length, 0),
+    heavyDays: lookaheadDays.filter((day) => day.conflicts.some((conflict) => conflict.id.endsWith(":heavy"))).length,
+    days: lookaheadDays,
+  };
+
   // Portfolio health
   const projectsAtRisk =
     atRiskItems > 0 || behindItems > 0
@@ -753,6 +1072,7 @@ export async function getControlTowerData(
       tasks: dueTasks,
       scheduleItems: dueScheduleItems,
     },
+    operationsLookahead,
     budgetHealth,
     schedule: {
       totalItems: scheduleItems.length,

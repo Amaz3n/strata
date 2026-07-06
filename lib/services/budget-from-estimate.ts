@@ -2,6 +2,7 @@ import "server-only"
 
 import { generateText } from "ai"
 
+import { requireAuthorization } from "@/lib/services/authorization"
 import { getOrgAiSearchConfig } from "@/lib/services/ai-config"
 import { getApiKeyForProvider, resolveLanguageModel } from "@/lib/services/ai-search/llm"
 import { requireOrgContext } from "@/lib/services/context"
@@ -52,7 +53,17 @@ export async function listBudgetEstimateSources(
   projectId: string,
   orgId?: string,
 ): Promise<BudgetEstimateSource[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "budget.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId,
+    supabase,
+    logDecision: true,
+    resourceType: "project",
+    resourceId: projectId,
+  })
 
   const { data, error } = await supabase
     .from("estimates")
@@ -101,7 +112,17 @@ export async function buildBudgetDraftFromEstimate({
   costCodesEnabled: boolean
   orgId?: string
 }): Promise<BudgetDraftFromEstimate> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "budget.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId,
+    supabase,
+    logDecision: true,
+    resourceType: "project",
+    resourceId: projectId,
+  })
 
   const { data: estimate, error } = await supabase
     .from("estimates")

@@ -5,9 +5,65 @@ import { companyFiltersSchema, companyInputSchema, companyUpdateSchema, type Com
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
-import { hasPermission, requireAnyPermission } from "@/lib/services/permissions"
+import { requireAnyPermission } from "@/lib/services/permissions"
+import { requireAuthorization } from "@/lib/services/authorization"
 import { getDefaultComplianceRequirements } from "@/lib/services/compliance"
 import { setCompanyRequirements } from "@/lib/services/compliance-documents"
+import { listInvoices } from "@/lib/services/invoices"
+import { listProjects } from "@/lib/services/projects"
+
+export interface ClientCompanyReceivableProject {
+  project_id: string
+  project_name: string
+  contract_value_cents: number
+  invoiced_cents: number
+  collected_cents: number
+  outstanding_cents: number
+  invoice_count: number
+  last_activity?: string
+}
+
+export interface ClientCompanyReceivablesSummary {
+  contract_value_cents: number
+  invoiced_cents: number
+  collected_cents: number
+  outstanding_cents: number
+  invoice_count: number
+  can_view_invoices: boolean
+  projects: ClientCompanyReceivableProject[]
+}
+
+export interface VendorFinancialSummary {
+  committed_cents: number
+  billed_cents: number
+  paid_cents: number
+  commitment_count: number
+  bill_count: number
+  trailing_days: number
+  can_view_commitments: boolean
+  can_view_bills: boolean
+}
+
+const emptyClientCompanyReceivablesSummary: ClientCompanyReceivablesSummary = {
+  contract_value_cents: 0,
+  invoiced_cents: 0,
+  collected_cents: 0,
+  outstanding_cents: 0,
+  invoice_count: 0,
+  can_view_invoices: true,
+  projects: [],
+}
+
+const emptyVendorFinancialSummary = (trailingDays: number): VendorFinancialSummary => ({
+  committed_cents: 0,
+  billed_cents: 0,
+  paid_cents: 0,
+  commitment_count: 0,
+  bill_count: 0,
+  trailing_days: trailingDays,
+  can_view_commitments: false,
+  can_view_bills: false,
+})
 
 function mapCompany(row: any): Company {
   const metadata = row?.metadata ?? {}
@@ -57,6 +113,67 @@ function mapContact(row: any): Contact {
     notes: metadata.notes ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at ?? undefined,
+  }
+}
+
+function moneyValueToCents(value?: number | null): number {
+  if (value == null || !Number.isFinite(value)) return 0
+  if (Math.abs(value) > 100000) return Math.round(value)
+  return Math.round(value * 100)
+}
+
+function latestIsoValue(values: Array<string | null | undefined>) {
+  return values
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .sort()
+    .at(-1)
+}
+
+function normalizeDirectoryName(value?: string | null) {
+  const normalized = (value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "")
+  return normalized || undefined
+}
+
+async function resolveDirectoryCompanyClassification(
+  supabase: SupabaseClient,
+  orgId: string,
+  companyType: string,
+  trade?: string | null,
+) {
+  const relationshipKey =
+    ["subcontractor", "supplier", "client", "architect", "engineer"].includes(companyType)
+      ? companyType
+      : "other"
+  const normalizedTrade = normalizeDirectoryName(trade)
+
+  const [relationshipResult, tradeResult] = await Promise.all([
+    supabase
+      .from("directory_relationship_types")
+      .select("id")
+      .eq("org_id", orgId)
+      .eq("key", relationshipKey)
+      .maybeSingle(),
+    normalizedTrade
+      ? supabase
+          .from("directory_trades")
+          .upsert(
+            {
+              org_id: orgId,
+              name: trade?.trim(),
+              normalized_name: normalizedTrade,
+              is_active: true,
+              metadata: { source: "company_form" },
+            },
+            { onConflict: "org_id,normalized_name" },
+          )
+          .select("id")
+          .single()
+      : Promise.resolve({ data: null, error: null }),
+  ])
+
+  return {
+    relationship_type_id: relationshipResult.data?.id ?? null,
+    trade_id: tradeResult.data?.id ?? null,
   }
 }
 
@@ -194,6 +311,190 @@ export async function getCompany(companyId: string, orgId?: string): Promise<Com
   }
 }
 
+export async function getClientCompanyReceivables(
+  companyId: string,
+  orgId?: string,
+): Promise<ClientCompanyReceivablesSummary> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["org.member", "org.read", "directory.read", "directory.write"], {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  })
+
+  const contacts = await getCompanyContacts(companyId, resolvedOrgId)
+  const contactIds = new Set(contacts.map((contact) => contact.id).filter(Boolean))
+  if (contactIds.size === 0) {
+    return { ...emptyClientCompanyReceivablesSummary }
+  }
+
+  const visibleProjects = (await listProjects(resolvedOrgId, { supabase, orgId: resolvedOrgId, userId })).filter(
+    (project) => project.client_id && contactIds.has(project.client_id),
+  )
+
+  if (visibleProjects.length === 0) {
+    return { ...emptyClientCompanyReceivablesSummary }
+  }
+
+  const invoiceResults = await Promise.all(
+    visibleProjects.map(async (project) => {
+      try {
+        const invoices = await listInvoices({ orgId: resolvedOrgId, projectId: project.id })
+        return { projectId: project.id, invoices, canViewInvoices: true }
+      } catch {
+        return { projectId: project.id, invoices: [], canViewInvoices: false }
+      }
+    }),
+  )
+
+  const invoiceResultsByProject = new Map(invoiceResults.map((result) => [result.projectId, result]))
+  const projects = visibleProjects.map((project) => {
+    const invoiceResult = invoiceResultsByProject.get(project.id)
+    const invoices = (invoiceResult?.invoices ?? []).filter((invoice) => invoice.status !== "void")
+    const contractValue =
+      project.billing_contract?.total_cents ??
+      project.total_contract_value_cents ??
+      moneyValueToCents(project.total_value)
+    const invoiced = invoices.reduce((sum, invoice) => sum + (invoice.total_cents ?? 0), 0)
+    const outstanding = invoices.reduce(
+      (sum, invoice) =>
+        sum +
+        (invoice.balance_due_cents ??
+          (invoice.status === "paid" ? 0 : (invoice.total_cents ?? 0))),
+      0,
+    )
+    const collected = Math.max(0, invoiced - outstanding)
+
+    return {
+      project_id: project.id,
+      project_name: project.name,
+      contract_value_cents: contractValue,
+      invoiced_cents: invoiced,
+      collected_cents: collected,
+      outstanding_cents: Math.max(0, outstanding),
+      invoice_count: invoices.length,
+      last_activity: latestIsoValue([
+        project.updated_at,
+        project.created_at,
+        ...invoices.flatMap((invoice) => [invoice.updated_at, invoice.sent_at, invoice.issue_date, invoice.created_at]),
+      ]),
+    } satisfies ClientCompanyReceivableProject
+  })
+
+  projects.sort((a, b) => (b.last_activity ?? "").localeCompare(a.last_activity ?? ""))
+
+  return {
+    contract_value_cents: projects.reduce((sum, project) => sum + project.contract_value_cents, 0),
+    invoiced_cents: projects.reduce((sum, project) => sum + project.invoiced_cents, 0),
+    collected_cents: projects.reduce((sum, project) => sum + project.collected_cents, 0),
+    outstanding_cents: projects.reduce((sum, project) => sum + project.outstanding_cents, 0),
+    invoice_count: projects.reduce((sum, project) => sum + project.invoice_count, 0),
+    can_view_invoices: invoiceResults.every((result) => result.canViewInvoices),
+    projects,
+  }
+}
+
+export async function getCompaniesVendorFinancialSummary(
+  companyIds: string[],
+  orgId?: string,
+  options?: { trailingDays?: number },
+): Promise<Record<string, VendorFinancialSummary>> {
+  const ids = Array.from(new Set(companyIds.filter(Boolean)))
+  const trailingDays = options?.trailingDays ?? 365
+  if (ids.length === 0) return {}
+
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["org.member", "org.read", "directory.read", "directory.write"], {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  })
+
+  const since = new Date()
+  since.setDate(since.getDate() - trailingDays)
+  const sinceIso = since.toISOString()
+  const result = Object.fromEntries(
+    ids.map((id) => [id, emptyVendorFinancialSummary(trailingDays)]),
+  ) as Record<string, VendorFinancialSummary>
+
+  let canViewCommitments = false
+  try {
+    await requireAuthorization({
+      permission: "commitment.read",
+      userId,
+      orgId: resolvedOrgId,
+      supabase,
+      resourceType: "directory",
+      resourceId: "vendor_financial_summary",
+    })
+    canViewCommitments = true
+  } catch {
+    canViewCommitments = false
+  }
+
+  let canViewBills = false
+  try {
+    await requireAuthorization({
+      permission: "bill.read",
+      userId,
+      orgId: resolvedOrgId,
+      supabase,
+      resourceType: "directory",
+      resourceId: "vendor_financial_summary",
+    })
+    canViewBills = true
+  } catch {
+    canViewBills = false
+  }
+
+  if (canViewCommitments) {
+    const { data, error } = await supabase
+      .from("commitments")
+      .select("id, company_id, total_cents")
+      .eq("org_id", resolvedOrgId)
+      .in("company_id", ids)
+      .gte("created_at", sinceIso)
+      .neq("status", "canceled")
+
+    if (error) {
+      throw new Error(`Failed to summarize vendor commitments: ${error.message}`)
+    }
+
+    for (const row of data ?? []) {
+      const companyId = row.company_id as string | null
+      if (!companyId || !result[companyId]) continue
+      result[companyId].committed_cents += row.total_cents ?? 0
+      result[companyId].commitment_count += 1
+      result[companyId].can_view_commitments = true
+    }
+  }
+
+  if (canViewBills) {
+    const { data, error } = await supabase
+      .from("vendor_bills")
+      .select("id, company_id, total_cents, paid_cents, status")
+      .eq("org_id", resolvedOrgId)
+      .in("company_id", ids)
+      .gte("created_at", sinceIso)
+
+    if (error) {
+      throw new Error(`Failed to summarize vendor bills: ${error.message}`)
+    }
+
+    for (const row of data ?? []) {
+      const companyId = row.company_id as string | null
+      if (!companyId || !result[companyId]) continue
+      result[companyId].billed_cents += row.total_cents ?? 0
+      result[companyId].paid_cents +=
+        row.paid_cents ?? (row.status === "paid" ? (row.total_cents ?? 0) : 0)
+      result[companyId].bill_count += 1
+      result[companyId].can_view_bills = true
+    }
+  }
+
+  return result
+}
+
 function buildCompanyInsert(input: CompanyInput, orgId: string) {
   return {
     org_id: orgId,
@@ -235,10 +536,16 @@ export async function createCompany({ input, orgId }: { input: CompanyInput; org
   const parsed = companyInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAnyPermission(["org.member", "directory.write"], { supabase, orgId: resolvedOrgId, userId })
+  const classification = await resolveDirectoryCompanyClassification(
+    supabase,
+    resolvedOrgId,
+    parsed.company_type,
+    parsed.trade,
+  )
 
   const { data, error } = await supabase
     .from("companies")
-    .insert(buildCompanyInsert(parsed, resolvedOrgId))
+    .insert({ ...buildCompanyInsert(parsed, resolvedOrgId), ...classification })
     .select(
       "id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status, metadata, created_at, updated_at, contact_company_links(count)",
     )
@@ -334,11 +641,22 @@ export async function updateCompany({
     metadata.prequalified_at = new Date().toISOString()
   }
 
+  const nextCompanyType = parsed.company_type ?? existing.company_type
+  const nextTrade = parsed.trade ?? existing.metadata?.trade
+  const classification = await resolveDirectoryCompanyClassification(
+    supabase,
+    resolvedOrgId,
+    nextCompanyType,
+    nextTrade,
+  )
+
   const { data, error } = await supabase
     .from("companies")
     .update({
       name: parsed.name ?? existing.name,
-      company_type: parsed.company_type ?? existing.company_type,
+      company_type: nextCompanyType,
+      relationship_type_id: classification.relationship_type_id,
+      trade_id: classification.trade_id,
       phone: parsed.phone ?? existing.phone,
       email: parsed.email ?? existing.email,
       website: parsed.website ?? existing.website,
@@ -390,13 +708,11 @@ export async function updateCompany({
 
 export async function archiveCompany(companyId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  const canArchive =
-    (await hasPermission("org.admin", { supabase, orgId: resolvedOrgId, userId })) ||
-    (await hasPermission("members.manage", { supabase, orgId: resolvedOrgId, userId }))
-
-  if (!canArchive) {
-    throw new Error("Missing permission: org.admin")
-  }
+  await requireAnyPermission(["org.member", "directory.write"], {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  })
 
   // Prevent archiving if there are assignments
   const { count, error: assignmentError } = await supabase
@@ -441,6 +757,53 @@ export async function archiveCompany(companyId: string, orgId?: string) {
     entityType: "company",
     entityId: data.id as string,
     before: null,
+    after: data,
+  })
+
+  return true
+}
+
+export async function restoreCompany(companyId: string, orgId?: string) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["org.member", "directory.write"], {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  })
+
+  const { data: existing, error: fetchError } = await supabase
+    .from("companies")
+    .select("id, org_id, name, metadata")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", companyId)
+    .maybeSingle()
+
+  if (fetchError || !existing) {
+    throw new Error("Company not found")
+  }
+
+  const metadata = { ...(existing.metadata ?? {}) }
+  delete metadata.archived_at
+
+  const { data, error } = await supabase
+    .from("companies")
+    .update({ metadata })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", companyId)
+    .select("id, org_id, name, metadata")
+    .maybeSingle()
+
+  if (error || !data) {
+    throw new Error(`Failed to restore company: ${error?.message}`)
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "company",
+    entityId: data.id as string,
+    before: existing,
     after: data,
   })
 

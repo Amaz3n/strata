@@ -19,6 +19,8 @@ import {
 
 import type { CostCode, Company } from "@/lib/types"
 import type { CommitmentSummary, CommitmentLine } from "@/lib/services/commitments"
+import type { CommitmentChangeOrderSummary } from "@/lib/services/commitment-change-orders"
+import type { ProjectBuyoutStatus } from "@/lib/services/bids"
 import type { ProjectFeeBillingSummary } from "@/lib/services/fee-billing"
 import type { ProjectGmpControlSummary } from "@/lib/services/gmp-control"
 import { cn } from "@/lib/utils"
@@ -43,6 +45,10 @@ import {
   createCommitmentLineAction,
   createProjectCommitmentAction,
   deleteCommitmentLineAction,
+  approveCommitmentChangeOrderAction,
+  createCommitmentChangeOrderAction,
+  listCommitmentChangeOrdersAction,
+  voidCommitmentChangeOrderAction,
   listCommitmentLinesAction,
   listCostCodesAction,
   updateCommitmentLineAction,
@@ -135,6 +141,7 @@ interface BudgetTabProps {
   commitments: CommitmentSummary[]
   companies: Company[]
   budgetBucketCompanies: Record<string, string[]>
+  buyoutStatus?: ProjectBuyoutStatus | null
   feeSummary?: ProjectFeeBillingSummary | null
   gmpSummary?: ProjectGmpControlSummary | null
   loadErrors?: string[]
@@ -308,11 +315,14 @@ function toLineState(lines: any[] | undefined): EditableBudgetLine[] {
 
 function statusTone(status?: string): "draft" | "approved" | "locked" | "complete" | "canceled" {
   const n = (status ?? "draft").toLowerCase()
+  if (n === "voided") return "canceled"
+  if (n === "sent" || n === "rejected") return "locked"
   if (n === "approved" || n === "locked" || n === "complete" || n === "canceled") return n as any
   return "draft"
 }
 
 function CommitmentStatusBadge({ status }: { status?: string }) {
+  const normalized = (status ?? "draft").toLowerCase()
   const tone = statusTone(status)
   const map: Record<string, { label: string; cls: string }> = {
     draft: { label: "Draft", cls: "bg-muted text-muted-foreground" },
@@ -320,13 +330,17 @@ function CommitmentStatusBadge({ status }: { status?: string }) {
       label: "Approved",
       cls: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
     },
+    locked: { label: "Sent", cls: "bg-sky-500/10 text-sky-700 dark:text-sky-300" },
     complete: { label: "Complete", cls: "bg-slate-500/10 text-slate-700 dark:text-slate-300" },
     canceled: {
       label: "Canceled",
       cls: "bg-destructive/10 text-destructive",
     },
+    sent: { label: "Sent", cls: "bg-sky-500/10 text-sky-700 dark:text-sky-300" },
+    rejected: { label: "Rejected", cls: "bg-destructive/10 text-destructive" },
+    voided: { label: "Voided", cls: "bg-destructive/10 text-destructive" },
   }
-  const entry = map[tone] ?? map.draft
+  const entry = map[normalized] ?? map[tone] ?? map.draft
   return (
     <span
       className={cn(
@@ -337,6 +351,33 @@ function CommitmentStatusBadge({ status }: { status?: string }) {
       {entry.label}
     </span>
   )
+}
+
+function formatBuyoutLabel(
+  buyout?: {
+    package_count: number
+    awarded_count: number
+    open_count: number
+    lowest_bid_cents?: number | null
+  } | null,
+) {
+  if (!buyout || buyout.package_count === 0) return "Not bought out"
+  if (buyout.awarded_count > 0) return "Awarded"
+  if (buyout.open_count > 0) return "Bidding"
+  return `${buyout.package_count} package${buyout.package_count === 1 ? "" : "s"}`
+}
+
+function buyoutClassName(
+  buyout?: {
+    package_count: number
+    awarded_count: number
+    open_count: number
+  } | null,
+) {
+  if (!buyout || buyout.package_count === 0) return "border-border/60 text-muted-foreground"
+  if (buyout.awarded_count > 0) return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+  if (buyout.open_count > 0) return "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+  return "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
 }
 
 export function BudgetTab({
@@ -350,6 +391,7 @@ export function BudgetTab({
   commitments,
   companies,
   budgetBucketCompanies,
+  buyoutStatus = null,
   feeSummary = null,
   gmpSummary = null,
   loadErrors = [],
@@ -464,6 +506,7 @@ export function BudgetTab({
     }
 
     const payloadLines = nextLines.map((line) => ({
+      id: line.id,
       cost_code_id: costCodesEnabled ? line.cost_code_id : null,
       description: line.description.trim(),
       amount_cents: dollarsToCents(line.amount_dollars) ?? 0,
@@ -580,6 +623,18 @@ export function BudgetTab({
     })
   }
 
+  const acknowledgeAll = () => {
+    startTransition(async () => {
+      try {
+        await Promise.all(activeAlerts.map((alert) => acknowledgeVarianceAlertAction(projectId, alert.id, "acknowledged")))
+        toast({ title: "Alerts acknowledged" })
+        router.refresh()
+      } catch (error) {
+        toast({ title: "Unable to update alerts", description: (error as Error).message })
+      }
+    })
+  }
+
   const runScan = () =>
     startTransition(async () => {
       try {
@@ -632,6 +687,10 @@ export function BudgetTab({
         coAdjustmentCents: number
         adjustedBudgetCents: number
         committedCents: number
+        committedBilledCents: number
+        remainingCommitmentCents: number
+        pendingCostCents: number
+        exposureCents: number
         actualCents: number
         invoicedCents: number
         varianceCents: number
@@ -642,6 +701,12 @@ export function BudgetTab({
         costToCompleteCents: number
         varianceAtCompletionCents: number
         assignedCompanies: string[]
+        buyout: {
+          package_count: number
+          awarded_count: number
+          open_count: number
+          lowest_bid_cents?: number | null
+        } | null
       }
     >()
 
@@ -667,6 +732,10 @@ export function BudgetTab({
         coAdjustmentCents: breakdown?.co_adjustment_cents ?? 0,
         adjustedBudgetCents: breakdown?.adjusted_budget_cents ?? 0,
         committedCents: breakdown?.committed_cents ?? 0,
+        committedBilledCents: breakdown?.committed_billed_cents ?? 0,
+        remainingCommitmentCents: breakdown?.remaining_commitment_cents ?? 0,
+        pendingCostCents: breakdown?.pending_cost_cents ?? 0,
+        exposureCents: breakdown?.exposure_cents ?? breakdown?.actual_cents ?? 0,
         actualCents: breakdown?.actual_cents ?? 0,
         invoicedCents: breakdown?.invoiced_cents ?? 0,
         varianceCents: breakdown?.variance_cents ?? 0,
@@ -677,6 +746,11 @@ export function BudgetTab({
         costToCompleteCents: breakdown?.cost_to_complete_cents ?? 0,
         varianceAtCompletionCents: breakdown?.variance_at_completion_cents ?? 0,
         assignedCompanies: budgetBucketCompanies[key] ?? [],
+        buyout: costCodesEnabled
+          ? lineCostCodeId
+            ? buyoutStatus?.by_cost_code_id[lineCostCodeId] ?? null
+            : null
+          : buyoutStatus?.by_budget_line_id[line.id] ?? null,
       }
       existing.lines.push(line)
       existing.budgetCents += dollarsToCents(line.amount_dollars) ?? 0
@@ -703,6 +777,10 @@ export function BudgetTab({
         coAdjustmentCents: breakdown.co_adjustment_cents ?? 0,
         adjustedBudgetCents: breakdown.adjusted_budget_cents ?? 0,
         committedCents: breakdown.committed_cents ?? 0,
+        committedBilledCents: breakdown.committed_billed_cents ?? 0,
+        remainingCommitmentCents: breakdown.remaining_commitment_cents ?? 0,
+        pendingCostCents: breakdown.pending_cost_cents ?? 0,
+        exposureCents: breakdown.exposure_cents ?? breakdown.actual_cents ?? 0,
         actualCents: breakdown.actual_cents ?? 0,
         invoicedCents: breakdown.invoiced_cents ?? 0,
         varianceCents: breakdown.variance_cents ?? 0,
@@ -713,6 +791,9 @@ export function BudgetTab({
         costToCompleteCents: breakdown.cost_to_complete_cents ?? 0,
         varianceAtCompletionCents: breakdown.variance_at_completion_cents ?? 0,
         assignedCompanies: budgetBucketCompanies[key] ?? [],
+        buyout: breakdownCostCodeId
+          ? buyoutStatus?.by_cost_code_id[breakdownCostCodeId] ?? null
+          : buyoutStatus?.by_budget_line_id[key] ?? null,
       })
     }
 
@@ -721,7 +802,7 @@ export function BudgetTab({
       const codeB = b.code ?? "zzz"
       return codeA.localeCompare(codeB) || a.name.localeCompare(b.name)
     })
-  }, [breakdownByCostCode, budgetBucketCompanies, costCodeById, costCodesEnabled, lines])
+  }, [breakdownByCostCode, budgetBucketCompanies, buyoutStatus, costCodeById, costCodesEnabled, lines])
 
   const attentionCount = useMemo(
     () => unifiedRows.filter((row) => row.status === "over" || row.status === "warning").length,
@@ -757,6 +838,10 @@ export function BudgetTab({
         acc.coAdjustmentCents += row.coAdjustmentCents
         acc.adjustedBudgetCents += row.adjustedBudgetCents
         acc.committedCents += row.committedCents
+        acc.committedBilledCents += row.committedBilledCents
+        acc.remainingCommitmentCents += row.remainingCommitmentCents
+        acc.pendingCostCents += row.pendingCostCents
+        acc.exposureCents += row.exposureCents
         acc.actualCents += row.actualCents
         acc.costToCompleteCents += row.costToCompleteCents
         acc.eacCents += row.eacCents
@@ -771,6 +856,10 @@ export function BudgetTab({
         coAdjustmentCents: 0,
         adjustedBudgetCents: 0,
         committedCents: 0,
+        committedBilledCents: 0,
+        remainingCommitmentCents: 0,
+        pendingCostCents: 0,
+        exposureCents: 0,
         actualCents: 0,
         costToCompleteCents: 0,
         eacCents: 0,
@@ -789,6 +878,7 @@ export function BudgetTab({
       "Approved CO",
       "Revised",
       "Committed",
+      "Exposure",
       "Spent",
       "Left to spend",
       "EAC",
@@ -804,6 +894,7 @@ export function BudgetTab({
         toAmount(row.coAdjustmentCents),
         toAmount(row.adjustedBudgetCents),
         toAmount(row.committedCents),
+        toAmount(row.exposureCents),
         toAmount(row.actualCents),
         toAmount(row.adjustedBudgetCents - row.actualCents),
         toAmount(row.eacCents),
@@ -852,6 +943,34 @@ export function BudgetTab({
     setCreateOpen(true)
   }
 
+  const startBidPackage = (bucket?: {
+    key?: string
+    costCodeId: string | null
+    budgetCents: number
+    committedCents: number
+    name?: string
+    lines: EditableBudgetLine[]
+  } | null) => {
+    const remainingToBuyCents = bucket
+      ? Math.max(0, bucket.budgetCents - bucket.committedCents)
+      : 0
+    const budgetLineId =
+      bucket?.lines.length === 1
+        ? bucket.lines[0].id
+        : !costCodesEnabled && bucket?.key && bucket.key !== "uncoded"
+          ? bucket.key
+          : null
+    const params = new URLSearchParams()
+    if (bucket?.costCodeId) params.set("cost_code_id", bucket.costCodeId)
+    if (budgetLineId) params.set("budget_line_id", budgetLineId)
+    if (remainingToBuyCents > 0) params.set("amount_cents", String(remainingToBuyCents))
+    if (bucket?.name) params.set("title", bucket.name)
+    const scope = bucket?.lines[0]?.description?.trim()
+    if (scope) params.set("scope", scope)
+    const query = params.toString()
+    router.push(`/projects/${projectId}/bids${query ? `?${query}` : ""}`)
+  }
+
   useEffect(() => {
     if (!activeBucket) {
       setActiveBucketCommitments([])
@@ -897,10 +1016,10 @@ export function BudgetTab({
   const showFeeSummary = feeSummary?.enabled || feeSummary?.billing_model === "cost_plus_fixed_fee"
 
   const isDetailed = viewMode === "detailed"
-  // Column count for the empty-state colSpan: code? + name + budget + committed +
+  // Column count for the empty-state colSpan: code? + name + budget + committed + exposure +
   // spent + (simple: left,%spent | detailed: original,co,ctc,eac,vac,%comp) + actions.
   const tableColCount =
-    (costCodesEnabled ? 1 : 0) + 4 + (isDetailed ? 6 : 2) + 1
+    (costCodesEnabled ? 1 : 0) + 5 + (isDetailed ? 6 : 2) + 1
 
   const baselineLockedAt: string | null = summary?.baseline_locked_at ?? null
 
@@ -943,7 +1062,7 @@ export function BudgetTab({
               size="sm"
               className="h-7 text-xs"
               disabled={isPending}
-              onClick={() => activeAlerts.forEach((a) => acknowledge(a.id, "acknowledged"))}
+              onClick={acknowledgeAll}
             >
               Ack all
             </Button>
@@ -1120,14 +1239,9 @@ export function BudgetTab({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem disabled className="justify-between gap-3">
-                <span className="flex items-center gap-2">
-                  <Sparkles className="h-4 w-4" />
-                  Start from estimate
-                </span>
-                <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                  Coming soon
-                </span>
+              <DropdownMenuItem onClick={() => setEstimateImportOpen(true)}>
+                <Sparkles className="h-4 w-4" />
+                Start from estimate
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => setCsvImportOpen(true)}>
                 <Upload className="h-4 w-4" />
@@ -1157,6 +1271,7 @@ export function BudgetTab({
             <UnifiedBudgetEmptyState
               editable={editable}
               onCreate={openCreateBucket}
+              onEstimateImport={() => setEstimateImportOpen(true)}
               filtered={onlyAttention || budgetLineSearch.trim().length > 0}
             />
           </div>
@@ -1257,8 +1372,8 @@ export function BudgetTab({
               </TableHead>
               {isDetailed && (
                 <>
-                  <TableHead className="hidden xl:table-cell w-[110px] px-4 text-right text-xs uppercase tracking-wide">Original</TableHead>
-                  <TableHead className="hidden xl:table-cell w-[110px] px-4 text-right text-xs uppercase tracking-wide">Approved CO</TableHead>
+                  <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">Original</TableHead>
+                  <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">Approved CO</TableHead>
                 </>
               )}
               <TableHead className="w-[120px] px-4 text-right text-xs uppercase tracking-wide">
@@ -1266,6 +1381,9 @@ export function BudgetTab({
               </TableHead>
               <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">
                 <Hint className="justify-end" label="Committed" hint="Committed — amount locked in via approved subcontracts and purchase orders for this line." />
+              </TableHead>
+              <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">
+                <Hint className="justify-end" label="Exposure" hint="Exposure — approved actual cost plus pending bills and sent commitment change orders." />
               </TableHead>
               <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">
                 <Hint className="justify-end" label={isDetailed ? "Actual" : "Spent"} hint="Costs already incurred — approved bills, expenses, and labor on this line." />
@@ -1301,6 +1419,7 @@ export function BudgetTab({
                   <UnifiedBudgetEmptyState
                     editable={editable}
                     onCreate={openCreateBucket}
+                    onEstimateImport={() => setEstimateImportOpen(true)}
                     filtered={onlyAttention || budgetLineSearch.trim().length > 0}
                   />
                 </TableCell>
@@ -1350,13 +1469,24 @@ export function BudgetTab({
                             : `${row.lines.length} budget lines`}
                         </span>
                       )}
+                      <span
+                        className={cn(
+                          "mt-1 inline-flex border px-1.5 py-0.5 text-[11px] font-medium",
+                          buyoutClassName(row.buyout),
+                        )}
+                      >
+                        {formatBuyoutLabel(row.buyout)}
+                        {row.buyout?.lowest_bid_cents != null && row.buyout.open_count > 0
+                          ? ` · low ${formatCurrency(row.buyout.lowest_bid_cents, { compact: true })}`
+                          : ""}
+                      </span>
                     </TableCell>
                     {isDetailed && (
                       <>
-                        <TableCell className="hidden px-4 text-right tabular-nums text-muted-foreground xl:table-cell">
+                        <TableCell className="px-4 text-right tabular-nums text-muted-foreground">
                           <span className="text-sm">{formatCurrency(row.baselineCents ?? row.budgetCents)}</span>
                         </TableCell>
-                        <TableCell className="hidden px-4 text-right tabular-nums text-muted-foreground xl:table-cell">
+                        <TableCell className="px-4 text-right tabular-nums text-muted-foreground">
                           <span className="text-sm">{formatCurrency(row.coAdjustmentCents)}</span>
                         </TableCell>
                       </>
@@ -1370,6 +1500,21 @@ export function BudgetTab({
                     </TableCell>
                     <TableCell className="px-4 text-right tabular-nums text-muted-foreground">
                       <span className="text-sm">{formatCurrency(row.committedCents)}</span>
+                      {row.committedCents > 0 && (
+                        <span className={cn("block text-[11px]", row.remainingCommitmentCents < 0 ? "text-destructive" : "text-muted-foreground")}>
+                          {formatCurrency(row.committedBilledCents, { compact: true })} billed
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell className="px-4 text-right tabular-nums text-muted-foreground">
+                      <span className={cn("text-sm", row.exposureCents > row.adjustedBudgetCents ? "text-destructive" : "")}>
+                        {formatCurrency(row.exposureCents)}
+                      </span>
+                      {row.pendingCostCents > 0 && (
+                        <span className="block text-[11px] text-muted-foreground">
+                          +{formatCurrency(row.pendingCostCents, { compact: true })} pending
+                        </span>
+                      )}
                     </TableCell>
                     <TableCell className="px-4 text-right tabular-nums text-muted-foreground">
                       <span className="text-sm">{formatCurrency(row.actualCents)}</span>
@@ -1435,6 +1580,9 @@ export function BudgetTab({
                           <DropdownMenuItem onClick={() => openCreateCommitment(row)}>
                             New commitment
                           </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => startBidPackage(row)}>
+                            Start bid package
+                          </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </TableCell>
@@ -1452,10 +1600,10 @@ export function BudgetTab({
                 </TableCell>
                 {isDetailed && (
                   <>
-                    <TableCell className="hidden px-4 text-right text-sm tabular-nums xl:table-cell">
+                    <TableCell className="px-4 text-right text-sm tabular-nums">
                       {formatCurrency(columnTotals.baselineCents)}
                     </TableCell>
-                    <TableCell className="hidden px-4 text-right text-sm tabular-nums xl:table-cell">
+                    <TableCell className="px-4 text-right text-sm tabular-nums">
                       {formatCurrency(columnTotals.coAdjustmentCents)}
                     </TableCell>
                   </>
@@ -1465,6 +1613,11 @@ export function BudgetTab({
                 </TableCell>
                 <TableCell className="px-4 text-right text-sm tabular-nums">
                   {formatCurrency(columnTotals.committedCents)}
+                </TableCell>
+                <TableCell className="px-4 text-right text-sm tabular-nums">
+                  <span className={cn(columnTotals.exposureCents > columnTotals.adjustedBudgetCents ? "text-destructive" : "")}>
+                    {formatCurrency(columnTotals.exposureCents)}
+                  </span>
                 </TableCell>
                 <TableCell className="px-4 text-right text-sm tabular-nums">
                   {formatCurrency(columnTotals.actualCents)}
@@ -1534,6 +1687,7 @@ export function BudgetTab({
         costCodesEnabled={costCodesEnabled}
         onEditBucket={() => activeBucket && openEditBucket(activeBucket)}
         onCreateCommitment={() => openCreateCommitment(activeBucket)}
+        onStartBidPackage={() => startBidPackage(activeBucket)}
         onEditCommitment={(commitment) => setEditCommitment(commitment)}
         onCommitmentLines={(commitment) => setLinesCommitment(commitment)}
         onCommitmentFiles={(commitment) => setFilesCommitment(commitment)}
@@ -1558,6 +1712,7 @@ export function BudgetTab({
       />
       <CommitmentLinesDialog
         commitment={linesCommitment}
+        projectId={projectId}
         onClose={() => setLinesCommitment(null)}
         costCodesEnabled={costCodesEnabled}
         defaultBudgetLineId={!costCodesEnabled && activeBucket?.key !== "uncoded" ? activeBucket?.key ?? null : null}
@@ -1639,10 +1794,12 @@ function FinancialLoadWarning({ errors }: { errors: string[] }) {
 function UnifiedBudgetEmptyState({
   editable,
   onCreate,
+  onEstimateImport,
   filtered = false,
 }: {
   editable: boolean
   onCreate: () => void
+  onEstimateImport?: () => void
   filtered?: boolean
 }) {
   // When the empty state is the result of a search/filter, keep it minimal.
@@ -1683,12 +1840,11 @@ function UnifiedBudgetEmptyState({
               <Plus className="h-4 w-4" />
               Add line
             </Button>
-            <Button size="sm" variant="outline" disabled>
+            <Button size="sm" variant="outline" onClick={onEstimateImport}>
               <Sparkles className="h-4 w-4" />
               Start from estimate
             </Button>
           </div>
-          <span className="text-[11px] text-muted-foreground">“Start from estimate” — coming soon</span>
         </div>
       )}
     </div>
@@ -2426,6 +2582,7 @@ function BudgetBucketSheet({
   costCodesEnabled,
   onEditBucket,
   onCreateCommitment,
+  onStartBidPackage,
   onEditCommitment,
   onCommitmentLines,
   onCommitmentFiles,
@@ -2444,6 +2601,10 @@ function BudgetBucketSheet({
     adjustedBudgetCents: number
     baselineCents?: number | null
     committedCents: number
+    committedBilledCents: number
+    remainingCommitmentCents: number
+    pendingCostCents: number
+    exposureCents: number
     actualCents: number
     varianceCents: number
     variancePercent: number
@@ -2451,6 +2612,12 @@ function BudgetBucketSheet({
     percentComplete: number | null
     eacCents: number
     costToCompleteCents: number
+    buyout: {
+      package_count: number
+      awarded_count: number
+      open_count: number
+      lowest_bid_cents?: number | null
+    } | null
   } | null
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -2459,6 +2626,7 @@ function BudgetBucketSheet({
   costCodesEnabled: boolean
   onEditBucket: () => void
   onCreateCommitment: () => void
+  onStartBidPackage: () => void
   onEditCommitment: (commitment: CommitmentSummary) => void
   onCommitmentLines: (commitment: CommitmentSummary) => void
   onCommitmentFiles: (commitment: CommitmentSummary) => void
@@ -2546,6 +2714,9 @@ function BudgetBucketSheet({
               <div className="rounded-lg border bg-card p-4">
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">Committed</p>
                 <p className="mt-1 text-2xl font-semibold tabular-nums">{formatCurrency(bucket?.committedCents)}</p>
+                <p className={cn("mt-1 text-xs", (bucket?.remainingCommitmentCents ?? 0) < 0 ? "text-destructive" : "text-muted-foreground")}>
+                  {formatCurrency(bucket?.committedBilledCents ?? 0)} billed · {formatCurrency(bucket?.remainingCommitmentCents ?? 0)} remaining
+                </p>
               </div>
               <div className="rounded-lg border bg-card p-4">
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">Remaining To Buy</p>
@@ -2560,6 +2731,15 @@ function BudgetBucketSheet({
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {bucket?.variancePercent ?? 0}% spent
+                </p>
+              </div>
+              <div className="rounded-lg border bg-card p-4 sm:col-span-2">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Exposure</p>
+                <p className={cn("mt-1 text-2xl font-semibold tabular-nums", (bucket?.exposureCents ?? 0) > (bucket?.adjustedBudgetCents ?? 0) ? "text-destructive" : "")}>
+                  {formatCurrency(bucket?.exposureCents)}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Includes {formatCurrency(bucket?.pendingCostCents ?? 0)} pending bills and sent commitment COs.
                 </p>
               </div>
             </div>
@@ -2680,6 +2860,9 @@ function BudgetBucketSheet({
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem onClick={onCreateCommitment}>
                       New commitment
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={onStartBidPackage}>
+                      Start bid package
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
@@ -3336,25 +3519,32 @@ function CommitmentEditDialog({
 
 function CommitmentLinesDialog({
   commitment,
+  projectId,
   onClose,
   costCodesEnabled,
   defaultBudgetLineId,
 }: {
   commitment: CommitmentSummary | null
+  projectId: string
   onClose: () => void
   costCodesEnabled: boolean
   defaultBudgetLineId?: string | null
 }) {
   const { toast } = useToast()
   const [lines, setLines] = useState<CommitmentLine[]>([])
+  const [changeOrders, setChangeOrders] = useState<CommitmentChangeOrderSummary[]>([])
   const [codes, setCodes] = useState<CostCode[]>([])
   const [loading, setLoading] = useState(false)
+  const [changeOrdersLoading, setChangeOrdersLoading] = useState(false)
   const [editingLine, setEditingLine] = useState<CommitmentLine | null>(null)
   const [creating, setCreating] = useState(false)
+  const [creatingChangeOrder, setCreatingChangeOrder] = useState(false)
+  const [signatureChangeOrder, setSignatureChangeOrder] = useState<CommitmentChangeOrderSummary | null>(null)
 
   useEffect(() => {
     if (!commitment) {
       setLines([])
+      setChangeOrders([])
       return
     }
     let cancelled = false
@@ -3384,7 +3574,28 @@ function CommitmentLinesDialog({
     setLines(l)
   }
 
+  const reloadChangeOrders = async () => {
+    if (!commitment) return
+    setChangeOrdersLoading(true)
+    try {
+      setChangeOrders(await listCommitmentChangeOrdersAction(commitment.id))
+    } finally {
+      setChangeOrdersLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!commitment) return
+    void reloadChangeOrders().catch((error) => {
+      toast({ title: "Unable to load commitment change orders", description: (error as Error).message })
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [commitment?.id])
+
   const totalCents = lines.reduce((s, l) => s + (l.total_cents ?? 0), 0)
+  const approvedChangeOrdersCents = changeOrders
+    .filter((changeOrder) => changeOrder.status === "approved")
+    .reduce((sum, changeOrder) => sum + changeOrder.total_cents, 0)
 
   return (
     <Dialog open={commitment !== null} onOpenChange={(o) => !o && onClose()}>
@@ -3472,6 +3683,128 @@ function CommitmentLinesDialog({
               </Table>
             </div>
           )}
+
+          <div className="space-y-3 border-t pt-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h4 className="text-sm font-semibold">Commitment change orders</h4>
+                <p className="text-xs text-muted-foreground">
+                  Approved CCOs revise the commitment total without overwriting the original contract.
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setCreatingChangeOrder(true)}
+                disabled={lines.length === 0}
+              >
+                <Plus className="h-4 w-4" />
+                New CCO
+              </Button>
+            </div>
+            <div className="rounded-lg border bg-muted/20 p-3">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                <span>Original {formatCurrency(commitment?.total_cents ?? totalCents)}</span>
+                <span>Approved CCOs {formatCurrency(approvedChangeOrdersCents)}</span>
+                <span className="font-medium text-foreground">
+                  Revised {formatCurrency((commitment?.total_cents ?? totalCents) + approvedChangeOrdersCents)}
+                </span>
+              </div>
+            </div>
+            {changeOrdersLoading ? (
+              <div className="rounded-lg border border-dashed py-6 text-center text-sm text-muted-foreground">
+                Loading CCOs...
+              </div>
+            ) : changeOrders.length === 0 ? (
+              <div className="rounded-lg border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
+                No commitment change orders yet.
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-lg border">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/40">
+                      <TableHead className="px-3">Title</TableHead>
+                      <TableHead className="px-3">Status</TableHead>
+                      <TableHead className="px-3 text-right">Amount</TableHead>
+                      <TableHead className="w-44 px-3 text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {changeOrders.map((changeOrder) => (
+                      <TableRow key={changeOrder.id}>
+                        <TableCell className="px-3">
+                          <span className="block text-sm font-medium">{changeOrder.title}</span>
+                          {changeOrder.source_change_order_title ? (
+                            <span className="block text-xs text-muted-foreground">
+                              From {changeOrder.source_change_order_title}
+                            </span>
+                          ) : null}
+                        </TableCell>
+                        <TableCell className="px-3">
+                          <CommitmentStatusBadge status={changeOrder.status} />
+                        </TableCell>
+                        <TableCell className="px-3 text-right font-medium tabular-nums">
+                          {changeOrder.total_cents > 0 ? "+" : ""}
+                          {formatCurrency(changeOrder.total_cents)}
+                        </TableCell>
+                        <TableCell className="px-3 text-right">
+                          <div className="flex justify-end gap-1">
+                            {changeOrder.status !== "approved" && changeOrder.status !== "voided" ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-xs"
+                                onClick={async () => {
+                                  try {
+                                    await approveCommitmentChangeOrderAction(projectId, changeOrder.id)
+                                    await reloadChangeOrders()
+                                    toast({ title: "CCO approved" })
+                                  } catch (error) {
+                                    toast({ title: "Unable to approve CCO", description: (error as Error).message })
+                                  }
+                                }}
+                              >
+                                Approve
+                              </Button>
+                            ) : null}
+                            {changeOrder.status !== "voided" ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-xs"
+                                onClick={() => setSignatureChangeOrder(changeOrder)}
+                              >
+                                Sign
+                              </Button>
+                            ) : null}
+                            {changeOrder.status !== "voided" ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-xs text-destructive"
+                                onClick={async () => {
+                                  try {
+                                    await voidCommitmentChangeOrderAction(projectId, changeOrder.id)
+                                    await reloadChangeOrders()
+                                    toast({ title: "CCO voided" })
+                                  } catch (error) {
+                                    toast({ title: "Unable to void CCO", description: (error as Error).message })
+                                  }
+                                }}
+                              >
+                                Void
+                              </Button>
+                            ) : null}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
         </div>
 
         <CommitmentLineDialog
@@ -3491,6 +3824,41 @@ function CommitmentLinesDialog({
             setCreating(false)
             setEditingLine(null)
             await reload()
+          }}
+        />
+        <CommitmentChangeOrderCreateDialog
+          open={creatingChangeOrder}
+          onOpenChange={setCreatingChangeOrder}
+          projectId={projectId}
+          commitment={commitment}
+          lines={lines}
+          onSaved={async () => {
+            setCreatingChangeOrder(false)
+            await reloadChangeOrders()
+          }}
+        />
+        <EnvelopeWizard
+          open={signatureChangeOrder !== null}
+          onOpenChange={(open) => {
+            if (!open) setSignatureChangeOrder(null)
+          }}
+          sourceEntity={
+            signatureChangeOrder
+              ? ({
+                  type: "subcontract_change_order",
+                  id: signatureChangeOrder.id,
+                  project_id: signatureChangeOrder.project_id,
+                  title: signatureChangeOrder.title,
+                  document_type: "contract",
+                } satisfies EnvelopeWizardSourceEntity)
+              : null
+          }
+          sourceLabel="Commitment change order"
+          sheetTitle="Send commitment change order for signature"
+          sheetDescription="Upload the subcontract change order and send it for execution."
+          onEnvelopeSent={async () => {
+            setSignatureChangeOrder(null)
+            await reloadChangeOrders()
           }}
         />
       </DialogContent>
@@ -3696,6 +4064,136 @@ function CommitmentLineDialog({
               {isPending ? "Saving..." : line ? "Update" : "Add"}
             </Button>
           </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function CommitmentChangeOrderCreateDialog({
+  open,
+  onOpenChange,
+  projectId,
+  commitment,
+  lines,
+  onSaved,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  projectId: string
+  commitment: CommitmentSummary | null
+  lines: CommitmentLine[]
+  onSaved: () => void
+}) {
+  const { toast } = useToast()
+  const [isPending, startTransition] = useTransition()
+  const [title, setTitle] = useState("")
+  const [description, setDescription] = useState("")
+  const [lineId, setLineId] = useState("")
+  const [amount, setAmount] = useState("0.00")
+
+  useEffect(() => {
+    if (!open) return
+    const firstLine = lines[0]
+    setLineId(firstLine?.id ?? "")
+    setTitle(firstLine ? `${firstLine.description} change` : "Commitment change order")
+    setDescription("")
+    setAmount("0.00")
+  }, [open, lines])
+
+  const selectedLine = lines.find((line) => line.id === lineId) ?? lines[0] ?? null
+  const amountCents = dollarsToCents(amount)
+
+  const submit = () => {
+    if (!commitment || !selectedLine) return
+    if (!title.trim()) {
+      toast({ title: "Title required" })
+      return
+    }
+    if (amountCents == null || amountCents === 0) {
+      toast({ title: "Enter a non-zero change amount" })
+      return
+    }
+
+    startTransition(async () => {
+      try {
+        await createCommitmentChangeOrderAction(projectId, {
+          commitment_id: commitment.id,
+          title: title.trim(),
+          description: description.trim() || null,
+          lines: [
+            {
+              commitment_line_id: selectedLine.id,
+              cost_code_id: selectedLine.cost_code_id ?? null,
+              budget_line_id: selectedLine.budget_line_id ?? null,
+              description: description.trim() || title.trim(),
+              quantity: 1,
+              unit: "ls",
+              unit_cost_cents: amountCents,
+              sort_order: 0,
+            },
+          ],
+        })
+        toast({ title: "CCO created" })
+        onSaved()
+      } catch (error) {
+        toast({ title: "Unable to create CCO", description: (error as Error).message })
+      }
+    })
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>New commitment change order</DialogTitle>
+          <DialogDescription>
+            Create a draft subcontract revision tied to one commitment line.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label>Line</Label>
+            <Select value={lineId} onValueChange={setLineId}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select a commitment line" />
+              </SelectTrigger>
+              <SelectContent>
+                {lines.map((line) => (
+                  <SelectItem key={line.id} value={line.id}>
+                    {line.description}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label>Title</Label>
+            <Input value={title} onChange={(event) => setTitle(event.target.value)} />
+          </div>
+          <div className="space-y-2">
+            <Label>Change amount</Label>
+            <Input
+              inputMode="decimal"
+              value={amount}
+              onChange={(event) => setAmount(event.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              Use a negative amount for deductive changes.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label>Description</Label>
+            <Textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} />
+          </div>
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isPending}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={isPending || !selectedLine}>
+            Create CCO
+          </Button>
         </div>
       </DialogContent>
     </Dialog>

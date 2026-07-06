@@ -1,4 +1,7 @@
+import { notFound } from "next/navigation"
+
 import { requireOrgContext } from "@/lib/services/context"
+import { hasPermission } from "@/lib/services/permissions"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { CheckCircle2, XCircle, AlertCircle } from "lucide-react"
@@ -9,6 +12,11 @@ export const dynamic = 'force-dynamic'
 
 export default async function DrawingsDebugPage() {
   const { supabase, orgId } = await requireOrgContext()
+
+  // Internal diagnostics (pipeline stats + org-wide tile backfill) — admins only.
+  if (!(await hasPermission("org.admin"))) {
+    notFound()
+  }
 
   // Get stats on drawing sheets
   const { data: sheetVersions } = await supabase

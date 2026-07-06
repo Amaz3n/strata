@@ -4,7 +4,7 @@ import { notFound } from "next/navigation"
 
 import { getProjectAction } from "@/app/(app)/projects/[id]/actions"
 import { listCostCodes } from "@/lib/services/cost-codes"
-import { listCostPlusTabData } from "@/lib/services/cost-plus"
+import { listProjectTimeEntries } from "@/lib/services/cost-plus"
 import { hasPermission } from "@/lib/services/permissions"
 import { listTeamMembers } from "@/lib/services/team"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -54,8 +54,8 @@ async function ProjectTimeData({ id }: { id: string }) {
 
   const [costCodes, data, canManageCrew, teamMembers] = await Promise.all([
     listCostCodes().catch(() => []),
-    listCostPlusTabData(id).catch(() => ({ timeEntries: [] as any[] })),
-    hasPermission("bill.approve").catch(() => false),
+    listProjectTimeEntries(id).catch(() => [] as any[]),
+    hasPermission("time.write").catch(() => false),
     listTeamMembers(undefined, { includeProjectCounts: false }).catch(() => []),
   ])
 
@@ -69,7 +69,7 @@ async function ProjectTimeData({ id }: { id: string }) {
     >
       <TimeEntriesClient
         projectId={project.id}
-        initialEntries={data.timeEntries ?? []}
+        initialEntries={data ?? []}
         costCodes={costCodes as any}
         teamMembers={teamMembers}
         canManageCrew={canManageCrew}

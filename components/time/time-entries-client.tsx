@@ -1,6 +1,7 @@
 "use client"
 
-import { useCallback, useMemo, useState, useTransition } from "react"
+import Link from "next/link"
+import { useMemo, useState, useTransition } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
@@ -10,16 +11,13 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Clock, MoreHorizontal, Paperclip, Plus } from "@/components/icons"
 
 import {
-  approveTimeEntryFormAction,
   createMyTimeEntryAction,
   createTimeEntriesAction,
   createTimeEntryApprovalLinkFormAction,
-  listProjectTimeEntriesAction,
-  rejectTimeEntryFormAction,
   type CreateMyTimeEntryInput,
   type CreateTimeEntriesInput,
 } from "@/app/(app)/projects/[id]/time/actions"
@@ -157,17 +155,6 @@ export function TimeEntriesClient({
     })
   }, [items, search, statusFilter])
 
-  const refresh = useCallback(() => {
-    startTransition(async () => {
-      try {
-        const next = await listProjectTimeEntriesAction(projectId)
-        setItems(next as TimeEntry[])
-      } catch (error) {
-        console.error("Failed to refresh time entries", error)
-      }
-    })
-  }, [projectId])
-
   async function handleCreateSelf(payload: CreateMyTimeEntryInput, attachment: File | null) {
     const formData = new FormData()
     formData.append("payload", JSON.stringify(payload))
@@ -212,30 +199,6 @@ export function TimeEntriesClient({
     })
   }
 
-  function approve(entryId: string) {
-    startTransition(async () => {
-      try {
-        await approveTimeEntryFormAction(projectId, entryId)
-        toast.success("Time approved")
-        refresh()
-      } catch (error: any) {
-        toast.error("Could not approve", { description: error?.message })
-      }
-    })
-  }
-
-  function reject(entryId: string) {
-    startTransition(async () => {
-      try {
-        await rejectTimeEntryFormAction(projectId, entryId)
-        toast.success("Time rejected")
-        refresh()
-      } catch (error: any) {
-        toast.error("Could not reject", { description: error?.message })
-      }
-    })
-  }
-
   function copyApprovalLink(entryId: string) {
     startTransition(async () => {
       try {
@@ -251,6 +214,7 @@ export function TimeEntriesClient({
   function rowActions(entry: TimeEntry) {
     const isSubmitted = entry.status === "submitted"
     const isPmApproved = entry.status === "pm_approved"
+    const isReviewable = isSubmitted || isPmApproved
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -260,21 +224,15 @@ export function TimeEntriesClient({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          {isSubmitted ? (
-            <DropdownMenuItem onClick={() => approve(entry.id)}>Approve</DropdownMenuItem>
+          {isReviewable ? (
+            <DropdownMenuItem asChild>
+              <Link href={`/projects/${projectId}/financials/review`}>Review in Financials</Link>
+            </DropdownMenuItem>
           ) : null}
           {isPmApproved ? (
             <DropdownMenuItem onClick={() => copyApprovalLink(entry.id)}>Copy client link</DropdownMenuItem>
           ) : null}
-          {isSubmitted ? (
-            <>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => reject(entry.id)} className="text-destructive focus:text-destructive">
-                Reject
-              </DropdownMenuItem>
-            </>
-          ) : null}
-          {!isSubmitted && !isPmApproved ? (
+          {!isReviewable ? (
             <DropdownMenuItem disabled>No actions available</DropdownMenuItem>
           ) : null}
         </DropdownMenuContent>

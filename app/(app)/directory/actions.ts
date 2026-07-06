@@ -107,6 +107,54 @@ const trimOrUndefined = (value?: string) => {
   return t ? t : undefined
 }
 
+function normalizeDirectoryName(value?: string) {
+  const normalized = (value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "")
+  return normalized || undefined
+}
+
+async function resolveDirectoryCompanyClassification(
+  supabase: SupabaseClient,
+  orgId: string,
+  companyType: CompanyType,
+  trade?: string,
+) {
+  const relationshipKey =
+    ["subcontractor", "supplier", "client", "architect", "engineer"].includes(companyType)
+      ? companyType
+      : "other"
+  const normalizedTrade = normalizeDirectoryName(trade)
+
+  const [relationshipResult, tradeResult] = await Promise.all([
+    supabase
+      .from("directory_relationship_types")
+      .select("id")
+      .eq("org_id", orgId)
+      .eq("key", relationshipKey)
+      .maybeSingle(),
+    normalizedTrade
+      ? supabase
+          .from("directory_trades")
+          .upsert(
+            {
+              org_id: orgId,
+              name: trade?.trim(),
+              normalized_name: normalizedTrade,
+              is_active: true,
+              metadata: { source: "directory_import" },
+            },
+            { onConflict: "org_id,normalized_name" },
+          )
+          .select("id")
+          .single()
+      : Promise.resolve({ data: null, error: null }),
+  ])
+
+  return {
+    relationship_type_id: relationshipResult.data?.id ?? null,
+    trade_id: tradeResult.data?.id ?? null,
+  }
+}
+
 /**
  * Find-or-create companies by (case-insensitive) name within the org, deduped
  * across the batch. Returns a map of lowercased-name -> company id plus the
@@ -120,15 +168,19 @@ async function resolveCompanies(
   const map = new Map<string, string>()
   if (wanted.size === 0) return { map, created: 0 }
 
-  const names = Array.from(wanted.values()).map((c) => c.name)
-  const { data: existing } = await supabase
+  const { data: existing, error: existingError } = await supabase
     .from("companies")
     .select("id, name")
     .eq("org_id", orgId)
-    .in("name", names)
+    .is("metadata->>archived_at", null)
+
+  if (existingError) {
+    throw new Error(`Failed to check existing companies: ${existingError.message}`)
+  }
 
   for (const row of existing ?? []) {
-    map.set(String(row.name).trim().toLowerCase(), row.id as string)
+    const key = String(row.name).trim().toLowerCase()
+    if (wanted.has(key)) map.set(key, row.id as string)
   }
 
   const toCreate = Array.from(wanted.entries())
@@ -159,9 +211,20 @@ async function resolveCompanies(
 
   let created = 0
   if (toCreate.length > 0) {
+    const enrichedToCreate = await Promise.all(
+      toCreate.map(async (row) => ({
+        ...row,
+        ...(await resolveDirectoryCompanyClassification(
+          supabase,
+          orgId,
+          row.company_type,
+          (row.metadata as { trade?: string | undefined }).trade,
+        )),
+      })),
+    )
     const { data, error } = await supabase
       .from("companies")
-      .insert(toCreate)
+      .insert(enrichedToCreate)
       .select("id, name")
     if (error) {
       throw new Error(`Failed to import companies: ${error.message}`)
@@ -210,6 +273,7 @@ export async function importDirectoryAction(
   const defaultContactType = input.defaultContactType ?? "subcontractor"
   const defaultCompanyType = input.defaultCompanyType ?? "subcontractor"
   const errors: DirectoryImportResult["errors"] = []
+  let skipped = 0
 
   // 1. Resolve companies first (companies + both modes).
   let companyMap = new Map<string, string>()
@@ -243,13 +307,20 @@ export async function importDirectoryAction(
   // 2. Build contact inserts (contacts + both modes).
   let contactsCreated = 0
   if (mode === "contacts" || mode === "both") {
-    const insertPayload: Array<Record<string, unknown>> = []
+    const candidates: Array<{
+      emailKey?: string
+      nameCompanyKey: string
+      companyId?: string
+      payload: Record<string, unknown>
+    }> = []
+    const batchKeys = new Set<string>()
     rows.forEach((row, index) => {
       const fullName = trimOrUndefined(row.full_name)
       // In "both" mode a row can be company-only; skip the contact silently.
       if (!fullName) {
         if (mode === "contacts") {
           errors.push({ row: index + 1, reason: "Missing name" })
+          skipped += 1
         }
         return
       }
@@ -268,6 +339,7 @@ export async function importDirectoryAction(
           row: index + 1,
           reason: parsed.error.issues[0]?.message ?? "Invalid row",
         })
+        skipped += 1
         return
       }
 
@@ -275,22 +347,81 @@ export async function importDirectoryAction(
         mode === "both"
           ? companyMap.get((row.company_name ?? "").trim().toLowerCase())
           : undefined
+      const emailKey = parsed.data.email?.trim().toLowerCase()
+      const nameCompanyKey = `${parsed.data.full_name.trim().toLowerCase()}::${companyId ?? "none"}`
+      const batchKey = emailKey ? `email:${emailKey}` : `name-company:${nameCompanyKey}`
+      if (batchKeys.has(batchKey)) {
+        skipped += 1
+        return
+      }
+      batchKeys.add(batchKey)
 
-      insertPayload.push({
-        org_id: orgId,
-        full_name: parsed.data.full_name,
-        email: parsed.data.email ?? null,
-        phone: parsed.data.phone ?? null,
-        address: parsed.data.address ? { formatted: parsed.data.address } : null,
-        role: parsed.data.role ?? null,
-        contact_type: parsed.data.contact_type ?? defaultContactType,
-        primary_company_id: companyId ?? null,
-        metadata: {
-          has_portal_access: false,
-          notes: parsed.data.notes,
+      candidates.push({
+        emailKey,
+        nameCompanyKey,
+        companyId,
+        payload: {
+          org_id: orgId,
+          full_name: parsed.data.full_name,
+          email: parsed.data.email ?? null,
+          phone: parsed.data.phone ?? null,
+          address: parsed.data.address ? { formatted: parsed.data.address } : null,
+          role: parsed.data.role ?? null,
+          contact_type: parsed.data.contact_type ?? defaultContactType,
+          primary_company_id: companyId ?? null,
+          metadata: {
+            has_portal_access: false,
+            notes: parsed.data.notes,
+          },
         },
       })
     })
+
+    const existingByEmail = new Map<string, { id: string; primary_company_id?: string | null }>()
+    const existingByNameCompany = new Map<string, { id: string; primary_company_id?: string | null }>()
+    if (candidates.length > 0) {
+      const { data: existingContacts, error: existingContactsError } = await supabase
+        .from("contacts")
+        .select("id, full_name, email, primary_company_id")
+        .eq("org_id", orgId)
+        .is("metadata->>archived_at", null)
+
+      if (existingContactsError) {
+        throw new Error(`Failed to check existing contacts: ${existingContactsError.message}`)
+      }
+
+      for (const contact of existingContacts ?? []) {
+        const existing = {
+          id: contact.id as string,
+          primary_company_id: contact.primary_company_id as string | null | undefined,
+        }
+        const email = String(contact.email ?? "").trim().toLowerCase()
+        if (email) existingByEmail.set(email, existing)
+        const nameKey = `${String(contact.full_name ?? "").trim().toLowerCase()}::${contact.primary_company_id ?? "none"}`
+        existingByNameCompany.set(nameKey, existing)
+      }
+    }
+
+    const insertPayload: Array<Record<string, unknown>> = []
+    const linkPayload: Array<{ org_id: string; contact_id: string; company_id: string; relationship: string }> = []
+    for (const candidate of candidates) {
+      const existing = candidate.emailKey
+        ? existingByEmail.get(candidate.emailKey)
+        : existingByNameCompany.get(candidate.nameCompanyKey)
+      if (existing) {
+        skipped += 1
+        if (candidate.companyId) {
+          linkPayload.push({
+            org_id: orgId,
+            contact_id: existing.id,
+            company_id: candidate.companyId,
+            relationship: "primary",
+          })
+        }
+        continue
+      }
+      insertPayload.push(candidate.payload)
+    }
 
     if (insertPayload.length > 0) {
       const { data, error } = await supabase
@@ -311,18 +442,21 @@ export async function importDirectoryAction(
           company_id: c.primary_company_id,
           relationship: "primary",
         }))
-      if (links.length > 0) {
-        await supabase
-          .from("contact_company_links")
-          .upsert(links, { onConflict: "contact_id,company_id" })
+      linkPayload.push(...links)
+    }
+
+    if (linkPayload.length > 0) {
+      const { error: linkError } = await supabase
+        .from("contact_company_links")
+        .upsert(linkPayload, { onConflict: "contact_id,company_id" })
+      if (linkError) {
+        throw new Error(`Failed to link imported contacts: ${linkError.message}`)
       }
     }
   }
 
-  const skipped = Math.max(0, total - Math.max(contactsCreated, companiesCreated))
-
   if (contactsCreated === 0 && companiesCreated === 0) {
-    return { ...empty, skipped: total, errors }
+    return { ...empty, skipped: Math.max(skipped, total), errors }
   }
 
   await recordEvent({

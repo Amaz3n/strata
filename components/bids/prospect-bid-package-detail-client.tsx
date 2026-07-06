@@ -67,6 +67,7 @@ import {
   createProspectBidAddendumAction,
   bulkCreateProspectBidInvitesAction,
   generateProspectBidInviteLinkAction,
+  resendProspectBidInviteAction,
   pauseProspectBidInviteAccessAction,
   resumeProspectBidInviteAccessAction,
   revokeProspectBidInviteAccessAction,
@@ -934,6 +935,17 @@ export function ProspectBidPackageDetailClient({
       toast.success("Bid link copied to clipboard")
     } catch (error: any) {
       toast.error("Failed to generate link", { description: error?.message ?? "Please try again." })
+    }
+  }
+
+  const handleResendInvite = async (invite: BidInvite) => {
+    try {
+      await resendProspectBidInviteAction(prospectId, bidPackage.id, invite.id)
+      const refreshed = await listProspectBidInvitesAction(bidPackage.id)
+      setInviteList(refreshed)
+      toast.success("Reminder queued")
+    } catch (error: any) {
+      toast.error("Failed to resend invite", { description: error?.message ?? "Please try again." })
     }
   }
 
@@ -2186,7 +2198,7 @@ export function ProspectBidPackageDetailClient({
                       </div>
 
                       {/* Actions */}
-                      <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex items-center gap-1 shrink-0">
                         {submission && current.status !== "awarded" && submission.is_current && submission.total_cents != null && (
                           <Button size="sm" variant="outline" onClick={() => openAwardDialog(submission)} className="h-7 text-xs">Award</Button>
                         )}
@@ -2197,7 +2209,11 @@ export function ProspectBidPackageDetailClient({
                           <DropdownMenuContent align="end">
                             {submission && <DropdownMenuItem onSelect={() => openSubmissionSheet(submission)}><Eye className="mr-2 h-4 w-4" />View submission</DropdownMenuItem>}
                             <DropdownMenuItem onClick={() => handleGenerateLink(invite)}><Copy className="mr-2 h-4 w-4" />Copy link</DropdownMenuItem>
-                            {(invite.invite_email || invite.contact?.email) && <DropdownMenuItem><Mail className="mr-2 h-4 w-4" />Resend</DropdownMenuItem>}
+                            {(invite.invite_email || invite.contact?.email) && (
+                              <DropdownMenuItem onClick={() => handleResendInvite(invite)}>
+                                <Mail className="mr-2 h-4 w-4" />Resend
+                              </DropdownMenuItem>
+                            )}
                             <DropdownMenuSeparator />
                             {(invite.active_access_count ?? 0) > 0 && (
                               <DropdownMenuItem onClick={() => handlePauseInviteAccess(invite)}><Ban className="mr-2 h-4 w-4" />Pause access</DropdownMenuItem>

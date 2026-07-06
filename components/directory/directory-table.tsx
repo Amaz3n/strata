@@ -19,21 +19,23 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { Company, Contact } from "@/lib/types";
+import type { Company, ComplianceStatusSummary, Contact } from "@/lib/types";
 import {
+  Archive,
   ArrowDown,
   ArrowUp,
+  AlertTriangle,
   Building2,
   Edit,
   Loader2,
   Mail,
   MoreHorizontal,
   Phone,
-  Trash2,
+  Send,
 } from "@/components/icons";
 
 export type DirectoryView = "all" | "companies" | "people";
-export type DirectorySortKey = "name" | "type" | "detail" | "contact";
+export type DirectorySortKey = "name" | "type" | "detail";
 export type DirectorySortDirection = "asc" | "desc";
 
 type DirectoryItem =
@@ -43,6 +45,8 @@ type DirectoryItem =
 interface DirectoryTableProps {
   companies: Company[];
   contacts: Contact[];
+  entries?: DirectoryItem[];
+  complianceStatusByCompanyId?: Record<string, ComplianceStatusSummary>;
   view: DirectoryView;
   sort: DirectorySortKey;
   direction: DirectorySortDirection;
@@ -56,6 +60,7 @@ interface DirectoryTableProps {
   onSelectContact?: (id: string) => void;
   onEditCompany?: (company: Company) => void;
   onEditContact?: (contact: Contact) => void;
+  onInviteContact?: (contact: Contact) => void;
   onArchiveCompany?: (companyId: string) => void;
   onArchiveContact?: (contactId: string) => void;
 }
@@ -124,6 +129,17 @@ function ContactMethods({ email, phone }: { email?: string; phone?: string }) {
         </a>
       ) : null}
     </div>
+  );
+}
+
+// Lowkey inline flag — only shown when a vendor actually needs attention.
+function ComplianceFlag({ status }: { status?: ComplianceStatusSummary }) {
+  if (!status || status.is_compliant) return null;
+  return (
+    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-warning">
+      <AlertTriangle className="h-3 w-3" />
+      Action required
+    </span>
   );
 }
 
@@ -205,6 +221,8 @@ function InfiniteScrollSentinel({
 export function DirectoryTable({
   companies,
   contacts,
+  entries,
+  complianceStatusByCompanyId = {},
   view,
   sort,
   direction,
@@ -218,6 +236,7 @@ export function DirectoryTable({
   onSelectContact,
   onEditCompany,
   onEditContact,
+  onInviteContact,
   onArchiveCompany,
   onArchiveContact,
 }: DirectoryTableProps) {
@@ -235,20 +254,22 @@ export function DirectoryTable({
     }
   }
 
-  const items: DirectoryItem[] = [
-    ...companies.map((company) => ({
-      type: "company" as const,
-      id: company.id,
-      name: company.name,
-      company,
-    })),
-    ...contacts.map((contact) => ({
-      type: "contact" as const,
-      id: contact.id,
-      name: contact.full_name,
-      contact,
-    })),
-  ];
+  const items: DirectoryItem[] =
+    entries ??
+    [
+      ...companies.map((company) => ({
+        type: "company" as const,
+        id: company.id,
+        name: company.name,
+        company,
+      })),
+      ...contacts.map((contact) => ({
+        type: "contact" as const,
+        id: contact.id,
+        name: contact.full_name,
+        contact,
+      })),
+    ];
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -270,6 +291,9 @@ export function DirectoryTable({
                     key={`m-company-${item.id}`}
                     company={item.company}
                     contacts={contactsByCompany.get(item.id) ?? []}
+                    complianceStatus={
+                      complianceStatusByCompanyId[item.company.id]
+                    }
                     onSelectCompany={onSelectCompany}
                     onEditCompany={onEditCompany}
                     onArchiveCompany={onArchiveCompany}
@@ -281,6 +305,7 @@ export function DirectoryTable({
                     companyLabel={contactCompanyLabel(item.contact, companyById)}
                     onSelectContact={onSelectContact}
                     onEditContact={onEditContact}
+                    onInviteContact={onInviteContact}
                     onArchiveContact={onArchiveContact}
                   />
                 ),
@@ -338,14 +363,7 @@ export function DirectoryTable({
                   onSortChange={onSortChange}
                   className="w-[24%]"
                 />
-                <SortHead
-                  label="Contact info"
-                  sortKey="contact"
-                  activeSort={sort}
-                  direction={direction}
-                  onSortChange={onSortChange}
-                  className="w-[22%]"
-                />
+                <TableHead className="w-[22%]">Contact info</TableHead>
                 <TableHead className="w-12 pr-4" />
               </TableRow>
             ) : view === "people" ? (
@@ -374,14 +392,7 @@ export function DirectoryTable({
                   onSortChange={onSortChange}
                   className="w-[18%]"
                 />
-                <SortHead
-                  label="Contact info"
-                  sortKey="contact"
-                  activeSort={sort}
-                  direction={direction}
-                  onSortChange={onSortChange}
-                  className="w-[20%]"
-                />
+                <TableHead className="w-[20%]">Contact info</TableHead>
                 <TableHead className="w-12 pr-4" />
               </TableRow>
             ) : (
@@ -410,14 +421,7 @@ export function DirectoryTable({
                   onSortChange={onSortChange}
                   className="w-[22%]"
                 />
-                <SortHead
-                  label="Contact"
-                  sortKey="contact"
-                  activeSort={sort}
-                  direction={direction}
-                  onSortChange={onSortChange}
-                  className="w-[24%]"
-                />
+                <TableHead className="w-[24%]">Contact</TableHead>
                 <TableHead className="w-12 pr-4" />
               </TableRow>
             )}
@@ -430,6 +434,7 @@ export function DirectoryTable({
                   item={item}
                   view={view}
                   contacts={contactsByCompany.get(item.id) ?? []}
+                  complianceStatus={complianceStatusByCompanyId[item.company.id]}
                   onSelectCompany={onSelectCompany}
                   onEditCompany={onEditCompany}
                   onArchiveCompany={onArchiveCompany}
@@ -442,6 +447,7 @@ export function DirectoryTable({
                   view={view}
                   onSelectContact={onSelectContact}
                   onEditContact={onEditContact}
+                  onInviteContact={onInviteContact}
                   onArchiveContact={onArchiveContact}
                 />
               ),
@@ -517,12 +523,14 @@ function InfiniteScrollStatus({
 function CompanyMobileRow({
   company,
   contacts,
+  complianceStatus,
   onSelectCompany,
   onEditCompany,
   onArchiveCompany,
 }: {
   company: Company;
   contacts: Contact[];
+  complianceStatus?: ComplianceStatusSummary;
   onSelectCompany?: (id: string) => void;
   onEditCompany?: (company: Company) => void;
   onArchiveCompany?: (companyId: string) => void;
@@ -569,6 +577,11 @@ function CompanyMobileRow({
               ) : null}
             </div>
           ) : null}
+          {complianceStatus && !complianceStatus.is_compliant ? (
+            <div className="mt-1.5">
+              <ComplianceFlag status={complianceStatus} />
+            </div>
+          ) : null}
         </div>
       </button>
       {hasActions ? (
@@ -595,8 +608,8 @@ function CompanyMobileRow({
                 className="text-destructive focus:text-destructive"
                 onSelect={() => onArchiveCompany(company.id)}
               >
-                <Trash2 className="mr-2 h-4 w-4" />
-                Delete
+                <Archive className="mr-2 h-4 w-4" />
+                Archive
               </DropdownMenuItem>
             ) : null}
           </DropdownMenuContent>
@@ -611,12 +624,14 @@ function ContactMobileRow({
   companyLabel,
   onSelectContact,
   onEditContact,
+  onInviteContact,
   onArchiveContact,
 }: {
   contact: Contact;
   companyLabel?: string;
   onSelectContact?: (id: string) => void;
   onEditContact?: (contact: Contact) => void;
+  onInviteContact?: (contact: Contact) => void;
   onArchiveContact?: (contactId: string) => void;
 }) {
   const metaParts = [
@@ -624,7 +639,7 @@ function ContactMobileRow({
     companyLabel,
     formatType(contact.contact_type),
   ].filter(Boolean) as string[];
-  const hasActions = Boolean(onEditContact || onArchiveContact);
+  const hasActions = Boolean(onEditContact || onInviteContact || onArchiveContact);
 
   return (
     <li className="flex items-stretch">
@@ -682,13 +697,22 @@ function ContactMobileRow({
                 Edit
               </DropdownMenuItem>
             ) : null}
+            {onInviteContact ? (
+              <DropdownMenuItem
+                disabled={!contact.email}
+                onSelect={() => onInviteContact(contact)}
+              >
+                <Send className="mr-2 h-4 w-4" />
+                Portal invite
+              </DropdownMenuItem>
+            ) : null}
             {onArchiveContact ? (
               <DropdownMenuItem
                 className="text-destructive focus:text-destructive"
                 onSelect={() => onArchiveContact(contact.id)}
               >
-                <Trash2 className="mr-2 h-4 w-4" />
-                Delete
+                <Archive className="mr-2 h-4 w-4" />
+                Archive
               </DropdownMenuItem>
             ) : null}
           </DropdownMenuContent>
@@ -702,6 +726,7 @@ function CompanyRow({
   item,
   contacts,
   view,
+  complianceStatus,
   onSelectCompany,
   onEditCompany,
   onArchiveCompany,
@@ -709,6 +734,7 @@ function CompanyRow({
   item: Extract<DirectoryItem, { type: "company" }>;
   contacts: Contact[];
   view: DirectoryView;
+  complianceStatus?: ComplianceStatusSummary;
   onSelectCompany?: (id: string) => void;
   onEditCompany?: (company: Company) => void;
   onArchiveCompany?: (companyId: string) => void;
@@ -737,6 +763,12 @@ function CompanyRow({
               <span>
                 {contactCount} contact{contactCount === 1 ? "" : "s"}
               </span>
+              {complianceStatus && !complianceStatus.is_compliant ? (
+                <>
+                  <span>·</span>
+                  <ComplianceFlag status={complianceStatus} />
+                </>
+              ) : null}
             </div>
           </div>
         </div>
@@ -789,8 +821,8 @@ function CompanyRow({
                 className="text-destructive focus:text-destructive"
                 onSelect={() => onArchiveCompany(company.id)}
               >
-                <Trash2 className="mr-2 h-4 w-4" />
-                Delete
+                <Archive className="mr-2 h-4 w-4" />
+                Archive
               </DropdownMenuItem>
             ) : null}
           </DropdownMenuContent>
@@ -806,6 +838,7 @@ function ContactRow({
   view,
   onSelectContact,
   onEditContact,
+  onInviteContact,
   onArchiveContact,
 }: {
   item: Extract<DirectoryItem, { type: "contact" }>;
@@ -813,6 +846,7 @@ function ContactRow({
   view: DirectoryView;
   onSelectContact?: (id: string) => void;
   onEditContact?: (contact: Contact) => void;
+  onInviteContact?: (contact: Contact) => void;
   onArchiveContact?: (contactId: string) => void;
 }) {
   const contact = item.contact;
@@ -892,13 +926,22 @@ function ContactRow({
                 Edit
               </DropdownMenuItem>
             ) : null}
+            {onInviteContact ? (
+              <DropdownMenuItem
+                disabled={!contact.email}
+                onSelect={() => onInviteContact(contact)}
+              >
+                <Send className="mr-2 h-4 w-4" />
+                Portal invite
+              </DropdownMenuItem>
+            ) : null}
             {onArchiveContact ? (
               <DropdownMenuItem
                 className="text-destructive focus:text-destructive"
                 onSelect={() => onArchiveContact(contact.id)}
               >
-                <Trash2 className="mr-2 h-4 w-4" />
-                Delete
+                <Archive className="mr-2 h-4 w-4" />
+                Archive
               </DropdownMenuItem>
             ) : null}
           </DropdownMenuContent>

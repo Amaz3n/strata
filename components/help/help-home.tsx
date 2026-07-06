@@ -21,34 +21,16 @@ export function HelpHome({
 }) {
   return (
     <>
-      <section className="help-hero-gradient relative min-h-[470px] overflow-hidden border-b border-border sm:min-h-[500px]">
-        <div className="help-hero-grid absolute inset-0" aria-hidden="true" />
-        <svg
-          aria-hidden="true"
-          className="help-hero-arc absolute bottom-[-13%] right-[-4%] hidden h-[92%] w-[54%] lg:block"
-          viewBox="0 0 581 521"
-          fill="none"
-          preserveAspectRatio="xMidYMid meet"
-        >
-          <path
-            d="M1 296V1h579v295C522 196 414 128 290 128S58 196 1 296ZM63 520c-9-25-14-52-14-80 0-133 108-241 241-241s241 108 241 241c0 28-5 55-14 80H63Z"
-            vectorEffect="non-scaling-stroke"
-          />
-        </svg>
-
-        <div className="relative z-10 flex min-h-[470px] w-full flex-col items-start justify-center px-5 py-16 text-left sm:min-h-[500px] sm:px-8 lg:px-12 xl:px-16">
-          <p className="text-base font-medium text-white/80">Arc Help Center</p>
-          <h1 className="mt-3 max-w-2xl text-5xl font-medium tracking-[-0.05em] text-white sm:text-6xl lg:text-[4.75rem] lg:leading-[0.95]">
+      <section className="border-b bg-card">
+        <div className="mx-auto w-full max-w-7xl px-5 py-14 sm:px-8 sm:py-20 lg:px-12">
+          <p className="microlabel">Arc Help Center</p>
+          <h1 className="mt-3 max-w-2xl text-4xl font-medium tracking-[-0.04em] sm:text-5xl">
             How can we help?
           </h1>
 
-          <div className="mt-10 flex w-full max-w-3xl flex-col gap-3">
+          <div className="mt-8 flex w-full max-w-3xl flex-col gap-3">
             <HelpSearch items={searchItems} />
-            <Button
-              variant="outline"
-              className="h-14 justify-start rounded-none border-[#4e82df] bg-[#0a0f16]/95 px-5 text-sm text-white/85 hover:border-[#7aa6f7] hover:bg-[#101827] hover:text-white sm:px-6 sm:text-base"
-              asChild
-            >
+            <Button variant="outline" className="h-12 justify-start px-5 text-sm" asChild>
               <a href="mailto:support@arcnaples.com">
                 <MessageSquare data-icon="inline-start" />
                 <span className="flex-1 text-left">Contact Arc support</span>
@@ -71,7 +53,7 @@ export function HelpHome({
                 <div className="flex flex-col gap-2">
                   <Link
                     href={helpTopicHref(topic.slug)}
-                    className="text-xl font-medium underline decoration-border underline-offset-4 transition-colors hover:text-[#8fb5ff]"
+                    className="text-xl font-medium underline decoration-border underline-offset-4 transition-colors hover:text-primary"
                   >
                     {topic.title}
                   </Link>

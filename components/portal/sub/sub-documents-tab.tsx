@@ -168,7 +168,7 @@ export function SubDocumentsTab({
                       }}
                       asChild
                     >
-                      <a href={file.url} download={file.file_name}>
+                      <a href={`${file.url}?download=1`} download={file.file_name}>
                         <Download className="h-4 w-4" />
                       </a>
                     </Button>

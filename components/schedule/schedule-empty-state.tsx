@@ -2,7 +2,7 @@
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
-import { CalendarDays, Plus, FileText, Upload, Sparkles } from "lucide-react"
+import { CalendarDays, Plus, FileText, Upload } from "lucide-react"
 
 interface ScheduleEmptyStateProps {
   className?: string
@@ -124,34 +124,6 @@ export function ScheduleEmptyStateCompact({
           Add Item
         </Button>
       )}
-    </div>
-  )
-}
-
-/**
- * Empty state for the multi-project overview when no projects have schedules
- */
-export function ScheduleOverviewEmptyState({ className }: { className?: string }) {
-  return (
-    <div className={cn("flex flex-col items-center justify-center h-full p-8 text-center", className)}>
-      <div className="rounded-full bg-gradient-to-br from-primary/10 to-primary/5 p-6 mb-6 animate-in fade-in zoom-in-50 duration-500">
-        <Sparkles className="h-12 w-12 text-primary/60 animate-pulse" />
-      </div>
-
-      <h3 className="text-xl font-semibold mb-2 animate-in fade-in slide-in-from-bottom-2 duration-500 delay-100">
-        Master Schedule Overview
-      </h3>
-
-      <p className="text-muted-foreground max-w-md mb-6 leading-relaxed animate-in fade-in slide-in-from-bottom-2 duration-500 delay-150">
-        View all your project schedules in one place. Select a project to get started,
-        or create schedules for your active projects.
-      </p>
-
-      <div className="text-sm text-muted-foreground animate-in fade-in slide-in-from-bottom-2 duration-500 delay-200">
-        <p className="px-4 py-2 rounded-lg bg-muted/50 border border-dashed">
-          Select a project from the sidebar to view its schedule
-        </p>
-      </div>
     </div>
   )
 }

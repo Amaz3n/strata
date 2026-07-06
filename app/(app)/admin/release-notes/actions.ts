@@ -5,6 +5,7 @@ import { z } from "zod"
 import { requireAnyPermissionGuard } from "@/lib/auth/guards"
 import {
   createReleaseNote,
+  deleteReleaseNote,
   updateReleaseNote,
   type ReleaseNoteInput,
 } from "@/lib/services/release-notes"
@@ -57,4 +58,10 @@ export async function createReleaseNoteAction(input: unknown) {
 export async function updateReleaseNoteAction(id: string, input: unknown) {
   await requireReleaseNotesAdmin()
   return updateReleaseNote(id, parseInput(input))
+}
+
+export async function deleteReleaseNoteAction(id: string) {
+  await requireReleaseNotesAdmin()
+  await deleteReleaseNote(z.string().uuid().parse(id))
+  return { success: true }
 }

@@ -1,11 +1,15 @@
 import { requireOrgContext } from "@/lib/services/context"
 import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
+import { recordAudit } from "@/lib/services/audit"
+import { recordEvent } from "@/lib/services/events"
 import type { ComplianceRequirementTemplateItem, ComplianceRules } from "@/lib/types"
 import { complianceRequirementInputSchema } from "@/lib/validation/compliance-documents"
 
 const defaultRules: ComplianceRules = {
   require_lien_waiver: false,
   block_payment_on_missing_docs: true,
+  warn_subcontract_execution_on_missing_docs: true,
+  block_subcontract_execution_on_missing_docs: false,
 }
 
 function normalizeBoolean(raw: unknown, fallback: boolean): boolean {
@@ -21,6 +25,14 @@ function mergeRules(raw?: Partial<ComplianceRules> | null): ComplianceRules {
     block_payment_on_missing_docs: normalizeBoolean(
       source.block_payment_on_missing_docs,
       defaultRules.block_payment_on_missing_docs ?? true
+    ),
+    warn_subcontract_execution_on_missing_docs: normalizeBoolean(
+      source.warn_subcontract_execution_on_missing_docs,
+      defaultRules.warn_subcontract_execution_on_missing_docs ?? true,
+    ),
+    block_subcontract_execution_on_missing_docs: normalizeBoolean(
+      source.block_subcontract_execution_on_missing_docs,
+      defaultRules.block_subcontract_execution_on_missing_docs ?? false,
     ),
   }
 }
@@ -48,7 +60,13 @@ export async function updateComplianceRules({
   orgId?: string
 }): Promise<ComplianceRules> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.admin", "billing.manage", "org.member"], { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["org.admin", "billing.manage"], { supabase, orgId: resolvedOrgId, userId })
+
+  const { data: beforeRow } = await supabase
+    .from("orgs")
+    .select("compliance_rules")
+    .eq("id", resolvedOrgId)
+    .maybeSingle()
 
   const payload = mergeRules(rules)
   const { data, error } = await supabase
@@ -62,7 +80,33 @@ export async function updateComplianceRules({
     throw new Error(`Failed to update compliance rules: ${error.message}`)
   }
 
-  return mergeRules((data?.compliance_rules ?? {}) as ComplianceRules)
+  const after = mergeRules((data?.compliance_rules ?? {}) as ComplianceRules)
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "org_compliance_rules",
+    entityId: resolvedOrgId,
+    before: { compliance_rules: mergeRules((beforeRow?.compliance_rules ?? {}) as ComplianceRules) },
+    after: { compliance_rules: after },
+    source: "settings.compliance",
+  })
+
+  try {
+    await recordEvent({
+      orgId: resolvedOrgId,
+      actorId: userId,
+      eventType: "compliance_rules_updated",
+      entityType: "org_compliance_rules",
+      entityId: resolvedOrgId,
+      channel: "activity",
+    })
+  } catch (eventError) {
+    console.error("Failed to record compliance rules event", eventError)
+  }
+
+  return after
 }
 
 export function normalizeComplianceRequirementDefaults(
@@ -111,7 +155,13 @@ export async function updateDefaultComplianceRequirements({
   orgId?: string
 }): Promise<ComplianceRequirementTemplateItem[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.admin", "billing.manage", "org.member"], { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["org.admin", "billing.manage"], { supabase, orgId: resolvedOrgId, userId })
+
+  const { data: beforeRow } = await supabase
+    .from("orgs")
+    .select("default_compliance_requirements")
+    .eq("id", resolvedOrgId)
+    .maybeSingle()
 
   const payload = normalizeComplianceRequirementDefaults(requirements)
   const { data, error } = await supabase
@@ -125,5 +175,31 @@ export async function updateDefaultComplianceRequirements({
     throw new Error(`Failed to update compliance defaults: ${error.message}`)
   }
 
-  return normalizeComplianceRequirementDefaults((data as any)?.default_compliance_requirements)
+  const after = normalizeComplianceRequirementDefaults((data as any)?.default_compliance_requirements)
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "org_compliance_defaults",
+    entityId: resolvedOrgId,
+    before: { default_compliance_requirements: normalizeComplianceRequirementDefaults((beforeRow as any)?.default_compliance_requirements) },
+    after: { default_compliance_requirements: after },
+    source: "settings.compliance",
+  })
+
+  try {
+    await recordEvent({
+      orgId: resolvedOrgId,
+      actorId: userId,
+      eventType: "compliance_defaults_updated",
+      entityType: "org_compliance_defaults",
+      entityId: resolvedOrgId,
+      channel: "activity",
+    })
+  } catch (eventError) {
+    console.error("Failed to record compliance defaults event", eventError)
+  }
+
+  return after
 }

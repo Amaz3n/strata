@@ -17,6 +17,10 @@
       "schedule": "0 * * * *"
     },
     {
+      "path": "/api/jobs/drawings-pipeline",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/jobs/rbac-evidence",
       "schedule": "15 2 * * *"
     },
@@ -33,8 +37,24 @@
       "schedule": "15 13 * * *"
     },
     {
+      "path": "/api/jobs/compliance-autopilot",
+      "schedule": "20 13 * * *"
+    },
+    {
+      "path": "/api/jobs/esign",
+      "schedule": "25 13 * * *"
+    },
+    {
       "path": "/api/jobs/late-fees",
       "schedule": "30 13 * * *"
+    },
+    {
+      "path": "/api/jobs/task-reminders",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/jobs/invoice-schedules",
+      "schedule": "40 13 * * *"
     }
   ],
   "functions": {
@@ -42,6 +62,9 @@
       "maxDuration": 30
     },
     "app/api/jobs/process-outbox/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/jobs/drawings-pipeline/route.ts": {
       "maxDuration": 300
     },
     "app/api/qbo/process-outbox/route.ts": {
@@ -65,7 +88,16 @@
     "app/api/jobs/reminders/route.ts": {
       "maxDuration": 120
     },
+    "app/api/jobs/compliance-autopilot/route.ts": {
+      "maxDuration": 180
+    },
+    "app/api/jobs/esign/route.ts": {
+      "maxDuration": 120
+    },
     "app/api/jobs/late-fees/route.ts": {
+      "maxDuration": 120
+    },
+    "app/api/jobs/task-reminders/route.ts": {
       "maxDuration": 120
     }
   }

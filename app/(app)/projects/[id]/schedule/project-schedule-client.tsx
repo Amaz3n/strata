@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { useSearchParams } from "next/navigation"
 import { toast } from "sonner"
 
 import { ScheduleView } from "@/components/schedule"
@@ -19,12 +20,14 @@ interface ProjectScheduleClientProps {
 
 export function ProjectScheduleClient({ projectId, initialItems }: ProjectScheduleClientProps) {
   const [items, setItems] = useState<ScheduleItem[]>(initialItems)
+  const focusItemId = useSearchParams().get("item")
 
   return (
     <div className="h-[calc(100vh-56px)] -mt-6 -mx-4 -mb-4 flex flex-col bg-background border-t border-border">
       <ScheduleView
         className="flex-1"
         projectId={projectId}
+        focusItemId={focusItemId}
         items={items}
         onItemCreate={async (item) => {
           const created = await createProjectScheduleItemAction(projectId, item)

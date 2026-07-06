@@ -6,6 +6,7 @@ import { requireAuth } from "@/lib/auth/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { getCurrentPlatformAccess } from "@/lib/services/platform-access"
 import type {
+  PlatformBugAiFix,
   PlatformBugAiReview,
   PlatformBug,
   PlatformBugEvent,
@@ -57,6 +58,7 @@ const EVENT_SELECT = `
 
 const BUG_ATTACHMENT_BUCKET = "platform-bug-attachments"
 const CODEX_REVIEW_WORKFLOW = "codex-bug-review.yml"
+const CODEX_FIX_WORKFLOW = "codex-bug-fix.yml"
 
 const AI_REVIEW_SELECT = `
   id,
@@ -72,6 +74,31 @@ const AI_REVIEW_SELECT = `
   github_run_url,
   summary,
   proposal,
+  raw_output,
+  error,
+  completed_at,
+  created_at,
+  updated_at
+`
+
+const AI_FIX_SELECT = `
+  id,
+  bug_id,
+  review_id,
+  status,
+  provider,
+  requested_by,
+  github_owner,
+  github_repo,
+  github_workflow,
+  github_ref,
+  github_run_id,
+  github_run_url,
+  branch_name,
+  commit_sha,
+  pr_number,
+  pr_url,
+  summary,
   raw_output,
   error,
   completed_at,
@@ -119,6 +146,10 @@ function normalizeAiReview(row: any): PlatformBugAiReview {
     ...row,
     proposal: row?.proposal && typeof row.proposal === "object" && !Array.isArray(row.proposal) ? row.proposal : {},
   } as PlatformBugAiReview
+}
+
+function normalizeAiFix(row: any): PlatformBugAiFix {
+  return row as PlatformBugAiFix
 }
 
 function cleanText(value?: string | null) {
@@ -325,6 +356,29 @@ export async function listPlatformBugAiReviews(bugIds: string[]) {
   return Array.from(latestByBug.values())
 }
 
+export async function listPlatformBugAiFixes(bugIds: string[]) {
+  await requirePlatformBugOwner()
+  if (bugIds.length === 0) return [] as PlatformBugAiFix[]
+
+  const supabase = createServiceSupabaseClient()
+  const { data, error } = await supabase
+    .from("platform_bug_ai_fixes")
+    .select(AI_FIX_SELECT)
+    .in("bug_id", bugIds)
+    .order("updated_at", { ascending: false })
+
+  if (error) {
+    throw new Error(`Failed to load AI fixes: ${error.message}`)
+  }
+
+  const latestByBug = new Map<string, PlatformBugAiFix>()
+  for (const row of data ?? []) {
+    const fix = normalizeAiFix(row)
+    if (!latestByBug.has(fix.bug_id)) latestByBug.set(fix.bug_id, fix)
+  }
+  return Array.from(latestByBug.values())
+}
+
 async function recordEvent(
   supabase: SupabaseClient,
   input: {
@@ -458,10 +512,6 @@ export async function createPlatformSupportIssue(input: {
     },
   })
 
-  dispatchPlatformBugAiReview(data.id, input.userId).catch((error) => {
-    console.error("Failed to start Codex review for support issue", error)
-  })
-
   return { id: data.id as string, issueKey: data.issue_key as string }
 }
 
@@ -587,6 +637,212 @@ async function dispatchPlatformBugAiReview(bugId: string, requestedBy: string | 
 export async function startPlatformBugAiReview(bugId: string) {
   const { user } = await requirePlatformBugOwner()
   return dispatchPlatformBugAiReview(bugId, user.id)
+}
+
+async function dispatchPlatformBugAiFix(bugId: string, requestedBy: string | null) {
+  const supabase = createServiceSupabaseClient()
+
+  const { data: bug, error: bugError } = await supabase
+    .from("platform_bugs")
+    .select(BUG_SELECT)
+    .eq("id", bugId)
+    .single()
+
+  if (bugError) {
+    throw new Error(`Failed to load platform bug: ${bugError.message}`)
+  }
+
+  const { data: latestReview } = await supabase
+    .from("platform_bug_ai_reviews")
+    .select(AI_REVIEW_SELECT)
+    .eq("bug_id", bugId)
+    .eq("status", "proposal_ready")
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  const repo = getCodexReviewRepo()
+  const token = process.env.CODEX_REVIEW_GITHUB_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim()
+  const ref = process.env.CODEX_REVIEW_GITHUB_REF?.trim() || "main"
+  const appBaseUrl = getAppBaseUrl()
+  const callbackSecret = process.env.CODEX_REVIEW_CALLBACK_SECRET?.trim()
+
+  if (!repo || !token || !appBaseUrl || !callbackSecret) {
+    throw new Error("Codex fix PR is not configured. Set CODEX_REVIEW_GITHUB_REPOSITORY, CODEX_REVIEW_GITHUB_TOKEN, NEXT_PUBLIC_APP_URL or APP_URL, and CODEX_REVIEW_CALLBACK_SECRET.")
+  }
+
+  const normalizedBug = normalizeBug(bug)
+  const { data: fix, error: fixError } = await supabase
+    .from("platform_bug_ai_fixes")
+    .insert({
+      bug_id: bugId,
+      review_id: latestReview?.id ?? null,
+      status: "queued",
+      provider: "codex",
+      requested_by: requestedBy,
+      github_owner: repo.owner,
+      github_repo: repo.repo,
+      github_workflow: CODEX_FIX_WORKFLOW,
+      github_ref: ref,
+    })
+    .select(AI_FIX_SELECT)
+    .single()
+
+  if (fixError) {
+    throw new Error(`Failed to create AI fix request: ${fixError.message}`)
+  }
+
+  const callbackUrl = `${appBaseUrl}/api/platform/bugs/ai-fix-callback`
+  const bugPayload = {
+    id: normalizedBug.id,
+    issue_key: normalizedBug.issue_key,
+    title: normalizedBug.title,
+    description: normalizedBug.description,
+    status: normalizedBug.status,
+    priority: normalizedBug.priority,
+    source: normalizedBug.source,
+    environment: normalizedBug.environment,
+    org: normalizedBug.org,
+    project: normalizedBug.project,
+    expected_behavior: normalizedBug.expected_behavior,
+    actual_behavior: normalizedBug.actual_behavior,
+    attachment_names: normalizedBug.attachment_names,
+    created_at: normalizedBug.created_at,
+    updated_at: normalizedBug.updated_at,
+  }
+  const reviewPayload = latestReview
+    ? {
+        id: latestReview.id,
+        summary: latestReview.summary,
+        proposal: latestReview.proposal,
+        raw_output: latestReview.raw_output,
+        github_run_url: latestReview.github_run_url,
+      }
+    : null
+
+  const response = await fetch(
+    `https://api.github.com/repos/${repo.owner}/${repo.repo}/actions/workflows/${CODEX_FIX_WORKFLOW}/dispatches`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      body: JSON.stringify({
+        ref,
+        inputs: {
+          bug_id: bugId,
+          fix_id: fix.id,
+          bug_payload: JSON.stringify(bugPayload, null, 2),
+          review_payload: JSON.stringify(reviewPayload, null, 2),
+          callback_url: callbackUrl,
+        },
+      }),
+    },
+  )
+
+  if (!response.ok) {
+    const details = await response.text().catch(() => "")
+    await supabase
+      .from("platform_bug_ai_fixes")
+      .update({
+        status: "failed",
+        error: `GitHub dispatch failed (${response.status}): ${details.slice(0, 1000)}`,
+        completed_at: new Date().toISOString(),
+      })
+      .eq("id", fix.id)
+    throw new Error(`GitHub dispatch failed (${response.status}).`)
+  }
+
+  const { data: dispatchedFix, error: updateError } = await supabase
+    .from("platform_bug_ai_fixes")
+    .update({ status: "dispatched" })
+    .eq("id", fix.id)
+    .select(AI_FIX_SELECT)
+    .single()
+
+  if (updateError) {
+    throw new Error(`Failed to mark AI fix dispatched: ${updateError.message}`)
+  }
+
+  await recordEvent(supabase, {
+    bugId,
+    actorUserId: requestedBy,
+    eventType: "commented",
+    body: "Codex fix PR started.",
+    metadata: { ai_fix_id: fix.id, provider: "codex" },
+  })
+
+  return normalizeAiFix(dispatchedFix)
+}
+
+export async function startPlatformBugAiFix(bugId: string) {
+  const { user } = await requirePlatformBugOwner()
+  return dispatchPlatformBugAiFix(bugId, user.id)
+}
+
+export async function completePlatformBugAiFix(input: {
+  fixId: string
+  bugId: string
+  status: "pr_ready" | "failed"
+  output?: string | null
+  error?: string | null
+  githubRunId?: string | null
+  githubRunUrl?: string | null
+  branchName?: string | null
+  commitSha?: string | null
+  prNumber?: number | null
+  prUrl?: string | null
+}) {
+  const supabase = createServiceSupabaseClient()
+  const proposal = parseJsonObject(input.output)
+  const summary = input.status === "pr_ready"
+    ? summarizeReviewOutput(input.output, proposal) ?? "Codex opened a fix PR."
+    : null
+
+  const { data, error } = await supabase
+    .from("platform_bug_ai_fixes")
+    .update({
+      status: input.status,
+      github_run_id: cleanText(input.githubRunId),
+      github_run_url: cleanText(input.githubRunUrl),
+      branch_name: cleanText(input.branchName),
+      commit_sha: cleanText(input.commitSha),
+      pr_number: input.prNumber ?? null,
+      pr_url: cleanText(input.prUrl),
+      summary,
+      raw_output: cleanText(input.output),
+      error: cleanText(input.error),
+      completed_at: new Date().toISOString(),
+    })
+    .eq("id", input.fixId)
+    .eq("bug_id", input.bugId)
+    .select(AI_FIX_SELECT)
+    .single()
+
+  if (error) {
+    throw new Error(`Failed to complete AI fix: ${error.message}`)
+  }
+
+  await recordEvent(supabase, {
+    bugId: input.bugId,
+    actorUserId: null,
+    eventType: "commented",
+    body: input.status === "pr_ready"
+      ? `Codex fix PR is ready.${input.prUrl ? `\n\n${input.prUrl}` : ""}${summary ? `\n\n${summary}` : ""}`
+      : `Codex fix PR failed.${input.error ? `\n\n${input.error}` : ""}`,
+    metadata: {
+      ai_fix_id: input.fixId,
+      provider: "codex",
+      github_run_id: input.githubRunId ?? null,
+      github_run_url: input.githubRunUrl ?? null,
+      pr_url: input.prUrl ?? null,
+    },
+  })
+
+  return normalizeAiFix(data)
 }
 
 export async function completePlatformBugAiReview(input: {

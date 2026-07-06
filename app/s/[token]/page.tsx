@@ -1,9 +1,20 @@
 import { notFound } from "next/navigation"
 
-import { validatePortalToken, loadSubPortalData, recordPortalAccess } from "@/lib/services/portal-access"
-import { getExternalPortalGateContext, getExternalPortalWorkspaceContext } from "@/lib/services/external-portal-auth"
+import {
+  isPortalPinVerified,
+  loadSubPortalData,
+  recordPortalAccess,
+  validatePortalToken,
+} from "@/lib/services/portal-access"
+import {
+  getExternalPortalGateContext,
+  getExternalPortalWorkspaceContext,
+  hasExternalPortalGrantForToken,
+} from "@/lib/services/external-portal-auth"
 import { getCompanyComplianceStatusWithClient } from "@/lib/services/compliance-documents"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { PortalAccountGate } from "@/components/portal/account/portal-account-gate"
+import { PortalPinGate } from "@/components/portal/portal-pin-gate"
 import { SubPortalClient } from "./sub-portal-client"
 import { SubPortalSetupRequired } from "./sub-portal-setup-required"
 import type { ComplianceDocumentType } from "@/lib/types"
@@ -34,6 +45,49 @@ export default async function SubPortalPage({ params }: SubPortalPageProps) {
     )
   }
 
+  const workspace = await getExternalPortalWorkspaceContext({ orgId: access.org_id })
+
+  if (access.require_account) {
+    const hasAccountAccess = await hasExternalPortalGrantForToken({
+      orgId: access.org_id,
+      tokenId: access.id,
+      tokenType: "portal",
+    })
+    if (!hasAccountAccess) {
+      const gateContext = await getExternalPortalGateContext({ token, tokenType: "portal" })
+      return (
+        <PortalAccountGate
+          token={token}
+          tokenType="portal"
+          orgName={gateContext?.orgName ?? "the builder"}
+          projectName={gateContext?.projectName ?? "this project"}
+          defaultMode={gateContext?.defaultMode}
+          initialEmail={gateContext?.expectedEmail ?? ""}
+          suggestedFullName={gateContext?.suggestedFullName ?? ""}
+          emailLocked={gateContext?.emailLocked}
+          hasExistingAccount={gateContext?.hasExistingAccount}
+        />
+      )
+    }
+  }
+
+  if (access.pin_required && !(await isPortalPinVerified(token))) {
+    const gateContext = await getExternalPortalGateContext({ token, tokenType: "portal" })
+    return (
+      <PortalPinGate
+        token={token}
+        projectName={gateContext?.projectName ?? "Sub portal"}
+        orgName={gateContext?.orgName ?? "Arc"}
+      />
+    )
+  }
+
+  try {
+    await recordPortalAccess(access.id)
+  } catch {
+    notFound()
+  }
+
   const supabase = createServiceSupabaseClient()
 
   // Load portal data and compliance data in parallel
@@ -44,6 +98,7 @@ export default async function SubPortalPage({ params }: SubPortalPageProps) {
       companyId: access.company_id,
       permissions: access.permissions,
       scopedRfiId: access.scoped_rfi_id ?? null,
+      portalToken: token,
     }),
     getCompanyComplianceStatusWithClient(supabase, access.org_id, access.company_id),
     supabase
@@ -73,16 +128,15 @@ export default async function SubPortalPage({ params }: SubPortalPageProps) {
     })
   )
 
-  await recordPortalAccess(access.id)
-  const workspace = await getExternalPortalWorkspaceContext({ orgId: access.org_id })
   const gateContext = workspace ? null : await getExternalPortalGateContext({ token, tokenType: "portal" })
 
   return (
     <SubPortalClient
       data={data}
       token={token}
-      canMessage={access.permissions.can_message}
       canSubmitInvoices={access.permissions.can_submit_invoices ?? true}
+      canSubmitTime={access.permissions.can_submit_time ?? true}
+      canSubmitExpenses={access.permissions.can_submit_expenses ?? true}
       canDownloadFiles={access.permissions.can_download_files}
       canUploadComplianceDocs={access.permissions.can_upload_compliance_docs ?? true}
       pinRequired={access.pin_required}

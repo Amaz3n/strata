@@ -15,6 +15,12 @@ export type QuickFilter =
   | "safety"
   | "financials"
   | "other"
+  | "expiring"
+  | "trash"
+
+export interface RefreshFilesOptions {
+  includeMetadata?: boolean
+}
 
 export type DocumentItem =
   | { type: "file"; data: FileWithUrls }
@@ -67,7 +73,7 @@ export interface DocumentsContextValue {
   loadFolderChildren: (path?: string) => Promise<void>
 
   // Actions
-  refreshFiles: () => Promise<void>
+  refreshFiles: (options?: RefreshFilesOptions) => Promise<void>
   loadMore: () => Promise<void>
   refreshDrawingSets: () => Promise<void>
   refreshFolderPermissions: () => Promise<void>
@@ -119,4 +125,6 @@ export const QUICK_FILTER_CONFIG: Record<
   safety: { label: "Safety", icon: "ShieldCheck" },
   financials: { label: "Financials", icon: "DollarSign" },
   other: { label: "Other", icon: "File" },
+  expiring: { label: "Expiring", icon: "Clock" },
+  trash: { label: "Trash", icon: "Trash2" },
 }

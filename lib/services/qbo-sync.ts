@@ -9,6 +9,7 @@ import { downloadFilesObject } from "@/lib/storage/files-storage"
 interface InvoiceLineRow {
   description: string
   quantity: number
+  unit?: string | null
   unit_price_cents: number
   metadata?: Record<string, any> | null
 }
@@ -171,7 +172,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
   const { data: invoice, error } = await supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, invoice_number, issue_date, due_date, total_cents, balance_due_cents, title, status, qbo_id, metadata, project:projects(qbo_class_id, qbo_class_name), invoice_lines (description, quantity, unit_price_cents, metadata)",
+      "id, org_id, project_id, invoice_number, issue_date, due_date, total_cents, balance_due_cents, title, status, qbo_id, metadata, project:projects(qbo_class_id, qbo_class_name), invoice_lines (description, quantity, unit, unit_price_cents, metadata)",
     )
     .eq("id", invoiceId)
     .eq("org_id", orgId)
@@ -319,6 +320,18 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
         }
       }),
     )
+
+    // Invoice-level discount syncs as a QBO discount line so QBO's computed total matches Arc's.
+    const invoiceDiscountCents = Number(
+      ((typedInvoice.metadata as Record<string, any> | null)?.totals as Record<string, any> | undefined)?.discount_cents ?? 0,
+    )
+    if (invoiceDiscountCents > 0) {
+      qboLines.push({
+        DetailType: "DiscountLineDetail",
+        Amount: invoiceDiscountCents / 100,
+        DiscountLineDetail: { PercentBased: false },
+      } as any)
+    }
 
     // Resolve a usable SyncToken before updating: invoices imported from QBO
     // (or with a token that drifted) carry a qbo_id but no cached token, which

@@ -1,3 +1,4 @@
+import { cache } from "react"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import type { OrgServiceContext } from "@/lib/services/context"
@@ -72,7 +73,10 @@ async function resolveContext(ctx?: Partial<PermissionContext>): Promise<Permiss
   return { ...resolved, supabase: ctx?.supabase ?? resolved.supabase }
 }
 
-export async function getUserPermissions(userId: string, orgId: string, supabase?: SupabaseClient) {
+// Request-cached: effective permissions are looked up by the layout, pages, and
+// individual permission checks within one render; they always resolve through
+// the service client, so the ignored per-caller supabase arg is not part of the key.
+const getUserPermissionsCached = cache(async (userId: string, orgId: string) => {
   if (isPlatformAdminId(userId, undefined)) {
     const client = createServiceSupabaseClient()
     return ["*", ...(await listAllPermissionKeys(client))]
@@ -92,6 +96,10 @@ export async function getUserPermissions(userId: string, orgId: string, supabase
   }
 
   return fetchPermissions({ supabase: client, orgId, userId })
+})
+
+export async function getUserPermissions(userId: string, orgId: string, _supabase?: SupabaseClient) {
+  return getUserPermissionsCached(userId, orgId)
 }
 
 export async function getCurrentUserPermissions(orgId?: string) {

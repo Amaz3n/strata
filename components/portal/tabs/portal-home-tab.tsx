@@ -1,13 +1,17 @@
 "use client"
 
+import Link from "next/link"
 import { format, addDays, isWithinInterval, parseISO, differenceInDays, isAfter, isBefore } from "date-fns"
 import { motion } from "framer-motion"
-import { ArrowRight, Calendar, Clock, DollarSign, AlertCircle, Camera, HardHat, Milestone } from "lucide-react"
+import { ArrowRight, Calendar, Clock, CreditCard, DollarSign, AlertCircle, Camera, HardHat, Milestone } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import type { ClientPortalData } from "@/lib/types"
 
 interface PortalHomeTabProps {
   data: ClientPortalData
+  token: string
+  canPayInvoices?: boolean
 }
 
 function formatCurrency(cents: number): string {
@@ -19,12 +23,12 @@ function formatCurrency(cents: number): string {
   }).format(cents / 100)
 }
 
-function calculateProjectProgress(data: ClientPortalData): { percent: number; label: string } {
+function calculateProjectProgress(data: ClientPortalData): { percent: number; label: string; ringLabel: string } {
   const scheduleItems = data.schedule ?? []
   if (scheduleItems.length > 0) {
     const totalProgress = scheduleItems.reduce((sum, item) => sum + (item.progress ?? 0), 0)
     const avgProgress = Math.round(totalProgress / scheduleItems.length)
-    return { percent: avgProgress, label: "based on schedule" }
+    return { percent: avgProgress, label: "Schedule progress", ringLabel: "complete" }
   }
 
   if (data.project.start_date && data.project.end_date) {
@@ -36,11 +40,11 @@ function calculateProjectProgress(data: ClientPortalData): { percent: number; la
 
     if (totalDays > 0) {
       const percent = Math.min(100, Math.max(0, Math.round((elapsedDays / totalDays) * 100)))
-      return { percent, label: "based on timeline" }
+      return { percent, label: "Timeline elapsed", ringLabel: "elapsed" }
     }
   }
 
-  return { percent: 0, label: "" }
+  return { percent: 0, label: "", ringLabel: "progress" }
 }
 
 function getTwoWeekLookahead(data: ClientPortalData) {
@@ -101,7 +105,17 @@ function getNextInvoice(data: ClientPortalData) {
 }
 
 // --- SVG Progress Ring ---
-function ProgressRing({ percent, size = 180, strokeWidth = 10 }: { percent: number; size?: number; strokeWidth?: number }) {
+function ProgressRing({
+  percent,
+  label,
+  size = 180,
+  strokeWidth = 10,
+}: {
+  percent: number
+  label: string
+  size?: number
+  strokeWidth?: number
+}) {
   const radius = (size - strokeWidth) / 2
   const circumference = 2 * Math.PI * radius
   const strokeDashoffset = circumference - (percent / 100) * circumference
@@ -143,7 +157,7 @@ function ProgressRing({ percent, size = 180, strokeWidth = 10 }: { percent: numb
         >
           {percent}%
         </motion.span>
-        <span className="text-[11px] uppercase tracking-widest text-muted-foreground mt-0.5">complete</span>
+        <span className="text-[11px] uppercase tracking-widest text-muted-foreground mt-0.5">{label}</span>
       </div>
     </div>
   )
@@ -164,7 +178,7 @@ const fadeUp = {
   show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: [0.25, 0.46, 0.45, 0.94] } },
 }
 
-export function PortalHomeTab({ data }: PortalHomeTabProps) {
+export function PortalHomeTab({ data, token, canPayInvoices = false }: PortalHomeTabProps) {
   const pendingCount = data.pendingChangeOrders.length + data.pendingSelections.length
   const progress = calculateProjectProgress(data)
   const lookahead = getTwoWeekLookahead(data)
@@ -198,7 +212,7 @@ export function PortalHomeTab({ data }: PortalHomeTabProps) {
           }}
         />
         <div className="relative flex flex-col sm:flex-row items-center gap-6 p-6">
-          <ProgressRing percent={progress.percent} />
+          <ProgressRing percent={progress.percent} label={progress.ringLabel} />
           <div className="flex-1 min-w-0 text-center sm:text-left space-y-4">
             <div>
               <p className="text-xs uppercase tracking-widest text-muted-foreground mb-1">Project Progress</p>
@@ -309,6 +323,14 @@ export function PortalHomeTab({ data }: PortalHomeTabProps) {
                   <p className="text-xs text-muted-foreground">
                     Due {format(new Date(data.financialSummary.nextDraw.due_date), "MMM d, yyyy")}
                   </p>
+                )}
+                {canPayInvoices && data.financialSummary.nextDraw.payment_available && (
+                  <Button asChild size="sm" className="mt-3 h-8">
+                    <Link href={`/p/${token}/draws/${data.financialSummary.nextDraw.id}/pay`}>
+                      <CreditCard className="mr-1 h-3.5 w-3.5" />
+                      Pay draw
+                    </Link>
+                  </Button>
                 )}
               </div>
             )}

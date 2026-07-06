@@ -1,8 +1,9 @@
 "use client"
 
-import { useEffect, useMemo, useState, useTransition } from "react"
-import { usePathname, useRouter, useSearchParams } from "next/navigation"
+import { useMemo, useState } from "react"
+import { usePathname, useSearchParams } from "next/navigation"
 import { ChevronsUpDown, FolderOpen, Loader2, Search } from "@/components/icons"
+import { useIsNavigationPending, useOptimisticNavigate } from "@/lib/navigation/optimistic-pathname"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -12,9 +13,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
-import type { Project } from "@/lib/types"
+import type { ProjectNavigationItem } from "@/lib/types"
+import { useSidebarProjects } from "./use-sidebar-projects"
 
-function isArchived(status?: Project["status"]) {
+function isArchived(status?: ProjectNavigationItem["status"]) {
   return status === "completed" || status === "cancelled"
 }
 
@@ -29,59 +31,14 @@ interface ProjectSwitcherProps {
 }
 
 export function ProjectSwitcher({ currentProjectId, currentProjectLabel }: ProjectSwitcherProps) {
-  const router = useRouter()
+  const navigate = useOptimisticNavigate()
   const pathname = usePathname()
   const searchParams = useSearchParams()
-  const [projects, setProjects] = useState<Project[]>([])
   const [query, setQuery] = useState("")
-  const [isPending, startTransition] = useTransition()
-  const [isLoading, setIsLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
+  const isPending = useIsNavigationPending()
+  const { projects, isLoading, loadError } = useSidebarProjects()
 
   const resolvedProjectId = currentProjectId ?? getProjectIdFromPath(pathname) ?? undefined
-
-  useEffect(() => {
-    let mounted = true
-    async function loadProjects() {
-      try {
-        setIsLoading(true)
-        const response = await fetch("/api/projects", { cache: "no-store" })
-        if (!response.ok) {
-          const text = await response.text()
-          throw new Error(`Project fetch failed (${response.status}): ${text}`)
-        }
-        const payload = await response.json()
-        if (mounted) {
-          setProjects(payload?.projects ?? [])
-          setLoadError(null)
-        }
-      } catch (error) {
-        console.error("Failed to load projects", error)
-        if (mounted) {
-          setProjects([])
-          setLoadError(error instanceof Error ? error.message : "Unknown error")
-        }
-      } finally {
-        if (mounted) setIsLoading(false)
-      }
-    }
-    loadProjects()
-
-    const handleOrgChange = () => {
-      loadProjects()
-    }
-
-    if (typeof window !== "undefined") {
-      window.addEventListener("arc-org-change", handleOrgChange)
-    }
-
-    return () => {
-      mounted = false
-      if (typeof window !== "undefined") {
-        window.removeEventListener("arc-org-change", handleOrgChange)
-      }
-    }
-  }, [])
 
   const filtered = useMemo(() => {
     const term = query.trim().toLowerCase()
@@ -100,18 +57,16 @@ export function ProjectSwitcher({ currentProjectId, currentProjectLabel }: Proje
   const displayLabel = !isLoading && projects.length === 0 ? "No projects" : currentLabel
 
   const handleSelect = (projectId: string) => {
-    startTransition(() => {
-      const targetPath = (() => {
-        const id = resolvedProjectId
-        if (!id) return `/projects/${projectId}`
+    const targetPath = (() => {
+      const id = resolvedProjectId
+      if (!id) return `/projects/${projectId}`
 
-        const nextPath = pathname.replace(`/projects/${id}`, `/projects/${projectId}`)
-        return nextPath
-      })()
+      const nextPath = pathname.replace(`/projects/${id}`, `/projects/${projectId}`)
+      return nextPath
+    })()
 
-      const search = searchParams.toString()
-      router.push(search ? `${targetPath}?${search}` : targetPath)
-    })
+    const search = searchParams.toString()
+    navigate(search ? `${targetPath}?${search}` : targetPath)
   }
 
   return (
@@ -191,7 +146,7 @@ export function ProjectSwitcher({ currentProjectId, currentProjectLabel }: Proje
           )}
         </div>
         <DropdownMenuSeparator className="my-2" />
-        <DropdownMenuItem onSelect={() => router.push("/projects")} className="text-sm">
+        <DropdownMenuItem onSelect={() => navigate("/projects")} className="text-sm">
           All Projects
         </DropdownMenuItem>
       </DropdownMenuContent>

@@ -2,7 +2,7 @@ import { notFound } from "next/navigation"
 import Link from "next/link"
 import { ArrowLeft } from "lucide-react"
 
-import { validatePortalToken, loadSubPortalData } from "@/lib/services/portal-access"
+import { assertPortalActionAccess, loadSubPortalData } from "@/lib/services/portal-access"
 import { Button } from "@/components/ui/button"
 import { PortalHeader } from "@/components/portal/portal-header"
 import { SubInvoiceForm } from "@/components/portal/sub/sub-invoice-form"
@@ -21,21 +21,17 @@ export default async function SubmitInvoicePage({
   const { token } = await params
   const { commitment: preselectedCommitmentId } = await searchParams
 
-  const access = await validatePortalToken(token)
-
-  if (!access) {
+  let access
+  try {
+    access = await assertPortalActionAccess(token, {
+      portalType: "sub",
+      requireCompany: true,
+      permission: "can_submit_invoices",
+    })
+  } catch {
     notFound()
   }
-
-  // Must be a sub portal with company_id
-  if (access.portal_type !== "sub" || !access.company_id) {
-    notFound()
-  }
-
-  // Must have permission to submit invoices
-  if (!access.permissions.can_submit_invoices) {
-    notFound()
-  }
+  if (!access.company_id) notFound()
 
   const data = await loadSubPortalData({
     orgId: access.org_id,

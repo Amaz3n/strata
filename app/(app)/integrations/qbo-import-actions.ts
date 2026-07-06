@@ -13,36 +13,97 @@ import {
   type QboImportResult,
 } from "@/lib/services/qbo-import"
 import { listProjects } from "@/lib/services/projects"
+import { requireOrgContext } from "@/lib/services/context"
 
 /** List QBO transactions with no Arc counterpart, optionally bounded by a lookback window. */
 export async function listQboImportRecordsAction(params?: {
   sinceDate?: string | null
   types?: QboImportEntityType[]
 }): Promise<QboImportListing> {
-  return listImportableQboRecords({ sinceDate: params?.sinceDate, types: params?.types })
+  try {
+    return await listImportableQboRecords({ sinceDate: params?.sinceDate, types: params?.types })
+  } catch (error: any) {
+    return {
+      connected: true,
+      records: [],
+      loadErrors: [{ entityType: "invoice", message: error?.message ?? "Couldn't load QuickBooks records." }],
+    }
+  }
 }
 
 /** Full QBO customer/project list for the import sheet's project filter. */
 export async function listQboCustomersForImportAction(): Promise<QboImportCustomerListing> {
-  return listQboCustomersForImport()
+  try {
+    return await listQboCustomersForImport()
+  } catch (error) {
+    return { connected: true, customers: [] }
+  }
 }
 
 /** Lightweight project list (id + name) for the per-line "allocate to project" picker. */
-export async function listProjectsForImportAction(): Promise<{ id: string; name: string }[]> {
+export async function listProjectsForImportAction(): Promise<{ id: string; name: string; costCodesEnabled: boolean }[]> {
   const projects = await listProjects()
-  return projects.map((project) => ({ id: project.id, name: project.name }))
+  return projects.map((project) => ({
+    id: project.id,
+    name: project.name,
+    costCodesEnabled: project.financial_settings?.cost_codes_enabled ?? true,
+  }))
+}
+
+export async function listCostCodesForImportAction(): Promise<{ id: string; code: string | null; name: string | null }[]> {
+  try {
+    const { supabase, orgId } = await requireOrgContext()
+    const { data, error } = await supabase
+      .from("cost_codes")
+      .select("id, code, name")
+      .eq("org_id", orgId)
+      .eq("is_active", true)
+      .order("code", { ascending: true })
+    if (error) throw new Error(`Failed to load cost codes: ${error.message}`)
+    return (data ?? []).map((row) => ({
+      id: row.id as string,
+      code: (row.code as string | null) ?? null,
+      name: (row.name as string | null) ?? null,
+    }))
+  } catch {
+    return []
+  }
 }
 
 /** Import the selected QBO transactions, each into its own destination project, creating pre-linked Arc records. */
 export async function importQboRecordsAction(params: {
-  items: { qboId: string; entityType: QboImportEntityType; projectId?: string; allocations?: Record<string, string> }[]
+  items: {
+    qboId: string
+    entityType: QboImportEntityType
+    projectId?: string
+    allocations?: Record<string, string>
+    costCodes?: Record<string, string>
+  }[]
 }): Promise<QboImportResult> {
-  const result = await importQboRecords({ items: params.items })
+  let result: QboImportResult
+  try {
+    result = await importQboRecords({ items: params.items })
+  } catch (error: any) {
+    return {
+      imported: 0,
+      skipped: 0,
+      failed: params.items.length,
+      errors: params.items.map((item) => ({
+        qboId: item.qboId,
+        entityType: item.entityType,
+        message: error?.message ?? "Import failed",
+      })),
+    }
+  }
 
   if (result.imported > 0) {
     // Revalidate every project that received a record (records can land in different projects).
     const projectIds = new Set(
-      params.items.map((item) => item.projectId).filter((id): id is string => Boolean(id)),
+      [
+        ...(result.affectedProjectIds ?? []),
+        ...params.items.map((item) => item.projectId).filter((id): id is string => Boolean(id)),
+        ...params.items.flatMap((item) => Object.values(item.allocations ?? {})),
+      ].filter((id): id is string => Boolean(id)),
     )
     for (const projectId of projectIds) {
       revalidatePath(`/projects/${projectId}/financials`)
@@ -59,8 +120,13 @@ export async function linkExistingQboImportRecordAction(params: {
   qboId: string
   entityType: "invoice" | "expense" | "bill"
   existingEntityId: string
-}): Promise<{ linked: true }> {
-  const result = await linkExistingQboImportRecord(params)
+}): Promise<{ linked: true } | { linked: false; error: string }> {
+  let result: { linked: true }
+  try {
+    result = await linkExistingQboImportRecord(params)
+  } catch (error: any) {
+    return { linked: false, error: error?.message ?? "Couldn't link existing record" }
+  }
   revalidatePath("/projects")
   revalidatePath("/invoices")
   return result

@@ -6,6 +6,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { buildFilesPublicUrl, ensureOrgScopedPath } from "@/lib/storage/files-storage"
 import type { FileMetadata, Rfi } from "@/lib/types"
 import { getCurrentExternalPortalSession, hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
+import { recordEvent } from "@/lib/services/events"
 
 const MAX_PIN_ATTEMPTS = 5
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000
@@ -517,7 +518,6 @@ export async function validateBidPortalPin({
 
 export async function loadBidPortalData(access: BidPortalAccess): Promise<BidPortalData> {
   const supabase = createServiceSupabaseClient()
-  const assignedCompanyId = access.invite.company?.id ?? null
 
   const [packageLinksResult, addendaResult, submissionsResult, rfisResult] = await Promise.all([
     supabase
@@ -549,15 +549,16 @@ export async function loadBidPortalData(access: BidPortalAccess): Promise<BidPor
       .eq("org_id", access.org_id)
       .eq("bid_invite_id", access.bid_invite_id)
       .order("version", { ascending: false }),
-    assignedCompanyId && access.bidPackage.project_id
+    access.bidPackage.project_id
       ? supabase
           .from("rfis")
           .select(
-            "id, org_id, project_id, rfi_number, subject, question, status, priority, submitted_by, submitted_by_company_id, assigned_to, assigned_company_id, submitted_at, due_date, answered_at, closed_at, cost_impact_cents, schedule_impact_days, drawing_reference, spec_reference, location, attachment_file_id, last_response_at, decision_status, decision_note, decided_by_user_id, decided_by_contact_id, decided_at, decided_via_portal, decision_portal_token_id, created_at, updated_at",
+            "id, org_id, project_id, bid_package_id, rfi_number, subject, question, status, priority, submitted_by, submitted_by_company_id, assigned_to, assigned_company_id, submitted_at, due_date, answered_at, closed_at, cost_impact_cents, schedule_impact_days, drawing_reference, spec_reference, location, attachment_file_id, last_response_at, decision_status, decision_note, decided_by_user_id, decided_by_contact_id, decided_at, decided_via_portal, decision_portal_token_id, created_at, updated_at",
           )
           .eq("org_id", access.org_id)
           .eq("project_id", access.bidPackage.project_id)
-          .eq("assigned_company_id", assignedCompanyId)
+          .eq("bid_package_id", access.bidPackage.id)
+          .neq("status", "draft")
           .order("created_at", { ascending: false })
       : Promise.resolve({ data: [] }),
   ])
@@ -742,6 +743,28 @@ export async function submitBidFromPortal({
     throw new Error("This invite is no longer active")
   }
 
+  const { data: addenda } = await supabase
+    .from("bid_addenda")
+    .select("id")
+    .eq("org_id", access.org_id)
+    .eq("bid_package_id", access.bidPackage.id)
+
+  const addendumIds = (addenda ?? []).map((addendum: any) => addendum.id as string)
+  if (addendumIds.length > 0) {
+    const { data: acknowledgements } = await supabase
+      .from("bid_addendum_acknowledgements")
+      .select("bid_addendum_id")
+      .eq("org_id", access.org_id)
+      .eq("bid_invite_id", access.bid_invite_id)
+      .in("bid_addendum_id", addendumIds)
+
+    const acknowledgedIds = new Set((acknowledgements ?? []).map((row: any) => row.bid_addendum_id as string))
+    const missingCount = addendumIds.filter((id) => !acknowledgedIds.has(id)).length
+    if (missingCount > 0) {
+      throw new Error(`Acknowledge ${missingCount} outstanding addendum${missingCount === 1 ? "" : "a"} before submitting.`)
+    }
+  }
+
   const { data: current } = await supabase
     .from("bid_submissions")
     .select("id, version")
@@ -785,6 +808,8 @@ export async function submitBidFromPortal({
       submitted_by_name: input.submitted_by_name ?? null,
       submitted_by_email: input.submitted_by_email ?? null,
       submitted_at: now,
+      source: "portal",
+      line_items: [],
     })
     .select(
       `
@@ -853,4 +878,50 @@ export async function submitBidFromPortal({
   }
 
   return submission
+}
+
+export async function declineBidFromPortal({
+  access,
+  reason,
+}: {
+  access: BidPortalAccess
+  reason?: string | null
+}) {
+  const supabase = createServiceSupabaseClient()
+  const now = new Date().toISOString()
+
+  const disallowedStatuses = ["closed", "awarded", "cancelled"]
+  if (disallowedStatuses.includes(access.bidPackage.status)) {
+    throw new Error("Bidding is closed for this package")
+  }
+
+  const { error } = await supabase
+    .from("bid_invites")
+    .update({
+      status: "declined",
+      declined_at: now,
+      updated_at: now,
+    })
+    .eq("org_id", access.org_id)
+    .eq("id", access.bid_invite_id)
+
+  if (error) {
+    throw new Error(`Failed to decline bid: ${error.message}`)
+  }
+
+  await recordEvent({
+    orgId: access.org_id,
+    actorId: access.invite.contact?.id ?? null,
+    eventType: "bid_invite_declined",
+    entityType: "bid_invite",
+    entityId: access.bid_invite_id,
+    payload: {
+      bid_package_id: access.bidPackage.id,
+      company_id: access.invite.company?.id ?? null,
+      reason: reason?.trim() || null,
+      via_portal: true,
+    },
+  })
+
+  return { declined_at: now }
 }

@@ -68,11 +68,17 @@ function mapScheduleItem(row: any, dependencyMap: Record<string, string[]>): Sch
   }
 }
 
-async function loadDependencies(supabase: SupabaseClient, orgId: string) {
-  const { data, error } = await supabase
+async function loadDependencies(supabase: SupabaseClient, orgId: string, projectId?: string) {
+  let query = supabase
     .from("schedule_dependencies")
     .select("item_id, depends_on_item_id, dependency_type, lag_days")
     .eq("org_id", orgId)
+
+  if (projectId) {
+    query = query.eq("project_id", projectId)
+  }
+
+  const { data, error } = await query
 
   if (error) {
     throw new Error(`Failed to load schedule dependencies: ${error.message}`)
@@ -129,6 +135,34 @@ export async function listScheduleItemsWithClient(supabase: SupabaseClient, orgI
 
   if (error) {
     throw new Error(`Failed to list schedule items: ${error.message}`)
+  }
+
+  return (data ?? []).map((row) => mapScheduleItem(row, dependencyMap))
+}
+
+export async function listProjectScheduleItemsWithClient(
+  supabase: SupabaseClient,
+  orgId: string,
+  projectId: string,
+): Promise<ScheduleItem[]> {
+  const dependencyMap = await loadDependencies(supabase, orgId, projectId)
+
+  const { data, error } = await supabase
+    .from("schedule_items")
+    .select(`
+      id, org_id, project_id, name, item_type, status, start_date, end_date,
+      progress, assigned_to, metadata, created_at, updated_at,
+      phase, trade, location, planned_hours, actual_hours,
+      constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
+      cost_code_id, budget_cents, actual_cost_cents
+    `)
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .order("sort_order", { ascending: true })
+    .order("start_date", { ascending: true, nullsFirst: false })
+
+  if (error) {
+    throw new Error(`Failed to list project schedule items: ${error.message}`)
   }
 
   return (data ?? []).map((row) => mapScheduleItem(row, dependencyMap))

@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-import type { Contract, Project } from "@/lib/types"
+import type { Contract, Project, ProjectNavigationItem } from "@/lib/types"
 import type { ProjectInput } from "@/lib/validation/projects"
 import { projectUpdateSchema } from "@/lib/validation/projects"
 import { recordEvent } from "@/lib/services/events"
@@ -8,8 +8,16 @@ import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
 import { ensureDefaultProjectFolders } from "@/lib/services/files"
-import type { ProjectBillingModel } from "@/lib/financials/billing-model"
-import { upsertProjectFinancialSettingsFromProjectInput } from "@/lib/services/project-financial-setup"
+import {
+  defaultFeePresentationForBillingModel,
+  normalizeFeePresentation,
+  type ProjectBillingModel,
+} from "@/lib/financials/billing-model"
+import {
+  getProjectFinancialSettings,
+  saveBillingContractWithAmendment,
+  upsertProjectFinancialSettingsFromProjectInput,
+} from "@/lib/services/project-financial-setup"
 
 function contractTypeForBillingModel(model?: ProjectBillingModel | null): "fixed" | "cost_plus" | "time_materials" {
   if (model === "time_and_materials") return "time_materials"
@@ -17,8 +25,18 @@ function contractTypeForBillingModel(model?: ProjectBillingModel | null): "fixed
   return "fixed"
 }
 
-function billingModelForContractInput(input: Partial<ProjectInput>, existing?: any): ProjectBillingModel {
+function billingModelForContractInput(input: Partial<ProjectInput>, existing?: any, existingSettings?: { billing_model?: string | null } | null): ProjectBillingModel {
   if (input.billing_model) return input.billing_model as ProjectBillingModel
+  const settingsModel = existingSettings?.billing_model
+  if (
+    settingsModel === "fixed_price" ||
+    settingsModel === "cost_plus_percent" ||
+    settingsModel === "cost_plus_fixed_fee" ||
+    settingsModel === "cost_plus_gmp" ||
+    settingsModel === "time_and_materials"
+  ) {
+    return settingsModel
+  }
   const snapshotModel = existing?.snapshot?.billing_model
   if (
     snapshotModel === "fixed_price" ||
@@ -66,6 +84,7 @@ function mapProject(row: any): Project {
     project_type: row.project_type ?? undefined,
     description: row.description ?? undefined,
     total_value: row.total_value ?? undefined,
+    total_contract_value_cents: row.total_contract_value_cents ?? undefined,
     qbo_class_id: row.qbo_class_id ?? null,
     qbo_class_name: row.qbo_class_name ?? null,
     qbo_customer_id: row.qbo_customer_id ?? null,
@@ -73,6 +92,24 @@ function mapProject(row: any): Project {
     excluded_from_reporting: row.excluded_from_reporting ?? false,
     financial_settings: row.project_financial_settings?.[0] ?? null,
     billing_contract: billingContractRow ? mapProjectBillingContract(billingContractRow) : null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }
+}
+
+function mapProjectNavigationItem(row: any): ProjectNavigationItem {
+  const financialSettings = Array.isArray(row.project_financial_settings)
+    ? row.project_financial_settings[0]
+    : row.project_financial_settings
+
+  return {
+    id: row.id,
+    org_id: row.org_id,
+    name: row.name,
+    status: row.status,
+    financial_settings: financialSettings?.billing_model
+      ? { billing_model: financialSettings.billing_model }
+      : null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   }
@@ -92,9 +129,13 @@ function mapProjectBillingContract(row: any): Contract {
     currency: row.currency ?? "usd",
     markup_percent: row.markup_percent != null ? Number(row.markup_percent) : undefined,
     gmp_cents: row.gmp_cents ?? undefined,
+    contingency_cents: row.contingency_cents ?? undefined,
+    fixed_fee_cents: row.fixed_fee_cents ?? undefined,
+    fee_presentation: row.fee_presentation ?? row.snapshot?.fee_presentation ?? undefined,
     savings_split_owner_pct: row.savings_split_owner_pct != null ? Number(row.savings_split_owner_pct) : undefined,
     savings_split_builder_pct: row.savings_split_builder_pct != null ? Number(row.savings_split_builder_pct) : undefined,
     labor_burden_multiplier: row.labor_burden_multiplier != null ? Number(row.labor_burden_multiplier) : undefined,
+    rate_schedule_id: row.rate_schedule_id ?? null,
     requires_client_cost_approval: row.requires_client_cost_approval ?? undefined,
     open_book: row.open_book ?? undefined,
     retainage_percent: row.retainage_percent != null ? Number(row.retainage_percent) : undefined,
@@ -103,6 +144,7 @@ function mapProjectBillingContract(row: any): Contract {
     effective_date: row.effective_date ?? undefined,
     signed_at: row.signed_at ?? undefined,
     signature_data: row.signature_data ?? undefined,
+    parent_contract_id: row.parent_contract_id ?? null,
     snapshot: row.snapshot ?? {},
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -110,9 +152,9 @@ function mapProjectBillingContract(row: any): Contract {
 }
 
 const PROJECT_SELECT = `
-  id, org_id, name, status, start_date, end_date, location, client_id, prospect_id, property_type, project_type, description, total_value, qbo_class_id, qbo_class_name, qbo_customer_id, qbo_customer_name, excluded_from_reporting, created_at, updated_at,
+  id, org_id, name, status, start_date, end_date, location, client_id, prospect_id, property_type, project_type, description, total_value, total_contract_value_cents, qbo_class_id, qbo_class_name, qbo_customer_id, qbo_customer_name, excluded_from_reporting, created_at, updated_at,
   project_financial_settings(id, org_id, project_id, billing_model, paid_costs_required, proof_required, client_cost_approval_required, open_book_required, cost_codes_enabled, setup_completed_at, metadata),
-  contracts(id, org_id, project_id, proposal_id, number, title, status, contract_type, total_cents, currency, markup_percent, gmp_cents, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, requires_client_cost_approval, open_book, retainage_percent, retainage_release_trigger, terms, effective_date, signed_at, signature_data, snapshot, created_at, updated_at)
+  contracts(id, org_id, project_id, proposal_id, number, title, status, contract_type, total_cents, currency, markup_percent, gmp_cents, contingency_cents, fixed_fee_cents, fee_presentation, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, rate_schedule_id, requires_client_cost_approval, open_book, retainage_percent, retainage_release_trigger, terms, effective_date, signed_at, signature_data, parent_contract_id, snapshot, created_at, updated_at)
 `
 
 export async function listProjects(orgId?: string, context?: OrgServiceContext): Promise<Project[]> {
@@ -156,6 +198,26 @@ export async function listProjectsWithClient(supabase: SupabaseClient, orgId: st
   }
 
   return (data ?? []).map(mapProject)
+}
+
+export async function listProjectNavigationItemsWithClient(
+  supabase: SupabaseClient,
+  orgId: string,
+): Promise<ProjectNavigationItem[]> {
+  const { data, error } = await supabase
+    .from("projects")
+    .select(`
+      id, org_id, name, status, created_at, updated_at,
+      project_financial_settings(project_id, billing_model)
+    `)
+    .eq("org_id", orgId)
+    .order("created_at", { ascending: false })
+
+  if (error) {
+    throw new Error(`Failed to list project navigation items: ${error.message}`)
+  }
+
+  return (data ?? []).map(mapProjectNavigationItem)
 }
 
 // Single-project fetch using the full PROJECT_SELECT so financial_settings and billing_contract
@@ -361,10 +423,13 @@ async function upsertProjectBillingContract({
     "billing_model",
     "markup_percent",
     "gmp_cents",
+    "contingency_cents",
     "fixed_fee_cents",
+    "fee_presentation",
     "savings_split_owner_pct",
     "savings_split_builder_pct",
     "labor_burden_multiplier",
+    "rate_schedule_id",
     "requires_client_cost_approval",
     "open_book",
     "paid_costs_required",
@@ -382,25 +447,39 @@ async function upsertProjectBillingContract({
     throw new Error("Savings split percentages cannot exceed 100%.")
   }
 
-  const { data: existing, error: existingError } = await supabase
-    .from("contracts")
-    .select("*")
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .eq("status", "active")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
+  const [existingResult, existingSettings] = await Promise.all([
+    supabase
+      .from("contracts")
+      .select("*")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .eq("status", "active")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    getProjectFinancialSettings({ supabase, orgId, projectId }).catch(() => null),
+  ])
 
-  if (existingError) {
-    throw new Error(`Failed to load project billing contract: ${existingError.message}`)
+  if (existingResult.error) {
+    throw new Error(`Failed to load project billing contract: ${existingResult.error.message}`)
   }
 
-  const billingModel = billingModelForContractInput(input, existing)
+  const existing = existingResult.data
+  const billingModel = billingModelForContractInput(input, existing, existingSettings)
   const contractType = input.billing_model ? contractTypeForBillingModel(billingModel) : input.contract_type ?? contractTypeForBillingModel(billingModel)
   const isFixedPrice = billingModel === "fixed_price"
   const isFixedFee = billingModel === "cost_plus_fixed_fee"
+  const feePresentation =
+    normalizeFeePresentation(input.fee_presentation) ??
+    normalizeFeePresentation(existing?.fee_presentation) ??
+    normalizeFeePresentation(existing?.snapshot?.fee_presentation) ??
+    (existing ? "embedded" : defaultFeePresentationForBillingModel(billingModel))
   const existingSnapshot = (existing?.snapshot ?? {}) as Record<string, any>
+  const {
+    billing_model: _legacySnapshotBillingModel,
+    fixed_fee_cents: _legacySnapshotFixedFeeCents,
+    ...nextSnapshotBase
+  } = existingSnapshot
   const approvedChangeOrdersCents = Number(existingSnapshot.approved_change_orders_cents ?? 0)
   const existingBaseTotalCents = existing
     ? Number(
@@ -423,63 +502,43 @@ async function upsertProjectBillingContract({
     currency: existing?.currency ?? "usd",
     markup_percent: isFixedPrice || isFixedFee ? null : input.markup_percent ?? existing?.markup_percent ?? 0,
     gmp_cents: billingModel === "cost_plus_gmp" ? input.gmp_cents ?? existing?.gmp_cents ?? null : null,
+    contingency_cents:
+      billingModel === "cost_plus_gmp"
+        ? input.contingency_cents ?? existing?.contingency_cents ?? existing?.snapshot?.contingency_cents ?? null
+        : null,
+    fixed_fee_cents: isFixedFee ? input.fixed_fee_cents ?? existing?.fixed_fee_cents ?? existing?.snapshot?.fixed_fee_cents ?? null : null,
+    fee_presentation: feePresentation,
     savings_split_owner_pct: billingModel === "cost_plus_gmp" ? input.savings_split_owner_pct ?? existing?.savings_split_owner_pct ?? 0 : 0,
     savings_split_builder_pct: billingModel === "cost_plus_gmp" ? input.savings_split_builder_pct ?? existing?.savings_split_builder_pct ?? 0 : 0,
     labor_burden_multiplier: input.labor_burden_multiplier ?? existing?.labor_burden_multiplier ?? 1,
+    rate_schedule_id: billingModel === "time_and_materials" ? input.rate_schedule_id ?? existing?.rate_schedule_id ?? null : null,
     requires_client_cost_approval: input.requires_client_cost_approval ?? existing?.requires_client_cost_approval ?? false,
     open_book: input.open_book ?? existing?.open_book ?? true,
     retainage_percent: input.retainage_percent ?? existing?.retainage_percent ?? 0,
     snapshot: {
-      ...existingSnapshot,
+      ...nextSnapshotBase,
       billing_setup_source: "project_settings",
-      billing_model: billingModel,
       base_total_cents: baseTotalCents,
       approved_change_orders_cents: approvedChangeOrdersCents,
       revised_total_cents: revisedTotalCents,
-      fixed_fee_cents: isFixedFee ? input.fixed_fee_cents ?? existing?.snapshot?.fixed_fee_cents ?? null : null,
+      fee_presentation: feePresentation,
+      rate_schedule_id: billingModel === "time_and_materials" ? input.rate_schedule_id ?? existing?.rate_schedule_id ?? null : null,
       paid_costs_required: input.paid_costs_required ?? existing?.snapshot?.paid_costs_required ?? false,
       proof_required: input.proof_required ?? existing?.snapshot?.proof_required ?? false,
     },
   }
 
-  if (existing?.id) {
-    const { data, error } = await supabase
-      .from("contracts")
-      .update(payload)
-      .eq("org_id", orgId)
-      .eq("id", existing.id)
-      .select("*")
-      .single()
-
-    if (error || !data) {
-      throw new Error(`Failed to update project billing contract: ${error?.message}`)
-    }
-
-    await upsertProjectFinancialSettingsFromProjectInput({
-      supabase,
-      orgId,
-      projectId,
-      userId,
-      input,
-      existingContract: data,
-    })
-
-    await recordAudit({
-      orgId,
-      actorId: userId,
-      action: "update",
-      entityType: "contract",
-      entityId: existing.id,
-      before: existing,
-      after: data,
-    })
-    return
-  }
-
-  const { data, error } = await supabase.from("contracts").insert(payload).select("*").single()
-  if (error || !data) {
-    throw new Error(`Failed to create project billing contract: ${error?.message}`)
-  }
+  const contractSave = await saveBillingContractWithAmendment({
+    supabase,
+    orgId,
+    userId,
+    projectId,
+    existingContract: existing,
+    existingSettings,
+    nextBillingModel: billingModel,
+    contractPayload: payload,
+    auditSource: "project_settings",
+  })
 
   await upsertProjectFinancialSettingsFromProjectInput({
     supabase,
@@ -487,16 +546,7 @@ async function upsertProjectBillingContract({
     projectId,
     userId,
     input,
-    existingContract: data,
-  })
-
-  await recordAudit({
-    orgId,
-    actorId: userId,
-    action: "insert",
-    entityType: "contract",
-    entityId: data.id,
-    after: data,
+    existingContract: contractSave.contract,
   })
 }
 

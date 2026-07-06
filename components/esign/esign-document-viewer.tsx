@@ -19,6 +19,7 @@ import {
   CheckSquare,
   ChevronLeft,
   ChevronRight,
+  FileText,
   Mail,
   Loader2,
   PenLine,
@@ -106,6 +107,7 @@ interface ESignDocumentViewerProps {
   onSave: () => void
   signerRoles?: SignerRoleOption[]
   onSend?: () => void
+  onSaveTemplate?: () => void
   sendDisabled?: boolean
   sendLabel?: string
   sendLoading?: boolean
@@ -125,6 +127,7 @@ export function ESignDocumentViewer({
   onSave,
   signerRoles = [],
   onSend,
+  onSaveTemplate,
   sendDisabled = false,
   sendLabel = "Send",
   sendLoading = false,
@@ -155,7 +158,7 @@ export function ESignDocumentViewer({
     const loadPdf = async () => {
       try {
         const { Document, Page, pdfjs } = await import("react-pdf")
-        pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
+        pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs"
         setPDFComponents({ Document, Page, pdfjs })
       } catch (error) {
         console.error("Failed to load PDF components", error)
@@ -910,6 +913,12 @@ export function ESignDocumentViewer({
 
           {/* Right: Save + Send buttons */}
           <div className="flex items-center gap-2">
+            {onSaveTemplate ? (
+              <Button variant="outline" size="sm" onClick={onSaveTemplate}>
+                <FileText className="h-4 w-4 mr-1.5" />
+                Save template
+              </Button>
+            ) : null}
             <Button variant="outline" size="sm" onClick={onSave}>
               <Check className="h-4 w-4 mr-1.5" />
               Save draft

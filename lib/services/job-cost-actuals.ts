@@ -5,6 +5,7 @@ import {
   type JobCostActualByCostCode,
   type JobCostGroupBy,
 } from "@/lib/financials/job-cost-rules"
+import { calculateTimeEntryCostCents } from "@/lib/financials/job-cost-calculations"
 import { requireOrgContext } from "@/lib/services/context"
 
 export type { JobCostActualByCostCode } from "@/lib/financials/job-cost-rules"
@@ -38,15 +39,8 @@ function toDateOnly(value?: string | null) {
   return value.slice(0, 10)
 }
 
-export function calculateTimeEntryCostCents(entry: {
-  cost_cents?: number | null
-  hours?: number | string | null
-  base_rate_cents?: number | null
-  burden_multiplier?: number | string | null
-}) {
-  if (entry.cost_cents != null) return Number(entry.cost_cents)
-  return Math.round(Number(entry.hours ?? 0) * Number(entry.base_rate_cents ?? 0) * Number(entry.burden_multiplier ?? 1))
-}
+export { calculateTimeEntryCostCents }
+
 
 async function findBillableCostForSource(args: {
   supabase: SupabaseClient
@@ -313,6 +307,8 @@ export async function postJobCostEntryFromTimeEntry(args: { timeEntryId: string;
       hours: entry.hours ?? null,
       base_rate_cents: entry.base_rate_cents ?? null,
       burden_multiplier: entry.burden_multiplier ?? null,
+      is_overtime: entry.is_overtime ?? false,
+      ot_multiplier: entry.ot_multiplier ?? 1.5,
     },
   })
 }

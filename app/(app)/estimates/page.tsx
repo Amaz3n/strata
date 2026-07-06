@@ -8,6 +8,7 @@ import { listCostCodes } from "@/lib/services/cost-codes"
 import { requireOrgContext } from "@/lib/services/context"
 import { getOrgBranding } from "@/lib/services/estimate-portal"
 
+// desk-rule: reachable via dashboard/search/feature flows only, not workspace nav.
 export const dynamic = "force-dynamic"
 
 interface EstimatesPageProps {

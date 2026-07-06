@@ -39,6 +39,12 @@ next-env.d.ts
 .idea
 *.swp
 *.swo
+xcuserdata/
+*.xcuserstate
+.derivedData/
+DerivedData/
+# Local iOS secrets — copy Secrets.example.xcconfig → Secrets.xcconfig and fill in
+ios/Arc/Config/Secrets.xcconfig
 
 # Logs
 logs

@@ -402,8 +402,13 @@ interface AiTraceState {
   timestamp: string
 }
 
+type AiAssistantMode = "org" | "general"
+
 interface CommandSearchProps {
   className?: string
+  // Set when the lazy wrapper mounts this component in response to a ⌘K/click
+  // that happened before the palette chunk finished loading.
+  defaultOpen?: boolean
 }
 
 function isSearchType(value: unknown): value is SearchType {
@@ -1855,7 +1860,7 @@ function AiResponsePanel({
   executingActionId,
   executingWorkflowId,
 }: {
-  aiAnswer: AiAnswerState
+  aiAnswer: AiAnswerState | null
   aiError: string | null
   submittedQuery: string
   onRetry: () => void
@@ -1868,10 +1873,12 @@ function AiResponsePanel({
   executingWorkflowId: string | null
 }) {
   const [sourcesExpanded, setSourcesExpanded] = useState(false)
-  const citationKeys = useMemo(() => new Set(aiAnswer.citations.map((citation) => `${citation.type}:${citation.id}`)), [aiAnswer.citations])
+  const citations = useMemo(() => aiAnswer?.citations ?? [], [aiAnswer])
+  const relatedResults = useMemo(() => aiAnswer?.relatedResults ?? [], [aiAnswer])
+  const citationKeys = useMemo(() => new Set(citations.map((citation) => `${citation.type}:${citation.id}`)), [citations])
   const nonDuplicateRelated = useMemo(
-    () => aiAnswer.relatedResults.filter((result) => !citationKeys.has(`${result.type}:${result.id}`)),
-    [aiAnswer.relatedResults, citationKeys],
+    () => relatedResults.filter((result) => !citationKeys.has(`${result.type}:${result.id}`)),
+    [relatedResults, citationKeys],
   )
 
   if (aiError) {
@@ -1891,6 +1898,8 @@ function AiResponsePanel({
       </div>
     )
   }
+
+  if (!aiAnswer) return null
 
   // Guided workflows get a dedicated, full-bleed, keyboard-first surface instead
   // of the chat-style answer layout (no avatars, confidence chips, or citations).
@@ -2373,8 +2382,8 @@ function EntityPreviewPanel({
 // ---------- Main Component ----------
 
 type ViewMode = "idle" | "search" | "ai" | "preview"
-export function CommandSearch({ className }: CommandSearchProps) {
-  const [open, setOpen] = useState(false)
+export function CommandSearch({ className, defaultOpen = false }: CommandSearchProps) {
+  const [open, setOpen] = useState(defaultOpen)
   const [aiEnabled, setAiEnabled] = useState(true)
   const aiConfigLoadedRef = useRef(false)
   const [query, setQuery] = useState("")
@@ -2388,6 +2397,7 @@ export function CommandSearch({ className }: CommandSearchProps) {
   const [executingActionId, setExecutingActionId] = useState<string | null>(null)
   const [executingWorkflowId, setExecutingWorkflowId] = useState<string | null>(null)
   const [submittedQuery, setSubmittedQuery] = useState("")
+  const [assistantMode, setAssistantMode] = useState<AiAssistantMode>("org")
   const [selectedIndex, setSelectedIndex] = useState(-1)
   const [showGlow, setShowGlow] = useState(false)
   const [shockwaveKey, setShockwaveKey] = useState(0)
@@ -2510,7 +2520,6 @@ export function CommandSearch({ className }: CommandSearchProps) {
       if (error instanceof DOMException && error.name === "AbortError") {
         return []
       }
-      console.error("Search failed:", error)
       return []
     } finally {
       if (controller && searchAbortRef.current === controller) {
@@ -2569,6 +2578,31 @@ export function CommandSearch({ className }: CommandSearchProps) {
           return
         }
 
+        if (eventName === "delta") {
+          if (!payload || typeof payload !== "object" || typeof (payload as { text?: unknown }).text !== "string") {
+            return
+          }
+          const text = (payload as { text: string }).text
+          setAiAnswer((prev) => {
+            if (prev) {
+              return {
+                ...prev,
+                answer: `${prev.answer}${text}`,
+              }
+            }
+            return {
+              answer: text,
+              citations: [],
+              relatedResults: [],
+              actions: [],
+              generatedAt: new Date().toISOString(),
+              assistantMode,
+              mode: "llm",
+            }
+          })
+          return
+        }
+
         if (eventName === "result") {
           const normalized = toAiAnswerState(payload)
           if (!normalized) {
@@ -2613,6 +2647,7 @@ export function CommandSearch({ className }: CommandSearchProps) {
             q: prompt,
             limit: 20,
             sessionId: aiSessionId ?? undefined,
+            mode: assistantMode,
             currentProjectId: currentProjectId ?? undefined,
           }),
           signal: abortController.signal,
@@ -2657,11 +2692,10 @@ export function CommandSearch({ className }: CommandSearchProps) {
         if (!hasTerminalEvent && askRequestIdRef.current === requestId) {
           finalizeWithError("The stream ended before a complete response was received.")
         }
-      } catch (error) {
+      } catch {
         if (abortController.signal.aborted) {
           return
         }
-        console.error("AI stream request failed:", error)
         finalizeWithError("Something went wrong while streaming the response. Please try again.")
       } finally {
         if (aiAbortRef.current === abortController) {
@@ -2669,7 +2703,7 @@ export function CommandSearch({ className }: CommandSearchProps) {
         }
       }
     },
-    [aiEnabled, aiSessionId, closeAiStream, currentProjectId, query],
+    [aiEnabled, aiSessionId, assistantMode, closeAiStream, currentProjectId, query],
   )
 
   // Resolve whether the AI affordances should be shown for this org (once, on first open).
@@ -3308,6 +3342,29 @@ export function CommandSearch({ className }: CommandSearchProps) {
                   <X className="size-3.5" />
                 </button>
               )}
+              {aiEnabled && viewMode !== "preview" && (
+                <div className="hidden shrink-0 items-center border border-border/60 bg-muted/20 p-0.5 sm:flex">
+                  {(["org", "general"] as const).map((mode) => {
+                    const active = assistantMode === mode
+                    return (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => setAssistantMode(mode)}
+                        aria-pressed={active}
+                        className={cn(
+                          "h-6 px-2 text-[11px] transition-colors",
+                          active
+                            ? "bg-foreground text-background"
+                            : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                        )}
+                      >
+                        {mode === "org" ? "Org" : "General"}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
               {viewMode === "search" && query.trim() && aiEnabled && (
                 <div className="flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground/60">
                   <CornerDownLeft className="size-3" />
@@ -3377,11 +3434,34 @@ export function CommandSearch({ className }: CommandSearchProps) {
                       <>
                         <div className="mb-1.5 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground/70">
                           <Sparkles className="size-3.5 text-cyan-400" />
-                          Ask Naturally
+                          {assistantMode === "org" ? "Org Copilot" : "General Assistant"}
                         </div>
                         <p className="text-sm text-foreground/85">
-                          Ask anything about your company data in your own words. Example topics: invoices, projects, approvals, cash, schedule, RFIs, or submittals.
+                          {assistantMode === "org"
+                            ? "Ask about company data in your own words. Answers stay grounded in org records with citations."
+                            : "Ask a general question. This mode is not grounded in company-record citations."}
                         </p>
+                        <div className="mt-3 flex border border-border/60 bg-background/60 p-0.5 sm:hidden">
+                          {(["org", "general"] as const).map((mode) => {
+                            const active = assistantMode === mode
+                            return (
+                              <button
+                                key={mode}
+                                type="button"
+                                onClick={() => setAssistantMode(mode)}
+                                aria-pressed={active}
+                                className={cn(
+                                  "h-7 flex-1 text-[11px] transition-colors",
+                                  active
+                                    ? "bg-foreground text-background"
+                                    : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                                )}
+                              >
+                                {mode === "org" ? "Org Copilot" : "General"}
+                              </button>
+                            )
+                          })}
+                        </div>
                         <div className="mt-3 flex flex-wrap gap-1.5">
                           {SUGGESTED_AI_PROMPTS.map((prompt) => (
                             <button
@@ -3606,10 +3686,10 @@ export function CommandSearch({ className }: CommandSearchProps) {
               {/* AI mode: loading or response */}
               {viewMode === "ai" && (
                 <>
-                  {isAskingAi && <AiLoadingIndicator trace={aiTrace} />}
-                  {!isAskingAi && (aiAnswer || aiError) && (
+                  {isAskingAi && !aiAnswer && <AiLoadingIndicator trace={aiTrace} />}
+                  {(aiAnswer || aiError) && (
                     <AiResponsePanel
-                      aiAnswer={aiAnswer!}
+                      aiAnswer={aiAnswer}
                       aiError={aiError}
                       submittedQuery={submittedQuery}
                       onRetry={() => void askAi(submittedQuery)}

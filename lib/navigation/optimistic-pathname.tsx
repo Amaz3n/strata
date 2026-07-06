@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import Link, { type LinkProps } from "next/link"
-import { usePathname, useRouter } from "next/navigation"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 
 type Ctx = {
   optimisticPath: string | null
@@ -11,17 +11,84 @@ type Ctx = {
 
 const OptimisticPathContext = React.createContext<Ctx | null>(null)
 
+type PendingNavigation = {
+  id: number
+  href: string
+  pathWithSearch: string
+  startedAt: number
+  reasserted: boolean
+}
+
+function currentTime() {
+  return typeof performance !== "undefined" ? performance.now() : Date.now()
+}
+
+function normalizeHref(href: string) {
+  try {
+    const url = new URL(href, window.location.origin)
+    return `${url.pathname}${url.search}`
+  } catch {
+    return href.split("#")[0] ?? href
+  }
+}
+
 export function OptimisticPathProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
-  const [optimisticPath, setOptimisticPath] = React.useState<string | null>(null)
+  const searchParams = useSearchParams()
+  const router = useRouter()
+  const [pendingNavigation, setPendingNavigation] = React.useState<PendingNavigation | null>(null)
+  const navigationIdRef = React.useRef(0)
+  const currentPathWithSearch = React.useMemo(() => {
+    const search = searchParams.toString()
+    return search ? `${pathname}?${search}` : pathname
+  }, [pathname, searchParams])
+  const lastCommittedPathRef = React.useRef(currentPathWithSearch)
+
+  const setOptimisticPath = React.useCallback((href: string | null) => {
+    if (!href) {
+      setPendingNavigation(null)
+      return
+    }
+
+    navigationIdRef.current += 1
+    setPendingNavigation({
+      id: navigationIdRef.current,
+      href,
+      pathWithSearch: normalizeHref(href),
+      startedAt: currentTime(),
+      reasserted: false,
+    })
+  }, [])
 
   React.useEffect(() => {
-    setOptimisticPath(null)
-  }, [pathname])
+    const previousPath = lastCommittedPathRef.current
+    lastCommittedPathRef.current = currentPathWithSearch
+
+    if (!pendingNavigation) return
+
+    if (currentPathWithSearch === pendingNavigation.pathWithSearch) {
+      setPendingNavigation(null)
+      return
+    }
+
+    if (currentTime() - pendingNavigation.startedAt > 10_000) {
+      setPendingNavigation(null)
+      return
+    }
+
+    if (currentPathWithSearch !== previousPath && !pendingNavigation.reasserted) {
+      router.replace(pendingNavigation.href)
+      setPendingNavigation((current) =>
+        current?.id === pendingNavigation.id
+          ? { ...current, reasserted: true }
+          : current,
+      )
+    }
+  }, [currentPathWithSearch, pendingNavigation, router])
 
   const value = React.useMemo<Ctx>(
-    () => ({ optimisticPath, setOptimisticPath }),
-    [optimisticPath],
+    () => ({ optimisticPath: pendingNavigation?.pathWithSearch ?? null, setOptimisticPath }),
+    [pendingNavigation?.pathWithSearch, setOptimisticPath],
   )
   return <OptimisticPathContext.Provider value={value}>{children}</OptimisticPathContext.Provider>
 }
@@ -74,10 +141,10 @@ export const OptimisticLink = React.forwardRef<HTMLAnchorElement, OptimisticLink
         href={href}
         target={target}
         onClick={(e) => {
+          onClick?.(e)
           if (target !== "_blank" && isPlainLeftClick(e)) {
             ctx?.setOptimisticPath(href)
           }
-          onClick?.(e)
         }}
         {...rest}
       />

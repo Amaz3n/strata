@@ -37,6 +37,25 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Textarea } from "@/components/ui/textarea"
 import { buildPartyDetailsBlock, parsePartyDetailsBlock } from "@/lib/invoices/party-details"
 import { UnbilledCostsPicker, type CostSelection } from "@/components/invoices/unbilled-costs-picker"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { unwrapAction } from "@/lib/action-result"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 
@@ -47,6 +66,8 @@ type Props = {
   defaultProjectId?: string
   initialSourceChangeOrderId?: string
   initialSourceChangeOrder?: ChangeOrder | null
+  /** Seed a create-mode composer from an existing invoice (Duplicate). */
+  duplicateFrom?: Invoice | null
   onSubmit: (values: InvoiceInput, sendToClient: boolean, options?: { silent?: boolean }) => Promise<Invoice>
   isSubmitting?: boolean
   mode?: "create" | "edit"
@@ -70,6 +91,8 @@ type ComposerLine = {
   unit: string
   unit_cost: string
   taxable: boolean
+  /** Per-line tax rate override as entered ("" inherits the invoice rate). */
+  tax_rate_percent: string
   cost_code_id: string | null
   qbo_income_account_id: string | null
   qbo_income_account_name: string | null
@@ -78,6 +101,8 @@ type ComposerLine = {
   markup_cents?: number | null
   markup_percent?: number | null
 }
+
+type DiscountType = "percent" | "fixed"
 
 type DrawOption = {
   id: string
@@ -127,6 +152,11 @@ function formatAddressBlock(value?: string | null) {
     .join("\n")
 }
 
+function lineTaxRateOverride(line: any): string {
+  const raw = line.tax_rate_percent ?? (line.metadata as Record<string, any> | undefined)?.tax_rate_percent
+  return raw == null ? "" : String(raw)
+}
+
 function toLineState(invoice?: Invoice | null): ComposerLine[] {
   const rawLines = invoice?.lines ?? (invoice?.metadata?.lines as any[] | undefined) ?? []
   const lines = Array.isArray(rawLines)
@@ -145,6 +175,7 @@ function toLineState(invoice?: Invoice | null): ComposerLine[] {
         unit: "ea",
         unit_cost: "",
         taxable: true,
+        tax_rate_percent: "",
         cost_code_id: null,
         qbo_income_account_id: null,
         qbo_income_account_name: null,
@@ -159,6 +190,7 @@ function toLineState(invoice?: Invoice | null): ComposerLine[] {
     unit: String(line.unit ?? "ea"),
     unit_cost: String(((line.unit_cost_cents ?? 0) / 100).toFixed(2)),
     taxable: line.taxable !== false,
+    tax_rate_percent: lineTaxRateOverride(line),
     cost_code_id: line.cost_code_id ?? null,
     qbo_income_account_id:
       (line.qbo_income_account_id as string | null | undefined) ??
@@ -251,6 +283,7 @@ function linesFromChangeOrder(changeOrder: ChangeOrder): ComposerLine[] {
       unit: String(line.unit ?? "ea"),
       unit_cost: ((line.unit_cost_cents ?? 0) / 100).toFixed(2),
       taxable: line.taxable !== false,
+      tax_rate_percent: "",
       cost_code_id: line.cost_code_id ?? null,
       qbo_income_account_id: (line as Record<string, any>).qbo_income_account_id ?? null,
       qbo_income_account_name: (line as Record<string, any>).qbo_income_account_name ?? null,
@@ -265,6 +298,7 @@ function linesFromChangeOrder(changeOrder: ChangeOrder): ComposerLine[] {
       unit: "co",
       unit_cost: (((changeOrder.total_cents ?? 0) / 100) || 0).toFixed(2),
       taxable: true,
+      tax_rate_percent: "",
       cost_code_id: null,
       qbo_income_account_id: null,
       qbo_income_account_name: null,
@@ -445,6 +479,7 @@ export function InvoiceComposerSheet({
   defaultProjectId,
   initialSourceChangeOrderId,
   initialSourceChangeOrder,
+  duplicateFrom = null,
   onSubmit,
   isSubmitting,
   mode = "create",
@@ -528,12 +563,42 @@ export function InvoiceComposerSheet({
   const [numberSource, setNumberSource] = useState<"qbo" | "local">("local")
   const [generatingPdf, setGeneratingPdf] = useState(false)
   const [editingTax, setEditingTax] = useState(false)
+  const [discountType, setDiscountType] = useState<DiscountType | null>(invoice?.totals?.discount_type ?? null)
+  const [discountValue, setDiscountValue] = useState<string>(
+    invoice?.totals?.discount_value != null ? String(invoice.totals.discount_value) : "",
+  )
+  const [editingDiscount, setEditingDiscount] = useState(false)
+  const [depositDialogOpen, setDepositDialogOpen] = useState(false)
+  const [depositAmount, setDepositAmount] = useState("")
+  const [depositMemo, setDepositMemo] = useState("Less deposit received")
+  const [submitAttempted, setSubmitAttempted] = useState(false)
+  const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false)
+  const [sendConfirmOpen, setSendConfirmOpen] = useState(false)
+  const [sendRecipient, setSendRecipient] = useState("")
 
   const reservationRef = useRef<string | null>(null)
   const reservationConsumedRef = useRef(false)
   const submitInFlightRef = useRef(false)
   const pdfInFlightRef = useRef(false)
   const initialSourceAppliedRef = useRef(false)
+  // Tracks whether the user has edited anything since the sheet opened, so an accidental
+  // dismiss (Esc / outside click) can ask before discarding work.
+  const dirtyRef = useRef(false)
+  // The org-default terms/note are applied once per open; later context reloads (e.g. after
+  // creating a QBO account) must not clobber dates or notes the user already set.
+  const defaultsAppliedRef = useRef(false)
+  // True once the user edits the title by hand, so project changes stop renaming the invoice.
+  const titleEditedRef = useRef(mode === "edit")
+
+  const markDirty = useCallback(() => {
+    dirtyRef.current = true
+  }, [])
+
+  // Mirrors issueDate for reads inside effects that must not re-run on date changes.
+  const issueDateRef = useRef(issueDate)
+  useEffect(() => {
+    issueDateRef.current = issueDate
+  }, [issueDate])
 
   const contactsSorted = useMemo(() => [...contacts].sort((a, b) => (a.full_name ?? "").localeCompare(b.full_name ?? "")), [contacts])
 
@@ -563,29 +628,43 @@ export function InvoiceComposerSheet({
     [financialContacts],
   )
 
+  // Mirrors the server math in lib/services/invoices.ts calculateNormalizedTotals:
+  // subtotal → discount (spread proportionally) → per-line tax (override wins) → total.
   const lineTotals = useMemo(() => {
-    const subtotal = lines.reduce((sum, line) => {
+    const lineSubtotalOf = (line: ComposerLine) => {
       const quantity = Number(line.quantity)
       const unitCost = Number(line.unit_cost)
-      if (!Number.isFinite(quantity) || !Number.isFinite(unitCost)) return sum
-      return sum + Math.round(quantity * unitCost * 100)
-    }, 0)
+      if (!Number.isFinite(quantity) || !Number.isFinite(unitCost)) return 0
+      return Math.round(quantity * unitCost * 100)
+    }
 
-    const taxableSubtotal = lines.reduce((sum, line) => {
+    const subtotal = lines.reduce((sum, line) => sum + lineSubtotalOf(line), 0)
+
+    const discountNumber = Number(discountValue)
+    let discount = 0
+    if (discountType && Number.isFinite(discountNumber) && discountNumber > 0 && subtotal > 0) {
+      discount =
+        discountType === "percent"
+          ? Math.round(subtotal * (Math.min(discountNumber, 100) / 100))
+          : Math.min(Math.round(discountNumber * 100), subtotal)
+    }
+    const discountRatio = subtotal > 0 ? discount / subtotal : 0
+
+    const taxExact = lines.reduce((sum, line) => {
       if (!line.taxable) return sum
-      const quantity = Number(line.quantity)
-      const unitCost = Number(line.unit_cost)
-      if (!Number.isFinite(quantity) || !Number.isFinite(unitCost)) return sum
-      return sum + Math.round(quantity * unitCost * 100)
+      const override = Number(line.tax_rate_percent)
+      const effectiveRate = line.tax_rate_percent.trim() !== "" && Number.isFinite(override) ? override : taxRate
+      return sum + lineSubtotalOf(line) * (1 - discountRatio) * (effectiveRate / 100)
     }, 0)
 
-    const tax = Math.round(taxableSubtotal * (taxRate / 100))
+    const tax = Math.round(taxExact)
     return {
       subtotal,
+      discount,
       tax,
-      total: subtotal + tax,
+      total: subtotal - discount + tax,
     }
-  }, [lines, taxRate])
+  }, [discountType, discountValue, lines, taxRate])
   const retainagePercent = Number(
     selectedProject?.billing_contract?.retainage_percent ??
       selectedProject?.retainage_percent ??
@@ -593,7 +672,7 @@ export function InvoiceComposerSheet({
   )
   const retainageCents =
     retainagePercent > 0
-      ? Math.round(Math.max(lineTotals.subtotal, 0) * (retainagePercent / 100))
+      ? Math.round(Math.max(lineTotals.subtotal - lineTotals.discount, 0) * (retainagePercent / 100))
       : 0
   const netInvoiceTotal = lineTotals.total - retainageCents
 
@@ -629,12 +708,28 @@ export function InvoiceComposerSheet({
   const resetForCreate = useCallback(() => {
     setSourceDrawId("none")
     setSourceChangeOrderId(initialSourceChangeOrder?.id ?? "none")
-    setTitle(selectedProjectName)
+    setTitle(duplicateFrom?.title ?? selectedProjectName)
     setIssueDate(format(new Date(), "yyyy-MM-dd"))
     setDueDate(format(addDays(new Date(), composerSettings.defaultPaymentTermsDays), "yyyy-MM-dd"))
     setCustomerId("none")
-    setSelectedQboCustomer(null)
-    setCustomerDetails("")
+    setSelectedQboCustomer(
+      duplicateFrom?.metadata?.qbo_customer_id
+        ? {
+            id: String(duplicateFrom.metadata.qbo_customer_id),
+            name: String(duplicateFrom.metadata.qbo_customer_name ?? duplicateFrom.customer_name ?? ""),
+            email: duplicateFrom.metadata.customer_email ? String(duplicateFrom.metadata.customer_email) : null,
+          }
+        : null,
+    )
+    setCustomerDetails(
+      duplicateFrom
+        ? buildPartyDetailsBlock({
+            name: duplicateFrom.customer_name ?? String(duplicateFrom.metadata?.customer_name ?? ""),
+            email: String(duplicateFrom.metadata?.customer_email ?? ""),
+            address: formatAddressBlock(String(duplicateFrom.metadata?.customer_address ?? "")),
+          })
+        : "",
+    )
     setFromDetails(
       buildPartyDetailsBlock({
         name: builderInfo?.name ?? "Arc Builder",
@@ -642,10 +737,19 @@ export function InvoiceComposerSheet({
         address: formatAddressBlock(builderInfo?.address ?? ""),
       }),
     )
-    setNotes(composerSettings.defaultInvoiceNote)
-    setTaxRate(0)
+    setNotes(
+      duplicateFrom && typeof duplicateFrom.notes === "string" && duplicateFrom.notes.trim()
+        ? duplicateFrom.notes
+        : composerSettings.defaultInvoiceNote,
+    )
+    setTaxRate(duplicateFrom?.totals?.tax_rate ?? ((duplicateFrom?.metadata?.tax_rate as number) ?? 0))
+    setDiscountType(duplicateFrom?.totals?.discount_type ?? null)
+    setDiscountValue(duplicateFrom?.totals?.discount_value != null ? String(duplicateFrom.totals.discount_value) : "")
     setPaymentTermsDays(composerSettings.defaultPaymentTermsDays)
-    if (initialSourceChangeOrder) {
+    if (duplicateFrom) {
+      customerManuallyChosenRef.current = Boolean(duplicateFrom.customer_name || duplicateFrom.metadata?.qbo_customer_id)
+      setLines(toLineState(duplicateFrom))
+    } else if (initialSourceChangeOrder) {
       initialSourceAppliedRef.current = true
       setLines(linesFromChangeOrder(initialSourceChangeOrder))
     } else {
@@ -657,28 +761,63 @@ export function InvoiceComposerSheet({
           unit: "ea",
           unit_cost: "",
           taxable: true,
+          tax_rate_percent: "",
           cost_code_id: null,
           qbo_income_account_id: null,
           qbo_income_account_name: null,
         },
       ])
     }
-  }, [builderInfo?.address, builderInfo?.email, builderInfo?.name, composerSettings.defaultInvoiceNote, composerSettings.defaultPaymentTermsDays, initialSourceChangeOrder, selectedProjectName])
+  }, [builderInfo?.address, builderInfo?.email, builderInfo?.name, composerSettings.defaultInvoiceNote, composerSettings.defaultPaymentTermsDays, duplicateFrom, initialSourceChangeOrder, selectedProjectName])
 
   // Append generated lines, dropping any leading blank placeholder rows so sources stack cleanly.
   const appendLines = (incoming: ComposerLine[]) => {
     if (incoming.length === 0) return
+    markDirty()
     setLines((prev) => {
       const kept = prev.filter((line) => line.description.trim() !== "" || line.unit_cost.trim() !== "")
       return [...kept, ...incoming]
     })
   }
 
+  // Issue date, due date, and Net terms stay consistent: whichever the user edits, the
+  // others follow (due = issue + net).
+  const handleIssueDateChange = (value: string) => {
+    markDirty()
+    setIssueDate(value)
+    const base = parseDate(value)
+    if (base && Number.isFinite(paymentTermsDays) && paymentTermsDays >= 0) {
+      setDueDate(format(addDays(base, paymentTermsDays), "yyyy-MM-dd"))
+    }
+  }
+
+  const handleDueDateChange = (value: string) => {
+    markDirty()
+    setDueDate(value)
+    const issue = parseDate(issueDate)
+    const due = parseDate(value)
+    if (issue && due) {
+      setPaymentTermsDays(Math.max(0, Math.round((due.getTime() - issue.getTime()) / 86_400_000)))
+    }
+  }
+
+  const handleTermsChange = (days: number) => {
+    markDirty()
+    setPaymentTermsDays(days)
+    const base = parseDate(issueDate)
+    if (base && Number.isFinite(days) && days >= 0) {
+      setDueDate(format(addDays(base, days), "yyyy-MM-dd"))
+    }
+  }
+
   const applyDrawToInvoice = (drawId: string) => {
     const draw = drawOptions.find((option) => option.id === drawId)
     if (!draw) return
     setSourceDrawId(drawId)
-    setDueDate(draw.due_date ?? dueDate)
+    if (draw.due_date && draw.due_date !== dueDate) {
+      setDueDate(draw.due_date)
+      toast.info("Due date set from the draw", { description: format(parse(draw.due_date, "yyyy-MM-dd", new Date()), "MMM d, yyyy") })
+    }
     appendLines([
       {
         id: crypto.randomUUID(),
@@ -687,11 +826,39 @@ export function InvoiceComposerSheet({
         unit: "draw",
         unit_cost: ((draw.amount_cents ?? 0) / 100).toFixed(2),
         taxable: false,
+        tax_rate_percent: "",
         cost_code_id: null,
         qbo_income_account_id: null,
         qbo_income_account_name: null,
       },
     ])
+  }
+
+  // Deposits/credits are applied as a plain negative, non-taxable line — visible on the invoice,
+  // synced to QBO as a negative line, and reflected in the amount due with no ledger side effects.
+  const applyDepositCredit = () => {
+    const amount = Number(depositAmount.replace(/[$,\s]/g, ""))
+    if (!Number.isFinite(amount) || amount <= 0) {
+      toast.error("Enter a deposit amount greater than zero")
+      return
+    }
+    appendLines([
+      {
+        id: crypto.randomUUID(),
+        description: depositMemo.trim() || "Less deposit received",
+        quantity: "1",
+        unit: "credit",
+        unit_cost: (-amount).toFixed(2),
+        taxable: false,
+        tax_rate_percent: "",
+        cost_code_id: null,
+        qbo_income_account_id: null,
+        qbo_income_account_name: null,
+      },
+    ])
+    setDepositDialogOpen(false)
+    setDepositAmount("")
+    setDepositMemo("Less deposit received")
   }
 
   const applyChangeOrderToInvoice = (changeOrderId: string) => {
@@ -734,6 +901,7 @@ export function InvoiceComposerSheet({
           unit: "LS",
           unit_cost: (Number(line.billable_cents ?? 0) / 100).toFixed(2),
           taxable: false,
+          tax_rate_percent: "",
           cost_code_id: line.cost_code_id ?? null,
           qbo_income_account_id: null,
           qbo_income_account_name: null,
@@ -752,11 +920,25 @@ export function InvoiceComposerSheet({
     }
   }
 
+  // Runs once per open (guarded by openInitRef): later dep-identity changes — e.g. composer
+  // settings loading — must not re-reset the form or re-reserve an invoice number.
+  const openInitRef = useRef(false)
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      openInitRef.current = false
+      return
+    }
+    if (openInitRef.current) return
+    openInitRef.current = true
+
+    dirtyRef.current = false
+    defaultsAppliedRef.current = false
+    setSubmitAttempted(false)
+    titleEditedRef.current = mode === "edit" || Boolean(duplicateFrom?.title)
 
     if (mode === "create") {
       initialSourceAppliedRef.current = Boolean(initialSourceChangeOrder)
+      customerManuallyChosenRef.current = false
       resetForCreate()
       setProjectId(defaultProjectId ?? projects[0]?.id)
       void loadInvoiceNumber()
@@ -799,9 +981,11 @@ export function InvoiceComposerSheet({
     )
     setNotes(typeof invoice?.notes === "string" ? invoice.notes : "")
     setTaxRate(invoice?.totals?.tax_rate ?? ((invoice?.metadata?.tax_rate as number) ?? 0))
+    setDiscountType(invoice?.totals?.discount_type ?? null)
+    setDiscountValue(invoice?.totals?.discount_value != null ? String(invoice.totals.discount_value) : "")
     setPaymentTermsDays((invoice?.metadata?.payment_terms_days as number) ?? 15)
     setLines(toLineState(invoice))
-  }, [open, mode, invoice, defaultProjectId, projects, loadInvoiceNumber, resetForCreate, builderInfo?.address, builderInfo?.email, builderInfo?.name, initialSourceChangeOrder])
+  }, [open, mode, invoice, defaultProjectId, projects, duplicateFrom, loadInvoiceNumber, resetForCreate, builderInfo?.address, builderInfo?.email, builderInfo?.name, initialSourceChangeOrder])
 
   useEffect(() => {
     if (customerDetails.trim().length === 0) {
@@ -810,26 +994,28 @@ export function InvoiceComposerSheet({
     }
   }, [customerDetails, customerId, selectedQboCustomer])
 
+  // Switching projects re-arms the auto-pick so the new project's default customer applies,
+  // and renames the invoice — unless the user already titled it by hand.
   useEffect(() => {
     if (!open || mode !== "create") return
-    if (title !== selectedProjectName) {
+    customerManuallyChosenRef.current = false
+    if (!titleEditedRef.current) {
       setTitle(selectedProjectName)
     }
-  }, [open, mode, title, selectedProjectName])
-
-  // Switching projects re-arms the auto-pick so the new project's default customer applies.
-  useEffect(() => {
-    customerManuallyChosenRef.current = false
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId])
 
+  // Loads billing sources + org defaults for the current project. Deliberately NOT keyed on
+  // notes/issueDate: this effect must never re-run (and clobber user input) while the user types.
   useEffect(() => {
     if (!open) return
     let cancelled = false
 
     setContextLoading(true)
     getInvoiceComposerContextAction(projectId ?? null)
-      .then((result) => {
+      .then((actionResult) => {
         if (cancelled) return
+        const result = unwrapAction(actionResult)
         setDrawOptions(result.draws ?? [])
         setChangeOrderOptions(result.changeOrders ?? [])
         if (mode === "create" && initialSourceChangeOrderId && !initialSourceAppliedRef.current) {
@@ -845,10 +1031,10 @@ export function InvoiceComposerSheet({
         setQboConnected(Boolean(result.qboConnected))
         setQboIncomeAccounts(result.qboIncomeAccounts ?? [])
         setQboDiagnostics((result.qboDiagnostics as QboDiagnostics | undefined) ?? null)
-        // Pre-select the project's default QBO customer unless the user has hand-picked a customer for
-        // this invoice (tracked via customerManuallyChosenRef, which resets on project change).
+        // Pre-select the project's default QBO customer unless the user has hand-picked or
+        // hand-typed a customer for this invoice (tracked via customerManuallyChosenRef).
         if (mode === "create" && result.qboConnected && !customerManuallyChosenRef.current) {
-          const def = (result as any).defaultQboCustomer as { id: string; name: string } | null | undefined
+          const def = result.defaultQboCustomer
           if (def?.id) {
             setSelectedQboCustomer({ id: def.id, name: def.name, email: null })
             setCustomerId("none")
@@ -866,12 +1052,14 @@ export function InvoiceComposerSheet({
           defaultInvoiceNote: String(result.settings?.defaultInvoiceNote ?? ""),
         }
         setComposerSettings(defaults)
-        if (mode === "create") {
-          setPaymentTermsDays(defaults.defaultPaymentTermsDays)
-          const issueBase = issueDate ? parse(issueDate, "yyyy-MM-dd", new Date()) : new Date()
-          setDueDate(format(addDays(issueBase, defaults.defaultPaymentTermsDays), "yyyy-MM-dd"))
-          if (!notes.trim()) {
-            setNotes(defaults.defaultInvoiceNote)
+        // Org defaults apply exactly once per open, and never over user edits.
+        if (mode === "create" && !defaultsAppliedRef.current) {
+          defaultsAppliedRef.current = true
+          if (!dirtyRef.current) {
+            setPaymentTermsDays(defaults.defaultPaymentTermsDays)
+            const issueBase = issueDateRef.current ? parse(issueDateRef.current, "yyyy-MM-dd", new Date()) : new Date()
+            setDueDate(format(addDays(issueBase, defaults.defaultPaymentTermsDays), "yyyy-MM-dd"))
+            setNotes((currentNotes) => (currentNotes.trim() ? currentNotes : defaults.defaultInvoiceNote))
           }
         }
       })
@@ -892,7 +1080,7 @@ export function InvoiceComposerSheet({
     return () => {
       cancelled = true
     }
-  }, [open, projectId, issueDate, mode, notes, initialSourceChangeOrderId])
+  }, [open, projectId, mode, initialSourceChangeOrderId])
 
   // Live QBO customer search: debounce keystrokes and query QBO directly so we never hold a second
   // customer base in Arc. Only runs while the picker is open and QBO is connected.
@@ -904,7 +1092,7 @@ export function InvoiceComposerSheet({
       searchQboCustomersAction(customerQuery)
         .then((result) => {
           if (cancelled) return
-          setCustomerResults(result.customers ?? [])
+          setCustomerResults(unwrapAction(result).customers ?? [])
         })
         .catch(() => {
           if (!cancelled) setCustomerResults([])
@@ -932,10 +1120,12 @@ export function InvoiceComposerSheet({
   }, [releaseReservation])
 
   const updateLine = (lineId: string, key: keyof ComposerLine, value: string | boolean | null) => {
+    markDirty()
     setLines((prev) => prev.map((line) => (line.id === lineId ? { ...line, [key]: value } : line)))
   }
 
   const addLine = () => {
+    markDirty()
     setLines((prev) => [
       ...prev,
       {
@@ -945,6 +1135,7 @@ export function InvoiceComposerSheet({
         unit: "ea",
         unit_cost: "",
         taxable: true,
+        tax_rate_percent: "",
         cost_code_id: null,
         qbo_income_account_id: null,
         qbo_income_account_name: null,
@@ -954,12 +1145,14 @@ export function InvoiceComposerSheet({
 
   const removeLine = (lineId: string) => {
     if (lines.length === 1) return
+    markDirty()
     setLines((prev) => prev.filter((line) => line.id !== lineId))
   }
 
   // Fallback only (QBO disconnected): bill an Arc contact.
   const selectContact = (contactId: string) => {
     customerManuallyChosenRef.current = true
+    markDirty()
     setCustomerId(contactId)
     setSelectedQboCustomer(null)
     const contact = financialContacts.find((item) => item.id === contactId)
@@ -976,6 +1169,7 @@ export function InvoiceComposerSheet({
 
   const selectQboCustomer = (customer: QBOCustomerOption) => {
     customerManuallyChosenRef.current = true
+    markDirty()
     setCustomerId("none")
     setSelectedQboCustomer(customer)
     setCustomerPickerOpen(false)
@@ -994,7 +1188,7 @@ export function InvoiceComposerSheet({
     if (!name || creatingQboCustomer) return
     setCreatingQboCustomer(true)
     try {
-      const created = await createQboCustomerAction({ name })
+      const created = unwrapAction(await createQboCustomerAction({ name }))
       selectQboCustomer(created)
       setCustomerQuery("")
       toast.success(`Created "${created.name}" in QuickBooks`)
@@ -1007,7 +1201,7 @@ export function InvoiceComposerSheet({
 
   const handleCreateQboIncomeAccount = useCallback(
     async (name: string): Promise<QBOIncomeAccountOption> => {
-      const created = await createQBOIncomeAccountAction(name)
+      const created = unwrapAction(await createQBOIncomeAccountAction(name))
       const normalized: QBOIncomeAccountOption = {
         id: created.id,
         name: created.name,
@@ -1027,26 +1221,26 @@ export function InvoiceComposerSheet({
     [],
   )
 
-  const submit = async (
-    sendToClient: boolean,
-    actionMode: "save" | "send" | "save_and_download" = sendToClient ? "send" : "save",
-  ) => {
-    if (submitInFlightRef.current) return
+  // Validates the current form, returning null (with a toast + inline highlighting via
+  // submitAttempted) when something is wrong.
+  const validateForSubmit = () => {
+    setSubmitAttempted(true)
     if (!projectId) {
       toast.error("Project is required")
-      return
+      return null
     }
     if (!invoiceNumber.trim()) {
       toast.error("Invoice number is required")
-      return
+      return null
     }
     if (!title.trim()) {
       toast.error("Title is required")
-      return
+      return null
     }
 
     const parsedLines = lines.map((line) => {
       const selectedLineAccount = qboIncomeAccounts.find((account) => account.id === line.qbo_income_account_id)
+      const overrideRate = Number(line.tax_rate_percent)
       return {
         cost_code_id: line.cost_code_id || undefined,
         description: line.description.trim(),
@@ -1054,6 +1248,8 @@ export function InvoiceComposerSheet({
         unit: line.unit.trim() || "ea",
         unit_cost: Number(line.unit_cost),
         taxable: line.taxable,
+        tax_rate_percent:
+          line.tax_rate_percent.trim() !== "" && Number.isFinite(overrideRate) ? overrideRate : undefined,
         qbo_income_account_id: line.qbo_income_account_id || undefined,
         qbo_income_account_name:
           selectedLineAccount?.fullyQualifiedName ??
@@ -1076,19 +1272,31 @@ export function InvoiceComposerSheet({
     )
 
     if (hasInvalidLine) {
-      toast.error("Fix line item values before submitting")
-      return
+      toast.error("Fix the highlighted line items before submitting")
+      return null
     }
 
     if (qboConnected && qboIncomeAccounts.length > 0 && parsedLines.some((line) => !line.qbo_income_account_id)) {
       toast.error("Pick a QuickBooks account for every line item")
-      return
+      return null
     }
+
+    return parsedLines
+  }
+
+  const submit = async (
+    sendToClient: boolean,
+    actionMode: "save" | "send" | "save_and_download" = sendToClient ? "send" : "save",
+    options?: { recipientEmail?: string },
+  ): Promise<Invoice | null> => {
+    if (submitInFlightRef.current) return null
+    const parsedLines = validateForSubmit()
+    if (!parsedLines || !projectId) return null
 
     const mergedNotes = notes.trim()
     const parsedCustomerDetails = parsePartyDetailsBlock(customerDetails)
     const parsedFromDetails = parsePartyDetailsBlock(fromDetails)
-    const recipientEmail = parsedCustomerDetails.email.trim()
+    const recipientEmail = (options?.recipientEmail ?? parsedCustomerDetails.email).trim()
     const recipientEmails = recipientEmail ? [recipientEmail] : undefined
     const nextStatus = sendToClient
       ? "sent"
@@ -1126,6 +1334,8 @@ export function InvoiceComposerSheet({
       notes: mergedNotes || undefined,
       client_visible: sendToClient,
       tax_rate: taxRate,
+      discount_type: discountType && Number(discountValue) > 0 ? discountType : undefined,
+      discount_value: discountType && Number(discountValue) > 0 ? Number(discountValue) : undefined,
       lines: parsedLines,
       sent_to_emails: recipientEmails,
       payment_terms_days: paymentTermsDays,
@@ -1142,11 +1352,29 @@ export function InvoiceComposerSheet({
       const savedInvoice = await onSubmit(payload, sendToClient, { silent: actionMode === "save_and_download" })
       reservationConsumedRef.current = true
       reservationRef.current = null
+      dirtyRef.current = false
+      setSubmitAttempted(false)
       return savedInvoice
+    } catch {
+      // The onSubmit handler already surfaced the failure toast; the sheet stays open for retry.
+      return null
     } finally {
       setSubmittingMode(null)
       submitInFlightRef.current = false
     }
+  }
+
+  // "Send invoice" always routes through an explicit confirmation showing who receives it.
+  const handleSendClick = () => {
+    const parsedLines = validateForSubmit()
+    if (!parsedLines) return
+    setSendRecipient(parsePartyDetailsBlock(customerDetails).email.trim())
+    setSendConfirmOpen(true)
+  }
+
+  const handleConfirmSend = () => {
+    setSendConfirmOpen(false)
+    void submit(true, "send", { recipientEmail: sendRecipient })
   }
 
   const generateAndDownloadPdf = async () => {
@@ -1161,12 +1389,13 @@ export function InvoiceComposerSheet({
     setGeneratingPdf(true)
     try {
       const savedInvoice = await submit(false, "save_and_download")
-      const invoiceId = savedInvoice?.id ?? invoice?.id
-      if (!invoiceId) {
+      if (!savedInvoice) {
+        // Validation or save failed — never fall back to a previously saved version, or the
+        // downloaded PDF would silently not match what's on screen.
         return
       }
 
-      const result = await generateInvoicePdfAction(invoiceId, { persistToArc: false })
+      const result = unwrapAction(await generateInvoicePdfAction(savedInvoice.id, { persistToArc: false }))
       if (result.pdfBase64) {
         openPdfBase64(result.pdfBase64, result.fileName)
       } else if (result.downloadUrl && typeof window !== "undefined") {
@@ -1189,6 +1418,15 @@ export function InvoiceComposerSheet({
   const sendDisabled = Boolean(isSubmitting || submittingMode || generatingPdf || !projectId || lines.length === 0)
   const saveAndDownloadBusy = submittingMode === "save_and_download" || generatingPdf
 
+  // Esc / outside click on a dirty form asks before discarding instead of silently dropping work.
+  const handleSheetOpenChange = (next: boolean) => {
+    if (!next && dirtyRef.current && !submitInFlightRef.current) {
+      setConfirmDiscardOpen(true)
+      return
+    }
+    onOpenChange(next)
+  }
+
   // Linked references shown as removable chips in the toolbar.
   const linkedDraw = sourceDrawId !== "none" ? drawOptions.find((draw) => draw.id === sourceDrawId) ?? null : null
   const linkedChangeOrder =
@@ -1206,7 +1444,6 @@ export function InvoiceComposerSheet({
     )
     return { costCount, totalBillableCents }
   }, [lines])
-  const hasAddSources = enableApprovedCostsSource || drawOptions.length > 0 || changeOrderOptions.length > 0
 
   // Shared grid + label styling so the header band and every line row stay in lockstep.
   // Account and cost-code columns only appear when relevant, so the template is built dynamically.
@@ -1237,7 +1474,7 @@ export function InvoiceComposerSheet({
     "[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:m-0"
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
+    <Sheet open={open} onOpenChange={handleSheetOpenChange}>
       <SheetContent
         side="right"
         mobileFullscreen
@@ -1301,24 +1538,46 @@ export function InvoiceComposerSheet({
           <div className="flex items-start justify-between gap-8">
             <div className="flex-1 min-w-0">
               <h1 className="text-2xl font-bold tracking-tight text-foreground">Invoice</h1>
-              <p className="mt-1 text-sm text-muted-foreground">{selectedProjectName}</p>
+              <GhostInput
+                value={title}
+                onChange={(e) => {
+                  titleEditedRef.current = true
+                  markDirty()
+                  setTitle(e.target.value)
+                }}
+                placeholder="Invoice title"
+                aria-label="Invoice title"
+                className={cn(
+                  "-mx-2 mt-1 h-7 w-full max-w-sm px-2 text-sm text-muted-foreground",
+                  submitAttempted && !title.trim() && "border-destructive/60",
+                )}
+              />
+              {title !== selectedProjectName && (
+                <p className="mt-0.5 text-[11px] text-muted-foreground/70">{selectedProjectName}</p>
+              )}
             </div>
             <div className="shrink-0">
               <div className="grid grid-cols-[auto_9rem] items-center gap-x-3 gap-y-1 text-sm">
                 <span className="text-right text-muted-foreground">Invoice #</span>
                 <GhostInput
                   value={invoiceNumber}
-                  onChange={(e) => setInvoiceNumber(e.target.value)}
+                  onChange={(e) => {
+                    markDirty()
+                    setInvoiceNumber(e.target.value)
+                  }}
                   disabled={numberLoading}
                   placeholder={numberLoading ? "Reserving…" : "—"}
-                  className="h-7 w-full px-2 text-right text-sm tabular-nums"
+                  className={cn(
+                    "h-7 w-full px-2 text-right text-sm tabular-nums",
+                    submitAttempted && !numberLoading && !invoiceNumber.trim() && "border-destructive/60",
+                  )}
                 />
 
                 <span className="text-right text-muted-foreground">Issued</span>
-                <DatePicker value={issueDate} onChange={setIssueDate} />
+                <DatePicker value={issueDate} onChange={handleIssueDateChange} />
 
                 <span className="text-right text-muted-foreground">Due</span>
-                <DatePicker value={dueDate} onChange={setDueDate} />
+                <DatePicker value={dueDate} onChange={handleDueDateChange} />
 
                 <span className="text-right text-muted-foreground">Net</span>
                 <GhostInput
@@ -1327,7 +1586,7 @@ export function InvoiceComposerSheet({
                   min="0"
                   max="365"
                   value={paymentTermsDays}
-                  onChange={(e) => setPaymentTermsDays(Number(e.target.value || 0))}
+                  onChange={(e) => handleTermsChange(Number(e.target.value || 0))}
                   className={cn("h-7 w-full px-2 text-right text-sm tabular-nums", noSpinner)}
                 />
               </div>
@@ -1347,7 +1606,10 @@ export function InvoiceComposerSheet({
               </div>
               <Textarea
                 value={fromDetails}
-                onChange={(e) => setFromDetails(e.target.value)}
+                onChange={(e) => {
+                  markDirty()
+                  setFromDetails(e.target.value)
+                }}
                 placeholder={"Business name\nemail@company.com\nAddress"}
                 className="mt-2 min-h-[124px] border-transparent bg-transparent text-sm shadow-none hover:border-input focus:border-input transition-colors leading-relaxed"
               />
@@ -1477,7 +1739,13 @@ export function InvoiceComposerSheet({
 
               <Textarea
                 value={customerDetails}
-                onChange={(e) => setCustomerDetails(e.target.value)}
+                onChange={(e) => {
+                  // Hand-typed billing details are a deliberate choice — the project-default
+                  // customer auto-pick must not overwrite them on later context loads.
+                  customerManuallyChosenRef.current = true
+                  markDirty()
+                  setCustomerDetails(e.target.value)
+                }}
                 placeholder={
                   showCustomerPicker ? "…or enter billing details manually" : "Name\nemail@customer.com\nBilling address"
                 }
@@ -1512,6 +1780,12 @@ export function InvoiceComposerSheet({
                 {lines.map((line) => {
                   const selectedCostCode = costCodes.find((c) => c.id === line.cost_code_id)
                   const lineAmount = (Number(line.quantity) || 0) * (Number(line.unit_cost) || 0)
+                  const quantityNumber = Number(line.quantity)
+                  const descriptionInvalid = submitAttempted && !line.description.trim()
+                  const quantityInvalid = submitAttempted && (!Number.isFinite(quantityNumber) || quantityNumber <= 0)
+                  const priceInvalid = submitAttempted && !Number.isFinite(Number(line.unit_cost))
+                  const accountMissing =
+                    submitAttempted && qboConnected && qboIncomeAccounts.length > 0 && !line.qbo_income_account_id
                   return (
                     <div
                       key={line.id}
@@ -1549,6 +1823,7 @@ export function InvoiceComposerSheet({
                               ghostTrigger,
                               "max-w-none",
                               line.qbo_income_account_id ? "text-foreground" : "text-muted-foreground",
+                              accountMissing && "border-destructive/60 text-destructive",
                             )}
                           />
                         ))}
@@ -1581,7 +1856,11 @@ export function InvoiceComposerSheet({
                         value={line.description}
                         onChange={(e) => updateLine(line.id, "description", e.target.value)}
                         placeholder="Description"
-                        className="h-full rounded-none px-2 text-sm font-medium"
+                        aria-invalid={descriptionInvalid || undefined}
+                        className={cn(
+                          "h-full rounded-none px-2 text-sm font-medium",
+                          descriptionInvalid && "border-destructive/60",
+                        )}
                       />
                       <GhostInput
                         type="number"
@@ -1590,7 +1869,12 @@ export function InvoiceComposerSheet({
                         step="0.01"
                         value={line.quantity}
                         onChange={(e) => updateLine(line.id, "quantity", e.target.value)}
-                        className={cn("h-full rounded-none px-2 text-center text-sm tabular-nums", noSpinner)}
+                        aria-invalid={quantityInvalid || undefined}
+                        className={cn(
+                          "h-full rounded-none px-2 text-center text-sm tabular-nums",
+                          noSpinner,
+                          quantityInvalid && "border-destructive/60",
+                        )}
                       />
                       <GhostInput
                         type="number"
@@ -1600,18 +1884,63 @@ export function InvoiceComposerSheet({
                         value={line.unit_cost}
                         onChange={(e) => updateLine(line.id, "unit_cost", e.target.value)}
                         placeholder="0.00"
-                        className={cn("h-full rounded-none px-2 text-right text-sm tabular-nums", noSpinner)}
+                        aria-invalid={priceInvalid || undefined}
+                        className={cn(
+                          "h-full rounded-none px-2 text-right text-sm tabular-nums",
+                          noSpinner,
+                          priceInvalid && "border-destructive/60",
+                        )}
                       />
                       <div className="flex items-center justify-end pr-2 text-sm font-semibold tabular-nums">
                         {formatMoney(lineAmount)}
                       </div>
                       <div className="flex items-center justify-center">
-                        <Checkbox
-                          checked={line.taxable}
-                          onCheckedChange={(checked) => updateLine(line.id, "taxable", checked === true)}
-                          className="size-4 rounded-[2px] shadow-none"
-                          aria-label={`Tax line ${line.description || "item"}`}
-                        />
+                        <Popover modal>
+                          <PopoverTrigger asChild>
+                            <button
+                              type="button"
+                              aria-label={`Tax settings for ${line.description || "line item"}`}
+                              className={cn(
+                                "inline-flex h-6 min-w-[28px] items-center justify-center rounded-none border border-transparent px-1 text-[11px] tabular-nums transition-colors hover:border-input",
+                                line.taxable ? "text-foreground" : "text-muted-foreground/60",
+                              )}
+                            >
+                              {!line.taxable
+                                ? "—"
+                                : line.tax_rate_percent.trim() !== ""
+                                  ? `${line.tax_rate_percent}%`
+                                  : "✓"}
+                            </button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-56 space-y-3 p-3" align="end">
+                            <label className="flex items-center gap-2 text-sm">
+                              <Checkbox
+                                checked={line.taxable}
+                                onCheckedChange={(checked) => updateLine(line.id, "taxable", checked === true)}
+                                className="size-4 rounded-[2px] shadow-none"
+                              />
+                              Taxable
+                            </label>
+                            <div className="space-y-1">
+                              <label className="text-xs text-muted-foreground" htmlFor={`tax-override-${line.id}`}>
+                                Rate override % (blank = invoice rate{taxRate > 0 ? `, ${taxRate}%` : ""})
+                              </label>
+                              <Input
+                                id={`tax-override-${line.id}`}
+                                type="number"
+                                inputMode="decimal"
+                                min="0"
+                                max="20"
+                                step="0.01"
+                                disabled={!line.taxable}
+                                value={line.tax_rate_percent}
+                                onChange={(event) => updateLine(line.id, "tax_rate_percent", event.target.value)}
+                                placeholder={taxRate > 0 ? String(taxRate) : "0"}
+                                className={cn("h-8 text-sm tabular-nums", noSpinner)}
+                              />
+                            </div>
+                          </PopoverContent>
+                        </Popover>
                       </div>
                       <button
                         type="button"
@@ -1639,9 +1968,8 @@ export function InvoiceComposerSheet({
                 <Plus className="mr-1.5 h-3.5 w-3.5" />
                 Add line
               </Button>
-              {hasAddSources && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
                     <Button variant="ghost" size="sm" className="h-8 rounded-none text-xs font-medium text-muted-foreground">
                       <Plus className="mr-1.5 h-3.5 w-3.5" />
                       Add from…
@@ -1651,9 +1979,10 @@ export function InvoiceComposerSheet({
                     {enableApprovedCostsSource && (
                       <DropdownMenuItem onSelect={() => setCostPickerOpen(true)}>Unbilled costs…</DropdownMenuItem>
                     )}
+                    <DropdownMenuItem onSelect={() => setDepositDialogOpen(true)}>Deposit / credit…</DropdownMenuItem>
                     {drawOptions.length > 0 && (
                       <>
-                        {enableApprovedCostsSource && <DropdownMenuSeparator />}
+                        <DropdownMenuSeparator />
                         <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground/70">
                           Draws
                         </DropdownMenuLabel>
@@ -1666,7 +1995,7 @@ export function InvoiceComposerSheet({
                     )}
                     {changeOrderOptions.length > 0 && (
                       <>
-                        {(enableApprovedCostsSource || drawOptions.length > 0) && <DropdownMenuSeparator />}
+                        {drawOptions.length === 0 && <DropdownMenuSeparator />}
                         <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground/70">
                           Change orders
                         </DropdownMenuLabel>
@@ -1677,9 +2006,8 @@ export function InvoiceComposerSheet({
                         ))}
                       </>
                     )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
 
@@ -1689,7 +2017,10 @@ export function InvoiceComposerSheet({
               <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-medium mb-2">Payment details</p>
               <Textarea
                 value={notes}
-                onChange={(e) => setNotes(e.target.value)}
+                onChange={(e) => {
+                  markDirty()
+                  setNotes(e.target.value)
+                }}
                 className="border-none shadow-none bg-transparent p-0 resize-none text-sm min-h-[72px] focus-visible:ring-0"
                 placeholder="Bank instructions, ACH/wire details, references, and payment notes..."
               />
@@ -1702,6 +2033,55 @@ export function InvoiceComposerSheet({
                   <span className="tabular-nums">{formatMoney(lineTotals.subtotal / 100)}</span>
                 </div>
                 <div className="flex items-center justify-between">
+                  {editingDiscount ? (
+                    <div className="flex items-center gap-1">
+                      <span className="text-muted-foreground">Disc.</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={discountValue}
+                        onChange={(e) => {
+                          markDirty()
+                          setDiscountValue(e.target.value)
+                          if (!discountType) setDiscountType("percent")
+                        }}
+                        onBlur={() => setEditingDiscount(false)}
+                        onKeyDown={(e) => e.key === "Enter" && setEditingDiscount(false)}
+                        autoFocus
+                        className="h-5 w-14 border-b border-foreground/30 bg-transparent text-center text-sm tabular-nums outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          markDirty()
+                          setDiscountType((current) => (current === "fixed" ? "percent" : "fixed"))
+                        }}
+                        className="text-muted-foreground transition-colors hover:text-foreground"
+                        aria-label="Toggle discount type"
+                      >
+                        {discountType === "fixed" ? "$" : "%"}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!discountType) setDiscountType("percent")
+                        setEditingDiscount(true)
+                      }}
+                      className="text-muted-foreground hover:text-foreground transition-colors text-left"
+                    >
+                      {lineTotals.discount > 0
+                        ? `Discount${discountType === "percent" ? ` (${discountValue}%)` : ""}`
+                        : "Discount"}
+                    </button>
+                  )}
+                  <span className="tabular-nums">
+                    {lineTotals.discount > 0 ? `-${formatMoney(lineTotals.discount / 100)}` : formatMoney(0)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
                   {editingTax ? (
                     <div className="flex items-center gap-1">
                       <span className="text-muted-foreground">Tax (</span>
@@ -1711,7 +2091,10 @@ export function InvoiceComposerSheet({
                         max="20"
                         step="0.01"
                         value={taxRate}
-                        onChange={(e) => setTaxRate(Number(e.target.value || 0))}
+                        onChange={(e) => {
+                          markDirty()
+                          setTaxRate(Number(e.target.value || 0))
+                        }}
                         onBlur={() => setEditingTax(false)}
                         onKeyDown={(e) => e.key === "Enter" && setEditingTax(false)}
                         autoFocus
@@ -1731,7 +2114,7 @@ export function InvoiceComposerSheet({
                   <span className="tabular-nums">{formatMoney(lineTotals.tax / 100)}</span>
                 </div>
                 {retainageCents > 0 ? (
-                  <div className="flex items-center justify-between text-amber-700 dark:text-amber-300">
+                  <div className="flex items-center justify-between text-warning">
                     <span>Retainage held ({retainagePercent}%)</span>
                     <span className="tabular-nums">-{formatMoney(retainageCents / 100)}</span>
                   </div>
@@ -1795,7 +2178,7 @@ export function InvoiceComposerSheet({
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
-              <Button size="sm" className="h-8 text-xs" disabled={sendDisabled} onClick={() => submit(true)}>
+              <Button size="sm" className="h-8 text-xs" disabled={sendDisabled} onClick={handleSendClick}>
                 <Send className="mr-1.5 h-3.5 w-3.5" />
                 {submittingMode === "send" ? "Sending..." : "Send invoice"}
               </Button>
@@ -1810,6 +2193,117 @@ export function InvoiceComposerSheet({
         costCodesEnabled={showCostCodeColumn}
         onConfirm={handleCostSelection}
       />
+
+      <Dialog open={sendConfirmOpen} onOpenChange={setSendConfirmOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Send invoice {invoiceNumber.trim() || ""}</DialogTitle>
+            <DialogDescription>
+              {sendRecipient.trim()
+                ? "The client receives an email with a secure link to view and pay this invoice."
+                : "No recipient email — the invoice will be marked sent and visible in the client portal, but no email will be delivered."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between border p-3 text-sm">
+              <span className="text-muted-foreground">Amount due</span>
+              <span className="font-semibold tabular-nums">{formatMoney(netInvoiceTotal / 100)}</span>
+            </div>
+            <div className="space-y-1.5">
+              <label htmlFor="invoice-send-recipient" className="text-xs font-medium text-muted-foreground">
+                Send to
+              </label>
+              <Input
+                id="invoice-send-recipient"
+                type="email"
+                value={sendRecipient}
+                onChange={(event) => setSendRecipient(event.target.value)}
+                placeholder="client@email.com"
+                className="h-9"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSendConfirmOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleConfirmSend}>
+              <Send className="mr-1.5 h-3.5 w-3.5" />
+              Send invoice
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={depositDialogOpen} onOpenChange={setDepositDialogOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Apply deposit / credit</DialogTitle>
+            <DialogDescription>
+              Adds a credit line that reduces the amount due. Use it for retainers, deposits already received, or
+              goodwill credits.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <label htmlFor="deposit-amount" className="text-xs font-medium text-muted-foreground">
+                Amount
+              </label>
+              <Input
+                id="deposit-amount"
+                inputMode="decimal"
+                value={depositAmount}
+                onChange={(event) => setDepositAmount(event.target.value)}
+                placeholder="0.00"
+                className="h-9 text-right tabular-nums"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label htmlFor="deposit-memo" className="text-xs font-medium text-muted-foreground">
+                Shown on invoice as
+              </label>
+              <Input
+                id="deposit-memo"
+                value={depositMemo}
+                onChange={(event) => setDepositMemo(event.target.value)}
+                className="h-9"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDepositDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={applyDepositCredit}>Apply credit</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={confirmDiscardOpen} onOpenChange={setConfirmDiscardOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard {mode === "edit" ? "changes" : "this invoice"}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {mode === "edit"
+                ? "Your unsaved edits to this invoice will be lost."
+                : "This invoice hasn't been saved. Closing now discards everything you've entered."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep editing</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                dirtyRef.current = false
+                setConfirmDiscardOpen(false)
+                onOpenChange(false)
+              }}
+            >
+              Discard
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Sheet>
   )
 }

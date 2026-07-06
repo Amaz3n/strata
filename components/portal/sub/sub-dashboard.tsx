@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { format } from "date-fns"
-import { Plus, AlertCircle, ChevronRight, Clock, ReceiptText } from "lucide-react"
+import { Plus, AlertCircle, CheckCircle2, ChevronRight, Clock, FileSignature, ReceiptText } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -14,6 +14,8 @@ interface SubDashboardProps {
   data: SubPortalData
   token: string
   canSubmitInvoices?: boolean
+  canSubmitTime?: boolean
+  canSubmitExpenses?: boolean
   complianceStatus?: ComplianceStatusSummary
 }
 
@@ -21,6 +23,8 @@ export function SubDashboard({
   data,
   token,
   canSubmitInvoices = true,
+  canSubmitTime = true,
+  canSubmitExpenses = true,
   complianceStatus,
 }: SubDashboardProps) {
   const upcomingSchedule = data.schedule
@@ -61,6 +65,8 @@ export function SubDashboard({
 
     return alerts
   })()
+  const canSignWaiver = (status: string, lienWaiverStatus?: string | null) =>
+    (status === "approved" || status === "partial") && lienWaiverStatus !== "received"
 
   return (
     <div className="space-y-4">
@@ -72,26 +78,32 @@ export function SubDashboard({
             <p className="text-sm text-muted-foreground">{data.company.trade}</p>
           )}
         </div>
-        {canSubmitInvoices && (
+        {(canSubmitInvoices || canSubmitTime || canSubmitExpenses) && (
           <div className="flex flex-wrap justify-end gap-2">
-            <Button asChild size="sm" variant="outline">
-              <Link href={`/s/${token}/time`}>
-                <Clock className="h-4 w-4 mr-1" />
-                Time
-              </Link>
-            </Button>
-            <Button asChild size="sm" variant="outline">
-              <Link href={`/s/${token}/expenses`}>
-                <ReceiptText className="h-4 w-4 mr-1" />
-                Expense
-              </Link>
-            </Button>
-            <Button asChild size="sm">
-              <Link href={`/s/${token}/submit-invoice`}>
-                <Plus className="h-4 w-4 mr-1" />
-                Invoice
-              </Link>
-            </Button>
+            {canSubmitTime && (
+              <Button asChild size="sm" variant="outline">
+                <Link href={`/s/${token}/time`}>
+                  <Clock className="h-4 w-4 mr-1" />
+                  Time
+                </Link>
+              </Button>
+            )}
+            {canSubmitExpenses && (
+              <Button asChild size="sm" variant="outline">
+                <Link href={`/s/${token}/expenses`}>
+                  <ReceiptText className="h-4 w-4 mr-1" />
+                  Expense
+                </Link>
+              </Button>
+            )}
+            {canSubmitInvoices && (
+              <Button asChild size="sm">
+                <Link href={`/s/${token}/submit-invoice`}>
+                  <Plus className="h-4 w-4 mr-1" />
+                  Invoice
+                </Link>
+              </Button>
+            )}
           </div>
         )}
       </div>
@@ -227,15 +239,21 @@ export function SubDashboard({
             {data.bills.slice(0, 3).map((bill) => (
               <div
                 key={bill.id}
-                className="flex items-center justify-between py-2 border-b last:border-0"
+                className="flex items-center justify-between gap-3 py-2 border-b last:border-0"
               >
-                <div>
+                <div className="min-w-0">
                   <p className="text-sm font-medium">{bill.bill_number}</p>
                   <p className="text-xs text-muted-foreground">
                     {bill.commitment_title}
                   </p>
+                  {bill.lien_waiver_status === "received" && (
+                    <p className="mt-1 flex items-center gap-1 text-xs text-success">
+                      <CheckCircle2 className="h-3 w-3" />
+                      Waiver received
+                    </p>
+                  )}
                 </div>
-                <div className="text-right">
+                <div className="shrink-0 text-right">
                   <Badge
                     variant={
                       bill.status === "paid"
@@ -251,6 +269,14 @@ export function SubDashboard({
                   <p className="text-sm font-medium">
                     ${(bill.total_cents / 100).toLocaleString()}
                   </p>
+                  {canSignWaiver(bill.status, bill.lien_waiver_status) && (
+                    <Button asChild size="sm" className="mt-2 h-8">
+                      <Link href={`/s/${token}/waivers/${bill.id}`}>
+                        <FileSignature className="mr-1 h-3.5 w-3.5" />
+                        Waiver
+                      </Link>
+                    </Button>
+                  )}
                 </div>
               </div>
             ))}

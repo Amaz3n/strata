@@ -10,7 +10,17 @@ export const documentCreateInputSchema = z.object({
   title: z.string().min(1, "Title is required"),
   source_file_id: z.string().uuid(),
   source_entity_type: z
-    .enum(["estimate", "proposal", "change_order", "lien_waiver", "selection", "subcontract", "closeout", "other"])
+    .enum([
+      "estimate",
+      "proposal",
+      "change_order",
+      "lien_waiver",
+      "selection",
+      "subcontract",
+      "subcontract_change_order",
+      "closeout",
+      "other",
+    ])
     .optional(),
   source_entity_id: z.string().uuid().optional(),
   metadata: z.record(z.any()).optional(),
@@ -70,7 +80,17 @@ export type DocumentSigningGroupInput = z.infer<typeof documentSigningGroupInput
 export const envelopeCreateInputSchema = z.object({
   document_id: z.string().uuid(),
   source_entity_type: z
-    .enum(["estimate", "proposal", "change_order", "lien_waiver", "selection", "subcontract", "closeout", "other"])
+    .enum([
+      "estimate",
+      "proposal",
+      "change_order",
+      "lien_waiver",
+      "selection",
+      "subcontract",
+      "subcontract_change_order",
+      "closeout",
+      "other",
+    ])
     .optional(),
   source_entity_id: z.string().uuid().optional(),
   document_revision: z.number().int().min(1).optional(),

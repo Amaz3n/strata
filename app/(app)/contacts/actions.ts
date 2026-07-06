@@ -10,6 +10,7 @@ import {
   // portal
   linkContactToCompany,
   listContacts,
+  restoreContact,
   unlinkContactFromCompany,
   updateContact,
 } from "@/lib/services/contacts"
@@ -25,6 +26,7 @@ import {
   setPortalTokenRequireAccount,
 } from "@/lib/services/portal-access"
 import { requireOrgContext } from "@/lib/services/context"
+import { requireAnyPermission } from "@/lib/services/permissions"
 import { sendProjectPortalInviteEmail } from "@/lib/services/mailer"
 
 function parseCsvLine(line: string): string[] {
@@ -100,6 +102,13 @@ export async function archiveContactAction(contactId: string) {
   return true
 }
 
+export async function restoreContactAction(contactId: string) {
+  await restoreContact(contactId)
+  revalidatePath("/contacts")
+  revalidatePath("/directory")
+  return true
+}
+
 export async function linkContactToCompanyAction(input: unknown) {
   const parsed = contactCompanyLinkSchema.parse(input)
   await linkContactToCompany(parsed)
@@ -148,7 +157,12 @@ export async function sendPortalInviteAction({
     throw new Error("This subcontractor contact needs a company before you can send a sub portal invite")
   }
 
-  const { supabase, orgId } = await requireOrgContext()
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireAnyPermission(["org.member", "directory.write", "project.manage"], {
+    supabase,
+    orgId,
+    userId,
+  })
 
   let token =
     await findReusablePortalAccessToken({

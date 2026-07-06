@@ -7,20 +7,21 @@ import { OptimisticLink, useOptimisticPathname } from "@/lib/navigation/optimist
 import {
   ArrowLeft,
   Bell,
-  Briefcase,
+  Bug,
   Building2,
+  CalendarDays,
+  ClipboardCheck,
   Contact,
   CreditCard,
-  Flag,
+  FileText,
   FolderOpen,
-  Hammer,
   HardHat,
   Home,
-  LayoutDashboard,
   Link2,
   Receipt,
   Settings,
   Shield,
+  ShieldCheck,
   SlidersHorizontal,
   Tag,
   User as UserIcon,
@@ -45,40 +46,31 @@ import {
   SidebarRail,
   SidebarSeparator,
 } from "@/components/ui/sidebar"
-import type { Project, User } from "@/lib/types"
-import { getProjectFinancialFeatureConfig } from "@/lib/financials/billing-model"
+import type { User } from "@/lib/types"
 import { useSidebarProjects } from "./use-sidebar-projects"
+import {
+  buildProjectNavGroups,
+  getProjectIdFromPath,
+  getProjectSection,
+  type ProjectNavGroup,
+  type ProjectNavItem,
+  type ProjectNavSubItem,
+} from "./project-nav-items"
 
 interface AppSidebarProps {
   user?: User | null
   pipelineBadgeCount?: number
+  myWorkBadgeCount?: number
+  readyToBillBadgeCount?: number
+  projectReviewBadgeCounts?: Record<string, number>
   canAccessPlatform?: boolean
   permissions?: string[]
   whatsNewUnreadCount?: number
 }
 
-type SidebarNavSubItem = {
-  title: string
-  url: string
-  isActive?: boolean
-  requiredAny?: string[]
-}
-
-type SidebarNavItem = {
-  title: string
-  url: string
-  icon?: LucideIcon
-  isActive?: boolean
-  badge?: number
-  disabled?: boolean
-  requiredAny?: string[]
-  items?: SidebarNavSubItem[]
-}
-
-type SidebarNavGroup = {
-  label?: string
-  items: SidebarNavItem[]
-}
+type SidebarNavSubItem = ProjectNavSubItem
+type SidebarNavItem = ProjectNavItem
+type SidebarNavGroup = ProjectNavGroup
 
 const settingsItems: SidebarNavItem[] = [
   { title: "Profile", url: "/settings?tab=profile", icon: UserIcon },
@@ -90,45 +82,12 @@ const settingsItems: SidebarNavItem[] = [
   { title: "Integrations", url: "/settings?tab=integrations", icon: Link2 },
   { title: "Team", url: "/settings?tab=team", icon: Users },
   { title: "Cost Codes", url: "/settings?tab=cost-codes", icon: Tag },
-  { title: "Markup Rules", url: "/settings/markup-rules", icon: Tag },
-  { title: "Vendor Compliance", url: "/settings?tab=compliance", icon: Settings },
-  { title: "About", url: "/settings?tab=about", icon: Shield },
+  { title: "Markup Rules", url: "/settings/markup-rules", icon: SlidersHorizontal },
+  { title: "Billing Rates", url: "/settings/billing-rates", icon: Wallet },
+  { title: "Templates", url: "/settings/templates", icon: FileText },
+  { title: "Vendor Compliance", url: "/settings?tab=compliance", icon: ShieldCheck },
+  { title: "About", url: "/settings?tab=about", icon: Settings },
 ]
-
-function getProjectIdFromPath(pathname: string): string | null {
-  if (pathname === "/projects" || pathname.startsWith("/projects?")) return null
-  const match = pathname.match(/^\/projects\/([^/]+)/)
-  return match?.[1] ?? null
-}
-
-function getProjectSection(pathname: string): string {
-  if (pathname.includes("/drawings")) return "drawings"
-  if (pathname.includes("/rfis")) return "rfis"
-  if (pathname.includes("/submittals")) return "submittals"
-  if (pathname.includes("/decisions")) return "decisions"
-  if (pathname.includes("/signatures")) return "signatures"
-  if (pathname.includes("/documents")) return "documents"
-  if (pathname.includes("/bids")) return "bids"
-  if (pathname.includes("/change-orders")) return "change-orders"
-  if (pathname.includes("/invoices")) return "invoices"
-  if (pathname.includes("/financials/receivables")) return "receivables"
-  if (pathname.includes("/financials/trust-center")) return "trust-center"
-  if (pathname.includes("/budget")) return "budget"
-  if (pathname.includes("/commitments")) return "commitments"
-  if (pathname.includes("/payables")) return "payables"
-  if (pathname.includes("/cost-inbox")) return "cost-inbox"
-  if (pathname.includes("/time")) return "time"
-  if (pathname.includes("/expenses")) return "expenses"
-  if (pathname.includes("/reports")) return "reports"
-  if (pathname.includes("/schedule")) return "schedule"
-  if (pathname.includes("/tasks")) return "tasks"
-  if (pathname.includes("/daily-logs")) return "daily-logs"
-  if (pathname.includes("/punch")) return "punch"
-  if (pathname.includes("/closeout")) return "closeout"
-  if (pathname.includes("/warranty")) return "warranty"
-  if (pathname.includes("/financials")) return "financials"
-  return "overview"
-}
 
 function canAccess(requiredAny: string[] | undefined, permissions: Set<string>) {
   if (!requiredAny || requiredAny.length === 0) return true
@@ -158,14 +117,24 @@ function filterGroups(groups: SidebarNavGroup[], permissions: Set<string>): Side
 function buildWorkspaceGroups(
   pathname: string,
   pipelineBadgeCount?: number,
+  myWorkBadgeCount?: number,
+  readyToBillBadgeCount?: number,
   canAccessPlatform?: boolean,
 ): SidebarNavGroup[] {
-  const items: SidebarNavItem[] = [
+  const workspaceItems: SidebarNavItem[] = [
     {
       title: "Home",
       url: "/",
       icon: Home,
       isActive: pathname === "/",
+    },
+    {
+      title: "Tasks",
+      url: "/tasks",
+      icon: ClipboardCheck,
+      isActive: pathname.startsWith("/tasks") || pathname.startsWith("/my-work"),
+      badge: myWorkBadgeCount && myWorkBadgeCount > 0 ? myWorkBadgeCount : undefined,
+      requiredAny: ["org.member"],
     },
     {
       title: "Projects",
@@ -182,6 +151,31 @@ function buildWorkspaceGroups(
       badge: pipelineBadgeCount && pipelineBadgeCount > 0 ? pipelineBadgeCount : undefined,
       requiredAny: ["pipeline.read", "pipeline.write"],
     },
+  ]
+
+  const officeItems: SidebarNavItem[] = [
+    {
+      title: "Billing",
+      url: "/billing",
+      icon: Wallet,
+      isActive: pathname.startsWith("/billing"),
+      badge: readyToBillBadgeCount && readyToBillBadgeCount > 0 ? readyToBillBadgeCount : undefined,
+      requiredAny: ["invoice.read"],
+    },
+    {
+      title: "Payables",
+      url: "/payables",
+      icon: CreditCard,
+      isActive: pathname.startsWith("/payables"),
+      requiredAny: ["bill.read", "payment.read"],
+    },
+    {
+      title: "Schedule",
+      url: "/schedule",
+      icon: CalendarDays,
+      isActive: pathname.startsWith("/schedule"),
+      requiredAny: ["schedule.read"],
+    },
     {
       title: "Directory",
       url: "/directory",
@@ -191,110 +185,37 @@ function buildWorkspaceGroups(
     },
   ]
 
-  return [{ items }]
-}
+  const groups: SidebarNavGroup[] = [{ items: workspaceItems }, { label: "Office", items: officeItems }]
 
-function getFinancialLandingUrl(projectId: string, project?: Project) {
-  const base = `/projects/${projectId}`
-  if (!project) return `${base}/financials`
-  const config = getProjectFinancialFeatureConfig(project, project.billing_contract)
-  if (config.landingPage === "receivables") return `${base}/financials/receivables`
-  if (config.landingPage === "budget") return `${base}/financials/budget`
-  return `${base}/financials`
-}
-
-function buildFinancialSubs(projectId: string, section: string, project?: Project): SidebarNavSubItem[] {
-  const base = `/projects/${projectId}`
-  const url = (suffix = "") => `${base}${suffix}`
-  const config = project ? getProjectFinancialFeatureConfig(project, project.billing_contract) : null
-
-  return [
-    config?.showInbox === false
-      ? null
-      : { title: "Inbox", url: url("/financials"), isActive: section === "financials" || section === "cost-inbox", requiredAny: ["budget.read", "invoice.read", "bill.read", "payment.read", "draw.read", "commitment.read"] },
-    { title: "Budget", url: url("/financials/budget"), isActive: section === "budget" || section === "commitments", requiredAny: ["budget.read", "commitment.read"] },
-    { title: "Receivables", url: url("/financials/receivables"), isActive: section === "receivables" || section === "invoices", requiredAny: ["invoice.read", "payment.read", "draw.read"] },
-    { title: "Payables", url: url("/financials/payables"), isActive: section === "payables", requiredAny: ["bill.read", "commitment.read"] },
-    config?.showTime === false
-      ? null
-      : { title: "Time", url: url("/time"), isActive: section === "time", requiredAny: ["invoice.read", "invoice.write"] },
-    { title: "Expenses", url: url("/expenses"), isActive: section === "expenses", requiredAny: ["invoice.read", "invoice.write", "bill.read"] },
-    { title: "Change Orders", url: url("/change-orders"), isActive: section === "change-orders", requiredAny: ["change_order.read"] },
-    { title: "Reports", url: url("/reports"), isActive: section === "reports", requiredAny: ["budget.read", "invoice.read"] },
-  ].filter(Boolean) as SidebarNavSubItem[]
-}
-
-function buildProjectGroups(projectId: string, section: string, project?: Project): SidebarNavGroup[] {
-  const base = `/projects/${projectId}`
-  const url = (suffix = "") => `${base}${suffix}`
-  const financialSections = ["financials", "budget", "commitments", "payables", "receivables", "invoices", "reports", "time", "expenses", "change-orders", "cost-inbox", "trust-center"]
-
-  const planSubs: SidebarNavSubItem[] = [
-    { title: "Documents", url: url("/documents"), isActive: section === "documents", requiredAny: ["docs.read"] },
-    { title: "Drawings", url: url("/drawings"), isActive: section === "drawings", requiredAny: ["drawing.read", "docs.read"] },
-    { title: "Bids", url: url("/bids"), isActive: section === "bids", requiredAny: ["bid.read", "bid.write"] },
-    { title: "Signatures", url: url("/signatures"), isActive: section === "signatures", requiredAny: ["signature.read", "signature.send"] },
-  ]
-  const buildSubs: SidebarNavSubItem[] = [
-    { title: "Schedule", url: url("/schedule"), isActive: section === "schedule", requiredAny: ["schedule.read"] },
-    { title: "Daily Logs", url: url("/daily-logs"), isActive: section === "daily-logs", requiredAny: ["daily_log.read"] },
-    { title: "Punch", url: url("/punch"), isActive: section === "punch", requiredAny: ["punch.read", "punch.write"] },
-    { title: "RFIs", url: url("/rfis"), isActive: section === "rfis", requiredAny: ["rfi.read"] },
-    { title: "Submittals", url: url("/submittals"), isActive: section === "submittals", requiredAny: ["submittal.read"] },
-    { title: "Decisions", url: url("/decisions"), isActive: section === "decisions", requiredAny: ["decision.read", "decision.write"] },
-  ]
-  const financialSubs = buildFinancialSubs(projectId, section, project)
-  const closeSubs: SidebarNavSubItem[] = [
-    { title: "Closeout", url: url("/closeout"), isActive: section === "closeout", requiredAny: ["closeout.read", "closeout.write"] },
-    { title: "Warranty", url: url("/warranty"), isActive: section === "warranty", requiredAny: ["warranty.read", "warranty.write"] },
-  ]
-
-  return [
-    {
+  if (canAccessPlatform) {
+    groups.push({
+      label: "Platform",
       items: [
         {
-          title: "Overview",
-          url: url(),
-          icon: LayoutDashboard,
-          isActive: section === "overview",
-          requiredAny: ["org.member", "project.read"],
+          title: "Platform",
+          url: "/platform",
+          icon: Shield,
+          isActive: pathname === "/platform",
         },
         {
-          title: "Plan",
-          url: url("/documents"),
-          icon: Briefcase,
-          isActive: planSubs.some((s) => s.isActive),
-          items: planSubs,
-        },
-        {
-          title: "Build",
-          url: url("/schedule"),
-          icon: Hammer,
-          isActive: buildSubs.some((s) => s.isActive),
-          items: buildSubs,
-        },
-        {
-          title: "Financials",
-          url: getFinancialLandingUrl(projectId, project),
-          icon: Wallet,
-          isActive: financialSubs.some((s) => s.isActive) || financialSections.includes(section),
-          items: financialSubs,
-        },
-        {
-          title: "Close",
-          url: url("/closeout"),
-          icon: Flag,
-          isActive: closeSubs.some((s) => s.isActive),
-          items: closeSubs,
+          title: "Issues",
+          url: "/platform/bugs",
+          icon: Bug,
+          isActive: pathname.startsWith("/platform/bugs"),
         },
       ],
-    },
-  ]
+    })
+  }
+
+  return groups
 }
 
 export function AppSidebar({
   user,
   pipelineBadgeCount,
+  myWorkBadgeCount,
+  readyToBillBadgeCount,
+  projectReviewBadgeCounts = {},
   canAccessPlatform,
   permissions = [],
   whatsNewUnreadCount = 0,
@@ -321,32 +242,41 @@ export function AppSidebar({
     if (settingsReturnTo) params.set("returnTo", settingsReturnTo)
     return `/settings?${params.toString()}`
   }
-  const switchSettingsTab = (tab: string) => {
-    setActiveSettingsTab(tab)
-    window.history.replaceState(null, "", settingsHref(tab))
-    window.dispatchEvent(new CustomEvent("arc-settings-tab-change", { detail: tab }))
+  const navigateSettingsItem = (item: SidebarNavItem) => {
+    const tab = new URLSearchParams(item.url.split("?")[1] ?? "").get("tab")
+    const isDirty = Boolean((window as typeof window & { __arcSettingsDirty?: boolean }).__arcSettingsDirty)
+    if (isDirty && !window.confirm("Discard unsaved settings changes?")) return
+
+    if (tab) {
+      setActiveSettingsTab(tab)
+      router.replace(settingsHref(tab), { scroll: false })
+      return
+    }
+
+    router.push(item.url)
   }
   useEffect(() => {
     setActiveSettingsTab(searchParams.get("tab") ?? "profile")
   }, [searchParams])
-  useEffect(() => {
-    const handleSettingsTabChange = (event: Event) => {
-      setActiveSettingsTab((event as CustomEvent<string>).detail)
-    }
-    window.addEventListener("arc-settings-tab-change", handleSettingsTabChange)
-    return () => window.removeEventListener("arc-settings-tab-change", handleSettingsTabChange)
-  }, [])
 
   const navGroups = useMemo(() => {
     if (isSettings) return [] as SidebarNavGroup[]
     if (isProject && projectId) {
-      return filterGroups(buildProjectGroups(projectId, section, currentProject), permissionSet)
+      return filterGroups(
+        buildProjectNavGroups({
+          projectId,
+          section,
+          project: currentProject,
+          reviewBadgeCount: projectReviewBadgeCounts[projectId],
+        }),
+        permissionSet,
+      )
     }
     return filterGroups(
-      buildWorkspaceGroups(pathname, pipelineBadgeCount, canAccessPlatform),
+      buildWorkspaceGroups(pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform),
       permissionSet,
     )
-  }, [isSettings, isProject, projectId, section, currentProject, pathname, pipelineBadgeCount, canAccessPlatform, permissionSet])
+  }, [isSettings, isProject, projectId, section, currentProject, pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, permissionSet, projectReviewBadgeCounts])
 
   const navMain = navGroups.map((group) => ({
     ...group,
@@ -426,8 +356,8 @@ export function AppSidebar({
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton
                     tooltip={item.title}
-                    isActive={activeSettingsTab === new URLSearchParams(item.url.split("?")[1] ?? "").get("tab")}
-                    onClick={() => switchSettingsTab(new URLSearchParams(item.url.split("?")[1] ?? "").get("tab") ?? "profile")}
+                    isActive={item.url.includes("?tab=") ? activeSettingsTab === new URLSearchParams(item.url.split("?")[1] ?? "").get("tab") : pathname === item.url}
+                    onClick={() => navigateSettingsItem(item)}
                   >
                     {item.icon && <item.icon />}
                     <span>{item.title}</span>

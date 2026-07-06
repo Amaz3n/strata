@@ -32,6 +32,29 @@ type ChangeOrderRow = {
   updated_at?: string
 }
 
+type ChangeOrderLineRow = {
+  id?: string | null
+  change_order_id?: string | null
+  cost_code_id?: string | null
+  budget_line_id?: string | null
+  description?: string | null
+  quantity?: number | string | null
+  unit?: string | null
+  unit_cost_cents?: number | null
+  gmp_classification?: "inside_gmp" | "outside_gmp" | null
+  gmp_impact?: "none" | "increase_gmp" | "decrease_gmp" | "outside_gmp" | null
+  gmp_delta_cents?: number | null
+  metadata?: Record<string, any> | null
+}
+
+export type ManualOfflineChangeOrderApprovalInput = {
+  approvedAt?: string | null
+  signerName?: string | null
+  signerEmail?: string | null
+  note?: string | null
+  signedFileId?: string | null
+}
+
 function normalizeLines(lines: ChangeOrderLineInput[]): ChangeOrderLine[] {
   return lines.map((line) => ({
     cost_code_id: line.cost_code_id ?? null,
@@ -250,6 +273,62 @@ async function postBudgetRevisionForChangeOrder({
   return { revisionId: revision.id, financialImpact }
 }
 
+function mapChangeOrderLineRow(row: ChangeOrderLineRow): ChangeOrderLine {
+  const metadata = row.metadata ?? {}
+  return {
+    id: row.id ?? undefined,
+    cost_code_id: row.cost_code_id ?? null,
+    budget_line_id: row.budget_line_id ?? null,
+    description: row.description ?? "",
+    quantity: Number(row.quantity ?? 1),
+    unit: row.unit ?? "unit",
+    unit_cost_cents: row.unit_cost_cents ?? 0,
+    allowance_cents: typeof metadata.allowance_cents === "number" ? metadata.allowance_cents : 0,
+    taxable: metadata.taxable !== false,
+    gmp_classification: row.gmp_classification ?? metadata.gmp_classification ?? "inside_gmp",
+    gmp_impact: row.gmp_impact ?? metadata.gmp_impact ?? "none",
+    gmp_delta_cents:
+      typeof row.gmp_delta_cents === "number"
+        ? row.gmp_delta_cents
+        : typeof metadata.gmp_delta_cents === "number"
+          ? metadata.gmp_delta_cents
+          : 0,
+  }
+}
+
+async function loadChangeOrderLines(
+  supabase: SupabaseClient,
+  orgId: string,
+  changeOrderIds: string[],
+) {
+  const ids = Array.from(new Set(changeOrderIds.filter(Boolean)))
+  const linesByChangeOrderId = new Map<string, ChangeOrderLine[]>()
+  if (ids.length === 0) return linesByChangeOrderId
+
+  const { data, error } = await supabase
+    .from("change_order_lines")
+    .select(
+      "id, change_order_id, cost_code_id, budget_line_id, description, quantity, unit, unit_cost_cents, gmp_classification, gmp_impact, gmp_delta_cents, metadata, sort_order",
+    )
+    .eq("org_id", orgId)
+    .in("change_order_id", ids)
+    .order("sort_order", { ascending: true })
+
+  if (error) {
+    throw new Error(`Failed to load change order lines: ${error.message}`)
+  }
+
+  for (const row of (data ?? []) as ChangeOrderLineRow[]) {
+    const changeOrderId = row.change_order_id
+    if (!changeOrderId) continue
+    const existing = linesByChangeOrderId.get(changeOrderId) ?? []
+    existing.push(mapChangeOrderLineRow(row))
+    linesByChangeOrderId.set(changeOrderId, existing)
+  }
+
+  return linesByChangeOrderId
+}
+
 function mapChangeOrderRow(row: ChangeOrderRow): ChangeOrder {
   const metadata = row.metadata ?? {}
   const lines = (metadata.lines as ChangeOrderLine[] | undefined) ?? []
@@ -317,7 +396,12 @@ export async function fetchChangeOrder(
   const { data, error } = await query.maybeSingle()
 
   if (error) throw new Error(`Failed to load change order: ${error.message}`)
-  return data ? mapChangeOrderRow(data as ChangeOrderRow) : null
+  if (!data) return null
+
+  const changeOrder = mapChangeOrderRow(data as ChangeOrderRow)
+  const lineMap = await loadChangeOrderLines(supabase, changeOrder.org_id, [changeOrder.id])
+  const tableLines = lineMap.get(changeOrder.id)
+  return tableLines && tableLines.length > 0 ? { ...changeOrder, lines: tableLines } : changeOrder
 }
 
 export async function listChangeOrders({
@@ -356,7 +440,16 @@ export async function listChangeOrders({
   }
 
   const rows = (data ?? []) as ChangeOrderRow[]
-  const changeOrders = rows.map((row) => mapChangeOrderRow(row))
+  const metadataBackedChangeOrders = rows.map((row) => mapChangeOrderRow(row))
+  const lineMap = await loadChangeOrderLines(
+    supabase,
+    resolvedOrgId,
+    metadataBackedChangeOrders.map((row) => row.id),
+  )
+  const changeOrders = metadataBackedChangeOrders.map((changeOrder) => {
+    const tableLines = lineMap.get(changeOrder.id)
+    return tableLines && tableLines.length > 0 ? { ...changeOrder, lines: tableLines } : changeOrder
+  })
   const projectIds = Array.from(new Set(changeOrders.map((row) => row.project_id).filter(Boolean)))
 
   if (projectIds.length === 0) {
@@ -980,12 +1073,29 @@ export async function approveChangeOrderFromPortalSignature(input: {
   return { success: true, idempotent: false }
 }
 
+function normalizeManualApprovalDate(value?: string | null) {
+  const trimmed = value?.trim()
+  if (!trimmed) return null
+
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(trimmed)
+    ? new Date(`${trimmed}T12:00:00.000Z`)
+    : new Date(trimmed)
+
+  if (Number.isNaN(date.getTime())) {
+    throw new Error("Approval date is invalid.")
+  }
+
+  return date.toISOString()
+}
+
 export async function approveChangeOrder({
   changeOrderId,
   orgId,
+  approval,
 }: {
   changeOrderId: string
   orgId?: string
+  approval?: ManualOfflineChangeOrderApprovalInput
 }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAuthorization({
@@ -1003,18 +1113,91 @@ export async function approveChangeOrder({
     throw new Error("Change order not found")
   }
 
+  if (existing.status === "approved") {
+    return existing
+  }
+
   const nowIso = new Date().toISOString()
+  const approvedAt = normalizeManualApprovalDate(approval?.approvedAt) ?? nowIso
+  const signerName = approval?.signerName?.trim() || null
+  const signerEmail = approval?.signerEmail?.trim() || null
+  const approvalNote = approval?.note?.trim() || null
+  const signedFileId = approval?.signedFileId?.trim() || null
+
+  if (signedFileId) {
+    const { data: file, error: fileError } = await supabase
+      .from("files")
+      .select("id, project_id")
+      .eq("org_id", resolvedOrgId)
+      .eq("id", signedFileId)
+      .maybeSingle()
+
+    if (fileError || !file) {
+      throw new Error("Signed approval file was not found.")
+    }
+
+    if (file.project_id && file.project_id !== existing.project_id) {
+      throw new Error("Signed approval file belongs to a different project.")
+    }
+
+    await attachFileWithServiceRole({
+      orgId: resolvedOrgId,
+      fileId: signedFileId,
+      projectId: existing.project_id,
+      entityType: "change_order",
+      entityId: existing.id,
+      linkRole: "executed_change_order",
+      createdBy: userId,
+    })
+  }
+
   const financialImpact = buildApprovedChangeOrderFinancialMetadata(existing, userId)
+  const offlineApproval = {
+    approved_at: approvedAt,
+    recorded_at: nowIso,
+    recorded_by: userId,
+    signer_name: signerName,
+    signer_email: signerEmail,
+    note: approvalNote,
+    signed_file_id: signedFileId,
+  }
+
+  const { error: approvalError } = await supabase.from("approvals").insert({
+    org_id: existing.org_id,
+    entity_type: "change_order",
+    entity_id: changeOrderId,
+    approver_id: userId,
+    status: "approved",
+    decision_at: approvedAt,
+    decision_notes: approvalNote ?? "Approved offline outside Arc",
+    payload: {
+      source: "manual_offline",
+      ...offlineApproval,
+    },
+    signature_data: JSON.stringify(offlineApproval),
+    signature_ip: null,
+    signed_at: approvedAt,
+  })
+
+  if (approvalError) {
+    throw new Error(`Failed to record offline approval: ${approvalError.message}`)
+  }
+
   const { data, error } = await supabase
     .from("change_orders")
     .update({
       status: "approved",
-      approved_at: nowIso,
+      approved_at: approvedAt,
       approved_by: userId,
       metadata: {
         ...(existing.metadata ?? {}),
         approval_method: "manual_offline",
         approved_by_user: userId,
+        approved_at: approvedAt,
+        approved_signer_name: signerName,
+        approved_signer_email: signerEmail,
+        approved_signed_file_id: signedFileId,
+        manual_offline_approval: offlineApproval,
         financial_impact: {
           ...(existing.metadata?.financial_impact ?? {}),
           ...financialImpact,
@@ -1037,7 +1220,9 @@ export async function approveChangeOrder({
     await postBudgetRevisionForChangeOrder({
       supabase,
       changeOrder: {
+        ...existing,
         ...mapChangeOrderRow(data as ChangeOrderRow),
+        lines: existing.lines,
         metadata: data.metadata as any,
       },
       actorId: userId,
@@ -1055,7 +1240,7 @@ export async function approveChangeOrder({
     eventType: "change_order_approved",
     entityType: "change_order",
     entityId: data.id,
-    payload: { project_id: data.project_id },
+    payload: { project_id: data.project_id, source: "manual_offline", approved_at: approvedAt, signer_name: signerName },
   })
 
   await recordAudit({
@@ -1340,7 +1525,8 @@ async function applyChangeOrderFinancialImpact({
  * Unlike draws, change_orders has no invoice_id column: the link lives entirely
  * in the invoice's metadata (source_change_order_id). Linking here stamps that
  * metadata, which is also what the composer reads to hide already-billed COs.
- * Any CO status (including draft) may be linked.
+ * Only approved COs may be linked; draft and sent COs have not changed the
+ * contract value yet.
  */
 export async function linkInvoiceToChangeOrder({
   changeOrderId,
@@ -1687,6 +1873,7 @@ export async function updateChangeOrder({
     org_id: resolvedOrgId,
     change_order_id: data.id,
     cost_code_id: line.cost_code_id ?? null,
+    budget_line_id: line.budget_line_id ?? null,
     description: line.description,
     quantity: line.quantity,
     unit: line.unit ?? "unit",

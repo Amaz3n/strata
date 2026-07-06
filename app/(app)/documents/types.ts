@@ -20,6 +20,7 @@ export interface FinalizeUploadedFileInput {
   storagePath: string
   fileSize: number
   mimeType?: string
+  checksum?: string | null
   category?: FileCategory
   visibility?: "public" | "private"
   folderPath?: string | null

@@ -25,15 +25,6 @@
     "paths": {
       "@/*": [
         "./*"
-      ],
-      "@midday/ui/*": [
-        "./components/midday/ui/*"
-      ],
-      "@midday/invoice": [
-        "./packages/invoice/src"
-      ],
-      "@midday/invoice/*": [
-        "./packages/invoice/src/*"
       ]
     }
   },
@@ -46,7 +37,6 @@
   ],
   "exclude": [
     "node_modules",
-    "supabase/functions",
-    "packages/invoice/invoice"
+    "supabase/functions"
   ]
 }

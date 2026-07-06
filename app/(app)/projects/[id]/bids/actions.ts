@@ -10,14 +10,21 @@ import {
   createBidInvite,
   bulkCreateBidInvites,
   generateBidInviteLink,
+  resendBidInvite,
   listBidAddenda,
   createBidAddendum,
   listBidSubmissions,
+  createManualBidSubmission,
+  updateBidSubmissionLeveling,
   awardBidSubmission,
   pauseBidInviteAccess,
   resumeBidInviteAccess,
   revokeBidInviteAccess,
   setBidInviteRequireAccount,
+  listBidPackageRfis,
+  listBidPackageRfiResponses,
+  answerBidPackageRfi,
+  listBidPackageActivity,
 } from "@/lib/services/bids"
 import {
   pauseBidInviteAccountGrants,
@@ -68,6 +75,13 @@ export async function bulkCreateBidInvitesAction(projectId: string, bidPackageId
 
 export async function generateBidInviteLinkAction(projectId: string, bidPackageId: string, inviteId: string) {
   const result = await generateBidInviteLink(inviteId)
+  revalidatePath(`/projects/${projectId}/bids`)
+  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+  return result
+}
+
+export async function resendBidInviteAction(projectId: string, bidPackageId: string, inviteId: string) {
+  const result = await resendBidInvite({ inviteId })
   revalidatePath(`/projects/${projectId}/bids`)
   revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
   return result
@@ -139,6 +153,39 @@ export async function createBidAddendumAction(projectId: string, input: unknown)
 
 export async function listBidSubmissionsAction(bidPackageId: string) {
   return listBidSubmissions(bidPackageId)
+}
+
+export async function createManualBidSubmissionAction(projectId: string, bidPackageId: string, input: unknown) {
+  const submission = await createManualBidSubmission({ input })
+  revalidatePath(`/projects/${projectId}/bids`)
+  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+  return submission
+}
+
+export async function updateBidSubmissionLevelingAction(projectId: string, bidPackageId: string, input: unknown) {
+  const submission = await updateBidSubmissionLeveling({ input })
+  revalidatePath(`/projects/${projectId}/bids`)
+  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+  return submission
+}
+
+export async function listBidPackageRfisAction(bidPackageId: string) {
+  return listBidPackageRfis(bidPackageId)
+}
+
+export async function listBidPackageRfiResponsesAction(rfiId: string) {
+  return listBidPackageRfiResponses({ rfiId })
+}
+
+export async function answerBidPackageRfiAction(projectId: string, bidPackageId: string, input: unknown) {
+  const result = await answerBidPackageRfi({ input })
+  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+  revalidatePath(`/projects/${projectId}/rfis`)
+  return result
+}
+
+export async function listBidPackageActivityAction(bidPackageId: string) {
+  return listBidPackageActivity(bidPackageId)
 }
 
 export async function awardBidSubmissionAction(

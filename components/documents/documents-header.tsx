@@ -46,6 +46,8 @@ const CATEGORY_LABELS: Record<Exclude<QuickFilter, "all" | "drawings">, string> 
   safety: "Safety",
   financials: "Financials",
   other: "Other",
+  expiring: "Expiring",
+  trash: "Trash",
 }
 
 interface DocumentsHeaderProps {

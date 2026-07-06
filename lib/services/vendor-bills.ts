@@ -17,6 +17,8 @@ import { getCompanyComplianceStatusWithClient } from "@/lib/services/compliance-
 import { propagateApprovalToLedger, voidBillableCostsForVendorBill } from "@/lib/services/cost-plus"
 import { voidJobCostEntriesForVendorBill } from "@/lib/services/job-cost-actuals"
 import { enqueueBillPaymentSync, enqueueVendorBillSync } from "@/lib/services/qbo-sync"
+import { APPROVAL_GATE_REASONS, loadApprovalGateSettings } from "@/lib/financials/approval-gates"
+import { payableOutstandingCents } from "@/lib/financials/payables-rules"
 
 export type VendorBillStatus = "pending" | "approved" | "partial" | "paid"
 export type PayableKind = "bill" | "vendor_credit"
@@ -92,6 +94,13 @@ export interface VendorBillSummary {
   imported_from_qbo: boolean
   payments: VendorBillPaymentSummary[]
 }
+
+const vendorBillSelect = `
+  id, org_id, project_id, commitment_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
+  project:projects(id, name),
+  company:companies!vendor_bills_company_id_fkey(id, name, qbo_vendor_id, qbo_vendor_name),
+  commitment:commitments(id, title, total_cents, company:companies(id, name, qbo_vendor_id, qbo_vendor_name))
+`
 
 export interface VendorBillProjectShare {
   id: string
@@ -597,13 +606,16 @@ export async function updateVendorBillStatus({
 
   const { data: existing, error: existingError } = await supabase
     .from("vendor_bills")
-    .select("id, org_id, project_id, commitment_id, company_id, bill_number, bill_date, due_date, status, total_cents, currency, metadata, approved_at, approved_by, paid_at, paid_cents, lien_waiver_status, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name")
+    .select("id, org_id, project_id, commitment_id, company_id, bill_number, bill_date, due_date, status, total_cents, currency, file_id, metadata, updated_at, approved_at, approved_by, paid_at, paid_cents, retainage_percent, retainage_cents, lien_waiver_status, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name")
     .eq("org_id", resolvedOrgId)
     .eq("id", billId)
     .maybeSingle()
 
   if (existingError || !existing) {
     throw new Error("Vendor bill not found")
+  }
+  if (parsed.expected_updated_at && existing.updated_at && parsed.expected_updated_at !== existing.updated_at) {
+    throw new Error("This payable changed since you opened it. Refresh and review the latest values before saving.")
   }
   const existingMetadata = (existing.metadata as Record<string, any> | null) ?? {}
   const isVendorCredit = existingMetadata.source === "vendor_credit"
@@ -653,6 +665,8 @@ export async function updateVendorBillStatus({
     const rules = await getComplianceRules(resolvedOrgId).catch(() => ({
       require_lien_waiver: false,
       block_payment_on_missing_docs: true,
+      warn_subcontract_execution_on_missing_docs: true,
+      block_subcontract_execution_on_missing_docs: false,
     }))
 
     if (rules.block_payment_on_missing_docs) {
@@ -660,7 +674,8 @@ export async function updateVendorBillStatus({
         throw new Error("Lien waiver required before payment")
       }
 
-      if (existing.commitment_id) {
+      let companyId = existing.company_id as string | undefined
+      if (!companyId && existing.commitment_id) {
         const { data: commitment, error: commitmentError } = await supabase
           .from("commitments")
           .select("company_id")
@@ -672,12 +687,13 @@ export async function updateVendorBillStatus({
           throw new Error(`Unable to validate compliance: ${commitmentError.message}`)
         }
 
-        const companyId = (commitment as any)?.company_id as string | undefined
-        if (companyId) {
-          const status = await getCompanyComplianceStatusWithClient(supabase, resolvedOrgId, companyId)
-          if (!status.is_compliant) {
-            throw new Error("Compliance documents required before payment")
-          }
+        companyId = (commitment as any)?.company_id as string | undefined
+      }
+
+      if (companyId) {
+        const status = await getCompanyComplianceStatusWithClient(supabase, resolvedOrgId, companyId)
+        if (!status.is_compliant) {
+          throw new Error("Compliance documents required before payment")
         }
       }
     }
@@ -700,7 +716,11 @@ export async function updateVendorBillStatus({
   }
   const totalCents = existing.total_cents ?? 0
   const existingPaid = typeof existing.paid_cents === "number" ? existing.paid_cents : 0
-  const remainingCents = Math.max(0, totalCents - existingPaid)
+  const remainingCents = payableOutstandingCents({
+    total_cents: totalCents,
+    paid_cents: existingPaid,
+    retainage_cents: existing.retainage_cents ?? 0,
+  })
 
   if (parsed.payment_reference) {
     updateData.payment_reference = parsed.payment_reference
@@ -771,6 +791,23 @@ export async function updateVendorBillStatus({
   if (parsed.status === "approved" && !existing.approved_at) {
     updateData.approved_at = new Date().toISOString()
     updateData.approved_by = userId
+  }
+
+  if (parsed.status === "approved" && parsed.lien_waiver_status === undefined) {
+    const rules = await getComplianceRules(resolvedOrgId).catch(() => ({
+      require_lien_waiver: false,
+      block_payment_on_missing_docs: true,
+      warn_subcontract_execution_on_missing_docs: true,
+      block_subcontract_execution_on_missing_docs: false,
+    }))
+
+    if (rules.require_lien_waiver && existing.lien_waiver_status !== "received") {
+      updateData.lien_waiver_status = "requested"
+      updateData.lien_waiver_received_at = null
+    } else if (!rules.require_lien_waiver && !existing.lien_waiver_status) {
+      updateData.lien_waiver_status = "not_required"
+      updateData.lien_waiver_received_at = null
+    }
   }
 
   const explicitLines = parsed.actual_lines && parsed.actual_lines.length > 0 ? parsed.actual_lines : null
@@ -877,7 +914,33 @@ export async function updateVendorBillStatus({
     })
   }
 
+  if (!isVendorCredit && isApprovedOrReleased && existing.project_id) {
+    const approvalSettings = await loadApprovalGateSettings({
+      supabase,
+      orgId: resolvedOrgId,
+      projectId: existing.project_id,
+    })
+
+    if (approvalSettings.cost_codes_enabled) {
+      let linesForApproval: Array<{ cost_code_id?: string | null }> = actualLines
+      if (linesForApproval.length === 0) {
+        const { data: currentLines, error: currentLinesError } = await supabase
+          .from("bill_lines")
+          .select("cost_code_id")
+          .eq("org_id", resolvedOrgId)
+          .eq("bill_id", billId)
+        if (currentLinesError) throw new Error(`Failed to validate vendor bill cost codes: ${currentLinesError.message}`)
+        linesForApproval = currentLines ?? []
+      }
+
+      if (linesForApproval.length === 0 || linesForApproval.some((line: any) => !line.cost_code_id)) {
+        throw new Error(APPROVAL_GATE_REASONS.vendorBillLineMissingCostCode)
+      }
+    }
+  }
+
   const shouldProcessPayment = parsed.status === "paid" || (parsed.status === "partial" && parsed.payment_amount_cents != null)
+  let recordedPaymentId: string | null = null
 
   if (shouldProcessPayment) {
     let paymentAmount = parsed.payment_amount_cents
@@ -906,7 +969,7 @@ export async function updateVendorBillStatus({
         currency: existing.currency ?? "usd",
         method: parsed.payment_method ?? "check",
         reference: parsed.payment_reference ?? null,
-        received_at: new Date().toISOString(),
+        received_at: parsed.payment_date ? `${parsed.payment_date}T12:00:00.000Z` : new Date().toISOString(),
         status: "succeeded",
         provider: "manual",
         net_cents: paymentAmount,
@@ -916,13 +979,12 @@ export async function updateVendorBillStatus({
       if (paymentInsertError) {
         throw new Error(`Failed to record bill payment: ${paymentInsertError.message}`)
       }
-      if (paymentRow?.id) {
-        await enqueueBillPaymentSync(paymentRow.id, resolvedOrgId)
-      }
+      recordedPaymentId = paymentRow?.id ?? null
     }
 
     const nextPaid = existingPaid + (paymentAmount ?? 0)
-    const isPaid = totalCents > 0 ? nextPaid >= totalCents : parsed.status === "paid"
+    const payableDueCents = totalCents - Math.max(0, existing.retainage_cents ?? 0)
+    const isPaid = payableDueCents > 0 ? nextPaid >= payableDueCents : parsed.status === "paid"
     updateData.status = isPaid ? "paid" : "partial"
     updateData.paid_cents = nextPaid
     if (isPaid && !existing.paid_at) {
@@ -941,22 +1003,23 @@ export async function updateVendorBillStatus({
       parsed.lien_waiver_status === "received" ? new Date().toISOString() : null
   }
 
-  const { data, error } = await supabase
+  let updateQuery = supabase
     .from("vendor_bills")
     .update(updateData)
     .eq("org_id", resolvedOrgId)
     .eq("id", billId)
-    .select(
-      `
-      id, org_id, project_id, commitment_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
-      project:projects(id, name),
-      company:companies!vendor_bills_company_id_fkey(id, name, qbo_vendor_id, qbo_vendor_name),
-      commitment:commitments(id, title, total_cents, company:companies(id, name, qbo_vendor_id, qbo_vendor_name))
-    `,
-    )
-    .single()
+  if (parsed.expected_updated_at) {
+    updateQuery = updateQuery.eq("updated_at", parsed.expected_updated_at)
+  }
+  const { data, error } = await updateQuery.select(vendorBillSelect).maybeSingle()
 
   if (error || !data) {
+    if (recordedPaymentId) {
+      await supabase.from("payments").delete().eq("org_id", resolvedOrgId).eq("id", recordedPaymentId)
+    }
+    if (!error && parsed.expected_updated_at) {
+      throw new Error("This payable changed while you were saving. Refresh and try again.")
+    }
     throw new Error(`Failed to update vendor bill: ${error?.message}`)
   }
 
@@ -972,6 +1035,9 @@ export async function updateVendorBillStatus({
       await voidJobCostEntriesForVendorBill({ billId, orgId: resolvedOrgId })
     }
   } catch (error) {
+    if (recordedPaymentId) {
+      await supabase.from("payments").delete().eq("org_id", resolvedOrgId).eq("id", recordedPaymentId)
+    }
     await supabase
       .from("vendor_bills")
       .update({
@@ -1001,6 +1067,9 @@ export async function updateVendorBillStatus({
   if (!isVendorCredit && (shouldEnqueueForStatus || shouldEnqueueForRecode)) {
     await enqueueVendorBillSync(billId, resolvedOrgId)
   }
+  if (recordedPaymentId) {
+    await enqueueBillPaymentSync(recordedPaymentId, resolvedOrgId)
+  }
 
   await recordAudit({
     orgId: resolvedOrgId,
@@ -1023,6 +1092,7 @@ export async function updateVendorBillStatus({
       actual_lines: parsed.actual_lines,
       payment_reference: parsed.payment_reference,
       payment_method: parsed.payment_method,
+      payment_date: parsed.payment_date,
       payment_amount_cents: parsed.payment_amount_cents,
       lien_waiver_status: parsed.lien_waiver_status,
       retainage_percent: parsed.retainage_percent,
@@ -1033,6 +1103,213 @@ export async function updateVendorBillStatus({
   })
 
   return mapVendorBill(data)
+}
+
+export async function createProjectVendorBill({
+  projectId,
+  input,
+  orgId,
+}: {
+  projectId: string
+  input: VendorBillCreate
+  orgId?: string
+}): Promise<VendorBillSummary> {
+  const parsed = vendorBillCreateSchema.parse(input)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  await requireAuthorization({
+    permission: "bill.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId,
+    supabase,
+    logDecision: true,
+    resourceType: "project",
+    resourceId: projectId,
+  })
+
+  let commitment: { id: string; total_cents: number | null; company_id?: string | null } | null = null
+  if (parsed.commitment_id) {
+    const { data, error: commitmentError } = await supabase
+      .from("commitments")
+      .select("id, total_cents, company_id")
+      .eq("id", parsed.commitment_id)
+      .eq("org_id", resolvedOrgId)
+      .eq("project_id", projectId)
+      .maybeSingle()
+
+    if (commitmentError || !data) {
+      throw new Error("Commitment not found")
+    }
+    commitment = data
+  }
+
+  let companyId: string | null = parsed.company_id ?? commitment?.company_id ?? null
+  if (companyId) {
+    const { data: company, error: companyError } = await supabase
+      .from("companies")
+      .select("id")
+      .eq("org_id", resolvedOrgId)
+      .eq("id", companyId)
+      .maybeSingle()
+    if (companyError || !company) {
+      throw new Error("Arc vendor not found")
+    }
+  } else if (!parsed.commitment_id && parsed.vendor_name?.trim()) {
+    const { data: company } = await supabase
+      .from("companies")
+      .select("id")
+      .eq("org_id", resolvedOrgId)
+      .ilike("name", parsed.vendor_name.trim())
+      .is("metadata->>archived_at", null)
+      .limit(1)
+      .maybeSingle()
+    companyId = (company?.id as string | undefined) ?? null
+  }
+
+  const vendorName = parsed.vendor_name?.trim() || parsed.qbo_vendor_name?.trim() || null
+
+  const { data: possibleDuplicates, error: duplicateError } = await supabase
+    .from("vendor_bills")
+    .select("id, company_id, qbo_vendor_id, qbo_vendor_name, metadata")
+    .eq("org_id", resolvedOrgId)
+    .ilike("bill_number", parsed.bill_number.trim())
+    .limit(25)
+
+  if (duplicateError) {
+    throw new Error(`Failed to check duplicate payables: ${duplicateError.message}`)
+  }
+
+  const normalizedVendorName = normalizeVendorName(vendorName)
+  const duplicate = (possibleDuplicates ?? []).find((bill: any) => {
+    const metadata = (bill.metadata as Record<string, any> | null) ?? {}
+    return (
+      (companyId && bill.company_id === companyId) ||
+      (parsed.qbo_vendor_id && bill.qbo_vendor_id === parsed.qbo_vendor_id) ||
+      (normalizedVendorName &&
+        normalizeVendorName(String(metadata.vendor_name ?? bill.qbo_vendor_name ?? "")) === normalizedVendorName)
+    )
+  })
+  if (duplicate) {
+    throw new Error("A payable with this vendor and invoice number already exists.")
+  }
+
+  let isOverBudget = false
+  if (parsed.commitment_id && commitment) {
+    const { data: existingBills } = await supabase
+      .from("vendor_bills")
+      .select("total_cents")
+      .eq("commitment_id", parsed.commitment_id)
+      .eq("org_id", resolvedOrgId)
+
+    const totalBilled = (existingBills ?? []).reduce((sum: number, bill: any) => sum + (bill.total_cents ?? 0), 0)
+    const approvedChangeOrdersCents = await getApprovedCommitmentChangeOrderTotalCents(
+      supabase,
+      resolvedOrgId,
+      parsed.commitment_id,
+    )
+    isOverBudget =
+      totalBilled + parsed.total_cents > (commitment.total_cents ?? 0) + approvedChangeOrdersCents
+  }
+
+  const { data, error } = await supabase
+    .from("vendor_bills")
+    .insert({
+      org_id: resolvedOrgId,
+      project_id: projectId,
+      commitment_id: parsed.commitment_id ?? null,
+      company_id: companyId,
+      bill_number: parsed.bill_number.trim(),
+      total_cents: parsed.total_cents,
+      currency: "usd",
+      status: "pending",
+      bill_date: parsed.bill_date,
+      due_date: parsed.due_date ?? null,
+      file_id: parsed.file_id ?? null,
+      submitted_by_contact_id: null,
+      metadata: {
+        description: parsed.description,
+        vendor_name: vendorName ?? undefined,
+        period_start: parsed.period_start,
+        period_end: parsed.period_end,
+        internal_upload: true,
+        over_budget: isOverBudget,
+      },
+      qbo_vendor_id: parsed.qbo_vendor_id || null,
+      qbo_vendor_name: parsed.qbo_vendor_name || parsed.vendor_name || null,
+    })
+    .select(vendorBillSelect)
+    .single()
+
+  if (error || !data) {
+    throw new Error(`Failed to create vendor bill: ${error?.message}`)
+  }
+
+  if (parsed.file_id) {
+    try {
+      await attachFileWithServiceRole({
+        orgId: resolvedOrgId,
+        fileId: parsed.file_id,
+        projectId,
+        entityType: "vendor_bill",
+        entityId: data.id as string,
+        linkRole: "invoice",
+        createdBy: userId,
+      })
+    } catch (error) {
+      console.warn("Failed to attach file", error)
+    }
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "insert",
+    entityType: "vendor_bill",
+    entityId: data.id as string,
+    before: null,
+    after: data,
+  })
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "vendor_bill_submitted",
+    entityType: "vendor_bill",
+    entityId: data.id as string,
+    payload: {
+      project_id: projectId,
+      commitment_id: parsed.commitment_id ?? null,
+      total_cents: parsed.total_cents,
+      bill_number: parsed.bill_number,
+      internal_upload: true,
+      over_budget: isOverBudget,
+    },
+  })
+
+  return mapVendorBill(data)
+}
+
+function normalizeVendorName(value?: string | null) {
+  return value?.trim().replace(/\s+/g, " ").toLowerCase() ?? ""
+}
+
+async function getApprovedCommitmentChangeOrderTotalCents(
+  supabase: SupabaseClient,
+  orgId: string,
+  commitmentId: string,
+) {
+  const { data, error } = await supabase
+    .from("commitment_change_orders")
+    .select("total_cents")
+    .eq("org_id", orgId)
+    .eq("commitment_id", commitmentId)
+    .eq("status", "approved")
+
+  if (error) {
+    throw new Error(`Failed to load commitment change orders: ${error.message}`)
+  }
+
+  return (data ?? []).reduce((sum: number, row: any) => sum + (row.total_cents ?? 0), 0)
 }
 
 /**
@@ -1054,12 +1331,16 @@ export async function createVendorBillFromPortal({
 }): Promise<VendorBillSummary> {
   const parsed = vendorBillCreateSchema.parse(input)
   const supabase = createServiceSupabaseClient()
+  const commitmentId = parsed.commitment_id
+  if (!commitmentId) {
+    throw new Error("Commitment is required")
+  }
 
   // Verify the commitment belongs to this org, project, and company
   const { data: commitment, error: commitmentError } = await supabase
     .from("commitments")
     .select("id, org_id, project_id, company_id, title, status, total_cents")
-    .eq("id", parsed.commitment_id)
+    .eq("id", commitmentId)
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .eq("company_id", companyId)
@@ -1077,11 +1358,16 @@ export async function createVendorBillFromPortal({
   const { data: existingBills } = await supabase
     .from("vendor_bills")
     .select("total_cents")
-    .eq("commitment_id", parsed.commitment_id)
+    .eq("commitment_id", commitmentId)
     .eq("org_id", orgId)
 
   const totalBilled = (existingBills ?? []).reduce((sum, b) => sum + (b.total_cents ?? 0), 0)
-  const remaining = (commitment.total_cents ?? 0) - totalBilled
+  const approvedChangeOrdersCents = await getApprovedCommitmentChangeOrderTotalCents(
+    supabase,
+    orgId,
+    commitmentId,
+  )
+  const remaining = (commitment.total_cents ?? 0) + approvedChangeOrdersCents - totalBilled
 
   // Warn if over budget (but still allow submission)
   const isOverBudget = parsed.total_cents > remaining
@@ -1092,7 +1378,7 @@ export async function createVendorBillFromPortal({
     .insert({
       org_id: orgId,
       project_id: projectId,
-      commitment_id: parsed.commitment_id,
+      commitment_id: commitmentId,
       bill_number: parsed.bill_number,
       total_cents: parsed.total_cents,
       currency: "usd",

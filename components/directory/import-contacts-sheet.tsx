@@ -245,14 +245,16 @@ interface ParsedCsv {
   fileName: string;
 }
 
-function parseCsvLine(line: string): string[] {
-  const result: string[] = [];
+function parseCsv(text: string, fileName: string): ParsedCsv {
+  const records: string[][] = [];
   let current = "";
+  let row: string[] = [];
   let inQuotes = false;
-  for (let i = 0; i < line.length; i += 1) {
-    const char = line[i];
+
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
     if (char === '"') {
-      if (inQuotes && line[i + 1] === '"') {
+      if (inQuotes && text[i + 1] === '"') {
         current += '"';
         i += 1;
       } else {
@@ -261,21 +263,26 @@ function parseCsvLine(line: string): string[] {
       continue;
     }
     if (char === "," && !inQuotes) {
-      result.push(current.trim());
+      row.push(current.trim());
+      current = "";
+      continue;
+    }
+    if ((char === "\n" || char === "\r") && !inQuotes) {
+      if (char === "\r" && text[i + 1] === "\n") i += 1;
+      row.push(current.trim());
+      if (row.some((cell) => cell.length > 0)) records.push(row);
+      row = [];
       current = "";
       continue;
     }
     current += char;
   }
-  result.push(current.trim());
-  return result;
-}
 
-function parseCsv(text: string, fileName: string): ParsedCsv {
-  const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0);
-  if (lines.length === 0) return { headers: [], rows: [], fileName };
-  const headers = parseCsvLine(lines[0]);
-  const rows = lines.slice(1).map((line) => parseCsvLine(line));
+  row.push(current.trim());
+  if (row.some((cell) => cell.length > 0)) records.push(row);
+
+  if (records.length === 0) return { headers: [], rows: [], fileName };
+  const [headers, ...rows] = records;
   return { headers, rows, fileName };
 }
 
@@ -444,8 +451,11 @@ export function ImportContactsSheet({ open, onOpenChange }: ImportContactsSheetP
         router.refresh();
       } else {
         toast({
-          title: "Nothing imported",
-          description: "No valid rows were found to import.",
+          title: res.skipped > 0 ? "No new records imported" : "Nothing imported",
+          description:
+            res.skipped > 0
+              ? "Every ready row already matched an existing directory record."
+              : "No valid rows were found to import.",
         });
       }
     } catch (error) {

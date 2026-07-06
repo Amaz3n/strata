@@ -48,8 +48,7 @@ export async function GET(request: NextRequest) {
           })
         : await searchAll(query, {}, { limit, sortBy: "relevance", preferFast: true })
     return NextResponse.json({ results })
-  } catch (error) {
-    console.error("Command search request failed", error)
+  } catch {
     return NextResponse.json({ results: [] }, { status: 200 })
   }
 }

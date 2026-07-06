@@ -2,6 +2,8 @@ import type { ProjectVendor } from "@/lib/types"
 import type { ProjectVendorInput } from "@/lib/validation/project-vendors"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
+import { recordAudit } from "@/lib/services/audit"
+import { requireAuthorization } from "@/lib/services/authorization"
 
 function mapProjectVendor(row: any): ProjectVendor {
   return {
@@ -49,7 +51,18 @@ export async function addProjectVendor({
   input: ProjectVendorInput
   orgId?: string
 }): Promise<ProjectVendor> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  await requireAuthorization({
+    permission: "project.manage",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: input.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "project",
+    resourceId: input.project_id,
+  })
 
   const { data, error } = await supabase
     .from("project_vendors")
@@ -81,11 +94,42 @@ export async function addProjectVendor({
     payload: { role: input.role, company_id: input.company_id, contact_id: input.contact_id },
   })
 
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "insert",
+    entityType: "project_vendor",
+    entityId: data.id,
+    after: data,
+  })
+
   return mapProjectVendor(data)
 }
 
 export async function removeProjectVendor(vendorId: string, orgId?: string): Promise<void> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const { data: existing, error: existingError } = await supabase
+    .from("project_vendors")
+    .select("id, org_id, project_id, company_id, contact_id, role, scope, status, notes")
+    .eq("id", vendorId)
+    .eq("org_id", resolvedOrgId)
+    .maybeSingle()
+
+  if (existingError || !existing) {
+    throw new Error(`Project vendor not found: ${existingError?.message ?? "missing"}`)
+  }
+
+  await requireAuthorization({
+    permission: "project.manage",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: existing.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "project_vendor",
+    resourceId: vendorId,
+  })
 
   const { error } = await supabase
     .from("project_vendors")
@@ -94,6 +138,15 @@ export async function removeProjectVendor(vendorId: string, orgId?: string): Pro
     .eq("org_id", resolvedOrgId)
 
   if (error) throw new Error(`Failed to remove project vendor: ${error.message}`)
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "delete",
+    entityType: "project_vendor",
+    entityId: vendorId,
+    before: existing,
+  })
 }
 
 export async function updateProjectVendor({
@@ -105,7 +158,29 @@ export async function updateProjectVendor({
   updates: Partial<Pick<ProjectVendorInput, "role" | "scope" | "notes">>
   orgId?: string
 }): Promise<ProjectVendor> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const { data: existing, error: existingError } = await supabase
+    .from("project_vendors")
+    .select("id, org_id, project_id, company_id, contact_id, role, scope, status, notes")
+    .eq("id", vendorId)
+    .eq("org_id", resolvedOrgId)
+    .maybeSingle()
+
+  if (existingError || !existing) {
+    throw new Error(`Project vendor not found: ${existingError?.message ?? "missing"}`)
+  }
+
+  await requireAuthorization({
+    permission: "project.manage",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: existing.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "project_vendor",
+    resourceId: vendorId,
+  })
 
   const { data, error } = await supabase
     .from("project_vendors")
@@ -125,5 +200,16 @@ export async function updateProjectVendor({
     .single()
 
   if (error) throw new Error(`Failed to update project vendor: ${error.message}`)
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "project_vendor",
+    entityId: vendorId,
+    before: existing,
+    after: data,
+  })
+
   return mapProjectVendor(data)
 }

@@ -7,8 +7,9 @@ export type ProjectBillingModel =
   | "cost_plus_gmp"
   | "time_and_materials"
 
-export type FinancialLandingPage = "inbox" | "receivables" | "budget" | "forecast"
+export type FinancialLandingPage = "summary" | "review" | "receivables" | "budget" | "forecast"
 export type OwnerBillingBasis = "draws" | "costs" | "costs_plus_fee" | "time_materials"
+export type FeePresentation = "embedded" | "separate_total" | "separate_by_code"
 
 export interface ProjectFinancialFeatureConfig {
   billingModel: ProjectBillingModel
@@ -45,6 +46,21 @@ export function shouldExposeOpenBookCostDetail(openBook?: boolean | null) {
   return openBook !== false
 }
 
+export function normalizeFeePresentation(value?: string | null): FeePresentation | null {
+  if (value === "embedded" || value === "separate_total" || value === "separate_by_code") return value
+  return null
+}
+
+export function defaultFeePresentationForBillingModel(model: ProjectBillingModel): FeePresentation {
+  return isCostDrivenBillingModel(model) && model !== "time_and_materials" ? "separate_total" : "embedded"
+}
+
+export function resolveContractFeePresentation(
+  contract: (Contract & { fee_presentation?: string | null }) | Record<string, any> | null | undefined,
+): FeePresentation {
+  return normalizeFeePresentation(contract?.fee_presentation) ?? normalizeFeePresentation(contract?.snapshot?.fee_presentation) ?? "embedded"
+}
+
 function getContract(source: BillingSource, explicitContract?: Contract | null) {
   if (explicitContract) return explicitContract
   if (!source) return null
@@ -75,6 +91,7 @@ export function resolveProjectBillingModel(source: BillingSource, explicitContra
 
   if (rawType === "time_materials") return "time_and_materials"
   if (rawType === "cost_plus") {
+    if (contract?.fixed_fee_cents) return "cost_plus_fixed_fee"
     return contract?.gmp_cents ? "cost_plus_gmp" : "cost_plus_percent"
   }
 
@@ -94,7 +111,7 @@ export function getProjectFinancialFeatureConfig(
   if (billingModel === "fixed_price") {
     return {
       billingModel,
-      landingPage: "receivables",
+      landingPage: "summary",
       showInbox: false,
       showTime: false,
       showExpenses: false,
@@ -110,7 +127,7 @@ export function getProjectFinancialFeatureConfig(
   if (billingModel === "cost_plus_fixed_fee") {
     return {
       billingModel,
-      landingPage: "inbox",
+      landingPage: "summary",
       showInbox: true,
       showTime: true,
       showExpenses: true,
@@ -126,7 +143,7 @@ export function getProjectFinancialFeatureConfig(
   if (billingModel === "cost_plus_gmp") {
     return {
       billingModel,
-      landingPage: "inbox",
+      landingPage: "summary",
       showInbox: true,
       showTime: true,
       showExpenses: true,
@@ -141,7 +158,7 @@ export function getProjectFinancialFeatureConfig(
 
   return {
     billingModel,
-    landingPage: "inbox",
+    landingPage: "summary",
     showInbox: true,
     showTime: true,
     showExpenses: true,

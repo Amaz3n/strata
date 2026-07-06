@@ -1,35 +1,29 @@
 "use client"
 
-import { useState, useMemo, useEffect } from "react"
+import { useState, useMemo, useEffect, useRef, type ComponentType, type ReactNode } from "react"
 import {
   format,
   parseISO,
   isSameDay,
   addDays,
-  startOfDay,
-  endOfDay,
-  isBefore,
-  isAfter,
 } from "date-fns"
 import { toast } from "sonner"
 import { useSearchParams } from "next/navigation"
 
-import type { DailyLog, ScheduleItem, Task } from "@/lib/types"
-import type { EnhancedFileMetadata, FileCategory, ProjectActivity, ProjectPunchItem } from "@/app/(app)/projects/[id]/actions"
-import type { DailyLogInput } from "@/lib/validation/daily-logs"
+import type { DailyLog, DailyReport, ScheduleItem, Task } from "@/lib/types"
+import type { EnhancedFileMetadata, FileCategory, ProjectPunchItem } from "@/app/(app)/projects/[id]/actions"
+import type { DailyLogInput, DailyReportUpdateInput, ManpowerInput } from "@/lib/validation/daily-logs"
 import { cn } from "@/lib/utils"
 
 import { FileViewer } from "@/components/files/file-viewer"
-import { isHeicFile } from "@/components/files/types"
 import { useMobileAction } from "@/components/layout/mobile-action-context"
 import { useUser } from "@/lib/auth/client"
 import { QuickLogEntry } from "./quick-log-entry"
-import { ActivityCalendar } from "./activity-calendar"
+import { DailyLogsWorkspace } from "./daily-logs-workspace"
 import { HighlightedMentionsText, MentionTextarea, type MentionableUser } from "./mention-textarea"
+import { buildDayBuckets, dayCompleteness, daySummaryLine, imageFilesOf, weatherEmoji, type DayBucket } from "./day-aggregate"
+import { CompletenessRing } from "./completeness-ring"
 import { Button } from "@/components/ui/button"
-import { Calendar } from "@/components/ui/calendar"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { Input } from "@/components/ui/input"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -49,194 +43,13 @@ import {
   XCircle,
   CheckCircle,
   Clock,
-  TrendingUp,
+  ChevronLeft,
+  ChevronRight,
   AlertTriangle,
-  Search,
   MessageSquare,
   Send,
-  SlidersHorizontal,
+  Users,
 } from "@/components/icons"
-import { DateRange } from "react-day-picker"
-
-const weatherOptions = [
-  { value: "Sunny", emoji: "☀️" },
-  { value: "Partly Cloudy", emoji: "⛅" },
-  { value: "Cloudy", emoji: "☁️" },
-  { value: "Light Rain", emoji: "🌧️" },
-  { value: "Heavy Rain", emoji: "⛈️" },
-  { value: "Windy", emoji: "💨" },
-  { value: "Hot", emoji: "🌡️" },
-]
-
-function getWeatherEmoji(weather: string | undefined): string {
-  if (!weather) return ""
-  const found = weatherOptions.find(w => w.value === weather)
-  return found?.emoji ?? ""
-}
-
-// ============================================================================
-// Day Summary - Aggregated stats for a single day
-// ============================================================================
-
-interface DaySummary {
-  date: Date
-  logs: DailyLog[]
-  photos: EnhancedFileMetadata[]
-  totalHours: number
-  avgProgress: number | null
-  workEntryCount: number
-  inspectionsPassed: number
-  inspectionsFailed: number
-  tasksCompleted: number
-  punchItemsClosed: number
-}
-
-function computeDaySummary(
-  dateKey: string,
-  logs: DailyLog[],
-  photos: EnhancedFileMetadata[]
-): DaySummary {
-  const date = parseISO(dateKey)
-  let totalHours = 0
-  let progressSum = 0
-  let progressCount = 0
-  let workEntryCount = 0
-  let inspectionsPassed = 0
-  let inspectionsFailed = 0
-  let tasksCompleted = 0
-  let punchItemsClosed = 0
-
-  for (const log of logs) {
-    const entries = log.entries ?? []
-    for (const entry of entries) {
-      if (entry.entry_type === "work") {
-        workEntryCount++
-        if (entry.hours) totalHours += entry.hours
-        if (entry.progress != null) {
-          progressSum += entry.progress
-          progressCount++
-        }
-      } else if (entry.entry_type === "inspection") {
-        if (entry.inspection_result === "pass") inspectionsPassed++
-        else if (entry.inspection_result === "fail") inspectionsFailed++
-      } else if (entry.entry_type === "task_update") {
-        if (entry.metadata?.mark_complete) tasksCompleted++
-      } else if (entry.entry_type === "punch_update") {
-        if (entry.metadata?.mark_closed) punchItemsClosed++
-      }
-    }
-  }
-
-  return {
-    date,
-    logs,
-    photos,
-    totalHours,
-    avgProgress: progressCount > 0 ? Math.round(progressSum / progressCount) : null,
-    workEntryCount,
-    inspectionsPassed,
-    inspectionsFailed,
-    tasksCompleted,
-    punchItemsClosed,
-  }
-}
-
-// ============================================================================
-// Day Header Component
-// ============================================================================
-
-interface DayHeaderProps {
-  summary: DaySummary
-  isToday: boolean
-  isYesterday: boolean
-}
-
-function DayHeader({ summary, isToday, isYesterday }: DayHeaderProps) {
-  const { date, logs, photos, totalHours, workEntryCount, inspectionsFailed } = summary
-
-  const hasAlerts = inspectionsFailed > 0
-
-  // Get weather from logs (use first non-empty weather)
-  const weather = logs.find(l => l.weather)?.weather
-
-  return (
-    <div className={cn(
-      "sticky top-0 z-10 flex items-center gap-4 py-3 bg-background/95 backdrop-blur-sm border-b",
-      hasAlerts && "border-red-200 dark:border-red-900/50"
-    )}>
-      {/* Date square */}
-      <div className={cn(
-        "flex flex-col items-center justify-center w-12 h-12 rounded-lg border bg-card flex-shrink-0",
-        isToday && "border-primary bg-primary/5"
-      )}>
-        <span className={cn(
-          "text-[10px] font-medium uppercase leading-none",
-          isToday ? "text-primary" : "text-muted-foreground"
-        )}>
-          {format(date, "MMM")}
-        </span>
-        <span className={cn(
-          "text-lg font-semibold leading-none mt-0.5",
-          isToday && "text-primary"
-        )}>
-          {format(date, "d")}
-        </span>
-      </div>
-
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          {isToday && (
-            <span className="text-xs font-medium text-primary">Today</span>
-          )}
-          {isYesterday && (
-            <span className="text-xs font-medium text-muted-foreground">Yesterday</span>
-          )}
-          {!isToday && !isYesterday && (
-            <span className="text-xs font-medium text-muted-foreground">
-              {format(date, "EEEE")}
-            </span>
-          )}
-          {weather && (
-            <span className="flex items-center gap-1 text-xs text-muted-foreground">
-              <span>{getWeatherEmoji(weather)}</span>
-              <span>{weather}</span>
-            </span>
-          )}
-        </div>
-
-        {/* Quick stats */}
-        <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground">
-          {totalHours > 0 && (
-            <span className="flex items-center gap-1">
-              <Clock className="h-3 w-3" />
-              {totalHours}h
-            </span>
-          )}
-          {workEntryCount > 0 && (
-            <span className="flex items-center gap-1">
-              <ClipboardList className="h-3 w-3" />
-              {workEntryCount} {workEntryCount === 1 ? "item" : "items"}
-            </span>
-          )}
-          {photos.length > 0 && (
-            <span className="flex items-center gap-1">
-              <Camera className="h-3 w-3" />
-              {photos.length}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Alert indicator */}
-      {hasAlerts && (
-        <div className="flex items-center gap-1.5 px-2 py-1 bg-red-500/10 text-red-600 dark:text-red-400 rounded text-xs font-medium flex-shrink-0">
-          <AlertTriangle className="h-3 w-3" />
-          {inspectionsFailed} failed
-        </div>
-      )}
-    </div>
-  )
-}
 
 // ============================================================================
 // Log Entry Component - Redesigned for density and clarity
@@ -750,6 +563,95 @@ function PhotoStrip({ photos, onImageClick }: PhotoStripProps) {
   )
 }
 
+function mobileDayLabel(date: Date, today: Date) {
+  if (isSameDay(date, today)) return "Today"
+  if (isSameDay(date, addDays(today, -1))) return "Yesterday"
+  return format(date, "EEEE")
+}
+
+function MobileDayChip({
+  dateKey,
+  bucket,
+  today,
+  selected,
+  onSelect,
+}: {
+  dateKey: string
+  bucket?: DayBucket
+  today: Date
+  selected: boolean
+  onSelect: () => void
+}) {
+  const date = parseISO(dateKey)
+  const completeness = dayCompleteness(bucket)
+
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      data-selected={selected || undefined}
+      className={cn(
+        "flex h-[64px] w-[64px] flex-shrink-0 flex-col items-center justify-between rounded-lg border px-2 py-2 text-center transition-colors",
+        selected
+          ? "border-primary bg-primary text-primary-foreground"
+          : "border-border bg-background hover:border-muted-foreground/40 hover:bg-muted/50",
+      )}
+    >
+      <span
+        className={cn(
+          "text-[9px] font-semibold uppercase leading-none tracking-wide",
+          selected ? "text-primary-foreground/75" : "text-muted-foreground",
+        )}
+      >
+        {format(date, "EEE")}
+      </span>
+      <span className="text-xl font-semibold leading-none tabular-nums">{format(date, "d")}</span>
+      {bucket ? (
+        <CompletenessRing
+          completeness={completeness}
+          size={16}
+          strokeWidth={2.5}
+          className={selected ? "text-primary-foreground" : undefined}
+        />
+      ) : (
+        <span
+          className={cn(
+            "h-1.5 w-1.5 rounded-full",
+            isSameDay(date, today) ? "bg-primary" : "bg-muted-foreground/35",
+            selected && "bg-primary-foreground/80",
+          )}
+        />
+      )}
+    </button>
+  )
+}
+
+function MobileDayStat({
+  icon: Icon,
+  children,
+  tone,
+}: {
+  icon: ComponentType<{ className?: string }>
+  children: ReactNode
+  tone?: "danger" | "success"
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex h-8 flex-shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium",
+        tone === "danger"
+          ? "border-destructive/20 bg-destructive/10 text-destructive"
+          : tone === "success"
+            ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+            : "border-border bg-background text-muted-foreground",
+      )}
+    >
+      <Icon className="h-3.5 w-3.5" />
+      {children}
+    </span>
+  )
+}
+
 // ============================================================================
 // Main Component
 // ============================================================================
@@ -757,16 +659,23 @@ function PhotoStrip({ photos, onImageClick }: PhotoStripProps) {
 interface DailyLogsTabProps {
   projectId: string
   projectAddress?: string
+  projectStartDate?: string
   dailyLogs: DailyLog[]
+  dailyReports: DailyReport[]
   files: EnhancedFileMetadata[]
   scheduleItems: ScheduleItem[]
   tasks: Task[]
   punchItems: ProjectPunchItem[]
-  activity: ProjectActivity[]
   mentionableUsers: MentionableUser[]
   onCreateLog: (values: DailyLogInput) => Promise<DailyLog>
   onCreateComment: (dailyLogId: string, values: { body: string; mentioned_user_ids?: string[] }) => Promise<NonNullable<DailyLog["comments"]>[number]>
   onUpdateLog: (dailyLogId: string, values: { summary?: string; weather?: string; mentioned_user_ids?: string[] }) => Promise<Pick<DailyLog, "id" | "notes" | "weather" | "updated_at" | "mentions">>
+  onUpdateReport: (date: string, values: DailyReportUpdateInput) => Promise<DailyReport>
+  onSubmitReport: (reportId: string) => Promise<DailyReport>
+  onReopenReport: (reportId: string) => Promise<DailyReport>
+  onAddManpower: (date: string, values: ManpowerInput) => Promise<DailyReport>
+  onUpdateManpower: (manpowerId: string, values: ManpowerInput) => Promise<DailyReport>
+  onDeleteManpower: (manpowerId: string) => Promise<DailyReport>
   onUploadFiles: (
     files: File[],
     context?: {
@@ -780,148 +689,35 @@ interface DailyLogsTabProps {
   onDeleteLog?: (dailyLogId: string) => Promise<void>
 }
 
-interface DailyLogsFiltersPopoverContentProps {
-  feedFilter: "all" | "logs" | "photos" | "mentions"
-  setFeedFilter: (value: "all" | "logs" | "photos" | "mentions") => void
-  logDateRange: DateRange | undefined
-  setLogDateRange: (range: DateRange | undefined) => void
-  searchTerm: string
-  setSearchTerm: (value: string) => void
-  today: Date
-}
-
-function DailyLogsFiltersPopoverContent({
-  feedFilter,
-  setFeedFilter,
-  logDateRange,
-  setLogDateRange,
-  searchTerm,
-  setSearchTerm,
-  today,
-}: DailyLogsFiltersPopoverContentProps) {
-  const hasActiveFilters =
-    feedFilter !== "all" || Boolean(logDateRange?.from) || searchTerm.trim().length > 0
-
-  return (
-    <>
-      <div className="p-3 space-y-3">
-        <div>
-          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-1.5">
-            Type
-          </div>
-          <div className="flex items-center p-0.5 bg-muted rounded-lg">
-            {(
-              [
-                { key: "all", label: "All" },
-                { key: "logs", label: "Logs" },
-                { key: "photos", label: "Photos" },
-                { key: "mentions", label: "Mentions" },
-              ] as const
-            ).map(({ key, label }) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => setFeedFilter(key)}
-                className={cn(
-                  "flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-all",
-                  feedFilter === key
-                    ? "bg-background text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div>
-          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-1.5">
-            Date
-          </div>
-          <div className="flex flex-wrap gap-1">
-            <Button
-              variant={!logDateRange?.from ? "secondary" : "ghost"}
-              size="sm"
-              className="h-7 text-xs"
-              onClick={() => setLogDateRange(undefined)}
-            >
-              All Time
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 text-xs"
-              onClick={() => setLogDateRange({ from: addDays(today, -7), to: today })}
-            >
-              Last 7 Days
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 text-xs"
-              onClick={() => setLogDateRange({ from: addDays(today, -30), to: today })}
-            >
-              Last 30 Days
-            </Button>
-          </div>
-        </div>
-
-        <Calendar
-          mode="range"
-          defaultMonth={logDateRange?.from}
-          selected={logDateRange}
-          onSelect={setLogDateRange}
-          numberOfMonths={1}
-        />
-      </div>
-
-      {hasActiveFilters && (
-        <div className="border-t p-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full h-8 text-xs"
-            onClick={() => {
-              setFeedFilter("all")
-              setLogDateRange(undefined)
-              setSearchTerm("")
-            }}
-          >
-            Clear all filters
-          </Button>
-        </div>
-      )}
-    </>
-  )
-}
-
 export function DailyLogsTab({
   projectId,
   projectAddress,
+  projectStartDate,
   dailyLogs,
+  dailyReports,
   files,
   scheduleItems,
   tasks,
   punchItems,
-  activity,
   mentionableUsers,
   onCreateLog,
   onCreateComment,
   onUpdateLog,
+  onUpdateReport,
+  onSubmitReport,
+  onReopenReport,
+  onAddManpower,
+  onUpdateManpower,
+  onDeleteManpower,
   onUploadFiles,
   onDownloadFile,
   onDeleteLog,
 }: DailyLogsTabProps) {
-  const today = new Date()
+  const today = useMemo(() => new Date(), [])
+  const todayKey = format(today, "yyyy-MM-dd")
   const { user } = useUser()
   const searchParams = useSearchParams()
   const highlightedLogId = searchParams.get("logId")
-
-  // State
-  const [feedFilter, setFeedFilter] = useState<'all' | 'logs' | 'photos' | 'mentions'>('all')
-  const [logDateRange, setLogDateRange] = useState<DateRange | undefined>()
-  const [searchTerm, setSearchTerm] = useState("")
 
   // Image viewer state
   const [viewerOpen, setViewerOpen] = useState(false)
@@ -931,23 +727,9 @@ export function DailyLogsTab({
   const [mobileLogOpen, setMobileLogOpen] = useState(false)
   const { setAction } = useMobileAction()
   useEffect(() => {
-    setAction({ label: "New log", onAction: () => setMobileLogOpen(true) })
+    setAction({ label: "New log", icon: Plus, onAction: () => setMobileLogOpen(true) })
     return () => setAction(null)
   }, [setAction])
-
-  // Derive the single-day selection for the activity rail from logDateRange
-  const selectedCalendarDate = useMemo(() => {
-    if (!logDateRange?.from || !logDateRange?.to) return undefined
-    return isSameDay(logDateRange.from, logDateRange.to) ? logDateRange.from : undefined
-  }, [logDateRange])
-
-  function handleCalendarSelect(date: Date | undefined) {
-    if (!date) {
-      setLogDateRange(undefined)
-      return
-    }
-    setLogDateRange({ from: date, to: date })
-  }
 
   const scheduleById = useMemo(
     () => scheduleItems.reduce<Record<string, ScheduleItem>>((acc, item) => {
@@ -973,127 +755,77 @@ export function DailyLogsTab({
     [punchItems],
   )
 
-  const logDatesById = useMemo(() => {
-    return dailyLogs.reduce<Record<string, string>>((acc, log) => {
-      acc[log.id] = log.date
-      return acc
-    }, {})
-  }, [dailyLogs])
-
   // Get all image files
-  const imageFiles = useMemo(() =>
-    files.filter(f => {
-      const isImg = (f.mime_type && f.mime_type.startsWith('image/')) || isHeicFile(f.mime_type, f.file_name)
-      return isImg && (f.category === "photos" || f.daily_log_id)
-    }),
-    [files]
+  const imageFiles = useMemo(() => imageFilesOf(files), [files])
+
+  const dayBuckets = useMemo(
+    () => buildDayBuckets(dailyLogs, imageFiles, user?.id, dailyReports),
+    [dailyLogs, imageFiles, user?.id, dailyReports],
   )
 
-  // Filter and group by date
-  const { daySummaries } = useMemo(() => {
-    const term = searchTerm.trim().toLowerCase()
+  const mobileInitialKey = useMemo(() => {
+    if (dayBuckets.has(todayKey)) return todayKey
+    const keys = Array.from(dayBuckets.keys()).sort((a, b) => b.localeCompare(a))
+    return keys[0] ?? todayKey
+  }, [dayBuckets, todayKey])
 
-    // Filter logs
-    const filteredLogs = dailyLogs.filter(log => {
-      if (feedFilter === 'photos') return false
-      if (feedFilter === 'mentions') {
-        const currentUserId = user?.id
-        if (!currentUserId) return false
-        const logMentioned = (log.mentions ?? []).some((mention) => mention.mentioned_user_id === currentUserId)
-        const commentMentioned = (log.comments ?? []).some((comment) =>
-          (comment.mentions ?? []).some((mention) => mention.mentioned_user_id === currentUserId)
-        )
-        if (!logMentioned && !commentMentioned) return false
+  const [mobileSelectedKey, setMobileSelectedKey] = useState(mobileInitialKey)
+
+  useEffect(() => {
+    if (highlightedLogId) {
+      const highlighted = dailyLogs.find((log) => log.id === highlightedLogId)
+      if (highlighted) {
+        setMobileSelectedKey(highlighted.date)
+        return
       }
-
-      const logDate = parseISO(log.date)
-      const from = logDateRange?.from ? startOfDay(logDateRange.from) : null
-      const to = logDateRange?.to ? endOfDay(logDateRange.to) : null
-      if (from && isBefore(logDate, from)) return false
-      if (to && isAfter(logDate, to)) return false
-
-      if (!term) return true
-
-      const entryText = (log.entries ?? [])
-        .map(entry => [
-          entry.description,
-          entry.location,
-          entry.trade,
-          scheduleById[entry.schedule_item_id ?? ""]?.name,
-          tasksById[entry.task_id ?? ""]?.title,
-          punchById[entry.punch_item_id ?? ""]?.title,
-        ].filter(Boolean).join(" "))
-        .join(" ")
-      const mentionText = [
-        ...(log.mentions ?? []).map((mention) => mention.user?.full_name ?? mention.user?.email),
-        ...(log.comments ?? []).map((comment) => [
-          comment.body,
-          comment.author?.full_name,
-          ...(comment.mentions ?? []).map((mention) => mention.user?.full_name ?? mention.user?.email),
-        ].filter(Boolean).join(" ")),
-      ].filter(Boolean).join(" ")
-
-      return [log.notes, log.weather, entryText, mentionText].some(value =>
-        (value ?? "").toString().toLowerCase().includes(term)
-      )
-    })
-
-    // Filter photos
-    const filteredPhotos = imageFiles.filter(photo => {
-      if (feedFilter === 'logs') return false
-      if (feedFilter === 'mentions') return false
-
-      const logDateStr = photo.daily_log_id ? logDatesById[photo.daily_log_id] : null
-      const photoDate = logDateStr ? parseISO(logDateStr) : parseISO(photo.created_at)
-      const from = logDateRange?.from ? startOfDay(logDateRange.from) : null
-      const to = logDateRange?.to ? endOfDay(logDateRange.to) : null
-      if (from && isBefore(photoDate, from)) return false
-      if (to && isAfter(photoDate, to)) return false
-
-      if (!term) return true
-
-      return [photo.file_name, photo.description, ...(photo.tags ?? [])].some(value =>
-        (value ?? "").toString().toLowerCase().includes(term)
-      )
-    })
-
-    // Group by date
-    const logsByDate = filteredLogs.reduce<Record<string, DailyLog[]>>((acc, log) => {
-      const dateKey = log.date
-      if (!acc[dateKey]) acc[dateKey] = []
-      acc[dateKey].push(log)
-      return acc
-    }, {})
-
-    const photosByDate = filteredPhotos.reduce<Record<string, EnhancedFileMetadata[]>>((acc, photo) => {
-      const logDate = photo.daily_log_id ? logDatesById[photo.daily_log_id] : null
-      const dateKey = logDate || format(parseISO(photo.created_at), 'yyyy-MM-dd')
-      if (!acc[dateKey]) acc[dateKey] = []
-      acc[dateKey].push(photo)
-      return acc
-    }, {})
-
-
-    // Get all unique dates
-    const allDates = new Set([...Object.keys(logsByDate), ...Object.keys(photosByDate)])
-    const sortedDates = Array.from(allDates).sort((a, b) =>
-      new Date(b).getTime() - new Date(a).getTime()
-    )
-
-    // Compute summaries
-    const summaries = sortedDates.map(dateKey =>
-      computeDaySummary(
-        dateKey,
-        logsByDate[dateKey] ?? [],
-        photosByDate[dateKey] ?? []
-      )
-    )
-
-    return {
-      daySummaries: summaries,
     }
-  }, [dailyLogs, imageFiles, feedFilter, logDateRange, searchTerm, scheduleById, tasksById, punchById, user?.id, logDatesById])
+    if (mobileSelectedKey !== todayKey && !dayBuckets.has(mobileSelectedKey)) {
+      setMobileSelectedKey(mobileInitialKey)
+    }
+  }, [dailyLogs, dayBuckets, highlightedLogId, mobileInitialKey, mobileSelectedKey, todayKey])
 
+  const mobileSelectedDate = useMemo(() => parseISO(mobileSelectedKey), [mobileSelectedKey])
+  const mobileSelectedBucket = dayBuckets.get(mobileSelectedKey)
+  const mobileCompleteness = useMemo(() => dayCompleteness(mobileSelectedBucket), [mobileSelectedBucket])
+
+  const mobileDayKeys = useMemo(() => {
+    const keys = new Set<string>([mobileSelectedKey])
+    for (let i = 0; i < 14; i += 1) {
+      keys.add(format(addDays(today, -i), "yyyy-MM-dd"))
+    }
+    for (const key of dayBuckets.keys()) keys.add(key)
+    return Array.from(keys).sort((a, b) => a.localeCompare(b))
+  }, [dayBuckets, mobileSelectedKey, today])
+
+  const mobileDayRailRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const selectedDay = mobileDayRailRef.current?.querySelector("[data-selected]")
+    selectedDay?.scrollIntoView({ block: "nearest", inline: "end" })
+  }, [mobileDayKeys.length, mobileSelectedKey])
+
+  const mobilePhotosByLogId = useMemo(() => {
+    const groups: Record<string, EnhancedFileMetadata[]> = {}
+    for (const photo of mobileSelectedBucket?.photos ?? []) {
+      const logId = photo.daily_log_id ?? "standalone"
+      if (!groups[logId]) groups[logId] = []
+      groups[logId].push(photo)
+    }
+    return groups
+  }, [mobileSelectedBucket])
+
+  const mobileStandalonePhotos = mobilePhotosByLogId.standalone ?? []
+  const mobileHasActivity = Boolean(
+    mobileSelectedBucket &&
+      (mobileSelectedBucket.logs.length > 0 ||
+        mobileSelectedBucket.photos.length > 0 ||
+        (mobileSelectedBucket.report?.manpower?.length ?? 0) > 0),
+  )
+
+  function selectAdjacentMobileDay(step: 1 | -1) {
+    const nextKey = format(addDays(parseISO(mobileSelectedKey), step), "yyyy-MM-dd")
+    if (step > 0 && nextKey > todayKey) return
+    setMobileSelectedKey(nextKey)
+  }
 
   function handleImageClick(file: EnhancedFileMetadata) {
     setViewerFile(file)
@@ -1101,7 +833,7 @@ export function DailyLogsTab({
   }
 
   useEffect(() => {
-    if (!highlightedLogId || daySummaries.length === 0) return
+    if (!highlightedLogId) return
     const handle = window.setTimeout(() => {
       document.getElementById(`daily-log-${highlightedLogId}`)?.scrollIntoView({
         behavior: "smooth",
@@ -1109,204 +841,176 @@ export function DailyLogsTab({
       })
     }, 100)
     return () => window.clearTimeout(handle)
-  }, [highlightedLogId, daySummaries.length])
-
-  const hasActiveFilters = feedFilter !== 'all' || logDateRange?.from || searchTerm.trim().length > 0
+  }, [highlightedLogId, mobileSelectedKey])
 
   return (
-    <div className="flex-1 flex flex-col min-h-0">
-      {/* Mobile toolbar — pinned flush to header, full-bleed, slim padding.
-          `-top-6` lets sticky honor the `-mt-6` that absorbs AppPageContent's pt-6. */}
-      <div className="flex-shrink-0 flex sm:hidden items-center gap-2 sticky -top-6 z-30 -mt-6 -mx-4 px-3 py-2.5 mb-0 bg-background/95 backdrop-blur-md supports-[backdrop-filter]:bg-background/80 border-b">
-        <div className="relative flex-1">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-          <Input
-            value={searchTerm}
-            onChange={(event) => setSearchTerm(event.target.value)}
-            placeholder="Search"
-            className="h-9 pl-7"
-          />
-        </div>
+    <>
+    {/* Desktop (lg+): day-centric workspace */}
+    <div className="hidden lg:flex flex-1 min-h-0">
+      <DailyLogsWorkspace
+        projectId={projectId}
+        projectAddress={projectAddress}
+        projectStartDate={projectStartDate}
+        dailyLogs={dailyLogs}
+        dailyReports={dailyReports}
+        files={files}
+        scheduleItems={scheduleItems}
+        tasks={tasks}
+        punchItems={punchItems}
+        mentionableUsers={mentionableUsers}
+        onCreateLog={onCreateLog}
+        onCreateComment={onCreateComment}
+        onUpdateLog={onUpdateLog}
+        onUpdateReport={onUpdateReport}
+        onSubmitReport={onSubmitReport}
+        onReopenReport={onReopenReport}
+        onAddManpower={onAddManpower}
+        onUpdateManpower={onUpdateManpower}
+        onDeleteManpower={onDeleteManpower}
+        onUploadFiles={onUploadFiles}
+        onDownloadFile={onDownloadFile}
+        onDeleteLog={onDeleteLog}
+      />
+    </div>
 
-        <Popover>
-          <PopoverTrigger asChild>
-            <Button
-              variant="outline"
-              size="icon"
-              className="relative h-9 w-9 flex-shrink-0"
-              aria-label="Filters"
-            >
-              <SlidersHorizontal className="h-4 w-4" />
-              {hasActiveFilters && (
-                <span className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-primary" />
-              )}
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent align="end" className="w-[280px] p-0">
-            <DailyLogsFiltersPopoverContent
-              feedFilter={feedFilter}
-              setFeedFilter={setFeedFilter}
-              logDateRange={logDateRange}
-              setLogDateRange={setLogDateRange}
-              searchTerm={searchTerm}
-              setSearchTerm={setSearchTerm}
-              today={today}
-            />
-          </PopoverContent>
-        </Popover>
-      </div>
-
-      {/* Desktop toolbar */}
-      <div className="flex-shrink-0 hidden sm:flex items-center justify-between gap-4 pb-4 border-b mb-4">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <div className="relative min-w-0 max-w-md flex-1">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 z-10 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
-              placeholder="Search logs..."
-              className="h-9 pl-7"
-            />
+    {/* Mobile / tablet (<lg): day-focused workspace with drawer capture. */}
+    <div className="flex lg:hidden flex-1 min-h-0 flex-col bg-background">
+      <div className="flex-shrink-0 border-b bg-background">
+        <div className="flex items-center justify-between gap-3 px-4 py-3">
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Daily report</p>
+            <h1 className="mt-0.5 truncate text-xl font-semibold leading-tight tracking-tight">
+              {format(mobileSelectedDate, "MMMM d, yyyy")}
+            </h1>
+            <p className="mt-0.5 truncate font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+              {mobileDayLabel(mobileSelectedDate, today)}
+              {mobileSelectedBucket?.report?.status === "submitted" ? " · Submitted" : " · Draft"}
+            </p>
           </div>
 
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button
-                variant="outline"
-                size="icon"
-                className="relative h-9 w-9 flex-shrink-0"
-                aria-label="Filters"
-              >
-                <SlidersHorizontal className="h-4 w-4" />
-                {hasActiveFilters && (
-                  <span className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-primary" />
-                )}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="start" className="w-[280px] p-0">
-              <DailyLogsFiltersPopoverContent
-                feedFilter={feedFilter}
-                setFeedFilter={setFeedFilter}
-                logDateRange={logDateRange}
-                setLogDateRange={setLogDateRange}
-                searchTerm={searchTerm}
-                setSearchTerm={setSearchTerm}
-                today={today}
-              />
-            </PopoverContent>
-          </Popover>
+          <div className="flex flex-shrink-0 items-center gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Previous day"
+              onClick={() => selectAdjacentMobileDay(-1)}
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Next day"
+              disabled={mobileSelectedKey >= todayKey}
+              onClick={() => selectAdjacentMobileDay(1)}
+            >
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+            <Button type="button" size="sm" className="ml-1 h-8 px-3" onClick={() => setMobileLogOpen(true)}>
+              <Plus className="h-4 w-4" />
+              Log
+            </Button>
+          </div>
         </div>
 
-        <QuickLogEntry
-          projectId={projectId}
-          projectAddress={projectAddress}
-          scheduleItems={scheduleItems}
-          tasks={tasks}
-          punchItems={punchItems}
-          mentionableUsers={mentionableUsers}
-          onCreateLog={onCreateLog}
-          onUploadFiles={onUploadFiles}
-        />
+        <div ref={mobileDayRailRef} className="flex gap-2 overflow-x-auto px-4 pb-3 hide-scrollbar">
+          {mobileDayKeys.map((key) => (
+            <MobileDayChip
+              key={key}
+              dateKey={key}
+              bucket={dayBuckets.get(key)}
+              today={today}
+              selected={key === mobileSelectedKey}
+              onSelect={() => setMobileSelectedKey(key)}
+            />
+          ))}
+        </div>
+
+        <div className="flex h-12 items-center gap-2 overflow-x-auto border-t bg-muted/20 px-4 hide-scrollbar">
+          <span className="inline-flex h-8 flex-shrink-0 items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs font-medium text-muted-foreground">
+            <CompletenessRing completeness={mobileCompleteness} size={16} strokeWidth={2.5} />
+            {mobileCompleteness.done}/{mobileCompleteness.total}
+          </span>
+          {mobileSelectedBucket?.weather ? (
+            <MobileDayStat icon={Clock}>
+              <span aria-hidden>{weatherEmoji(mobileSelectedBucket.weather)}</span>
+              {mobileSelectedBucket.weather}
+            </MobileDayStat>
+          ) : (
+            <MobileDayStat icon={Clock}>No weather</MobileDayStat>
+          )}
+          {mobileSelectedBucket?.manpowerWorkers ? (
+            <MobileDayStat icon={Users}>{mobileSelectedBucket.manpowerWorkers} on site</MobileDayStat>
+          ) : null}
+          {mobileSelectedBucket?.totalHours ? (
+            <MobileDayStat icon={Clock}>{mobileSelectedBucket.totalHours}h</MobileDayStat>
+          ) : null}
+          {mobileSelectedBucket?.photos.length ? (
+            <MobileDayStat icon={Camera}>{mobileSelectedBucket.photos.length} photos</MobileDayStat>
+          ) : null}
+          {mobileSelectedBucket?.failedInspections.length ? (
+            <MobileDayStat icon={AlertTriangle} tone="danger">
+              {mobileSelectedBucket.failedInspections.length} issues
+            </MobileDayStat>
+          ) : mobileSelectedBucket?.passedInspections.length ? (
+            <MobileDayStat icon={CheckCircle2} tone="success">
+              {mobileSelectedBucket.passedInspections.length} inspections
+            </MobileDayStat>
+          ) : null}
+        </div>
       </div>
 
-      {/* Body: timeline feed + desktop activity rail */}
-      <div className="flex-1 flex min-h-0 gap-6 lg:gap-8">
-        <div className="flex-1 min-w-0 overflow-y-auto">
-          {daySummaries.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 text-center">
-              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted mb-4">
-                <ClipboardList className="h-8 w-8 text-muted-foreground" />
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        {!mobileHasActivity ? (
+          <div className="flex min-h-[360px] flex-col items-center justify-center text-center">
+            <div className="mb-4 grid h-14 w-14 place-items-center rounded-full bg-muted">
+              <ClipboardList className="h-7 w-7 text-muted-foreground" />
+            </div>
+            <h3 className="font-semibold">No activity for this day</h3>
+            <p className="mt-1 max-w-[280px] text-sm leading-relaxed text-muted-foreground">
+              Start this report with a quick note, attachment, weather, or detailed entry.
+            </p>
+            <Button type="button" className="mt-4" onClick={() => setMobileLogOpen(true)}>
+              <Plus className="mr-2 h-4 w-4" />
+              Add log
+            </Button>
+          </div>
+        ) : (
+          <div className="mx-auto max-w-2xl">
+            {mobileSelectedBucket && daySummaryLine(mobileSelectedBucket) && (
+              <div className="mb-4 rounded-lg border bg-muted/25 px-3 py-2.5">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                  First note
+                </p>
+                <p className="mt-1 line-clamp-2 text-sm leading-relaxed">{daySummaryLine(mobileSelectedBucket)}</p>
               </div>
-              <h3 className="font-semibold mb-1">No daily logs yet</h3>
-              <p className="text-sm text-muted-foreground max-w-[300px] mb-4">
-                Start documenting site activity, weather conditions, and progress with daily logs.
-              </p>
-              <QuickLogEntry
-                projectId={projectId}
-                projectAddress={projectAddress}
-                scheduleItems={scheduleItems}
-                tasks={tasks}
-                punchItems={punchItems}
-                onCreateLog={onCreateLog}
-                onUploadFiles={onUploadFiles}
+            )}
+
+            {mobileSelectedBucket?.logs.map((log) => (
+              <LogEntry
+                key={log.id}
+                log={log}
+                photos={mobilePhotosByLogId[log.id] ?? []}
+                scheduleById={scheduleById}
+                tasksById={tasksById}
+                punchById={punchById}
                 mentionableUsers={mentionableUsers}
-                trigger={
-                  <Button>
-                    <Plus className="mr-2 h-4 w-4" />
-                    Create First Log
-                  </Button>
-                }
+                isHighlighted={highlightedLogId === log.id}
+                onImageClick={handleImageClick}
+                onCreateComment={onCreateComment}
+                onUpdateLog={onUpdateLog}
+                onDeleteLog={onDeleteLog}
               />
-            </div>
-          ) : (
-            <div className="max-w-4xl">
-              {daySummaries.map((summary) => {
-                const isToday = isSameDay(summary.date, today)
-                const isYesterday = isSameDay(summary.date, addDays(today, -1))
-                const dateKey = format(summary.date, 'yyyy-MM-dd')
+            ))}
 
-                // Group photos by log
-                const photosByLogId = summary.photos.reduce<Record<string, EnhancedFileMetadata[]>>((acc, photo) => {
-                  const logId = photo.daily_log_id ?? "standalone"
-                  if (!acc[logId]) acc[logId] = []
-                  acc[logId].push(photo)
-                  return acc
-                }, {})
-
-                const standalonePhotos = photosByLogId["standalone"] ?? []
-
-                return (
-                  <div key={dateKey} className="mb-2">
-                    <DayHeader
-                      summary={summary}
-                      isToday={isToday}
-                      isYesterday={isYesterday}
-                    />
-
-                    <div className="pt-4">
-                      {/* Log entries */}
-                      {summary.logs.map((log) => (
-                        <LogEntry
-                          key={log.id}
-                          log={log}
-                          photos={photosByLogId[log.id] ?? []}
-                          scheduleById={scheduleById}
-                          tasksById={tasksById}
-                          punchById={punchById}
-                          mentionableUsers={mentionableUsers}
-                          isHighlighted={highlightedLogId === log.id}
-                          onImageClick={handleImageClick}
-                          onCreateComment={onCreateComment}
-                          onUpdateLog={onUpdateLog}
-                          onDeleteLog={onDeleteLog}
-                        />
-                      ))}
-
-
-                      {/* Standalone photos */}
-                      {standalonePhotos.length > 0 && summary.logs.length === 0 && (
-                        <PhotoStrip
-                          photos={standalonePhotos}
-                          onImageClick={handleImageClick}
-                        />
-                      )}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* Desktop-only activity rail */}
-        <aside className="hidden lg:flex w-[300px] xl:w-[320px] flex-shrink-0 flex-col border-l pl-6 xl:pl-8">
-          <ActivityCalendar
-            dailyLogs={dailyLogs}
-            photos={imageFiles}
-            selectedDate={selectedCalendarDate}
-            onSelectDate={handleCalendarSelect}
-          />
-        </aside>
+            {mobileStandalonePhotos.length > 0 && (
+              <PhotoStrip photos={mobileStandalonePhotos} onImageClick={handleImageClick} />
+            )}
+          </div>
+        )}
+      </div>
       </div>
 
       {/* Mobile "New log" — opened from the bottom-nav action button */}
@@ -1319,6 +1023,7 @@ export function DailyLogsTab({
         mentionableUsers={mentionableUsers}
         onCreateLog={onCreateLog}
         onUploadFiles={onUploadFiles}
+        defaultDate={mobileSelectedDate}
         open={mobileLogOpen}
         onOpenChange={setMobileLogOpen}
       />
@@ -1339,6 +1044,6 @@ export function DailyLogsTab({
         onOpenChange={setViewerOpen}
         onDownload={(file) => onDownloadFile(file as EnhancedFileMetadata)}
       />
-    </div>
+    </>
   )
 }

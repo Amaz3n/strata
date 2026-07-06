@@ -1,3 +1,4 @@
+import { cache } from "react"
 import { cookies } from "next/headers"
 import { createServerClient, type CookieOptions } from "@supabase/ssr"
 import { createClient as createBrowserlessClient, type SupabaseClient } from "@supabase/supabase-js"
@@ -13,7 +14,9 @@ function requireEnv(value: string | undefined, name: string) {
   return value
 }
 
-export async function createServerSupabaseClient(): Promise<SupabaseClient> {
+// Request-cached: the client is bound to the request's cookie store, so a single
+// instance per request is correct and avoids rebuilding it in every service call.
+export const createServerSupabaseClient = cache(async (): Promise<SupabaseClient> => {
   const url = requireEnv(SUPABASE_URL, "NEXT_PUBLIC_SUPABASE_URL")
   const anonKey = requireEnv(SUPABASE_ANON_KEY, "NEXT_PUBLIC_SUPABASE_ANON_KEY")
 
@@ -56,7 +59,7 @@ export async function createServerSupabaseClient(): Promise<SupabaseClient> {
       },
     })
   }
-}
+})
 
 
 export function createServiceSupabaseClient(): SupabaseClient {

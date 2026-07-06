@@ -1,17 +1,22 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
 import {
+  bulkSendTemplateEnvelopesAction,
+  createMySigningLinkAction,
   deleteDraftDocumentAction,
   getEnvelopeExecutedDownloadUrlAction,
+  listESignTemplatesAction,
   listSignatureStartTargetsAction,
+  markEnvelopeSignedOfflineAction,
   resendEnvelopeAction,
   sendDocumentSigningReminderAction,
   voidEnvelopeAction,
+  type ESignTemplateSummary,
 } from "@/app/(app)/signatures/actions"
 import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard"
 import { Badge } from "@/components/ui/badge"
@@ -50,13 +55,15 @@ import {
 } from "@/components/ui/drawer"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Progress } from "@/components/ui/progress"
 import { Separator } from "@/components/ui/separator"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip"
-import { Ban, Download, Mail, MoreHorizontal, RefreshCcw, Trash2, Link2, Clock, CheckCircle2, FileText, Users, Calendar, Plus, Search, Filter, ChevronRight } from "@/components/icons"
+import { TooltipProvider } from "@/components/ui/tooltip"
+import { AlertTriangle, Ban, Download, Eye, Mail, MoreHorizontal, RefreshCcw, Trash2, Link2, Clock, CheckCircle2, FileText, Users, Calendar, Plus, Search, Filter, ChevronRight, Upload } from "@/components/icons"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { cn } from "@/lib/utils"
 
@@ -68,6 +75,7 @@ type SignatureHubRow = {
   document_type: string
   document_status: string
   document_metadata: Record<string, any>
+  source_file_id: string | null
   project_id: string
   project_name: string | null
   source_entity_type: string | null
@@ -89,12 +97,38 @@ type SignatureHubRow = {
   next_pending_emails: string[]
   recipient_names: string[]
   next_pending_names: string[]
+  recipient_statuses: Array<{
+    id: string
+    name: string
+    email: string | null
+    signer_role: string | null
+    sequence: number
+    status: string
+    sent_at: string | null
+    viewed_at: string | null
+    signed_at: string | null
+    signed_by_name: string | null
+    signed_by_email: string | null
+    identity_mismatch: boolean
+    is_current: boolean
+    can_remind: boolean
+  }>
+  activity: Array<{
+    id: string
+    event_type: string
+    label: string
+    created_at: string
+    actor_label: string | null
+    detail: string | null
+  }>
   last_event_at: string | null
   can_remind: boolean
   can_void: boolean
   can_resend: boolean
   can_download: boolean
   can_delete_draft: boolean
+  can_sign_myself: boolean
+  can_mark_offline: boolean
   queue_flags: {
     waiting_on_client: boolean
     executed_this_week: boolean
@@ -135,7 +169,7 @@ const envelopeStatusClassName: Record<string, string> = {
   expired: "bg-orange-500/15 text-orange-700 border-orange-500/30",
 }
 
-type RowAction = "download" | "resend" | "duplicate_packet" | "void" | "delete_draft" | "continue_draft" | "view_source"
+type RowAction = "preview_source" | "download" | "resend" | "sign_myself" | "mark_offline" | "duplicate_packet" | "void" | "delete_draft" | "continue_draft" | "view_source"
 
 function formatDateTime(value?: string | null) {
   if (!value) return "—"
@@ -167,8 +201,12 @@ function formatEnvelopeStatusLabel(value: string) {
 
 function formatDocumentType(value: string) {
   switch (value) {
+    case "estimate":
+      return "Estimate"
     case "change_order":
       return "Change Order"
+    case "subcontract_change_order":
+      return "Subcontract Change Order"
     case "proposal":
       return "Proposal"
     case "contract":
@@ -182,12 +220,16 @@ function getSourceLabel(row: SignatureHubRow) {
   switch (row.source_entity_type) {
     case "change_order":
       return `Change Order · ${row.document_title}`
+    case "estimate":
+      return `Estimate · ${row.document_title}`
     case "proposal":
       return `Proposal · ${row.document_title}`
     case "selection":
       return `Selection · ${row.document_title}`
     case "subcontract":
       return `Subcontract · ${row.document_title}`
+    case "subcontract_change_order":
+      return `Subcontract Change Order · ${row.document_title}`
     case "closeout":
       return `Closeout · ${row.document_title}`
     default:
@@ -199,20 +241,19 @@ function getOpenSourceActionLabel(row: SignatureHubRow) {
   switch (row.source_entity_type) {
     case "change_order":
       return "Open change order"
+    case "estimate":
+      return "Open estimate"
     case "proposal":
-      return "Open proposal signature"
+      return "Open proposal"
     case "selection":
       return "Open selection"
     case "subcontract":
       return "Open commitment"
+    case "subcontract_change_order":
+      return "Open commitment change order"
     default:
       return "Open source"
   }
-}
-
-function getRecipientSubtitle(row: SignatureHubRow) {
-  if (row.recipient_names.length === 0) return "To: —"
-  return `To: ${row.recipient_names.join(", ")}`
 }
 
 function getProgressPercent(row: SignatureHubRow) {
@@ -229,11 +270,29 @@ function getPendingLabel(row: SignatureHubRow) {
   return `${row.signer_summary.pending} pending`
 }
 
+function getViewedLabel(row: SignatureHubRow) {
+  const viewedStatuses = row.recipient_statuses.filter((recipient) => recipient.viewed_at && recipient.status !== "signed")
+  if (viewedStatuses.length === 0) return null
+  const latestViewed = viewedStatuses
+    .map((recipient) => recipient.viewed_at)
+    .filter((value): value is string => !!value)
+    .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0]
+  if (!latestViewed) return null
+  return `${viewedStatuses.length} viewed, last ${format(new Date(latestViewed), "MMM d")}`
+}
+
+function hasIdentityMismatch(row: SignatureHubRow) {
+  return row.recipient_statuses.some((recipient) => recipient.identity_mismatch)
+}
+
 function getAvailableActions(row: SignatureHubRow): RowAction[] {
   const actions: RowAction[] = []
   if (row.document_status === "draft") actions.push("continue_draft")
+  if (row.source_file_id) actions.push("preview_source")
   if (row.can_download) actions.push("download")
   if (row.can_remind) actions.push("resend")
+  if (row.can_sign_myself) actions.push("sign_myself")
+  if (row.can_mark_offline) actions.push("mark_offline")
   if (row.can_resend && row.envelope_status !== "draft") actions.push("duplicate_packet")
   if (row.can_void) actions.push("void")
   if (row.can_delete_draft) actions.push("delete_draft")
@@ -246,6 +305,59 @@ function getVersionLabel(row: SignatureHubRow) {
   if (!Number.isFinite(versionNumber) || versionNumber <= 0) return null
   const isCurrent = row.document_metadata?.is_current_version !== false
   return isCurrent ? `v${versionNumber}` : `v${versionNumber} (older)`
+}
+
+function getActionLabel(action: RowAction, row: SignatureHubRow) {
+  switch (action) {
+    case "preview_source":
+      return "Preview source PDF"
+    case "view_source":
+      return getOpenSourceActionLabel(row)
+    case "resend":
+      return "Send reminder"
+    case "sign_myself":
+      return "Sign myself now"
+    case "mark_offline":
+      return "Upload signed copy"
+    case "download":
+      return "Download executed PDF"
+    case "duplicate_packet":
+      return "Void & send new copy"
+    case "continue_draft":
+      return "Continue draft"
+    case "void":
+      return "Void envelope"
+    case "delete_draft":
+      return "Delete draft"
+  }
+}
+
+function SummaryTiles({ summary }: { summary: SignaturesHubSummary }) {
+  const tiles = [
+    { label: "Total", value: summary.total, icon: FileText },
+    { label: "Waiting", value: summary.waiting_on_client, icon: Users },
+    { label: "Executed this week", value: summary.executed_this_week, icon: CheckCircle2 },
+    { label: "Expiring soon", value: summary.expiring_soon, icon: Calendar },
+  ]
+
+  return (
+    <div className="grid gap-3 border-b bg-muted/20 p-4 sm:grid-cols-2 lg:grid-cols-4">
+      {tiles.map((tile) => {
+        const Icon = tile.icon
+        return (
+          <Card key={tile.label} className="rounded-md shadow-none">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 px-4 pb-1 pt-3">
+              <CardTitle className="text-xs font-medium text-muted-foreground">{tile.label}</CardTitle>
+              <Icon className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent className="px-4 pb-3">
+              <p className="text-2xl font-semibold leading-none">{tile.value}</p>
+            </CardContent>
+          </Card>
+        )
+      })}
+    </div>
+  )
 }
 
 export function SignaturesHubClient({
@@ -272,22 +384,39 @@ export function SignaturesHubClient({
   const [voidDialogOpen, setVoidDialogOpen] = useState(false)
   const [voidReason, setVoidReason] = useState("")
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [resendDialogOpen, setResendDialogOpen] = useState(false)
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false)
+  const [bulkDialogOpen, setBulkDialogOpen] = useState(false)
+  const [templates, setTemplates] = useState<ESignTemplateSummary[]>([])
+  const [loadingTemplates, setLoadingTemplates] = useState(false)
+  const [bulkTemplateId, setBulkTemplateId] = useState("")
+  const [bulkRecipientsText, setBulkRecipientsText] = useState("")
+  const [bulkExpiresInDays, setBulkExpiresInDays] = useState("14")
+  const [bulkRemindersEnabled, setBulkRemindersEnabled] = useState(true)
+  const [bulkReminderIntervalDays, setBulkReminderIntervalDays] = useState("3")
+  const [offlineDialogOpen, setOfflineDialogOpen] = useState(false)
+  const [offlineSignerName, setOfflineSignerName] = useState("")
+  const [offlineNote, setOfflineNote] = useState("")
+  const [offlineFile, setOfflineFile] = useState<File | null>(null)
+  const offlineFileInputRef = useRef<HTMLInputElement>(null)
 
   // Mobile UI state
-  const [mobileFilterOpen, setMobileFilterOpen] = useState(false)
   const [mobileProjectPickerOpen, setMobileProjectPickerOpen] = useState(false)
   const [mobileActionsRow, setMobileActionsRow] = useState<SignatureHubRow | null>(null)
 
   useEffect(() => {
+    if (scope === "org") {
+      setNewEnvelopeProjectId("")
+      return
+    }
     if (projectsForNewEnvelope.length === 0) {
       setNewEnvelopeProjectId("")
       return
     }
-
     if (!newEnvelopeProjectId || !projectsForNewEnvelope.some((project) => project.id === newEnvelopeProjectId)) {
       setNewEnvelopeProjectId(projectsForNewEnvelope[0].id)
     }
-  }, [newEnvelopeProjectId, projectsForNewEnvelope])
+  }, [newEnvelopeProjectId, projectsForNewEnvelope, scope])
 
   const filteredRows = useMemo(() => {
     const term = search.trim().toLowerCase()
@@ -323,6 +452,9 @@ export function SignaturesHubClient({
     try {
       await fn()
       router.refresh()
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Action failed", { description: error?.message ?? "Please try again." })
     } finally {
       setPendingActionId(null)
     }
@@ -361,11 +493,54 @@ export function SignaturesHubClient({
     })
   }
 
-  const handleDuplicatePacket = async (row: SignatureHubRow) => {
+  const handleSignMyself = async (row: SignatureHubRow) => {
     await withPendingAction(row.envelope_id, async () => {
-      await resendEnvelopeAction({ envelopeId: row.envelope_id })
-      toast.success("Signature packet resent")
+      const result = await createMySigningLinkAction({ envelopeId: row.envelope_id })
+      window.open(result.url, "_blank", "noopener,noreferrer")
     })
+  }
+
+  const handleOfflineTrigger = (row: SignatureHubRow) => {
+    setSelectedRow(row)
+    setOfflineSignerName(row.next_pending_names[0] ?? row.recipient_names[0] ?? "")
+    setOfflineNote("")
+    setOfflineFile(null)
+    setOfflineDialogOpen(true)
+  }
+
+  const handleConfirmOffline = async () => {
+    if (!selectedRow || !offlineFile) {
+      toast.error("Upload the signed PDF")
+      return
+    }
+    const formData = new FormData()
+    formData.append("file", offlineFile)
+    formData.append("signer_name", offlineSignerName)
+    formData.append("note", offlineNote)
+    await withPendingAction(selectedRow.envelope_id, async () => {
+      await markEnvelopeSignedOfflineAction({ envelopeId: selectedRow.envelope_id, formData })
+      toast.success("Signed copy recorded")
+      setOfflineDialogOpen(false)
+    })
+  }
+
+  const handleDuplicatePacketTrigger = (row: SignatureHubRow) => {
+    setSelectedRow(row)
+    setResendDialogOpen(true)
+  }
+
+  const handleConfirmDuplicatePacket = async () => {
+    if (!selectedRow) return
+    await withPendingAction(selectedRow.envelope_id, async () => {
+      await resendEnvelopeAction({ envelopeId: selectedRow.envelope_id })
+      toast.success("New signature copy sent")
+      setResendDialogOpen(false)
+    })
+  }
+
+  const handlePreviewSource = (row: SignatureHubRow) => {
+    if (!row.source_file_id) return
+    window.open(`/api/files/${row.source_file_id}/raw`, "_blank", "noopener,noreferrer")
   }
 
   const handleDeleteTrigger = (row: SignatureHubRow) => {
@@ -394,9 +569,13 @@ export function SignaturesHubClient({
 
     // Otherwise go to the specific entity type page if we have a mapping
     const entityRoutes: Record<string, string> = {
-      proposal: "signatures",
+      estimate: "estimates",
+      proposal: "proposals",
       change_order: "change-orders",
+      selection: "selections",
       subcontract: "commitments",
+      subcontract_change_order: "commitments",
+      closeout: "closeout",
       lien_waiver: "financials",
     }
 
@@ -407,18 +586,19 @@ export function SignaturesHubClient({
     }
   }
 
-  const handleOpenSourcePicker = async () => {
-    if (!newEnvelopeProjectId) {
-      toast.error("Project context is required before starting a signature packet.")
+  const handleOpenSourcePicker = async (projectId = newEnvelopeProjectId) => {
+    if (!projectId) {
+      toast.error("Project context is required before starting a signature envelope.")
       return
     }
 
     setPrepareSource(null)
     setPrepareDocumentId(null)
+    setNewEnvelopeProjectId(projectId)
     setPrepareOpen(true)
     setLoadingSourceTargets(true)
     try {
-      const targets = await listSignatureStartTargetsAction({ projectId: newEnvelopeProjectId })
+      const targets = await listSignatureStartTargetsAction({ projectId })
       setSourceTargets(targets)
     } catch (error: any) {
       console.error(error)
@@ -437,6 +617,7 @@ export function SignaturesHubClient({
       sourceType === "lien_waiver" ||
       sourceType === "selection" ||
       sourceType === "subcontract" ||
+      sourceType === "subcontract_change_order" ||
       sourceType === "closeout" ||
       sourceType === "other"
 
@@ -466,15 +647,99 @@ export function SignaturesHubClient({
   const prepareSheetTitle = prepareDocumentId
     ? "Continue draft envelope"
     : prepareSource?.standalone
-    ? "Prepare signature packet"
-    : "Prepare linked signature packet"
+    ? "Prepare signature envelope"
+    : "Prepare linked signature envelope"
 
   const handleMobileNewEnvelope = () => {
     if (scope === "org" && projectsForNewEnvelope.length > 1) {
       setMobileProjectPickerOpen(true)
       return
     }
-    void handleOpenSourcePicker()
+    void handleOpenSourcePicker(newEnvelopeProjectId || projectsForNewEnvelope[0]?.id || "")
+  }
+
+  const handleDesktopNewEnvelope = () => {
+    if (scope === "org" && projectsForNewEnvelope.length > 1) {
+      setProjectPickerOpen(true)
+      return
+    }
+    void handleOpenSourcePicker(newEnvelopeProjectId || projectsForNewEnvelope[0]?.id || "")
+  }
+
+  const loadTemplatesForBulk = async (projectId = newEnvelopeProjectId || projectsForNewEnvelope[0]?.id || "") => {
+    if (!projectId) {
+      toast.error("Choose a project before bulk sending.")
+      return
+    }
+    setNewEnvelopeProjectId(projectId)
+    setLoadingTemplates(true)
+    try {
+      const rows = await listESignTemplatesAction({ projectId })
+      setTemplates(rows ?? [])
+      setBulkTemplateId((current) => (current && rows.some((row) => row.id === current) ? current : rows[0]?.id ?? ""))
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Could not load templates", { description: error?.message ?? "Please try again." })
+    } finally {
+      setLoadingTemplates(false)
+    }
+  }
+
+  const openBulkDialog = async () => {
+    if (projectsForNewEnvelope.length === 0) return
+    if (!newEnvelopeProjectId && projectsForNewEnvelope.length > 1 && scope === "org") {
+      setBulkDialogOpen(true)
+      return
+    }
+    setBulkDialogOpen(true)
+    await loadTemplatesForBulk(newEnvelopeProjectId || projectsForNewEnvelope[0]?.id || "")
+  }
+
+  const parseBulkRecipients = () => {
+    return bulkRecipientsText
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [nameOrEmail, maybeEmail, maybeTitle] = line.split(",").map((part) => part.trim())
+        const email = maybeEmail || nameOrEmail
+        const name = maybeEmail ? nameOrEmail : ""
+        return { name, email, title: maybeTitle }
+      })
+      .filter((recipient) => recipient.email.includes("@"))
+  }
+
+  const handleBulkSend = async () => {
+    if (!bulkTemplateId || !newEnvelopeProjectId) {
+      toast.error("Choose a project and template")
+      return
+    }
+    const recipients = parseBulkRecipients()
+    if (recipients.length === 0) {
+      toast.error("Add recipients as name,email rows")
+      return
+    }
+    setPendingActionId("bulk-send")
+    try {
+      const expiryDays = Math.max(1, Math.min(180, Number(bulkExpiresInDays) || 14))
+      const expiresAt = new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000).toISOString()
+      const result = await bulkSendTemplateEnvelopesAction({
+        templateId: bulkTemplateId,
+        projectId: newEnvelopeProjectId,
+        recipients,
+        expires_at: expiresAt,
+        reminder_enabled: bulkRemindersEnabled,
+        reminder_interval_days: Math.max(1, Math.min(30, Number(bulkReminderIntervalDays) || 3)),
+      })
+      toast.success(`Bulk send complete: ${result.sent} sent${result.failed ? `, ${result.failed} failed` : ""}`)
+      setBulkDialogOpen(false)
+      router.refresh()
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Bulk send failed", { description: error?.message ?? "Please try again." })
+    } finally {
+      setPendingActionId(null)
+    }
   }
 
   const queueFilterLabels: Record<QueueFilter, string> = {
@@ -506,8 +771,8 @@ export function SignaturesHubClient({
                 size="icon"
                 className="h-10 w-10 shrink-0"
                 onClick={handleMobileNewEnvelope}
-                disabled={!newEnvelopeProjectId}
-                aria-label="New signature packet"
+                disabled={projectsForNewEnvelope.length === 0}
+                aria-label="New signature envelope"
               >
                 <Plus className="h-4 w-4" />
               </Button>
@@ -569,30 +834,20 @@ export function SignaturesHubClient({
             </div>
           </div>
           <div className="flex w-full gap-2 sm:w-auto sm:items-center">
-            {scope === "org" ? (
-              <Select value={newEnvelopeProjectId} onValueChange={setNewEnvelopeProjectId} disabled={projectsForNewEnvelope.length === 0}>
-                <SelectTrigger className="w-full sm:w-60">
-                  <SelectValue placeholder="Project for new envelope" />
-                </SelectTrigger>
-                <SelectContent>
-                  {projectsForNewEnvelope.map((project) => (
-                    <SelectItem key={project.id} value={project.id}>
-                      {project.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ) : null}
-
-            <Button onClick={() => void handleOpenSourcePicker()} disabled={!newEnvelopeProjectId} className="w-full sm:w-auto">
+            <Button variant="outline" onClick={() => void openBulkDialog()} disabled={projectsForNewEnvelope.length === 0} className="w-full sm:w-auto">
+              <Mail className="mr-2 h-4 w-4" />
+              Bulk Send
+            </Button>
+            <Button onClick={handleDesktopNewEnvelope} disabled={projectsForNewEnvelope.length === 0} className="w-full sm:w-auto">
               <Plus className="mr-2 h-4 w-4" />
-              New Signature Packet
+              New Signature Envelope
             </Button>
           </div>
         </div>
         )}
 
         <div className="min-h-0 flex-1 overflow-auto">
+          {!isMobile ? <SummaryTiles summary={initialData.summary} /> : null}
           {isMobile ? (
             <MobileEnvelopeList
               rows={filteredRows}
@@ -604,7 +859,7 @@ export function SignaturesHubClient({
               }}
               onRowActions={(row) => setMobileActionsRow(row)}
               onNewEnvelope={handleMobileNewEnvelope}
-              canCreate={Boolean(newEnvelopeProjectId)}
+              canCreate={projectsForNewEnvelope.length > 0}
             />
           ) : (
           <Table>
@@ -670,11 +925,19 @@ export function SignaturesHubClient({
                       <div className="space-y-1.5 w-full pr-4">
                         <div className="flex items-center justify-between text-[10px] text-muted-foreground">
                           <span>{row.signer_summary.signed}/{row.signer_summary.total}</span>
-                          <span>{getProgressPercent(row)}%</span>
+                          {hasIdentityMismatch(row) ? (
+                            <span className="flex items-center gap-1 text-amber-700 dark:text-amber-400">
+                              <AlertTriangle className="h-3 w-3" />
+                              mismatch
+                            </span>
+                          ) : null}
                         </div>
                         <Progress value={getProgressPercent(row)} className="h-1.5" />
                         {getPendingLabel(row) ? (
                           <p className="text-[10px] text-blue-600 dark:text-blue-400 font-medium truncate">{getPendingLabel(row)}</p>
+                        ) : null}
+                        {getViewedLabel(row) ? (
+                          <p className="text-[10px] text-muted-foreground truncate">{getViewedLabel(row)}</p>
                         ) : null}
                       </div>
                     </TableCell>
@@ -723,6 +986,24 @@ export function SignaturesHubClient({
                                   Resend reminder
                                 </DropdownMenuItem>
                               ) : null}
+                              {availableActions.includes("sign_myself") ? (
+                                <DropdownMenuItem onClick={() => void handleSignMyself(row)}>
+                                  <Link2 className="mr-2 h-4 w-4" />
+                                  Sign myself now
+                                </DropdownMenuItem>
+                              ) : null}
+                              {availableActions.includes("mark_offline") ? (
+                                <DropdownMenuItem onClick={() => handleOfflineTrigger(row)}>
+                                  <Upload className="mr-2 h-4 w-4" />
+                                  Upload signed copy
+                                </DropdownMenuItem>
+                              ) : null}
+                              {availableActions.includes("preview_source") ? (
+                                <DropdownMenuItem onClick={() => handlePreviewSource(row)}>
+                                  <Eye className="mr-2 h-4 w-4" />
+                                  Preview source PDF
+                                </DropdownMenuItem>
+                              ) : null}
                               {availableActions.includes("continue_draft") ? (
                                 <DropdownMenuItem onClick={() => handleContinueDraft(row)}>
                                   <RefreshCcw className="mr-2 h-4 w-4" />
@@ -736,9 +1017,9 @@ export function SignaturesHubClient({
                                 </DropdownMenuItem>
                               ) : null}
                               {availableActions.includes("duplicate_packet") ? (
-                                <DropdownMenuItem onClick={() => void handleDuplicatePacket(row)}>
+                                <DropdownMenuItem onClick={() => handleDuplicatePacketTrigger(row)}>
                                   <RefreshCcw className="mr-2 h-4 w-4" />
-                                  Duplicate and resend packet
+                                  Void & send new copy
                                 </DropdownMenuItem>
                               ) : null}
                               {availableActions.includes("void") ? (
@@ -776,9 +1057,9 @@ export function SignaturesHubClient({
                       </div>
                       {projectsForNewEnvelope.length > 0 ? (
                         <div className="mt-2">
-                          <Button variant="default" size="sm" onClick={() => void handleOpenSourcePicker()} disabled={!newEnvelopeProjectId}>
+                          <Button variant="default" size="sm" onClick={handleDesktopNewEnvelope} disabled={projectsForNewEnvelope.length === 0}>
                             <Plus className="mr-2 h-4 w-4" />
-                            New Signature Packet
+                            New Signature Envelope
                           </Button>
                         </div>
                       ) : null}
@@ -816,6 +1097,33 @@ export function SignaturesHubClient({
             router.refresh()
           }}
         />
+
+        <Dialog open={projectPickerOpen} onOpenChange={setProjectPickerOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Choose project</DialogTitle>
+              <DialogDescription>
+                Select the project for this signature envelope.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="max-h-[50vh] space-y-1 overflow-y-auto py-2">
+              {projectsForNewEnvelope.map((project) => (
+                <button
+                  key={project.id}
+                  type="button"
+                  onClick={() => {
+                    setProjectPickerOpen(false)
+                    void handleOpenSourcePicker(project.id)
+                  }}
+                  className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm hover:bg-muted"
+                >
+                  <span className="truncate">{project.name}</span>
+                  <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                </button>
+              ))}
+            </div>
+          </DialogContent>
+        </Dialog>
 
         {/* Detail Drawer - Desktop (right) */}
         {!isMobile ? (
@@ -897,11 +1205,19 @@ export function SignaturesHubClient({
                             </p>
                             <p className="truncate text-xs text-muted-foreground">{selectedRow.document_title}</p>
                           </div>
-                          {selectedRow.source_entity_id ? (
-                            <Button variant="outline" size="sm" onClick={() => handleViewSource(selectedRow)}>
-                              {getOpenSourceActionLabel(selectedRow)}
-                            </Button>
-                          ) : null}
+                          <div className="flex shrink-0 items-center gap-2">
+                            {selectedRow.source_file_id ? (
+                              <Button variant="outline" size="sm" onClick={() => handlePreviewSource(selectedRow)}>
+                                <Eye className="mr-2 h-4 w-4" />
+                                Preview PDF
+                              </Button>
+                            ) : null}
+                            {selectedRow.source_entity_id ? (
+                              <Button variant="outline" size="sm" onClick={() => handleViewSource(selectedRow)}>
+                                {getOpenSourceActionLabel(selectedRow)}
+                              </Button>
+                            ) : null}
+                          </div>
                         </div>
                         {selectedRow.source_entity_type === "change_order" ? (
                           <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
@@ -924,12 +1240,12 @@ export function SignaturesHubClient({
                         </span>
                       </div>
                       <div className="space-y-3">
-                        {selectedRow.recipient_names.map((name, idx) => {
-                          const isSigned = idx < selectedRow.signer_summary.signed;
-                          const isPending = idx === selectedRow.signer_summary.signed && selectedRow.envelope_status !== "executed" && selectedRow.envelope_status !== "voided";
+                        {selectedRow.recipient_statuses.map((recipient, idx) => {
+                          const isSigned = recipient.status === "signed"
+                          const isPending = recipient.is_current && selectedRow.envelope_status !== "executed" && selectedRow.envelope_status !== "voided"
                           
                           return (
-                            <div key={idx} className="flex items-center justify-between border rounded-lg p-3 bg-muted/30">
+                            <div key={recipient.id} className="flex items-center justify-between gap-3 border rounded-lg p-3 bg-muted/30">
                               <div className="flex items-center gap-3">
                                 <div className={cn(
                                   "h-8 w-8 rounded-full flex items-center justify-center text-xs font-medium",
@@ -939,14 +1255,26 @@ export function SignaturesHubClient({
                                 )}>
                                   {isSigned ? <CheckCircle2 className="h-4 w-4" /> : idx + 1}
                                 </div>
-                                <div>
-                                  <p className="text-sm font-medium">{name}</p>
-                                  <p className="text-xs text-muted-foreground">
-                                    {isSigned ? "Completed signing" : isPending ? "Current signer" : "Awaiting previous signers"}
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-medium">{recipient.name}</p>
+                                  <p className="truncate text-xs text-muted-foreground">
+                                    {isSigned
+                                      ? `Signed${recipient.signed_at ? ` ${format(new Date(recipient.signed_at), "MMM d")}` : ""}`
+                                      : recipient.viewed_at
+                                      ? `Viewed ${format(new Date(recipient.viewed_at), "MMM d, h:mm a")}`
+                                      : isPending
+                                      ? "Current signer"
+                                      : "Awaiting previous signers"}
                                   </p>
+                                  {recipient.identity_mismatch ? (
+                                    <p className="mt-1 flex items-center gap-1 text-[11px] font-medium text-amber-700 dark:text-amber-400">
+                                      <AlertTriangle className="h-3 w-3" />
+                                      Signed by {recipient.signed_by_email}
+                                    </p>
+                                  ) : null}
                                 </div>
                               </div>
-                              {isPending && selectedRow.can_remind && (
+                              {recipient.can_remind && (
                                 <Button variant="outline" size="sm" className="h-8" onClick={() => void handleResendReminder(selectedRow)}>
                                   Remind
                                 </Button>
@@ -964,19 +1292,25 @@ export function SignaturesHubClient({
                           variant={action === "void" || action === "delete_draft" ? "destructive" : "outline"}
                           className="w-full justify-start h-10"
                           onClick={() => {
+                            if (action === "preview_source") handlePreviewSource(selectedRow)
                             if (action === "view_source") handleViewSource(selectedRow)
                             if (action === "resend") handleResendReminder(selectedRow)
+                            if (action === "sign_myself") handleSignMyself(selectedRow)
+                            if (action === "mark_offline") handleOfflineTrigger(selectedRow)
                             if (action === "download") handleDownload(selectedRow)
-                            if (action === "duplicate_packet") handleDuplicatePacket(selectedRow)
+                            if (action === "duplicate_packet") handleDuplicatePacketTrigger(selectedRow)
                             if (action === "continue_draft") handleContinueDraft(selectedRow)
                             if (action === "void") handleVoidTrigger(selectedRow)
                             if (action === "delete_draft") handleDeleteTrigger(selectedRow)
                           }}
                         >
+                          {action === "preview_source" && <><Eye className="mr-2 h-4 w-4" /> Preview source PDF</>}
                           {action === "view_source" && <><Link2 className="mr-2 h-4 w-4" /> {getOpenSourceActionLabel(selectedRow)}</>}
                           {action === "resend" && <><Mail className="mr-2 h-4 w-4" /> Send reminder</>}
+                          {action === "sign_myself" && <><Link2 className="mr-2 h-4 w-4" /> Sign myself now</>}
+                          {action === "mark_offline" && <><Upload className="mr-2 h-4 w-4" /> Upload signed copy</>}
                           {action === "download" && <><Download className="mr-2 h-4 w-4" /> Download executed PDF</>}
-                          {action === "duplicate_packet" && <><RefreshCcw className="mr-2 h-4 w-4" /> Duplicate and resend packet</>}
+                          {action === "duplicate_packet" && <><RefreshCcw className="mr-2 h-4 w-4" /> Void & send new copy</>}
                           {action === "continue_draft" && <><RefreshCcw className="mr-2 h-4 w-4" /> Continue draft</>}
                           {action === "void" && <><Ban className="mr-2 h-4 w-4" /> Void envelope</>}
                           {action === "delete_draft" && <><Trash2 className="mr-2 h-4 w-4" /> Delete draft</>}
@@ -991,29 +1325,29 @@ export function SignaturesHubClient({
                         <Clock className="h-4 w-4" />
                         Activity
                       </h3>
-                      <div className="space-y-2 text-xs text-muted-foreground">
-                        <div className="flex items-center justify-between gap-3">
-                          <span>Created</span>
-                          <span>{formatDateTime(selectedRow.created_at)}</span>
-                        </div>
-                        {selectedRow.sent_at ? (
-                          <div className="flex items-center justify-between gap-3">
-                            <span>Sent</span>
-                            <span>{formatDateTime(selectedRow.sent_at)}</span>
-                          </div>
-                        ) : null}
-                        {selectedRow.executed_at ? (
-                          <div className="flex items-center justify-between gap-3">
-                            <span>Executed</span>
-                            <span>{formatDateTime(selectedRow.executed_at)}</span>
-                          </div>
-                        ) : null}
-                        {selectedRow.last_event_at ? (
-                          <div className="flex items-center justify-between gap-3">
-                            <span>Last activity</span>
-                            <span>{formatDateTime(selectedRow.last_event_at)}</span>
-                          </div>
-                        ) : null}
+                      <div className="space-y-3">
+                        {selectedRow.activity.length > 0 ? (
+                          selectedRow.activity.map((event) => (
+                            <div key={event.id} className="flex gap-3">
+                              <div className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-primary" />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center justify-between gap-3">
+                                  <p className="truncate text-sm font-medium">{event.label}</p>
+                                  <span className="shrink-0 text-[11px] text-muted-foreground">
+                                    {formatDateTime(event.created_at)}
+                                  </span>
+                                </div>
+                                {event.actor_label || event.detail ? (
+                                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                                    {[event.actor_label, event.detail].filter(Boolean).join(" · ")}
+                                  </p>
+                                ) : null}
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <p className="text-xs text-muted-foreground">No activity recorded yet.</p>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1102,18 +1436,15 @@ export function SignaturesHubClient({
                         Recipients
                       </p>
                       <div className="space-y-1.5">
-                        {selectedRow.recipient_names.length === 0 ? (
+                        {selectedRow.recipient_statuses.length === 0 ? (
                           <p className="text-xs text-muted-foreground">No recipients</p>
                         ) : (
-                          selectedRow.recipient_names.map((name, idx) => {
-                            const isSigned = idx < selectedRow.signer_summary.signed
-                            const isPending =
-                              idx === selectedRow.signer_summary.signed &&
-                              selectedRow.envelope_status !== "executed" &&
-                              selectedRow.envelope_status !== "voided"
+                          selectedRow.recipient_statuses.map((recipient, idx) => {
+                            const isSigned = recipient.status === "signed"
+                            const isPending = recipient.is_current && selectedRow.envelope_status !== "executed" && selectedRow.envelope_status !== "voided"
                             return (
                               <div
-                                key={`${name}-${idx}`}
+                                key={recipient.id}
                                 className="flex items-center gap-3 rounded-lg border bg-card px-3 py-2.5"
                               >
                                 <div
@@ -1129,12 +1460,23 @@ export function SignaturesHubClient({
                                   {isSigned ? <CheckCircle2 className="h-3.5 w-3.5" /> : idx + 1}
                                 </div>
                                 <div className="min-w-0 flex-1">
-                                  <p className="truncate text-sm font-medium">{name}</p>
+                                  <p className="truncate text-sm font-medium">{recipient.name}</p>
                                   <p className="truncate text-[11px] text-muted-foreground">
-                                    {isSigned ? "Signed" : isPending ? "Current signer" : "Awaiting"}
+                                    {isSigned
+                                      ? "Signed"
+                                      : recipient.viewed_at
+                                      ? `Viewed ${format(new Date(recipient.viewed_at), "MMM d")}`
+                                      : isPending
+                                      ? "Current signer"
+                                      : "Awaiting"}
                                   </p>
+                                  {recipient.identity_mismatch ? (
+                                    <p className="mt-0.5 truncate text-[11px] font-medium text-amber-700 dark:text-amber-400">
+                                      Signed by {recipient.signed_by_email}
+                                    </p>
+                                  ) : null}
                                 </div>
-                                {isPending && selectedRow.can_remind ? (
+                                {recipient.can_remind ? (
                                   <Button
                                     variant="outline"
                                     size="sm"
@@ -1156,36 +1498,24 @@ export function SignaturesHubClient({
                       <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                         Activity
                       </p>
-                      <div className="space-y-1.5 rounded-lg border bg-muted/20 px-3 py-2.5 text-xs">
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="text-muted-foreground">Created</span>
-                          <span className="font-medium">{formatDateTime(selectedRow.created_at)}</span>
-                        </div>
-                        {selectedRow.sent_at ? (
-                          <div className="flex items-center justify-between gap-3">
-                            <span className="text-muted-foreground">Sent</span>
-                            <span className="font-medium">{formatDateTime(selectedRow.sent_at)}</span>
-                          </div>
-                        ) : null}
-                        {selectedRow.expires_at ? (
-                          <div className="flex items-center justify-between gap-3">
-                            <span className="text-muted-foreground">Expires</span>
-                            <span
-                              className={cn(
-                                "font-medium",
-                                selectedRow.queue_flags.expiring_soon && "text-orange-600 dark:text-orange-400",
-                              )}
-                            >
-                              {formatDateTime(selectedRow.expires_at)}
-                            </span>
-                          </div>
-                        ) : null}
-                        {selectedRow.executed_at ? (
-                          <div className="flex items-center justify-between gap-3">
-                            <span className="text-muted-foreground">Executed</span>
-                            <span className="font-medium">{formatDateTime(selectedRow.executed_at)}</span>
-                          </div>
-                        ) : null}
+                      <div className="space-y-2 rounded-lg border bg-muted/20 px-3 py-2.5 text-xs">
+                        {selectedRow.activity.length > 0 ? (
+                          selectedRow.activity.map((event) => (
+                            <div key={event.id} className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="truncate font-medium">{event.label}</p>
+                                {event.actor_label || event.detail ? (
+                                  <p className="truncate text-muted-foreground">
+                                    {[event.actor_label, event.detail].filter(Boolean).join(" · ")}
+                                  </p>
+                                ) : null}
+                              </div>
+                              <span className="shrink-0 text-muted-foreground">{format(new Date(event.created_at), "MMM d")}</span>
+                            </div>
+                          ))
+                        ) : (
+                          <p className="text-muted-foreground">No activity recorded yet.</p>
+                        )}
                       </div>
                     </div>
 
@@ -1203,10 +1533,13 @@ export function SignaturesHubClient({
                                 key={action}
                                 type="button"
                                 onClick={() => {
+                                  if (action === "preview_source") handlePreviewSource(selectedRow)
                                   if (action === "view_source") handleViewSource(selectedRow)
                                   if (action === "resend") void handleResendReminder(selectedRow)
+                                  if (action === "sign_myself") void handleSignMyself(selectedRow)
+                                  if (action === "mark_offline") handleOfflineTrigger(selectedRow)
                                   if (action === "download") void handleDownload(selectedRow)
-                                  if (action === "duplicate_packet") void handleDuplicatePacket(selectedRow)
+                                  if (action === "duplicate_packet") handleDuplicatePacketTrigger(selectedRow)
                                   if (action === "continue_draft") handleContinueDraft(selectedRow)
                                   if (action === "void") handleVoidTrigger(selectedRow)
                                   if (action === "delete_draft") handleDeleteTrigger(selectedRow)
@@ -1216,21 +1549,18 @@ export function SignaturesHubClient({
                                   isDestructive ? "text-destructive" : "text-foreground",
                                 )}
                               >
+                                {action === "preview_source" && <Eye className="h-[18px] w-[18px] shrink-0" />}
                                 {action === "view_source" && <Link2 className="h-[18px] w-[18px] shrink-0" />}
                                 {action === "resend" && <Mail className="h-[18px] w-[18px] shrink-0" />}
+                                {action === "sign_myself" && <Link2 className="h-[18px] w-[18px] shrink-0" />}
+                                {action === "mark_offline" && <Upload className="h-[18px] w-[18px] shrink-0" />}
                                 {action === "download" && <Download className="h-[18px] w-[18px] shrink-0" />}
                                 {action === "duplicate_packet" && <RefreshCcw className="h-[18px] w-[18px] shrink-0" />}
                                 {action === "continue_draft" && <RefreshCcw className="h-[18px] w-[18px] shrink-0" />}
                                 {action === "void" && <Ban className="h-[18px] w-[18px] shrink-0" />}
                                 {action === "delete_draft" && <Trash2 className="h-[18px] w-[18px] shrink-0" />}
                                 <span className="flex-1">
-                                  {action === "view_source" && getOpenSourceActionLabel(selectedRow)}
-                                  {action === "resend" && "Send reminder"}
-                                  {action === "download" && "Download executed PDF"}
-                                  {action === "duplicate_packet" && "Duplicate and resend"}
-                                  {action === "continue_draft" && "Continue draft"}
-                                  {action === "void" && "Void envelope"}
-                                  {action === "delete_draft" && "Delete draft"}
+                                  {getActionLabel(action, selectedRow)}
                                 </span>
                               </button>
                             )
@@ -1245,34 +1575,6 @@ export function SignaturesHubClient({
           </DrawerContent>
         </Drawer>
         )}
-
-        {/* Mobile Filter Drawer */}
-        <Drawer open={mobileFilterOpen} onOpenChange={setMobileFilterOpen}>
-          <DrawerContent>
-            <DrawerHeader className="border-b px-4 py-3">
-              <DrawerTitle className="text-center text-sm font-semibold">Filter envelopes</DrawerTitle>
-            </DrawerHeader>
-            <div className="flex flex-col gap-0.5 px-3 pb-[max(env(safe-area-inset-bottom),1rem)] pt-2">
-              {(Object.keys(queueFilterLabels) as QueueFilter[]).map((key) => (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => {
-                    setQueueFilter(key)
-                    setMobileFilterOpen(false)
-                  }}
-                  className={cn(
-                    "flex items-center justify-between rounded-lg px-3 py-3 text-left text-sm font-medium active:bg-muted",
-                    queueFilter === key && "bg-muted",
-                  )}
-                >
-                  <span>{queueFilterLabels[key]}</span>
-                  {queueFilter === key ? <CheckCircle2 className="h-4 w-4 text-primary" /> : null}
-                </button>
-              ))}
-            </div>
-          </DrawerContent>
-        </Drawer>
 
         {/* Mobile Project Picker Drawer */}
         <Drawer open={mobileProjectPickerOpen} onOpenChange={setMobileProjectPickerOpen}>
@@ -1291,7 +1593,7 @@ export function SignaturesHubClient({
                     onClick={() => {
                       setNewEnvelopeProjectId(project.id)
                       setMobileProjectPickerOpen(false)
-                      setTimeout(() => void handleOpenSourcePicker(), 50)
+                      setTimeout(() => void handleOpenSourcePicker(project.id), 50)
                     }}
                     className="flex items-center justify-between rounded-lg px-3 py-3 text-left text-sm font-medium active:bg-muted"
                   >
@@ -1342,10 +1644,13 @@ export function SignaturesHubClient({
                         type="button"
                         onClick={() => {
                           setMobileActionsRow(null)
+                          if (action === "preview_source") handlePreviewSource(row)
                           if (action === "view_source") handleViewSource(row)
                           if (action === "resend") void handleResendReminder(row)
+                          if (action === "sign_myself") void handleSignMyself(row)
+                          if (action === "mark_offline") handleOfflineTrigger(row)
                           if (action === "download") void handleDownload(row)
-                          if (action === "duplicate_packet") void handleDuplicatePacket(row)
+                          if (action === "duplicate_packet") handleDuplicatePacketTrigger(row)
                           if (action === "continue_draft") handleContinueDraft(row)
                           if (action === "void") handleVoidTrigger(row)
                           if (action === "delete_draft") handleDeleteTrigger(row)
@@ -1355,21 +1660,18 @@ export function SignaturesHubClient({
                           isDestructive ? "text-destructive" : "text-foreground",
                         )}
                       >
+                        {action === "preview_source" && <Eye className="h-[18px] w-[18px] shrink-0" />}
                         {action === "view_source" && <Link2 className="h-[18px] w-[18px] shrink-0" />}
                         {action === "resend" && <Mail className="h-[18px] w-[18px] shrink-0" />}
+                        {action === "sign_myself" && <Link2 className="h-[18px] w-[18px] shrink-0" />}
+                        {action === "mark_offline" && <Upload className="h-[18px] w-[18px] shrink-0" />}
                         {action === "download" && <Download className="h-[18px] w-[18px] shrink-0" />}
                         {action === "duplicate_packet" && <RefreshCcw className="h-[18px] w-[18px] shrink-0" />}
                         {action === "continue_draft" && <RefreshCcw className="h-[18px] w-[18px] shrink-0" />}
                         {action === "void" && <Ban className="h-[18px] w-[18px] shrink-0" />}
                         {action === "delete_draft" && <Trash2 className="h-[18px] w-[18px] shrink-0" />}
                         <span className="flex-1">
-                          {action === "view_source" && getOpenSourceActionLabel(row)}
-                          {action === "resend" && "Send reminder"}
-                          {action === "download" && "Download executed PDF"}
-                          {action === "duplicate_packet" && "Duplicate and resend"}
-                          {action === "continue_draft" && "Continue draft"}
-                          {action === "void" && "Void envelope"}
-                          {action === "delete_draft" && "Delete draft"}
+                          {getActionLabel(action, row)}
                         </span>
                       </button>
                     )
@@ -1379,6 +1681,142 @@ export function SignaturesHubClient({
             ) : null}
           </DrawerContent>
         </Drawer>
+
+        <Dialog open={bulkDialogOpen} onOpenChange={setBulkDialogOpen}>
+          <DialogContent className="sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Bulk send from template</DialogTitle>
+              <DialogDescription>
+                Create one envelope per recipient using a saved template.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-2">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Project</label>
+                  <Select
+                    value={newEnvelopeProjectId}
+                    onValueChange={(value) => void loadTemplatesForBulk(value)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Choose project" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {projectsForNewEnvelope.map((project) => (
+                        <SelectItem key={project.id} value={project.id}>
+                          {project.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Template</label>
+                  <Select value={bulkTemplateId} onValueChange={setBulkTemplateId} disabled={loadingTemplates || templates.length === 0}>
+                    <SelectTrigger>
+                      <SelectValue placeholder={loadingTemplates ? "Loading..." : "Choose template"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {templates.map((template) => (
+                        <SelectItem key={template.id} value={template.id}>
+                          {template.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Recipients</label>
+                <Textarea
+                  value={bulkRecipientsText}
+                  onChange={(event) => setBulkRecipientsText(event.target.value)}
+                  rows={7}
+                  placeholder={"Jane Client,jane@example.com,Optional title\nsam@example.com"}
+                />
+              </div>
+              <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Expires after</label>
+                  <Input
+                    type="number"
+                    min="1"
+                    max="180"
+                    value={bulkExpiresInDays}
+                    onChange={(event) => setBulkExpiresInDays(event.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Reminder interval</label>
+                  <Input
+                    type="number"
+                    min="1"
+                    max="30"
+                    value={bulkReminderIntervalDays}
+                    onChange={(event) => setBulkReminderIntervalDays(event.target.value)}
+                    disabled={!bulkRemindersEnabled}
+                  />
+                </div>
+                <div className="flex items-center gap-2 pb-2">
+                  <Switch checked={bulkRemindersEnabled} onCheckedChange={setBulkRemindersEnabled} />
+                  <span className="text-xs text-muted-foreground">Reminders</span>
+                </div>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setBulkDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={() => void handleBulkSend()} disabled={pendingActionId === "bulk-send" || !bulkTemplateId}>
+                {pendingActionId === "bulk-send" ? "Sending..." : "Send envelopes"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={offlineDialogOpen} onOpenChange={setOfflineDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Upload signed copy</DialogTitle>
+              <DialogDescription>
+                Mark this envelope complete using a wet-ink or offline signed PDF.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-2">
+              <input
+                ref={offlineFileInputRef}
+                type="file"
+                accept="application/pdf"
+                className="hidden"
+                onChange={(event) => setOfflineFile(event.target.files?.[0] ?? null)}
+              />
+              <Button variant="outline" className="w-full justify-start" onClick={() => offlineFileInputRef.current?.click()}>
+                <Upload className="mr-2 h-4 w-4" />
+                {offlineFile ? offlineFile.name : "Choose signed PDF"}
+              </Button>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Signer name</label>
+                <Input value={offlineSignerName} onChange={(event) => setOfflineSignerName(event.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Note</label>
+                <Input
+                  value={offlineNote}
+                  onChange={(event) => setOfflineNote(event.target.value)}
+                  placeholder="Optional"
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setOfflineDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={() => void handleConfirmOffline()} disabled={!offlineFile || pendingActionId !== null}>
+                Record signed copy
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Void Dialog */}
         <Dialog open={voidDialogOpen} onOpenChange={setVoidDialogOpen}>
@@ -1423,6 +1861,24 @@ export function SignaturesHubClient({
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+
+        <AlertDialog open={resendDialogOpen} onOpenChange={setResendDialogOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Void and send a new copy?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This voids the current envelope and creates a fresh one with new signing links.
+                Any signatures already collected on the current envelope will not carry over.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={handleConfirmDuplicatePacket}>
+                Void & send new copy
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </TooltipProvider>
   )
@@ -1462,7 +1918,7 @@ function MobileEnvelopeList({
         {canCreate ? (
           <Button onClick={onNewEnvelope} className="mt-1">
             <Plus className="mr-2 h-4 w-4" />
-            New Signature Packet
+            New Signature Envelope
           </Button>
         ) : null}
       </div>

@@ -22,6 +22,25 @@ interface Props {
   data: SelectionsData
 }
 
+function formatMoney(cents: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(cents / 100)
+}
+
+function formatPriceLabel(option: SelectionOption): string | undefined {
+  if (option.price_type === "included") return "Included"
+  const cents = option.price_delta_cents ?? option.price_cents
+  if (cents == null) return undefined
+  const amount = formatMoney(Math.abs(cents))
+  if (option.price_type === "upgrade") return `+${amount}`
+  if (option.price_type === "downgrade") return `-${amount}`
+  return amount
+}
+
 export function SelectionsPortalClient({ token, data }: Props) {
   const [selections, setSelections] = useState(data.selections)
   const [isPending, startTransition] = useTransition()
@@ -31,7 +50,16 @@ export function SelectionsPortalClient({ token, data }: Props) {
       try {
         await selectOptionAction({ token, selectionId, optionId })
         setSelections((prev) =>
-          prev.map((s) => (s.id === selectionId ? { ...s, selected_option_id: optionId, status: "selected" } : s)),
+          prev.map((s) =>
+            s.id === selectionId
+              ? {
+                  ...s,
+                  selected_option_id: optionId,
+                  selected_option: data.optionsByCategory[s.category_id]?.find((option) => option.id === optionId) ?? null,
+                  status: "selected",
+                }
+              : s,
+          ),
         )
         toast.success("Selection saved")
       } catch (error) {
@@ -83,22 +111,20 @@ export function SelectionsPortalClient({ token, data }: Props) {
                   )}
                   {options.map((opt) => {
                     const isSelected = selection.selected_option_id === opt.id
-                    const priceLabel =
-                      opt.price_type === "included"
-                        ? "Included"
-                        : opt.price_type === "upgrade"
-                          ? `+$${(opt.price_delta_cents ?? opt.price_cents ?? 0 / 100).toLocaleString()}`
-                          : opt.price_type === "downgrade"
-                            ? `-$${(opt.price_delta_cents ?? 0) / 100}`
-                            : opt.price_cents != null
-                              ? `$${(opt.price_cents / 100).toLocaleString()}`
-                              : undefined
+                    const priceLabel = formatPriceLabel(opt)
 
                     return (
                       <div
                         key={opt.id}
                         className="rounded-lg border bg-card/50 p-3 space-y-2 transition hover:border-primary/50"
                       >
+                        {opt.image_url && (
+                          <img
+                            src={opt.image_url}
+                            alt={opt.name}
+                            className="h-36 w-full rounded-md border object-cover"
+                          />
+                        )}
                         <div className="flex items-center justify-between gap-2">
                           <div className="space-y-1">
                             <p className="text-sm font-semibold">{opt.name}</p>
@@ -131,9 +157,6 @@ export function SelectionsPortalClient({ token, data }: Props) {
     </div>
   )
 }
-
-
-
 
 
 

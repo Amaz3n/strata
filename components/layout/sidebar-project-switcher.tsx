@@ -25,16 +25,16 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 import { Skeleton } from "@/components/ui/skeleton"
-import type { Project } from "@/lib/types"
+import type { ProjectNavigationItem } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { useHydrated } from "@/hooks/use-hydrated"
 import { useSidebarProjects } from "./use-sidebar-projects"
 
-function isArchived(status?: Project["status"]) {
+function isArchived(status?: ProjectNavigationItem["status"]) {
   return status === "completed" || status === "cancelled"
 }
 
-function formatProjectStatus(status?: Project["status"]) {
+function formatProjectStatus(status?: ProjectNavigationItem["status"]) {
   return (status ?? "active").replace("_", " ")
 }
 
@@ -111,7 +111,7 @@ export function SidebarProjectSwitcher({ projectId }: SidebarProjectSwitcherProp
 
     return (
       <>
-        <ProjectAvatar projectId={currentProject.id} size="lg" className="rounded-none" />
+        <ProjectAvatar projectId={currentProject.id} size="lg" />
         {state !== "collapsed" && (
           <>
             <span className="min-w-0 flex-1 truncate whitespace-nowrap text-sm font-medium">{currentProject.name}</span>

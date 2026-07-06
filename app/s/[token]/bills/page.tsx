@@ -1,8 +1,8 @@
 import { notFound } from "next/navigation"
 import Link from "next/link"
-import { ArrowLeft } from "lucide-react"
+import { ArrowLeft, CheckCircle2, FileSignature } from "lucide-react"
 
-import { validatePortalToken, loadSubPortalData } from "@/lib/services/portal-access"
+import { assertPortalActionAccess, loadSubPortalData } from "@/lib/services/portal-access"
 import { PortalHeader } from "@/components/portal/portal-header"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -23,13 +23,23 @@ function formatCurrency(cents: number): string {
   }).format(cents / 100)
 }
 
+function canSignWaiver(status: string, lienWaiverStatus?: string | null): boolean {
+  return (status === "approved" || status === "partial") && lienWaiverStatus !== "received"
+}
+
 export default async function SubBillsPage({ params }: SubBillsPageProps) {
   const { token } = await params
-  const access = await validatePortalToken(token)
-
-  if (!access) notFound()
-  if (access.portal_type !== "sub" || !access.company_id) notFound()
-  if (!access.permissions.can_view_bills) notFound()
+  let access
+  try {
+    access = await assertPortalActionAccess(token, {
+      portalType: "sub",
+      requireCompany: true,
+      permission: "can_view_bills",
+    })
+  } catch {
+    notFound()
+  }
+  if (!access.company_id) notFound()
 
   const data = await loadSubPortalData({
     orgId: access.org_id,
@@ -65,15 +75,21 @@ export default async function SubBillsPage({ params }: SubBillsPageProps) {
               <p className="text-sm text-muted-foreground">No invoices submitted yet</p>
             ) : (
               data.bills.map((bill) => (
-                <div key={bill.id} className="flex items-center justify-between py-2 border-b last:border-0">
+                <div key={bill.id} className="flex items-center justify-between gap-3 py-2 border-b last:border-0">
                   <div className="min-w-0">
                     <p className="text-sm font-medium truncate">{bill.bill_number}</p>
                     <p className="text-xs text-muted-foreground truncate">{bill.commitment_title}</p>
                     {bill.due_date && (
                       <p className="text-xs text-muted-foreground">Due {new Date(bill.due_date).toLocaleDateString()}</p>
                     )}
+                    {bill.lien_waiver_status === "received" && (
+                      <p className="mt-1 flex items-center gap-1 text-xs text-success">
+                        <CheckCircle2 className="h-3 w-3" />
+                        Waiver received
+                      </p>
+                    )}
                   </div>
-                  <div className="text-right shrink-0">
+                  <div className="shrink-0 text-right">
                     <Badge
                       variant={bill.status === "paid" ? "secondary" : bill.status === "approved" ? "outline" : "outline"}
                       className="capitalize text-xs mb-1"
@@ -81,6 +97,14 @@ export default async function SubBillsPage({ params }: SubBillsPageProps) {
                       {bill.status}
                     </Badge>
                     <p className="text-sm font-medium">{formatCurrency(bill.total_cents)}</p>
+                    {canSignWaiver(bill.status, bill.lien_waiver_status) && (
+                      <Button asChild size="sm" className="mt-2 h-8">
+                        <Link href={`/s/${token}/waivers/${bill.id}`}>
+                          <FileSignature className="mr-1 h-3.5 w-3.5" />
+                          Sign waiver
+                        </Link>
+                      </Button>
+                    )}
                   </div>
                 </div>
               ))
@@ -91,4 +115,3 @@ export default async function SubBillsPage({ params }: SubBillsPageProps) {
     </div>
   )
 }
-

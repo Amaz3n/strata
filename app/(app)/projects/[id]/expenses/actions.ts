@@ -141,6 +141,8 @@ function revalidate(projectId: string) {
   revalidatePath(`/projects/${projectId}/expenses`)
   revalidatePath(`/projects/${projectId}/cost-inbox`)
   revalidatePath(`/projects/${projectId}/financials`)
+  revalidatePath(`/projects/${projectId}/financials/review`)
+  revalidatePath(`/projects/${projectId}/financials/receivables`)
 }
 
 /** Latest budget's lines for a project — used as the cost bucket picker when cost codes are off. */

@@ -6,15 +6,15 @@ import { AnimatePresence, motion } from "framer-motion"
 import { OptimisticLink, useOptimisticPathname } from "@/lib/navigation/optimistic-pathname"
 import { signOutAction } from "@/app/(auth)/auth/actions"
 import {
-  Briefcase,
   Building2,
+  CalendarDays,
   CircleHelp,
+  ClipboardCheck,
   Contact,
+  CreditCard,
   FolderOpen,
-  Hammer,
   HardHat,
   Home,
-  LayoutDashboard,
   LogOut,
   MoreHorizontal,
   Plus,
@@ -27,25 +27,29 @@ import type { LucideIcon } from "@/components/icons"
 import { useMobileAction } from "@/components/layout/mobile-action-context"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import type { Project, User } from "@/lib/types"
+import type { User } from "@/lib/types"
 import { cn } from "@/lib/utils"
-import { getProjectFinancialFeatureConfig } from "@/lib/financials/billing-model"
 import { useSidebarProjects } from "./use-sidebar-projects"
+import {
+  buildProjectNavGroups,
+  getProjectIdFromPath,
+  getProjectSection,
+  type ProjectNavItem,
+  type ProjectNavSubItem,
+} from "./project-nav-items"
 
 interface MobileBottomNavProps {
   user?: User | null
   pipelineBadgeCount?: number
+  myWorkBadgeCount?: number
+  readyToBillBadgeCount?: number
+  projectReviewBadgeCounts?: Record<string, number>
   canAccessPlatform?: boolean
   permissions?: string[]
   whatsNewUnreadCount?: number
 }
 
-type NavSubItem = {
-  title: string
-  url: string
-  isActive?: boolean
-  requiredAny?: string[]
-}
+type NavSubItem = ProjectNavSubItem
 
 type NavItem = {
   title: string
@@ -62,96 +66,36 @@ type MenuSection = {
   items: NavItem[]
 }
 
-function getProjectIdFromPath(pathname: string): string | null {
-  if (pathname === "/projects" || pathname.startsWith("/projects?")) return null
-  const match = pathname.match(/^\/projects\/([^/]+)/)
-  return match?.[1] ?? null
-}
-
-function getProjectSection(pathname: string): string {
-  if (pathname.includes("/drawings")) return "drawings"
-  if (pathname.includes("/rfis")) return "rfis"
-  if (pathname.includes("/submittals")) return "submittals"
-  if (pathname.includes("/decisions")) return "decisions"
-  if (pathname.includes("/signatures")) return "signatures"
-  if (pathname.includes("/documents")) return "documents"
-  if (pathname.includes("/bids")) return "bids"
-  if (pathname.includes("/change-orders")) return "change-orders"
-  if (pathname.includes("/invoices")) return "invoices"
-  if (pathname.includes("/financials/receivables")) return "receivables"
-  if (pathname.includes("/financials/trust-center")) return "trust-center"
-  if (pathname.includes("/budget")) return "budget"
-  if (pathname.includes("/commitments")) return "commitments"
-  if (pathname.includes("/payables")) return "payables"
-  if (pathname.includes("/cost-inbox")) return "cost-inbox"
-  if (pathname.includes("/time")) return "time"
-  if (pathname.includes("/expenses")) return "expenses"
-  if (pathname.includes("/reports")) return "reports"
-  if (pathname.includes("/schedule")) return "schedule"
-  if (pathname.includes("/tasks")) return "tasks"
-  if (pathname.includes("/daily-logs")) return "daily-logs"
-  if (pathname.includes("/punch")) return "punch"
-  if (pathname.includes("/closeout")) return "closeout"
-  if (pathname.includes("/warranty")) return "warranty"
-  if (pathname.includes("/financials")) return "financials"
-  return "overview"
-}
-
 function canAccess(requiredAny: string[] | undefined, permissions: Set<string>) {
   if (!requiredAny || requiredAny.length === 0) return true
   if (permissions.has("*") || permissions.has("org.admin")) return true
   return requiredAny.some((permission) => permissions.has(permission))
 }
 
-const FINANCIAL_SECTIONS = new Set([
-  "financials",
-  "budget",
-  "commitments",
-  "payables",
-  "receivables",
-  "invoices",
-  "reports",
-  "time",
-  "expenses",
-  "change-orders",
-  "cost-inbox",
-  "trust-center",
-])
-const BUILD_SECTIONS = new Set(["schedule", "daily-logs", "punch", "rfis", "submittals", "decisions"])
-const PLAN_SECTIONS = new Set(["documents", "drawings", "bids", "signatures"])
-
-function getFinancialLandingUrl(projectId: string, project?: Project) {
-  const base = `/projects/${projectId}`
-  if (!project) return `${base}/financials`
-  const config = getProjectFinancialFeatureConfig(project, project.billing_contract)
-  if (config.landingPage === "receivables") return `${base}/financials/receivables`
-  if (config.landingPage === "budget") return `${base}/financials/budget`
-  return `${base}/financials`
+function visibleBadge(count?: number) {
+  return count && count > 0 ? count : undefined
 }
 
-function buildFinancialSubItems(projectId: string, section: string, project?: Project): NavSubItem[] {
-  const base = `/projects/${projectId}`
-  const config = project ? getProjectFinancialFeatureConfig(project, project.billing_contract) : null
-
-  return [
-    config?.showInbox === false
-      ? null
-      : { title: "Inbox", url: `${base}/financials`, isActive: section === "financials" || section === "cost-inbox", requiredAny: ["budget.read", "invoice.read", "bill.read", "payment.read", "draw.read", "commitment.read"] },
-    { title: "Budget", url: `${base}/financials/budget`, isActive: section === "budget" || section === "commitments", requiredAny: ["budget.read", "commitment.read"] },
-    { title: "Receivables", url: `${base}/financials/receivables`, isActive: section === "receivables" || section === "invoices", requiredAny: ["invoice.read", "payment.read", "draw.read"] },
-    { title: "Payables", url: `${base}/financials/payables`, isActive: section === "payables", requiredAny: ["bill.read", "commitment.read"] },
-    { title: "Trust Center", url: `${base}/financials/trust-center`, isActive: section === "trust-center", requiredAny: ["invoice.read", "bill.read", "budget.read"] },
-    config?.showTime === false
-      ? null
-      : { title: "Time", url: `${base}/time`, isActive: section === "time", requiredAny: ["invoice.read", "invoice.write"] },
-    { title: "Expenses", url: `${base}/expenses`, isActive: section === "expenses", requiredAny: ["invoice.read", "invoice.write", "bill.read"] },
-    { title: "Change Orders", url: `${base}/change-orders`, isActive: section === "change-orders", requiredAny: ["change_order.read"] },
-  ].filter(Boolean) as NavSubItem[]
+function toMobileNavItem(item: ProjectNavItem): NavItem | null {
+  if (!item.icon) return null
+  return {
+    title: item.title,
+    url: item.url,
+    icon: item.icon,
+    isActive: item.isActive,
+    badge: item.badge,
+    requiredAny: item.requiredAny,
+    subItems: item.items,
+  }
 }
+
 
 export function MobileBottomNav({
   user,
   pipelineBadgeCount,
+  myWorkBadgeCount,
+  readyToBillBadgeCount,
+  projectReviewBadgeCounts = {},
   canAccessPlatform,
   permissions = [],
   whatsNewUnreadCount = 0,
@@ -168,7 +112,7 @@ export function MobileBottomNav({
 
   const projectId = getProjectIdFromPath(pathname)
   const isProject = Boolean(projectId)
-  const section = isProject ? getProjectSection(pathname) : ""
+  const section = getProjectSection(pathname)
   const currentProject = useMemo(
     () => projects.find((project) => project.id === projectId),
     [projects, projectId],
@@ -221,66 +165,57 @@ export function MobileBottomNav({
 
   const { primary, menuSections } = useMemo<{ primary: NavItem[]; menuSections: MenuSection[] }>(() => {
     if (isProject && projectId) {
-      const base = `/projects/${projectId}`
-      const buildSubs: NavSubItem[] = [
-        { title: "Schedule", url: `${base}/schedule`, isActive: section === "schedule", requiredAny: ["schedule.read"] },
-        { title: "Daily Logs", url: `${base}/daily-logs`, isActive: section === "daily-logs", requiredAny: ["daily_log.read"] },
-        { title: "Punch", url: `${base}/punch`, isActive: section === "punch", requiredAny: ["punch.read", "punch.write"] },
-        { title: "RFIs", url: `${base}/rfis`, isActive: section === "rfis", requiredAny: ["rfi.read"] },
-        { title: "Submittals", url: `${base}/submittals`, isActive: section === "submittals", requiredAny: ["submittal.read"] },
-        { title: "Decisions", url: `${base}/decisions`, isActive: section === "decisions", requiredAny: ["decision.read", "decision.write"] },
-      ]
-      const financialSubs = buildFinancialSubItems(projectId, section, currentProject)
-      const planSubs: NavSubItem[] = [
-        { title: "Documents", url: `${base}/documents`, isActive: section === "documents", requiredAny: ["docs.read"] },
-        { title: "Drawings", url: `${base}/drawings`, isActive: section === "drawings", requiredAny: ["drawing.read", "docs.read"] },
-        { title: "Bids", url: `${base}/bids`, isActive: section === "bids", requiredAny: ["bid.read", "bid.write"] },
-        { title: "Signatures", url: `${base}/signatures`, isActive: section === "signatures", requiredAny: ["signature.read", "signature.send"] },
-      ]
-      const projectPrimary: NavItem[] = [
-        {
-          title: "Overview",
-          url: base,
-          icon: LayoutDashboard,
-          isActive: section === "overview",
-          requiredAny: ["org.member", "project.read"],
-        },
-        {
-          title: "Plan",
-          url: `${base}/documents`,
-          icon: Briefcase,
-          isActive: PLAN_SECTIONS.has(section),
-          subItems: planSubs,
-        },
-        {
-          title: "Build",
-          url: `${base}/schedule`,
-          icon: Hammer,
-          isActive: BUILD_SECTIONS.has(section),
-          subItems: buildSubs,
-        },
-        {
-          title: "Financials",
-          url: getFinancialLandingUrl(projectId, currentProject),
-          icon: Wallet,
-          isActive: FINANCIAL_SECTIONS.has(section),
-          subItems: financialSubs,
-        },
-      ]
+      const projectItems =
+        buildProjectNavGroups({
+          projectId,
+          section,
+          project: currentProject,
+          reviewBadgeCount: projectReviewBadgeCounts[projectId],
+        })[0]?.items ?? []
+      const closeItem = projectItems.find((item) => item.title === "Close")
+      const projectPrimary = projectItems
+        .filter((item) => item.title !== "Close")
+        .map(toMobileNavItem)
+        .filter((item): item is NavItem => item != null)
+      const projectMenuItems = closeItem
+        ? [toMobileNavItem(closeItem)].filter((item): item is NavItem => item != null)
+        : []
 
       const projectMenu: MenuSection[] = [
+        ...(projectMenuItems.length ? [{ label: "Project", items: projectMenuItems }] : []),
         {
           label: "Workspace",
           items: [
             { title: "Home", url: "/", icon: Home },
+            {
+              title: "Tasks",
+              url: "/tasks",
+              icon: ClipboardCheck,
+              badge: visibleBadge(myWorkBadgeCount),
+              requiredAny: ["org.member"],
+            },
             { title: "Projects", url: "/projects", icon: FolderOpen, requiredAny: ["org.member", "project.read"] },
             {
               title: "Pipeline",
               url: "/pipeline",
               icon: Contact,
-              badge: pipelineBadgeCount && pipelineBadgeCount > 0 ? pipelineBadgeCount : undefined,
+              badge: visibleBadge(pipelineBadgeCount),
               requiredAny: ["pipeline.read", "pipeline.write"],
             },
+          ],
+        },
+        {
+          label: "Office",
+          items: [
+            {
+              title: "Billing",
+              url: "/billing",
+              icon: Wallet,
+              badge: visibleBadge(readyToBillBadgeCount),
+              requiredAny: ["invoice.read"],
+            },
+            { title: "Payables", url: "/payables", icon: CreditCard, requiredAny: ["bill.read", "payment.read"] },
+            { title: "Schedule", url: "/schedule", icon: CalendarDays, requiredAny: ["schedule.read"] },
             { title: "Directory", url: "/directory", icon: Building2, requiredAny: ["directory.read", "directory.write"] },
           ],
         },
@@ -291,6 +226,14 @@ export function MobileBottomNav({
 
     const workspacePrimary: NavItem[] = [
       { title: "Home", url: "/", icon: Home, isActive: pathname === "/" },
+      {
+        title: "Tasks",
+        url: "/tasks",
+        icon: ClipboardCheck,
+        isActive: pathname.startsWith("/tasks") || pathname.startsWith("/my-work"),
+        badge: visibleBadge(myWorkBadgeCount),
+        requiredAny: ["org.member"],
+      },
       {
         title: "Projects",
         url: "/projects",
@@ -303,14 +246,36 @@ export function MobileBottomNav({
         url: "/pipeline",
         icon: Contact,
         isActive: pathname.startsWith("/pipeline"),
-        badge: pipelineBadgeCount && pipelineBadgeCount > 0 ? pipelineBadgeCount : undefined,
+        badge: visibleBadge(pipelineBadgeCount),
         requiredAny: ["pipeline.read", "pipeline.write"],
       },
     ]
     const workspaceMenu: MenuSection[] = [
       {
-        label: "More",
+        label: "Office",
         items: [
+          {
+            title: "Billing",
+            url: "/billing",
+            icon: Wallet,
+            isActive: pathname.startsWith("/billing"),
+            badge: visibleBadge(readyToBillBadgeCount),
+            requiredAny: ["invoice.read"],
+          },
+          {
+            title: "Payables",
+            url: "/payables",
+            icon: CreditCard,
+            isActive: pathname.startsWith("/payables"),
+            requiredAny: ["bill.read", "payment.read"],
+          },
+          {
+            title: "Schedule",
+            url: "/schedule",
+            icon: CalendarDays,
+            isActive: pathname.startsWith("/schedule"),
+            requiredAny: ["schedule.read"],
+          },
           {
             title: "Directory",
             url: "/directory",
@@ -322,7 +287,7 @@ export function MobileBottomNav({
       },
     ]
     return { primary: workspacePrimary, menuSections: workspaceMenu }
-  }, [pathname, projectId, isProject, section, currentProject, pipelineBadgeCount])
+  }, [pathname, projectId, isProject, section, currentProject, projectReviewBadgeCounts, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount])
 
   const visiblePrimary = useMemo(
     () =>
@@ -618,6 +583,11 @@ function SubItemRow({ item }: { item: NavSubItem }) {
         )}
       />
       <span className="min-w-0 flex-1 truncate">{item.title}</span>
+      {item.badge ? (
+        <span className="flex h-5 min-w-5 items-center justify-center bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">
+          {item.badge > 9 ? "9+" : item.badge}
+        </span>
+      ) : null}
     </OptimisticLink>
   )
 }
@@ -724,6 +694,11 @@ function MenuGroupRows({ item, onSelect }: { item: NavItem; onSelect: () => void
             )}
           />
           <span className="min-w-0 flex-1 truncate">{sub.title}</span>
+          {sub.badge ? (
+            <span className="flex h-5 min-w-5 items-center justify-center bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">
+              {sub.badge > 9 ? "9+" : sub.badge}
+            </span>
+          ) : null}
         </OptimisticLink>
       ))}
     </div>

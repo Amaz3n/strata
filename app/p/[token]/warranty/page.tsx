@@ -1,4 +1,6 @@
-import { validatePortalToken } from "@/lib/services/portal-access"
+import { notFound } from "next/navigation"
+
+import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { listWarrantyRequestsForPortal } from "@/lib/services/warranty"
 import { WarrantyPortalClient } from "./warranty-client"
 
@@ -8,9 +10,14 @@ interface Params {
 
 export default async function WarrantyPortalPage({ params }: Params) {
   const { token } = await params
-  const access = await validatePortalToken(token)
-  if (!access || access.portal_type !== "client") {
-    return null
+  let access
+  try {
+    access = await assertPortalActionAccess(token, {
+      portalType: "client",
+      permission: "can_view_warranty",
+    })
+  } catch {
+    notFound()
   }
 
   const requests = await listWarrantyRequestsForPortal(access.org_id, access.project_id).catch(() => [])

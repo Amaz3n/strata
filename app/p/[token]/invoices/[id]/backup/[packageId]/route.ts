@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 
-import { validatePortalToken } from "@/lib/services/portal-access"
+import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { getInvoiceForPortal } from "@/lib/services/invoices"
 import { getSharedBackupPackageManifestForPortal } from "@/lib/services/owner-billing-packages"
 
@@ -12,8 +12,13 @@ export const dynamic = "force-dynamic"
 
 export async function GET(_request: Request, { params }: Params) {
   const { token, id, packageId } = await params
-  const access = await validatePortalToken(token)
-  if (!access || !access.permissions.can_view_invoices) {
+  let access
+  try {
+    access = await assertPortalActionAccess(token, {
+      portalType: "client",
+      permission: "can_view_invoices",
+    })
+  } catch {
     return new NextResponse("Not found", { status: 404 })
   }
 

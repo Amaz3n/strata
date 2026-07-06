@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { validatePortalToken } from "@/lib/services/portal-access"
+import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { deleteFilesObjects, uploadFilesObject } from "@/lib/storage/files-storage"
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024 // 25MB
@@ -14,30 +14,29 @@ const ALLOWED_TYPES = [
   "image/heic",
 ]
 
+function portalAccessErrorResponse(err: unknown) {
+  if (err instanceof Error) {
+    return NextResponse.json({ error: err.message }, { status: 403 })
+  }
+  return NextResponse.json({ error: "Access denied" }, { status: 403 })
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ token: string }> }
 ) {
+  const { token } = await params
+  const portalToken = await assertPortalActionAccess(token, {
+    portalType: "sub",
+    requireCompany: true,
+    permission: "can_upload_compliance_docs",
+  }).catch(portalAccessErrorResponse)
+  if (portalToken instanceof NextResponse) return portalToken
+  if (!portalToken.company_id) {
+    return NextResponse.json({ error: "Invalid portal type" }, { status: 403 })
+  }
+
   try {
-    const { token } = await params
-    const portalToken = await validatePortalToken(token)
-
-    if (!portalToken) {
-      return NextResponse.json({ error: "Invalid or expired portal access" }, { status: 401 })
-    }
-
-    if (portalToken.portal_type !== "sub" || !portalToken.company_id) {
-      return NextResponse.json({ error: "Invalid portal type" }, { status: 403 })
-    }
-
-    // Check permission
-    if (!portalToken.permissions.can_upload_compliance_docs) {
-      return NextResponse.json(
-        { error: "You do not have permission to upload compliance documents" },
-        { status: 403 }
-      )
-    }
-
     const formData = await request.formData()
     const file = formData.get("file") as File
 

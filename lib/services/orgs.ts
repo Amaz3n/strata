@@ -30,25 +30,6 @@ export async function getOrgBilling(orgId?: string) {
   return { org, subscription, plan }
 }
 
-export async function getOrgSupport(orgId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
-
-  const { data, error } = await supabase
-    .from("support_contracts")
-    .select("status, starts_at, ends_at, details")
-    .eq("org_id", resolvedOrgId)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  if (error) {
-    console.error("Failed to load support contract", error)
-    return null
-  }
-
-  return data
-}
-
 export async function getOrgOnboardingState(orgId?: string) {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
 

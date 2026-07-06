@@ -1,13 +1,16 @@
 "use client"
 
-import { useState, useCallback, useEffect } from "react"
+import { useState, useCallback, useEffect, useRef } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
 import type { ChangeOrder, Project } from "@/lib/types"
+import type { CommitmentSummary } from "@/lib/services/commitments"
+import type { CommitmentChangeOrderSummary, ChangeOrderSubCostSignal } from "@/lib/services/commitment-change-orders"
 import { resolveProjectBillingModel } from "@/lib/financials/billing-model"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import {
   Sheet,
   SheetContent,
@@ -29,6 +32,10 @@ import {
   voidChangeOrderAction,
   unlinkInvoiceFromChangeOrderAction,
   getChangeOrderLinkedInvoicesAction,
+  createCommitmentChangeOrderFromChangeOrderAction,
+  getChangeOrderSubCostSignalAction,
+  listCommitmentChangeOrdersForChangeOrderAction,
+  listCommitmentsForChangeOrderAction,
   linkInvoiceToChangeOrderAction,
   listLinkableInvoicesForChangeOrderAction,
   updateChangeOrderFollowupAction,
@@ -66,7 +73,7 @@ const vendorImpactLabels: Record<string, string> = {
   not_reviewed: "Not reviewed",
   no_vendor_impact: "No vendor impact",
   needs_vendor_pricing: "Needs vendor pricing",
-  create_vendor_change: "Create vendor change",
+  create_vendor_change: "Vendor CO needed",
   linked_commitment: "Linked to commitment",
 }
 
@@ -112,6 +119,10 @@ function formatGmpImpact(value?: string | null) {
   }
 }
 
+function todayDateInputValue() {
+  return format(new Date(), "yyyy-MM-dd")
+}
+
 export function ChangeOrderDetailSheet({
   changeOrder,
   project,
@@ -124,6 +135,13 @@ export function ChangeOrderDetailSheet({
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [isLoadingAttachments, setIsLoadingAttachments] = useState(false)
   const [approving, setApproving] = useState(false)
+  const [approvalDialogOpen, setApprovalDialogOpen] = useState(false)
+  const [offlineApprovalDate, setOfflineApprovalDate] = useState(todayDateInputValue)
+  const [offlineSignerName, setOfflineSignerName] = useState("")
+  const [offlineSignerEmail, setOfflineSignerEmail] = useState("")
+  const [offlineApprovalNote, setOfflineApprovalNote] = useState("")
+  const [offlineSignedFile, setOfflineSignedFile] = useState<File | null>(null)
+  const offlineFileInputRef = useRef<HTMLInputElement>(null)
   const [sendingToClient, setSendingToClient] = useState(false)
   const [voidDialogOpen, setVoidDialogOpen] = useState(false)
   const [voidReason, setVoidReason] = useState("")
@@ -138,6 +156,13 @@ export function ChangeOrderDetailSheet({
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<Set<string>>(new Set())
   const [linkingInvoices, setLinkingInvoices] = useState(false)
   const [unlinkingInvoiceId, setUnlinkingInvoiceId] = useState<string | null>(null)
+  const [linkedCommitmentChangeOrders, setLinkedCommitmentChangeOrders] = useState<CommitmentChangeOrderSummary[]>([])
+  const [subCostSignal, setSubCostSignal] = useState<ChangeOrderSubCostSignal | null>(null)
+  const [subCostLoading, setSubCostLoading] = useState(false)
+  const [commitmentPickerOpen, setCommitmentPickerOpen] = useState(false)
+  const [commitmentOptions, setCommitmentOptions] = useState<CommitmentSummary[]>([])
+  const [selectedCommitmentId, setSelectedCommitmentId] = useState("")
+  const [creatingCommitmentChangeOrder, setCreatingCommitmentChangeOrder] = useState(false)
 
   const loadLinkedInvoices = useCallback(async () => {
     if (!changeOrder) return
@@ -152,15 +177,38 @@ export function ChangeOrderDetailSheet({
     }
   }, [changeOrder])
 
+  const loadSubCostLinks = useCallback(async () => {
+    if (!changeOrder) return
+    setSubCostLoading(true)
+    try {
+      const [links, signal] = await Promise.all([
+        listCommitmentChangeOrdersForChangeOrderAction(changeOrder.id),
+        getChangeOrderSubCostSignalAction(changeOrder.id),
+      ])
+      setLinkedCommitmentChangeOrders((links as CommitmentChangeOrderSummary[]) ?? [])
+      setSubCostSignal(signal as ChangeOrderSubCostSignal)
+    } catch {
+      setLinkedCommitmentChangeOrders([])
+      setSubCostSignal(null)
+    } finally {
+      setSubCostLoading(false)
+    }
+  }, [changeOrder])
+
   useEffect(() => {
     if (open && changeOrder) {
       void loadLinkedInvoices()
+      void loadSubCostLinks()
     } else if (!open) {
       setLinkedInvoices([])
+      setLinkedCommitmentChangeOrders([])
+      setSubCostSignal(null)
       setLinkPickerOpen(false)
+      setCommitmentPickerOpen(false)
       setSelectedInvoiceIds(new Set())
+      setSelectedCommitmentId("")
     }
-  }, [open, changeOrder, loadLinkedInvoices])
+  }, [open, changeOrder, loadLinkedInvoices, loadSubCostLinks])
 
   async function openLinkPicker() {
     if (!changeOrder) return
@@ -291,6 +339,18 @@ export function ChangeOrderDetailSheet({
   const metadata = changeOrder.metadata ?? {}
   const vendorImpactStatus =
     typeof metadata.vendor_impact_status === "string" ? metadata.vendor_impact_status : "not_reviewed"
+  const financialImpact = (metadata.financial_impact as Record<string, any> | undefined) ?? null
+  const budgetPostingStatus =
+    financialImpact?.billing_status === "ready_to_bill"
+      ? "Budget posted"
+      : financialImpact?.billing_status === "tracking_only"
+        ? "Tracking only"
+        : changeOrder.status === "approved"
+          ? "Not posted"
+          : "Pending approval"
+  const summaryText = changeOrder.summary?.trim() || ""
+  const descriptionText = changeOrder.description?.trim() || ""
+  const showDescription = Boolean(descriptionText && descriptionText !== summaryText)
   const billingStatus =
     changeOrder.status !== "approved"
       ? "Not approved"
@@ -359,18 +419,55 @@ export function ChangeOrderDetailSheet({
       : null,
   ].filter(Boolean) as Array<{ label: string; value: string | null; detail: string }>
 
+  const resetOfflineApproval = () => {
+    setOfflineApprovalDate(todayDateInputValue())
+    setOfflineSignerName("")
+    setOfflineSignerEmail("")
+    setOfflineApprovalNote("")
+    setOfflineSignedFile(null)
+  }
+
+  const openOfflineApprovalDialog = () => {
+    if (!canApprove) return
+    resetOfflineApproval()
+    setApprovalDialogOpen(true)
+  }
+
   const handleApprove = async () => {
     if (!canApprove) return
-    const confirmed = window.confirm(
-      "Record this change order as approved without an Arc executed document? Use this only when the signed change-order document was completed outside Arc.",
-    )
-    if (!confirmed) return
+    if (!offlineApprovalDate) {
+      toast.error("Approval date is required")
+      return
+    }
+    if (offlineSignerName.trim().length < 2) {
+      toast.error("Signer name is required")
+      return
+    }
     setApproving(true)
     try {
-      const updated = await approveChangeOrderAction(changeOrder.id)
+      let signedFileId: string | undefined
+      if (offlineSignedFile) {
+        const formData = new FormData()
+        formData.append("file", offlineSignedFile)
+        formData.append("projectId", changeOrder.project_id)
+        formData.append("category", "contracts")
+        const uploaded = await uploadFileAction(formData)
+        signedFileId = uploaded.id
+      }
+
+      const updated = await approveChangeOrderAction(changeOrder.id, {
+        approvedAt: offlineApprovalDate,
+        signerName: offlineSignerName,
+        signerEmail: offlineSignerEmail,
+        note: offlineApprovalNote,
+        signedFileId,
+      })
       onUpdate?.(updated)
+      setApprovalDialogOpen(false)
+      resetOfflineApproval()
+      await loadAttachments()
       toast.success("Offline approval recorded", {
-        description: "Use this only when the executed change-order document lives outside Arc.",
+        description: "Financial impact has been posted from the approved change order.",
       })
     } catch (error: any) {
       toast.error("Failed to approve", { description: error?.message ?? "Please try again." })
@@ -431,6 +528,39 @@ export function ChangeOrderDetailSheet({
     }
   }
 
+  const openCommitmentPicker = async () => {
+    if (!changeOrder.project_id) return
+    setCommitmentPickerOpen(true)
+    try {
+      const commitments = await listCommitmentsForChangeOrderAction(changeOrder.project_id)
+      setCommitmentOptions(commitments)
+      setSelectedCommitmentId(commitments[0]?.id ?? "")
+    } catch (error: any) {
+      toast.error("Could not load commitments", { description: error?.message ?? "Please try again." })
+      setCommitmentOptions([])
+      setSelectedCommitmentId("")
+    }
+  }
+
+  const handleCreateCommitmentChangeOrder = async () => {
+    if (!changeOrder.project_id || !selectedCommitmentId) return
+    setCreatingCommitmentChangeOrder(true)
+    try {
+      await createCommitmentChangeOrderFromChangeOrderAction(
+        changeOrder.project_id,
+        changeOrder.id,
+        selectedCommitmentId,
+      )
+      await loadSubCostLinks()
+      setCommitmentPickerOpen(false)
+      toast.success("Commitment change order drafted")
+    } catch (error: any) {
+      toast.error("Could not create commitment change order", { description: error?.message ?? "Please try again." })
+    } finally {
+      setCreatingCommitmentChangeOrder(false)
+    }
+  }
+
   return (
     <>
       <Sheet open={open} onOpenChange={onOpenChange}>
@@ -482,24 +612,23 @@ export function ChangeOrderDetailSheet({
         <ScrollArea className="flex-1 min-h-0">
           <div className="px-6 py-4 space-y-6">
 
-          {changeOrder.summary && (
+          {summaryText && (
             <div className="space-y-2">
-              <h4 className="text-sm font-medium">Notes</h4>
+              <h4 className="text-sm font-medium">Scope & Notes</h4>
               <div className="rounded-lg border bg-muted/30 p-4">
-                <p className="text-sm whitespace-pre-wrap">{changeOrder.summary}</p>
+                <p className="text-sm whitespace-pre-wrap">{summaryText}</p>
               </div>
             </div>
           )}
 
-          {/* Description */}
-          {changeOrder.description && (
+          {showDescription ? (
             <div className="space-y-2">
-              <h4 className="text-sm font-medium">Scope & Notes</h4>
+              <h4 className="text-sm font-medium">Description</h4>
               <div className="rounded-lg border bg-muted/30 p-4">
-                <p className="text-sm whitespace-pre-wrap">{changeOrder.description}</p>
+                <p className="text-sm whitespace-pre-wrap">{descriptionText}</p>
               </div>
             </div>
-          )}
+          ) : null}
 
           {hasActiveClientChangeRequest && latestChangeRequest ? (
             <div className="space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-foreground">
@@ -535,7 +664,7 @@ export function ChangeOrderDetailSheet({
                             <span>
                               {line.quantity ?? 1} {line.unit ?? "units"} × {formatMoney(line.unit_cost_cents)}
                             </span>
-                            {line.allowance_cents != null && line.allowance_cents > 0 ? (
+                            {line.allowance_cents != null && line.allowance_cents !== 0 ? (
                               <span>· {formatMoney(line.allowance_cents)} allowance</span>
                             ) : null}
                             {line.taxable ? <span>· Taxable</span> : null}
@@ -565,7 +694,7 @@ export function ChangeOrderDetailSheet({
                         <span className="text-muted-foreground">Subtotal</span>
                         <span className="tabular-nums">{formatMoney(changeOrder.totals.subtotal_cents)}</span>
                       </div>
-                      {changeOrder.totals.allowance_cents != null && changeOrder.totals.allowance_cents > 0 ? (
+                      {changeOrder.totals.allowance_cents != null && changeOrder.totals.allowance_cents !== 0 ? (
                         <div className="flex justify-between">
                           <span className="text-muted-foreground">Allowances</span>
                           <span className="tabular-nums">{formatMoney(changeOrder.totals.allowance_cents)}</span>
@@ -593,6 +722,45 @@ export function ChangeOrderDetailSheet({
               </div>
             </div>
           )}
+
+          {(changeOrder.status === "approved" || financialImpact) ? (
+            <div className="space-y-3">
+              <h4 className="text-sm font-semibold">Financial impact</h4>
+              <div className="grid gap-3 rounded-lg border bg-muted/20 p-4 sm:grid-cols-3">
+                <div>
+                  <p className="text-[11px] font-medium uppercase text-muted-foreground">Contract change</p>
+                  <p className="mt-1 text-sm font-semibold tabular-nums">{formatMoney(totalCents)}</p>
+                </div>
+                <div>
+                  <p className="text-[11px] font-medium uppercase text-muted-foreground">Budget posting</p>
+                  <p className="mt-1 text-sm font-semibold">{budgetPostingStatus}</p>
+                  {financialImpact?.posting_skipped_reason ? (
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">{financialImpact.posting_skipped_reason}</p>
+                  ) : financialImpact?.budget_revision_cents != null ? (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {formatMoney(Number(financialImpact.budget_revision_cents))} revision
+                    </p>
+                  ) : null}
+                </div>
+                {isGmpProject ? (
+                  <div>
+                    <p className="text-[11px] font-medium uppercase text-muted-foreground">GMP delta</p>
+                    <p className="mt-1 text-sm font-semibold tabular-nums">
+                      {formatMoney(typeof financialImpact?.gmp_delta_cents === "number" ? financialImpact.gmp_delta_cents : 0)}
+                    </p>
+                    <p className="mt-1 text-xs capitalize text-muted-foreground">
+                      {String(financialImpact?.gmp_impact ?? "none").replace(/_/g, " ")}
+                    </p>
+                  </div>
+                ) : (
+                  <div>
+                    <p className="text-[11px] font-medium uppercase text-muted-foreground">Billing status</p>
+                    <p className="mt-1 text-sm font-semibold">{billingStatus}</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
 
           {/* Linked receivable invoices */}
           {changeOrder.status === "approved" ? (
@@ -629,6 +797,58 @@ export function ChangeOrderDetailSheet({
                   </Button>
                 ) : null}
               </div>
+            </div>
+          ) : null}
+
+          {changeOrder.status === "approved" ? (
+            <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h4 className="text-sm font-semibold">Sub cost</h4>
+                  <p className="text-xs text-muted-foreground">Create or review subcontract change orders tied to this client CO.</p>
+                </div>
+                <Button type="button" size="sm" variant="outline" onClick={openCommitmentPicker} disabled={subCostLoading}>
+                  <Link2 className="mr-2 h-4 w-4" />
+                  Create CCO
+                </Button>
+              </div>
+              {subCostSignal && !subCostSignal.has_linked_commitment_change_orders && subCostSignal.matching_commitments.length > 0 ? (
+                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+                  Sold but not bought: {subCostSignal.matching_commitments.length} matching commitment{subCostSignal.matching_commitments.length === 1 ? "" : "s"} may need a CCO.
+                </div>
+              ) : null}
+              {subCostLoading ? (
+                <div className="flex items-center gap-2 rounded-lg border bg-muted/40 p-4 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Loading subcontract impact…
+                </div>
+              ) : linkedCommitmentChangeOrders.length > 0 ? (
+                <div className="space-y-2">
+                  {linkedCommitmentChangeOrders.map((cco) => (
+                    <div key={cco.id} className="flex items-center justify-between gap-3 rounded-lg border bg-muted/40 p-4">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="truncate text-sm font-medium">{cco.title}</span>
+                          <Badge variant="outline" className="text-[10px] capitalize">
+                            {cco.status}
+                          </Badge>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {cco.company_name ?? "No vendor"} · {cco.commitment_title ?? "Commitment"}
+                        </p>
+                      </div>
+                      <span className="shrink-0 text-sm font-semibold tabular-nums">
+                        {cco.total_cents > 0 ? "+" : ""}
+                        {formatMoney(cco.total_cents)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  No subcontract change orders are linked to this client change order yet.
+                </p>
+              )}
             </div>
           ) : null}
 
@@ -796,22 +1016,31 @@ export function ChangeOrderDetailSheet({
                         Void
                       </Button>
                     </>
-                  ) : canSendToClient ? (
-                    <Button
-                      type="button"
-                      onClick={handleSendToClient}
-                      disabled={!changeOrder.project_id || sendingToClient}
-                    >
-                      {sendingToClient
-                        ? "Sending..."
-                        : resolvedStatus === "requested_changes"
-                          ? "Resend to client portal"
-                          : "Send to client portal"}
-                    </Button>
                   ) : (
-                    <Button type="button" disabled>
-                      Sent to client
-                    </Button>
+                    <>
+                      {canApprove ? (
+                        <Button type="button" variant="outline" onClick={openOfflineApprovalDialog} disabled={approving}>
+                          {approving ? "Recording..." : "Record offline approval"}
+                        </Button>
+                      ) : null}
+                      {canSendToClient ? (
+                        <Button
+                          type="button"
+                          onClick={handleSendToClient}
+                          disabled={!changeOrder.project_id || sendingToClient}
+                        >
+                          {sendingToClient
+                            ? "Sending..."
+                            : resolvedStatus === "requested_changes"
+                              ? "Resend to client portal"
+                              : "Send to client portal"}
+                        </Button>
+                      ) : (
+                        <Button type="button" disabled>
+                          Sent to client
+                        </Button>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
@@ -819,6 +1048,95 @@ export function ChangeOrderDetailSheet({
           </div>
         </SheetContent>
       </Sheet>
+
+      <Dialog
+        open={approvalDialogOpen}
+        onOpenChange={(open) => {
+          setApprovalDialogOpen(open)
+          if (!open) resetOfflineApproval()
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Record offline approval</DialogTitle>
+            <DialogDescription>
+              Use this when the client approved this change order outside Arc and you need to post its financial impact.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-2">
+                <label htmlFor="offline-approval-date" className="text-sm font-medium">
+                  Approval date
+                </label>
+                <Input
+                  id="offline-approval-date"
+                  type="date"
+                  value={offlineApprovalDate}
+                  onChange={(event) => setOfflineApprovalDate(event.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <label htmlFor="offline-signer-name" className="text-sm font-medium">
+                  Signer name
+                </label>
+                <Input
+                  id="offline-signer-name"
+                  value={offlineSignerName}
+                  onChange={(event) => setOfflineSignerName(event.target.value)}
+                  placeholder="Client name"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="offline-signer-email" className="text-sm font-medium">
+                Signer email <span className="font-normal text-muted-foreground">(optional)</span>
+              </label>
+              <Input
+                id="offline-signer-email"
+                type="email"
+                value={offlineSignerEmail}
+                onChange={(event) => setOfflineSignerEmail(event.target.value)}
+                placeholder="client@example.com"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Signed document</label>
+              <input
+                ref={offlineFileInputRef}
+                type="file"
+                accept="application/pdf,image/*"
+                className="hidden"
+                onChange={(event) => setOfflineSignedFile(event.target.files?.[0] ?? null)}
+              />
+              <Button type="button" variant="outline" className="w-full justify-start" onClick={() => offlineFileInputRef.current?.click()}>
+                {offlineSignedFile ? offlineSignedFile.name : "Choose signed file"}
+              </Button>
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="offline-approval-note" className="text-sm font-medium">
+                Note <span className="font-normal text-muted-foreground">(optional)</span>
+              </label>
+              <Textarea
+                id="offline-approval-note"
+                value={offlineApprovalNote}
+                onChange={(event) => setOfflineApprovalNote(event.target.value)}
+                placeholder="Who approved, where the approval is stored, or any context accounting should know."
+                rows={3}
+              />
+            </div>
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setApprovalDialogOpen(false)} disabled={approving}>
+              Cancel
+            </Button>
+            <Button onClick={handleApprove} disabled={approving || !offlineApprovalDate || offlineSignerName.trim().length < 2}>
+              {approving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Record approval
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={voidDialogOpen}
@@ -856,6 +1174,61 @@ export function ChangeOrderDetailSheet({
             <Button variant="destructive" onClick={handleVoid} disabled={voiding}>
               {voiding && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Void change order
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={commitmentPickerOpen} onOpenChange={setCommitmentPickerOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Create commitment change order</DialogTitle>
+            <DialogDescription>
+              Select the subcontract or PO that should absorb this client change order.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {commitmentOptions.length === 0 ? (
+              <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                No commitments found for this project.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Commitment</label>
+                <Select value={selectedCommitmentId} onValueChange={setSelectedCommitmentId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select commitment" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {commitmentOptions.map((commitment) => (
+                      <SelectItem key={commitment.id} value={commitment.id}>
+                        {commitment.title}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedCommitmentId ? (
+                  <p className="text-xs text-muted-foreground">
+                    {(() => {
+                      const selected = commitmentOptions.find((commitment) => commitment.id === selectedCommitmentId)
+                      if (!selected) return null
+                      return `${selected.company_name ?? "No vendor"} · ${formatMoney(selected.revised_total_cents ?? selected.total_cents ?? 0)} revised`
+                    })()}
+                  </p>
+                ) : null}
+              </div>
+            )}
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setCommitmentPickerOpen(false)} disabled={creatingCommitmentChangeOrder}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCreateCommitmentChangeOrder}
+              disabled={creatingCommitmentChangeOrder || !selectedCommitmentId}
+            >
+              {creatingCommitmentChangeOrder && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Create CCO
             </Button>
           </div>
         </DialogContent>

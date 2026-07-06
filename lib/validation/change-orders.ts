@@ -8,8 +8,8 @@ export const changeOrderLineInputSchema = z.object({
     .number({ invalid_type_error: "Quantity is required" })
     .min(0.01, "Quantity must be greater than zero"),
   unit: z.string().max(20).optional().default("unit"),
-  unit_cost: z.number({ invalid_type_error: "Unit cost is required" }).min(0, "Unit cost must be positive"),
-  allowance: z.number().min(0).default(0),
+  unit_cost: z.number({ invalid_type_error: "Unit cost is required" }),
+  allowance: z.number().default(0),
   taxable: z.boolean().default(true),
   gmp_classification: z.enum(["inside_gmp", "outside_gmp"]).default("inside_gmp"),
   gmp_impact: z.enum(["none", "increase_gmp", "decrease_gmp", "outside_gmp"]).default("none"),
@@ -27,7 +27,7 @@ export const changeOrderInputSchema = z.object({
   intro: z.string().max(4000, "Cover note is too long").optional(),
   terms: z.string().max(8000, "Terms are too long").optional(),
   pricing_display: z.enum(["itemized", "subtotals", "lump_sum"]).optional().default("itemized"),
-  days_impact: z.number().int().min(0).max(365).nullable().optional(),
+  days_impact: z.number().int().min(-365).max(365).nullable().optional(),
   requires_signature: z.boolean().default(true),
   tax_rate: z.number().min(0).max(20).default(0),
   markup_percent: z.number().min(0).max(100).default(0),
@@ -38,7 +38,6 @@ export const changeOrderInputSchema = z.object({
 
 export type ChangeOrderLineInput = z.infer<typeof changeOrderLineInputSchema>
 export type ChangeOrderInput = z.infer<typeof changeOrderInputSchema>
-
 
 
 

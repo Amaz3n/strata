@@ -55,6 +55,7 @@ export type PlatformBugEvent = {
 }
 
 export type PlatformBugAiReviewStatus = "queued" | "dispatched" | "running" | "proposal_ready" | "failed" | "cancelled"
+export type PlatformBugAiFixStatus = "queued" | "dispatched" | "running" | "pr_ready" | "failed" | "cancelled"
 
 export type PlatformBugAiReview = {
   id: string
@@ -70,6 +71,31 @@ export type PlatformBugAiReview = {
   github_run_url: string | null
   summary: string | null
   proposal: Record<string, unknown>
+  raw_output: string | null
+  error: string | null
+  completed_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type PlatformBugAiFix = {
+  id: string
+  bug_id: string
+  review_id: string | null
+  status: PlatformBugAiFixStatus
+  provider: "codex"
+  requested_by: string | null
+  github_owner: string | null
+  github_repo: string | null
+  github_workflow: string | null
+  github_ref: string | null
+  github_run_id: string | null
+  github_run_url: string | null
+  branch_name: string | null
+  commit_sha: string | null
+  pr_number: number | null
+  pr_url: string | null
+  summary: string | null
   raw_output: string | null
   error: string | null
   completed_at: string | null

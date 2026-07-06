@@ -2,7 +2,7 @@ import { notFound } from "next/navigation"
 import Link from "next/link"
 import { ArrowLeft } from "lucide-react"
 
-import { validatePortalToken, loadSubPortalData } from "@/lib/services/portal-access"
+import { assertPortalActionAccess, loadSubPortalData } from "@/lib/services/portal-access"
 import { PortalHeader } from "@/components/portal/portal-header"
 import { Button } from "@/components/ui/button"
 import { SubContractsCard } from "@/components/portal/sub/sub-contracts-card"
@@ -15,11 +15,17 @@ export const revalidate = 0
 
 export default async function SubCommitmentsPage({ params }: SubCommitmentsPageProps) {
   const { token } = await params
-  const access = await validatePortalToken(token)
-
-  if (!access) notFound()
-  if (access.portal_type !== "sub" || !access.company_id) notFound()
-  if (!access.permissions.can_view_commitments) notFound()
+  let access
+  try {
+    access = await assertPortalActionAccess(token, {
+      portalType: "sub",
+      requireCompany: true,
+      permission: "can_view_commitments",
+    })
+  } catch {
+    notFound()
+  }
+  if (!access.company_id) notFound()
 
   const data = await loadSubPortalData({
     orgId: access.org_id,

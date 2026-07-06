@@ -18,8 +18,7 @@ export async function GET(request: NextRequest) {
   try {
     const preview = await getEntityPreview({ type, id })
     return NextResponse.json({ preview })
-  } catch (error) {
-    console.error("Entity preview request failed", error)
+  } catch {
     return NextResponse.json({ preview: null }, { status: 200 })
   }
 }

@@ -234,6 +234,9 @@ export async function buildInvoicePdfData({
     taxCents: invoice.tax_cents ?? invoice.totals?.tax_cents ?? 0,
     totalCents: invoice.total_cents ?? invoice.totals?.total_cents ?? 0,
     taxRate: invoice.totals?.tax_rate ?? (metadata.tax_rate as number | undefined),
+    discountCents: invoice.totals?.discount_cents || undefined,
+    discountPercent:
+      invoice.totals?.discount_type === "percent" ? invoice.totals?.discount_value ?? undefined : undefined,
     lines,
   }
 }

@@ -176,6 +176,79 @@ export function normalizeFolderPath(path?: string | null): string | undefined {
   return withoutTrailingSlash || undefined
 }
 
+function isMissingRpcError(error: any): boolean {
+  return error?.code === "PGRST202" || error?.code === "42883"
+}
+
+function getNestedFolderPath(oldPath: string, newPath: string, candidatePath?: string | null): string {
+  const normalizedCandidate = normalizeFolderPath(candidatePath)
+  if (!normalizedCandidate) return newPath
+  if (normalizedCandidate === oldPath) return newPath
+  if (normalizedCandidate.startsWith(`${oldPath}/`)) {
+    return `${newPath}${normalizedCandidate.slice(oldPath.length)}`
+  }
+  return normalizedCandidate
+}
+
+function sanitizeFolderName(name: string): string {
+  const trimmed = name.trim()
+  if (!trimmed) {
+    throw new Error("Folder name is required")
+  }
+  if (
+    trimmed === "." ||
+    trimmed === ".." ||
+    trimmed.includes("/") ||
+    trimmed.includes("\\") ||
+    /[\x00-\x1f]/.test(trimmed)
+  ) {
+    throw new Error("Folder name cannot contain slashes or control characters")
+  }
+  return trimmed
+}
+
+async function auditFolderRenameForFiles({
+  orgId,
+  actorId,
+  files,
+  oldPath,
+  newPath,
+}: {
+  orgId: string
+  actorId?: string
+  files: Array<{ id: string; file_name?: string | null; folder_path?: string | null }>
+  oldPath: string
+  newPath: string
+}) {
+  for (let index = 0; index < files.length; index += 25) {
+    const batch = files.slice(index, index + 25)
+    await Promise.all(
+      batch.map((file) => {
+        const beforePath = normalizeFolderPath(file.folder_path) ?? undefined
+        const afterPath = getNestedFolderPath(oldPath, newPath, beforePath)
+        return recordAudit({
+          orgId,
+          actorId,
+          action: "update",
+          entityType: "file",
+          entityId: file.id,
+          before: {
+            id: file.id,
+            file_name: file.file_name,
+            folder_path: beforePath,
+          },
+          after: {
+            id: file.id,
+            file_name: file.file_name,
+            folder_path: afterPath,
+          },
+          source: "folder_rename",
+        })
+      }),
+    )
+  }
+}
+
 export function getDefaultFolderForCategory(category?: FileCategory): string | undefined {
   if (!category) return "/general"
   return DEFAULT_FOLDER_BY_CATEGORY[category] ?? "/general"
@@ -293,8 +366,9 @@ export async function listFiles(
 ): Promise<{ data: FileRecord[]; count: number; hasMore: boolean }> {
   const parsed = fileListFiltersSchema.parse(filters)
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
-  const sourceMatchedFileIds = parsed.search
-    ? await findFileIdsBySourceSearch(parsed.search, resolvedOrgId).catch((error) => {
+  const searchTerm = parsed.search?.trim().slice(0, 120)
+  const sourceMatchedFileIds = searchTerm
+    ? await findFileIdsBySourceSearch(searchTerm, resolvedOrgId).catch((error) => {
         console.warn("[files] Failed to expand source search:", error)
         return [] as string[]
       })
@@ -336,16 +410,21 @@ export async function listFiles(
     query = query.overlaps("tags", parsed.tags)
   }
 
-  if (parsed.search) {
+  if (searchTerm) {
     // Search in file_name, description, and tags safely
-    const searchPattern = `%${parsed.search}%`
-    const searchClauses = [
-      `file_name.ilike.${searchPattern}`,
-      `description.ilike.${searchPattern}`,
-      `tags::text.ilike.${searchPattern}`,
-      ...sourceMatchedFileIds.map((id) => `id.eq.${id}`),
-    ]
-    query = query.or(searchClauses.join(","))
+    const safeSearchTerm = searchTerm.replace(/[(),]/g, " ").replace(/\s+/g, " ").trim()
+    const searchClauses = sourceMatchedFileIds.slice(0, 50).map((id) => `id.eq.${id}`)
+    if (safeSearchTerm) {
+      const searchPattern = `%${safeSearchTerm}%`
+      searchClauses.unshift(
+        `file_name.ilike.${searchPattern}`,
+        `description.ilike.${searchPattern}`,
+        `tags::text.ilike.${searchPattern}`,
+      )
+    }
+    if (searchClauses.length > 0) {
+      query = query.or(searchClauses.join(","))
+    }
   }
 
   if (parsed.status) {
@@ -364,7 +443,17 @@ export async function listFiles(
     query = query.eq("share_with_subs", parsed.share_with_subs)
   }
 
-  if (!parsed.include_archived) {
+  if (parsed.due_after) {
+    query = query.gte("due_at", parsed.due_after)
+  }
+
+  if (parsed.due_before) {
+    query = query.lte("due_at", parsed.due_before)
+  }
+
+  if (parsed.archived_only) {
+    query = query.not("archived_at", "is", null)
+  } else if (!parsed.include_archived) {
     query = query.is("archived_at", null)
   }
 
@@ -448,6 +537,7 @@ export async function createFileRecord(input: FileInput, orgId?: string): Promis
       storage_path: parsed.storage_path,
       mime_type: parsed.mime_type,
       size_bytes: parsed.size_bytes,
+      checksum: parsed.checksum,
       visibility: parsed.visibility ?? "public",
       category: parsed.category,
       folder_path: resolvedFolderPath,
@@ -456,6 +546,7 @@ export async function createFileRecord(input: FileInput, orgId?: string): Promis
       source: parsed.source ?? "upload",
       share_with_clients: shareWithClients,
       share_with_subs: shareWithSubs,
+      metadata: parsed.metadata ?? {},
       uploaded_by: userId,
     })
     .select(`
@@ -691,14 +782,31 @@ export async function deleteFile(fileId: string, orgId?: string): Promise<void> 
     throw new Error("File not found")
   }
 
+  const { data: versionRows, error: versionsError } = await supabase
+    .from("doc_versions")
+    .select("storage_path")
+    .eq("org_id", resolvedOrgId)
+    .eq("file_id", fileId)
+
+  if (versionsError) {
+    throw new Error(`Failed to load file versions for deletion: ${versionsError.message}`)
+  }
+
+  const storagePaths = Array.from(
+    new Set(
+      [existing.storage_path, ...(versionRows ?? []).map((row: any) => row.storage_path)]
+        .filter((path): path is string => typeof path === "string" && path.length > 0),
+    ),
+  )
+
   try {
     await deleteFilesObjects({
       supabase,
       orgId: resolvedOrgId,
-      paths: [existing.storage_path],
+      paths: storagePaths,
     })
   } catch (error) {
-    console.error("Failed to delete file from storage:", error)
+    console.error("Failed to delete file blobs from storage:", error)
     // Continue to clean up db record
   }
 
@@ -818,10 +926,29 @@ export async function listFolders(
 ): Promise<string[]> {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
 
+  if (projectId) {
+    const { data: rpcFolders, error: rpcError } = await supabase.rpc("list_project_document_folders", {
+      p_org_id: resolvedOrgId,
+      p_project_id: projectId,
+    })
+
+    if (!rpcError && Array.isArray(rpcFolders)) {
+      return rpcFolders
+        .map((row: any) => normalizeFolderPath(row.path))
+        .filter((path): path is string => Boolean(path))
+        .sort()
+    }
+
+    if (rpcError && !isMissingRpcError(rpcError)) {
+      console.warn("[files] Falling back to JS folder listing:", rpcError.message)
+    }
+  }
+
   let query = supabase
     .from("files")
     .select("folder_path")
     .eq("org_id", resolvedOrgId)
+    .is("archived_at", null)
     .not("folder_path", "is", null)
 
   if (projectId) {
@@ -892,6 +1019,25 @@ export async function listChildFolders(
 ): Promise<FolderChild[]> {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
   const normalizedParentPath = normalizeFolderPath(parentPath)
+
+  const { data: rpcFolders, error: rpcError } = await supabase.rpc("list_project_child_folders", {
+    p_org_id: resolvedOrgId,
+    p_project_id: projectId,
+    p_parent_path: normalizedParentPath ?? null,
+  })
+
+  if (!rpcError && Array.isArray(rpcFolders)) {
+    return rpcFolders.map((row: any) => ({
+      path: row.path,
+      name: row.name,
+      itemCount: Number(row.item_count ?? 0),
+    }))
+  }
+
+  if (rpcError && !isMissingRpcError(rpcError)) {
+    console.warn("[files] Falling back to JS child folder listing:", rpcError.message)
+  }
+
   const childPaths = new Set<string>()
   const fileCountByChildPath = new Map<string, number>()
 
@@ -921,6 +1067,7 @@ export async function listChildFolders(
     .select("folder_path")
     .eq("org_id", resolvedOrgId)
     .eq("project_id", projectId)
+    .is("archived_at", null)
     .not("folder_path", "is", null)
 
   if (normalizedParentPath) {
@@ -1145,53 +1292,210 @@ export async function renameProjectFolder(
   newName: string,
   orgId?: string
 ): Promise<{ affectedFiles: number }> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const normalizedOldPath = normalizeFolderPath(oldPath)
   if (!normalizedOldPath || normalizedOldPath === "/") {
     throw new Error("Cannot rename root folder")
   }
 
+  const safeNewName = sanitizeFolderName(newName)
   const parts = normalizedOldPath.split("/")
-  parts[parts.length - 1] = newName
-  const normalizedNewPath = parts.join("/")
+  parts[parts.length - 1] = safeNewName
+  const normalizedNewPath = normalizeFolderPath(parts.join("/"))
 
-  // 1. Update files in this folder
-  const { data: filesData, error: filesError } = await supabase
-    .from("files")
-    .update({ folder_path: normalizedNewPath })
-    .eq("org_id", resolvedOrgId)
-    .eq("project_id", projectId)
-    .eq("folder_path", normalizedOldPath)
-    .select("id")
-
-  if (filesError) {
-    throw new Error(`Failed to update files during folder rename: ${filesError.message}`)
+  if (!normalizedNewPath || normalizedNewPath === normalizedOldPath) {
+    return { affectedFiles: 0 }
   }
 
-  // 2. Update files in nested folders
-  const nestedOldPattern = `${normalizedOldPath}/%`
-  const { data: nestedData, error: nestedError } = await supabase.rpc("rename_nested_folder_paths", {
+  const [{ data: directFiles, error: directFetchError }, { data: nestedFiles, error: nestedFetchError }] =
+    await Promise.all([
+      supabase
+        .from("files")
+        .select("id, file_name, folder_path")
+        .eq("org_id", resolvedOrgId)
+        .eq("project_id", projectId)
+        .eq("folder_path", normalizedOldPath),
+      supabase
+        .from("files")
+        .select("id, file_name, folder_path")
+        .eq("org_id", resolvedOrgId)
+        .eq("project_id", projectId)
+        .like("folder_path", `${normalizedOldPath}/%`),
+    ])
+
+  if (directFetchError) {
+    throw new Error(`Failed to load folder files: ${directFetchError.message}`)
+  }
+  if (nestedFetchError) {
+    throw new Error(`Failed to load nested folder files: ${nestedFetchError.message}`)
+  }
+
+  const { data: existingFolderConflict, error: folderConflictError } = await supabase
+    .from("project_file_folders")
+    .select("path")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+    .eq("path", normalizedNewPath)
+    .maybeSingle()
+
+  if (folderConflictError && folderConflictError.code !== "PGRST116" && folderConflictError.code !== "42P01") {
+    throw new Error(`Failed to check folder rename target: ${folderConflictError.message}`)
+  }
+  if (existingFolderConflict?.path) {
+    throw new Error("A folder with that name already exists")
+  }
+
+  const affectedFileRows = [...(directFiles ?? []), ...(nestedFiles ?? [])] as Array<{
+    id: string
+    file_name?: string | null
+    folder_path?: string | null
+  }>
+
+  const { data: rpcResult, error: rpcError } = await supabase.rpc("rename_project_file_folder_paths", {
     p_org_id: resolvedOrgId,
     p_project_id: projectId,
     p_old_path: normalizedOldPath,
-    p_new_path: normalizedNewPath
+    p_new_path: normalizedNewPath,
+    p_actor_id: userId ?? null,
   })
 
-  // Fallback if RPC is not available
-  if (nestedError) {
-     // We'll need to do it manually if RPC doesn't exist
-     // For now let's assume we can at least update direct files
+  let affectedFiles = affectedFileRows.length
+
+  if (rpcError && !isMissingRpcError(rpcError)) {
+    throw new Error(`Failed to rename folder: ${rpcError.message}`)
   }
 
-  // 3. Update permissions
-  await supabase
-    .from("project_file_folder_permissions")
-    .update({ path: normalizedNewPath })
-    .eq("org_id", resolvedOrgId)
-    .eq("project_id", projectId)
-    .eq("path", normalizedOldPath)
+  if (!rpcError) {
+    const firstResult = Array.isArray(rpcResult) ? rpcResult[0] : rpcResult
+    affectedFiles = Number(firstResult?.affected_files ?? affectedFiles)
+  } else {
+    const { error: directUpdateError } = await supabase
+      .from("files")
+      .update({ folder_path: normalizedNewPath })
+      .eq("org_id", resolvedOrgId)
+      .eq("project_id", projectId)
+      .eq("folder_path", normalizedOldPath)
 
-  return { affectedFiles: (filesData?.length ?? 0) + (nestedData ?? 0) }
+    if (directUpdateError) {
+      throw new Error(`Failed to update files during folder rename: ${directUpdateError.message}`)
+    }
+
+    for (const file of nestedFiles ?? []) {
+      const { error: nestedUpdateError } = await supabase
+        .from("files")
+        .update({
+          folder_path: getNestedFolderPath(normalizedOldPath, normalizedNewPath, (file as any).folder_path),
+        })
+        .eq("org_id", resolvedOrgId)
+        .eq("project_id", projectId)
+        .eq("id", (file as any).id)
+
+      if (nestedUpdateError) {
+        throw new Error(`Failed to update nested file path: ${nestedUpdateError.message}`)
+      }
+    }
+
+    await renameFolderPathRows(
+      supabase,
+      "project_file_folders",
+      resolvedOrgId,
+      projectId,
+      normalizedOldPath,
+      normalizedNewPath,
+    )
+    await renameFolderPathRows(
+      supabase,
+      "project_file_folder_permissions",
+      resolvedOrgId,
+      projectId,
+      normalizedOldPath,
+      normalizedNewPath,
+    )
+  }
+
+  await auditFolderRenameForFiles({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    files: affectedFileRows,
+    oldPath: normalizedOldPath,
+    newPath: normalizedNewPath,
+  })
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "project_file_folder",
+    entityId: projectId,
+    before: { path: normalizedOldPath },
+    after: { path: normalizedNewPath },
+  })
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    eventType: "folder_renamed",
+    entityType: "project_file_folder",
+    entityId: projectId,
+    payload: {
+      project_id: projectId,
+      old_path: normalizedOldPath,
+      new_path: normalizedNewPath,
+      affected_files: affectedFiles,
+    },
+  })
+
+  return { affectedFiles }
+}
+
+async function renameFolderPathRows(
+  supabase: any,
+  tableName: "project_file_folders" | "project_file_folder_permissions",
+  orgId: string,
+  projectId: string,
+  oldPath: string,
+  newPath: string,
+) {
+  const [{ data: exactRows, error: exactError }, { data: nestedRows, error: nestedError }] = await Promise.all([
+    supabase
+      .from(tableName)
+      .select("id, path")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .eq("path", oldPath),
+    supabase
+      .from(tableName)
+      .select("id, path")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .like("path", `${oldPath}/%`),
+  ])
+
+  if (exactError) {
+    if (exactError.code === "42P01") return
+    throw new Error(`Failed to load folder rows: ${exactError.message}`)
+  }
+  if (nestedError) {
+    if (nestedError.code === "42P01") return
+    throw new Error(`Failed to load nested folder rows: ${nestedError.message}`)
+  }
+
+  const rows = [...(exactRows ?? []), ...(nestedRows ?? [])].sort(
+    (a: any, b: any) => String(b.path).length - String(a.path).length,
+  )
+
+  for (const row of rows) {
+    const { error } = await supabase
+      .from(tableName)
+      .update({ path: getNestedFolderPath(oldPath, newPath, row.path) })
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .eq("id", row.id)
+
+    if (error) {
+      throw new Error(`Failed to rename folder row: ${error.message}`)
+    }
+  }
 }
 
 /**
@@ -1202,35 +1506,85 @@ export async function deleteEmptyProjectFolder(
   folderPath: string,
   orgId?: string
 ): Promise<void> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const normalizedPath = normalizeFolderPath(folderPath)
   if (!normalizedPath || normalizedPath === "/") {
     throw new Error("Cannot delete root folder")
   }
 
   // Check if any files exist in this folder or subfolders
-  const { count, error: countError } = await supabase
-    .from("files")
-    .select("id", { count: "exact", head: true })
-    .eq("org_id", resolvedOrgId)
-    .eq("project_id", projectId)
-    .or(`folder_path.eq.${normalizedPath},folder_path.ilike.${normalizedPath}/%`)
+  const [{ count: directCount, error: directCountError }, { count: nestedCount, error: nestedCountError }] =
+    await Promise.all([
+      supabase
+        .from("files")
+        .select("id", { count: "exact", head: true })
+        .eq("org_id", resolvedOrgId)
+        .eq("project_id", projectId)
+        .eq("folder_path", normalizedPath)
+        .is("archived_at", null),
+      supabase
+        .from("files")
+        .select("id", { count: "exact", head: true })
+        .eq("org_id", resolvedOrgId)
+        .eq("project_id", projectId)
+        .like("folder_path", `${normalizedPath}/%`)
+        .is("archived_at", null),
+    ])
 
-  if (countError) {
-    throw new Error(`Failed to check folder content: ${countError.message}`)
+  if (directCountError) {
+    throw new Error(`Failed to check folder content: ${directCountError.message}`)
+  }
+  if (nestedCountError) {
+    throw new Error(`Failed to check nested folder content: ${nestedCountError.message}`)
   }
 
-  if (count && count > 0) {
+  if ((directCount ?? 0) + (nestedCount ?? 0) > 0) {
     throw new Error("Folder is not empty")
   }
 
-  // Delete permissions entry if exists
-  await supabase
-    .from("project_file_folder_permissions")
+  await deleteFolderPathRows(supabase, "project_file_folder_permissions", resolvedOrgId, projectId, normalizedPath)
+  await deleteFolderPathRows(supabase, "project_file_folders", resolvedOrgId, projectId, normalizedPath)
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "delete",
+    entityType: "project_file_folder",
+    entityId: projectId,
+    before: { path: normalizedPath },
+  })
+}
+
+async function deleteFolderPathRows(
+  supabase: any,
+  tableName: "project_file_folders" | "project_file_folder_permissions",
+  orgId: string,
+  projectId: string,
+  folderPath: string,
+) {
+  const { error: exactError } = await supabase
+    .from(tableName)
     .delete()
-    .eq("org_id", resolvedOrgId)
+    .eq("org_id", orgId)
     .eq("project_id", projectId)
-    .eq("path", normalizedPath)
+    .eq("path", folderPath)
+
+  if (exactError) {
+    if (exactError.code === "42P01") return
+    throw new Error(`Failed to delete folder row: ${exactError.message}`)
+  }
+
+  const { error: nestedError } = await supabase
+    .from(tableName)
+    .delete()
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .like("path", `${folderPath}/%`)
+
+  if (nestedError) {
+    if (nestedError.code === "42P01") return
+    throw new Error(`Failed to delete nested folder rows: ${nestedError.message}`)
+  }
 }
 
 export async function ensureProjectFolders(
@@ -1472,6 +1826,68 @@ export async function getFileCounts(
   orgId?: string
 ): Promise<Record<string, number>> {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const expiringBeforeIso = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+  const loadTrashCount = async () => {
+    let trashQuery = supabase
+      .from("files")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", resolvedOrgId)
+      .not("archived_at", "is", null)
+
+    if (projectId) {
+      trashQuery = trashQuery.eq("project_id", projectId)
+    }
+
+    const { count, error } = await trashQuery
+    if (error) {
+      console.warn("[files] Failed to get trash count:", error.message)
+      return 0
+    }
+    return count ?? 0
+  }
+  const loadExpiringCount = async () => {
+    let expiringQuery = supabase
+      .from("files")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", resolvedOrgId)
+      .is("archived_at", null)
+      .not("due_at", "is", null)
+      .lte("due_at", expiringBeforeIso)
+
+    if (projectId) {
+      expiringQuery = expiringQuery.eq("project_id", projectId)
+    }
+
+    const { count, error } = await expiringQuery
+    if (error) {
+      console.warn("[files] Failed to get expiring count:", error.message)
+      return 0
+    }
+    return count ?? 0
+  }
+
+  const { data: rpcCounts, error: rpcError } = await supabase.rpc("get_file_counts_by_category", {
+    p_org_id: resolvedOrgId,
+    p_project_id: projectId ?? null,
+  })
+
+  if (!rpcError && Array.isArray(rpcCounts)) {
+    const counts: Record<string, number> = { all: 0 }
+    for (const row of rpcCounts) {
+      const category = row.category ?? "other"
+      const count = Number(row.file_count ?? 0)
+      counts[category] = count
+      counts.all += count
+    }
+    const [expiringCount, trashCount] = await Promise.all([loadExpiringCount(), loadTrashCount()])
+    counts.expiring = expiringCount
+    counts.trash = trashCount
+    return counts
+  }
+
+  if (rpcError && !isMissingRpcError(rpcError)) {
+    console.warn("[files] Falling back to JS file counts:", rpcError.message)
+  }
 
   let query = supabase
     .from("files")
@@ -1497,6 +1913,10 @@ export async function getFileCounts(
     const cat = row.category ?? "other"
     counts[cat] = (counts[cat] ?? 0) + 1
   }
+
+  const [expiringCount, trashCount] = await Promise.all([loadExpiringCount(), loadTrashCount()])
+  counts.expiring = expiringCount
+  counts.trash = trashCount
 
   return counts
 }

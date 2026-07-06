@@ -28,13 +28,16 @@ export const taskTradeSchema = z.enum([
 ])
 
 const baseTaskSchema = z.object({
-  project_id: z.string().uuid("Project is required"),
+  // Optional: tasks can be personal (no project) or attached to any project.
+  project_id: z.string().uuid().optional(),
   title: z.string().min(2, "Title is required"),
   description: z.string().optional(),
   status: z.enum(["todo", "in_progress", "blocked", "done"]).default("todo"),
   priority: z.enum(["low", "normal", "high", "urgent"]).default("normal"),
   start_date: z.string().optional(),
   due_date: z.string().optional(),
+  // Self-reminder date. Empty string clears it.
+  reminder_at: z.string().optional(),
   assignee_id: z.string().uuid().optional(),
   assignee_kind: z.enum(["user", "contact", "company"]).optional(),
   // Construction-specific

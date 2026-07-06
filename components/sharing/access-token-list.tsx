@@ -404,7 +404,11 @@ function TokenCard({
                 <PermissionPill label="Change orders" enabled={token.permissions.can_approve_change_orders} />
                 <PermissionPill label="Selections" enabled={token.permissions.can_submit_selections} />
                 <PermissionPill label="Punch" enabled={token.permissions.can_create_punch_items} />
-                <PermissionPill label="Messages" enabled={token.permissions.can_message} />
+                <PermissionPill label="Warranty" enabled={token.permissions.can_view_warranty ?? true} />
+                <PermissionPill label="Sub invoices" enabled={token.permissions.can_submit_invoices ?? true} />
+                <PermissionPill label="Time" enabled={token.permissions.can_submit_time ?? true} />
+                <PermissionPill label="Expenses" enabled={token.permissions.can_submit_expenses ?? true} />
+                <PermissionPill label="Compliance" enabled={token.permissions.can_upload_compliance_docs ?? true} />
               </div>
             </div>
           </div>

@@ -1,9 +1,15 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
+import {
+  getExpenseApprovalBlockingReasons,
+  getTimeEntryApprovalBlockingReasons,
+  getVendorBillApprovalBlockingReasons,
+} from "@/lib/financials/approval-gates"
 import { getProjectFinancialSetupStatusForProject } from "@/lib/services/project-financial-setup"
 import { listProjectBillingPeriods, type ProjectBillingPeriod } from "@/lib/services/billing-periods"
 import { listCostCodes } from "@/lib/services/cost-codes"
 import { listCostPlusTabData } from "@/lib/services/cost-plus"
+import { getProjectFeeBillingSummary } from "@/lib/services/fee-billing"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { listVendorBillsForProject } from "@/lib/services/vendor-bills"
@@ -22,13 +28,14 @@ export async function loadFinancialsReviewQueueData(projectId: string) {
     resourceType: "financials_review_queue",
   })
 
-  const [setupResult, periodsResult, costPlusResult, vendorBillsResult, costCodesResult, billableCostsResult] = await Promise.allSettled([
+  const [setupResult, periodsResult, costPlusResult, vendorBillsResult, costCodesResult, billableCostsResult, feeSummaryResult] = await Promise.allSettled([
     getProjectFinancialSetupStatusForProject(projectId, orgId),
     listProjectBillingPeriods(projectId, orgId),
     listCostPlusTabData(projectId),
     listVendorBillsForProject(projectId),
     listCostCodes(),
     listReviewQueueBillableCosts({ supabase, orgId, projectId }),
+    getProjectFeeBillingSummary(projectId, orgId),
   ])
 
   const errors = [
@@ -38,6 +45,7 @@ export async function loadFinancialsReviewQueueData(projectId: string) {
     resultError("Vendor bills", vendorBillsResult),
     resultError("Cost codes", costCodesResult),
     resultError("Ready costs", billableCostsResult),
+    resultError("Fee billing", feeSummaryResult),
   ].filter(Boolean) as string[]
 
   const setup = setupResult.status === "fulfilled" ? setupResult.value : null
@@ -52,6 +60,7 @@ export async function loadFinancialsReviewQueueData(projectId: string) {
       billingPeriods: [],
       costCodes: costCodesEnabled ? costCodes : [],
       costCodesEnabled,
+      feeSummary: null,
       errors,
     }
   }
@@ -59,72 +68,64 @@ export async function loadFinancialsReviewQueueData(projectId: string) {
   const costPlusData =
     costPlusResult.status === "fulfilled"
       ? costPlusResult.value
-      : { billableCosts: [], timeEntries: [], expenses: [], gmpSnapshot: null }
+      : { billableCosts: [], timeEntries: [], expenses: [], gmpSummary: null }
   const vendorBills = vendorBillsResult.status === "fulfilled" ? vendorBillsResult.value : []
   const costCodes = costCodesResult.status === "fulfilled" ? costCodesResult.value : []
   const billingPeriods = periodsResult.status === "fulfilled" ? periodsResult.value : []
   const billableCosts = billableCostsResult.status === "fulfilled" ? billableCostsResult.value : []
+  const feeSummary =
+    feeSummaryResult.status === "fulfilled" && feeSummaryResult.value.enabled
+      ? feeSummaryResult.value
+      : null
   const settings = setup?.settings ?? null
   const costCodesEnabled = settings?.cost_codes_enabled ?? true
+  const gateSettings = {
+    cost_codes_enabled: costCodesEnabled,
+    proof_required: settings?.proof_required ?? false,
+    paid_costs_required: settings?.paid_costs_required ?? false,
+  }
 
   return {
     timeEntries: (costPlusData.timeEntries ?? [])
       .filter((entry: any) => ["submitted", "pm_approved"].includes(entry.status))
-      .map((entry: any) =>
-        annotateReviewRow({
+      .map((entry: any) => {
+        const blockingReasons = getTimeEntryApprovalBlockingReasons(entry, gateSettings)
+        return annotateReviewRow({
           row: entry,
           date: entry.work_date,
-          baseState:
-            entry.status === "pm_approved"
-              ? "awaiting-client-approval"
-              : Number(entry.base_rate_cents ?? 0) <= 0 || (costCodesEnabled && !entry.cost_code_id)
-                ? "blocked"
-                : "needs-review",
+          baseState: entry.status === "pm_approved" ? "awaiting-client-approval" : blockingReasons.length > 0 ? "blocked" : "needs-review",
           periods: billingPeriods,
-          blockingReasons: [
-            Number(entry.base_rate_cents ?? 0) <= 0 ? "Set a labor rate before approval." : null,
-            costCodesEnabled && !entry.cost_code_id ? "Choose a cost code." : null,
-            settings?.proof_required && (!Array.isArray(entry.attached_file_ids) || entry.attached_file_ids.length === 0)
-              ? "Attach time backup before billing."
-              : null,
-          ],
+          blockingReasons,
           proofComplete: Array.isArray(entry.attached_file_ids) && entry.attached_file_ids.length > 0,
           paidEligible: true,
-        }),
-      ),
+        })
+      }),
     expenses: (costPlusData.expenses ?? [])
       .filter((expense: any) => ["draft", "submitted"].includes(expense.status))
-      .map((expense: any) =>
-        annotateReviewRow({
+      .map((expense: any) => {
+        const blockingReasons = getExpenseApprovalBlockingReasons(expense, gateSettings)
+        return annotateReviewRow({
           row: expense,
           date: expense.expense_date,
-          baseState: expense.status === "draft" || (costCodesEnabled && !expense.cost_code_id) || !expense.receipt_file_id ? "blocked" : "needs-review",
+          baseState: blockingReasons.length > 0 ? "blocked" : "needs-review",
           periods: billingPeriods,
-          blockingReasons: [
-            expense.status === "draft" ? "Submit expense before approval." : null,
-            costCodesEnabled && !expense.cost_code_id ? "Choose a cost code." : null,
-            settings?.proof_required && !expense.receipt_file_id ? "Attach receipt proof before billing." : null,
-          ],
+          blockingReasons,
           proofComplete: Boolean(expense.receipt_file_id),
           paidEligible: true,
-        }),
-      ),
+        })
+      }),
     vendorBills: vendorBills
       .filter((bill) => bill.status === "pending")
       .map((bill) => {
         const actualLines = bill.actual_lines ?? []
-        const isCoded = !costCodesEnabled || (actualLines.length > 0 && actualLines.every((line: any) => Boolean(line.cost_code_id)))
+        const blockingReasons = getVendorBillApprovalBlockingReasons(bill as any, actualLines, gateSettings)
         const isPaid = Number((bill as any).paid_cents ?? 0) >= Number(bill.total_cents ?? 0) && Number(bill.total_cents ?? 0) > 0
         return annotateReviewRow({
           row: bill,
           date: bill.bill_date ?? bill.due_date,
-          baseState: isCoded ? "needs-review" : "blocked",
+          baseState: blockingReasons.length > 0 ? "blocked" : "needs-review",
           periods: billingPeriods,
-          blockingReasons: [
-            costCodesEnabled && !isCoded ? "Every vendor bill line needs a cost code." : null,
-            settings?.proof_required && !(bill as any).file_id ? "Attach vendor bill proof before billing." : null,
-            settings?.paid_costs_required && !isPaid ? "Mark vendor bill paid before owner billing." : null,
-          ],
+          blockingReasons,
           proofComplete: Boolean((bill as any).file_id),
           paidEligible: !settings?.paid_costs_required || isPaid,
         })
@@ -143,6 +144,7 @@ export async function loadFinancialsReviewQueueData(projectId: string) {
     billingPeriods,
     costCodes: costCodesEnabled ? costCodes : [],
     costCodesEnabled,
+    feeSummary,
     errors,
   }
 }

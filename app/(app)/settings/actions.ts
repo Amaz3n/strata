@@ -1,5 +1,6 @@
 'use server'
 
+import { revalidatePath } from "next/cache"
 import { z } from "zod"
 
 import { requireOrgMembership } from '@/lib/auth/context'
@@ -9,7 +10,214 @@ import { createStripeBillingPortalSession, createStripeCheckoutSession, createSt
 import { getCurrentUserPermissions, requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 import { TEAM_PERMISSION_OPTIONS, listAssignableOrgRoles, listTeamMembers } from "@/lib/services/team"
 import { getOrgAccessState } from "@/lib/services/access"
-import { AI_PROVIDER_VALUES, defaultModelForProvider, getOrgAiSearchConfig, normalizeAiProvider, validateAiProviderModelPair } from "@/lib/services/ai-config"
+import { recordAudit } from "@/lib/services/audit"
+import { recordEvent } from "@/lib/services/events"
+import { createFileRecord } from "@/lib/services/files"
+import { createInitialVersion } from "@/lib/services/file-versions"
+import { buildOrgScopedPath, uploadFilesObject } from "@/lib/storage/files-storage"
+
+const contractTemplateForSchema = z.enum(["estimate", "change_order", "subcontract", "subcontract_change_order"])
+export type ContractTemplateFor = z.infer<typeof contractTemplateForSchema>
+
+export type ContractTemplateSummary = {
+  id: string
+  template_for: ContractTemplateFor
+  file_name: string
+  size_bytes: number | null
+  updated_at: string
+}
+
+function mapContractTemplate(row: any): ContractTemplateSummary {
+  const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {}
+  return {
+    id: row.id,
+    template_for: contractTemplateForSchema.parse(metadata.contract_template_for),
+    file_name: row.file_name,
+    size_bytes: row.size_bytes ?? null,
+    updated_at: row.updated_at ?? row.created_at,
+  }
+}
+
+async function requireContractTemplatePermission() {
+  const { orgId, user, supabase } = await requireOrgMembership()
+  await requireAnyPermission(["org.admin", "billing.manage"], { orgId, userId: user.id, supabase })
+  return { orgId, user, supabase }
+}
+
+export async function listContractTemplatesAction(): Promise<ContractTemplateSummary[]> {
+  const { orgId } = await requireContractTemplatePermission()
+  const service = createServiceSupabaseClient()
+  const { data, error } = await service
+    .from("files")
+    .select("id, file_name, size_bytes, metadata, created_at, updated_at")
+    .eq("org_id", orgId)
+    .is("project_id", null)
+    .is("archived_at", null)
+    .not("metadata->>contract_template_for", "is", null)
+    .order("updated_at", { ascending: false })
+
+  if (error) {
+    throw new Error(`Failed to load contract templates: ${error.message}`)
+  }
+
+  return (data ?? [])
+    .filter((row: any) => contractTemplateForSchema.safeParse(row.metadata?.contract_template_for).success)
+    .map(mapContractTemplate)
+}
+
+export async function uploadContractTemplateAction(templateFor: ContractTemplateFor, formData: FormData) {
+  const parsedTemplateFor = contractTemplateForSchema.parse(templateFor)
+  const { orgId, user } = await requireContractTemplatePermission()
+  const service = createServiceSupabaseClient()
+  const file = formData.get("file") as File | null
+
+  if (!file) {
+    return { error: "Choose a PDF template." }
+  }
+  if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
+    return { error: "Contract templates must be PDF files." }
+  }
+
+  const nowIso = new Date().toISOString()
+  const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_")
+  const storagePath = buildOrgScopedPath(
+    orgId,
+    "contract-templates",
+    parsedTemplateFor,
+    `${Date.now()}_${safeName}`,
+  )
+  const bytes = Buffer.from(await file.arrayBuffer())
+
+  await uploadFilesObject({
+    supabase: service,
+    orgId,
+    path: storagePath,
+    bytes,
+    contentType: "application/pdf",
+    upsert: false,
+  })
+
+  const { data: existingTemplates, error: existingError } = await service
+    .from("files")
+    .select("id, metadata")
+    .eq("org_id", orgId)
+    .is("project_id", null)
+    .is("archived_at", null)
+    .eq("metadata->>contract_template_for", parsedTemplateFor)
+
+  if (existingError) {
+    return { error: `Failed to inspect existing templates: ${existingError.message}` }
+  }
+
+  for (const existing of existingTemplates ?? []) {
+    const metadata = existing.metadata && typeof existing.metadata === "object" ? existing.metadata : {}
+    await service
+      .from("files")
+      .update({
+        archived_at: nowIso,
+        metadata: {
+          ...metadata,
+          contract_template_replaced_at: nowIso,
+          contract_template_replaced_by: user.id,
+        },
+      })
+      .eq("org_id", orgId)
+      .eq("id", existing.id)
+  }
+
+  const record = await createFileRecord(
+    {
+      file_name: file.name,
+      storage_path: storagePath,
+      mime_type: "application/pdf",
+      size_bytes: file.size,
+      visibility: "private",
+      category: "contracts",
+      folder_path: "/contract-templates",
+      source: "upload",
+      metadata: {
+        contract_template_for: parsedTemplateFor,
+        contract_template_kind: "standard_terms",
+      },
+    },
+    orgId,
+  )
+
+  void createInitialVersion(
+    {
+      fileId: record.id,
+      storagePath,
+      fileName: file.name,
+      mimeType: "application/pdf",
+      sizeBytes: file.size,
+    },
+    orgId,
+  ).catch((error) => {
+    console.error("Failed to create contract template file version", error)
+  })
+
+  await recordEvent({
+    orgId,
+    eventType: "contract_template_uploaded",
+    entityType: "file",
+    entityId: record.id,
+    payload: { template_for: parsedTemplateFor },
+  }).catch(() => null)
+
+  revalidatePath("/settings")
+  return { success: true, template: mapContractTemplate(record) }
+}
+
+export async function removeContractTemplateAction(templateId: string) {
+  const { orgId, user } = await requireContractTemplatePermission()
+  const service = createServiceSupabaseClient()
+  const { data: existing, error } = await service
+    .from("files")
+    .select("id, metadata")
+    .eq("org_id", orgId)
+    .eq("id", templateId)
+    .maybeSingle()
+
+  if (error || !existing) {
+    return { error: error?.message ?? "Template not found." }
+  }
+
+  const metadata = existing.metadata && typeof existing.metadata === "object" ? existing.metadata : {}
+  if (!contractTemplateForSchema.safeParse(metadata.contract_template_for).success) {
+    return { error: "This file is not a contract template." }
+  }
+
+  const archivedAt = new Date().toISOString()
+  const { error: updateError } = await service
+    .from("files")
+    .update({
+      archived_at: archivedAt,
+      metadata: {
+        ...metadata,
+        contract_template_removed_at: archivedAt,
+        contract_template_removed_by: user.id,
+      },
+    })
+    .eq("org_id", orgId)
+    .eq("id", templateId)
+
+  if (updateError) {
+    return { error: updateError.message }
+  }
+
+  await recordAudit({
+    orgId,
+    actorId: user.id,
+    action: "update",
+    entityType: "file",
+    entityId: templateId,
+    before: existing,
+    after: { archived_at: archivedAt },
+  }).catch(() => null)
+
+  revalidatePath("/settings")
+  return { success: true }
+}
 
 export async function getNotificationPreferencesAction() {
   const { user } = await requireOrgMembership()
@@ -50,10 +258,10 @@ export async function getUnreadCountAction() {
 }
 
 export async function markNotificationAsReadAction(notificationId: string) {
-  await requireOrgMembership()
+  const { user } = await requireOrgMembership()
 
   const service = new NotificationService()
-  await service.markAsRead(notificationId)
+  await service.markAsRead(notificationId, user.id)
 
   return { success: true }
 }
@@ -222,7 +430,7 @@ export async function createCheckoutSessionAction(planCode: string) {
     throw new Error("Subscription is already active.")
   }
 
-  if (subscription?.id && plan.code && subscription?.id) {
+  if (subscription?.id && plan.code) {
     await service.from("subscriptions").update({ plan_code: plan.code }).eq("id", subscription.id)
   }
 
@@ -344,17 +552,8 @@ export async function getTeamSettingsDataAction() {
   }
 }
 
-const organizationSettingsSchema = z.object({
+const organizationDetailsSettingsSchema = z.object({
   name: z.string().trim().min(2, "Organization name is required."),
-  billingEmail: z.string().trim().email("Enter a valid billing email."),
-  addressLine1: z.string().trim().max(120).optional().default(""),
-  addressLine2: z.string().trim().max(120).optional().default(""),
-  city: z.string().trim().max(80).optional().default(""),
-  state: z.string().trim().max(80).optional().default(""),
-  postalCode: z.string().trim().max(20).optional().default(""),
-  country: z.string().trim().max(80).optional().default(""),
-  defaultPaymentTermsDays: z.number().min(0).max(365).default(15),
-  defaultInvoiceNote: z.string().trim().max(2000).optional().default(""),
   proposalTermsTemplate: z.string().trim().max(8000).optional().default(""),
   estimateTermsTemplate: z.string().trim().max(8000).optional().default(""),
   estimateAccentColor: z
@@ -368,10 +567,23 @@ const organizationSettingsSchema = z.object({
   estimateIntroTemplate: z.string().trim().max(4000).optional().default(""),
   estimateBuilderSignerMode: z.enum(["estimate_creator", "prospect_owner", "specific_user"]).optional().default("estimate_creator"),
   estimateBuilderSignerUserId: z.string().uuid().nullable().optional(),
-  aiProvider: z.enum(AI_PROVIDER_VALUES).optional(),
-  aiModel: z.string().trim().max(120).optional(),
-  aiInheritDefaults: z.boolean().optional(),
 })
+
+const invoicingSettingsSchema = z.object({
+  billingEmail: z.string().trim().email("Enter a valid billing email."),
+  addressLine1: z.string().trim().max(120).optional().default(""),
+  addressLine2: z.string().trim().max(120).optional().default(""),
+  city: z.string().trim().max(80).optional().default(""),
+  state: z.string().trim().max(80).optional().default(""),
+  postalCode: z.string().trim().max(20).optional().default(""),
+  country: z.string().trim().max(80).optional().default(""),
+  defaultPaymentTermsDays: z.number().min(0).max(365).default(15),
+  defaultInvoiceNote: z.string().trim().max(2000).optional().default(""),
+})
+
+const organizationSettingsSchema = organizationDetailsSettingsSchema.merge(invoicingSettingsSchema)
+
+type InvoicingSettingsInput = z.infer<typeof invoicingSettingsSchema>
 
 type OrgAddress = {
   formatted?: string
@@ -430,7 +642,7 @@ function resolveAddressFields(address: OrgAddress) {
   }
 }
 
-function buildAddressPayload(input: z.infer<typeof organizationSettingsSchema>): OrgAddress {
+function buildAddressPayload(input: InvoicingSettingsInput): OrgAddress {
   const line1 = input.addressLine1.trim()
   const line2 = input.addressLine2.trim()
   const city = input.city.trim()
@@ -465,6 +677,20 @@ function resolveLogoPath(logoUrl: string | null | undefined) {
   try {
     const parsed = new URL(logoUrl)
     const marker = "/storage/v1/object/public/org-logos/"
+    const markerIndex = parsed.pathname.indexOf(marker)
+    if (markerIndex === -1) return null
+    return decodeURIComponent(parsed.pathname.slice(markerIndex + marker.length))
+  } catch {
+    return null
+  }
+}
+
+function resolveUserAvatarPath(avatarUrl: string | null | undefined) {
+  if (!avatarUrl) return null
+
+  try {
+    const parsed = new URL(avatarUrl)
+    const marker = "/storage/v1/object/public/user-avatars/"
     const markerIndex = parsed.pathname.indexOf(marker)
     if (markerIndex === -1) return null
     return decodeURIComponent(parsed.pathname.slice(markerIndex + marker.length))
@@ -512,8 +738,6 @@ export async function getOrganizationSettingsAction() {
     .select("settings")
     .eq("org_id", orgId)
     .maybeSingle()
-  const aiConfig = await getOrgAiSearchConfig({ supabase: createServiceSupabaseClient(), orgId })
-
   const orgAddress = resolveAddressFields((orgResult.data.address as OrgAddress) ?? null)
   const settings = (orgSettingsData?.settings as Record<string, any> | null) ?? {}
   const defaultPaymentTermsDaysRaw = Number(settings.invoice_default_payment_terms_days ?? 15)
@@ -543,17 +767,17 @@ export async function getOrganizationSettingsAction() {
         : "estimate_creator",
     estimateBuilderSignerUserId:
       typeof settings.estimate_builder_signer_user_id === "string" ? settings.estimate_builder_signer_user_id : "",
-    aiProvider: aiConfig.provider,
-    aiModel: aiConfig.model,
-    aiConfigSource: aiConfig.source,
     logoUrl: (orgResult.data.logo_url as string | null) ?? null,
     canManageOrganization,
   }
 }
 
+type OrganizationSettingsSection = "organization" | "invoicing" | "all"
+
 export async function updateOrganizationSettingsAction(input: {
-  name: string
-  billingEmail: string
+  section?: OrganizationSettingsSection
+  name?: string
+  billingEmail?: string
   addressLine1?: string
   addressLine2?: string
   city?: string
@@ -569,16 +793,26 @@ export async function updateOrganizationSettingsAction(input: {
   estimateIntroTemplate?: string
   estimateBuilderSignerMode?: "estimate_creator" | "prospect_owner" | "specific_user"
   estimateBuilderSignerUserId?: string | null
-  aiProvider?: string
-  aiModel?: string
-  aiInheritDefaults?: boolean
 }) {
-  const parsed = organizationSettingsSchema.safeParse(input)
+  const section = input.section ?? "all"
+  const schema =
+    section === "organization"
+      ? organizationDetailsSettingsSchema
+      : section === "invoicing"
+        ? invoicingSettingsSchema
+        : organizationSettingsSchema
+
+  const parsed = schema.safeParse(input)
   if (!parsed.success) {
     const firstError = parsed.error.errors.at(0)?.message ?? "Invalid organization details."
     return { error: firstError }
   }
-  if (parsed.data.estimateBuilderSignerMode === "specific_user" && !parsed.data.estimateBuilderSignerUserId) {
+
+  const data = parsed.data as Partial<z.infer<typeof organizationSettingsSchema>>
+  const includesOrganizationFields = section === "organization" || section === "all"
+  const includesInvoicingFields = section === "invoicing" || section === "all"
+
+  if (includesOrganizationFields && data.estimateBuilderSignerMode === "specific_user" && !data.estimateBuilderSignerUserId) {
     return { error: "Choose the Arc user who should countersign client-signed estimates." }
   }
 
@@ -586,77 +820,123 @@ export async function updateOrganizationSettingsAction(input: {
   await requireAnyPermission(["org.admin", "billing.manage"], { orgId, userId: user.id, supabase })
 
   const service = createServiceSupabaseClient()
-  const { data: existingSettings } = await service
-    .from("org_settings")
-    .select("settings")
-    .eq("org_id", orgId)
-    .maybeSingle()
+  const [existingOrgResult, existingSettingsResult] = await Promise.all([
+    service
+      .from("orgs")
+      .select("id, name, billing_email, address")
+      .eq("id", orgId)
+      .maybeSingle(),
+    service
+      .from("org_settings")
+      .select("settings")
+      .eq("org_id", orgId)
+      .maybeSingle(),
+  ])
 
-  const addressPayload = buildAddressPayload(parsed.data)
-  const { error } = await service
-    .from("orgs")
-    .update({
-      name: parsed.data.name,
-      billing_email: parsed.data.billingEmail,
-      address: addressPayload,
-    })
-    .eq("id", orgId)
-
-  if (error) {
-    console.error("Failed to update organization settings", error)
-    return { error: error.message ?? "Failed to update organization settings." }
+  if (existingOrgResult.error || !existingOrgResult.data) {
+    return { error: existingOrgResult.error?.message ?? "Organization not found." }
   }
 
-  const existingSettingPayload = ((existingSettings?.settings as Record<string, any> | null) ?? {})
-  const mergedSettings: Record<string, any> = {
-    ...existingSettingPayload,
-    invoice_default_payment_terms_days: parsed.data.defaultPaymentTermsDays,
-    invoice_default_payment_details: parsed.data.defaultInvoiceNote || null,
-    invoice_default_note: parsed.data.defaultInvoiceNote || null,
-    proposal_terms_template: parsed.data.proposalTermsTemplate || null,
-    estimate_terms_template: parsed.data.estimateTermsTemplate || null,
-    estimate_accent_color: parsed.data.estimateAccentColor || null,
-    estimate_font: parsed.data.estimateFont || null,
-    estimate_intro_template: parsed.data.estimateIntroTemplate || null,
-    estimate_builder_signer_mode: parsed.data.estimateBuilderSignerMode,
-    estimate_builder_signer_user_id:
-      parsed.data.estimateBuilderSignerMode === "specific_user" ? parsed.data.estimateBuilderSignerUserId || null : null,
-  }
+  if (includesOrganizationFields && data.estimateBuilderSignerMode === "specific_user" && data.estimateBuilderSignerUserId) {
+    const { data: signerMembership, error: signerError } = await service
+      .from("memberships")
+      .select("id")
+      .eq("org_id", orgId)
+      .eq("user_id", data.estimateBuilderSignerUserId)
+      .eq("status", "active")
+      .maybeSingle()
 
-  const shouldInheritAiDefaults = parsed.data.aiInheritDefaults === true
-  const hasAiInput = parsed.data.aiProvider !== undefined || parsed.data.aiModel !== undefined
-
-  if (shouldInheritAiDefaults) {
-    delete mergedSettings.ai_search_provider
-    delete mergedSettings.ai_search_model
-  } else if (hasAiInput) {
-    const existingAiProvider = normalizeAiProvider(existingSettingPayload.ai_search_provider)
-    const existingAiModel =
-      typeof existingSettingPayload.ai_search_model === "string" ? existingSettingPayload.ai_search_model.trim() : ""
-    const normalizedAiProvider = normalizeAiProvider(parsed.data.aiProvider) ?? existingAiProvider ?? "openai"
-    const requestedAiModel = parsed.data.aiModel?.trim() ?? ""
-    const normalizedAiModel = requestedAiModel || existingAiModel || defaultModelForProvider(normalizedAiProvider)
-    const providerModelError = validateAiProviderModelPair(normalizedAiProvider, normalizedAiModel)
-    if (providerModelError) {
-      return { error: providerModelError }
+    if (signerError || !signerMembership) {
+      return { error: "Choose an active member of this organization as the builder signer." }
     }
-
-    mergedSettings.ai_search_provider = normalizedAiProvider
-    mergedSettings.ai_search_model = normalizedAiModel
   }
 
-  const { error: settingsError } = await service
-    .from("org_settings")
-    .upsert({
-      org_id: orgId,
-      settings: mergedSettings,
-    })
+  const orgUpdate: Record<string, unknown> = {}
+  if (includesOrganizationFields) {
+    orgUpdate.name = data.name
+  }
+  if (includesInvoicingFields) {
+    orgUpdate.billing_email = data.billingEmail
+    orgUpdate.address = buildAddressPayload(data as InvoicingSettingsInput)
+  }
+
+  if (Object.keys(orgUpdate).length > 0) {
+    const { error } = await service
+      .from("orgs")
+      .update(orgUpdate)
+      .eq("id", orgId)
+
+    if (error) {
+      console.error("Failed to update organization settings", error)
+      return { error: error.message ?? "Failed to update organization settings." }
+    }
+  }
+
+  const settingsPatch: Record<string, unknown> = {}
+  if (includesInvoicingFields) {
+    settingsPatch.invoice_default_payment_terms_days = data.defaultPaymentTermsDays
+    settingsPatch.invoice_default_payment_details = data.defaultInvoiceNote || null
+  }
+  if (includesOrganizationFields) {
+    settingsPatch.proposal_terms_template = data.proposalTermsTemplate || null
+    settingsPatch.estimate_terms_template = data.estimateTermsTemplate || null
+    settingsPatch.estimate_accent_color = data.estimateAccentColor || null
+    settingsPatch.estimate_font = data.estimateFont || null
+    settingsPatch.estimate_intro_template = data.estimateIntroTemplate || null
+    settingsPatch.estimate_builder_signer_mode = data.estimateBuilderSignerMode
+    settingsPatch.estimate_builder_signer_user_id =
+      data.estimateBuilderSignerMode === "specific_user" ? data.estimateBuilderSignerUserId || null : null
+  }
+
+  const { data: mergedSettings, error: settingsError } = await service.rpc("merge_org_settings", {
+    p_org_id: orgId,
+    p_patch: settingsPatch,
+    p_delete_keys: [],
+  })
 
   if (settingsError) {
     console.error("Failed to update org billing settings", settingsError)
     return { error: settingsError.message ?? "Failed to update billing settings." }
   }
 
+  const { data: updatedOrg } = await service
+    .from("orgs")
+    .select("id, name, billing_email, address")
+    .eq("id", orgId)
+    .maybeSingle()
+
+  await recordAudit({
+    orgId,
+    actorId: user.id,
+    action: "update",
+    entityType: "org_settings",
+    entityId: orgId,
+    before: {
+      org: existingOrgResult.data,
+      settings: (existingSettingsResult.data?.settings as Record<string, unknown> | null) ?? {},
+    },
+    after: {
+      org: updatedOrg ?? existingOrgResult.data,
+      settings: (mergedSettings as Record<string, unknown> | null) ?? {},
+    },
+    source: `settings.${section}`,
+  })
+
+  try {
+    await recordEvent({
+      orgId,
+      actorId: user.id,
+      eventType: "settings_updated",
+      entityType: "org_settings",
+      entityId: orgId,
+      payload: { section },
+      channel: "activity",
+    })
+  } catch (eventError) {
+    console.error("Failed to record settings update event", eventError)
+  }
+
+  revalidatePath("/settings")
   return { success: true }
 }
 
@@ -671,7 +951,7 @@ export async function updateOrganizationLogoAction(formData: FormData) {
   const service = createServiceSupabaseClient()
   const { data: orgData, error: orgError } = await service
     .from("orgs")
-    .select("logo_url")
+    .select("id, logo_url")
     .eq("id", orgId)
     .maybeSingle()
 
@@ -691,6 +971,31 @@ export async function updateOrganizationLogoAction(formData: FormData) {
       await service.storage.from("org-logos").remove([previousLogoPath])
     }
 
+    await recordAudit({
+      orgId,
+      actorId: user.id,
+      action: "update",
+      entityType: "org",
+      entityId: orgId,
+      before: { logo_url: orgData?.logo_url ?? null },
+      after: { logo_url: null },
+      source: "settings.organization.logo",
+    })
+
+    try {
+      await recordEvent({
+        orgId,
+        actorId: user.id,
+        eventType: "organization_logo_removed",
+        entityType: "org",
+        entityId: orgId,
+        channel: "activity",
+      })
+    } catch (eventError) {
+      console.error("Failed to record organization logo event", eventError)
+    }
+
+    revalidatePath("/settings")
     return { success: true, logoUrl: null as string | null }
   }
 
@@ -736,5 +1041,123 @@ export async function updateOrganizationLogoAction(formData: FormData) {
     await service.storage.from("org-logos").remove([previousLogoPath])
   }
 
+  await recordAudit({
+    orgId,
+    actorId: user.id,
+    action: "update",
+    entityType: "org",
+    entityId: orgId,
+    before: { logo_url: orgData?.logo_url ?? null },
+    after: { logo_url: logoUrl },
+    source: "settings.organization.logo",
+  })
+
+  try {
+    await recordEvent({
+      orgId,
+      actorId: user.id,
+      eventType: "organization_logo_updated",
+      entityType: "org",
+      entityId: orgId,
+      channel: "activity",
+    })
+  } catch (eventError) {
+    console.error("Failed to record organization logo event", eventError)
+  }
+
+  revalidatePath("/settings")
   return { success: true, logoUrl }
+}
+
+export async function updateUserAvatarAction(formData: FormData) {
+  const { orgId, user } = await requireOrgMembership()
+  const rawFile = formData.get("avatar")
+  const file = rawFile instanceof File ? rawFile : null
+
+  if (!file) {
+    return { error: "Choose a profile photo to upload." }
+  }
+
+  const supportedTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/svg+xml"])
+  if (!supportedTypes.has(file.type)) {
+    return { error: "Use PNG, JPG, WEBP, or SVG." }
+  }
+
+  if (file.size > 5 * 1024 * 1024) {
+    return { error: "Profile photo must be 5MB or smaller." }
+  }
+
+  const service = createServiceSupabaseClient()
+  const { data: existingUser, error: userError } = await service
+    .from("app_users")
+    .select("id, email, full_name, avatar_url")
+    .eq("id", user.id)
+    .maybeSingle()
+
+  if (userError) {
+    return { error: userError.message ?? "Unable to load your profile." }
+  }
+
+  const previousAvatarPath = resolveUserAvatarPath((existingUser?.avatar_url as string | null) ?? null)
+  const extension = extensionForMimeType(file.type)
+  const storagePath = `${user.id}/avatar-${Date.now()}.${extension}`
+  const fileBuffer = Buffer.from(await file.arrayBuffer())
+
+  const { error: uploadError } = await service.storage
+    .from("user-avatars")
+    .upload(storagePath, fileBuffer, {
+      upsert: true,
+      contentType: file.type,
+      cacheControl: "3600",
+    })
+
+  if (uploadError) {
+    console.error("Failed to upload user avatar", uploadError)
+    return { error: uploadError.message ?? "Failed to upload profile photo." }
+  }
+
+  const { data: publicUrlData } = service.storage.from("user-avatars").getPublicUrl(storagePath)
+  const avatarUrl = publicUrlData.publicUrl
+
+  const { data: updatedUser, error: updateError } = await service
+    .from("app_users")
+    .update({ avatar_url: avatarUrl })
+    .eq("id", user.id)
+    .select("id, email, full_name, avatar_url")
+    .maybeSingle()
+
+  if (updateError || !updatedUser) {
+    return { error: updateError?.message ?? "Failed to save profile photo." }
+  }
+
+  if (previousAvatarPath && previousAvatarPath !== storagePath) {
+    await service.storage.from("user-avatars").remove([previousAvatarPath])
+  }
+
+  await recordAudit({
+    orgId,
+    actorId: user.id,
+    action: "update",
+    entityType: "app_user",
+    entityId: user.id,
+    before: existingUser ?? null,
+    after: updatedUser,
+    source: "settings.profile.avatar",
+  })
+
+  try {
+    await recordEvent({
+      orgId,
+      actorId: user.id,
+      eventType: "profile_photo_updated",
+      entityType: "app_user",
+      entityId: user.id,
+      channel: "activity",
+    })
+  } catch (eventError) {
+    console.error("Failed to record profile photo event", eventError)
+  }
+
+  revalidatePath("/settings")
+  return { success: true, avatarUrl }
 }

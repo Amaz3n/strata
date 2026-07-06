@@ -5,6 +5,12 @@ import { EstimatePortalClient } from "@/components/portal/estimate-portal-client
 import { isDateExpired } from "@/lib/utils"
 
 export const revalidate = 0
+export const metadata = {
+  robots: {
+    index: false,
+    follow: false,
+  },
+}
 
 interface Params {
   params: Promise<{ token: string }>

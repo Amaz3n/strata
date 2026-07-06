@@ -1,8 +1,9 @@
 "use client"
 
+import Link from "next/link"
 import { useEffect, useMemo, useRef, useState, useTransition } from "react"
 import { format } from "date-fns"
-import { ArrowLeft, CalendarDays, CheckCircle2, ExternalLink, Layers, Plus, Trash2, XCircle } from "lucide-react"
+import { ArrowLeft, CalendarDays, ExternalLink, Layers, Plus, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 
 import { cn } from "@/lib/utils"
@@ -19,10 +20,8 @@ import { WorkspaceShell } from "@/components/financials/workspace/workspace-shel
 import { WorkspaceListPanel, type WorkspaceQueue } from "@/components/financials/workspace/workspace-list-panel"
 import { formatMoneyFromCents, qboBadge } from "@/components/financials/workspace/workspace-helpers"
 import {
-  approveProjectExpenseFormAction,
   getExpenseAccountingContextAction,
   listExpenseProjectsAction,
-  rejectProjectExpenseFormAction,
   syncProjectExpenseToQBOAction,
   updateProjectExpenseAccountingAction,
   updateProjectExpenseDetailsAction,
@@ -748,24 +747,18 @@ export function ExpenseWorkspace({
 
         {/* Workflow actions */}
         {isSubmitted ? (
-          <div className="grid grid-cols-2 gap-3">
-            <Button
-              variant="outline"
-              className="h-11 border-emerald-600 text-emerald-700 hover:bg-emerald-50 hover:text-emerald-800"
-              disabled={isPending}
-              onClick={() => runAction(() => approveProjectExpenseFormAction(projectId, selectedExpense.id), "Expense approved")}
-            >
-              <CheckCircle2 className="mr-2 h-4 w-4" />
-              Approve
-            </Button>
-            <Button
-              variant="outline"
-              className="h-11 border-destructive/40 text-destructive hover:bg-destructive/10"
-              disabled={isPending}
-              onClick={() => runAction(() => rejectProjectExpenseFormAction(projectId, selectedExpense.id), "Expense rejected")}
-            >
-              <XCircle className="mr-2 h-4 w-4" />
-              Reject
+          <div className="flex flex-col gap-3 border bg-muted/20 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-medium">Ready for Financials Review</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Approvals and rejections are handled from the project financial review queue.
+              </p>
+            </div>
+            <Button asChild>
+              <Link href={`/projects/${projectId}/financials/review`}>
+                Review in Financials
+                <ExternalLink className="h-4 w-4" />
+              </Link>
             </Button>
           </div>
         ) : null}

@@ -20,17 +20,27 @@ import { CSS } from "@dnd-kit/utilities"
 
 import {
   completeESignDocumentUploadAction,
+  createDraftFromESignTemplateAction,
+  createESignTemplateFromDocumentAction,
   createESignDocumentUploadUrlAction,
   createVersionedSourceDocumentDraftAction,
   createDocumentAction,
+  listESignTemplatesAction,
   getDraftDocumentByIdAction,
+  getContractTermsTemplateForSourceAction,
+  getSignatureSourceComplianceAction,
   getSourceEntityVersionContextAction,
   getSourceEntityDraftAction,
   listEnvelopeRecipientSuggestionsAction,
   saveDocumentDraftEnvelopeAction,
   saveDocumentFieldsAction,
   sendDocumentEnvelopeAction,
+  mergeESignPdfUploadAction,
+  applyContractTermsTemplateAction,
   uploadESignDocumentFileAction,
+  type ContractTermsTemplateSummary,
+  type ESignTemplateSummary,
+  type SignatureSourceComplianceGate,
 } from "@/app/(app)/signatures/actions"
 import type { FileWithUrls } from "@/app/(app)/documents/types"
 import { type UnifiedSignableEntityType } from "@/lib/esign/unified-contracts"
@@ -43,11 +53,13 @@ import { Progress } from "@/components/ui/progress"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Switch } from "@/components/ui/switch"
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "@/components/ui/command"
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover"
 import {
   ArrowRight,
+  AlertTriangle,
   FileText,
   GripVertical,
   Mail,
@@ -103,6 +115,7 @@ const sourceEntityMetadataIdKeyByType: Record<UnifiedSignableEntityType, string>
   lien_waiver: "lien_waiver_id",
   selection: "selection_id",
   subcontract: "subcontract_id",
+  subcontract_change_order: "subcontract_change_order_id",
   closeout: "closeout_id",
   other: "source_entity_id",
 }
@@ -159,6 +172,8 @@ function getSourceOptionTypeLabel(type: UnifiedSignableEntityType) {
       return "Selection"
     case "subcontract":
       return "Subcontract"
+    case "subcontract_change_order":
+      return "Subcontract Change Order"
     case "closeout":
       return "Closeout"
     default:
@@ -260,6 +275,21 @@ export function EnvelopeWizard({
   const [fieldsStepReady, setFieldsStepReady] = useState(false)
   const [sendingEnvelope, setSendingEnvelope] = useState(false)
   const [recipientSuggestions, setRecipientSuggestions] = useState<RecipientSuggestion[]>([])
+  const [templates, setTemplates] = useState<ESignTemplateSummary[]>([])
+  const [loadingTemplates, setLoadingTemplates] = useState(false)
+  const [signatureCompliance, setSignatureCompliance] = useState<SignatureSourceComplianceGate | null>(null)
+  const [loadingSignatureCompliance, setLoadingSignatureCompliance] = useState(false)
+  const [contractTermsTemplate, setContractTermsTemplate] = useState<ContractTermsTemplateSummary | null>(null)
+  const [loadingContractTermsTemplate, setLoadingContractTermsTemplate] = useState(false)
+  const [attachContractTerms, setAttachContractTerms] = useState(false)
+  const [applyingTemplateId, setApplyingTemplateId] = useState<string | null>(null)
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false)
+  const [templateName, setTemplateName] = useState("")
+  const [templateDescription, setTemplateDescription] = useState("")
+  const [savingTemplate, setSavingTemplate] = useState(false)
+  const [expiresInDays, setExpiresInDays] = useState("14")
+  const [remindersEnabled, setRemindersEnabled] = useState(true)
+  const [reminderIntervalDays, setReminderIntervalDays] = useState("3")
   const fileInputRef = useRef<HTMLInputElement>(null)
   const draftHydrationRef = useRef(0)
   const prepareKeyRef = useRef<string | null>(null)
@@ -360,6 +390,91 @@ export function EnvelopeWizard({
     if (!open) return
     void import("react-pdf").catch(() => null)
   }, [open])
+
+  useEffect(() => {
+    if (!open || !sourceEntity?.project_id) {
+      setTemplates([])
+      return
+    }
+
+    setLoadingTemplates(true)
+    listESignTemplatesAction({ projectId: sourceEntity.project_id })
+      .then((rows) => setTemplates(rows ?? []))
+      .catch((error) => {
+        console.error(error)
+        setTemplates([])
+      })
+      .finally(() => setLoadingTemplates(false))
+  }, [open, sourceEntity?.project_id])
+
+  useEffect(() => {
+    const sourceType = sourceEntity?.standalone ? null : sourceEntity?.type
+    const sourceId = sourceEntity?.standalone ? null : sourceEntity?.id
+    if (
+      !open ||
+      !sourceType ||
+      !sourceId ||
+      (sourceType !== "subcontract" && sourceType !== "subcontract_change_order")
+    ) {
+      setSignatureCompliance(null)
+      setLoadingSignatureCompliance(false)
+      return
+    }
+
+    let cancelled = false
+    setLoadingSignatureCompliance(true)
+    getSignatureSourceComplianceAction({
+      source_entity_type: sourceType,
+      source_entity_id: sourceId,
+    })
+      .then((gate) => {
+        if (!cancelled) setSignatureCompliance(gate)
+      })
+      .catch((error) => {
+        console.error(error)
+        if (!cancelled) setSignatureCompliance(null)
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingSignatureCompliance(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [open, sourceEntity?.id, sourceEntity?.standalone, sourceEntity?.type])
+
+  useEffect(() => {
+    const sourceType = sourceEntity?.standalone ? null : sourceEntity?.type
+    if (!open || !sourceType) {
+      setContractTermsTemplate(null)
+      setAttachContractTerms(false)
+      setLoadingContractTermsTemplate(false)
+      return
+    }
+
+    let cancelled = false
+    setLoadingContractTermsTemplate(true)
+    getContractTermsTemplateForSourceAction({ source_entity_type: sourceType })
+      .then((template) => {
+        if (cancelled) return
+        setContractTermsTemplate(template)
+        setAttachContractTerms(Boolean(template))
+      })
+      .catch((error) => {
+        console.error(error)
+        if (!cancelled) {
+          setContractTermsTemplate(null)
+          setAttachContractTerms(false)
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingContractTermsTemplate(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [open, sourceEntity?.standalone, sourceEntity?.type])
 
   useEffect(() => {
     if (!open || !resumeDocumentId) return
@@ -686,6 +801,17 @@ export function EnvelopeWizard({
       directUploadDisabledRef.current = false
       setSendingEnvelope(false)
       setRecipientSuggestions([])
+      setContractTermsTemplate(null)
+      setLoadingContractTermsTemplate(false)
+      setAttachContractTerms(false)
+      setApplyingTemplateId(null)
+      setSaveTemplateOpen(false)
+      setTemplateName("")
+      setTemplateDescription("")
+      setSavingTemplate(false)
+      setExpiresInDays("14")
+      setRemindersEnabled(true)
+      setReminderIntervalDays("3")
       setViewerFields([])
       setViewerDocument(null)
       setViewerFileUrl(null)
@@ -693,9 +819,72 @@ export function EnvelopeWizard({
     onOpenChange(nextOpen)
   }
 
-  const handleFileSelected = async (file: File | null) => {
-    if (!file || !sourceEntity) return
-    if (file.type !== "application/pdf") {
+  const hydratePreparedDraft = async (documentId: string) => {
+    const draft = await getDraftDocumentByIdAction(documentId)
+    if (!draft) throw new Error("Draft document not found")
+
+    const mappedFields = (draft.fields ?? []).map((field: any) => ({
+      id: field.id,
+      page_index: field.page_index,
+      field_type: field.field_type,
+      label: field.label ?? undefined,
+      required: field.required ?? true,
+      signer_role: field.signer_role ?? undefined,
+      x: field.x,
+      y: field.y,
+      w: field.w,
+      h: field.h,
+      sort_order: field.sort_order ?? undefined,
+      metadata: field.metadata ?? undefined,
+    }))
+
+    setDocumentTitle(draft.document.title || "Document")
+    setDocumentType((draft.document.document_type as DocumentType) ?? "other")
+    setUploadedPdf({
+      id: draft.file.id,
+      fileName: draft.file.file_name,
+      url: `/api/files/${draft.file.id}/raw`,
+    })
+    setViewerDocument({
+      id: draft.document.id,
+      title: draft.document.title,
+      document_type: draft.document.document_type,
+    })
+    setViewerFields(mappedFields)
+    setViewerFileUrl(`/api/files/${draft.file.id}/raw`)
+    setSigningOrderEnabled(draft.signing_order_enabled !== false)
+    const restoredRecipients = hydrateDraftRecipients(draft.recipients ?? [])
+    if (restoredRecipients.length > 0) setRecipients(restoredRecipients)
+    setFieldsStepReady(true)
+    prepareKeyRef.current = null
+    preparePromiseRef.current = null
+    prewarmedPdfUrlRef.current = null
+  }
+
+  const handleApplyTemplate = async (templateId: string) => {
+    if (!templateId || !sourceEntity?.project_id) return
+    setApplyingTemplateId(templateId)
+    try {
+      const template = templates.find((row) => row.id === templateId)
+      const result = await createDraftFromESignTemplateAction({
+        templateId,
+        projectId: sourceEntity.project_id,
+        title: template?.name ?? (documentTitle.trim() || undefined),
+      })
+      await hydratePreparedDraft(result.documentId)
+      toast.success("Template applied")
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Failed to apply template", { description: error?.message ?? "Please try again." })
+    } finally {
+      setApplyingTemplateId(null)
+    }
+  }
+
+  const handleFileSelected = async (selectedFiles: File[] | File | null) => {
+    const files = Array.isArray(selectedFiles) ? selectedFiles : selectedFiles ? [selectedFiles] : []
+    if (files.length === 0 || !sourceEntity) return
+    if (files.some((file) => file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf"))) {
       toast.error("Only PDF files are supported")
       return
     }
@@ -704,16 +893,17 @@ export function EnvelopeWizard({
       return
     }
 
-    const baseName = file.name.replace(/\.pdf$/i, "")
+    const file = files[0]
+    const baseName = files.length > 1 ? `${file.name.replace(/\.pdf$/i, "")} packet` : file.name.replace(/\.pdf$/i, "")
     setDocumentTitle(baseName)
     setUploadedPdf(null)
     setUploadingPdf(true)
     setUploadProgress(8)
 
-    const applyUploadedFile = (uploaded: { id: string }) => {
+    const applyUploadedFile = (uploaded: { id: string; file_name?: string | null }) => {
       setUploadedPdf({
         id: uploaded.id,
-        fileName: file.name,
+        fileName: uploaded.file_name ?? (files.length > 1 ? `${baseName}.pdf` : file.name),
         url: `/api/files/${uploaded.id}/raw`,
       })
       setUploadProgress(100)
@@ -726,15 +916,38 @@ export function EnvelopeWizard({
       prewarmedPdfUrlRef.current = null
     }
 
+    const applyTermsIfNeeded = async (uploaded: { id: string; file_name?: string | null }) => {
+      if (!attachContractTerms || !contractTermsTemplate || sourceEntity.standalone || !sourceEntity.type) {
+        return uploaded
+      }
+      setUploadProgress(96)
+      const packet = await applyContractTermsTemplateAction({
+        projectId: sourceEntity.project_id as string,
+        sourceFileId: uploaded.id,
+        sourceEntityType: sourceEntity.type,
+        title: documentTitle.trim() || baseName,
+      })
+      toast.success("Standard terms attached")
+      return packet
+    }
+
     const uploadWithServerFallback = async () => {
       const formData = new FormData()
-      formData.append("file", file)
-      const uploaded = await uploadESignDocumentFileAction(sourceEntity.project_id as string, formData)
-      applyUploadedFile(uploaded)
+      if (files.length > 1) {
+        files.forEach((item) => formData.append("files", item))
+        formData.append("file_name", `${baseName}.pdf`)
+      } else {
+        formData.append("file", file)
+      }
+      const uploaded =
+        files.length > 1
+          ? await mergeESignPdfUploadAction(sourceEntity.project_id as string, formData)
+          : await uploadESignDocumentFileAction(sourceEntity.project_id as string, formData)
+      applyUploadedFile(await applyTermsIfNeeded(uploaded))
     }
 
     try {
-      if (directUploadDisabledRef.current) {
+      if (directUploadDisabledRef.current || files.length > 1) {
         await uploadWithServerFallback()
       } else {
         try {
@@ -759,7 +972,7 @@ export function EnvelopeWizard({
             fileType: file.type || "application/pdf",
             fileSize: file.size,
           })
-          applyUploadedFile(uploaded)
+          applyUploadedFile(await applyTermsIfNeeded(uploaded))
         } catch {
           // Usually R2 CORS/network in browser. Disable direct mode for this session.
           directUploadDisabledRef.current = true
@@ -805,7 +1018,7 @@ export function EnvelopeWizard({
     try {
       await fetch(fileUrl, { credentials: "include" }).catch(() => null)
       const { pdfjs } = await import("react-pdf")
-      pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
+      pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs"
       const task = pdfjs.getDocument({ url: fileUrl, withCredentials: true })
       const pdf = await task.promise
       pdf.destroy()
@@ -1031,6 +1244,10 @@ export function EnvelopeWizard({
       toast.error("Add at least one field before sending")
       return
     }
+    if (signatureComplianceBlocksSend) {
+      toast.error("Compliance documents are required before sending")
+      return
+    }
     setSendingEnvelope(true)
 
     try {
@@ -1063,9 +1280,15 @@ export function EnvelopeWizard({
         return
       }
 
+      const expiryDays = Math.max(1, Math.min(180, Number(expiresInDays) || 14))
+      const expiresAt = new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000).toISOString()
+      const reminderDays = Math.max(1, Math.min(30, Number(reminderIntervalDays) || 3))
       const result = await sendDocumentEnvelopeAction({
         document_id: viewerDocument.id,
         recipients: preparedRecipients,
+        expires_at: expiresAt,
+        reminder_enabled: remindersEnabled,
+        reminder_interval_days: reminderDays,
       })
       onEnvelopeSent?.({
         documentId: viewerDocument.id,
@@ -1078,6 +1301,41 @@ export function EnvelopeWizard({
       toast.error("Failed to send envelope", { description: error?.message ?? "Please try again." })
     } finally {
       setSendingEnvelope(false)
+    }
+  }
+
+  const handleSaveTemplate = async () => {
+    if (!viewerDocument) return
+    const name = templateName.trim() || documentTitle.trim() || viewerDocument.title
+    if (!name) {
+      toast.error("Template name is required")
+      return
+    }
+    setSavingTemplate(true)
+    try {
+      const hasSaved = await handleSaveFields(false)
+      if (!hasSaved) return
+      const result = await createESignTemplateFromDocumentAction({
+        documentId: viewerDocument.id,
+        name,
+        description: templateDescription.trim() || null,
+        projectScoped: true,
+      })
+      toast.success("Template saved")
+      setSaveTemplateOpen(false)
+      setTemplateName("")
+      setTemplateDescription("")
+      if (sourceEntity?.project_id) {
+        const nextTemplates = await listESignTemplatesAction({ projectId: sourceEntity.project_id })
+        setTemplates(nextTemplates ?? [])
+      } else if (result.templateId) {
+        setTemplates((prev) => prev)
+      }
+    } catch (error: any) {
+      console.error(error)
+      toast.error("Failed to save template", { description: error?.message ?? "Please try again." })
+    } finally {
+      setSavingTemplate(false)
     }
   }
 
@@ -1109,6 +1367,22 @@ export function EnvelopeWizard({
       document_type: option.document_type,
     })
   }
+
+  const signatureComplianceIssues = signatureCompliance
+    ? [
+        ...signatureCompliance.missingDocumentNames.map((name) => `${name} missing`),
+        ...signatureCompliance.expiredDocumentNames.map((name) => `${name} expired`),
+        ...signatureCompliance.deficiencyMessages,
+        ...(signatureCompliance.pendingReviewCount > 0
+          ? [`${signatureCompliance.pendingReviewCount} document${signatureCompliance.pendingReviewCount === 1 ? "" : "s"} pending review`]
+          : []),
+      ].filter(Boolean)
+    : []
+  const signatureComplianceBlocksSend =
+    !!signatureCompliance &&
+    signatureCompliance.applies &&
+    signatureCompliance.block &&
+    !signatureCompliance.isCompliant
 
   return (
     <Sheet open={open} onOpenChange={closeWizard}>
@@ -1222,6 +1496,99 @@ export function EnvelopeWizard({
                   </div>
                 </div>
 
+                {loadingSignatureCompliance ? (
+                  <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                    Checking vendor compliance...
+                  </div>
+                ) : signatureCompliance && !signatureCompliance.isCompliant ? (
+                  <div
+                    className={cn(
+                      "rounded-md border px-3 py-2 text-sm",
+                      signatureComplianceBlocksSend
+                        ? "border-destructive/30 bg-destructive/10 text-destructive"
+                        : "border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-200",
+                    )}
+                  >
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                      <div className="min-w-0 space-y-1">
+                        <p className="font-medium">
+                          {signatureComplianceBlocksSend
+                            ? "Required compliance documents are missing"
+                            : "Vendor compliance needs attention"}
+                        </p>
+                        {signatureComplianceIssues.length > 0 ? (
+                          <p className="text-xs opacity-90">
+                            {signatureComplianceIssues.slice(0, 3).join(" · ")}
+                            {signatureComplianceIssues.length > 3 ? ` · +${signatureComplianceIssues.length - 3} more` : ""}
+                          </p>
+                        ) : null}
+                        {signatureCompliance.companyId ? (
+                          <a
+                            href={`/companies/${signatureCompliance.companyId}?tab=compliance`}
+                            className="inline-flex text-xs font-medium underline underline-offset-4"
+                          >
+                            Open compliance
+                          </a>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="space-y-2">
+                  <Label>Template</Label>
+                  <Select
+                    value=""
+                    onValueChange={(value) => void handleApplyTemplate(value)}
+                    disabled={loadingTemplates || applyingTemplateId !== null || templates.length === 0}
+                  >
+                    <SelectTrigger>
+                      <SelectValue
+                        placeholder={
+                          loadingTemplates
+                            ? "Loading templates..."
+                            : templates.length > 0
+                              ? "Apply saved template"
+                              : "No templates for this project"
+                        }
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {templates.map((template) => (
+                        <SelectItem key={template.id} value={template.id}>
+                          {template.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {applyingTemplateId ? (
+                    <p className="text-xs text-muted-foreground">Preparing template draft...</p>
+                  ) : null}
+                </div>
+
+                {loadingContractTermsTemplate ? (
+                  <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                    Checking standard terms...
+                  </div>
+                ) : contractTermsTemplate ? (
+                  <div className="flex items-start justify-between gap-3 rounded-md border bg-muted/20 p-3">
+                    <div className="min-w-0">
+                      <Label htmlFor="attach-contract-terms" className="text-sm">
+                        Attach standard terms
+                      </Label>
+                      <p className="mt-1 truncate text-xs text-muted-foreground">
+                        {contractTermsTemplate.file_name} will be prepended before the Arc exhibit.
+                      </p>
+                    </div>
+                    <Switch
+                      id="attach-contract-terms"
+                      checked={attachContractTerms}
+                      onCheckedChange={setAttachContractTerms}
+                    />
+                  </div>
+                ) : null}
+
                 <div className="space-y-2">
                   <Label>Document name</Label>
                   <Input
@@ -1229,6 +1596,38 @@ export function EnvelopeWizard({
                     onChange={(event) => setDocumentTitle(event.target.value)}
                     placeholder="Document title"
                   />
+                </div>
+
+                <div className="grid gap-3 rounded-md border bg-muted/20 p-3 sm:grid-cols-[1fr_auto] sm:items-end">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-2">
+                      <Label htmlFor="esign-expiry-days">Expires after</Label>
+                      <Input
+                        id="esign-expiry-days"
+                        type="number"
+                        min="1"
+                        max="180"
+                        value={expiresInDays}
+                        onChange={(event) => setExpiresInDays(event.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="esign-reminder-days">Reminder interval</Label>
+                      <Input
+                        id="esign-reminder-days"
+                        type="number"
+                        min="1"
+                        max="30"
+                        value={reminderIntervalDays}
+                        onChange={(event) => setReminderIntervalDays(event.target.value)}
+                        disabled={!remindersEnabled}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 pb-2">
+                    <Switch checked={remindersEnabled} onCheckedChange={setRemindersEnabled} />
+                    <Label className="text-xs font-normal text-muted-foreground">Automatic reminders</Label>
+                  </div>
                 </div>
 
                 <div className="space-y-2">
@@ -1261,8 +1660,9 @@ export function EnvelopeWizard({
                     ref={fileInputRef}
                     type="file"
                     accept="application/pdf"
+                    multiple
                     className="hidden"
-                    onChange={(event) => void handleFileSelected(event.target.files?.[0] ?? null)}
+                    onChange={(event) => void handleFileSelected(Array.from(event.target.files ?? []))}
                   />
                   <div
                     className={cn(
@@ -1277,12 +1677,11 @@ export function EnvelopeWizard({
                     onDrop={(event) => {
                       event.preventDefault()
                       setUploadDragActive(false)
-                      const file = event.dataTransfer.files?.[0] ?? null
-                      void handleFileSelected(file)
+                      void handleFileSelected(Array.from(event.dataTransfer.files ?? []))
                     }}
                   >
                     <Upload className="mx-auto h-5 w-5 text-muted-foreground" />
-                    <p className="mt-2 text-sm">Drag and drop PDF here</p>
+                    <p className="mt-2 text-sm">Drag and drop PDF files here</p>
                     <p className="text-xs text-muted-foreground">or</p>
                     <Button
                       type="button"
@@ -1291,7 +1690,7 @@ export function EnvelopeWizard({
                       onClick={() => fileInputRef.current?.click()}
                       disabled={uploadingPdf}
                     >
-                      Choose file
+                      Choose files
                     </Button>
                     {uploadingPdf && (
                       <div className="mx-auto mt-3 w-full max-w-sm space-y-1.5">
@@ -1404,11 +1803,16 @@ export function EnvelopeWizard({
                 fields={viewerFields}
                 setFields={setViewerFields}
                 onSave={() => void handleSaveFields(true)}
+                onSaveTemplate={() => {
+                  setTemplateName(documentTitle.trim() || viewerDocument.title)
+                  setTemplateDescription("")
+                  setSaveTemplateOpen(true)
+                }}
                 signerRoles={signerRoleOptions}
                 onSend={() => void handleSendEnvelope()}
-                sendDisabled={sendingEnvelope}
+                sendDisabled={sendingEnvelope || signatureComplianceBlocksSend}
                 sendLoading={sendingEnvelope}
-                sendLabel={sendingEnvelope ? "Sending..." : "Send"}
+                sendLabel={sendingEnvelope ? "Sending..." : signatureComplianceBlocksSend ? "Compliance blocked" : "Send"}
                 embedded
                 className="h-full"
                 onBack={() => setPrepareStep("envelope")}
@@ -1419,6 +1823,45 @@ export function EnvelopeWizard({
           </>
         )}
       </SheetContent>
+      <Dialog open={saveTemplateOpen} onOpenChange={setSaveTemplateOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Save template</DialogTitle>
+            <DialogDescription>
+              Reuse this PDF, recipient roles, and field layout for future envelopes.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="esign-template-name">Name</Label>
+              <Input
+                id="esign-template-name"
+                value={templateName}
+                onChange={(event) => setTemplateName(event.target.value)}
+                placeholder="Template name"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="esign-template-description">Description</Label>
+              <Input
+                id="esign-template-description"
+                value={templateDescription}
+                onChange={(event) => setTemplateDescription(event.target.value)}
+                placeholder="Optional"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setSaveTemplateOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={() => void handleSaveTemplate()} disabled={savingTemplate}>
+              {savingTemplate ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Save template
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Sheet>
   )
 }

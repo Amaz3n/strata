@@ -113,7 +113,7 @@ export async function prepareBillingAutopilotRun(projectId: string): Promise<Bil
   })
   if (!enabled) throw new Error("Arc Autopilot is not enabled for this organization.")
 
-  const [projectResult, settingsResult, drawsResult, costsResult, retainageResult, changesResult, scheduleResult] = await Promise.all([
+  const [projectResult, settingsResult] = await Promise.all([
     supabase.from("projects").select("id, status, updated_at").eq("org_id", orgId).eq("id", projectId).single(),
     supabase
       .from("project_financial_settings")
@@ -121,19 +121,32 @@ export async function prepareBillingAutopilotRun(projectId: string): Promise<Bil
       .eq("org_id", orgId)
       .eq("project_id", projectId)
       .maybeSingle(),
+  ])
+  if (projectResult.error || !projectResult.data || settingsResult.error) {
+    throw new Error(`Unable to analyze project billing: ${projectResult.error?.message ?? settingsResult.error?.message ?? "Project not found"}`)
+  }
+
+  const settings = settingsResult.data
+  const billingModel =
+    (settings?.billing_model as ProjectFinancialSettings["billing_model"] | undefined) ?? "fixed_price"
+  const isFixedPrice = billingModel === "fixed_price"
+
+  const [drawsResult, costsResult, retainageResult, changesResult, scheduleResult] = await Promise.all([
     supabase
       .from("draw_schedules")
       .select("id, draw_number, title, amount_cents, due_date, due_trigger, milestone_id, status, metadata, updated_at")
       .eq("org_id", orgId)
       .eq("project_id", projectId)
       .eq("status", "pending"),
-    supabase
-      .from("billable_costs")
-      .select("id, source_type, occurred_on, description, billable_cents, metadata, updated_at")
-      .eq("org_id", orgId)
-      .eq("project_id", projectId)
-      .eq("status", "open")
-      .eq("is_billable", true),
+    isFixedPrice
+      ? Promise.resolve({ data: [], error: null })
+      : supabase
+          .from("billable_costs")
+          .select("id, source_type, occurred_on, description, billable_cents, metadata, updated_at")
+          .eq("org_id", orgId)
+          .eq("project_id", projectId)
+          .eq("status", "open")
+          .eq("is_billable", true),
     supabase
       .from("retainage")
       .select("id, amount_cents, status, held_at, updated_at")
@@ -154,21 +167,16 @@ export async function prepareBillingAutopilotRun(projectId: string): Promise<Bil
   ])
 
   const queryError = [
-    projectResult.error,
-    settingsResult.error,
     drawsResult.error,
     costsResult.error,
     retainageResult.error,
     changesResult.error,
     scheduleResult.error,
   ].find(Boolean)
-  if (queryError || !projectResult.data) {
-    throw new Error(`Unable to analyze project billing: ${queryError?.message ?? "Project not found"}`)
+  if (queryError) {
+    throw new Error(`Unable to analyze project billing: ${queryError.message}`)
   }
 
-  const settings = settingsResult.data
-  const billingModel =
-    (settings?.billing_model as ProjectFinancialSettings["billing_model"] | undefined) ?? "fixed_price"
   const today = new Date().toISOString().slice(0, 10)
   const items: BillingAutopilotItem[] = []
   const scheduleById = new Map((scheduleResult.data ?? []).map((item) => [item.id, item]))
@@ -314,7 +322,7 @@ export async function prepareBillingAutopilotRun(projectId: string): Promise<Bil
       project: projectResult.data.updated_at,
       settings: settings?.updated_at,
       draws: (drawsResult.data ?? []).map((row) => [row.id, row.updated_at]),
-      costs: (costsResult.data ?? []).map((row) => [row.id, row.updated_at]),
+      costs: isFixedPrice ? [] : (costsResult.data ?? []).map((row) => [row.id, row.updated_at]),
       retainage: (retainageResult.data ?? []).map((row) => [row.id, row.updated_at]),
       changes: (changesResult.data ?? []).map((row) => [row.id, row.updated_at]),
       schedule: (scheduleResult.data ?? []).map((row) => [row.id, row.updated_at]),

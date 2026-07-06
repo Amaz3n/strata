@@ -18,6 +18,7 @@ import { recordEvent } from "@/lib/services/events"
 import { createStripePaymentIntent } from "@/lib/integrations/payments/stripe"
 import { calculatePaymentFeeQuote, type OnlinePaymentMethod, loadPaymentFeePolicy } from "@/lib/payments/fees"
 import { generateConditionalWaiverForPayment } from "@/lib/services/lien-waivers"
+import { releaseInvoiceLienWaiversIfPaid } from "@/lib/services/invoice-lien-waivers"
 import { enqueuePaymentSync } from "@/lib/services/qbo-sync"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { requireReadyStripeConnectedAccount, requireReadyStripeConnectedAccountForOrg } from "@/lib/services/stripe-connected-accounts"
@@ -699,11 +700,20 @@ export async function createPublicInvoicePaymentIntent(input: CreatePublicInvoic
   const invoiceBalanceCents = invoice.balance_due_cents ?? invoice.total_cents ?? 0
   if (invoiceBalanceCents <= 0) throw new Error("Invoice has no outstanding balance")
 
+  // Optional partial payment: never above the outstanding balance, never below $1.
+  const requestedCents = input.amount_cents ?? invoiceBalanceCents
+  if (requestedCents > invoiceBalanceCents) {
+    throw new Error("Payment amount cannot exceed the outstanding balance")
+  }
+  if (requestedCents < Math.min(100, invoiceBalanceCents)) {
+    throw new Error("Minimum online payment is $1.00")
+  }
+
   const connectedAccount = await requireReadyStripeConnectedAccountForOrg(invoice.org_id)
   const amounts = await buildPaymentIntentAmounts({
     supabase,
     orgId: invoice.org_id,
-    invoiceBalanceCents,
+    invoiceBalanceCents: requestedCents,
     method: input.method,
     includeProcessingFee: true,
   })
@@ -750,7 +760,9 @@ export async function createPublicInvoicePaymentIntent(input: CreatePublicInvoic
     idempotency_key: stripeIntent.provider_intent_id,
     metadata: {
       payment_method_choice: input.method,
-      invoice_balance_cents: amounts.invoiceBalanceCents,
+      invoice_balance_cents: invoiceBalanceCents,
+      requested_amount_cents: requestedCents,
+      is_partial_payment: requestedCents < invoiceBalanceCents,
       payment_method_fee_cents: amounts.paymentMethodFeeCents,
       payment_method_total_cents: amounts.chargeAmountCents,
     },
@@ -868,6 +880,7 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
   await supabase
     .from("payments")
     .update({
+      received_at: parsed.received_at,
       provider_charge_id: payload.provider_charge_id,
       connected_account_id: payload.connected_account_id,
       processor_fee_cents: payload.processor_fee_cents,
@@ -889,6 +902,13 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
       provider: payload.provider,
       method: payload.method,
       reference: payload.reference,
+    })
+    // Non-fatal: releases any pending lien waivers once this payment settles the invoice.
+    await releaseInvoiceLienWaiversIfPaid({
+      supabase,
+      orgId: resolvedOrgId,
+      invoiceId,
+      paymentId: paymentRow.id,
     })
   }
 

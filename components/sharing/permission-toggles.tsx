@@ -40,7 +40,13 @@ const DEFAULTS: PortalPermissions = {
   can_approve_change_orders: true,
   can_submit_selections: true,
   can_create_punch_items: false,
-  can_message: true,
+  can_view_warranty: true,
+  can_submit_time: true,
+  can_submit_expenses: true,
+  can_view_commitments: true,
+  can_view_bills: true,
+  can_submit_invoices: true,
+  can_upload_compliance_docs: true,
 }
 
 const PERMISSION_GROUPS = [
@@ -56,6 +62,9 @@ const PERMISSION_GROUPS = [
       { key: "can_view_invoices", label: "Invoices", icon: Receipt },
       { key: "can_view_rfis", label: "RFIs", icon: MessageSquare },
       { key: "can_view_submittals", label: "Submittals", icon: Layers },
+      { key: "can_view_warranty", label: "Warranty", icon: Flag },
+      { key: "can_view_commitments", label: "Commitments", icon: ClipboardList },
+      { key: "can_view_bills", label: "Bills", icon: Receipt },
     ],
   },
   {
@@ -67,7 +76,10 @@ const PERMISSION_GROUPS = [
       { key: "can_approve_change_orders", label: "Approve COs", icon: CheckSquare },
       { key: "can_submit_selections", label: "Submit selections", icon: CheckSquare },
       { key: "can_create_punch_items", label: "Create punch items", icon: Flag },
-      { key: "can_message", label: "Send messages", icon: MessageSquare },
+      { key: "can_submit_invoices", label: "Submit invoices", icon: Receipt },
+      { key: "can_submit_time", label: "Submit time", icon: ClipboardList },
+      { key: "can_submit_expenses", label: "Submit expenses", icon: DollarSign },
+      { key: "can_upload_compliance_docs", label: "Upload compliance", icon: Layers },
     ],
   },
 ] as const

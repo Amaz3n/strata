@@ -18,6 +18,7 @@ function revalidateBudgetPages(projectId: string) {
 }
 
 const budgetLineInputSchema = z.object({
+  id: z.string().uuid().nullable().optional(),
   cost_code_id: z.string().uuid().nullable().optional(),
   description: z.string().min(1),
   amount_cents: z.number().int().min(0),
@@ -72,8 +73,8 @@ export async function acknowledgeVarianceAlertAction(projectId: string, alertId:
 }
 
 export async function runVarianceScanAction(projectId: string) {
-  const { orgId } = await requireOrgContext()
-  await checkVarianceAlerts(projectId, orgId)
+  const { orgId, userId } = await requireOrgContext()
+  await checkVarianceAlerts(projectId, orgId, undefined, userId)
   revalidateBudgetPages(projectId)
 }
 
@@ -139,11 +140,12 @@ export async function applyBudgetFromEstimateAction(input: unknown) {
 }
 
 export async function updateCostCodeProgressAction(projectId: string, costCodeId: string, input: unknown) {
-  const { orgId } = await requireOrgContext()
+  const { orgId, userId } = await requireOrgContext()
   const parsed = progressInputSchema.parse(input)
   
   await updateCostCodeProgress({
     orgId,
+    userId,
     projectId,
     costCodeId,
     percentComplete: parsed.percent_complete ?? null,

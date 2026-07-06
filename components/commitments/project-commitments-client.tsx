@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 
 import type { Company } from "@/lib/types"
 import type { CommitmentSummary, CommitmentLine } from "@/lib/services/commitments"
@@ -215,6 +216,7 @@ export function ProjectCommitmentsClient({
   commitments: CommitmentSummary[]
   companies: Company[]
 }) {
+  const router = useRouter()
   const { toast } = useToast()
   const [isPending, startTransition] = useTransition()
 

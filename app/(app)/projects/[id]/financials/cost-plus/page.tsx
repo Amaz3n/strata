@@ -5,5 +5,5 @@ interface PageProps {
 
 export default async function FinancialsCostPlusPage({ params }: PageProps) {
   const { id } = await params
-  redirect(`/projects/${id}/financials`)
+  redirect(`/projects/${id}/financials/review`)
 }

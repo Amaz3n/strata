@@ -1,9 +1,9 @@
 "use client"
 
-import { Home, Camera, FileText, CheckSquare, MessageCircle, Info } from "lucide-react"
+import { Home, Camera, FileText, CheckSquare, Info, ReceiptText } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-export type PortalTab = "home" | "roadmap" | "timeline" | "documents" | "actions" | "about"
+export type PortalTab = "home" | "roadmap" | "timeline" | "documents" | "invoices" | "actions" | "about"
 
 interface PortalBottomNavProps {
   activeTab: PortalTab
@@ -16,6 +16,7 @@ const tabs: { id: PortalTab; label: string; icon: typeof Home }[] = [
   { id: "home", label: "Home", icon: Home },
   { id: "timeline", label: "Timeline", icon: Camera },
   { id: "documents", label: "Docs", icon: FileText },
+  { id: "invoices", label: "Pay", icon: ReceiptText },
   { id: "actions", label: "Actions", icon: CheckSquare },
   { id: "about", label: "About", icon: Info },
 ]

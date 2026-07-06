@@ -3,10 +3,11 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-stripe-js"
 import { loadStripe, type Appearance } from "@stripe/stripe-js"
-import { Building2, CheckCircle2, CreditCard, Download, Link2, Loader2, Lock } from "lucide-react"
+import { Ban, Building2, CheckCircle2, CreditCard, Download, FileText, Link2, Loader2, Lock } from "lucide-react"
 
-import type { Invoice } from "@/lib/types"
+import type { Invoice, InvoiceLienWaiver } from "@/lib/types"
 import type { Receipt } from "@/lib/types"
+import { INVOICE_WAIVER_TYPE_LABELS } from "@/lib/types"
 import {
   ArcInvoiceDocument,
   toArcInvoiceData,
@@ -15,8 +16,9 @@ import {
 } from "@/components/invoices/arc-invoice-document"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
-import { createPublicInvoicePaymentIntentAction } from "@/app/i/[token]/actions"
+import { createPublicInvoicePaymentIntentAction, getPublicInvoiceStatusAction } from "@/app/i/[token]/actions"
 
 type PaymentProps = {
   publishableKey: string
@@ -45,11 +47,33 @@ interface Props {
   payment?: PaymentProps | null
   receipts?: Receipt[] | null
   branding?: ArcInvoiceBranding | null
+  lienWaivers?: InvoiceLienWaiver[] | null
 }
 
 function formatMoney(cents?: number | null, currency = "USD") {
   const value = (cents ?? 0) / 100
   return value.toLocaleString("en-US", { style: "currency", currency })
+}
+
+/**
+ * Client-side fee preview for a custom (partial) amount. Mirrors calculatePaymentFeeQuote
+ * in lib/payments/fees.ts; the server recomputes the authoritative amounts when the
+ * payment intent is created.
+ */
+function quoteForAmount(base: PaymentFeeQuote, amountCents: number): PaymentFeeQuote {
+  const feeRate = base.feePercent / 100
+  const grossedUpTotal =
+    feeRate > 0 && feeRate < 1
+      ? Math.ceil((amountCents + base.feeFixedCents) / (1 - feeRate))
+      : amountCents + base.feeFixedCents
+  const uncappedFee = Math.max(0, grossedUpTotal - amountCents)
+  const feeCents = base.enabled ? (base.feeCapCents == null ? uncappedFee : Math.min(uncappedFee, base.feeCapCents)) : 0
+  return {
+    ...base,
+    invoiceBalanceCents: amountCents,
+    feeCents,
+    totalCents: amountCents + feeCents,
+  }
 }
 
 // Stripe appearance customization to match app design
@@ -128,15 +152,37 @@ function getStripeAppearance(isDark: boolean): Appearance {
 function ConfirmPaymentForm({
   quote,
   token,
+  invoiceBalanceCents,
 }: {
   quote: PaymentFeeQuote
   token: string
+  invoiceBalanceCents: number
 }) {
   const stripe = useStripe()
   const elements = useElements()
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+
+  // Wait for the payment webhook to settle the invoice before reloading, so the payer
+  // never lands back on a stale "unpaid" page right after a successful charge.
+  const waitForSettlementAndReload = async () => {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+      try {
+        const status = await getPublicInvoiceStatusAction(token)
+        if (
+          status &&
+          (status.balanceDueCents < invoiceBalanceCents || status.status === "paid" || status.status === "partial")
+        ) {
+          break
+        }
+      } catch {
+        // Keep polling; we reload regardless once attempts are exhausted.
+      }
+    }
+    window.location.reload()
+  }
 
   const handleSubmit = async () => {
     setError(null)
@@ -161,7 +207,7 @@ function ConfirmPaymentForm({
     }
     if (paymentIntent?.status === "succeeded" || paymentIntent?.status === "processing") {
       setMessage(paymentIntent.status === "processing" ? "Payment is processing. This page will refresh shortly." : "Payment submitted successfully. This page will refresh shortly.")
-      window.setTimeout(() => window.location.reload(), 2500)
+      void waitForSettlementAndReload()
     } else {
       setMessage(`Payment status: ${paymentIntent?.status ?? "unknown"}`)
     }
@@ -171,9 +217,15 @@ function ConfirmPaymentForm({
     <div className="space-y-6">
       <div className="space-y-2 border bg-muted/30 p-4 text-sm">
         <div className="flex items-center justify-between">
-          <span className="text-muted-foreground">Invoice balance</span>
+          <span className="text-muted-foreground">Payment amount</span>
           <span>{formatMoney(quote.invoiceBalanceCents)}</span>
         </div>
+        {quote.invoiceBalanceCents < invoiceBalanceCents && (
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>Remaining after this payment</span>
+            <span>{formatMoney(invoiceBalanceCents - quote.invoiceBalanceCents)}</span>
+          </div>
+        )}
         <div className="flex items-center justify-between">
           <span className="text-muted-foreground">{quote.label} processing fee</span>
           <span>{formatMoney(quote.feeCents)}</span>
@@ -240,6 +292,8 @@ function PaymentSection({
   const [isCreatingIntent, setIsCreatingIntent] = useState(false)
   const [intentError, setIntentError] = useState<string | null>(null)
   const [unavailableMethods, setUnavailableMethods] = useState<Array<PaymentFeeQuote["method"]>>([])
+  const [amountMode, setAmountMode] = useState<"full" | "custom">("full")
+  const [customAmount, setCustomAmount] = useState("")
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -266,9 +320,33 @@ function PaymentSection({
     [payment.feeQuotes.ach, payment.feeQuotes.card],
   )
 
+  const minPaymentCents = Math.min(100, balanceCents)
+  const customAmountCents = (() => {
+    const parsed = Number(customAmount.replace(/[$,\s]/g, ""))
+    if (!Number.isFinite(parsed) || parsed <= 0) return null
+    return Math.round(parsed * 100)
+  })()
+  const payAmountCents = amountMode === "full" ? balanceCents : customAmountCents
+  const amountValid = payAmountCents != null && payAmountCents >= minPaymentCents && payAmountCents <= balanceCents
+  const amountError =
+    amountMode === "custom" && customAmount.trim().length > 0 && !amountValid
+      ? payAmountCents != null && payAmountCents > balanceCents
+        ? "Amount cannot exceed the outstanding balance."
+        : "Minimum online payment is $1.00."
+      : null
+
+  // Changing the amount invalidates any payment form already created for the old amount.
+  const resetPaymentForm = () => {
+    setSelectedQuote(null)
+    setClientSecret(null)
+    setStripeAccountId(null)
+    setIntentError(null)
+  }
+
   async function handleMethodSelect(quote: PaymentFeeQuote) {
     if (!quote.enabled || isPaid || isCreatingIntent || unavailableMethods.includes(quote.method)) return
-    setSelectedQuote(quote)
+    if (!amountValid || payAmountCents == null) return
+    setSelectedQuote(quoteForAmount(quote, payAmountCents))
     setClientSecret(null)
     setStripeAccountId(null)
     setIntentError(null)
@@ -277,6 +355,7 @@ function PaymentSection({
       const intent = await createPublicInvoicePaymentIntentAction({
         token: payment.token,
         method: quote.method,
+        amount_cents: payAmountCents < balanceCents ? payAmountCents : undefined,
       })
       if (!intent.client_secret) {
         throw new Error("Stripe did not return a payment form secret.")
@@ -295,10 +374,11 @@ function PaymentSection({
     }
   }
 
-  function renderMethodButton(quote: PaymentFeeQuote) {
+  function renderMethodButton(baseQuote: PaymentFeeQuote) {
+    const quote = amountValid && payAmountCents != null ? quoteForAmount(baseQuote, payAmountCents) : baseQuote
     const isSelected = selectedQuote?.method === quote.method
     const unavailable = unavailableMethods.includes(quote.method)
-    const disabled = !quote.enabled || unavailable || isPaid || isCreatingIntent
+    const disabled = !quote.enabled || unavailable || isPaid || isCreatingIntent || !amountValid
     const Icon = quote.method === "ach" ? Building2 : CreditCard
     return (
       <button
@@ -340,6 +420,65 @@ function PaymentSection({
 
   return (
     <div className="space-y-5">
+      {balanceCents > minPaymentCents && (
+        <div className="space-y-2">
+          <h3 className="text-sm font-semibold">Payment amount</h3>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setAmountMode("full")
+                resetPaymentForm()
+              }}
+              className={[
+                "border p-3 text-left text-sm transition-colors",
+                amountMode === "full" ? "border-primary bg-primary/[0.04] ring-1 ring-primary" : "bg-background hover:border-foreground/25",
+              ].join(" ")}
+            >
+              <span className="block font-medium">Full balance</span>
+              <span className="mt-0.5 block text-xs text-muted-foreground tabular-nums">{formatMoney(balanceCents)}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAmountMode("custom")
+                resetPaymentForm()
+              }}
+              className={[
+                "border p-3 text-left text-sm transition-colors",
+                amountMode === "custom" ? "border-primary bg-primary/[0.04] ring-1 ring-primary" : "bg-background hover:border-foreground/25",
+              ].join(" ")}
+            >
+              <span className="block font-medium">Other amount</span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">Partial payment</span>
+            </button>
+          </div>
+          {amountMode === "custom" && (
+            <div className="space-y-1">
+              <div className="relative">
+                <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
+                <Input
+                  inputMode="decimal"
+                  value={customAmount}
+                  onChange={(event) => {
+                    setCustomAmount(event.target.value)
+                    resetPaymentForm()
+                  }}
+                  placeholder={(balanceCents / 100).toFixed(2)}
+                  className="pl-7 tabular-nums"
+                  aria-label="Payment amount"
+                />
+              </div>
+              {amountError ? (
+                <p className="text-xs text-red-600 dark:text-red-400">{amountError}</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">Up to {formatMoney(balanceCents)} outstanding.</p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       <h3 className="text-sm font-semibold">Payment method</h3>
 
       {availableQuotes.length > 0 ? (
@@ -371,14 +510,15 @@ function PaymentSection({
             appearance,
           }}
         >
-          <ConfirmPaymentForm quote={selectedQuote} token={payment.token} />
+          <ConfirmPaymentForm quote={selectedQuote} token={payment.token} invoiceBalanceCents={balanceCents} />
         </Elements>
       ) : null}
     </div>
   )
 }
 
-export function InvoicePublicWithPay({ invoice, payment, receipts, branding }: Props) {
+export function InvoicePublicWithPay({ invoice, payment, receipts, branding, lienWaivers }: Props) {
+  const waiverList = lienWaivers ?? []
   const [copied, setCopied] = useState(false)
   const [containerWidth, setContainerWidth] = useState(0)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -392,7 +532,9 @@ export function InvoicePublicWithPay({ invoice, payment, receipts, branding }: P
 
   const totalCents = invoice.totals?.total_cents ?? invoice.total_cents ?? 0
   const balanceCents = invoice.totals?.balance_due_cents ?? invoice.balance_due_cents ?? totalCents
-  const isPaid = balanceCents <= 0 || invoice.status === "paid" || invoice.status === "void"
+  // A voided invoice is canceled, not paid — never show it as settled.
+  const isVoid = invoice.status === "void"
+  const isPaid = !isVoid && (balanceCents <= 0 || invoice.status === "paid")
 
   // Fixed dimensions for invoice - letter size
   const invoiceWidth = 750
@@ -454,10 +596,10 @@ export function InvoicePublicWithPay({ invoice, payment, receipts, branding }: P
           <div className="flex items-center gap-2.5 text-sm">
             <span className="font-medium">Invoice {arcData.invoiceNumber}</span>
             <Badge
-              variant={isPaid ? "default" : "secondary"}
-              className={`capitalize ${isPaid ? "bg-green-600 hover:bg-green-600" : ""}`}
+              variant={isPaid ? "default" : isVoid ? "outline" : "secondary"}
+              className={`capitalize ${isPaid ? "bg-green-600 hover:bg-green-600" : isVoid ? "text-muted-foreground" : ""}`}
             >
-              {isPaid ? "Paid" : invoice.status}
+              {isPaid ? "Paid" : isVoid ? "Canceled" : invoice.status}
             </Badge>
           </div>
           <span className="text-xs text-muted-foreground">
@@ -470,6 +612,50 @@ export function InvoicePublicWithPay({ invoice, payment, receipts, branding }: P
         <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:gap-7">
           {/* Invoice document — scales to fit its column */}
           <div ref={containerRef} className="order-2 w-full lg:order-1 lg:w-[750px] lg:flex-none">
+            {/* Mobile-readable summary: the letter-sized document below is scaled down on
+                phones, so give payers a native-sized breakdown first. */}
+            {arcLines.length > 0 && (
+              <div className="mb-4 border bg-card shadow-sm lg:hidden print:hidden">
+                <div className="border-b bg-muted/30 px-4 py-2.5 text-sm font-semibold">Invoice details</div>
+                <div className="divide-y">
+                  {arcLines.map((line, index) => (
+                    <div key={index} className="flex items-start justify-between gap-3 px-4 py-2.5 text-sm">
+                      <div className="min-w-0">
+                        <p className="line-clamp-2">{line.description || "—"}</p>
+                        {line.quantity !== 1 && (
+                          <p className="mt-0.5 text-xs text-muted-foreground tabular-nums">
+                            {line.quantity} {line.unit ?? ""} × {formatMoney(line.unitCostCents)}
+                          </p>
+                        )}
+                      </div>
+                      <span className="shrink-0 tabular-nums">{formatMoney(line.lineTotalCents)}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="space-y-1 border-t px-4 py-3 text-sm">
+                  <div className="flex items-center justify-between text-muted-foreground">
+                    <span>Subtotal</span>
+                    <span className="tabular-nums">{formatMoney(arcData.subtotalCents)}</span>
+                  </div>
+                  {(arcData.discountCents ?? 0) > 0 && (
+                    <div className="flex items-center justify-between text-muted-foreground">
+                      <span>Discount{typeof arcData.discountPercent === "number" ? ` (${arcData.discountPercent}%)` : ""}</span>
+                      <span className="tabular-nums">-{formatMoney(arcData.discountCents ?? 0)}</span>
+                    </div>
+                  )}
+                  {arcData.taxCents > 0 && (
+                    <div className="flex items-center justify-between text-muted-foreground">
+                      <span>Tax</span>
+                      <span className="tabular-nums">{formatMoney(arcData.taxCents)}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between font-semibold">
+                    <span>Total</span>
+                    <span className="tabular-nums">{formatMoney(arcData.totalCents)}</span>
+                  </div>
+                </div>
+              </div>
+            )}
             <div className="overflow-hidden" style={{ height: scale < 1 ? scaledHeight : invoiceHeight }}>
               <div
                 className="border shadow-lg origin-top-left"
@@ -491,16 +677,20 @@ export function InvoicePublicWithPay({ invoice, payment, receipts, branding }: P
               <div className="border-b bg-muted/30 p-6">
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    {isPaid ? "Amount paid" : "Balance due"}
+                    {isVoid ? "Invoice canceled" : isPaid ? "Amount paid" : "Balance due"}
                   </p>
-                  {!isPaid && dueLabel ? (
+                  {!isPaid && !isVoid && dueLabel ? (
                     <p className="text-xs text-muted-foreground">
                       Due <span className="font-medium text-foreground/80">{dueLabel}</span>
                     </p>
                   ) : null}
                 </div>
-                <p className="mt-1.5 text-[2rem] font-semibold leading-none tracking-tight tabular-nums">
-                  {formatMoney(isPaid ? totalCents : balanceCents)}
+                <p
+                  className={`mt-1.5 text-[2rem] font-semibold leading-none tracking-tight tabular-nums ${
+                    isVoid ? "text-muted-foreground line-through decoration-1" : ""
+                  }`}
+                >
+                  {formatMoney(isVoid || isPaid ? totalCents : balanceCents)}
                 </p>
                 <p className="mt-2 text-xs text-muted-foreground">
                   Invoice {arcData.invoiceNumber} · {customerName}
@@ -509,7 +699,15 @@ export function InvoicePublicWithPay({ invoice, payment, receipts, branding }: P
 
               {/* State-specific body */}
               <div className="p-6">
-                {isPaid ? (
+                {isVoid ? (
+                  <div className="py-6 text-center">
+                    <Ban className="mx-auto size-7 text-muted-foreground" />
+                    <h3 className="mt-3 font-semibold">This invoice was canceled</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      No payment is due. If a revised invoice was issued, use the link from its email instead.
+                    </p>
+                  </div>
+                ) : isPaid ? (
                   <div className="space-y-4">
                     <div className="flex items-start gap-3">
                       <div className="flex size-9 shrink-0 items-center justify-center bg-green-100 dark:bg-green-900/40">
@@ -543,6 +741,40 @@ export function InvoicePublicWithPay({ invoice, payment, receipts, branding }: P
                   </div>
                 )}
               </div>
+
+              {/* Lien waivers — conditional ones are visible pre-payment, all released ones after */}
+              {waiverList.length > 0 && !isVoid && invoiceToken && (
+                <div className="space-y-2 border-t px-6 py-4">
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Lien waivers</p>
+                  {waiverList.map((waiver) => (
+                    <a
+                      key={waiver.id}
+                      href={`/i/${invoiceToken}/waiver/${waiver.id}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex items-center justify-between gap-3 border bg-background px-3 py-2.5 text-sm transition-colors hover:bg-muted/40"
+                    >
+                      <span className="flex min-w-0 items-center gap-2.5">
+                        <FileText className="size-4 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0">
+                          <span className="block truncate font-medium">
+                            {INVOICE_WAIVER_TYPE_LABELS[waiver.waiver_type] ?? "Lien waiver"}
+                          </span>
+                          <span className="block text-xs text-muted-foreground">
+                            {waiver.status === "released" ? "Released — payment received" : "Effective upon payment"}
+                          </span>
+                        </span>
+                      </span>
+                      <Download className="size-4 shrink-0 text-muted-foreground" />
+                    </a>
+                  ))}
+                  {!isPaid && (
+                    <p className="text-xs text-muted-foreground">
+                      Conditional waivers release automatically once payment is received in full.
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* Actions */}
               <div className="flex items-center gap-1 border-t p-2.5">

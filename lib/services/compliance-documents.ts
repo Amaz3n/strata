@@ -1044,7 +1044,10 @@ export async function getCompaniesComplianceStatus(
   if (uniqueCompanyIds.length === 0) return {}
 
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(
+    ["org.member", "org.read", "directory.read", "directory.write"],
+    { supabase, orgId: resolvedOrgId, userId },
+  )
 
   const [
     requirementsResult,

@@ -2,20 +2,32 @@ import { NextRequest, NextResponse } from "next/server"
 import { createHash } from "node:crypto"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { sendEmail, getOrgSenderEmail, renderStandardEmailLayout } from "@/lib/services/mailer"
-import { isEmailNotificationTypeEnabled, isEmailEligibleNotificationType } from "@/lib/services/notifications"
 import {
-  createDrawingSheet,
-  createSheetVersion,
-  updateDrawingSet,
-} from "@/lib/services/drawings"
+  sendEmail,
+  getOrgSenderEmail,
+  renderEmailTemplate,
+  renderStandardEmailLayout,
+  sendBidInviteEmail,
+  sendBidAddendumEmail,
+  sendBidDateUpdateEmail,
+} from "@/lib/services/mailer"
+import { SignatureEmail } from "@/lib/emails/signature-email"
+import { createExecutedFileAccessToken } from "@/lib/services/esign-executed-links"
+import { approveChangeOrderFromEnvelopeExecution } from "@/lib/services/change-orders"
+import { markCommitmentChangeOrderExecutedFromEnvelope } from "@/lib/services/commitment-change-orders"
+import { markCommitmentExecutedFromEnvelope } from "@/lib/services/commitments"
+import { executeEstimateFromEnvelopeExecution } from "@/lib/services/estimate-portal"
+import { acceptProposalFromEnvelopeExecution } from "@/lib/services/proposals"
+import { confirmSelectionFromEnvelopeExecution } from "@/lib/services/selections"
+import { isEmailNotificationTypeEnabled, isEmailEligibleNotificationType } from "@/lib/services/notifications"
+import { isApnsConfigured, sendApnsNotification } from "@/lib/services/apns"
 import { buildDrawingsTilesBaseUrl } from "@/lib/storage/drawings-urls"
 import {
   deleteTilesObjects,
   listTilesObjects,
   uploadTilesObject,
 } from "@/lib/storage/drawings-tiles-storage"
-import { downloadDrawingPdfObject } from "@/lib/storage/drawings-pdfs-storage"
+import { runDrawingsPipeline } from "@/lib/services/drawings-pipeline"
 import { downloadFilesObject, uploadFilesObject } from "@/lib/storage/files-storage"
 import { reindexEntity, removeFromIndex } from "@/lib/services/search-index"
 import type { SearchEntityType } from "@/lib/services/search-config"
@@ -78,10 +90,9 @@ export const runtime = "nodejs"
 
 const CRON_SECRET = process.env.CRON_SECRET
 const MAX_RETRIES = 3
-// Mostly lightweight email delivery now (heavy tile work is delegated to the
-// Cloud Run worker), so process a healthy batch per run to keep the queue drained.
+// Lightweight jobs (emails, indexing) run first; drawing pipeline jobs are
+// drained afterwards with the remaining time budget.
 const BATCH_SIZE = 50
-const SUPABASE_FUNCTION_TIMEOUT_MS = 120_000
 
 function isAuthorizedCronRequest(request: NextRequest) {
   const isDev = process.env.NODE_ENV !== "production"
@@ -435,21 +446,6 @@ export async function GET(request: NextRequest) {
   })
 }
 
-const TILE_SIZE = 256
-const OVERLAP = 1
-const MAX_LEVELS = 12 // safety cap
-const WEBP_QUALITY = 82
-
-type TileManifest = {
-  Image: {
-    xmlns: string
-    Format: "webp" | "png"
-    Overlap: number
-    TileSize: number
-    Size: { Width: number; Height: number }
-  }
-}
-
 async function processOutboxQueue(request: NextRequest) {
   if (!isAuthorizedCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
@@ -462,7 +458,7 @@ async function processOutboxQueue(request: NextRequest) {
   const { data: jobs, error } = await supabase
     .from("outbox")
     .select("*")
-    .in("job_type", ["deliver_notification", "send_daily_log_mention_email", "refresh_drawing_sheets_list", "index_file", "generate_file_preview", "reindex_search", "remove_search_index"])
+    .in("job_type", ["deliver_notification", "deliver_push", "send_daily_log_mention_email", "send_esign_executed_email", "send_bid_email", "process_esign_execution_side_effects", "refresh_drawing_sheets_list", "index_file", "generate_file_preview", "reindex_search", "remove_search_index"])
     .eq("status", "pending")
     .lte("run_at", now)
     .order("created_at", { ascending: false })
@@ -487,8 +483,16 @@ async function processOutboxQueue(request: NextRequest) {
     try {
       if (job.job_type === "deliver_notification") {
         await deliverNotificationJob(supabase, job)
+      } else if (job.job_type === "deliver_push") {
+        await deliverPushJob(supabase, job)
       } else if (job.job_type === "send_daily_log_mention_email") {
         await sendDailyLogMentionEmailJob(supabase, job)
+      } else if (job.job_type === "send_esign_executed_email") {
+        await sendESignExecutedEmailJob(supabase, job)
+      } else if (job.job_type === "send_bid_email") {
+        await sendBidEmailJob(supabase, job)
+      } else if (job.job_type === "process_esign_execution_side_effects") {
+        await processESignExecutionSideEffectsJob(supabase, job)
       } else if (job.job_type === "refresh_drawing_sheets_list") {
         await refreshDrawingSheetsListJob(supabase)
       } else if (job.job_type === "index_file") {
@@ -499,15 +503,6 @@ async function processOutboxQueue(request: NextRequest) {
         await reindexSearchJob(supabase, job)
       } else if (job.job_type === "remove_search_index") {
         await removeSearchIndexJob(supabase, job)
-      } else if (job.job_type === "generate_drawing_tiles" || job.job_type === "process_drawing_set") {
-        // Skip drawing jobs - these are now handled by the Cloud Run worker
-        console.log(`Skipping ${job.job_type} job ${job.id} - handled by Cloud Run worker`)
-        await supabase
-          .from("outbox")
-          .update({ status: "completed", last_error: "Delegated to Cloud Run worker" })
-          .eq("id", job.id)
-        processed += 1
-        continue
       } else {
         await supabase
           .from("outbox")
@@ -576,11 +571,66 @@ async function processOutboxQueue(request: NextRequest) {
     }
   }
 
-  return NextResponse.json(isDev ? { processed, failed, failures } : { processed, failed })
+  // Drain drawing pipeline jobs (process_drawing_set / process_drawing_page /
+  // generate_drawing_tiles) with whatever time budget remains. The dedicated
+  // /api/jobs/drawings-pipeline kick route handles the fast path after
+  // uploads; this is the cron safety net so nothing stays stuck.
+  const drawings = await runDrawingsPipeline({ deadlineMs: Date.now() + 120_000 })
+
+  return NextResponse.json(
+    isDev ? { processed, failed, failures, drawings } : { processed, failed, drawings },
+  )
 }
 
 export async function POST(request: NextRequest) {
   return processOutboxQueue(request)
+}
+
+async function deliverPushJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
+  if (!isApnsConfigured()) return // env-gated: nothing to do until APNs is configured
+
+  const payload = job.payload ?? {}
+  const notificationId =
+    (typeof payload.notificationId === "string" ? payload.notificationId : null) ??
+    (typeof payload.notification_id === "string" ? payload.notification_id : null)
+  if (!notificationId) throw new Error("Missing notificationId")
+
+  const { data: notification, error: notifError } = await supabase
+    .from("notifications")
+    .select("id, org_id, user_id, notification_type, payload")
+    .eq("id", notificationId)
+    .maybeSingle()
+  if (notifError || !notification) throw new Error(`Notification not found (${notifError?.message ?? "unknown error"})`)
+
+  const { data: tokens } = await supabase
+    .from("device_tokens")
+    .select("id, token")
+    .eq("user_id", notification.user_id)
+  if (!tokens?.length) return
+
+  const nPayload = (notification.payload ?? {}) as any
+  const title = typeof nPayload.title === "string" ? nPayload.title : "Arc"
+  const body = typeof nPayload.message === "string" ? nPayload.message : ""
+
+  const staleTokenIds: string[] = []
+  for (const row of tokens as Array<{ id: string; token: string }>) {
+    const result = await sendApnsNotification({
+      deviceToken: row.token,
+      title,
+      body,
+      data: {
+        notification_id: notification.id,
+        type: notification.notification_type,
+        project_id: typeof nPayload.project_id === "string" ? nPayload.project_id : undefined,
+      },
+    })
+    if (result.unregistered) staleTokenIds.push(row.id)
+  }
+
+  // Prune tokens Apple reports as no longer valid so the table stays clean.
+  if (staleTokenIds.length) {
+    await supabase.from("device_tokens").delete().in("id", staleTokenIds)
+  }
 }
 
 async function deliverNotificationJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
@@ -727,6 +777,298 @@ async function sendDailyLogMentionEmailJob(supabase: ReturnType<typeof createSer
   })
 }
 
+function buildExecutedDocumentUrl(token: string) {
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? ""
+  return appUrl ? `${appUrl}/api/esign/executed/${token}` : `/api/esign/executed/${token}`
+}
+
+async function sendESignExecutedEmailJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
+  const payload = job.payload ?? {}
+  const executedFileId = typeof payload.executed_file_id === "string" ? payload.executed_file_id : null
+  const recipientEmail = typeof payload.recipient_email === "string" ? payload.recipient_email : null
+  const recipientName = typeof payload.recipient_name === "string" ? payload.recipient_name : ""
+  const payloadDocumentTitle = typeof payload.document_title === "string" ? payload.document_title : null
+
+  if (!executedFileId || !recipientEmail) {
+    throw new Error("Missing executed_file_id or recipient_email")
+  }
+
+  const { data: file, error: fileError } = await supabase
+    .from("files")
+    .select("id, org_id, storage_path, file_name, mime_type, size_bytes")
+    .eq("id", executedFileId)
+    .maybeSingle()
+
+  if (fileError || !file) {
+    throw new Error(`Executed file not found (${fileError?.message ?? "missing"})`)
+  }
+
+  const { data: org } = await supabase
+    .from("orgs")
+    .select("name, logo_url, slug")
+    .eq("id", file.org_id)
+    .maybeSingle()
+
+  const documentTitle = payloadDocumentTitle ?? file.file_name ?? "Document"
+  const executedUrl = buildExecutedDocumentUrl(createExecutedFileAccessToken(file.id))
+  const bytes = await downloadFilesObject({
+    supabase,
+    orgId: file.org_id,
+    path: file.storage_path,
+  })
+
+  const html = await renderEmailTemplate(
+    SignatureEmail({
+      documentTitle,
+      signingLink: executedUrl,
+      recipientName,
+      orgName: org?.name ?? null,
+      orgLogoUrl: org?.logo_url ?? null,
+      eventLabel: "Document Executed",
+      headline: "Document fully executed",
+      bodyText: `${documentTitle} has been fully executed.`,
+      detailLabel: "Executed Copy",
+      detailText: "Open the executed PDF to review the completed document. A copy is also attached to this email.",
+      buttonText: "Open Executed PDF",
+      previewText: `Document executed: ${documentTitle}`,
+    }),
+  )
+
+  await sendEmail({
+    to: [recipientEmail],
+    subject: `Document executed: ${documentTitle}`,
+    html,
+    from: getOrgSenderEmail(org?.slug, org?.name),
+    attachments: [
+      {
+        filename: file.file_name ?? "executed.pdf",
+        content: Buffer.from(bytes).toString("base64"),
+        contentType: file.mime_type ?? "application/pdf",
+      },
+    ],
+  })
+}
+
+async function sendBidEmailJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
+  const payload = job.payload ?? {}
+  const kind = typeof payload.kind === "string" ? payload.kind : null
+  const to = typeof payload.to === "string" ? payload.to : null
+  if (!kind || !to) {
+    throw new Error("Missing bid email kind or recipient")
+  }
+
+  if (kind === "invite") {
+    await sendBidInviteEmail({
+      to,
+      companyName: typeof payload.companyName === "string" ? payload.companyName : undefined,
+      contactName: typeof payload.contactName === "string" ? payload.contactName : undefined,
+      projectName: typeof payload.projectName === "string" ? payload.projectName : undefined,
+      bidPackageTitle: String(payload.bidPackageTitle ?? "Bid package"),
+      trade: typeof payload.trade === "string" ? payload.trade : undefined,
+      dueDate: typeof payload.dueDate === "string" ? payload.dueDate : null,
+      orgName: typeof payload.orgName === "string" ? payload.orgName : undefined,
+      orgLogoUrl: typeof payload.orgLogoUrl === "string" ? payload.orgLogoUrl : undefined,
+      bidLink: String(payload.bidLink ?? ""),
+      orgSlug: typeof payload.orgSlug === "string" ? payload.orgSlug : undefined,
+    })
+    return
+  }
+
+  if (kind === "addendum") {
+    await sendBidAddendumEmail({
+      to,
+      companyName: typeof payload.companyName === "string" ? payload.companyName : undefined,
+      contactName: typeof payload.contactName === "string" ? payload.contactName : undefined,
+      projectName: typeof payload.projectName === "string" ? payload.projectName : undefined,
+      bidPackageTitle: String(payload.bidPackageTitle ?? "Bid package"),
+      addendumNumber: Number(payload.addendumNumber ?? 0),
+      addendumTitle: typeof payload.addendumTitle === "string" ? payload.addendumTitle : null,
+      addendumMessage: typeof payload.addendumMessage === "string" ? payload.addendumMessage : null,
+      orgName: typeof payload.orgName === "string" ? payload.orgName : undefined,
+      orgLogoUrl: typeof payload.orgLogoUrl === "string" ? payload.orgLogoUrl : undefined,
+      bidLink: String(payload.bidLink ?? ""),
+      orgSlug: typeof payload.orgSlug === "string" ? payload.orgSlug : undefined,
+    })
+    return
+  }
+
+  if (kind === "date_update") {
+    await sendBidDateUpdateEmail({
+      to,
+      companyName: typeof payload.companyName === "string" ? payload.companyName : undefined,
+      contactName: typeof payload.contactName === "string" ? payload.contactName : undefined,
+      projectName: typeof payload.projectName === "string" ? payload.projectName : undefined,
+      bidPackageTitle: String(payload.bidPackageTitle ?? "Bid package"),
+      oldDueDate: typeof payload.oldDueDate === "string" ? payload.oldDueDate : null,
+      newDueDate: String(payload.newDueDate ?? ""),
+      orgName: typeof payload.orgName === "string" ? payload.orgName : undefined,
+      orgLogoUrl: typeof payload.orgLogoUrl === "string" ? payload.orgLogoUrl : undefined,
+      bidLink: String(payload.bidLink ?? ""),
+      orgSlug: typeof payload.orgSlug === "string" ? payload.orgSlug : undefined,
+    })
+    return
+  }
+
+  if (kind === "award_notice") {
+    const outcome = payload.outcome === "winner" ? "winner" : "not_selected"
+    const orgName = typeof payload.orgName === "string" ? payload.orgName : undefined
+    const orgLogoUrl = typeof payload.orgLogoUrl === "string" ? payload.orgLogoUrl : undefined
+    const contactName = typeof payload.contactName === "string" ? payload.contactName : ""
+    const projectName = typeof payload.projectName === "string" ? payload.projectName : null
+    const bidPackageTitle = String(payload.bidPackageTitle ?? "Bid package")
+    const title = outcome === "winner" ? `Bid awarded: ${bidPackageTitle}` : `Bid update: ${bidPackageTitle}`
+    const message = outcome === "winner"
+      ? `Your bid${projectName ? ` for ${projectName}` : ""} has been selected. The builder will follow up with next steps.`
+      : `Thank you for bidding${projectName ? ` ${projectName}` : ""}. This package has been awarded to another bidder.`
+
+    const html = renderStandardEmailLayout({
+      title,
+      messageHtml: `Hi ${escapeHtml(contactName || "there")},<br/><br/>${escapeHtml(message)}`,
+      orgName,
+      orgLogoUrl,
+      appUrl: process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com",
+    })
+
+    await sendEmail({
+      to: [to],
+      subject: title,
+      html,
+      from: getOrgSenderEmail(typeof payload.orgSlug === "string" ? payload.orgSlug : undefined, orgName),
+    })
+    return
+  }
+
+  throw new Error(`Unknown bid email kind: ${kind}`)
+}
+
+async function processESignExecutionSideEffectsJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
+  const payload = job.payload ?? {}
+  const orgId = job.org_id as string
+  const documentId = typeof payload.document_id === "string" ? payload.document_id : null
+  const envelopeId = typeof payload.envelope_id === "string" ? payload.envelope_id : null
+  const executedFileId = typeof payload.executed_file_id === "string" ? payload.executed_file_id : null
+  const signerName = typeof payload.signer_name === "string" ? payload.signer_name : "Document signer"
+  const signerEmail = typeof payload.signer_email === "string" ? payload.signer_email : null
+  const signerIp = typeof payload.signer_ip === "string" ? payload.signer_ip : null
+
+  if (!orgId || !documentId || !executedFileId) {
+    throw new Error("Missing org/document/executed file payload for e-sign side effects")
+  }
+
+  const { data: document, error } = await supabase
+    .from("documents")
+    .select("id, org_id, source_entity_type, source_entity_id, metadata")
+    .eq("org_id", orgId)
+    .eq("id", documentId)
+    .maybeSingle()
+
+  if (error || !document) {
+    throw new Error(`Document not found (${error?.message ?? "missing"})`)
+  }
+
+  const proposalId =
+    document.source_entity_type === "proposal"
+      ? document.source_entity_id
+      : (document.metadata?.proposal_id as string | undefined)
+  if (proposalId) {
+    await acceptProposalFromEnvelopeExecution({
+      orgId,
+      proposalId,
+      documentId,
+      envelopeId,
+      executedFileId,
+      signerName,
+      signerEmail,
+      signerIp,
+    })
+  }
+
+  const estimateId =
+    document.source_entity_type === "estimate"
+      ? document.source_entity_id
+      : (document.metadata?.estimate_id as string | undefined)
+  if (estimateId) {
+    await executeEstimateFromEnvelopeExecution({
+      orgId,
+      estimateId,
+      documentId,
+      envelopeId,
+      executedFileId,
+      signerName,
+      signerEmail,
+      signerIp,
+    })
+  }
+
+  const changeOrderId =
+    document.source_entity_type === "change_order"
+      ? document.source_entity_id
+      : (document.metadata?.change_order_id as string | undefined)
+  if (changeOrderId) {
+    await approveChangeOrderFromEnvelopeExecution({
+      orgId,
+      changeOrderId,
+      envelopeId,
+      documentId,
+      executedFileId,
+      signerName,
+      signerEmail,
+      signerIp,
+    })
+  }
+
+  const commitmentChangeOrderId =
+    document.source_entity_type === "subcontract_change_order"
+      ? document.source_entity_id
+      : (document.metadata?.subcontract_change_order_id as string | undefined)
+  if (commitmentChangeOrderId) {
+    await markCommitmentChangeOrderExecutedFromEnvelope({
+      orgId,
+      commitmentChangeOrderId,
+      envelopeId,
+      documentId,
+      executedFileId,
+      signerName,
+      signerEmail,
+      signerIp,
+    })
+  }
+
+  const commitmentId =
+    document.source_entity_type === "subcontract"
+      ? document.source_entity_id
+      : (document.metadata?.subcontract_id as string | undefined)
+  if (commitmentId) {
+    await markCommitmentExecutedFromEnvelope({
+      orgId,
+      commitmentId,
+      envelopeId,
+      documentId,
+      executedFileId,
+      signerName,
+      signerEmail,
+      signerIp,
+    })
+  }
+
+  const selectionId =
+    document.source_entity_type === "selection"
+      ? document.source_entity_id
+      : (document.metadata?.selection_id as string | undefined)
+  if (selectionId) {
+    await confirmSelectionFromEnvelopeExecution({
+      orgId,
+      selectionId,
+      envelopeId,
+      documentId,
+      executedFileId,
+      signerName,
+      signerEmail,
+      signerIp,
+    })
+  }
+}
+
 function readSearchIndexJobRef(job: any): { entityType: SearchEntityType; entityId: string } {
   const payload = job.payload ?? {}
   const entityType = typeof payload.entity_type === "string" ? (payload.entity_type as SearchEntityType) : null
@@ -750,6 +1092,94 @@ async function removeSearchIndexJob(supabase: ReturnType<typeof createServiceSup
   await removeFromIndex({ orgId: job.org_id, entityType, entityId }, supabase)
 }
 
+const MAX_FILE_INDEX_TEXT_LENGTH = 200_000
+type MupdfModule = typeof import("mupdf")
+
+function normalizeExtractedText(value: string): string {
+  return value.replace(/\s+/g, " ").trim().slice(0, MAX_FILE_INDEX_TEXT_LENGTH)
+}
+
+function extractStructuredPageText(page: any): string {
+  try {
+    const structured = JSON.parse(page.toStructuredText("preserve-whitespace").asJSON())
+    const parts: string[] = []
+    for (const block of structured.blocks ?? []) {
+      for (const line of block.lines ?? []) {
+        if (typeof line.text === "string") {
+          parts.push(line.text)
+        } else if (Array.isArray(line.spans)) {
+          parts.push(line.spans.map((span: any) => span.text ?? "").join(""))
+        }
+      }
+    }
+    return parts.join("\n")
+  } catch (error) {
+    console.warn("[index_file] Failed to extract PDF page text", error)
+    return ""
+  }
+}
+
+async function extractPdfText(bytes: Buffer): Promise<string> {
+  const mupdf: MupdfModule = await import("mupdf")
+  const doc = mupdf.Document.openDocument(bytes, "application/pdf")
+  const pageCount = Math.min(doc.countPages(), 250)
+  const pages: string[] = []
+
+  try {
+    for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+      const page = doc.loadPage(pageIndex)
+      try {
+        const text = extractStructuredPageText(page)
+        if (text) pages.push(text)
+      } finally {
+        page.destroy?.()
+      }
+      if (pages.join("\n").length >= MAX_FILE_INDEX_TEXT_LENGTH) break
+    }
+  } finally {
+    doc.destroy?.()
+  }
+
+  return normalizeExtractedText(pages.join("\n"))
+}
+
+async function extractDocxText(bytes: Buffer): Promise<string> {
+  const mammothModule: any = await import("mammoth")
+  const mammoth = mammothModule.default ?? mammothModule
+  const result = await mammoth.extractRawText({ buffer: bytes })
+  return normalizeExtractedText(result.value ?? "")
+}
+
+async function extractIndexableFileText({
+  bytes,
+  fileName,
+  mimeType,
+}: {
+  bytes: Buffer
+  fileName?: string | null
+  mimeType?: string | null
+}): Promise<string> {
+  const lowerName = fileName?.toLowerCase() ?? ""
+  const lowerMime = mimeType?.toLowerCase() ?? ""
+
+  if (lowerMime.startsWith("text/") || lowerMime === "text/csv" || lowerName.endsWith(".txt") || lowerName.endsWith(".csv")) {
+    return normalizeExtractedText(bytes.toString("utf8"))
+  }
+
+  if (lowerMime === "application/pdf" || lowerName.endsWith(".pdf")) {
+    return extractPdfText(bytes)
+  }
+
+  if (
+    lowerMime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    lowerName.endsWith(".docx")
+  ) {
+    return extractDocxText(bytes)
+  }
+
+  return ""
+}
+
 async function indexFileJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
   const payload = job.payload ?? {}
   const fileId = typeof payload.fileId === "string" ? payload.fileId : null
@@ -757,9 +1187,63 @@ async function indexFileJob(supabase: ReturnType<typeof createServiceSupabaseCli
     throw new Error("Missing fileId")
   }
 
-  // Placeholder for text/OCR extraction. Keep the job type successful so queued
-  // indexing work does not become permanent outbox noise while previews ship.
-  console.log(`[index_file] queued for future extraction: ${fileId}`)
+  const { data: file, error } = await supabase
+    .from("files")
+    .select("id, org_id, project_id, file_name, storage_path, mime_type, metadata, checksum")
+    .eq("id", fileId)
+    .maybeSingle()
+
+  if (error || !file) {
+    throw new Error(`File not found (${error?.message ?? "unknown error"})`)
+  }
+
+  const bytes = await downloadFilesObject({
+    supabase,
+    orgId: file.org_id,
+    path: file.storage_path,
+  })
+  const checksum = createHash("sha256").update(bytes).digest("hex")
+  let extractedText = ""
+  let extractionStatus: "ready" | "empty" | "failed" = "empty"
+  let extractionError: string | undefined
+  try {
+    extractedText = await extractIndexableFileText({
+      bytes,
+      fileName: file.file_name,
+      mimeType: file.mime_type,
+    })
+    extractionStatus = extractedText ? "ready" : "empty"
+  } catch (error: any) {
+    extractionStatus = "failed"
+    extractionError = String(error?.message ?? error).slice(0, 500)
+    console.warn("[index_file] Failed to extract file text", { fileId: file.id, error: extractionError })
+  }
+  const metadata = file.metadata && typeof file.metadata === "object" ? file.metadata as Record<string, any> : {}
+
+  const { error: updateError } = await supabase
+    .from("files")
+    .update({
+      checksum: file.checksum ?? checksum,
+      metadata: {
+        ...metadata,
+        search: {
+          ...(metadata.search ?? {}),
+          extracted_text: extractedText,
+          extracted_at: new Date().toISOString(),
+          extraction_status: extractionStatus,
+          extraction_source: extractedText ? "embedded_text" : "none",
+          character_count: extractedText.length,
+          extraction_error: extractionError ?? null,
+        },
+      },
+    })
+    .eq("id", file.id)
+
+  if (updateError) {
+    throw new Error(`Failed to update file search metadata: ${updateError.message}`)
+  }
+
+  await reindexEntity({ orgId: file.org_id, entityType: "file", entityId: file.id }, supabase)
 }
 
 async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
@@ -1037,268 +1521,6 @@ async function createPdfPlaceholderThumbnail(
   }
 }
 
-async function processDrawingSetJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
-  const payload = (job.payload ?? {}) as any
-  const drawingSetId = typeof payload.drawingSetId === "string" ? payload.drawingSetId : null
-  const projectId = typeof payload.projectId === "string" ? payload.projectId : null
-  const sourceFileId = typeof payload.sourceFileId === "string" ? payload.sourceFileId : null
-  const storagePath = typeof payload.storagePath === "string" ? payload.storagePath : null
-  const orgId = typeof payload.orgId === "string" ? payload.orgId : null
-
-  if (!drawingSetId || !projectId || !sourceFileId || !storagePath || !orgId) {
-    throw new Error("Missing required fields: drawingSetId, projectId, sourceFileId, storagePath, orgId")
-  }
-
-  console.log(`[ProcessSet] Processing drawing set: ${drawingSetId}`)
-
-  try {
-    // 1. Get the drawing set and file info
-    const { data: drawingSet, error: setError } = await supabase
-      .from("drawing_sets")
-      .select("id, org_id, title")
-      .eq("id", drawingSetId)
-      .single()
-
-    if (setError || !drawingSet) {
-      throw new Error(`Drawing set not found: ${setError?.message}`)
-    }
-
-    const { data: fileRecord, error: fileError } = await supabase
-      .from("files")
-      .select("file_name, storage_path")
-      .eq("id", sourceFileId)
-      .single()
-
-    if (fileError || !fileRecord) {
-      throw new Error(`File record not found: ${fileError?.message}`)
-    }
-
-    console.log(`[ProcessSet] Found drawing set: ${drawingSet.title}, file: ${fileRecord.file_name}`)
-
-    // 2. Download the PDF
-    const pdfBytes = await downloadDrawingPdfObject({
-      supabase,
-      orgId,
-      path: storagePath,
-    })
-    console.log(`[ProcessSet] Downloaded PDF: ${pdfBytes.length} bytes`)
-
-    // 3. Create placeholder pages for now (PDF processing libraries are problematic)
-    const pages: { pageNumber: number; imageBuffer: Uint8Array; width: number; height: number }[] = []
-    // TODO: Implement proper PDF processing without pdfjs-dist dependencies
-    console.log(`[ProcessSet] PDF processing temporarily disabled - creating placeholder pages`)
-
-    // Create a reasonable number of placeholder pages based on PDF size
-    // Large PDFs likely have more pages
-    const estimatedPages = Math.max(1, Math.min(20, Math.floor(pdfBytes.length / 200000)))
-    console.log(`[ProcessSet] PDF size: ${pdfBytes.length} bytes, estimated pages: ${estimatedPages}`)
-
-    for (let pageNum = 1; pageNum <= estimatedPages; pageNum++) {
-      console.log(`[ProcessSet] Creating placeholder page ${pageNum}`)
-      const placeholder = await createPlaceholderImageForPdf()
-      pages.push({
-        pageNumber: pageNum,
-        imageBuffer: placeholder.pngBytes,
-        width: placeholder.width,
-        height: placeholder.height
-      })
-      console.log(`[ProcessSet] Created placeholder page ${pageNum}: ${placeholder.pngBytes.length} bytes`)
-    }
-
-    console.log(`[ProcessSet] Created ${pages.length} placeholder pages total`)
-
-    // 4. Create individual drawing sheets
-    const sheetsCreated = []
-    for (const page of pages) {
-      try {
-        // Create sheet record directly (avoid authentication issues)
-        const sheetNumber = `${drawingSet.title} - Page ${page.pageNumber}`
-        const sheetData = {
-          project_id: projectId,
-          drawing_set_id: drawingSetId,
-          sheet_number: sheetNumber,
-          sheet_title: `${drawingSet.title} - Page ${page.pageNumber}`,
-          discipline: null,
-          page_index: page.pageNumber - 1, // 0-based
-          created_by: null, // No user context in background job
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        }
-
-        const { data: sheet, error: sheetError } = await supabase
-          .from("drawing_sheets")
-          .insert(sheetData)
-          .select()
-          .single()
-
-        if (sheetError || !sheet) {
-          throw new Error(`Failed to create sheet: ${sheetError?.message}`)
-        }
-
-        // Create sheet version with the extracted page image
-        const hash = `page-${page.pageNumber}-${Date.now()}`
-        const basePath = `${drawingSet.org_id}/${hash}`
-        const publicBaseUrl = buildPublicBaseUrl(drawingSet.org_id, hash)
-
-        // Upload the page image as a single tile
-        const objectPath = `${basePath}/tiles/0/0_0.png`
-        await uploadPublicObject(supabase, objectPath, page.imageBuffer, "image/png")
-
-        // Create thumbnail
-        let sharp: any
-        try {
-          sharp = (await import("sharp")) as any
-        } catch (e: any) {
-          throw new Error(`Sharp import failed: ${e?.message ?? String(e)}`)
-        }
-
-        const thumbBuffer = await sharp(Buffer.from(page.imageBuffer))
-          .resize(256, 256, { fit: 'inside' })
-          .png()
-          .toBuffer()
-
-        await uploadPublicObject(supabase, `${basePath}/thumbnail.png`, new Uint8Array(thumbBuffer), "image/png")
-
-        // Create manifest
-        const manifest: TileManifest = {
-          Image: {
-            xmlns: "http://schemas.microsoft.com/deepzoom/2008",
-            Format: "png",
-            Overlap: 0,
-            TileSize: page.width,
-            Size: { Width: page.width, Height: page.height },
-          },
-        }
-
-        await uploadPublicObject(
-          supabase,
-          `${basePath}/manifest.json`,
-          new TextEncoder().encode(JSON.stringify(manifest)),
-          "application/json",
-        )
-
-        // Create sheet version directly
-        const versionData = {
-          drawing_sheet_id: sheet.id,
-          file_id: sourceFileId,
-          page_index: page.pageNumber - 1,
-          image_width: page.width,
-          image_height: page.height,
-          tile_manifest: manifest,
-          tile_base_url: publicBaseUrl,
-          thumbnail_url: `${publicBaseUrl}/thumbnail.png`,
-          source_hash: hash,
-          tile_levels: 1,
-          tiles_generated_at: new Date().toISOString(),
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        }
-
-        const { data: version, error: versionError } = await supabase
-          .from("drawing_sheet_versions")
-          .insert(versionData)
-          .select()
-          .single()
-
-        if (versionError || !version) {
-          throw new Error(`Failed to create sheet version: ${versionError?.message}`)
-        }
-
-        console.log(`[ProcessSet] Created sheet version: ${version.id}`)
-
-        sheetsCreated.push(sheet)
-        console.log(`[ProcessSet] Created sheet: ${sheetNumber}`)
-      } catch (pageError) {
-        console.error(`[ProcessSet] Failed to create sheet for page ${page.pageNumber}:`, pageError)
-      }
-    }
-
-    // 5. Update drawing set status
-    await supabase
-      .from("drawing_sets")
-      .update({
-        status: "ready",
-        processed_pages: sheetsCreated.length
-      })
-      .eq("id", drawingSetId)
-
-    console.log(`[ProcessSet] Successfully processed ${sheetsCreated.length} sheets for drawing set: ${drawingSetId}`)
-
-    // 6. Queue tile generation jobs for each sheet (though they're already processed)
-    // This is kept for consistency with the existing flow
-    for (const sheet of sheetsCreated) {
-      const { data: versions } = await supabase
-        .from("drawing_sheet_versions")
-        .select("id")
-        .eq("drawing_sheet_id", sheet.id)
-        .order("created_at", { ascending: false })
-        .limit(1)
-
-      if (versions && versions[0]) {
-        // Tiles are already generated, but queue anyway for consistency
-        await supabase.from("outbox").insert({
-          org_id: drawingSet.org_id,
-          job_type: "generate_drawing_tiles",
-          payload: { sheetVersionId: versions[0].id },
-          run_at: new Date().toISOString(),
-        })
-      }
-    }
-
-    // 7. Refresh the materialized view
-    try {
-      await supabase.rpc("refresh_drawing_sheets_list")
-    } catch (e) {
-      console.error("[ProcessSet] Failed to refresh drawing sheets list:", e)
-    }
-
-  } catch (error) {
-    console.error(`[ProcessSet] Failed to process drawing set ${drawingSetId}:`, error)
-
-    // Update set status to failed
-    try {
-      await supabase
-        .from("drawing_sets")
-        .update({
-          status: "failed",
-          error_message: String(error)
-        })
-        .eq("id", drawingSetId)
-    } catch (updateError) {
-      console.error("[ProcessSet] Failed to update set status:", updateError)
-    }
-
-    throw error
-  }
-}
-
-async function generateDrawingTilesJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
-  const payload = (job.payload ?? {}) as any
-  const sheetVersionId =
-    (typeof payload.sheetVersionId === "string" ? payload.sheetVersionId : null) ??
-    (typeof payload.sheet_version_id === "string" ? payload.sheet_version_id : null)
-
-  if (!sheetVersionId) {
-    throw new Error("Missing sheetVersionId")
-  }
-
-  // Option A: Generate tiles in Node (this worker), not via Edge Functions.
-  // This avoids runtime incompatibilities with PDF rendering libraries.
-  await generateDrawingTilesInNode(supabase, sheetVersionId)
-
-  // Keep the list view fresh enough for users right after tiles land.
-  // This is non-concurrent refresh for simplicity; if this becomes heavy,
-  // move to scheduled refreshes + eventual consistency.
-  const isDevMode = process.env.NODE_ENV !== "production"
-  if (!isDevMode) {
-    try {
-      await supabase.rpc("refresh_drawing_sheets_list")
-    } catch (e) {
-      console.error("[process-outbox] refresh_drawing_sheets_list failed after tiles:", e)
-    }
-  }
-}
-
 async function refreshDrawingSheetsListJob(supabase: ReturnType<typeof createServiceSupabaseClient>) {
   const isDev = process.env.NODE_ENV !== "production"
   if (isDev) {
@@ -1312,252 +1534,6 @@ async function refreshDrawingSheetsListJob(supabase: ReturnType<typeof createSer
   }
 }
 
-function sha256Hex(bytes: Uint8Array): string {
-  return createHash("sha256").update(Buffer.from(bytes)).digest("hex")
-}
-
-function buildPublicBaseUrl(orgId: string, hash: string) {
-  const base = buildDrawingsTilesBaseUrl(`${orgId}/${hash}`)
-  if (!base) {
-    throw new Error("Missing DRAWINGS_TILES_BASE_URL/NEXT_PUBLIC_DRAWINGS_TILES_BASE_URL")
-  }
-  return base
-}
-
-function clampCrop(x: number, y: number, w: number, h: number, maxW: number, maxH: number) {
-  const x0 = Math.max(0, Math.floor(x))
-  const y0 = Math.max(0, Math.floor(y))
-  const x1 = Math.min(maxW, Math.ceil(x + w))
-  const y1 = Math.min(maxH, Math.ceil(y + h))
-  return { x: x0, y: y0, w: Math.max(0, x1 - x0), h: Math.max(0, y1 - y0) }
-}
-
-
-
-async function createPlaceholderImageForPdf() {
-  // Create a placeholder image when PDF processing fails
-  let createCanvas: any
-  try {
-    ;({ createCanvas } = await import("@napi-rs/canvas"))
-  } catch (e: any) {
-    throw new Error(`@napi-rs/canvas import failed: ${e?.message ?? String(e)}`)
-  }
-
-  try {
-    const width = 2400
-    const height = 1800
-    const canvas = createCanvas(width, height)
-    const ctx = canvas.getContext("2d")
-
-    // Fill with light blue background (construction theme)
-    ctx.fillStyle = '#e3f2fd'
-    ctx.fillRect(0, 0, width, height)
-
-    // Add text
-    ctx.fillStyle = '#1976d2'
-    ctx.font = 'bold 48px Arial'
-    ctx.textAlign = 'center'
-    ctx.fillText('PDF Processing Active', width / 2, height / 2 - 50)
-    ctx.font = '24px Arial'
-    ctx.fillText('Drawing tiles are being generated', width / 2, height / 2 + 20)
-    ctx.fillText('Please refresh in a few moments', width / 2, height / 2 + 60)
-
-    const png = canvas.toBuffer("image/png")
-    return { pngBytes: new Uint8Array(png), width, height }
-  } catch (e: any) {
-    throw new Error(`Placeholder image creation failed: ${e?.message ?? String(e)}`)
-  }
-}
-
-async function uploadPublicObject(
-  supabase: ReturnType<typeof createServiceSupabaseClient>,
-  objectPath: string,
-  bytes: Uint8Array,
-  contentType: string,
-) {
-  console.log(`[Storage] Uploading ${bytes.length} bytes to ${objectPath} (${contentType})`)
-
-  await uploadTilesObject({
-    supabase,
-    path: objectPath,
-    bytes,
-    contentType,
-  })
-
-  console.log(`[Storage] Successfully uploaded ${objectPath}`)
-}
-
-async function generateDrawingTilesInNode(
-  supabase: ReturnType<typeof createServiceSupabaseClient>,
-  sheetVersionId: string,
-) {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), SUPABASE_FUNCTION_TIMEOUT_MS)
-
-  console.log(`[TileGen] Starting tile generation for sheet version: ${sheetVersionId}`)
-
-  try {
-    // 1) Load minimal metadata (avoid join-multiplicity issues that break .single()).
-    console.log(`[TileGen] Loading sheet version metadata for: ${sheetVersionId}`)
-    const { data: version, error: versionError } = await supabase
-      .from("drawing_sheet_versions")
-      .select("id, org_id, file_id, tile_manifest, tile_base_url")
-      .eq("id", sheetVersionId)
-      .maybeSingle()
-
-    if (versionError) {
-      console.error(`[TileGen] Failed to load sheet version: ${versionError.message}`)
-      throw new Error(`Failed to load sheet version: ${versionError.message}`)
-    }
-
-    if (!version) {
-      console.error(`[TileGen] Sheet version not found: ${sheetVersionId}`)
-      const err = new Error(`Sheet version not found: ${sheetVersionId}`)
-      ;(err as any).code = "SHEET_VERSION_NOT_FOUND"
-      throw err
-    }
-
-    console.log(`[TileGen] Found sheet version:`, {
-      id: version.id,
-      org_id: (version as any).org_id,
-      has_existing_tiles: !!((version as any).tile_manifest && (version as any).tile_base_url),
-      existing_format: (version as any).tile_manifest?.Image?.Format
-    })
-
-    // Idempotency: if PNG tiles already exist, skip. Regenerate if old WebP format.
-    const hasExistingTiles = (version as any).tile_manifest && (version as any).tile_base_url
-    const isOldFormat = (version as any).tile_manifest?.Image?.Format === 'webp'
-
-    if (hasExistingTiles && !isOldFormat) {
-      console.log(`[TileGen] PNG tiles already exist, skipping generation`)
-      return
-    }
-
-    if (hasExistingTiles && isOldFormat) {
-      console.log(`[TileGen] Old WebP tiles found, regenerating as PNG`)
-    }
-
-    const orgId = (version as any).org_id as string
-    const fileId = (version as any).file_id as string | null
-    if (!fileId) {
-      throw new Error("Sheet version missing file_id")
-    }
-
-    const { data: file, error: fileError } = await supabase
-      .from("files")
-      .select("storage_path")
-      .eq("id", fileId)
-      .maybeSingle()
-
-    if (fileError || !file?.storage_path) {
-      throw new Error(`Failed to load file storage_path: ${fileError?.message ?? "missing storage_path"}`)
-    }
-
-    // 2) Download PDF bytes
-    const pdfBytes = new Uint8Array(
-      await downloadDrawingPdfObject({
-        supabase,
-        orgId,
-        path: file.storage_path,
-      })
-    )
-    const hash = sha256Hex(pdfBytes).slice(0, 16)
-
-    console.log(`[TileGen] Downloaded PDF: ${pdfBytes.length} bytes, hash: ${hash}`)
-
-    // 3) Create placeholder image (PDF processing disabled)
-    console.log(`[TileGen] Creating placeholder image for sheet ${sheetVersionId}`)
-    const placeholder = await createPlaceholderImageForPdf()
-    const pngBytes = placeholder.pngBytes
-    const width = placeholder.width
-    const height = placeholder.height
-    console.log(`[TileGen] Created placeholder: ${pngBytes.length} bytes, ${width}x${height}px`)
-
-    // 4) Content-addressed base path
-    const basePath = `${orgId}/${hash}`
-    const publicBaseUrl = buildPublicBaseUrl(orgId, hash)
-
-    console.log(`[TileGen] Using base path: ${basePath}`)
-    console.log(`[TileGen] Public URL: ${publicBaseUrl}`)
-
-    // 6) Create single high-resolution PNG image for viewer
-    // The current viewer expects a single image at tiles/0/0_0.png
-    const objectPath = `${basePath}/tiles/0/0_0.png`
-    console.log(`[TileGen] Uploading PNG to: ${objectPath} (${pngBytes.length} bytes)`)
-    await uploadPublicObject(supabase, objectPath, pngBytes, "image/png")
-    console.log(`[TileGen] Successfully uploaded main image`)
-
-    // 7) Create thumbnail
-    let sharp: any
-    try {
-      sharp = (await import("sharp")) as any
-    } catch (e: any) {
-      throw new Error(`Sharp import failed: ${e?.message ?? String(e)}`)
-    }
-
-    const thumbBuffer = await sharp(Buffer.from(pngBytes))
-      .resize(256, 256, { fit: 'inside' })
-      .png()
-      .toBuffer()
-
-    console.log(`[TileGen] Uploading thumbnail (${thumbBuffer.length} bytes)`)
-    await uploadPublicObject(supabase, `${basePath}/thumbnail.png`, new Uint8Array(thumbBuffer), "image/png")
-    console.log(`[TileGen] Successfully uploaded thumbnail`)
-
-    // 8) Create minimal manifest for compatibility
-    const manifest: TileManifest = {
-      Image: {
-        xmlns: "http://schemas.microsoft.com/deepzoom/2008",
-        Format: "png",
-        Overlap: 0,
-        TileSize: width, // Single tile covers entire image
-        Size: { Width: width, Height: height },
-      },
-    }
-
-    console.log(`[TileGen] Uploading manifest:`, manifest)
-    await uploadPublicObject(
-      supabase,
-      `${basePath}/manifest.json`,
-      new TextEncoder().encode(JSON.stringify(manifest)),
-      "application/json",
-    )
-    console.log(`[TileGen] Successfully uploaded manifest`)
-
-    // 8) Persist metadata
-    console.log(`[TileGen] Updating database for sheet version: ${sheetVersionId}`)
-    const updateData = {
-      tile_manifest: manifest,
-      tile_base_url: publicBaseUrl,
-      source_hash: hash,
-      tile_levels: 1, // Single level for now
-      tiles_generated_at: new Date().toISOString(),
-      thumbnail_url: `${publicBaseUrl}/thumbnail.png`,
-      image_width: width,
-      image_height: height,
-      tiles_base_path: basePath,
-    }
-    console.log(`[TileGen] Update data:`, updateData)
-
-    const { error: updateError } = await supabase
-      .from("drawing_sheet_versions")
-      .update(updateData)
-      .eq("id", sheetVersionId)
-
-    if (updateError) {
-      console.error(`[TileGen] Failed to update database: ${updateError.message}`)
-      throw new Error(`Failed to update drawing_sheet_versions: ${updateError.message}`)
-    }
-
-    console.log(`[TileGen] Successfully updated database`)
-    console.log(`[TileGen] Tile generation completed for sheet version: ${sheetVersionId}`)
-  } catch (e: any) {
-    if (e?.name === "AbortError") throw new Error("generate-drawing-tiles timed out")
-    throw e
-  } finally {
-    clearTimeout(timeout)
-  }
-}
 
 function buildNotificationHref(payload: any): string | null {
   const projectId = typeof payload?.project_id === "string" ? payload.project_id : null

@@ -2,10 +2,10 @@
 
 import { useEffect, useState } from "react"
 
-import type { Project } from "@/lib/types"
+import type { ProjectNavigationItem } from "@/lib/types"
 
 type SidebarProjectsSnapshot = {
-  projects: Project[]
+  projects: ProjectNavigationItem[]
   isLoading: boolean
   loadError: string | null
 }
