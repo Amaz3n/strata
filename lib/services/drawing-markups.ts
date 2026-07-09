@@ -20,6 +20,7 @@ import {
   drawingPinListFiltersSchema,
 } from "@/lib/validation/drawings"
 import { requireOrgContext } from "@/lib/services/context"
+import { requirePermission } from "@/lib/services/permissions"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 
@@ -161,6 +162,7 @@ export async function listDrawingMarkups(
 ): Promise<DrawingMarkup[]> {
   const parsed = drawingMarkupListFiltersSchema.parse(filters)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
 
   let query = supabase
     .from("drawing_markups")
@@ -212,7 +214,8 @@ export async function getDrawingMarkup(
   markupId: string,
   orgId?: string
 ): Promise<DrawingMarkup | null> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("drawing_markups")
@@ -243,6 +246,7 @@ export async function createDrawingMarkup(
 ): Promise<DrawingMarkup> {
   const parsed = drawingMarkupInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.markup", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("drawing_markups")
@@ -305,6 +309,7 @@ export async function updateDrawingMarkup(
 ): Promise<DrawingMarkup> {
   const parsed = drawingMarkupUpdateSchema.parse(updates)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.markup", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: fetchError } = await supabase
     .from("drawing_markups")
@@ -361,6 +366,7 @@ export async function updateDrawingMarkup(
  */
 export async function deleteDrawingMarkup(markupId: string, orgId?: string): Promise<void> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.markup", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: fetchError } = await supabase
     .from("drawing_markups")
@@ -403,6 +409,7 @@ export async function deleteMarkupsForSheet(
   orgId?: string
 ): Promise<number> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.markup", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("drawing_markups")
@@ -833,7 +840,8 @@ export async function getMarkupCountsByType(
   sheetId: string,
   orgId?: string
 ): Promise<Record<MarkupType, number>> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("drawing_markups")

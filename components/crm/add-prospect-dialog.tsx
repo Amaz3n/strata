@@ -19,6 +19,8 @@ import type { TeamMember } from "@/lib/types"
 import { createProspectAction } from "@/app/(app)/crm/actions"
 import { useToast } from "@/hooks/use-toast"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface AddProspectDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -62,7 +64,7 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers }: AddProspe
 
     startTransition(async () => {
       try {
-        await createProspectAction({
+        unwrapAction(await createProspectAction({
           full_name: fullName.trim(),
           phone: phone.trim() || undefined,
           email: email.trim() || undefined,
@@ -73,7 +75,7 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers }: AddProspe
           lead_project_type: leadProjectType as any,
           lead_budget_range: leadBudgetRange as any,
           lead_timeline_preference: leadTimeline as any,
-        })
+        }))
         router.refresh()
         toast({ title: "Prospect created" })
         reset()

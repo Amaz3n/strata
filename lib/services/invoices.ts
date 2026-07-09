@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 
 import type { Invoice, InvoiceLine, InvoiceTotals, InvoiceView } from "@/lib/types"
 import type { InvoiceInput, InvoiceLineInput } from "@/lib/validation/invoices"
+import { isCostDrivenBillingModel, resolveProjectBillingModel } from "@/lib/financials/billing-model"
 import { createApprovedCostInvoiceFromPreview } from "@/lib/services/approved-cost-invoicing"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -14,6 +15,7 @@ import { getNextInvoiceNumber, markReservationUsed, releaseInvoiceNumberReservat
 import { enqueueInvoiceSync } from "@/lib/services/qbo-sync"
 import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
 import { requireAuthorization } from "@/lib/services/authorization"
+import { releaseInvoiceFromBillingPeriod } from "@/lib/services/billing-periods"
 
 type InvoiceRow = {
   id: string
@@ -47,6 +49,7 @@ type InvoiceRow = {
 type SourceBillingContext = {
   contractId?: string | null
   retainagePercent: number
+  retainageAppliesToFee: boolean
   retainageAmountCents: number
   metadata: Record<string, any>
 }
@@ -206,6 +209,10 @@ function stripSystemGeneratedBillingLines(lines: InvoiceLine[]) {
   return lines.filter((line) => !isSystemGeneratedRetainageLine(line))
 }
 
+function isInvoiceFeeLine(line: InvoiceLine) {
+  return String(line.unit ?? "").toLowerCase() === "fee" || Boolean(((line as any).metadata ?? {})?.fee_line_kind)
+}
+
 async function resolveInvoiceSourceBillingContext(params: {
   supabase: SupabaseClient
   orgId: string
@@ -294,7 +301,7 @@ async function resolveInvoiceSourceBillingContext(params: {
   if (contractId) {
     const { data: linkedContract, error: contractError } = await supabase
       .from("contracts")
-      .select("id, project_id, total_cents, retainage_percent, snapshot, status")
+      .select("id, project_id, total_cents, retainage_percent, retainage_applies_to_fee, snapshot, status")
       .eq("org_id", orgId)
       .eq("id", contractId)
       .maybeSingle()
@@ -306,7 +313,7 @@ async function resolveInvoiceSourceBillingContext(params: {
   } else if (contractProjectId) {
     const { data: activeContract, error: contractError } = await supabase
       .from("contracts")
-      .select("id, project_id, total_cents, retainage_percent, snapshot, status")
+      .select("id, project_id, total_cents, retainage_percent, retainage_applies_to_fee, snapshot, status")
       .eq("org_id", orgId)
       .eq("project_id", contractProjectId)
       .eq("status", "active")
@@ -323,6 +330,7 @@ async function resolveInvoiceSourceBillingContext(params: {
 
   // Fallback to project-level settings if no contract found
   let effectiveRetainagePercent = Number(contract?.retainage_percent ?? 0)
+  const retainageAppliesToFee = Boolean(contract?.retainage_applies_to_fee ?? contract?.snapshot?.retainage_applies_to_fee ?? false)
   let effectiveContractTotalCents = contract?.total_cents ?? null
 
   if (!contract && contractProjectId) {
@@ -339,7 +347,9 @@ async function resolveInvoiceSourceBillingContext(params: {
     }
   }
 
-  const effectiveBaseLines = stripSystemGeneratedBillingLines(baseLines)
+  const effectiveBaseLines = stripSystemGeneratedBillingLines(baseLines).filter(
+    (line) => retainageAppliesToFee || !isInvoiceFeeLine(line),
+  )
   const grossAmountCents = effectiveBaseLines.reduce(
     (sum, line) => sum + Math.round(line.quantity * line.unit_cost_cents),
     0,
@@ -350,6 +360,7 @@ async function resolveInvoiceSourceBillingContext(params: {
   return {
     contractId,
     retainagePercent: effectiveRetainagePercent,
+    retainageAppliesToFee,
     retainageAmountCents,
     metadata: {
       ...sourceMetadata,
@@ -358,6 +369,7 @@ async function resolveInvoiceSourceBillingContext(params: {
       approved_change_orders_cents: contract?.snapshot?.approved_change_orders_cents ?? null,
       revised_contract_total_cents: contract?.snapshot?.revised_total_cents ?? effectiveContractTotalCents ?? null,
       retainage_percent: effectiveRetainagePercent > 0 ? effectiveRetainagePercent : null,
+      retainage_applies_to_fee: retainageAppliesToFee,
       retainage_amount_cents: retainageAmountCents > 0 ? retainageAmountCents : null,
       gross_amount_cents: grossAmountCents,
     },
@@ -489,6 +501,69 @@ async function assertSourceNotAlreadyBilled(params: {
   }
 }
 
+async function assertDirectChangeOrderInvoiceAllowed(params: {
+  supabase: SupabaseClient
+  orgId: string
+  projectId?: string | null
+  sourceType?: string | null
+  sourceChangeOrderId?: string | null
+}) {
+  if (params.sourceType !== "change_order" || !params.sourceChangeOrderId) return
+
+  let projectId = params.projectId ?? null
+  if (!projectId) {
+    const { data: changeOrder, error: changeOrderError } = await params.supabase
+      .from("change_orders")
+      .select("project_id")
+      .eq("org_id", params.orgId)
+      .eq("id", params.sourceChangeOrderId)
+      .maybeSingle()
+
+    if (changeOrderError) {
+      throw new Error(`Failed to load change order billing model: ${changeOrderError.message}`)
+    }
+    projectId = changeOrder?.project_id ?? null
+  }
+  if (!projectId) return
+
+  const [settingsResult, contractResult] = await Promise.all([
+    params.supabase
+      .from("project_financial_settings")
+      .select("billing_model")
+      .eq("org_id", params.orgId)
+      .eq("project_id", projectId)
+      .maybeSingle(),
+    params.supabase
+      .from("contracts")
+      .select("contract_type, fixed_fee_cents, gmp_cents, snapshot")
+      .eq("org_id", params.orgId)
+      .eq("project_id", projectId)
+      .eq("status", "active")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ])
+
+  if (settingsResult.error) {
+    throw new Error(`Failed to load project billing settings: ${settingsResult.error.message}`)
+  }
+  if (contractResult.error) {
+    throw new Error(`Failed to load project contract billing model: ${contractResult.error.message}`)
+  }
+
+  const billingModel = resolveProjectBillingModel({
+    status: "active",
+    financial_settings: settingsResult.data ?? null,
+    billing_contract: contractResult.data ?? null,
+  } as any)
+
+  if (isCostDrivenBillingModel(billingModel)) {
+    throw new Error(
+      "Cost-driven projects bill approved costs through the cost ledger. Do not invoice change orders directly.",
+    )
+  }
+}
+
 async function syncDrawInvoiceLink(params: {
   supabase: SupabaseClient
   orgId: string
@@ -541,6 +616,12 @@ async function releaseInvoiceSourceLinks(params: {
   const { supabase, orgId, invoiceId, metadata } = params
   const sourceDrawIds = invoiceMetadataDrawIds(metadata)
   const sourceType = typeof metadata?.source_type === "string" ? metadata.source_type : null
+
+  await releaseInvoiceFromBillingPeriod({
+    supabase,
+    orgId,
+    invoiceId,
+  })
 
   if (sourceDrawIds.length > 0) {
     const { error } = await supabase
@@ -911,6 +992,13 @@ export async function createInvoice({
   const sourceType = input.source_type ?? "manual"
   const sourceDrawId = input.source_draw_id ?? null
   const sourceChangeOrderId = input.source_change_order_id ?? null
+  await assertDirectChangeOrderInvoiceAllowed({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: input.project_id ?? null,
+    sourceType,
+    sourceChangeOrderId,
+  })
   const sourceContext = await resolveInvoiceSourceBillingContext({
     supabase,
     orgId: resolvedOrgId,
@@ -1074,6 +1162,7 @@ export async function createInvoice({
       source_contract_id: sourceContext?.contractId ?? null,
       billing_context: sourceContext?.metadata ?? null,
       retainage_percent: sourceContext?.retainagePercent ?? null,
+      retainage_applies_to_fee: sourceContext?.retainageAppliesToFee ?? null,
       retainage_amount_cents: sourceContext?.retainageAmountCents ?? null,
       qbo_income_account_id: input.qbo_income_account_id ?? null,
       qbo_income_account_name: input.qbo_income_account_name ?? null,
@@ -1272,6 +1361,16 @@ export async function updateInvoice({
   const sourceType = input.source_type ?? (existing.metadata as any)?.source_type ?? "manual"
   const sourceDrawId = input.source_draw_id ?? (existing.metadata as any)?.source_draw_id ?? null
   const sourceChangeOrderId = input.source_change_order_id ?? (existing.metadata as any)?.source_change_order_id ?? null
+  if (sourceType === "from_costs" || (existing.metadata as any)?.source_type === "from_costs") {
+    throw new Error("Approved-cost invoices are controlled by the cost ledger. Revise and reissue instead of editing.")
+  }
+  await assertDirectChangeOrderInvoiceAllowed({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: input.project_id ?? existing.project_id ?? null,
+    sourceType,
+    sourceChangeOrderId,
+  })
   const sourceContext = await resolveInvoiceSourceBillingContext({
     supabase,
     orgId: resolvedOrgId,
@@ -1336,6 +1435,8 @@ export async function updateInvoice({
       source_contract_id: sourceContext?.contractId ?? (existing.metadata as any)?.source_contract_id ?? null,
       billing_context: sourceContext?.metadata ?? (existing.metadata as any)?.billing_context ?? null,
       retainage_percent: sourceContext?.retainagePercent ?? (existing.metadata as any)?.retainage_percent ?? null,
+      retainage_applies_to_fee:
+        sourceContext?.retainageAppliesToFee ?? (existing.metadata as any)?.retainage_applies_to_fee ?? null,
       retainage_amount_cents: sourceContext?.retainageAmountCents ?? (existing.metadata as any)?.retainage_amount_cents ?? null,
       qbo_income_account_id: input.qbo_income_account_id ?? null,
       qbo_income_account_name: input.qbo_income_account_name ?? null,
@@ -1375,6 +1476,11 @@ export async function updateInvoice({
         qbo_income_account_id: line.qbo_income_account_id ?? null,
         qbo_income_account_name: line.qbo_income_account_name ?? null,
         system_generated_kind: isSystemGeneratedRetainageLine(line) ? "retainage_hold" : null,
+        source_type: sourceType === "fee" ? "fee" : null,
+        billable_cost_ids: line.billable_cost_ids ?? null,
+        cost_cents: line.cost_cents ?? null,
+        markup_cents: line.markup_cents ?? null,
+        markup_percent: line.markup_percent ?? null,
       },
     })),
   )
@@ -1758,6 +1864,14 @@ export async function reviseInvoice({ invoiceId, orgId }: { invoiceId: string; o
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const original = await getInvoiceWithLines(invoiceId, resolvedOrgId)
   if (!original) throw new Error("Invoice not found")
+  await requireInvoicePermission({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    permission: "invoice.write",
+    projectId: original.project_id,
+    invoiceId,
+  })
   if (["draft", "saved"].includes(original.status) && !original.sent_at && !original.qbo_id) {
     throw new Error("This invoice is still editable and does not need to be revised.")
   }
@@ -2034,7 +2148,8 @@ export async function recordInvoiceViewed({
 }
 
 export async function listInvoiceViews(invoiceId: string, orgId?: string): Promise<InvoiceView[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireInvoicePermission({ supabase, orgId: resolvedOrgId, userId, permission: "invoice.read", invoiceId })
   const { data, error } = await supabase
     .from("invoice_views")
     .select("id, org_id, invoice_id, token, user_agent, ip_address, viewed_at, created_at")

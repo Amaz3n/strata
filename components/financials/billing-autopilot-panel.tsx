@@ -9,6 +9,8 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import type { BillingAutopilotState } from "@/lib/services/billing-autopilot"
 
+import { unwrapAction } from "@/lib/action-result"
+
 export function BillingAutopilotPanel({
   projectId,
   initialState,

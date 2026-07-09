@@ -11,6 +11,8 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Send } from "@/components/icons"
 import { listEstimateCommentsAction, addEstimateCommentAction } from "@/app/(app)/estimates/actions"
 
+import { unwrapAction } from "@/lib/action-result"
+
 type Comment = {
   id: string
   author_type: string
@@ -73,7 +75,7 @@ export function EstimateActivitySheet({ estimate, open, onOpenChange }: Props) {
     if (!estimate || !reply.trim()) return
     startTransition(async () => {
       try {
-        await addEstimateCommentAction(estimate.id, reply.trim())
+        unwrapAction(await addEstimateCommentAction(estimate.id, reply.trim()))
         const data = await listEstimateCommentsAction(estimate.id)
         setComments(data as Comment[])
         setReply("")

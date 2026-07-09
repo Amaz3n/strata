@@ -42,6 +42,7 @@ import {
   type ESignTemplateSummary,
   type SignatureSourceComplianceGate,
 } from "@/app/(app)/signatures/actions"
+import { generateSubcontractDocumentAction } from "@/app/(app)/projects/[id]/commitments/actions"
 import type { FileWithUrls } from "@/app/(app)/documents/types"
 import { type UnifiedSignableEntityType } from "@/lib/esign/unified-contracts"
 import { cn } from "@/lib/utils"
@@ -69,6 +70,8 @@ import {
   Upload,
   User,
 } from "@/components/icons"
+
+import { unwrapAction } from "@/lib/action-result"
 
 type RecipientRole = "signer" | "cc"
 type PrepareStep = "envelope" | "fields"
@@ -283,6 +286,7 @@ export function EnvelopeWizard({
   const [loadingContractTermsTemplate, setLoadingContractTermsTemplate] = useState(false)
   const [attachContractTerms, setAttachContractTerms] = useState(false)
   const [applyingTemplateId, setApplyingTemplateId] = useState<string | null>(null)
+  const [generatingAgreement, setGeneratingAgreement] = useState(false)
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false)
   const [templateName, setTemplateName] = useState("")
   const [templateDescription, setTemplateDescription] = useState("")
@@ -861,16 +865,36 @@ export function EnvelopeWizard({
     prewarmedPdfUrlRef.current = null
   }
 
+  const handleGenerateSubcontractAgreement = async () => {
+    if (!sourceEntity || sourceEntity.type !== "subcontract" || !sourceEntity.project_id) return
+    setGeneratingAgreement(true)
+    try {
+      const result = unwrapAction(await generateSubcontractDocumentAction(sourceEntity.project_id, sourceEntity.id))
+      if (!result?.documentId) {
+        toast.error("Unable to generate agreement", {
+          description: result?.reason ?? "Please try again.",
+        })
+        return
+      }
+      await hydratePreparedDraft(result.documentId)
+      toast.success("Agreement generated from commitment")
+    } catch (error: any) {
+      toast.error("Unable to generate agreement", { description: error?.message ?? "Please try again." })
+    } finally {
+      setGeneratingAgreement(false)
+    }
+  }
+
   const handleApplyTemplate = async (templateId: string) => {
     if (!templateId || !sourceEntity?.project_id) return
     setApplyingTemplateId(templateId)
     try {
       const template = templates.find((row) => row.id === templateId)
-      const result = await createDraftFromESignTemplateAction({
+      const result = unwrapAction(await createDraftFromESignTemplateAction({
         templateId,
         projectId: sourceEntity.project_id,
         title: template?.name ?? (documentTitle.trim() || undefined),
-      })
+      }))
       await hydratePreparedDraft(result.documentId)
       toast.success("Template applied")
     } catch (error: any) {
@@ -921,12 +945,12 @@ export function EnvelopeWizard({
         return uploaded
       }
       setUploadProgress(96)
-      const packet = await applyContractTermsTemplateAction({
+      const packet = unwrapAction(await applyContractTermsTemplateAction({
         projectId: sourceEntity.project_id as string,
         sourceFileId: uploaded.id,
         sourceEntityType: sourceEntity.type,
         title: documentTitle.trim() || baseName,
-      })
+      }))
       toast.success("Standard terms attached")
       return packet
     }
@@ -942,7 +966,7 @@ export function EnvelopeWizard({
       const uploaded =
         files.length > 1
           ? await mergeESignPdfUploadAction(sourceEntity.project_id as string, formData)
-          : await uploadESignDocumentFileAction(sourceEntity.project_id as string, formData)
+          : unwrapAction(await uploadESignDocumentFileAction(sourceEntity.project_id as string, formData))
       applyUploadedFile(await applyTermsIfNeeded(uploaded))
     }
 
@@ -951,12 +975,12 @@ export function EnvelopeWizard({
         await uploadWithServerFallback()
       } else {
         try {
-          const directUpload = await createESignDocumentUploadUrlAction({
+          const directUpload = unwrapAction(await createESignDocumentUploadUrlAction({
             projectId: sourceEntity.project_id,
             fileName: file.name,
             fileType: file.type || "application/pdf",
             fileSize: file.size,
-          })
+          }))
 
           await uploadFileToSignedUrl({
             uploadUrl: directUpload.uploadUrl,
@@ -964,14 +988,14 @@ export function EnvelopeWizard({
             onProgress: (percent) => setUploadProgress(percent),
           })
 
-          const uploaded = await completeESignDocumentUploadAction({
+          const uploaded = unwrapAction(await completeESignDocumentUploadAction({
             projectId: sourceEntity.project_id,
             storagePath: directUpload.storagePath,
             uploadToken: directUpload.uploadToken,
             fileName: file.name,
             fileType: file.type || "application/pdf",
             fileSize: file.size,
-          })
+          }))
           applyUploadedFile(await applyTermsIfNeeded(uploaded))
         } catch {
           // Usually R2 CORS/network in browser. Disable direct mode for this session.
@@ -989,7 +1013,7 @@ export function EnvelopeWizard({
   }
 
   const saveDraftEnvelope = useCallback(async (documentId: string, nextTitle: string) => {
-    await saveDocumentDraftEnvelopeAction({
+    unwrapAction(await saveDocumentDraftEnvelopeAction({
       document_id: documentId,
       ...(sourceEntity?.standalone
         ? {}
@@ -1000,7 +1024,7 @@ export function EnvelopeWizard({
       title: nextTitle,
       signing_order_enabled: signingOrderEnabled,
       recipients: serializeDraftRecipients(recipients),
-    })
+    }))
   }, [recipients, signingOrderEnabled, sourceEntity])
 
   const buildPreparationKey = useCallback(() => {
@@ -1073,7 +1097,7 @@ export function EnvelopeWizard({
 
           const document = linkedSourceMetadata
             ? (
-                await createVersionedSourceDocumentDraftAction({
+                unwrapAction(await createVersionedSourceDocumentDraftAction({
                   project_id: sourceEntity.project_id!,
                   document_type: documentType,
                   title: draftTitle,
@@ -1081,15 +1105,15 @@ export function EnvelopeWizard({
                   source_entity_type: linkedSourceMetadata.source_entity_type,
                   source_entity_id: linkedSourceMetadata.source_entity_id,
                   metadata: draftMetadata,
-                })
+                }))
               ).document
-            : await createDocumentAction({
+            : unwrapAction(await createDocumentAction({
                 project_id: sourceEntity.project_id!,
                 document_type: documentType,
                 title: draftTitle,
                 source_file_id: uploadedPdf.id,
                 metadata: draftMetadata,
-              })
+              }))
 
           activeDocument = { id: document.id, title: document.title, document_type: document.document_type }
           setViewerDocument(activeDocument)
@@ -1208,7 +1232,7 @@ export function EnvelopeWizard({
 
     try {
       const draftTitle = documentTitle.trim() || viewerDocument.title
-      await saveDocumentFieldsAction(
+      unwrapAction(await saveDocumentFieldsAction(
         viewerDocument.id,
         1,
         viewerFields.map((field, index) => ({
@@ -1224,7 +1248,7 @@ export function EnvelopeWizard({
           sort_order: field.sort_order ?? index,
           metadata: field.metadata ?? {},
         })),
-      )
+      ))
       await saveDraftEnvelope(viewerDocument.id, draftTitle)
       if (viewerDocument.title !== draftTitle) {
         setViewerDocument((prev) => (prev ? { ...prev, title: draftTitle } : prev))
@@ -1283,13 +1307,13 @@ export function EnvelopeWizard({
       const expiryDays = Math.max(1, Math.min(180, Number(expiresInDays) || 14))
       const expiresAt = new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000).toISOString()
       const reminderDays = Math.max(1, Math.min(30, Number(reminderIntervalDays) || 3))
-      const result = await sendDocumentEnvelopeAction({
+      const result = unwrapAction(await sendDocumentEnvelopeAction({
         document_id: viewerDocument.id,
         recipients: preparedRecipients,
         expires_at: expiresAt,
         reminder_enabled: remindersEnabled,
         reminder_interval_days: reminderDays,
-      })
+      }))
       onEnvelopeSent?.({
         documentId: viewerDocument.id,
         envelopeId: result?.envelopeId ?? null,
@@ -1315,12 +1339,12 @@ export function EnvelopeWizard({
     try {
       const hasSaved = await handleSaveFields(false)
       if (!hasSaved) return
-      const result = await createESignTemplateFromDocumentAction({
+      const result = unwrapAction(await createESignTemplateFromDocumentAction({
         documentId: viewerDocument.id,
         name,
         description: templateDescription.trim() || null,
         projectScoped: true,
-      })
+      }))
       toast.success("Template saved")
       setSaveTemplateOpen(false)
       setTemplateName("")
@@ -1656,6 +1680,25 @@ export function EnvelopeWizard({
 
                 <div className="space-y-2">
                   <Label>PDF file</Label>
+                  {sourceEntity?.type === "subcontract" && !uploadedPdf ? (
+                    <div className="flex items-center justify-between rounded-md border px-3 py-2.5">
+                      <div>
+                        <p className="text-sm">Generate the agreement from this commitment</p>
+                        <p className="text-xs text-muted-foreground">
+                          Scope, schedule of values, retainage, and terms — no upload needed.
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={generatingAgreement || uploadingPdf}
+                        onClick={() => void handleGenerateSubcontractAgreement()}
+                      >
+                        {generatingAgreement ? "Generating..." : "Generate agreement"}
+                      </Button>
+                    </div>
+                  ) : null}
                   <input
                     ref={fileInputRef}
                     type="file"

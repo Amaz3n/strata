@@ -11,6 +11,7 @@
 
 import { differenceInCalendarDays, parseISO } from "date-fns"
 
+import { isCostDrivenBillingModel, resolveProjectBillingModel } from "@/lib/financials/billing-model"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { getProjectJobCostActualsByCostCode } from "@/lib/services/job-cost-actuals"
@@ -208,6 +209,7 @@ async function checkBillableNoJobCost(
   const linkedBillableCostIds = new Set((jobCostLinks ?? []).map((j: any) => j.billable_cost_id))
 
   return (billableCosts as any[])
+    .filter((cost) => cost.source_type !== "manual_adjustment" && cost.source_type !== "allowance_overage")
     .filter((cost) => !linkedBillableCostIds.has(cost.id))
     .map((cost) => ({
       id: `billable-no-jce-${cost.id}`,
@@ -252,6 +254,107 @@ async function checkJobCostUnclassified(
       source_id: entry.source_id,
       href: projectFinancialHref(projectId, "/budget"),
     }))
+}
+
+async function checkIncurredBillableTieOut(
+  ctx: OrgServiceContext,
+  projectId: string,
+): Promise<TrustCenterException[]> {
+  const [settingsResult, contractResult] = await Promise.all([
+    ctx.supabase
+      .from("project_financial_settings")
+      .select("billing_model")
+      .eq("org_id", ctx.orgId)
+      .eq("project_id", projectId)
+      .maybeSingle(),
+    ctx.supabase
+      .from("contracts")
+      .select("contract_type, fixed_fee_cents, gmp_cents, snapshot")
+      .eq("org_id", ctx.orgId)
+      .eq("project_id", projectId)
+      .eq("status", "active")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ])
+
+  if (settingsResult.error || contractResult.error) return []
+  const billingModel = resolveProjectBillingModel({
+    status: "active",
+    financial_settings: settingsResult.data ?? null,
+    billing_contract: contractResult.data ?? null,
+  } as any)
+  if (!isCostDrivenBillingModel(billingModel)) return []
+
+  const { data: actuals, error: actualsError } = await ctx.supabase
+    .from("job_cost_entries")
+    .select("id, source_type, source_id, cost_cents, is_billable, billable_cost_id, metadata")
+    .eq("org_id", ctx.orgId)
+    .eq("project_id", projectId)
+    .eq("status", "posted")
+    .in("source_type", ["vendor_bill_line", "project_expense", "project_expense_line", "time_entry"])
+
+  if (actualsError || !actuals || actuals.length === 0) return []
+
+  const sourcePairs = (actuals as any[])
+    .map((entry) => `${entry.source_type}:${entry.source_id}`)
+    .filter((value) => !value.endsWith(":null"))
+  const sourceIdsByType = new Map<string, string[]>()
+  for (const pair of sourcePairs) {
+    const [sourceType, sourceId] = pair.split(":")
+    if (!sourceType || !sourceId) continue
+    const values = sourceIdsByType.get(sourceType) ?? []
+    values.push(sourceId)
+    sourceIdsByType.set(sourceType, values)
+  }
+
+  const ledgerPairs = new Set<string>()
+  await Promise.all(
+    Array.from(sourceIdsByType.entries()).map(async ([sourceType, sourceIds]) => {
+      const ids = Array.from(new Set(sourceIds))
+      if (ids.length === 0) return
+      const { data } = await ctx.supabase
+        .from("billable_costs")
+        .select("source_type, source_id")
+        .eq("org_id", ctx.orgId)
+        .eq("project_id", projectId)
+        .eq("source_type", sourceType)
+        .in("source_id", ids)
+        .neq("status", "voided")
+      for (const row of data ?? []) {
+        ledgerPairs.add(`${(row as any).source_type}:${(row as any).source_id}`)
+      }
+    }),
+  )
+
+  const missing = (actuals as any[]).filter((entry) => {
+    if (entry.billable_cost_id) return false
+    if (ledgerPairs.has(`${entry.source_type}:${entry.source_id}`)) return false
+    const metadata = (entry.metadata ?? {}) as Record<string, any>
+    return entry.is_billable === true || metadata.billable_to_customer === true || metadata.imported_from_qbo === true
+  })
+
+  if (missing.length === 0) return []
+
+  const amountCents = missing.reduce((sum, entry) => sum + Number(entry.cost_cents ?? 0), 0)
+  return [
+    {
+      id: `incurred-billable-tieout-${projectId}`,
+      kind: "incurred_billable_tieout",
+      severity: severityForAmount(amountCents),
+      project_id: projectId,
+      reference: `${missing.length} incurred cost${missing.length === 1 ? "" : "s"}`,
+      description: `$${(Math.abs(amountCents) / 100).toLocaleString()} in actual costs look reimbursable but are missing from the billable ledger`,
+      amount_cents: Math.abs(amountCents),
+      source_type: "job_cost_entries",
+      source_id: projectId,
+      href: projectFinancialHref(projectId, "/trust-center"),
+      metadata: {
+        entry_count: missing.length,
+        qbo_imported_count: missing.filter((entry) => entry.metadata?.imported_from_qbo === true).length,
+      },
+    },
+  ]
 }
 
 async function checkBillsWithoutCommitment(
@@ -777,6 +880,7 @@ export async function getProjectTrustCenterData(
     checkBilledWithoutProof(ctx, projectId),
     checkBillableNoJobCost(ctx, projectId),
     checkJobCostUnclassified(ctx, projectId),
+    checkIncurredBillableTieOut(ctx, projectId),
     checkBillsWithoutCommitment(ctx, projectId),
     checkUnlinkedPayments(ctx, projectId),
     checkQboSyncErrors(ctx, projectId),

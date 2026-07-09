@@ -67,6 +67,8 @@ function queueIcon(kind: TrustCenterExceptionKind) {
       return <AlertTriangle className={iconClass} />
     case "billable_no_job_cost":
       return <Link2Off className={iconClass} />
+    case "incurred_billable_tieout":
+      return <CircleDot className={iconClass} />
     case "approved_unbilled":
       return <Receipt className={iconClass} />
     case "billed_without_proof":

@@ -10,15 +10,18 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Separator } from "@/components/ui/separator"
+import { SubmitPackageDialog } from "./submit-package-dialog"
 
 interface SubmittalsPortalClientProps {
   submittals: Submittal[]
   token: string
 }
 
+const OPEN_FOR_SUBMISSION = new Set(["draft", "pending", "submitted", "in_review", "revise_resubmit"])
+
 export function SubmittalsPortalClient({ submittals, token }: SubmittalsPortalClientProps) {
   const [selected, setSelected] = useState<Submittal | null>(null)
-  void token
+  const [submitFor, setSubmitFor] = useState<Submittal | null>(null)
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-background to-muted px-4 py-6">
@@ -57,14 +60,28 @@ export function SubmittalsPortalClient({ submittals, token }: SubmittalsPortalCl
                     </p>
                   )}
                 </div>
-                <Button variant="outline" size="sm" onClick={() => setSelected(sub)}>
-                  View details
-                </Button>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={() => setSelected(sub)}>
+                    View details
+                  </Button>
+                  {OPEN_FOR_SUBMISSION.has(sub.status) && !sub.superseded_by_id && (
+                    <Button size="sm" onClick={() => setSubmitFor(sub)}>
+                      Submit documents
+                    </Button>
+                  )}
+                </div>
               </CardContent>
             </Card>
           ))}
         </div>
       </div>
+
+      <SubmitPackageDialog
+        token={token}
+        submittal={submitFor}
+        open={!!submitFor}
+        onOpenChange={(open) => (open ? null : setSubmitFor(null))}
+      />
 
       <Dialog open={!!selected} onOpenChange={(open) => (open ? null : setSelected(null))}>
         <DialogContent className="max-w-2xl">

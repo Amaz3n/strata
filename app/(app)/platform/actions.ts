@@ -16,7 +16,8 @@ import {
 } from "@/lib/services/platform-session"
 import { provisionOrganization } from "@/lib/services/provisioning"
 import { setPlatformOrganizationStatus } from "@/lib/services/platform-access"
-import { createOrgSubscriptionCheckout } from "@/lib/services/billing"
+import { activateOrgBilling } from "@/lib/services/billing"
+import { seedSampleProject } from "@/lib/services/demo-seed"
 import { createOrgMemberInvite } from "@/lib/services/team"
 import {
   AI_FEATURE_VALUES,
@@ -29,6 +30,16 @@ import {
   validateAiProviderModelPair,
 } from "@/lib/services/ai-config"
 import { listOrgAiSearchAccess, setOrgAiSearchAccess } from "@/lib/services/ai-search-access"
+
+import { actionError, type ActionResult } from "@/lib/action-result"
+
+async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
+  try {
+    return { success: true, data: await fn() }
+  } catch (error) {
+    return actionError(error)
+  }
+}
 
 const enterOrgContextSchema = z.object({
   orgId: z.string().uuid("Invalid organization id"),
@@ -45,12 +56,15 @@ const startImpersonationSchema = z.object({
 const provisionPlatformOrgSchema = z.object({
   orgName: z.string().min(2, "Organization name is required"),
   slug: z.string().min(2, "Slug is required"),
-  billingModel: z.enum(["subscription", "license"]),
-  planCode: z.string().optional(),
+  billingModel: z.enum(["subscription", "license"]).default("subscription"),
   fullName: z.string().min(2, "Primary contact name is required"),
   primaryEmail: z.string().email("Valid email is required"),
-  trialDays: z.coerce.number().optional(),
-  createCheckout: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
+  trialDays: z.coerce.number().int().min(1).max(60).optional(),
+  amountDollars: z.coerce.number().positive("Amount must be greater than zero.").optional(),
+  interval: z.enum(["month", "year"]).optional(),
+  collectionMethod: z.enum(["checkout", "invoice"]).optional(),
+  netDays: z.coerce.number().int().min(1).max(90).optional(),
+  seedSampleProject: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
   sendInvites: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
   teamMembers: z
     .array(
@@ -61,6 +75,21 @@ const provisionPlatformOrgSchema = z.object({
       }),
     )
     .default([]),
+}).superRefine((data, ctx) => {
+  const hasAmount = typeof data.amountDollars === "number" && Number.isFinite(data.amountDollars)
+  if (!hasAmount) return
+  if (data.billingModel !== "subscription") {
+    ctx.addIssue({ code: "custom", path: ["amountDollars"], message: "Set-price billing is only available for subscriptions." })
+  }
+  if (!hasAmount) {
+    ctx.addIssue({ code: "custom", path: ["amountDollars"], message: "Enter the negotiated amount." })
+  }
+  if (!data.interval) {
+    ctx.addIssue({ code: "custom", path: ["interval"], message: "Choose a billing interval." })
+  }
+  if (!data.collectionMethod) {
+    ctx.addIssue({ code: "custom", path: ["collectionMethod"], message: "Choose a payment method." })
+  }
 })
 
 const setOrganizationStatusSchema = z.object({
@@ -104,30 +133,34 @@ function parseTeamMembers(formData: FormData) {
 }
 
 export async function enterOrgContextAction(formData: FormData) {
-  const parsed = enterOrgContextSchema.safeParse({
-    orgId: formData.get("orgId"),
-    reason: formData.get("reason"),
+  return run(async () => {
+      const parsed = enterOrgContextSchema.safeParse({
+        orgId: formData.get("orgId"),
+        reason: formData.get("reason"),
+      })
+
+      if (!parsed.success) {
+        throw new Error(parsed.error.errors[0]?.message ?? "Invalid context request")
+      }
+
+      const { user } = await requireAuth()
+      await requirePermission("platform.org.access", { userId: user.id })
+      await setPlatformOrgContext(parsed.data.orgId, parsed.data.reason)
+
+      revalidatePath("/")
+      redirect("/")
   })
-
-  if (!parsed.success) {
-    throw new Error(parsed.error.errors[0]?.message ?? "Invalid context request")
-  }
-
-  const { user } = await requireAuth()
-  await requirePermission("platform.org.access", { userId: user.id })
-  await setPlatformOrgContext(parsed.data.orgId, parsed.data.reason)
-
-  revalidatePath("/")
-  redirect("/")
 }
 
 export async function clearOrgContextAction() {
-  const { user } = await requireAuth()
-  await requirePermission("platform.org.access", { userId: user.id })
-  await clearPlatformOrgContext()
+  return run(async () => {
+      const { user } = await requireAuth()
+      await requirePermission("platform.org.access", { userId: user.id })
+      await clearPlatformOrgContext()
 
-  revalidatePath("/")
-  redirect("/platform")
+      revalidatePath("/")
+      redirect("/platform")
+  })
 }
 
 export async function startImpersonationAction(
@@ -176,13 +209,15 @@ export async function startImpersonationAction(
 }
 
 export async function endImpersonationAction() {
-  const { user } = await requireAuth()
-  await requirePermission("impersonation.end", { userId: user.id })
-  await endImpersonationSession()
+  return run(async () => {
+      const { user } = await requireAuth()
+      await requirePermission("impersonation.end", { userId: user.id })
+      await endImpersonationSession()
 
-  revalidatePath("/")
-  revalidatePath("/platform")
-  redirect("/platform")
+      revalidatePath("/")
+      revalidatePath("/platform")
+      redirect("/platform")
+  })
 }
 
 export async function provisionPlatformOrgAction(
@@ -193,11 +228,14 @@ export async function provisionPlatformOrgAction(
     orgName: formData.get("orgName"),
     slug: formData.get("slug") ?? formData.get("orgSlug"),
     billingModel: formData.get("billingModel") ?? "subscription",
-    planCode: formData.get("planCode"),
     fullName: formData.get("fullName"),
     primaryEmail: formData.get("primaryEmail"),
     trialDays: formData.get("trialDays"),
-    createCheckout: formData.get("createCheckout") ?? "true",
+    amountDollars: formData.get("amountDollars") || undefined,
+    interval: formData.get("interval") || undefined,
+    collectionMethod: formData.get("collectionMethod") || undefined,
+    netDays: formData.get("netDays") || undefined,
+    seedSampleProject: formData.get("seedSampleProject") ?? "true",
     sendInvites: formData.get("sendInvites") ?? "false",
     teamMembers: parseTeamMembers(formData),
   })
@@ -214,7 +252,7 @@ export async function provisionPlatformOrgAction(
       name: parsed.data.orgName,
       slug: parsed.data.slug,
       billingModel: parsed.data.billingModel,
-      planCode: parsed.data.planCode,
+      planCode: null,
       primaryEmail: parsed.data.primaryEmail,
       primaryName: parsed.data.fullName,
       trialDays: parsed.data.trialDays,
@@ -239,17 +277,28 @@ export async function provisionPlatformOrgAction(
     }
 
     let checkoutUrl: string | undefined
-    if (parsed.data.billingModel === "subscription" && parsed.data.createCheckout) {
-      if (!parsed.data.planCode) {
-        throw new Error("Choose a subscription plan before creating a checkout link.")
-      }
-
-      const checkout = await createOrgSubscriptionCheckout({
+    let invoiceCollection = false
+    if (parsed.data.billingModel === "subscription" && parsed.data.amountDollars && parsed.data.interval && parsed.data.collectionMethod) {
+      const activation = await activateOrgBilling({
         orgId: org.id,
-        planCode: parsed.data.planCode,
+        amountCents: Math.round(parsed.data.amountDollars * 100),
+        interval: parsed.data.interval,
+        collectionMethod: parsed.data.collectionMethod,
+        netDays: parsed.data.collectionMethod === "invoice" ? parsed.data.netDays ?? 30 : undefined,
         actorUserId: user.id,
       })
-      checkoutUrl = checkout.checkoutUrl
+      checkoutUrl = activation.checkoutUrl ?? undefined
+      invoiceCollection = parsed.data.collectionMethod === "invoice"
+    }
+
+    let seedWarning = ""
+    if (parsed.data.seedSampleProject) {
+      try {
+        await seedSampleProject(org.id, user.id)
+      } catch (seedError) {
+        console.error("Failed to seed sample project", seedError)
+        seedWarning = " Sample project seeding failed; the org was still created."
+      }
     }
 
     revalidatePath("/platform")
@@ -261,9 +310,11 @@ export async function provisionPlatformOrgAction(
         ? parsed.data.sendInvites
           ? "Client org created. Send the Stripe Checkout link to finish subscription setup."
           : "Client org created without sending workspace invites. Send the Stripe Checkout link to finish subscription setup."
-        : parsed.data.sendInvites
-          ? "Client org created and workspace invites sent."
-          : "Client org created without sending workspace invites.",
+        : invoiceCollection
+          ? `Client org created. Stripe will email the invoice to ${parsed.data.primaryEmail}.`
+          : parsed.data.sendInvites
+            ? `Client org created and workspace invites sent.${seedWarning}`
+            : `Client org created without sending workspace invites.${seedWarning}`,
       checkoutUrl,
       orgId: org.id,
       orgName: org.name,
@@ -276,148 +327,156 @@ export async function provisionPlatformOrgAction(
 }
 
 export async function setOrganizationStatusAction(formData: FormData) {
-  const parsed = setOrganizationStatusSchema.safeParse({
-    orgId: formData.get("orgId"),
-    status: formData.get("status"),
-    reason: formData.get("reason"),
+  return run(async () => {
+      const parsed = setOrganizationStatusSchema.safeParse({
+        orgId: formData.get("orgId"),
+        status: formData.get("status"),
+        reason: formData.get("reason"),
+      })
+
+      if (!parsed.success) {
+        throw new Error(parsed.error.errors[0]?.message ?? "Invalid status update request.")
+      }
+
+      const { user } = await requireAuth()
+      await requireAnyPermission(["platform.billing.manage", "platform.support.write"], { userId: user.id })
+
+      await setPlatformOrganizationStatus({
+        orgId: parsed.data.orgId,
+        status: parsed.data.status,
+        reason: parsed.data.reason,
+        actorUserId: user.id,
+      })
+
+      revalidatePath("/platform")
+      revalidatePath("/admin/customers")
+      revalidatePath("/")
   })
-
-  if (!parsed.success) {
-    throw new Error(parsed.error.errors[0]?.message ?? "Invalid status update request.")
-  }
-
-  const { user } = await requireAuth()
-  await requireAnyPermission(["platform.billing.manage", "platform.support.write"], { userId: user.id })
-
-  await setPlatformOrganizationStatus({
-    orgId: parsed.data.orgId,
-    status: parsed.data.status,
-    reason: parsed.data.reason,
-    actorUserId: user.id,
-  })
-
-  revalidatePath("/platform")
-  revalidatePath("/admin/customers")
-  revalidatePath("/")
 }
 
 export async function getPlatformAiDefaultsAction() {
-  const { user } = await requireAuth()
-  await requirePermission("platform.org.access", { userId: user.id })
+      const { user } = await requireAuth()
+      await requirePermission("platform.org.access", { userId: user.id })
 
-  const [canManage, config] = await Promise.all([
-    hasAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id }),
-    getPlatformAiFeatureDefaultConfig({ supabase: createServiceSupabaseClient(), feature: "search" }),
-  ])
+      const [canManage, config] = await Promise.all([
+        hasAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id }),
+        getPlatformAiFeatureDefaultConfig({ supabase: createServiceSupabaseClient(), feature: "search" }),
+      ])
 
-  return {
-    provider: config.provider,
-    model: config.model,
-    source: config.source,
-    canManage,
-  }
+      return {
+        provider: config.provider,
+        model: config.model,
+        source: config.source,
+        canManage,
+      }
 }
 
 export async function updatePlatformAiDefaultsAction(input: { feature?: string; provider: string; model?: string }) {
-  const parsed = updatePlatformAiDefaultsSchema.safeParse(input)
-  if (!parsed.success) {
-    return { error: parsed.error.errors[0]?.message ?? "Invalid AI defaults." }
-  }
+  return run(async () => {
+      const parsed = updatePlatformAiDefaultsSchema.safeParse(input)
+      if (!parsed.success) {
+        return { error: parsed.error.errors[0]?.message ?? "Invalid AI defaults." }
+      }
 
-  const { user } = await requireAuth()
-  await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
+      const { user } = await requireAuth()
+      await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
 
-  const provider = normalizeAiProvider(parsed.data.provider) ?? "openai"
-  const feature = parsed.data.feature
-  const model = parsed.data.model?.trim() || defaultModelForFeatureProvider(feature, provider)
-  const providerModelError = validateAiProviderModelPair(provider, model)
-  if (providerModelError) {
-    return { error: providerModelError }
-  }
+      const provider = normalizeAiProvider(parsed.data.provider) ?? "openai"
+      const feature = parsed.data.feature
+      const model = parsed.data.model?.trim() || defaultModelForFeatureProvider(feature, provider)
+      const providerModelError = validateAiProviderModelPair(provider, model)
+      if (providerModelError) {
+        return { error: providerModelError }
+      }
 
-  try {
-    await upsertPlatformAiFeatureDefaultConfig({
-      supabase: createServiceSupabaseClient(),
-      feature,
-      provider,
-      model,
-      updatedBy: user.id,
-    })
-  } catch (error: any) {
-    console.error("Failed to update platform AI defaults", error)
-    return { error: error?.message ?? "Unable to update platform AI defaults." }
-  }
+      try {
+        await upsertPlatformAiFeatureDefaultConfig({
+          supabase: createServiceSupabaseClient(),
+          feature,
+          provider,
+          model,
+          updatedBy: user.id,
+        })
+      } catch (error: any) {
+        console.error("Failed to update platform AI defaults", error)
+        return { error: error?.message ?? "Unable to update platform AI defaults." }
+      }
 
-  revalidatePath("/platform")
-  revalidatePath("/settings")
-  return {
-    success: true as const,
-    feature,
-    provider,
-    model,
-    source: "platform" as const,
-  }
+      revalidatePath("/platform")
+      revalidatePath("/settings")
+      return {
+        success: true as const,
+        feature,
+        provider,
+        model,
+        source: "platform" as const,
+      }
+  })
 }
 
 export async function clearPlatformAiDefaultsAction(input: { feature?: string } = {}) {
-  const feature = AI_FEATURE_VALUES.includes(input.feature as any) ? input.feature as (typeof AI_FEATURE_VALUES)[number] : "search"
-  const { user } = await requireAuth()
-  await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
+  return run(async () => {
+      const feature = AI_FEATURE_VALUES.includes(input.feature as any) ? input.feature as (typeof AI_FEATURE_VALUES)[number] : "search"
+      const { user } = await requireAuth()
+      await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
 
-  try {
-    await clearPlatformAiFeatureDefaultConfig({
-      supabase: createServiceSupabaseClient(),
-      feature,
-    })
-  } catch (error: any) {
-    console.error("Failed to clear platform AI defaults", error)
-    return { error: error?.message ?? "Unable to clear platform AI defaults." }
-  }
+      try {
+        await clearPlatformAiFeatureDefaultConfig({
+          supabase: createServiceSupabaseClient(),
+          feature,
+        })
+      } catch (error: any) {
+        console.error("Failed to clear platform AI defaults", error)
+        return { error: error?.message ?? "Unable to clear platform AI defaults." }
+      }
 
-  const config = await getPlatformAiFeatureDefaultConfig({ supabase: createServiceSupabaseClient(), feature })
-  revalidatePath("/platform")
-  revalidatePath("/settings")
-  return {
-    success: true as const,
-    feature,
-    provider: config.provider,
-    model: config.model,
-    source: config.source,
-  }
+      const config = await getPlatformAiFeatureDefaultConfig({ supabase: createServiceSupabaseClient(), feature })
+      revalidatePath("/platform")
+      revalidatePath("/settings")
+      return {
+        success: true as const,
+        feature,
+        provider: config.provider,
+        model: config.model,
+        source: config.source,
+      }
+  })
 }
 
 export async function getAiSearchAccessAction() {
-  const { user } = await requireAuth()
-  await requirePermission("platform.org.access", { userId: user.id })
+      const { user } = await requireAuth()
+      await requirePermission("platform.org.access", { userId: user.id })
 
-  const [canManage, orgs] = await Promise.all([
-    hasAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id }),
-    listOrgAiSearchAccess(),
-  ])
+      const [canManage, orgs] = await Promise.all([
+        hasAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id }),
+        listOrgAiSearchAccess(),
+      ])
 
-  return { canManage, orgs }
+      return { canManage, orgs }
 }
 
 export async function setAiSearchAccessAction(input: { orgId: string; enabled: boolean }) {
-  const parsed = setAiSearchAccessSchema.safeParse(input)
-  if (!parsed.success) {
-    return { error: parsed.error.errors[0]?.message ?? "Invalid AI search access request." }
-  }
+  return run(async () => {
+      const parsed = setAiSearchAccessSchema.safeParse(input)
+      if (!parsed.success) {
+        return { error: parsed.error.errors[0]?.message ?? "Invalid AI search access request." }
+      }
 
-  const { user } = await requireAuth()
-  await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
+      const { user } = await requireAuth()
+      await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
 
-  try {
-    await setOrgAiSearchAccess({
-      orgId: parsed.data.orgId,
-      enabled: parsed.data.enabled,
-      actorId: user.id,
-    })
-  } catch (error: any) {
-    console.error("Failed to update AI search access", error)
-    return { error: error?.message ?? "Unable to update AI search access." }
-  }
+      try {
+        await setOrgAiSearchAccess({
+          orgId: parsed.data.orgId,
+          enabled: parsed.data.enabled,
+          actorId: user.id,
+        })
+      } catch (error: any) {
+        console.error("Failed to update AI search access", error)
+        return { error: error?.message ?? "Unable to update AI search access." }
+      }
 
-  revalidatePath("/platform")
-  return { success: true as const, orgId: parsed.data.orgId, enabled: parsed.data.enabled }
+      revalidatePath("/platform")
+      return { success: true as const, orgId: parsed.data.orgId, enabled: parsed.data.enabled }
+  })
 }

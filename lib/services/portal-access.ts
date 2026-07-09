@@ -24,6 +24,7 @@ import type {
 } from "@/lib/types"
 
 import { listProjectScheduleItemsWithClient } from "@/lib/services/schedule"
+import { listDecisionsForPortal } from "@/lib/services/decisions"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
 import { hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
@@ -759,6 +760,7 @@ export async function loadClientPortalData({
   permissions,
   portalType = "client",
   companyId,
+  contactId,
   scopedRfiId,
   portalToken,
 }: {
@@ -767,6 +769,7 @@ export async function loadClientPortalData({
   permissions: PortalPermissions
   portalType?: "client" | "sub"
   companyId?: string | null
+  contactId?: string | null
   scopedRfiId?: string | null
   portalToken?: string
 }): Promise<ClientPortalData> {
@@ -825,6 +828,11 @@ export async function loadClientPortalData({
   const submittals = permissions.can_view_submittals ? await fetchSubmittals(supabase, orgId, projectId) : []
 
   const selections = permissions.can_submit_selections ? await fetchSelections(supabase, orgId, projectId) : []
+  const pendingDecisions = permissions.can_submit_selections
+    ? (await listDecisionsForPortal(orgId, projectId, contactId ?? null)).filter(
+        (decision) => decision.status === "pending",
+      )
+    : []
   const punchItems = permissions.can_create_punch_items ? await fetchPunchItems(supabase, orgId, projectId) : []
   const photos = permissions.can_view_photos ? await fetchPhotoTimeline(supabase, orgId, projectId) : []
   const warrantyRequests = permissions.can_view_warranty ? await fetchWarrantyRequests(supabase, orgId, projectId) : []
@@ -850,6 +858,7 @@ export async function loadClientPortalData({
     photos,
     pendingChangeOrders,
     pendingSelections: selections,
+    pendingDecisions,
     warrantyRequests,
     invoices,
     rfis,
@@ -1413,7 +1422,7 @@ async function fetchSubmittals(supabase: any, orgId: string, projectId: string):
   const { data, error } = await supabase
     .from("submittals")
     .select(
-      "id, org_id, project_id, submittal_number, title, description, status, spec_section, submittal_type, due_date, reviewed_at, attachment_file_id, last_item_submitted_at, decision_status, decision_note, decision_by_user_id, decision_by_contact_id, decision_at, decision_via_portal, decision_portal_token_id",
+      "id, org_id, project_id, submittal_number, revision, superseded_by_id, title, description, status, spec_section, submittal_type, due_date, reviewed_at, attachment_file_id, last_item_submitted_at, decision_status, decision_note, decision_by_user_id, decision_by_contact_id, decision_at, decision_via_portal, decision_portal_token_id",
     )
     .eq("org_id", orgId)
     .eq("project_id", projectId)
@@ -1504,6 +1513,8 @@ function mapSubmittal(data: any): Submittal {
     org_id: data.org_id,
     project_id: data.project_id,
     submittal_number: data.submittal_number,
+    revision: data.revision ?? 0,
+    superseded_by_id: data.superseded_by_id ?? null,
     title: data.title,
     description: data.description ?? undefined,
     status: data.status,

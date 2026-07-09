@@ -218,8 +218,8 @@ test("QBO-imported payables can split by line project while whole-payable reassi
   )
 
   const lineProjectSelect = workspaceSource.slice(
-    workspaceSource.indexOf("<Label className=\"mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground\">Project</Label>"),
-    workspaceSource.indexOf("<Label className=\"mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground\">Amount</Label>"),
+    workspaceSource.indexOf("<Label className=\"microlabel mb-1 block\">Project</Label>"),
+    workspaceSource.indexOf("<Label className=\"microlabel mb-1 block\">Amount</Label>"),
   )
 
   assert.match(lineProjectSelect, /projectId: value/)

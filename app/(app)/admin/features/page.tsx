@@ -6,6 +6,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Skeleton } from "@/components/ui/skeleton"
 import { getFeatureFlags, getFeatureFlagOrganizations } from "@/lib/services/admin"
 
+import { unwrapAction } from "@/lib/action-result"
+
 export const dynamic = 'force-dynamic'
 
 export default async function FeaturesPage() {

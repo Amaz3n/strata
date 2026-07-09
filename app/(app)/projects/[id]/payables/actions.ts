@@ -18,17 +18,14 @@ import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
 import { syncVendorBillToQBO } from "@/lib/services/qbo-sync"
 import { extractPayableInvoiceFromFile, type ExtractedPayableInvoice } from "@/lib/services/receipt-extraction"
 
-function cleanAndRethrowError(error: unknown): never {
-  console.error("[Payables Action Error]:", error)
-  if (error instanceof AuthorizationError) {
-    throw new Error(`AUTH_FORBIDDEN:${error.reasonCode}`)
+import { actionError, type ActionResult } from "@/lib/action-result"
+
+async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
+  try {
+    return { success: true, data: await fn() }
+  } catch (error) {
+    return actionError(error)
   }
-  if (error instanceof Error) {
-    const cleanErr = new Error(error.message)
-    cleanErr.stack = error.stack
-    throw cleanErr
-  }
-  throw error
 }
 
 export type PayableActionResult = { success: true } | { success: false; error: string }
@@ -62,190 +59,194 @@ export async function updateProjectVendorBillStatusAction(
   projectId: string,
   billId: string,
   input: unknown,
-): Promise<PayableMutationResult> {
-  try {
-    const updated = await updateVendorBillStatus({ billId, input: input as any })
-    revalidatePayablesPages(projectId)
-    return { success: true, data: updated }
-  } catch (error) {
-    return { success: false, error: toPayableActionError(error) }
-  }
+): Promise<ActionResult<PayableMutationResult>> {
+  return run(async () => {
+      try {
+        const updated = await updateVendorBillStatus({ billId, input: input as any })
+        revalidatePayablesPages(projectId)
+        return { success: true, data: updated }
+      } catch (error) {
+        return { success: false, error: toPayableActionError(error) }
+      }
+  })
 }
 
 export async function createProjectVendorBillAction(
   projectId: string,
   input: unknown,
-): Promise<PayableMutationResult> {
-  try {
-    const bill = await createProjectVendorBill({ projectId, input: input as any })
-    revalidatePayablesPages(projectId)
-    return { success: true, data: bill }
-  } catch (error) {
-    return { success: false, error: toPayableActionError(error) }
-  }
+): Promise<ActionResult<PayableMutationResult>> {
+  return run(async () => {
+      try {
+        const bill = await createProjectVendorBill({ projectId, input: input as any })
+        revalidatePayablesPages(projectId)
+        return { success: true, data: bill }
+      } catch (error) {
+        return { success: false, error: toPayableActionError(error) }
+      }
+  })
 }
 
 export type PayableInvoiceExtractionResult =
   | { ok: true; data: ExtractedPayableInvoice }
   | { ok: false; error: string }
 
-export async function extractPayableInvoiceAction(_projectId: string, formData: FormData): Promise<PayableInvoiceExtractionResult> {
-  try {
-    const { orgId } = await requireOrgContext()
-    const invoice = formData.get("invoice")
-    if (!(invoice instanceof File)) {
-      return { ok: false, error: "Choose an invoice to scan" }
-    }
+export async function extractPayableInvoiceAction(_projectId: string, formData: FormData): Promise<ActionResult<PayableInvoiceExtractionResult>> {
+  return run(async () => {
+      try {
+        const { orgId } = await requireOrgContext()
+        const invoice = formData.get("invoice")
+        if (!(invoice instanceof File)) {
+          return { ok: false, error: "Choose an invoice to scan" }
+        }
 
-    const data = await extractPayableInvoiceFromFile(invoice, { orgId })
-    return { ok: true, data }
-  } catch (error: any) {
-    console.warn("[PayableExtraction] Scan failed", error)
-    return { ok: false, error: error?.message ?? "Could not scan invoice" }
-  }
+        const data = await extractPayableInvoiceFromFile(invoice, { orgId })
+        return { ok: true, data }
+      } catch (error: any) {
+        console.warn("[PayableExtraction] Scan failed", error)
+        return { ok: false, error: error?.message ?? "Could not scan invoice" }
+      }
+  })
 }
 
 export async function ensureProjectVendorCompanyForPayableAction(projectId: string, billId: string) {
-  try {
-    const { orgId } = await requireOrgContext()
-    const supabase = createServiceSupabaseClient()
+  return run(async () => {
+        const { orgId } = await requireOrgContext()
+        const supabase = createServiceSupabaseClient()
 
-    const { data: bill, error: billError } = await supabase
-      .from("vendor_bills")
-      .select("id, org_id, project_id, company_id, commitment_id, metadata, qbo_vendor_id, qbo_vendor_name, commitment:commitments(company_id)")
-      .eq("org_id", orgId)
-      .eq("project_id", projectId)
-      .eq("id", billId)
-      .maybeSingle()
+        const { data: bill, error: billError } = await supabase
+          .from("vendor_bills")
+          .select("id, org_id, project_id, company_id, commitment_id, metadata, qbo_vendor_id, qbo_vendor_name, commitment:commitments(company_id)")
+          .eq("org_id", orgId)
+          .eq("project_id", projectId)
+          .eq("id", billId)
+          .maybeSingle()
 
-    if (billError || !bill) {
-      throw new Error("Payable not found")
-    }
+        if (billError || !bill) {
+          throw new Error("Payable not found")
+        }
 
-    const existingCompanyId =
-      (bill.company_id as string | null | undefined) ??
-      ((bill.commitment as any)?.company_id as string | null | undefined)
-    if (existingCompanyId) {
-      return getCompany(existingCompanyId, orgId)
-    }
+        const existingCompanyId =
+          (bill.company_id as string | null | undefined) ??
+          ((bill.commitment as any)?.company_id as string | null | undefined)
+        if (existingCompanyId) {
+          return getCompany(existingCompanyId, orgId)
+        }
 
-    const metadata = (bill.metadata as Record<string, any> | null) ?? {}
-    const vendorName = String(metadata.vendor_name ?? bill.qbo_vendor_name ?? "").trim()
-    if (!vendorName) {
-      throw new Error("This payable does not have a vendor name to turn into an Arc vendor.")
-    }
+        const metadata = (bill.metadata as Record<string, any> | null) ?? {}
+        const vendorName = String(metadata.vendor_name ?? bill.qbo_vendor_name ?? "").trim()
+        if (!vendorName) {
+          throw new Error("This payable does not have a vendor name to turn into an Arc vendor.")
+        }
 
-    const { data: existingCompany, error: companyLookupError } = await supabase
-      .from("companies")
-      .select("id")
-      .eq("org_id", orgId)
-      .ilike("name", vendorName)
-      .is("metadata->>archived_at", null)
-      .limit(1)
-      .maybeSingle()
+        const { data: existingCompany, error: companyLookupError } = await supabase
+          .from("companies")
+          .select("id")
+          .eq("org_id", orgId)
+          .ilike("name", vendorName)
+          .is("metadata->>archived_at", null)
+          .limit(1)
+          .maybeSingle()
 
-    if (companyLookupError) {
-      throw new Error(`Unable to find matching vendor: ${companyLookupError.message}`)
-    }
+        if (companyLookupError) {
+          throw new Error(`Unable to find matching vendor: ${companyLookupError.message}`)
+        }
 
-    const company =
-      existingCompany?.id
-        ? await getCompany(existingCompany.id as string, orgId)
-        : await createCompany({
-            orgId,
-            input: {
-              name: vendorName,
-              company_type: "supplier",
-              qbo_vendor_id: bill.qbo_vendor_id || undefined,
-              qbo_vendor_name: bill.qbo_vendor_name || undefined,
-              qbo_vendor_synced_at: bill.qbo_vendor_id ? new Date().toISOString() : undefined,
-              qbo_vendor_sync_status: bill.qbo_vendor_id ? "linked" : undefined,
-            },
+        const company =
+          existingCompany?.id
+            ? await getCompany(existingCompany.id as string, orgId)
+            : await createCompany({
+                orgId,
+                input: {
+                  name: vendorName,
+                  company_type: "supplier",
+                  qbo_vendor_id: bill.qbo_vendor_id || undefined,
+                  qbo_vendor_name: bill.qbo_vendor_name || undefined,
+                  qbo_vendor_synced_at: bill.qbo_vendor_id ? new Date().toISOString() : undefined,
+                  qbo_vendor_sync_status: bill.qbo_vendor_id ? "linked" : undefined,
+                },
+              })
+
+        const { error: updateError } = await supabase
+          .from("vendor_bills")
+          .update({
+            company_id: company.id,
+            qbo_vendor_id: company.qbo_vendor_id ?? bill.qbo_vendor_id ?? null,
+            qbo_vendor_name: company.qbo_vendor_name ?? bill.qbo_vendor_name ?? vendorName,
           })
+          .eq("org_id", orgId)
+          .eq("id", billId)
 
-    const { error: updateError } = await supabase
-      .from("vendor_bills")
-      .update({
-        company_id: company.id,
-        qbo_vendor_id: company.qbo_vendor_id ?? bill.qbo_vendor_id ?? null,
-        qbo_vendor_name: company.qbo_vendor_name ?? bill.qbo_vendor_name ?? vendorName,
-      })
-      .eq("org_id", orgId)
-      .eq("id", billId)
+        if (updateError) {
+          throw new Error(`Unable to link payable vendor: ${updateError.message}`)
+        }
 
-    if (updateError) {
-      throw new Error(`Unable to link payable vendor: ${updateError.message}`)
-    }
-
-    revalidatePayablesPages(projectId)
-    revalidatePath(`/companies/${company.id}`)
-    revalidatePath("/directory")
-    return company
-  } catch (error) {
-    cleanAndRethrowError(error)
-  }
+        revalidatePayablesPages(projectId)
+        revalidatePath(`/companies/${company.id}`)
+        revalidatePath("/directory")
+        return company
+  })
 }
 
 export async function listProjectCommitmentsForPayablesAction(projectId: string) {
-  return listProjectCommitments(projectId)
+      return listProjectCommitments(projectId)
 }
 
 export async function getPayablesAccountingContextAction() {
-  const { orgId } = await requireOrgContext()
-  const supabase = createServiceSupabaseClient()
-  const client = await QBOClient.forOrg(orgId)
-  if (!client) {
-    return {
-      enabled: false,
-      expenseAccounts: [],
-      apAccounts: [],
-      vendors: [],
-      defaults: {},
-    }
-  }
+      const { orgId } = await requireOrgContext()
+      const supabase = createServiceSupabaseClient()
+      const client = await QBOClient.forOrg(orgId)
+      if (!client) {
+        return {
+          enabled: false,
+          expenseAccounts: [],
+          apAccounts: [],
+          vendors: [],
+          defaults: {},
+        }
+      }
 
-  const [{ data: connection }, expenseAccounts, apAccounts, vendors] = await Promise.all([
-    supabase.from("qbo_connections").select("settings").eq("org_id", orgId).eq("status", "active").maybeSingle(),
-    client.listExpenseAccounts().catch(() => []),
-    client.listAccountsPayableAccounts().catch(() => []),
-    client.listVendors().catch(() => []),
-  ])
+      const [{ data: connection }, expenseAccounts, apAccounts, vendors] = await Promise.all([
+        supabase.from("qbo_connections").select("settings").eq("org_id", orgId).eq("status", "active").maybeSingle(),
+        client.listExpenseAccounts().catch(() => []),
+        client.listAccountsPayableAccounts().catch(() => []),
+        client.listVendors().catch(() => []),
+      ])
 
-  const settings = (connection?.settings as Record<string, any> | null) ?? {}
-  return {
-    enabled: true,
-    expenseAccounts,
-    apAccounts,
-    vendors,
-    defaults: {
-      expenseAccountId: settings.default_expense_account_id as string | undefined,
-      apAccountId: settings.default_ap_account_id as string | undefined,
-    },
-  }
+      const settings = (connection?.settings as Record<string, any> | null) ?? {}
+      return {
+        enabled: true,
+        expenseAccounts,
+        apAccounts,
+        vendors,
+        defaults: {
+          expenseAccountId: settings.default_expense_account_id as string | undefined,
+          apAccountId: settings.default_ap_account_id as string | undefined,
+        },
+      }
 }
 
 export async function syncProjectVendorBillToQBOAction(projectId: string, billId: string) {
-  try {
-    const { orgId } = await requireOrgContext()
-    const result = await syncVendorBillToQBO(billId, orgId)
-    revalidatePayablesPages(projectId)
-    return result
-  } catch (error) {
-    cleanAndRethrowError(error)
-  }
+  return run(async () => {
+      const { orgId } = await requireOrgContext()
+      const result = await syncVendorBillToQBO(billId, orgId)
+      revalidatePayablesPages(projectId)
+      return result
+  })
 }
 
 export async function deleteProjectVendorBillAction(
   projectId: string,
   billId: string,
-): Promise<PayableActionResult> {
-  try {
-    await deleteVendorBill({ billId })
-    revalidatePayablesPages(projectId)
-    return { success: true }
-  } catch (error) {
-    return { success: false, error: toPayableActionError(error) }
-  }
+): Promise<ActionResult<PayableActionResult>> {
+  return run(async () => {
+      try {
+        await deleteVendorBill({ billId })
+        revalidatePayablesPages(projectId)
+        return { success: true }
+      } catch (error) {
+        return { success: false, error: toPayableActionError(error) }
+      }
+  })
 }
 
 export type ReassignPayableResult =
@@ -256,13 +257,15 @@ export async function reassignProjectPayableAction(
   projectId: string,
   billId: string,
   targetProjectId: string,
-): Promise<ReassignPayableResult> {
-  try {
-    const result = await reassignImportedPayable({ billId, targetProjectId })
-    revalidatePayablesPages(projectId)
-    revalidatePayablesPages(targetProjectId)
-    return { success: true, projectId: result.projectId }
-  } catch (error) {
-    return { success: false, error: toPayableActionError(error) }
-  }
+): Promise<ActionResult<ReassignPayableResult>> {
+  return run(async () => {
+      try {
+        const result = await reassignImportedPayable({ billId, targetProjectId })
+        revalidatePayablesPages(projectId)
+        revalidatePayablesPages(targetProjectId)
+        return { success: true, projectId: result.projectId }
+      } catch (error) {
+        return { success: false, error: toPayableActionError(error) }
+      }
+  })
 }

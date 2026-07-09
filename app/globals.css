@@ -6,24 +6,35 @@
 /* =====================================================================
    ARC DESIGN STANDARD — operational software for construction.
 
-   The look: a precision instrument. Paper-white surfaces, graphite ink,
-   hairline rules, mono tabular figures, sharp corners. Authority comes
-   from density and alignment, never from decoration.
+   The look: a quiet, modern console (think Linear/Vercel, not a
+   newspaper). Paper-white surfaces, graphite ink, sharp corners, mono
+   tabular figures. Structure comes from spacing and subtle surface
+   shifts — a slightly darker panel, a low-contrast 1px border — never
+   from tinted section blocks, heavy rules, or enclosure for its own
+   sake. Authority comes from density and alignment, not decoration.
 
    Rules (enforced — violating these is a bug):
    1. Tokens only. Every color in the app resolves to a variable defined
-      here. No hex/rgb/oklch literals in components, no new grays.
+      here. No hex/rgb/oklch literals in components, no raw Tailwind
+      palette classes (emerald-500, indigo-50, ...), no new grays.
    2. Radius is 0. Surfaces are square. 999px pills are allowed only for
       small status chips.
    3. Color is state. Blue = primary/active, amber = warning/aging,
-      red = late/destructive, green = success. Color is never decoration.
-   4. No gradients, no glassmorphism, no glows, no hero/marquee panels.
-      Pages open with the work: a title row, then the data.
-   5. Motion policy: one orchestrated entrance per page load (.desk-rise),
+      red = late/destructive, green = success. Color is never decoration
+      and never section identity — a payments section is not green, a
+      paid amount is.
+   4. Sections separate with whitespace and a microlabel first; reach
+      for a bordered bg-card / bg-muted panel only when a region needs
+      to read as one unit (a line-item card, a docked pane). Never tint
+      a section's background to label it.
+   5. No gradients, no glassmorphism, no glows, no hero/marquee panels,
+      no oversized stat billboards. Pages open with the work: a title
+      row, then the data.
+   6. Motion policy: one orchestrated entrance per page load (.desk-rise),
       hover transitions ≤ 200ms, and NO infinite animation except a live
       progress indicator for work actually happening (.skeleton-shimmer,
       .receipt-scan-sweep).
-   6. Component-specific CSS lives next to the component (see
+   7. Component-specific CSS lives next to the component (see
       components/schedule/gantt.css), not in this file. This file holds
       tokens, base styles, and the small shared library below — keep it
       under ~500 lines.

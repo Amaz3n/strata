@@ -139,6 +139,7 @@ function mapProjectBillingContract(row: any): Contract {
     requires_client_cost_approval: row.requires_client_cost_approval ?? undefined,
     open_book: row.open_book ?? undefined,
     retainage_percent: row.retainage_percent != null ? Number(row.retainage_percent) : undefined,
+    retainage_applies_to_fee: row.retainage_applies_to_fee ?? row.snapshot?.retainage_applies_to_fee ?? false,
     retainage_release_trigger: row.retainage_release_trigger ?? undefined,
     terms: row.terms ?? undefined,
     effective_date: row.effective_date ?? undefined,
@@ -154,14 +155,26 @@ function mapProjectBillingContract(row: any): Contract {
 const PROJECT_SELECT = `
   id, org_id, name, status, start_date, end_date, location, client_id, prospect_id, property_type, project_type, description, total_value, total_contract_value_cents, qbo_class_id, qbo_class_name, qbo_customer_id, qbo_customer_name, excluded_from_reporting, created_at, updated_at,
   project_financial_settings(id, org_id, project_id, billing_model, paid_costs_required, proof_required, client_cost_approval_required, open_book_required, cost_codes_enabled, setup_completed_at, metadata),
-  contracts(id, org_id, project_id, proposal_id, number, title, status, contract_type, total_cents, currency, markup_percent, gmp_cents, contingency_cents, fixed_fee_cents, fee_presentation, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, rate_schedule_id, requires_client_cost_approval, open_book, retainage_percent, retainage_release_trigger, terms, effective_date, signed_at, signature_data, parent_contract_id, snapshot, created_at, updated_at)
+  contracts(id, org_id, project_id, proposal_id, number, title, status, contract_type, total_cents, currency, markup_percent, gmp_cents, contingency_cents, fixed_fee_cents, fee_presentation, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, rate_schedule_id, requires_client_cost_approval, open_book, retainage_percent, retainage_applies_to_fee, retainage_release_trigger, terms, effective_date, signed_at, signature_data, parent_contract_id, snapshot, created_at, updated_at)
 `
 
 export async function listProjects(orgId?: string, context?: OrgServiceContext): Promise<Project[]> {
   const { supabase, orgId: resolvedOrgId, userId } = context || await requireOrgContext(orgId)
+
+  // Members scoped to "assigned" only see projects they explicitly belong to,
+  // regardless of an org-level project.read/manage grant.
+  const { data: scopeRows } = await supabase
+    .from("memberships")
+    .select("project_scope")
+    .eq("org_id", resolvedOrgId)
+    .eq("user_id", userId)
+    .eq("status", "active")
+  const assignedOnly = (scopeRows ?? []).some((row) => (row as { project_scope?: string }).project_scope === "assigned")
+
   const canSeeAllProjects =
-    (await hasPermission("project.read", { supabase, orgId: resolvedOrgId, userId })) ||
-    (await hasPermission("project.manage", { supabase, orgId: resolvedOrgId, userId }))
+    !assignedOnly &&
+    ((await hasPermission("project.read", { supabase, orgId: resolvedOrgId, userId })) ||
+      (await hasPermission("project.manage", { supabase, orgId: resolvedOrgId, userId })))
 
   if (canSeeAllProjects) {
     return listProjectsWithClient(supabase, resolvedOrgId)
@@ -436,6 +449,7 @@ async function upsertProjectBillingContract({
     "proof_required",
     "cost_codes_enabled",
     "retainage_percent",
+    "retainage_applies_to_fee",
     "total_contract_value_cents",
   ]
   const hasBillingInput = billingKeys.some((key) => Object.prototype.hasOwnProperty.call(input, key))
@@ -515,6 +529,8 @@ async function upsertProjectBillingContract({
     requires_client_cost_approval: input.requires_client_cost_approval ?? existing?.requires_client_cost_approval ?? false,
     open_book: input.open_book ?? existing?.open_book ?? true,
     retainage_percent: input.retainage_percent ?? existing?.retainage_percent ?? 0,
+    retainage_applies_to_fee:
+      input.retainage_applies_to_fee ?? existing?.retainage_applies_to_fee ?? existing?.snapshot?.retainage_applies_to_fee ?? false,
     snapshot: {
       ...nextSnapshotBase,
       billing_setup_source: "project_settings",
@@ -525,6 +541,8 @@ async function upsertProjectBillingContract({
       rate_schedule_id: billingModel === "time_and_materials" ? input.rate_schedule_id ?? existing?.rate_schedule_id ?? null : null,
       paid_costs_required: input.paid_costs_required ?? existing?.snapshot?.paid_costs_required ?? false,
       proof_required: input.proof_required ?? existing?.snapshot?.proof_required ?? false,
+      retainage_applies_to_fee:
+        input.retainage_applies_to_fee ?? existing?.retainage_applies_to_fee ?? existing?.snapshot?.retainage_applies_to_fee ?? false,
     },
   }
 

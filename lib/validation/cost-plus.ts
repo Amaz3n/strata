@@ -58,6 +58,8 @@ export const projectExpenseInputSchema = z.object({
   qboApAccountName: z.string().max(255).optional().nullable(),
   qboVendorId: z.string().max(80).optional().nullable(),
   qboVendorName: z.string().max(255).optional().nullable(),
+  /** Set after the user confirms a possible-duplicate warning. */
+  allowDuplicate: z.boolean().default(false),
 })
 
 export const markupRuleInputSchema = z.object({
@@ -87,6 +89,18 @@ export const generateInvoiceFromCostsInputSchema = z.object({
   idempotencyKey: z.string().min(8).max(200).optional(),
 })
 
+export const manualBillableAdjustmentInputSchema = z.object({
+  projectId: z.string().uuid(),
+  costCodeId: z.string().uuid().optional().nullable(),
+  budgetLineId: z.string().uuid().optional().nullable(),
+  occurredOn: dateInput.optional().nullable(),
+  description: z.string().trim().min(3).max(300),
+  reason: z.string().trim().min(3).max(1000),
+  amountCents: z.number().int().refine((value) => value !== 0, "Amount cannot be zero"),
+  markupPercentOverride: z.number().min(0).max(200).optional().nullable(),
+  gmpClassification: z.enum(["inside_gmp", "outside_gmp"]).optional().nullable(),
+})
+
 export const approvalDecisionSchema = z.object({
   rejectionReason: z.string().max(1000).optional().nullable(),
 })
@@ -96,4 +110,5 @@ export type TimeEntryUpdateInput = z.infer<typeof timeEntryUpdateSchema>
 export type ProjectExpenseInput = z.infer<typeof projectExpenseInputSchema>
 export type MarkupRuleInput = z.infer<typeof markupRuleInputSchema>
 export type GenerateInvoiceFromCostsInput = z.infer<typeof generateInvoiceFromCostsInputSchema>
+export type ManualBillableAdjustmentInput = z.infer<typeof manualBillableAdjustmentInputSchema>
 export type ApprovalDecisionInput = z.infer<typeof approvalDecisionSchema>

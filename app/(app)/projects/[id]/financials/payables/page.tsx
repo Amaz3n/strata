@@ -8,6 +8,8 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { getProjectFinancialSetupStatusForProject } from "@/lib/services/project-financial-setup"
 import { loadFinancialsOverviewData } from "../page-data"
 
+import { unwrapAction } from "@/lib/action-result"
+
 export const dynamic = "force-dynamic"
 
 interface PageProps {

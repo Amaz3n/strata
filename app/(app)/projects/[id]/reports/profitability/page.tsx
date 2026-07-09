@@ -7,6 +7,8 @@ import { ProjectProfitabilityReportView } from "@/components/reports/project-pro
 import { getProjectAction } from "@/app/(app)/projects/[id]/actions"
 import { getProjectProfitabilityReport } from "@/lib/services/reports/project-profitability"
 
+import { unwrapAction } from "@/lib/action-result"
+
 export const dynamic = "force-dynamic"
 
 interface PageProps {

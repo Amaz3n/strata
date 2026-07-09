@@ -109,6 +109,8 @@ import {
   X,
 } from "lucide-react"
 
+import { unwrapAction } from "@/lib/action-result"
+
 const statusOptions: BidPackageStatus[] = ["draft", "sent", "open", "closed", "awarded", "cancelled"]
 const NO_TRADE_VALUE = "__none__"
 
@@ -654,8 +656,8 @@ export function ProspectBidPackageDetailClient({
           const formData = new FormData()
           formData.append("file", file)
           formData.append("category", "plans")
-          const uploaded = await uploadFileAction(formData)
-          await attachFileAction(uploaded.id, "bid_package", bidPackage.id)
+          const uploaded = unwrapAction(await uploadFileAction(formData))
+          unwrapAction(await attachFileAction(uploaded.id, "bid_package", bidPackage.id))
         }
         await loadPackageAttachments()
         toast.success(`${files.length} file${files.length > 1 ? "s" : ""} uploaded`)
@@ -711,7 +713,7 @@ export function ProspectBidPackageDetailClient({
   const handleFileDetach = useCallback(
     async (attachment: AttachedFile) => {
       try {
-        await detachFileLinkAction(attachment.linkId)
+        unwrapAction(await detachFileLinkAction(attachment.linkId))
         await loadPackageAttachments()
         toast.success(`Removed ${attachment.file_name}`)
       } catch {
@@ -769,7 +771,7 @@ export function ProspectBidPackageDetailClient({
     }
     startSaving(async () => {
       try {
-        const updated = await updateProspectBidPackageAction(bidPackage.id, prospectId, {
+        const updated = unwrapAction(await updateProspectBidPackageAction(bidPackage.id, prospectId, {
           title: title.trim(),
           cost_code_id: costCodeId === "__none__" ? null : costCodeId,
           trade: trade === NO_TRADE_VALUE ? null : trade,
@@ -777,7 +779,7 @@ export function ProspectBidPackageDetailClient({
           status,
           scope: scope.trim() || null,
           instructions: instructions.trim() || null,
-        })
+        }))
         setCurrent(updated)
         setTitle(updated.title)
         setCostCodeId(updated.cost_code_id ?? "__none__")
@@ -828,11 +830,11 @@ export function ProspectBidPackageDetailClient({
           company_name: item.companyName || null,
         }))
 
-        const result = await bulkCreateProspectBidInvitesAction(prospectId, bidPackage.id, {
+        const result = unwrapAction(await bulkCreateProspectBidInvitesAction(prospectId, bidPackage.id, {
           bid_package_id: bidPackage.id,
           invites: [...companyInviteItems, ...emailOnlyInviteItems],
           send_emails: sendEmails,
-        })
+        }))
 
         setInviteList((prev) => [...result.created, ...prev])
         setSelectedCompanyIds(new Set())
@@ -928,7 +930,7 @@ export function ProspectBidPackageDetailClient({
 
   const handleGenerateLink = async (invite: BidInvite) => {
     try {
-      const result = await generateProspectBidInviteLinkAction(prospectId, bidPackage.id, invite.id)
+      const result = unwrapAction(await generateProspectBidInviteLinkAction(prospectId, bidPackage.id, invite.id))
       await navigator.clipboard.writeText(result.url)
       const refreshed = await listProspectBidInvitesAction(bidPackage.id)
       setInviteList(refreshed)
@@ -940,7 +942,7 @@ export function ProspectBidPackageDetailClient({
 
   const handleResendInvite = async (invite: BidInvite) => {
     try {
-      await resendProspectBidInviteAction(prospectId, bidPackage.id, invite.id)
+      unwrapAction(await resendProspectBidInviteAction(prospectId, bidPackage.id, invite.id))
       const refreshed = await listProspectBidInvitesAction(bidPackage.id)
       setInviteList(refreshed)
       toast.success("Reminder queued")
@@ -951,7 +953,7 @@ export function ProspectBidPackageDetailClient({
 
   const handlePauseInviteAccess = async (invite: BidInvite) => {
     try {
-      await pauseProspectBidInviteAccessAction(prospectId, bidPackage.id, invite.id)
+      unwrapAction(await pauseProspectBidInviteAccessAction(prospectId, bidPackage.id, invite.id))
       const refreshed = await listProspectBidInvitesAction(bidPackage.id)
       setInviteList(refreshed)
       toast.success("Invite access paused")
@@ -962,7 +964,7 @@ export function ProspectBidPackageDetailClient({
 
   const handleResumeInviteAccess = async (invite: BidInvite) => {
     try {
-      await resumeProspectBidInviteAccessAction(prospectId, bidPackage.id, invite.id)
+      unwrapAction(await resumeProspectBidInviteAccessAction(prospectId, bidPackage.id, invite.id))
       const refreshed = await listProspectBidInvitesAction(bidPackage.id)
       setInviteList(refreshed)
       toast.success("Invite access resumed")
@@ -973,7 +975,7 @@ export function ProspectBidPackageDetailClient({
 
   const handleRevokeInviteAccess = async (invite: BidInvite) => {
     try {
-      await revokeProspectBidInviteAccessAction(prospectId, bidPackage.id, invite.id)
+      unwrapAction(await revokeProspectBidInviteAccessAction(prospectId, bidPackage.id, invite.id))
       const refreshed = await listProspectBidInvitesAction(bidPackage.id)
       setInviteList(refreshed)
       toast.success("Invite access revoked")
@@ -984,7 +986,7 @@ export function ProspectBidPackageDetailClient({
 
   const handleSetInviteRequireAccount = async (invite: BidInvite, requireAccount: boolean) => {
     try {
-      await setProspectBidInviteRequireAccountAction(prospectId, bidPackage.id, invite.id, requireAccount)
+      unwrapAction(await setProspectBidInviteRequireAccountAction(prospectId, bidPackage.id, invite.id, requireAccount))
       const refreshed = await listProspectBidInvitesAction(bidPackage.id)
       setInviteList(refreshed)
       toast.success(requireAccount ? "Account required enabled" : "Link-only access enabled")
@@ -995,7 +997,7 @@ export function ProspectBidPackageDetailClient({
 
   const handlePauseInviteAccounts = async (invite: BidInvite) => {
     try {
-      await pauseProspectBidInviteAccountGrantsAction(prospectId, bidPackage.id, invite.id)
+      unwrapAction(await pauseProspectBidInviteAccountGrantsAction(prospectId, bidPackage.id, invite.id))
       const refreshed = await listProspectBidInvitesAction(bidPackage.id)
       setInviteList(refreshed)
       toast.success("Linked accounts paused")
@@ -1006,7 +1008,7 @@ export function ProspectBidPackageDetailClient({
 
   const handleResumeInviteAccounts = async (invite: BidInvite) => {
     try {
-      await resumeProspectBidInviteAccountGrantsAction(prospectId, bidPackage.id, invite.id)
+      unwrapAction(await resumeProspectBidInviteAccountGrantsAction(prospectId, bidPackage.id, invite.id))
       const refreshed = await listProspectBidInvitesAction(bidPackage.id)
       setInviteList(refreshed)
       toast.success("Linked accounts resumed")
@@ -1017,7 +1019,7 @@ export function ProspectBidPackageDetailClient({
 
   const handleRevokeInviteAccounts = async (invite: BidInvite) => {
     try {
-      await revokeProspectBidInviteAccountGrantsAction(prospectId, bidPackage.id, invite.id)
+      unwrapAction(await revokeProspectBidInviteAccountGrantsAction(prospectId, bidPackage.id, invite.id))
       const refreshed = await listProspectBidInvitesAction(bidPackage.id)
       setInviteList(refreshed)
       toast.success("Linked accounts revoked")
@@ -1029,11 +1031,11 @@ export function ProspectBidPackageDetailClient({
   const handleAddendum = () => {
     startAddingAddendum(async () => {
       try {
-        const addendum = await createProspectBidAddendumAction(prospectId, {
+        const addendum = unwrapAction(await createProspectBidAddendumAction(prospectId, {
           bid_package_id: bidPackage.id,
           title: addendumTitle.trim() || null,
           message: addendumMessage.trim() || null,
-        })
+        }))
         setAddendumList((prev) => [...prev, addendum])
         setAddendumTitle("")
         setAddendumMessage("")
@@ -1072,7 +1074,7 @@ export function ProspectBidPackageDetailClient({
     const awardedSubmissionId = selectedSubmission.id
     startAwarding(async () => {
       try {
-        await awardProspectBidSubmissionAction(prospectId, bidPackage.id, awardedSubmissionId)
+        unwrapAction(await awardProspectBidSubmissionAction(prospectId, bidPackage.id, awardedSubmissionId))
         setCurrent((prev) => ({ ...prev, status: "awarded" }))
         setStatus("awarded")
         setSubmissionList((prev) =>
@@ -1104,8 +1106,8 @@ export function ProspectBidPackageDetailClient({
         const formData = new FormData()
         formData.append("file", file)
         formData.append("category", "plans")
-        const uploaded = await uploadFileAction(formData)
-        await attachFileAction(uploaded.id, "bid_addendum", addendumId)
+        const uploaded = unwrapAction(await uploadFileAction(formData))
+        unwrapAction(await attachFileAction(uploaded.id, "bid_addendum", addendumId))
       }
       await loadAddendumAttachments()
     },
@@ -1114,7 +1116,7 @@ export function ProspectBidPackageDetailClient({
 
   const handleAddendumDetach = useCallback(
     async (linkId: string) => {
-      await detachFileLinkAction(linkId)
+      unwrapAction(await detachFileLinkAction(linkId))
       await loadAddendumAttachments()
     },
     [loadAddendumAttachments]

@@ -108,6 +108,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 
+import { unwrapAction } from "@/lib/action-result"
+
 type EditableBudgetLine = {
   id: string
   cost_code_id: string | null
@@ -515,14 +517,14 @@ export function BudgetTab({
     startTransition(async () => {
       try {
         if (!currentBudget) {
-          await createProjectBudgetAction({
+          unwrapAction(await createProjectBudgetAction({
             project_id: projectId,
             status: "draft",
             lines: payloadLines,
-          })
+          }))
           toast({ title: message })
         } else {
-          await replaceProjectBudgetLinesAction(projectId, currentBudget.id, payloadLines)
+          unwrapAction(await replaceProjectBudgetLinesAction(projectId, currentBudget.id, payloadLines))
           toast({ title: message })
         }
         router.refresh()
@@ -614,7 +616,7 @@ export function BudgetTab({
   const acknowledge = (alertId: string, status: "acknowledged" | "resolved") => {
     startTransition(async () => {
       try {
-        await acknowledgeVarianceAlertAction(projectId, alertId, status)
+        unwrapAction(await acknowledgeVarianceAlertAction(projectId, alertId, status))
         toast({ title: status === "resolved" ? "Alert resolved" : "Alert acknowledged" })
         router.refresh()
       } catch (error) {
@@ -626,7 +628,7 @@ export function BudgetTab({
   const acknowledgeAll = () => {
     startTransition(async () => {
       try {
-        await Promise.all(activeAlerts.map((alert) => acknowledgeVarianceAlertAction(projectId, alert.id, "acknowledged")))
+        await Promise.all(activeAlerts.map((alert) => acknowledgeVarianceAlertAction(projectId, alert.id, "acknowledged").then(unwrapAction)))
         toast({ title: "Alerts acknowledged" })
         router.refresh()
       } catch (error) {
@@ -638,7 +640,7 @@ export function BudgetTab({
   const runScan = () =>
     startTransition(async () => {
       try {
-        await runVarianceScanAction(projectId)
+        unwrapAction(await runVarianceScanAction(projectId))
         toast({ title: "Variance scan complete" })
         router.refresh()
       } catch (error) {
@@ -1026,7 +1028,7 @@ export function BudgetTab({
   const lockBaseline = () =>
     startTransition(async () => {
       try {
-        await lockBudgetBaselineAction(projectId)
+        unwrapAction(await lockBudgetBaselineAction(projectId))
         toast({ title: baselineLockedAt ? "Baseline updated" : "Baseline locked" })
         router.refresh()
       } catch (error) {
@@ -1969,7 +1971,7 @@ function EstimateImportDialog({
 
     startApply(async () => {
       try {
-        await applyBudgetFromEstimateAction({ project_id: projectId, lines: payloadLines })
+        unwrapAction(await applyBudgetFromEstimateAction({ project_id: projectId, lines: payloadLines }))
         toast({ title: "Budget created from estimate" })
         onOpenChange(false)
         router.refresh()
@@ -2266,7 +2268,7 @@ function CsvImportDialog({
     }
     startApply(async () => {
       try {
-        await applyBudgetFromEstimateAction({ project_id: projectId, lines: payloadLines })
+        unwrapAction(await applyBudgetFromEstimateAction({ project_id: projectId, lines: payloadLines }))
         toast({ title: "Budget imported" })
         onOpenChange(false)
         router.refresh()
@@ -3210,7 +3212,7 @@ function CommitmentCreateDialog({
 
     startTransition(async () => {
       try {
-        const commitment = await createProjectCommitmentAction(projectId, {
+        const commitment = unwrapAction(await createProjectCommitmentAction(projectId, {
           project_id: projectId,
           company_id: companyId,
           title: title.trim(),
@@ -3220,15 +3222,15 @@ function CommitmentCreateDialog({
           retainage_percent: retainage,
           scope: scope.trim(),
           terms: terms.trim() || null,
-        })
-        await createCommitmentLineAction(commitment.id, {
+        }))
+        unwrapAction(await createCommitmentLineAction(commitment.id, {
           cost_code_id: costCodesEnabled ? costCodeId : null,
           budget_line_id: costCodesEnabled ? null : draft?.budgetLineId ?? null,
           description: scope.trim(),
           quantity: 1,
           unit: "LS",
           unit_cost_cents: Math.round(n * 100),
-        })
+        }))
         toast({ title: "Commitment created" })
         onOpenChange(false)
         router.refresh()
@@ -3421,7 +3423,7 @@ function CommitmentEditDialog({
 
     startTransition(async () => {
       try {
-        await updateProjectCommitmentAction(projectId, commitment.id, {
+        unwrapAction(await updateProjectCommitmentAction(projectId, commitment.id, {
           title: title.trim(),
           status,
           total_cents: Math.round(n * 100),
@@ -3429,7 +3431,7 @@ function CommitmentEditDialog({
           retainage_percent: retainage,
           scope: scope.trim() || null,
           terms: terms.trim() || null,
-        })
+        }))
         toast({ title: "Commitment updated" })
         onClose()
         router.refresh()
@@ -3757,7 +3759,7 @@ function CommitmentLinesDialog({
                                 className="h-7 px-2 text-xs"
                                 onClick={async () => {
                                   try {
-                                    await approveCommitmentChangeOrderAction(projectId, changeOrder.id)
+                                    unwrapAction(await approveCommitmentChangeOrderAction(projectId, changeOrder.id))
                                     await reloadChangeOrders()
                                     toast({ title: "CCO approved" })
                                   } catch (error) {
@@ -3785,7 +3787,7 @@ function CommitmentLinesDialog({
                                 className="h-7 px-2 text-xs text-destructive"
                                 onClick={async () => {
                                   try {
-                                    await voidCommitmentChangeOrderAction(projectId, changeOrder.id)
+                                    unwrapAction(await voidCommitmentChangeOrderAction(projectId, changeOrder.id))
                                     await reloadChangeOrders()
                                     toast({ title: "CCO voided" })
                                   } catch (error) {
@@ -3942,9 +3944,9 @@ function CommitmentLineDialog({
           unit_cost_cents: cost,
         }
         if (line) {
-          await updateCommitmentLineAction(line.id, payload)
+          unwrapAction(await updateCommitmentLineAction(line.id, payload))
         } else {
-          await createCommitmentLineAction(commitmentId, payload)
+          unwrapAction(await createCommitmentLineAction(commitmentId, payload))
         }
         onSaved()
         router.refresh()
@@ -3961,7 +3963,7 @@ function CommitmentLineDialog({
     if (!line) return
     startTransition(async () => {
       try {
-        await deleteCommitmentLineAction(line.id)
+        unwrapAction(await deleteCommitmentLineAction(line.id))
         onSaved()
         router.refresh()
       } catch (error) {
@@ -4117,7 +4119,7 @@ function CommitmentChangeOrderCreateDialog({
 
     startTransition(async () => {
       try {
-        await createCommitmentChangeOrderAction(projectId, {
+        unwrapAction(await createCommitmentChangeOrderAction(projectId, {
           commitment_id: commitment.id,
           title: title.trim(),
           description: description.trim() || null,
@@ -4133,7 +4135,7 @@ function CommitmentChangeOrderCreateDialog({
               sort_order: 0,
             },
           ],
-        })
+        }))
         toast({ title: "CCO created" })
         onSaved()
       } catch (error) {
@@ -4247,14 +4249,14 @@ function CommitmentFilesDialog({
       formData.append("file", file)
       formData.append("projectId", projectId)
       formData.append("category", "financials")
-      const uploaded = await uploadFileAction(formData)
-      await attachFileAction(uploaded.id, "commitment", commitment.id, projectId, linkRole)
+      const uploaded = unwrapAction(await uploadFileAction(formData))
+      unwrapAction(await attachFileAction(uploaded.id, "commitment", commitment.id, projectId, linkRole))
     }
     await refresh()
   }
 
   const handleDetach = async (linkId: string) => {
-    await detachFileLinkAction(linkId)
+    unwrapAction(await detachFileLinkAction(linkId))
     await refresh()
   }
 
@@ -4310,10 +4312,10 @@ function CostCodeProgressEditor({
       try {
         const p = percent.trim() ? parseFloat(percent) : null
         const c = ctc.trim() ? Math.round(parseFloat(ctc) * 100) : null
-        await updateCostCodeProgressAction(projectId, costCodeId, {
+        unwrapAction(await updateCostCodeProgressAction(projectId, costCodeId, {
           percent_complete: p,
           estimate_remaining_cents: c,
-        })
+        }))
         toast({ title: "Progress updated" })
         router.refresh()
       } catch (error) {

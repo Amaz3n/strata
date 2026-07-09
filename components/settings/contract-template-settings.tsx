@@ -13,6 +13,8 @@ import {
 import { Button } from "@/components/ui/button"
 import { FileText, Loader2, Trash2, Upload } from "@/components/icons"
 
+import { unwrapAction } from "@/lib/action-result"
+
 const TEMPLATE_TYPES: Array<{ value: ContractTemplateFor; label: string }> = [
   { value: "estimate", label: "Estimate" },
   { value: "change_order", label: "Change order" },
@@ -57,7 +59,7 @@ export function ContractTemplateSettings({ canManage }: { canManage: boolean }) 
     formData.append("file", file)
     setUploadingFor(templateFor)
     try {
-      const result = await uploadContractTemplateAction(templateFor, formData)
+      const result = unwrapAction(await uploadContractTemplateAction(templateFor, formData))
       if (result?.error) {
         toast.error("Unable to upload template", { description: result.error })
         return
@@ -77,7 +79,7 @@ export function ContractTemplateSettings({ canManage }: { canManage: boolean }) 
   const removeTemplate = async (template: ContractTemplateSummary) => {
     setRemovingId(template.id)
     try {
-      const result = await removeContractTemplateAction(template.id)
+      const result = unwrapAction(await removeContractTemplateAction(template.id))
       if (result?.error) {
         toast.error("Unable to remove template", { description: result.error })
         return

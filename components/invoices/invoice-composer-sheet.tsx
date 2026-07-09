@@ -878,14 +878,14 @@ export function InvoiceComposerSheet({
     }
     setApprovedCostsLoading(true)
     try {
-      const result = await generateInvoiceFromCostsAction({
+      const result = unwrapAction(await generateInvoiceFromCostsAction({
         projectId,
         dateRange: selection.dateRange,
         billableCostIds: selection.billableCostIds,
         groupBy: selection.groupBy,
         includeAllowanceVariances: false,
         dryRun: true,
-      })
+      }))
 
       const previewLines = result.invoicePreview?.lines ?? []
       if (previewLines.length === 0) {

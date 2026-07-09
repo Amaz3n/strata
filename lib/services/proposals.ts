@@ -4,6 +4,7 @@ import { z } from "zod"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { runProposalAcceptanceConversion } from "@/lib/services/conversions"
+import { requirePermission } from "@/lib/services/permissions"
 
 const proposalLineSchema = z.object({
   cost_code_id: z.string().uuid().optional(),
@@ -74,6 +75,7 @@ function calculateTotals(
 export async function createProposal(input: z.infer<typeof createProposalSchema>, orgId?: string) {
   const parsed = createProposalSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("proposal.write", { supabase, orgId: resolvedOrgId, userId })
   const secret = requireProposalSecret()
 
   const { count, error: countError } = await supabase
@@ -93,8 +95,6 @@ export async function createProposal(input: z.infer<typeof createProposalSchema>
 
   const token = randomBytes(32).toString("hex")
   const tokenHash = createHmac("sha256", secret).update(token).digest("hex")
-
-  console.log("Creating proposal with token:", token.substring(0, 10) + "...", "hash:", tokenHash.substring(0, 10) + "...")
 
   const { data: proposal, error } = await supabase
     .from("proposals")
@@ -170,7 +170,8 @@ export async function createProposal(input: z.infer<typeof createProposalSchema>
 }
 
 export async function generateProposalLink(proposalId: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("proposal.write", { supabase, orgId: resolvedOrgId, userId })
   const secret = requireProposalSecret()
 
   const token = randomBytes(32).toString("hex")
@@ -197,7 +198,8 @@ export async function sendProposal(
   orgId?: string,
   options: { queueEmail?: boolean } = {},
 ) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("proposal.write", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: proposal, error } = await supabase
     .from("proposals")

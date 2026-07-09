@@ -108,6 +108,8 @@ import {
   Filter,
 } from "@/components/icons"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ProjectDetailClientProps {
   project: Project
   stats: ProjectStats
@@ -236,7 +238,7 @@ export function ProjectDetailClient({
   const [projectVendorsState, setProjectVendorsState] = useState<ProjectVendor[]>(projectVendors)
   const [contractSheetOpen, setContractSheetOpen] = useState(false)
   const handleSaveProject = async (input: Partial<ProjectInput>) => {
-    await updateProjectSettingsAction(project.id, input)
+    unwrapAction(await updateProjectSettingsAction(project.id, input))
     router.refresh()
   }
 
@@ -305,7 +307,7 @@ export function ProjectDetailClient({
   async function handleTokenRevoke(tokenId: string) {
     setSharingLoading(true)
     try {
-      await revokePortalTokenAction({ token_id: tokenId, project_id: project.id })
+      unwrapAction(await revokePortalTokenAction({ token_id: tokenId, project_id: project.id }))
       setPortalTokensState((prev) =>
         prev.map((token) =>
           token.id === tokenId ? { ...token, revoked_at: new Date().toISOString() } : token
@@ -323,7 +325,7 @@ export function ProjectDetailClient({
   async function handleSetPin(tokenId: string, pin: string) {
     setSharingLoading(true)
     try {
-      await setPortalTokenPinAction({ token_id: tokenId, pin })
+      unwrapAction(await setPortalTokenPinAction({ token_id: tokenId, pin }))
       setPortalTokensState((prev) =>
         prev.map((token) => (token.id === tokenId ? { ...token, pin_required: true } : token)),
       )
@@ -339,7 +341,7 @@ export function ProjectDetailClient({
   async function handleTokenPause(tokenId: string) {
     setSharingLoading(true)
     try {
-      await pausePortalTokenAction({ token_id: tokenId, project_id: project.id })
+      unwrapAction(await pausePortalTokenAction({ token_id: tokenId, project_id: project.id }))
       setPortalTokensState((prev) =>
         prev.map((token) => (token.id === tokenId ? { ...token, paused_at: new Date().toISOString() } : token))
       )
@@ -355,7 +357,7 @@ export function ProjectDetailClient({
   async function handleTokenResume(tokenId: string) {
     setSharingLoading(true)
     try {
-      await resumePortalTokenAction({ token_id: tokenId, project_id: project.id })
+      unwrapAction(await resumePortalTokenAction({ token_id: tokenId, project_id: project.id }))
       setPortalTokensState((prev) =>
         prev.map((token) => (token.id === tokenId ? { ...token, paused_at: null } : token))
       )
@@ -371,7 +373,7 @@ export function ProjectDetailClient({
   async function handleSetAccountStatus(accountId: string, status: "active" | "paused" | "revoked") {
     setSharingLoading(true)
     try {
-      await setExternalPortalAccountStatusAction({ account_id: accountId, project_id: project.id, status })
+      unwrapAction(await setExternalPortalAccountStatusAction({ account_id: accountId, project_id: project.id, status }))
       setExternalAccounts((prev) =>
         prev.map((account) =>
           account.id === accountId
@@ -396,7 +398,7 @@ export function ProjectDetailClient({
   async function handleClearPin(tokenId: string) {
     setSharingLoading(true)
     try {
-      await removePortalTokenPinAction({ token_id: tokenId })
+      unwrapAction(await removePortalTokenPinAction({ token_id: tokenId }))
       setPortalTokensState((prev) =>
         prev.map((token) => (token.id === tokenId ? { ...token, pin_required: false } : token)),
       )
@@ -452,7 +454,7 @@ export function ProjectDetailClient({
 
     setTeamLoading(true)
     try {
-      const added = await addProjectMembersAction(project.id, { userIds, roleId })
+      const added = unwrapAction(await addProjectMembersAction(project.id, { userIds, roleId }))
       setTeamMembers((prev) => {
         const map = new Map(prev.map((member) => [member.user_id, member]))
         added.forEach((member) => map.set(member.user_id, member))
@@ -475,7 +477,7 @@ export function ProjectDetailClient({
   async function handleRemoveMember(memberId: string) {
     setTeamLoading(true)
     try {
-      await removeProjectMemberAction(project.id, memberId)
+      unwrapAction(await removeProjectMemberAction(project.id, memberId))
       setTeamMembers((prev) => prev.filter((member) => member.id !== memberId))
       await loadTeamDirectory()
       toast.success("Removed from project")
@@ -490,7 +492,7 @@ export function ProjectDetailClient({
   async function handleRoleChange(memberId: string, roleId: string) {
     setTeamLoading(true)
     try {
-      const updated = await updateProjectMemberRoleAction(project.id, memberId, roleId)
+      const updated = unwrapAction(await updateProjectMemberRoleAction(project.id, memberId, roleId))
       setTeamMembers((prev) => prev.map((member) => (member.id === memberId ? updated : member)))
       await loadTeamDirectory()
       toast.success("Role updated")
@@ -510,7 +512,7 @@ export function ProjectDetailClient({
     }
     setTeamLoading(true)
     try {
-      const added = await addProjectMembersAction(project.id, { userIds: [userId], roleId })
+      const added = unwrapAction(await addProjectMembersAction(project.id, { userIds: [userId], roleId }))
       setTeamMembers((prev) => {
         const map = new Map(prev.map((member) => [member.user_id, member]))
         added.forEach((member) => map.set(member.user_id, member))
@@ -541,7 +543,7 @@ export function ProjectDetailClient({
   async function handleAddVendor(input: ProjectVendorInput) {
     setTeamLoading(true)
     try {
-      await addProjectVendorAction(project.id, input)
+      unwrapAction(await addProjectVendorAction(project.id, input))
       const refreshed = await getProjectVendorsAction(project.id)
       setProjectVendorsState(refreshed)
       toast.success("Added to directory")
@@ -556,14 +558,14 @@ export function ProjectDetailClient({
   async function handleAssignExistingVendor(entity: { type: "company" | "contact"; id: string }) {
     setAssigningVendor(true)
     try {
-      await addProjectVendorAction(project.id, {
+      unwrapAction(await addProjectVendorAction(project.id, {
         project_id: project.id,
         company_id: entity.type === "company" ? entity.id : undefined,
         contact_id: entity.type === "contact" ? entity.id : undefined,
         role: vendorRole,
         scope: vendorScope || undefined,
         notes: vendorNotes || undefined,
-      })
+      }))
       const refreshed = await getProjectVendorsAction(project.id)
       setProjectVendorsState(refreshed)
       setSelectedVendorEntity(null)
@@ -585,7 +587,7 @@ export function ProjectDetailClient({
     }
     setAssigningVendor(true)
     try {
-      await createAndAssignVendorAction(project.id, {
+      unwrapAction(await createAndAssignVendorAction(project.id, {
         kind: newVendorKind,
         name: newVendorName.trim(),
         email: newVendorEmail.trim() || undefined,
@@ -596,7 +598,7 @@ export function ProjectDetailClient({
         role: vendorRole,
         scope: vendorScope || undefined,
         notes: vendorNotes || undefined,
-      })
+      }))
       const refreshed = await getProjectVendorsAction(project.id)
       setProjectVendorsState(refreshed)
       setCreateNewMode(false)
@@ -617,7 +619,7 @@ export function ProjectDetailClient({
   async function handleRemoveVendor(vendorId: string) {
     setTeamLoading(true)
     try {
-      await removeProjectVendorAction(project.id, vendorId)
+      unwrapAction(await removeProjectVendorAction(project.id, vendorId))
       setProjectVendorsState((prev) => prev.filter((v) => v.id !== vendorId))
       toast.success("Removed from project")
     } catch (error) {
@@ -631,7 +633,7 @@ export function ProjectDetailClient({
   async function handleUpdateVendor(vendorId: string, updates: Partial<Pick<ProjectVendorInput, "role" | "scope" | "notes">>) {
     setTeamLoading(true)
     try {
-      await updateProjectVendorAction(project.id, vendorId, updates)
+      unwrapAction(await updateProjectVendorAction(project.id, vendorId, updates))
       const refreshed = await getProjectVendorsAction(project.id)
       setProjectVendorsState(refreshed)
       toast.success("Updated")

@@ -815,7 +815,7 @@ export function InvoicesClient({
     setPackageActionInvoiceId(invoice.id)
     setPackageActionKind("generate")
     try {
-      const summary = await generateOwnerBillingPackageAction({ projectId: invoice.project_id, invoiceId: invoice.id })
+      const summary = unwrapAction(await generateOwnerBillingPackageAction({ projectId: invoice.project_id, invoiceId: invoice.id }))
       setPackageSummaries((prev) => [summary, ...prev.filter((item) => item.invoice_id !== invoice.id)])
       toast.success("Backup package generated", {
         description: `${summary.cost_count} costs and ${summary.proof_count} proof files captured.`,
@@ -840,7 +840,7 @@ export function InvoicesClient({
     setPackageActionInvoiceId(invoice.id)
     setPackageActionKind("share")
     try {
-      const shared = await shareOwnerBillingPackageAction({ projectId: invoice.project_id, packageId: summary.package_id })
+      const shared = unwrapAction(await shareOwnerBillingPackageAction({ projectId: invoice.project_id, packageId: summary.package_id }))
       setPackageSummaries((prev) => [shared, ...prev.filter((item) => item.invoice_id !== invoice.id)])
       setItems((prev) => prev.map((item) => (item.id === invoice.id ? { ...item, client_visible: true } : item)))
       toast.success("Backup package shared", {

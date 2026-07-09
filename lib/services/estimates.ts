@@ -1,9 +1,11 @@
 import { z } from "zod"
 
+import { calculateEstimateTotals } from "@/lib/financials/estimate-totals"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 
 import { requireOrgContext } from "@/lib/services/context"
+import { requirePermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 const estimateLineSchema = z.object({
@@ -18,6 +20,10 @@ const estimateLineSchema = z.object({
   notes: z.string().optional(),
   /** Client-selectable upgrade/add-on; excluded from the base total. */
   is_optional: z.boolean().optional(),
+  /** Allowance line: included in the total as a placeholder budget the client can reallocate. */
+  is_allowance: z.boolean().optional(),
+  /** Sub bid this line's cost basis was pulled from (estimate builder "Use bid"). */
+  source_bid_submission_id: z.string().uuid().optional(),
   metadata: z.record(z.any()).optional(),
 })
 
@@ -34,6 +40,10 @@ function buildLineMetadata(line: EstimateLine): Record<string, any> {
   else delete metadata.notes
   if (line.is_optional) metadata.is_optional = true
   else delete metadata.is_optional
+  if (line.is_allowance) metadata.is_allowance = true
+  else delete metadata.is_allowance
+  if (line.source_bid_submission_id) metadata.source_bid_submission_id = line.source_bid_submission_id
+  else delete metadata.source_bid_submission_id
   return metadata
 }
 
@@ -88,90 +98,7 @@ function stripNul(value: string | null | undefined): string | null | undefined {
   return typeof value === "string" ? value.split(String.fromCharCode(0)).join("") : value
 }
 
-function calculateTotals(
-  lines: z.infer<typeof estimateLineSchema>[],
-  taxRate = 0,
-): { subtotal: number; tax: number; total: number } {
-  const subtotal = lines.reduce((sum, line) => {
-    // Optional add-ons and group headers never contribute to the base total.
-    if (line.is_optional || line.item_type === "group") return sum
-    const base = (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
-    const markup = Math.round(base * (line.markup_pct ?? 0) / 100)
-    return sum + base + markup
-  }, 0)
-
-  const tax = Math.round(subtotal * (taxRate ?? 0) / 100)
-  return { subtotal, tax, total: subtotal + tax }
-}
-
-export async function createEstimateFromTemplate({
-  templateId,
-  projectId,
-  title,
-  tax_rate,
-  orgId,
-}: {
-  templateId: string
-  projectId: string
-  title: string
-  tax_rate?: number
-  orgId?: string
-}) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-
-  const { data: template, error: templateError } = await supabase
-    .from("estimate_templates")
-    .select("id, org_id, name, lines")
-    .eq("id", templateId)
-    .eq("org_id", resolvedOrgId)
-    .maybeSingle()
-
-  if (templateError || !template) {
-    throw new Error("Template not found")
-  }
-
-  const parsedLines = estimateLineSchema.array().parse(template.lines ?? [])
-  const totals = calculateTotals(parsedLines, tax_rate ?? 0)
-
-  const { data: estimate, error: estimateError } = await supabase
-    .from("estimates")
-    .insert({
-      org_id: resolvedOrgId,
-      project_id: projectId,
-      title,
-      status: "draft",
-      version: 1,
-      subtotal_cents: totals.subtotal,
-      tax_cents: totals.tax,
-      total_cents: totals.total,
-      metadata: { tax_rate: tax_rate ?? 0, template_id: templateId },
-      created_by: userId,
-    })
-    .select("*")
-    .single()
-
-  if (estimateError || !estimate) {
-    throw new Error(`Failed to create estimate: ${estimateError?.message}`)
-  }
-
-  const itemsPayload = buildItemsPayload(resolvedOrgId, estimate.id, parsedLines)
-
-  const { error: lineError } = await supabase.from("estimate_items").insert(itemsPayload)
-  if (lineError) {
-    throw new Error(`Failed to create estimate lines: ${lineError.message}`)
-  }
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "insert",
-    entityType: "estimate",
-    entityId: estimate.id,
-    after: { ...estimate, items: itemsPayload },
-  })
-
-  return { estimate, items: itemsPayload }
-}
+const calculateTotals = calculateEstimateTotals
 
 export async function createEstimate({
   project_id,
@@ -210,6 +137,7 @@ export async function createEstimate({
 }) {
   const parsedLines = estimateLineSchema.array().min(1).parse(lines)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
 
   const totals = calculateTotals(parsedLines, tax_rate ?? 0)
 
@@ -400,68 +328,6 @@ async function updateProspectStatusOnEstimateCreation({
   }
 }
 
-export async function updateEstimateLines({
-  estimateId,
-  lines,
-  tax_rate,
-  orgId,
-}: {
-  estimateId: string
-  lines: z.infer<typeof estimateLineSchema>[]
-  tax_rate?: number
-  orgId?: string
-}) {
-  const parsedLines = estimateLineSchema.array().min(1).parse(lines)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-
-  const totals = calculateTotals(parsedLines, tax_rate ?? 0)
-
-  await supabase.from("estimate_items").delete().eq("estimate_id", estimateId).eq("org_id", resolvedOrgId)
-
-  const itemsPayload = buildItemsPayload(resolvedOrgId, estimateId, parsedLines)
-
-  const { error: lineError } = await supabase.from("estimate_items").insert(itemsPayload)
-  if (lineError) {
-    throw new Error(`Failed to update estimate lines: ${lineError.message}`)
-  }
-
-  const { data: existing } = await supabase
-    .from("estimates")
-    .select("metadata")
-    .eq("id", estimateId)
-    .eq("org_id", resolvedOrgId)
-    .maybeSingle()
-
-  const { error: estimateError } = await supabase
-    .from("estimates")
-    .update({
-      subtotal_cents: totals.subtotal,
-      tax_cents: totals.tax,
-      total_cents: totals.total,
-      metadata: {
-        ...(existing?.metadata ?? {}),
-        tax_rate: tax_rate ?? (existing?.metadata as any)?.tax_rate ?? 0,
-      },
-    })
-    .eq("id", estimateId)
-    .eq("org_id", resolvedOrgId)
-
-  if (estimateError) {
-    throw new Error(`Failed to update estimate totals: ${estimateError.message}`)
-  }
-
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "update",
-    entityType: "estimate",
-    entityId: estimateId,
-    after: { totals, items: itemsPayload },
-  })
-
-  return { totals, items: itemsPayload }
-}
-
 export async function updateEstimateStatus({
   estimateId,
   status,
@@ -472,17 +338,24 @@ export async function updateEstimateStatus({
   orgId?: string
 }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
 
+  // Signed/executed estimates are legal documents — their status can only move
+  // through the e-sign pipeline, never through this manual bookkeeping path.
   const { data, error } = await supabase
     .from("estimates")
     .update({ status })
     .eq("id", estimateId)
     .eq("org_id", resolvedOrgId)
+    .not("status", "in", '("client_signed","executed","converted_to_project")')
     .select("*")
-    .single()
+    .maybeSingle()
 
-  if (error || !data) {
-    throw new Error(`Failed to update estimate status: ${error?.message}`)
+  if (error) {
+    throw new Error(`Failed to update estimate status: ${error.message}`)
+  }
+  if (!data) {
+    throw new Error("This estimate has been signed and its status can no longer be changed manually.")
   }
 
   await recordAudit({
@@ -500,6 +373,7 @@ export async function updateEstimateStatus({
 export async function duplicateEstimate({ estimateId, orgId }: { estimateId: string; orgId?: string }) {
   const supabase = createServiceSupabaseClient()
   const { supabase: scoped, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("org.member", { supabase: scoped, orgId: resolvedOrgId, userId })
 
   const { data: existing } = await supabase
     .from("estimates")
@@ -578,6 +452,7 @@ export async function duplicateEstimate({ estimateId, orgId }: { estimateId: str
 export async function reviseEstimate({ estimateId, orgId }: { estimateId: string; orgId?: string }) {
   const supabase = createServiceSupabaseClient()
   const { supabase: scoped, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("org.member", { supabase: scoped, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: loadError } = await supabase
     .from("estimates")
@@ -588,6 +463,10 @@ export async function reviseEstimate({ estimateId, orgId }: { estimateId: string
 
   if (loadError || !existing) {
     throw new Error("Estimate not found")
+  }
+
+  if (["executed", "converted_to_project"].includes(existing.status)) {
+    throw new Error("This estimate is executed. Changes after execution go through a change order.")
   }
 
   const versionGroupId = (existing.version_group_id as string | null) ?? existing.id
@@ -701,16 +580,21 @@ export async function createEstimateVersion({
 }) {
   const parsedLines = estimateLineSchema.array().min(1).parse(input.lines)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: loadError } = await supabase
     .from("estimates")
-    .select("id, project_id, prospect_id, opportunity_id, version, version_group_id, currency, metadata")
+    .select("id, project_id, prospect_id, opportunity_id, status, version, version_group_id, currency, metadata")
     .eq("id", estimateId)
     .eq("org_id", resolvedOrgId)
     .single()
 
   if (loadError || !existing) {
     throw new Error("Estimate not found")
+  }
+
+  if (["executed", "converted_to_project"].includes(existing.status as string)) {
+    throw new Error("This estimate is executed. Changes after execution go through a change order.")
   }
 
   const versionGroupId = (existing.version_group_id as string | null) ?? existing.id

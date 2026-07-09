@@ -16,6 +16,8 @@ import {
 import { setFollowUpAction } from "@/app/(app)/crm/actions"
 import { useToast } from "@/hooks/use-toast"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface FollowUpDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -55,10 +57,10 @@ export function FollowUpDialog({ open, onOpenChange, contactId, contactName, cur
     startTransition(async () => {
       try {
         const datetime = date && time ? `${date}T${time}:00.000Z` : null
-        await setFollowUpAction({
+        unwrapAction(await setFollowUpAction({
           contact_id: contactId,
           next_follow_up_at: datetime,
-        })
+        }))
         router.refresh()
         toast({ title: datetime ? "Follow-up scheduled" : "Follow-up cleared" })
         onOpenChange(false)
@@ -71,10 +73,10 @@ export function FollowUpDialog({ open, onOpenChange, contactId, contactName, cur
   const handleClear = () => {
     startTransition(async () => {
       try {
-        await setFollowUpAction({
+        unwrapAction(await setFollowUpAction({
           contact_id: contactId,
           next_follow_up_at: null,
-        })
+        }))
         router.refresh()
         toast({ title: "Follow-up cleared" })
         onOpenChange(false)

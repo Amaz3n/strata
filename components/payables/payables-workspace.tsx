@@ -12,12 +12,10 @@ import {
   ChevronRight,
   ChevronsUpDown,
   ExternalLink,
-  GripVertical,
   Layers,
   MoreHorizontal,
   Plus,
   Receipt,
-  Search,
   Trash2,
 } from "lucide-react"
 import { toast } from "sonner"
@@ -42,6 +40,9 @@ import {
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import { type AttachedFile } from "@/components/files"
 import { CompanyForm } from "@/components/companies/company-form"
+import { WorkspaceShell } from "@/components/financials/workspace/workspace-shell"
+import { WorkspaceListPanel } from "@/components/financials/workspace/workspace-list-panel"
+import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
 import { getCompanyAction, listCompaniesAction } from "@/app/(app)/companies/actions"
 import {
   attachFileAction,
@@ -55,6 +56,7 @@ import {
   syncProjectVendorBillToQBOAction,
   updateProjectVendorBillStatusAction,
 } from "@/app/(app)/projects/[id]/payables/actions"
+import { qboTxnUrl } from "@/lib/integrations/accounting/qbo-links"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import {
   getPayableSyncBlockReason,
@@ -76,6 +78,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+
+import { unwrapAction } from "@/lib/action-result"
 
 type QBOAccountOption = { id: string; name: string; fullyQualifiedName?: string }
 type ProjectBillingModel = "fixed_price" | "cost_plus_percent" | "cost_plus_fixed_fee" | "cost_plus_gmp" | "time_and_materials"
@@ -195,11 +199,11 @@ export function PayablesWorkspace({
     clearOptimisticSync(selectedBill.id)
     startTransition(async () => {
       try {
-        const result = await updateProjectVendorBillStatusAction(projectId, selectedBill.id, {
+        const result = unwrapAction(await updateProjectVendorBillStatusAction(projectId, selectedBill.id, {
           status: selectedBill.status as any,
           expected_updated_at: selectedBill.updated_at,
           company_id: company.id,
-        })
+        }))
         if (!result.success) {
           toast.error(result.error)
           return
@@ -243,40 +247,6 @@ export function PayablesWorkspace({
   const [pendingSelection, setPendingSelection] = useState<string | null | undefined>(undefined)
   const approveShortcutRef = useRef<(() => void) | null>(null)
 
-  const [rightPaneWidth, setRightPaneWidth] = useState(550)
-  const [isDraggingBorder, setIsDraggingBorder] = useState(false)
-
-  const startDragging = (e: React.MouseEvent) => {
-    e.preventDefault()
-    setIsDraggingBorder(true)
-  }
-
-  useEffect(() => {
-    if (!isDraggingBorder) return
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const newWidth = window.innerWidth - e.clientX
-      const minWidth = 280
-      const maxWidth = Math.min(850, window.innerWidth * 0.6)
-      
-      if (newWidth >= minWidth && newWidth <= maxWidth) {
-        setRightPaneWidth(newWidth)
-      }
-    }
-
-    const handleMouseUp = () => {
-      setIsDraggingBorder(false)
-    }
-
-    window.addEventListener("mousemove", handleMouseMove)
-    window.addEventListener("mouseup", handleMouseUp)
-
-    return () => {
-      window.removeEventListener("mousemove", handleMouseMove)
-      window.removeEventListener("mouseup", handleMouseUp)
-    }
-  }, [isDraggingBorder])
-
   const selectedBill = useMemo(
     () => bills.find((bill) => bill.id === selectedBillId) ?? null,
     [bills, selectedBillId],
@@ -302,17 +272,13 @@ export function PayablesWorkspace({
     [costCodes, costCodesEnabled],
   )
   const projectName = (id: string) => projects.find((project) => project.id === id)?.name ?? "Project"
+  const defaultBillableToCustomer = useCallback(
+    (lineProjectId?: string | null) =>
+      !selectedIsVendorCredit && supportsBillableCosts(projects.find((project) => project.id === lineProjectId)?.billingModel),
+    [projects, selectedIsVendorCredit],
+  )
   const getExpenseAccountName = (id?: string) => qboExpenseAccounts.find((account) => account.id === id)?.name
   const getApAccountName = (id?: string) => qboApAccounts.find((account) => account.id === id)?.name
-
-  // Hide immersive chrome (mobile bottom nav) while the workspace is open.
-  useEffect(() => {
-    if (typeof window === "undefined" || !selectedBill) return
-    window.dispatchEvent(new CustomEvent("arc-immersive-view", { detail: { active: true } }))
-    return () => {
-      window.dispatchEvent(new CustomEvent("arc-immersive-view", { detail: { active: false } }))
-    }
-  }, [selectedBill])
 
   const isDirty = useMemo(() => {
     if (!selectedBill) return false
@@ -346,7 +312,7 @@ export function PayablesWorkspace({
             amountDollars: ((selectedBill.total_cents ?? 0) / 100).toFixed(2),
             qboExpenseAccountId: selectedBill.qbo_expense_account_id ?? qboDefaults.expenseAccountId ?? "",
             qboApAccountId: selectedBill.qbo_ap_account_id ?? qboDefaults.apAccountId ?? "",
-            billableToCustomer: false,
+            billableToCustomer: defaultBillableToCustomer(selectedBill.project_id),
           },
         ])
     return (
@@ -371,6 +337,7 @@ export function PayablesWorkspace({
     qboExpenseAccountId,
     retainage,
     selectedBill,
+    defaultBillableToCustomer,
     sortedCostCodes,
     splitLines,
   ])
@@ -391,17 +358,14 @@ export function PayablesWorkspace({
     onSelectBill(next)
   }
 
-  // Keyboard triage: Escape closes, j/k move through the rail, a approves pending bills.
+  // Keyboard triage: j/k move through the rail, a approves pending bills.
+  // (Escape-to-close is owned by WorkspaceShell.)
   useEffect(() => {
     if (!selectedBill) return
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
       const tagName = target?.tagName?.toLowerCase()
       const isTextEntry = tagName === "input" || tagName === "textarea" || target?.getAttribute("role") === "combobox"
-      if (event.key === "Escape") {
-        requestSelectBill(null)
-        return
-      }
       if (isTextEntry || event.metaKey || event.ctrlKey || event.altKey) return
       if (event.key === "j" || event.key === "k") {
         const index = filtered.findIndex((bill) => bill.id === selectedBill.id)
@@ -458,11 +422,11 @@ export function PayablesWorkspace({
               amountDollars: ((selectedBill.total_cents ?? 0) / 100).toFixed(2),
               qboExpenseAccountId: selectedBill.qbo_expense_account_id ?? qboDefaults.expenseAccountId ?? "",
               qboApAccountId: selectedBill.qbo_ap_account_id ?? qboDefaults.apAccountId ?? "",
-              billableToCustomer: false,
+              billableToCustomer: defaultBillableToCustomer(selectedBill.project_id),
             },
           ],
     )
-  }, [selectedBill, sortedCostCodes, qboDefaults, costCodesEnabled])
+  }, [selectedBill, sortedCostCodes, qboDefaults, costCodesEnabled, defaultBillableToCustomer])
 
   // Load attachments for the selected bill.
   useEffect(() => {
@@ -528,14 +492,14 @@ export function PayablesWorkspace({
       formData.append("file", file)
       formData.append("projectId", projectId)
       formData.append("category", "financials")
-      const uploaded = await uploadFileAction(formData)
-      await attachFileAction(uploaded.id, "vendor_bill", selectedBill.id, projectId, linkRole)
+      const uploaded = unwrapAction(await uploadFileAction(formData))
+      unwrapAction(await attachFileAction(uploaded.id, "vendor_bill", selectedBill.id, projectId, linkRole))
     }
     await refreshAttachments()
   }
 
   const handleDetach = async (linkId: string) => {
-    await detachFileLinkAction(linkId)
+    unwrapAction(await detachFileLinkAction(linkId))
     await refreshAttachments()
   }
 
@@ -554,7 +518,7 @@ export function PayablesWorkspace({
     startTransition(async () => {
       try {
         const amountCents = paymentAmount.trim() ? Math.round(Number(paymentAmount) * 100) : undefined
-        const result = await updateProjectVendorBillStatusAction(projectId, selectedBill.id, {
+        const result = unwrapAction(await updateProjectVendorBillStatusAction(projectId, selectedBill.id, {
           status,
           expected_updated_at: selectedBill.updated_at,
           qbo_expense_account_id: qboExpenseAccountId || qboDefaults.expenseAccountId,
@@ -563,7 +527,7 @@ export function PayablesWorkspace({
           payment_reference: status === "paid" || status === "partial" ? paymentRef || undefined : undefined,
           payment_date: status === "paid" || status === "partial" ? paymentDate : undefined,
           payment_amount_cents: status === "paid" || status === "partial" ? amountCents : undefined,
-        })
+        }))
         if (!result.success) {
           toast.error(result.error)
           return
@@ -614,7 +578,7 @@ export function PayablesWorkspace({
     clearOptimisticSync(selectedBill.id)
     startTransition(async () => {
       try {
-        const result = await updateProjectVendorBillStatusAction(projectId, selectedBill.id, {
+        const result = unwrapAction(await updateProjectVendorBillStatusAction(projectId, selectedBill.id, {
           status: selectedBill.status as any,
           expected_updated_at: selectedBill.updated_at,
           bill_number: billNumber.trim() || undefined,
@@ -627,7 +591,7 @@ export function PayablesWorkspace({
           qbo_expense_account_name: getExpenseAccountName(qboExpenseAccountId),
           qbo_ap_account_id: qboApAccountId || undefined,
           qbo_ap_account_name: getApAccountName(qboApAccountId),
-        })
+        }))
         if (!result.success) {
           toast.error(result.error)
           return
@@ -644,11 +608,11 @@ export function PayablesWorkspace({
     if (!selectedBill || payableHeldRetainageCents(selectedBill) <= 0) return
     clearOptimisticSync(selectedBill.id)
     startTransition(async () => {
-      const result = await updateProjectVendorBillStatusAction(projectId, selectedBill.id, {
+      const result = unwrapAction(await updateProjectVendorBillStatusAction(projectId, selectedBill.id, {
         status: selectedBill.status as any,
         expected_updated_at: selectedBill.updated_at,
         retainage_percent: 0,
-      })
+      }))
       if (result.success) {
         setRetainage("0")
         toast.success("Retainage released")
@@ -666,7 +630,7 @@ export function PayablesWorkspace({
       return
     }
     startTransition(async () => {
-      const result = await reassignProjectPayableAction(projectId, selectedBill.id, creditProjectId)
+      const result = unwrapAction(await reassignProjectPayableAction(projectId, selectedBill.id, creditProjectId))
       if (result.success) {
         toast.success(selectedIsVendorCredit ? "Vendor credit reassigned" : "Bill reassigned")
         router.push(`/projects/${result.projectId}/financials/payables?bill=${selectedBill.id}`)
@@ -685,7 +649,7 @@ export function PayablesWorkspace({
       return
     }
     startTransition(async () => {
-      const result = await syncProjectVendorBillToQBOAction(projectId, selectedBill.id)
+      const result = unwrapAction(await syncProjectVendorBillToQBOAction(projectId, selectedBill.id))
       if (result.success) {
         setOptimisticSyncedBillIds((prev) => new Set(prev).add(selectedBill.id))
         toast.success("Synced to QuickBooks")
@@ -713,7 +677,7 @@ export function PayablesWorkspace({
     }
     startTransition(async () => {
       try {
-        const company = await ensureProjectVendorCompanyForPayableAction(projectId, selectedBill.id)
+        const company = unwrapAction(await ensureProjectVendorCompanyForPayableAction(projectId, selectedBill.id))
         setVendorEditorCompany(company)
         setVendorEditorCompanyId(company.id)
         setVendorEditorOpen(true)
@@ -726,83 +690,62 @@ export function PayablesWorkspace({
     })
   }
 
-  return (
-    <div className="fixed inset-0 z-50 flex bg-background">
-      {/* LEFT: payables list */}
-      <aside className="hidden w-[300px] shrink-0 flex-col border-r bg-muted/10 md:flex">
-        <button
-          type="button"
-          onClick={() => requestSelectBill(null)}
-          className="flex h-16 shrink-0 items-center gap-2 border-b px-4 text-left hover:bg-muted/50 transition-colors w-full group"
-          title="Back to payables"
-        >
-          <ArrowLeft className="h-4 w-4 text-muted-foreground group-hover:-translate-x-0.5 transition-transform" />
-          <span className="text-sm font-semibold">Payables</span>
-        </button>
-        <div className="border-b px-3 py-2">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search vendor, bill..." className="h-9 pl-8" />
+  const listPanel = (
+    <WorkspaceListPanel<VendorBillSummary, PayableQueue>
+      title="Payables"
+      onBack={() => requestSelectBill(null)}
+      search={search}
+      onSearchChange={setSearch}
+      searchPlaceholder="Search vendor, bill..."
+      queues={[
+        { key: "all", label: "All", count: counts.all },
+        { key: "overdue", label: "Late", count: counts.overdue },
+        { key: "due_soon", label: "Soon", count: counts.due_soon },
+        { key: "needs_review", label: "Review", count: counts.needs_review },
+        { key: "ready", label: accountingEnabled ? "Ready" : "Pay", count: counts.ready },
+        { key: "synced", label: accountingEnabled ? "Synced" : "Paid", count: counts.synced },
+      ]}
+      activeQueue={queueFilter}
+      onQueueChange={setQueueFilter}
+      items={filtered}
+      getKey={(bill) => bill.id}
+      isActive={(bill) => bill.id === selectedBill.id}
+      onSelect={(bill) => requestSelectBill(bill.id)}
+      emptyLabel="No payables match."
+      renderRow={(bill) => (
+        <>
+          <div className="flex items-center justify-between gap-2">
+            <span className="truncate text-sm font-semibold">{vendorLabel(bill)}</span>
+            <span className="shrink-0 text-sm font-semibold tabular-nums">
+              {formatMoneyFromCents(bill.project_amount_cents ?? bill.total_cents ?? 0)}
+            </span>
           </div>
-          <div className="mt-2 grid grid-cols-3 gap-1">
-            {([
-              { key: "all", label: "All" },
-              { key: "overdue", label: "Late" },
-              { key: "due_soon", label: "Soon" },
-              { key: "needs_review", label: "Review" },
-              { key: "ready", label: accountingEnabled ? "Ready" : "Pay" },
-              { key: "synced", label: accountingEnabled ? "Synced" : "Paid" },
-            ] as const).map((chip) => (
-              <button
-                key={chip.key}
-                type="button"
-                onClick={() => setQueueFilter(chip.key)}
-                className={cn(
-                  "flex items-center justify-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium transition-colors",
-                  queueFilter === chip.key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted",
-                )}
-              >
-                {chip.label}
-                <span className="tabular-nums opacity-70">{counts[chip.key]}</span>
-              </button>
-            ))}
+          <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+            <span className={dueDateClassName(bill.due_date, bill.status)}>
+              {bill.due_date
+                ? getDueState(bill.due_date, bill.status).label.replace(new RegExp(`, ${new Date().getFullYear()}$`), "")
+                : "No due date"}
+            </span>
+            {bill.is_shared ? <Layers className="h-3 w-3 shrink-0 text-primary" /> : null}
           </div>
-        </div>
-        <div className="min-h-0 flex-1 overflow-auto">
-          {filtered.map((bill) => {
-            const amount = bill.project_amount_cents ?? bill.total_cents ?? 0
-            const active = bill.id === selectedBill.id
-            return (
-              <button
-                key={bill.id}
-                type="button"
-                onClick={() => requestSelectBill(bill.id)}
-                className={cn(
-                  "flex w-full flex-col gap-1 border-b px-3 py-2.5 text-left transition-colors",
-                  active ? "bg-primary/10" : "hover:bg-muted/50",
-                )}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-sm font-semibold">{vendorLabel(bill)}</span>
-                  <span className="shrink-0 text-sm font-semibold tabular-nums">{formatMoneyFromCents(amount)}</span>
-                </div>
-                <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-                  <span className={dueDateClassName(bill.due_date, bill.status)}>
-                    {bill.due_date ? getDueState(bill.due_date, bill.status).label.replace(new RegExp(`, ${new Date().getFullYear()}$`), "") : "No due date"}
-                  </span>
-                  {bill.is_shared ? <Layers className="h-3 w-3 shrink-0 text-indigo-500" /> : null}
-                </div>
-              </button>
-            )
-          })}
-          {filtered.length === 0 ? (
-            <div className="px-3 py-8 text-center text-xs text-muted-foreground">No payables match.</div>
-          ) : null}
-        </div>
-      </aside>
+        </>
+      )}
+    />
+  )
 
-      {/* CENTER: overview / edit */}
-      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+  const documentPane = (
+    <PayableDocumentPane
+      attachments={attachments}
+      loading={attachmentsLoading}
+      onAttach={handleAttach}
+      onDetach={handleDetach}
+      projectId={projectId}
+    />
+  )
+
+  return (
+    <>
+      <WorkspaceShell open onClose={() => requestSelectBill(null)} listPanel={listPanel} documentPane={documentPane}>
         <div className="flex h-16 shrink-0 items-center justify-between gap-3 border-b px-4">
           <div className="flex min-w-0 items-center gap-2">
             <Button variant="ghost" size="icon" className="h-8 w-8 md:hidden" onClick={() => requestSelectBill(null)} title="Back">
@@ -832,40 +775,55 @@ export function PayablesWorkspace({
         </div>
 
         <div className="min-h-0 flex-1 space-y-8 overflow-y-auto px-4 py-6 sm:px-6">
-          {/* Amount hero */}
-          <div className="rounded-xl border bg-muted/10 p-5 space-y-4">
-            <div className="flex items-center justify-between">
+          {/* Amount summary */}
+          <section className="space-y-3 border bg-card p-4">
+            <div className="flex flex-wrap items-end justify-between gap-4">
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Total amount</p>
-                <p className="mt-1 text-3xl font-bold tabular-nums tracking-tight">{formatMoneyFromCents(billTotalCents)}</p>
+                <p className="microlabel">Total amount</p>
+                <p className="mt-1 font-mono text-2xl font-medium tabular-nums tracking-tight">{formatMoneyFromCents(billTotalCents)}</p>
               </div>
-              <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-right">
-                {selectedIsVendorCredit ? (
-                  <>
-                    <span className="col-span-2 text-[10px] font-bold uppercase tracking-widest text-violet-700">Reduces project cost</span>
-                    <span className="col-span-2 text-sm font-semibold text-muted-foreground">Managed in QuickBooks</span>
-                  </>
-                ) : (
-                  <>
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Paid</span>
-                    <span className="text-sm font-semibold tabular-nums text-emerald-600">{formatMoneyFromCents(selectedBill.paid_cents ?? 0)}</span>
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Retained</span>
-                    <span className="text-sm font-semibold tabular-nums text-slate-600 dark:text-slate-300">{formatMoneyFromCents(payableHeldRetainageCents(selectedBill))}</span>
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Balance</span>
-                    <span className="text-sm font-semibold tabular-nums text-amber-600">{formatMoneyFromCents(balanceCents)}</span>
-                  </>
-                )}
-              </div>
+              {selectedIsVendorCredit ? (
+                <div className="text-right text-xs text-muted-foreground">
+                  <p className="microlabel">Vendor credit</p>
+                  <p className="mt-1">Reduces project cost · managed in QuickBooks</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-3 gap-x-6 text-right">
+                  <span className="microlabel">Paid</span>
+                  <span className="microlabel">Retained</span>
+                  <span className="microlabel">Balance</span>
+                  <span className="mt-1 font-mono text-sm font-medium tabular-nums text-success">{formatMoneyFromCents(selectedBill.paid_cents ?? 0)}</span>
+                  <span className="mt-1 font-mono text-sm font-medium tabular-nums text-muted-foreground">{formatMoneyFromCents(payableHeldRetainageCents(selectedBill))}</span>
+                  <span className={cn("mt-1 font-mono text-sm font-medium tabular-nums", balanceCents > 0 ? "text-foreground" : "text-muted-foreground")}>{formatMoneyFromCents(balanceCents)}</span>
+                </div>
+              )}
             </div>
 
             {selectedBill.over_budget ? (
-              <div className="rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive">
+              <div className="border border-destructive/20 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive">
                 This payable exceeds the linked commitment. Review the contract balance before approval.
               </div>
             ) : null}
 
+            {selectedBill.commitment_id && (selectedBill.commitment_total_cents ?? 0) > 0 ? (
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3 text-xs text-muted-foreground">
+                <span className="truncate">{selectedBill.commitment_title ?? "Commitment"}</span>
+                <span className="font-mono tabular-nums">
+                  Billed {formatMoneyFromCents(selectedBill.commitment_billed_cents ?? 0)} of {formatMoneyFromCents(selectedBill.commitment_total_cents)}
+                  {" · "}
+                  <span
+                    className={cn(
+                      (selectedBill.commitment_total_cents ?? 0) - (selectedBill.commitment_billed_cents ?? 0) < 0 && "font-medium text-destructive",
+                    )}
+                  >
+                    {formatMoneyFromCents((selectedBill.commitment_total_cents ?? 0) - (selectedBill.commitment_billed_cents ?? 0))} remaining
+                  </span>
+                </span>
+              </div>
+            ) : null}
+
             {selectedBill.approved_at ? (
-              <div className="rounded-md border bg-background px-3 py-2 text-xs text-muted-foreground">
+              <div className="border-t pt-3 text-xs text-muted-foreground">
                 Approved {format(new Date(selectedBill.approved_at), "MMM d, yyyy")} {selectedBill.approved_by ? `by ${selectedBill.approved_by}` : ""}
               </div>
             ) : null}
@@ -873,7 +831,7 @@ export function PayablesWorkspace({
             {accountingEnabled && (
               <div className="border-t pt-3 flex flex-wrap items-center justify-between gap-3 text-xs">
                 <div className="flex items-center gap-2">
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Sync status:</span>
+                  <span className="microlabel">Sync status</span>
                   {qboBadge(effectiveSyncStatus, selectedBill.qbo_sync_error)}
                   {selectedBill.qbo_id ? (
                     <a href={qboTransactionUrl(selectedBill)!} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
@@ -888,12 +846,12 @@ export function PayablesWorkspace({
                 ) : null}
               </div>
             )}
-          </div>
+          </section>
 
-          <div className="flex items-start justify-between gap-3 rounded-xl border bg-muted/5 p-4">
+          <div className="flex items-start justify-between gap-3 border bg-card p-4">
             {isChangingVendor ? (
               <div className="flex-1 space-y-3">
-                <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Change Vendor</Label>
+                <Label className="microlabel">Change Vendor</Label>
                 <div className="flex items-center gap-2">
                   <Popover open={vendorPickerOpen} onOpenChange={setVendorPickerOpen}>
                     <PopoverTrigger asChild>
@@ -936,7 +894,7 @@ export function PayablesWorkspace({
               </div>
             ) : (
               <div className="min-w-0">
-                <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Vendor</Label>
+                <Label className="microlabel">Vendor</Label>
                 <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2">
                   <span className="truncate text-base font-semibold">{selectedBill.company_name ?? vendorLabel(selectedBill)}</span>
                   {accountingEnabled ? qboVendorLinkBadge(selectedBill) : null}
@@ -971,15 +929,15 @@ export function PayablesWorkspace({
           </div>
 
           {/* Bill Details Section (Editable) */}
-          <section className="space-y-4 rounded-xl border bg-muted/5 p-4">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{selectedIsVendorCredit ? "Credit details" : "Bill details"}</h3>
+          <section className="space-y-4 border bg-card p-4">
+            <h3 className="microlabel">{selectedIsVendorCredit ? "Credit details" : "Bill details"}</h3>
             <div className="grid gap-4 sm:grid-cols-3">
               <div className="space-y-1.5">
-                <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">{selectedIsVendorCredit ? "Credit #" : "Invoice / Bill #"}</Label>
+                <Label className="microlabel">{selectedIsVendorCredit ? "Credit #" : "Invoice / Bill #"}</Label>
                 <Input value={billNumber} onChange={(e) => setBillNumber(e.target.value)} placeholder="e.g. INV-12345" className="h-10 text-sm font-semibold" />
               </div>
               <div className="space-y-1.5 flex flex-col">
-                <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Invoice Date</Label>
+                <Label className="microlabel">Invoice Date</Label>
                 <Popover>
                   <PopoverTrigger asChild>
                     <Button
@@ -1007,7 +965,7 @@ export function PayablesWorkspace({
                 </Popover>
               </div>
               <div className="space-y-1.5 flex flex-col">
-                <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Due Date</Label>
+                <Label className="microlabel">Due Date</Label>
                 <Popover>
                   <PopoverTrigger asChild>
                     <Button
@@ -1039,9 +997,9 @@ export function PayablesWorkspace({
 
           {/* Shared-across-projects affordance */}
           {selectedBill.is_shared && selectedBill.shared_projects && selectedBill.shared_projects.length > 1 ? (
-            <div className="space-y-2 rounded-xl border border-indigo-200 bg-indigo-50/50 p-4 dark:border-indigo-900/40 dark:bg-indigo-950/20">
-              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">
-                <Layers className="h-3.5 w-3.5" />
+            <div className="space-y-2 border bg-card p-4">
+              <div className="microlabel flex items-center gap-2">
+                <Layers className="h-3.5 w-3.5 text-primary" />
                 Shared across {selectedBill.shared_projects.length} projects
               </div>
               <div className="space-y-1">
@@ -1070,7 +1028,7 @@ export function PayablesWorkspace({
           {!selectedIsVendorCredit && selectedBill.status === "pending" ? (
             <Button variant="outline" className="group h-11 w-full justify-between" disabled={isPending} onClick={() => setStatus("approved")}>
               <span className="flex items-center gap-2">
-                <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                <CheckCircle2 className="h-4 w-4 text-success" />
                 Approve for payment
               </span>
               <ChevronRight className="h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
@@ -1079,12 +1037,12 @@ export function PayablesWorkspace({
 
           {/* Payment Details */}
           {!selectedIsVendorCredit && selectedBill.payments.length > 0 ? (
-            <div className="space-y-4 rounded-xl border border-emerald-100 bg-emerald-50/30 p-5 dark:border-emerald-900/30 dark:bg-emerald-950/10">
-              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
-                <CheckCircle2 className="h-3.5 w-3.5" />
+            <div className="space-y-4 border bg-card p-4">
+              <div className="microlabel flex items-center gap-2">
+                <CheckCircle2 className="h-3.5 w-3.5 text-success" />
                 Payment history
               </div>
-              <div className="divide-y rounded-lg border bg-background">
+              <div className="divide-y border bg-background">
                 {selectedBill.payments.map((payment) => (
                   <div key={payment.id} className="flex items-center justify-between gap-4 px-3 py-2.5 text-sm">
                     <div className="min-w-0">
@@ -1097,7 +1055,7 @@ export function PayablesWorkspace({
                         {payment.qbo_id ? ` • QBO ${payment.qbo_id}` : ""}
                       </p>
                     </div>
-                    <span className="shrink-0 font-semibold tabular-nums text-emerald-700 dark:text-emerald-300">
+                    <span className="shrink-0 font-mono font-medium tabular-nums text-success">
                       {formatMoneyFromCents(payment.amount_cents)}
                     </span>
                   </div>
@@ -1109,22 +1067,22 @@ export function PayablesWorkspace({
           {!selectedIsVendorCredit &&
           selectedBill.payments.length === 0 &&
           (selectedBill.status === "paid" || selectedBill.status === "partial") ? (
-            <div className="space-y-4 rounded-xl border border-emerald-100 bg-emerald-50/30 p-5 dark:border-emerald-900/30 dark:bg-emerald-950/10">
-              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
-                <CheckCircle2 className="h-3.5 w-3.5" />
+            <div className="space-y-4 border bg-card p-4">
+              <div className="microlabel flex items-center gap-2">
+                <CheckCircle2 className="h-3.5 w-3.5 text-success" />
                 Payment details
               </div>
               <div className="grid gap-4 sm:grid-cols-3">
                 <div className="space-y-1">
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Amount paid</span>
-                  <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">{formatMoneyFromCents(selectedBill.paid_cents ?? billTotalCents)}</p>
+                  <span className="microlabel">Amount paid</span>
+                  <p className="font-mono text-sm font-medium tabular-nums text-success">{formatMoneyFromCents(selectedBill.paid_cents ?? billTotalCents)}</p>
                 </div>
                 <div className="space-y-1">
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Method</span>
+                  <span className="microlabel">Method</span>
                   <p className="text-sm font-semibold capitalize">{selectedBill.payment_method || "—"}</p>
                 </div>
                 <div className="space-y-1">
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Reference</span>
+                  <span className="microlabel">Reference</span>
                   <p className="text-sm font-semibold">{selectedBill.payment_reference || "—"}</p>
                 </div>
               </div>
@@ -1132,21 +1090,21 @@ export function PayablesWorkspace({
           ) : null}
 
           {!selectedIsVendorCredit && (selectedBill.status === "approved" || selectedBill.status === "partial" || (selectedBill.status === "paid" && balanceCents > 0)) ? (
-            <div className="space-y-4 rounded-xl border border-blue-100 bg-blue-50/30 p-5 dark:border-blue-900/30 dark:bg-blue-950/10">
-              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-blue-700 dark:text-blue-300">
-                <Receipt className="h-3.5 w-3.5" />
+            <div className="space-y-4 border bg-card p-4">
+              <div className="microlabel flex items-center gap-2">
+                <Receipt className="h-3.5 w-3.5 text-primary" />
                 Record payment
               </div>
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-1.5">
-                  <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Amount</Label>
+                  <Label className="microlabel">Amount</Label>
                   <div className="relative">
                     <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-xs text-muted-foreground">$</span>
                     <Input className="h-10 pl-7 font-semibold" placeholder="0.00" value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value)} />
                   </div>
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Method</Label>
+                  <Label className="microlabel">Method</Label>
                   <Select value={paymentMethod} onValueChange={setPaymentMethod}>
                     <SelectTrigger className="h-10 w-full"><SelectValue /></SelectTrigger>
                     <SelectContent>
@@ -1160,7 +1118,7 @@ export function PayablesWorkspace({
                 </div>
               </div>
               <div className="space-y-1.5 flex flex-col">
-                <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Payment Date</Label>
+                <Label className="microlabel">Payment Date</Label>
                 <Popover>
                   <PopoverTrigger asChild>
                     <Button
@@ -1185,10 +1143,10 @@ export function PayablesWorkspace({
                 </Popover>
               </div>
               <div className="space-y-1.5">
-                <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Reference</Label>
+                <Label className="microlabel">Reference</Label>
                 <Input className="h-10" placeholder="Check # or transaction ID" value={paymentRef} onChange={(event) => setPaymentRef(event.target.value)} />
               </div>
-              <Button className="h-10 w-full bg-blue-600 hover:bg-blue-700" disabled={isPending || Boolean(paymentBlockReason)} onClick={() => setStatus("paid")}>
+              <Button className="h-10 w-full" disabled={isPending || Boolean(paymentBlockReason)} onClick={() => setStatus("paid")}>
                 {isPending ? "Processing..." : paymentBlockReason ? `Blocked: ${paymentBlockReason}` : "Post payment"}
               </Button>
             </div>
@@ -1197,7 +1155,7 @@ export function PayablesWorkspace({
           {/* Allocation / cost splits (Line Items) */}
           <section className="space-y-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Line items</h3>
+              <h3 className="microlabel">Line items</h3>
               <Button
                 type="button"
                 variant="outline"
@@ -1215,7 +1173,7 @@ export function PayablesWorkspace({
                       amountDollars: "0.00",
                       qboExpenseAccountId: qboExpenseAccountId,
                       qboApAccountId: qboApAccountId,
-                      billableToCustomer: false,
+                      billableToCustomer: defaultBillableToCustomer(selectedBill.project_id),
                     },
                   ])
                 }
@@ -1226,19 +1184,19 @@ export function PayablesWorkspace({
             </div>
 
             {isSplitAcrossProjects ? (
-              <div className="flex items-center gap-2 rounded-md bg-indigo-50 px-3 py-1.5 text-[11px] font-medium text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-300">
-                <Layers className="h-3.5 w-3.5" />
+              <div className="flex items-center gap-2 border bg-muted/40 px-3 py-1.5 text-[11px] font-medium text-foreground">
+                <Layers className="h-3.5 w-3.5 text-primary" />
                 Split across {distinctSplitProjects.length} projects — one {selectedIsVendorCredit ? "credit" : "bill"}, one payment{selectedIsVendorCredit ? "." : ", synced to QuickBooks."}
               </div>
             ) : null}
 
             <div className="space-y-3">
               {splitLines.map((line) => (
-                <div key={line.id} className="space-y-3 rounded-xl border bg-background p-4 shadow-sm relative">
+                <div key={line.id} className="relative space-y-3 border bg-card p-4">
                   {/* Top row: Project and Amount */}
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div>
-                      <Label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Project</Label>
+                      <Label className="microlabel mb-1 block">Project</Label>
                       <Select
                         value={line.projectId}
                         onValueChange={(value) =>
@@ -1275,7 +1233,7 @@ export function PayablesWorkspace({
                     </div>
 
                     <div>
-                      <Label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Amount</Label>
+                      <Label className="microlabel mb-1 block">Amount</Label>
                       <div className="flex gap-2">
                         <div className="relative flex-1">
                           <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-xs text-muted-foreground">$</span>
@@ -1304,7 +1262,7 @@ export function PayablesWorkspace({
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     {costCodesEnabled ? (
                       <div>
-                        <Label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Cost Code</Label>
+                        <Label className="microlabel mb-1 block">Cost Code</Label>
                         <Select
                           value={line.costCodeId}
                           onValueChange={(value) => setSplitLines((prev) => prev.map((item) => (item.id === line.id ? { ...item, costCodeId: value } : item)))}
@@ -1321,7 +1279,7 @@ export function PayablesWorkspace({
                       </div>
                     ) : budgetLines.length > 0 ? (
                       <div>
-                        <Label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Budget line</Label>
+                        <Label className="microlabel mb-1 block">Budget line</Label>
                         <Select
                           value={line.budgetLineId || "__none__"}
                           onValueChange={(value) => setSplitLines((prev) => prev.map((item) => (item.id === line.id ? { ...item, budgetLineId: value === "__none__" ? "" : value } : item)))}
@@ -1340,7 +1298,7 @@ export function PayablesWorkspace({
                     ) : null}
 
                     <div className={cn(!costCodesEnabled && budgetLines.length === 0 && "sm:col-span-2")}>
-                      <Label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Description</Label>
+                      <Label className="microlabel mb-1 block">Description</Label>
                       <Input
                         value={line.description}
                         placeholder="Split description..."
@@ -1351,7 +1309,7 @@ export function PayablesWorkspace({
                   </div>
 
                   {!selectedIsVendorCredit && supportsBillableCosts(projects.find((project) => project.id === line.projectId)?.billingModel) ? (
-                    <div className="flex items-center justify-between gap-4 rounded-lg border bg-muted/20 px-3 py-2.5">
+                    <div className="flex items-center justify-between gap-4 border bg-muted/20 px-3 py-2.5">
                       <div className="min-w-0">
                         <Label htmlFor={`billable-${line.id}`} className="text-xs font-semibold">
                           Billable to customer
@@ -1375,10 +1333,10 @@ export function PayablesWorkspace({
                   {/* Third row: QuickBooks Coding (if accounting enabled) */}
                   {accountingEnabled && (
                     <div className="border-t pt-3 mt-3 space-y-3">
-                      <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground/70">QuickBooks Line Coding</div>
+                      <div className="microlabel">QuickBooks line coding</div>
                       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         <div>
-                          <Label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">QBO Category</Label>
+                          <Label className="microlabel mb-1 block">QBO Category</Label>
                           <Select
                             value={line.qboExpenseAccountId || ""}
                             onValueChange={(value) => setSplitLines((prev) => prev.map((item) => (item.id === line.id ? { ...item, qboExpenseAccountId: value } : item)))}
@@ -1393,7 +1351,7 @@ export function PayablesWorkspace({
                         </div>
 
                         <div>
-                          <Label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">QBO AP Account</Label>
+                          <Label className="microlabel mb-1 block">QBO AP Account</Label>
                           <Select
                             value={line.qboApAccountId || ""}
                             onValueChange={(value) => setSplitLines((prev) => prev.map((item) => (item.id === line.id ? { ...item, qboApAccountId: value } : item)))}
@@ -1414,7 +1372,7 @@ export function PayablesWorkspace({
               ))}
             </div>
 
-            <div className={cn("flex items-center justify-between rounded-md px-3 py-2 text-xs font-medium", splitsBalanced ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-300" : "bg-amber-50 text-amber-700 dark:bg-amber-950/20 dark:text-amber-300")}>
+            <div className={cn("flex items-center justify-between border px-3 py-2 text-xs font-medium tabular-nums", splitsBalanced ? "border-success/20 bg-success/10 text-success" : "border-warning/20 bg-warning/10 text-warning")}>
               <span>Allocated {formatMoneyFromCents(splitTotalCents)} of {formatMoneyFromCents(billTotalCents)}</span>
               <span>{splitsBalanced ? "Balanced" : `${formatMoneyFromCents(billTotalCents - splitTotalCents)} unallocated`}</span>
             </div>
@@ -1423,7 +1381,7 @@ export function PayablesWorkspace({
           {/* Terms */}
           {!selectedIsVendorCredit ? <div className="grid grid-cols-2 gap-6">
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Retainage %</Label>
+              <Label className="microlabel">Retainage %</Label>
               <Input type="number" step="0.1" value={retainage} onChange={(event) => setRetainage(event.target.value)} placeholder="0" className="h-10 font-semibold" />
               {payableHeldRetainageCents(selectedBill) > 0 ? (
                 <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
@@ -1435,7 +1393,7 @@ export function PayablesWorkspace({
               ) : null}
             </div>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Lien waiver</Label>
+              <Label className="microlabel">Lien waiver</Label>
               <Select value={lienWaiver} onValueChange={setLienWaiver}>
                 <SelectTrigger className="h-10 w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -1489,38 +1447,7 @@ export function PayablesWorkspace({
             <Button disabled={isPending} onClick={saveDetails}>{isPending ? "Saving..." : "Save changes"}</Button>
           </div>
         </div>
-      </main>
-
-      {/* Draggable Divider */}
-      <div
-        className={cn(
-          "hidden lg:block w-[1px] cursor-col-resize hover:bg-primary/50 transition-colors select-none relative z-30 bg-border",
-          isDraggingBorder && "bg-primary"
-        )}
-        onMouseDown={startDragging}
-      >
-        {/* Invisible wider hover area for easy dragging */}
-        <div className="absolute inset-y-0 -left-1.5 -right-1.5 cursor-col-resize z-30" />
-        
-        {/* Drag handle button (circle) */}
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex h-8 w-8 cursor-col-resize items-center justify-center rounded-full border bg-background shadow-md hover:bg-muted select-none z-40">
-          <GripVertical className="h-5 w-5 text-muted-foreground" />
-        </div>
-      </div>
-
-      {/* RIGHT: document viewer */}
-      <aside
-        style={{ width: `${rightPaneWidth}px` }}
-        className="hidden shrink-0 lg:block bg-background"
-      >
-        <PayableDocumentPane
-          attachments={attachments}
-          loading={attachmentsLoading}
-          onAttach={handleAttach}
-          onDetach={handleDetach}
-          projectId={projectId}
-        />
-      </aside>
+      </WorkspaceShell>
 
       <Sheet open={vendorEditorOpen} onOpenChange={setVendorEditorOpen}>
         <SheetContent side="right" mobileFullscreen className="flex flex-col p-0 sm:max-w-xl">
@@ -1568,7 +1495,7 @@ export function PayablesWorkspace({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </>
   )
 }
 
@@ -1586,10 +1513,6 @@ function mapAttachment(link: any): AttachedFile {
   }
 }
 
-function formatMoneyFromCents(cents?: number | null) {
-  return ((cents ?? 0) / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
-}
-
 function dollarsToCents(input: string) {
   const normalized = input.replaceAll(",", "").trim()
   if (!normalized) return 0
@@ -1599,9 +1522,7 @@ function dollarsToCents(input: string) {
 }
 
 function qboTransactionUrl(bill: VendorBillSummary) {
-  if (!bill.qbo_id) return null
-  const page = isVendorCredit(bill) ? "vendorcredit" : "bill"
-  return `https://qbo.intuit.com/app/${page}?txnId=${encodeURIComponent(bill.qbo_id)}`
+  return qboTxnUrl(isVendorCredit(bill) ? "vendorcredit" : "bill", bill.qbo_id)
 }
 
 function normalizeLienWaiverStatus(status?: string | null) {

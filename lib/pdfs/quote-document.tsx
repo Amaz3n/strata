@@ -303,7 +303,10 @@ function QuoteDocument({ data }: { data: QuoteDocumentData }) {
           ) : (
             <View key={`line-${line.id ?? idx}`} style={styles.itemRow} wrap={false}>
               <View style={styles.itemLeft}>
-                <Text style={styles.itemDesc}>{line.description}</Text>
+                <Text style={styles.itemDesc}>
+                  {line.description}
+                  {line.metadata?.is_allowance === true ? "  (Allowance)" : ""}
+                </Text>
                 {line.metadata?.notes ? <Text style={styles.itemNotes}>{line.metadata.notes}</Text> : null}
                 {showUnitLine ? <Text style={styles.itemUnitLine}>{unitLineText(line)}</Text> : null}
               </View>

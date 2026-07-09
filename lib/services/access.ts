@@ -21,6 +21,8 @@ export interface OrgAccessState {
   orgName?: string | null
   trialEndsAt?: string | null
   periodEndsAt?: string | null
+  hasPrice?: boolean
+  checkoutUrl?: string | null
 }
 
 const GRACE_DAYS_PAST_DUE = 5
@@ -55,7 +57,7 @@ export const getOrgAccessStateForOrg = cache(async (orgId: string, isPlatformAdm
 
   const { data: subscription } = await supabase
     .from("subscriptions")
-    .select("status, trial_ends_at, current_period_end")
+    .select("status, plan_code, trial_ends_at, current_period_end, checkout_url")
     .eq("org_id", orgId)
     .order("created_at", { ascending: false })
     .limit(1)
@@ -67,31 +69,33 @@ export const getOrgAccessStateForOrg = cache(async (orgId: string, isPlatformAdm
 
   const trialEndsAt = subscription.trial_ends_at
   const periodEndsAt = subscription.current_period_end
+  const hasPrice = Boolean(subscription.plan_code)
+  const checkoutUrl = subscription.checkout_url ?? null
   const now = new Date()
 
   switch (subscription.status) {
     case "active":
-      return { status: "active", locked: false, periodEndsAt, orgName: (org as any).name ?? null }
+      return { status: "active", locked: false, periodEndsAt, orgName: (org as any).name ?? null, hasPrice, checkoutUrl }
     case "trialing": {
       if (trialEndsAt && new Date(trialEndsAt) > now) {
-        return { status: "trialing", locked: false, trialEndsAt, orgName: (org as any).name ?? null }
+        return { status: "trialing", locked: false, trialEndsAt, orgName: (org as any).name ?? null, hasPrice, checkoutUrl }
       }
-      return { status: "locked", locked: true, reason: "Trial expired.", trialEndsAt, orgName: (org as any).name ?? null }
+      return { status: "locked", locked: true, reason: "Trial expired.", trialEndsAt, orgName: (org as any).name ?? null, hasPrice, checkoutUrl }
     }
     case "past_due": {
       if (periodEndsAt) {
         const graceEnd = addDays(new Date(periodEndsAt), GRACE_DAYS_PAST_DUE)
         if (graceEnd > now) {
-          return { status: "past_due", locked: false, periodEndsAt, orgName: (org as any).name ?? null }
+          return { status: "past_due", locked: false, periodEndsAt, orgName: (org as any).name ?? null, hasPrice, checkoutUrl }
         }
       }
-      return { status: "locked", locked: true, reason: "Payment past due.", orgName: (org as any).name ?? null }
+      return { status: "locked", locked: true, reason: "Payment past due.", orgName: (org as any).name ?? null, hasPrice, checkoutUrl }
     }
     case "canceled": {
       if (periodEndsAt && new Date(periodEndsAt) > now) {
-        return { status: "canceled", locked: false, periodEndsAt, orgName: (org as any).name ?? null }
+        return { status: "canceled", locked: false, periodEndsAt, orgName: (org as any).name ?? null, hasPrice, checkoutUrl }
       }
-      return { status: "locked", locked: true, reason: "Subscription canceled.", orgName: (org as any).name ?? null }
+      return { status: "locked", locked: true, reason: "Subscription canceled.", orgName: (org as any).name ?? null, hasPrice, checkoutUrl }
     }
     default:
       return { status: "unknown", locked: true, reason: "Unknown subscription status.", orgName: (org as any).name ?? null }

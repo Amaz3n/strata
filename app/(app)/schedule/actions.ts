@@ -13,44 +13,62 @@ import {
 import { scheduleItemInputSchema, scheduleItemUpdateSchema, scheduleBulkUpdateSchema } from "@/lib/validation/schedule"
 import type { ScheduleDependency } from "@/lib/types"
 
+import { actionError, type ActionResult } from "@/lib/action-result"
+
+async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
+  try {
+    return { success: true, data: await fn() }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
 export async function listScheduleItemsAction() {
-  return listScheduleItems()
+      return listScheduleItems()
 }
 
 export async function listDependenciesForProjectsAction(projectIds: string[]): Promise<ScheduleDependency[]> {
-  const allDependencies: ScheduleDependency[] = []
-  for (const projectId of projectIds) {
-    const deps = await listDependenciesByProject(projectId)
-    allDependencies.push(...deps)
-  }
-  return allDependencies
+      const allDependencies: ScheduleDependency[] = []
+      for (const projectId of projectIds) {
+        const deps = await listDependenciesByProject(projectId)
+        allDependencies.push(...deps)
+      }
+      return allDependencies
 }
 
 export async function createScheduleItemAction(input: unknown) {
-  const parsed = scheduleItemInputSchema.parse(input)
-  const item = await createScheduleItem({ input: parsed })
-  revalidatePath("/schedule")
-  revalidatePath("/")
-  return item
+  return run(async () => {
+      const parsed = scheduleItemInputSchema.parse(input)
+      const item = await createScheduleItem({ input: parsed })
+      revalidatePath("/schedule")
+      revalidatePath("/")
+      return item
+  })
 }
 
 export async function updateScheduleItemAction(itemId: string, input: unknown) {
-  const parsed = scheduleItemUpdateSchema.parse(input)
-  const item = await updateScheduleItem({ itemId, input: parsed })
-  revalidatePath("/schedule")
-  revalidatePath("/")
-  return item
+  return run(async () => {
+      const parsed = scheduleItemUpdateSchema.parse(input)
+      const item = await updateScheduleItem({ itemId, input: parsed })
+      revalidatePath("/schedule")
+      revalidatePath("/")
+      return item
+  })
 }
 
 export async function bulkUpdateScheduleItemsAction(input: unknown) {
-  const parsed = scheduleBulkUpdateSchema.parse(input)
-  const items = await bulkUpdateScheduleItems(parsed)
-  revalidatePath("/schedule")
-  return items
+  return run(async () => {
+      const parsed = scheduleBulkUpdateSchema.parse(input)
+      const items = await bulkUpdateScheduleItems(parsed)
+      revalidatePath("/schedule")
+      return items
+  })
 }
 
 export async function deleteScheduleItemAction(itemId: string) {
-  await deleteScheduleItem(itemId)
-  revalidatePath("/schedule")
-  revalidatePath("/")
+  return run(async () => {
+      await deleteScheduleItem(itemId)
+      revalidatePath("/schedule")
+      revalidatePath("/")
+  })
 }

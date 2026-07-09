@@ -22,6 +22,8 @@ import type { BillingAutopilotState } from "@/lib/services/billing-autopilot"
 import type { ProjectBillingPeriod } from "@/lib/services/billing-periods"
 import { cn } from "@/lib/utils"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface PeriodCloseWorkflowProps {
   projectId: string
   billingModel: ProjectBillingModel
@@ -89,7 +91,7 @@ export function PeriodCloseWorkflow({
     startTransition(async () => {
       try {
         const today = new Date().toISOString().slice(0, 10)
-        const result = await generateInvoiceFromCostsAction({
+        const result = unwrapAction(await generateInvoiceFromCostsAction({
           projectId,
           billingPeriodId: selectedPeriodId,
           dateRange: periodRange ?? { from: "1970-01-01", to: today },
@@ -100,10 +102,10 @@ export function PeriodCloseWorkflow({
           overrideGmpCap,
           dryRun: false,
           idempotencyKey: crypto.randomUUID(),
-        })
+        }))
         const invoiceId = (result as any).invoiceId as string | undefined
         if (invoiceId) {
-          await generateOwnerBillingPackageAction({ projectId, invoiceId })
+          unwrapAction(await generateOwnerBillingPackageAction({ projectId, invoiceId }))
           toast.success("Invoice and backup package created")
           router.push(`/projects/${projectId}/financials/receivables?invoice=${invoiceId}`)
         } else {
@@ -122,10 +124,10 @@ export function PeriodCloseWorkflow({
     if (!selectedPeriodId) return
     startTransition(async () => {
       try {
-        await closeProjectBillingPeriodAction({
+        unwrapAction(await closeProjectBillingPeriodAction({
           projectId,
           billingPeriodId: selectedPeriodId,
-        })
+        }))
         toast.success("Billing period closed")
         router.refresh()
       } catch (error) {

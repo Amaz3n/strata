@@ -76,6 +76,8 @@ import {
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface DirectoryClientProps {
   companies: Company[];
   contacts: Contact[];
@@ -354,9 +356,9 @@ export function DirectoryClient({
   ) => {
     try {
       if (kind === "company") {
-        await restoreCompanyAction(id);
+        unwrapAction(await restoreCompanyAction(id));
       } else {
-        await restoreContactAction(id);
+        unwrapAction(await restoreContactAction(id));
       }
       router.refresh();
       toast({ title: `${kind === "company" ? "Company" : "Contact"} restored`, description: name });
@@ -393,10 +395,10 @@ export function DirectoryClient({
     startTransition(async () => {
       try {
         if (target.kind === "company") {
-          await archiveCompanyAction(target.id);
+          unwrapAction(await archiveCompanyAction(target.id));
           setCompanies((prev) => prev.filter((c) => c.id !== target.id));
         } else {
-          await archiveContactAction(target.id);
+          unwrapAction(await archiveContactAction(target.id));
           setContacts((prev) => prev.filter((c) => c.id !== target.id));
         }
         setEntries((prev) =>

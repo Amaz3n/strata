@@ -239,7 +239,7 @@ export function OrgSwitcher({
               <>
                 <DropdownMenuSeparator className="my-2" />
                 <DropdownMenuItem className="gap-3 rounded-none px-2.5 py-2.5" asChild>
-                  <Link href="/admin/provision" className="flex items-center gap-3">
+                  <Link href="/platform" className="flex items-center gap-3">
                     <div className="flex size-8 shrink-0 items-center justify-center rounded-none border border-border/70 bg-background/70">
                       <Plus className="size-4" />
                     </div>

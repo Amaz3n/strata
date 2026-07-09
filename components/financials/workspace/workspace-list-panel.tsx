@@ -77,7 +77,7 @@ export function WorkspaceListPanel<T, K extends string>({
         </div>
         <div
           className="mt-2 grid gap-1"
-          style={{ gridTemplateColumns: `repeat(${queues.length}, minmax(0, 1fr))` }}
+          style={{ gridTemplateColumns: `repeat(${Math.min(queues.length, 3)}, minmax(0, 1fr))` }}
         >
           {queues.map((queue) => (
             <button

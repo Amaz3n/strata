@@ -18,9 +18,13 @@ import { propagateApprovalToLedger, voidBillableCostsForVendorBill } from "@/lib
 import { voidJobCostEntriesForVendorBill } from "@/lib/services/job-cost-actuals"
 import { enqueueBillPaymentSync, enqueueVendorBillSync } from "@/lib/services/qbo-sync"
 import { APPROVAL_GATE_REASONS, loadApprovalGateSettings } from "@/lib/financials/approval-gates"
+import { isCostDrivenBillingModel } from "@/lib/financials/billing-model"
 import { payableOutstandingCents } from "@/lib/financials/payables-rules"
 
 export type VendorBillStatus = "pending" | "approved" | "partial" | "paid"
+
+/** Hard bound on the project payables query — lists that can grow unbounded get a cap. */
+const PROJECT_PAYABLES_FETCH_LIMIT = 500
 export type PayableKind = "bill" | "vendor_credit"
 
 export interface VendorBillPaymentSummary {
@@ -43,6 +47,8 @@ export interface VendorBillSummary {
   commitment_id?: string
   commitment_title?: string
   commitment_total_cents?: number
+  /** Sum of all bills (net of credits) recorded against the same commitment. */
+  commitment_billed_cents?: number
   company_id?: string
   company_name?: string
   bill_number?: string
@@ -188,7 +194,7 @@ async function buildBillLinesFromCommitment({
       description: line.description?.trim() || fallbackDescription,
       amount_cents: amountCents,
       project_id: projectId,
-      billable_to_customer: false,
+      billable_to_customer: undefined,
       qbo_expense_account_id: undefined,
       qbo_expense_account_name: undefined,
       qbo_ap_account_id: undefined,
@@ -408,31 +414,32 @@ async function replaceBillLineCoding(
     throw new Error(`Failed to update bill coding: ${deleteError.message}`)
   }
 
-  const rows = lines.map((line, index) => ({
-    org_id: orgId,
-    bill_id: billId,
-    cost_code_id: line.cost_code_id,
-    budget_line_id: line.budget_line_id ?? null,
-    project_id: line.project_id ?? null,
-    description: line.description,
-    quantity: 1,
-    unit: "LS",
-    unit_cost_cents: line.amount_cents,
-    sort_order: index,
-    metadata: {
-      source: "ap_review",
-      billable_to_customer:
-        billingModelByProject.get(line.project_id ?? "") !== "fixed_price" &&
-        Boolean(billingModelByProject.get(line.project_id ?? "")) &&
-        line.billable_to_customer === true,
-      qbo_expense_account_id: line.qbo_expense_account_id,
-      qbo_expense_account_name: line.qbo_expense_account_name,
-      qbo_ap_account_id: line.qbo_ap_account_id,
-      qbo_ap_account_name: line.qbo_ap_account_name,
-      qbo_vendor_id: line.qbo_vendor_id,
-      qbo_vendor_name: line.qbo_vendor_name,
-    },
-  }))
+  const rows = lines.map((line, index) => {
+    const billingModel = billingModelByProject.get(line.project_id ?? "")
+    const costDriven = Boolean(billingModel && isCostDrivenBillingModel(billingModel as any))
+    return {
+      org_id: orgId,
+      bill_id: billId,
+      cost_code_id: line.cost_code_id,
+      budget_line_id: line.budget_line_id ?? null,
+      project_id: line.project_id ?? null,
+      description: line.description,
+      quantity: 1,
+      unit: "LS",
+      unit_cost_cents: line.amount_cents,
+      sort_order: index,
+      metadata: {
+        source: "ap_review",
+        billable_to_customer: costDriven && line.billable_to_customer !== false,
+        qbo_expense_account_id: line.qbo_expense_account_id,
+        qbo_expense_account_name: line.qbo_expense_account_name,
+        qbo_ap_account_id: line.qbo_ap_account_id,
+        qbo_ap_account_name: line.qbo_ap_account_name,
+        qbo_vendor_id: line.qbo_vendor_id,
+        qbo_vendor_name: line.qbo_vendor_name,
+      },
+    }
+  })
 
   const { error: insertError } = await supabase.from("bill_lines").insert(rows)
 
@@ -536,6 +543,7 @@ export async function listVendorBillsForProject(projectId: string, orgId?: strin
   const { data, error } = await scoped
     .order("due_date", { ascending: true, nullsFirst: true })
     .order("created_at", { ascending: false })
+    .limit(PROJECT_PAYABLES_FETCH_LIMIT)
 
   if (error) {
     throw new Error(`Failed to list vendor bills: ${error.message}`)
@@ -543,6 +551,27 @@ export async function listVendorBillsForProject(projectId: string, orgId?: strin
 
   const bills = data ?? []
   const billIds = bills.map((bill: any) => bill.id).filter(Boolean)
+
+  // Billed-to-date per commitment so the workspace can show remaining contract
+  // value at coding/approval time.
+  const commitmentIds = Array.from(new Set(bills.map((bill: any) => bill.commitment_id).filter(Boolean)))
+  const billedByCommitment = new Map<string, number>()
+  if (commitmentIds.length > 0) {
+    const { data: commitmentBills, error: commitmentBillsError } = await supabase
+      .from("vendor_bills")
+      .select("commitment_id, total_cents")
+      .eq("org_id", resolvedOrgId)
+      .in("commitment_id", commitmentIds)
+    if (commitmentBillsError) {
+      throw new Error(`Failed to load commitment billing totals: ${commitmentBillsError.message}`)
+    }
+    for (const row of commitmentBills ?? []) {
+      billedByCommitment.set(
+        row.commitment_id,
+        (billedByCommitment.get(row.commitment_id) ?? 0) + Number(row.total_cents ?? 0),
+      )
+    }
+  }
 
   const { data: billLines, error: billLinesError } =
     billIds.length === 0
@@ -587,9 +616,13 @@ export async function listVendorBillsForProject(projectId: string, orgId?: strin
     paymentsByBillId.set(payment.bill_id, current)
   }
 
-  return bills.map((bill: any) =>
-    mapVendorBill(bill, linesByBillId.get(bill.id), projectId, paymentsByBillId.get(bill.id)),
-  )
+  return bills.map((bill: any) => {
+    const summary = mapVendorBill(bill, linesByBillId.get(bill.id), projectId, paymentsByBillId.get(bill.id))
+    if (summary.commitment_id) {
+      summary.commitment_billed_cents = billedByCommitment.get(summary.commitment_id)
+    }
+    return summary
+  })
 }
 
 export async function updateVendorBillStatus({
@@ -819,7 +852,7 @@ export async function updateVendorBillStatus({
         description: line.description?.trim() || (existing.bill_number ? `Bill ${existing.bill_number}` : "Vendor bill"),
         amount_cents: line.amount_cents,
         project_id: line.project_id ?? existing.project_id ?? null,
-        billable_to_customer: line.billable_to_customer === true,
+        billable_to_customer: line.billable_to_customer,
         qbo_expense_account_id: line.qbo_expense_account_id ?? parsed.qbo_expense_account_id ?? existing.qbo_expense_account_id ?? undefined,
         qbo_expense_account_name: line.qbo_expense_account_name ?? parsed.qbo_expense_account_name ?? existing.qbo_expense_account_name ?? undefined,
         qbo_ap_account_id: line.qbo_ap_account_id ?? parsed.qbo_ap_account_id ?? existing.qbo_ap_account_id ?? undefined,
@@ -873,7 +906,7 @@ export async function updateVendorBillStatus({
                 description: fallbackDescription,
                 amount_cents: totalCents,
                 project_id: existing.project_id ?? null,
-                billable_to_customer: false,
+                billable_to_customer: undefined,
                 qbo_expense_account_id: parsed.qbo_expense_account_id ?? existing.qbo_expense_account_id ?? undefined,
                 qbo_expense_account_name: parsed.qbo_expense_account_name ?? existing.qbo_expense_account_name ?? undefined,
                 qbo_ap_account_id: parsed.qbo_ap_account_id ?? existing.qbo_ap_account_id ?? undefined,

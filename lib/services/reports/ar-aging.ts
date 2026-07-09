@@ -1,4 +1,5 @@
 import { requireOrgContext } from "@/lib/services/context"
+import { requirePermission } from "@/lib/services/permissions"
 import { applyReportingExclusion, getReportingExcludedProjectIds } from "@/lib/services/reporting-scope"
 import { getAgingBucket, type AgingBucket } from "@/lib/services/reports/aging"
 import { todayIsoDateOnly } from "@/lib/services/reports/dates"
@@ -47,7 +48,8 @@ export async function getArAgingReport({
   asOf?: string
   orgId?: string
 }): Promise<ARAgingReport> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("report.read", { supabase, orgId: resolvedOrgId, userId })
   const asOfDate = asOf ?? todayIsoDateOnly()
 
   let query = supabase

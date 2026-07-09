@@ -34,6 +34,8 @@ import {
 import type { CommitmentSummary } from "@/lib/services/commitments"
 import type { Company } from "@/lib/types"
 
+import { unwrapAction } from "@/lib/action-result"
+
 const NO_COMMITMENT = "__no_commitment__"
 
 function normalizeName(value: string) {
@@ -105,6 +107,7 @@ export function AddPayableSheet({
   const commitmentAfterBillCents = commitmentBilledCents + amountCents
   const commitmentOverBudget = Boolean(selectedCommitment && commitmentTotalCents > 0 && commitmentAfterBillCents > commitmentTotalCents)
   const selectedCompany = companyId ? companies.find((company) => company.id === companyId) ?? vendorEditorCompany : null
+  const vendorCommitments = companyId ? commitments.filter((commitment) => commitment.company_id === companyId) : []
   const visibleCompanies = companies.filter(
     (company) => !vendorName.trim() || normalizeName(company.name).includes(normalizeName(vendorName)),
   )
@@ -151,10 +154,10 @@ export function AddPayableSheet({
     if (!name) return
     startCreateVendorTransition(async () => {
       try {
-        const company = await createCompanyAction({
+        const company = unwrapAction(await createCompanyAction({
           name,
           company_type: "supplier",
-        })
+        }))
         setCompanies((prev) => {
           if (prev.some((item) => item.id === company.id)) return prev
           return [...prev, company].sort((a, b) => a.name.localeCompare(b.name))
@@ -179,7 +182,7 @@ export function AddPayableSheet({
     try {
       const formData = new FormData()
       formData.append("invoice", nextFile)
-      const result = await extractPayableInvoiceAction(projectId, formData)
+      const result = unwrapAction(await extractPayableInvoiceAction(projectId, formData))
       if (!result.ok) {
         toast.error(result.error)
         return
@@ -228,12 +231,12 @@ export function AddPayableSheet({
           formData.append("file", file)
           formData.append("projectId", projectId)
           formData.append("category", "financials")
-          const uploaded = await uploadFileAction(formData)
+          const uploaded = unwrapAction(await uploadFileAction(formData))
           fileId = uploaded.id
           setIsUploading(false)
         }
 
-        const result = await createProjectVendorBillAction(projectId, {
+        const result = unwrapAction(await createProjectVendorBillAction(projectId, {
           commitment_id: commitmentId === NO_COMMITMENT ? null : commitmentId,
           company_id: companyId || undefined,
           vendor_name: selectedCompany?.name ?? (vendorName.trim() || undefined),
@@ -243,7 +246,7 @@ export function AddPayableSheet({
           due_date: dueDate ? format(dueDate, "yyyy-MM-dd") : undefined,
           description: description || undefined,
           file_id: fileId,
-        })
+        }))
         if (!result.success) {
           toast.error(result.error)
           setIsUploading(false)
@@ -408,13 +411,19 @@ export function AddPayableSheet({
                   ))}
                 </SelectContent>
               </Select>
+              {vendorCommitments.length > 1 ? (
+                <div className="border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-foreground">
+                  <span className="font-medium">{selectedCompany?.name ?? "This vendor"} has {vendorCommitments.length} commitments on this project.</span>{" "}
+                  Arc pre-selected one — confirm the source commitment matches the invoice before saving.
+                </div>
+              ) : null}
               {selectedCommitment ? (
                 <div
                   className={cn(
-                    "rounded-md border px-3 py-2 text-xs",
+                    "border px-3 py-2 text-xs",
                     commitmentOverBudget
                       ? "border-destructive/30 bg-destructive/10 text-destructive"
-                      : "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+                      : "border-success/20 bg-success/10 text-success",
                   )}
                 >
                   <div className="font-medium">
@@ -423,6 +432,15 @@ export function AddPayableSheet({
                   <div className="mt-0.5">
                     This bill takes the commitment to {formatMoney(commitmentAfterBillCents)}
                     {commitmentTotalCents > 0 ? ` (${Math.round((commitmentAfterBillCents / commitmentTotalCents) * 100)}%)` : ""}.
+                  </div>
+                </div>
+              ) : null}
+              {selectedCommitment && !selectedCommitment.executed_at ? (
+                <div className="border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+                  <div className="font-medium">No executed subcontract on this commitment</div>
+                  <div className="mt-0.5">
+                    You are billing against an agreement the vendor has not signed. Send the subcontract for
+                    signature from the Commitments tab.
                   </div>
                 </div>
               ) : null}

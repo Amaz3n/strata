@@ -24,6 +24,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 
+import { unwrapAction } from "@/lib/action-result"
+
 type StatusKey = "active" | "inactive"
 
 const statusLabels: Record<StatusKey, string> = {
@@ -78,7 +80,7 @@ export function PlansClient({ plans }: PlansClientProps) {
   async function handleCreate(formData: FormData) {
     startCreating(async () => {
       try {
-        const result = await createPlanAction({}, formData)
+        const result = unwrapAction(await createPlanAction({}, formData))
 
         if (result.error) {
           toast.error("Failed to create plan", { description: result.error })
@@ -103,7 +105,7 @@ export function PlansClient({ plans }: PlansClientProps) {
 
     startDeleting(async () => {
       try {
-        const result = await deletePlanAction(planToDelete.code)
+        const result = unwrapAction(await deletePlanAction(planToDelete.code))
 
         if (result.error) {
           toast.error("Failed to delete plan", { description: result.error })

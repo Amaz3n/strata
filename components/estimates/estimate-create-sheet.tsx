@@ -19,7 +19,11 @@ import { Receipt, CalendarDays, ChevronsUpDown, Trash2, Plus, LayoutGrid, ImageI
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { uploadEstimatePhotoAction } from "@/app/(app)/estimates/actions"
+import { listProspectBidQuotesAction } from "@/app/(app)/pipeline/prospects/[prospectId]/bids/actions"
+import type { ProspectBidQuote } from "@/lib/services/bids"
 import type { PricingDisplayMode } from "@/lib/validation/estimates"
+
+import { unwrapAction } from "@/lib/action-result"
 
 type LineDraft = {
   item_type: "line" | "group"
@@ -28,13 +32,15 @@ type LineDraft = {
   unit_cost: number | string
   cost_code_id: string | undefined
   is_optional: boolean
+  is_allowance: boolean
+  source_bid_submission_id?: string
 }
 
 type PhotoDraft = { path: string; url: string; caption: string }
 
-const NEW_LINE: LineDraft = { item_type: "line", description: "", quantity: 1, unit_cost: "", cost_code_id: undefined, is_optional: false }
+const NEW_LINE: LineDraft = { item_type: "line", description: "", quantity: 1, unit_cost: "", cost_code_id: undefined, is_optional: false, is_allowance: false }
 const newLine = (): LineDraft => ({ ...NEW_LINE })
-const newSection = (): LineDraft => ({ item_type: "group", description: "", quantity: 1, unit_cost: "", cost_code_id: undefined, is_optional: false })
+const newSection = (): LineDraft => ({ item_type: "group", description: "", quantity: 1, unit_cost: "", cost_code_id: undefined, is_optional: false, is_allowance: false })
 
 export type EstimateTemplateOption = {
   id: string
@@ -47,6 +53,7 @@ export type EstimateTemplateOption = {
     unit_cost_cents?: number | null
     cost_code_id?: string | null
     is_optional?: boolean | null
+    is_allowance?: boolean | null
   }>
 }
 
@@ -75,6 +82,7 @@ export type EstimateSheetInitial = {
     unit_cost_cents?: number | null
     cost_code_id?: string | null
     is_optional?: boolean | null
+    is_allowance?: boolean | null
   }>
 }
 
@@ -153,6 +161,7 @@ export function EstimateCreateSheet({
           unit_cost: centsToInput(line.unit_cost_cents),
           cost_code_id: line.cost_code_id ?? undefined,
           is_optional: line.is_optional ?? false,
+          is_allowance: line.is_allowance ?? false,
         }))
       : [newLine()]
 
@@ -184,6 +193,8 @@ export function EstimateCreateSheet({
   const [validUntilOpen, setValidUntilOpen] = useState(false)
   const [lines, setLines] = useState<LineDraft[]>(seededLines)
   const [showErrors, setShowErrors] = useState(false)
+  // Sub quotes from the prospect's bid packages, usable as a line's cost basis.
+  const [bidQuotes, setBidQuotes] = useState<ProspectBidQuote[]>([])
 
   // Base total excludes section headers and optional add-ons (shown separately as upgrades).
   const total = useMemo(
@@ -220,6 +231,39 @@ export function EstimateCreateSheet({
     if (defaultProjectId) setProjectId(defaultProjectId)
   }, [defaultProjectId])
 
+  useEffect(() => {
+    if (!open || !defaultProspectId) return
+    let cancelled = false
+    listProspectBidQuotesAction(defaultProspectId)
+      .then((quotes) => {
+        if (!cancelled) setBidQuotes(quotes)
+      })
+      .catch(() => {
+        // Quotes are a convenience; the builder can always price lines by hand.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, defaultProspectId])
+
+  const applyBidQuote = (idx: number, quote: ProspectBidQuote) => {
+    setLines((prev) =>
+      prev.map((line, i) =>
+        i === idx
+          ? {
+              ...line,
+              description: line.description.trim()
+                ? line.description
+                : `${quote.package_title}${quote.company_name ? ` — ${quote.company_name}` : ""}`,
+              quantity: 1,
+              unit_cost: quote.total_cents / 100,
+              source_bid_submission_id: quote.submission_id,
+            }
+          : line,
+      ),
+    )
+  }
+
   const updateLine = (idx: number, patch: Partial<LineDraft>) =>
     setLines((prev) => prev.map((line, i) => (i === idx ? { ...line, ...patch } : line)))
 
@@ -245,6 +289,7 @@ export function EstimateCreateSheet({
         unit_cost: centsToInput(line.unit_cost_cents),
         cost_code_id: line.cost_code_id ?? undefined,
         is_optional: line.is_optional ?? false,
+        is_allowance: line.is_allowance ?? false,
       })),
     )
     if (!title.trim()) setTitle(template.name)
@@ -259,7 +304,7 @@ export function EstimateCreateSheet({
       for (const file of files) {
         const formData = new FormData()
         formData.append("photo", file)
-        const result = await uploadEstimatePhotoAction(formData)
+        const result = unwrapAction(await uploadEstimatePhotoAction(formData))
         if ("error" in result && result.error) {
           toast.error(result.error)
           continue
@@ -336,6 +381,8 @@ export function EstimateCreateSheet({
         markup_pct: 0,
         item_type: line.item_type,
         is_optional: line.item_type === "group" ? undefined : line.is_optional,
+        is_allowance: line.item_type === "group" ? undefined : line.is_allowance,
+        source_bid_submission_id: line.item_type === "group" ? undefined : line.source_bid_submission_id,
       })),
     }
 
@@ -655,7 +702,7 @@ export function EstimateCreateSheet({
                             <Trash2 className="h-4 w-4" />
                           </Button>
                         </div>
-                        {/* Row 2: cost code · optional · total */}
+                        {/* Row 2: cost code · use bid · optional · total */}
                         <div className="flex items-end gap-2">
                           <div className="flex-1 space-y-1">
                             <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Cost code</Label>
@@ -671,9 +718,42 @@ export function EstimateCreateSheet({
                               </SelectContent>
                             </Select>
                           </div>
+                          {bidQuotes.length > 0 ? (
+                            <div className="flex-1 space-y-1">
+                              <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Use bid</Label>
+                              <Select
+                                value={line.source_bid_submission_id ?? "none"}
+                                onValueChange={(v) => {
+                                  if (v === "none") {
+                                    updateLine(idx, { source_bid_submission_id: undefined })
+                                    return
+                                  }
+                                  const quote = bidQuotes.find((q) => q.submission_id === v)
+                                  if (quote) applyBidQuote(idx, quote)
+                                }}
+                              >
+                                <SelectTrigger className="h-9">
+                                  <SelectValue placeholder="No bid" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="none">No bid</SelectItem>
+                                  {bidQuotes.map((quote) => (
+                                    <SelectItem key={quote.submission_id} value={quote.submission_id}>
+                                      {quote.package_title}
+                                      {quote.company_name ? ` · ${quote.company_name}` : ""} · {money(quote.total_cents / 100)}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          ) : null}
                           <label className="flex h-9 items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
                             <Checkbox checked={line.is_optional} onCheckedChange={(c) => updateLine(idx, { is_optional: c === true })} />
                             Optional add-on
+                          </label>
+                          <label className="flex h-9 items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
+                            <Checkbox checked={line.is_allowance} onCheckedChange={(c) => updateLine(idx, { is_allowance: c === true })} />
+                            Allowance
                           </label>
                           <div className="space-y-1 text-right">
                             <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Line total</Label>

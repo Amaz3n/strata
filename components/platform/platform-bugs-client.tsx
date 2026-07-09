@@ -83,6 +83,8 @@ import {
   type PlatformBugStatus,
 } from "@/lib/platform-bugs/types"
 
+import { unwrapAction } from "@/lib/action-result"
+
 type Props = {
   initialBugs: PlatformBug[]
   initialEvents: PlatformBugEvent[]
@@ -377,7 +379,7 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
   const updateBug = (id: string, payload: Record<string, unknown>) => {
     setError(null)
     startTransition(async () => {
-      const result = await updatePlatformBugAction(id, payload)
+      const result = unwrapAction(await updatePlatformBugAction(id, payload))
       if (result.error) {
         setError(result.error)
         return
@@ -392,7 +394,7 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
   const createBug = (formData: FormData) => {
     setError(null)
     startTransition(async () => {
-      const result = await createPlatformBugFromFormAction(formData)
+      const result = unwrapAction(await createPlatformBugFromFormAction(formData))
       if (result.error) {
         setError(result.error)
         return
@@ -413,7 +415,7 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
     if (!selectedBug || !comment.trim()) return
     setError(null)
     startTransition(async () => {
-      const result = await addPlatformBugCommentAction(selectedBug.id, comment)
+      const result = unwrapAction(await addPlatformBugCommentAction(selectedBug.id, comment))
       if (result.error) {
         setError(result.error)
         return
@@ -427,7 +429,7 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
     if (!selectedBug) return
     setError(null)
     startTransition(async () => {
-      const result = await startPlatformBugAiReviewAction(selectedBug.id)
+      const result = unwrapAction(await startPlatformBugAiReviewAction(selectedBug.id))
       if (result.error) {
         setError(result.error)
         return
@@ -446,7 +448,7 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
     if (!selectedBug) return
     setError(null)
     startTransition(async () => {
-      const result = await startPlatformBugAiFixAction(selectedBug.id)
+      const result = unwrapAction(await startPlatformBugAiFixAction(selectedBug.id))
       if (result.error) {
         setError(result.error)
         return
@@ -466,7 +468,7 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
     if (!targetId) return
     setError(null)
     startTransition(async () => {
-      const result = await archivePlatformBugAction(targetId)
+      const result = unwrapAction(await archivePlatformBugAction(targetId))
       if (result.error) {
         setError(result.error)
         return
@@ -485,7 +487,7 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
     if (!window.confirm(`Delete ${bug?.issue_key ?? "this issue"} permanently? This cannot be undone.`)) return
     setError(null)
     startTransition(async () => {
-      const result = await deletePlatformBugAction(id)
+      const result = unwrapAction(await deletePlatformBugAction(id))
       if (result.error) {
         setError(result.error)
         return

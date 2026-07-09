@@ -36,6 +36,8 @@ import { DirectorySearch } from "@/components/directory/directory-search"
 import { Filter, LayoutGrid, List, MoreHorizontal, Plus, Search } from "@/components/icons"
 import { useToast } from "@/hooks/use-toast"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface CompaniesTableProps {
   companies: Company[]
   contacts?: Contact[]
@@ -87,7 +89,7 @@ export function CompaniesTable({
           })
           return
         }
-        await archiveCompanyAction(companyId)
+        unwrapAction(await archiveCompanyAction(companyId))
         router.refresh()
         toast({ title: "Company archived" })
       } catch (error) {

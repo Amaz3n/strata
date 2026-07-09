@@ -21,6 +21,8 @@ import { useToast } from "@/hooks/use-toast"
 import { formatDistanceToNow, format, isPast, isToday } from "date-fns"
 import { formatPhone } from "@/lib/utils"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ProspectDetailSheetProps {
   contactId?: string
   open: boolean

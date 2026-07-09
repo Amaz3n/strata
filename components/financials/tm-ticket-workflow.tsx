@@ -22,6 +22,8 @@ import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import type { TmTicket } from "@/lib/services/tm-tickets"
 
+import { unwrapAction } from "@/lib/action-result"
+
 type OpenCost = {
   id: string
   source_type: string
@@ -80,12 +82,12 @@ export function TmTicketWorkflow({
     const ids = selectedCostIds.filter((id) => eligibleCosts.some((cost) => cost.id === id))
     startTransition(async () => {
       try {
-        await createTmTicketAction({
+        unwrapAction(await createTmTicketAction({
           projectId,
           workDate,
           billableCostIds: ids.length > 0 ? ids : undefined,
           notes: notes.trim() || null,
-        })
+        }))
         setSelectedCostIds([])
         setNotes("")
         router.refresh()
@@ -111,7 +113,7 @@ export function TmTicketWorkflow({
   function createSignatureLink(ticketId: string) {
     startTransition(async () => {
       try {
-        const link = await createTmTicketSignatureLinkAction(projectId, ticketId)
+        const link = unwrapAction(await createTmTicketSignatureLinkAction(projectId, ticketId))
         await navigator.clipboard?.writeText(link.url)
         router.refresh()
         toast.success("Signature link copied")
@@ -250,7 +252,7 @@ export function TmTicketWorkflow({
                           variant="ghost"
                           aria-label="Submit ticket"
                           disabled={isPending}
-                          onClick={() => runTicketAction("Ticket submitted", () => submitTmTicketAction(projectId, ticket.id))}
+                          onClick={() => runTicketAction("Ticket submitted", () => submitTmTicketAction(projectId, ticket.id).then(unwrapAction))}
                         >
                           <Send className="h-4 w-4" />
                         </Button>
@@ -272,7 +274,7 @@ export function TmTicketWorkflow({
                           type="button"
                           size="sm"
                           disabled={isPending}
-                          onClick={() => runTicketAction("Invoice created", () => generateInvoiceFromTmTicketAction(projectId, ticket.id))}
+                          onClick={() => runTicketAction("Invoice created", () => generateInvoiceFromTmTicketAction(projectId, ticket.id).then(unwrapAction))}
                         >
                           Invoice
                         </Button>
@@ -289,7 +291,7 @@ export function TmTicketWorkflow({
                           variant="ghost"
                           aria-label="Void ticket"
                           disabled={isPending}
-                          onClick={() => runTicketAction("Ticket voided", () => voidTmTicketAction(projectId, ticket.id))}
+                          onClick={() => runTicketAction("Ticket voided", () => voidTmTicketAction(projectId, ticket.id).then(unwrapAction))}
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>

@@ -7,10 +7,25 @@ import { ZodError } from "zod"
  */
 export type ActionResult<T> = { success: true; data: T } | { success: false; error: string }
 
+/**
+ * Structural check for AuthorizationError without importing it — that class pulls in
+ * server-only Supabase code, and this module is imported by client components too.
+ */
+function isAuthorizationError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === "AUTH_FORBIDDEN"
+  )
+}
+
 export function actionError(error: unknown, fallback = "Something went wrong. Please try again."): {
   success: false
   error: string
 } {
+  if (isAuthorizationError(error)) {
+    return { success: false, error: "You don't have permission to do that." }
+  }
   if (error instanceof ZodError) {
     const issue = error.issues[0]
     const path = issue?.path?.length ? `${issue.path.join(".")}: ` : ""

@@ -55,6 +55,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
+import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard"
+import { updateProjectCommitmentAction } from "@/app/(app)/projects/[id]/commitments/actions"
 import { formatFileSize, getMimeIcon, isPreviewable } from "@/components/files/types"
 import { FileViewer } from "@/components/files/file-viewer"
 import {
@@ -120,6 +122,8 @@ import {
   Users,
   X,
 } from "lucide-react"
+
+import { unwrapAction } from "@/lib/action-result"
 
 const statusOptions: BidPackageStatus[] = ["draft", "sent", "open", "closed", "awarded", "cancelled"]
 const NO_TRADE_VALUE = "__none__"
@@ -569,6 +573,14 @@ export function BidPackageDetailClientNew({
   const [inviteDialogOpen, setInviteDialogOpen] = useState(false)
   const [addendumDialogOpen, setAddendumDialogOpen] = useState(false)
   const [awardDialogOpen, setAwardDialogOpen] = useState(false)
+  // Post-award handoff: the freshly created commitment, offered for approve-and-send
+  // so the subcontract goes out while the award is still in front of the user.
+  const [postAwardCommitment, setPostAwardCommitment] = useState<
+    { id: string; title: string; companyName: string | null } | null
+  >(null)
+  const [subcontractCommitment, setSubcontractCommitment] = useState<
+    { id: string; title: string; companyName: string | null } | null
+  >(null)
   const [selectedSubmission, setSelectedSubmission] = useState<BidSubmission | null>(null)
   const [submissionSheetOpen, setSubmissionSheetOpen] = useState(false)
   const [detailSubmission, setDetailSubmission] = useState<BidSubmission | null>(null)
@@ -881,8 +893,8 @@ export function BidPackageDetailClientNew({
           formData.append("file", file)
           formData.append("projectId", projectId)
           formData.append("category", "plans")
-          const uploaded = await uploadFileAction(formData)
-          await attachFileAction(uploaded.id, "bid_package", bidPackage.id, projectId)
+          const uploaded = unwrapAction(await uploadFileAction(formData))
+          unwrapAction(await attachFileAction(uploaded.id, "bid_package", bidPackage.id, projectId))
         }
         await loadPackageAttachments()
         toast.success(`${files.length} file${files.length > 1 ? "s" : ""} uploaded`)
@@ -938,7 +950,7 @@ export function BidPackageDetailClientNew({
   const handleFileDetach = useCallback(
     async (attachment: AttachedFile) => {
       try {
-        await detachFileLinkAction(attachment.linkId)
+        unwrapAction(await detachFileLinkAction(attachment.linkId))
         await loadPackageAttachments()
         toast.success(`Removed ${attachment.file_name}`)
       } catch {
@@ -986,7 +998,7 @@ export function BidPackageDetailClientNew({
     startLinkingFiles(async () => {
       try {
         await Promise.all(
-          fileIds.map((fileId) => attachFileAction(fileId, "bid_package", bidPackage.id, projectId))
+          fileIds.map((fileId) => attachFileAction(fileId, "bid_package", bidPackage.id, projectId).then(unwrapAction))
         )
         await loadPackageAttachments()
         setProjectFilesSheetOpen(false)
@@ -1048,7 +1060,7 @@ export function BidPackageDetailClientNew({
     }
     startSaving(async () => {
       try {
-        const updated = await updateBidPackageAction(bidPackage.id, projectId, {
+        const updated = unwrapAction(await updateBidPackageAction(bidPackage.id, projectId, {
           title: title.trim(),
           cost_code_id: costCodeId === "__none__" ? null : costCodeId,
           trade: trade === NO_TRADE_VALUE ? null : trade,
@@ -1056,7 +1068,7 @@ export function BidPackageDetailClientNew({
           status,
           scope: scope.trim() || null,
           instructions: instructions.trim() || null,
-        })
+        }))
         setCurrent(updated)
         setTitle(updated.title)
         setCostCodeId(updated.cost_code_id ?? "__none__")
@@ -1085,7 +1097,7 @@ export function BidPackageDetailClientNew({
     if (nextStatus === current.status || nextStatus === "awarded") return
     startUpdatingStatus(async () => {
       try {
-        const updated = await updateBidPackageAction(bidPackage.id, projectId, { status: nextStatus })
+        const updated = unwrapAction(await updateBidPackageAction(bidPackage.id, projectId, { status: nextStatus }))
         setCurrent(updated)
         setStatus(updated.status)
         toast.success(`Bid package marked ${nextStatus}`)
@@ -1122,11 +1134,11 @@ export function BidPackageDetailClientNew({
           company_name: item.companyName || null,
         }))
 
-        const result = await bulkCreateBidInvitesAction(projectId, bidPackage.id, {
+        const result = unwrapAction(await bulkCreateBidInvitesAction(projectId, bidPackage.id, {
           bid_package_id: bidPackage.id,
           invites: [...companyInviteItems, ...emailOnlyInviteItems],
           send_emails: sendEmails,
-        })
+        }))
 
         setInviteList((prev) => [...result.created, ...prev])
         setSelectedCompanyIds(new Set())
@@ -1222,7 +1234,7 @@ export function BidPackageDetailClientNew({
 
   const handleGenerateLink = async (invite: BidInvite) => {
     try {
-      const result = await generateBidInviteLinkAction(projectId, bidPackage.id, invite.id)
+      const result = unwrapAction(await generateBidInviteLinkAction(projectId, bidPackage.id, invite.id))
       await navigator.clipboard.writeText(result.url)
       const refreshed = await listBidInvitesAction(bidPackage.id)
       setInviteList(refreshed)
@@ -1234,7 +1246,7 @@ export function BidPackageDetailClientNew({
 
   const handleResendInvite = async (invite: BidInvite) => {
     try {
-      await resendBidInviteAction(projectId, bidPackage.id, invite.id)
+      unwrapAction(await resendBidInviteAction(projectId, bidPackage.id, invite.id))
       const refreshed = await listBidInvitesAction(bidPackage.id)
       setInviteList(refreshed)
       await loadBidActivity()
@@ -1276,7 +1288,7 @@ export function BidPackageDetailClientNew({
 
     startEnteringManualBid(async () => {
       try {
-        const submission = await createManualBidSubmissionAction(projectId, bidPackage.id, {
+        const submission = unwrapAction(await createManualBidSubmissionAction(projectId, bidPackage.id, {
           bid_package_id: bidPackage.id,
           bid_invite_id: target.invite?.id ?? null,
           company_id: target.invite?.company_id ?? target.company?.id ?? null,
@@ -1289,7 +1301,7 @@ export function BidPackageDetailClientNew({
           clarifications: manualBidClarifications.trim() || null,
           notes: manualBidNotes.trim() || null,
           line_items: lineItems,
-        })
+        }))
 
         const [refreshedInvites, refreshedSubmissions] = await Promise.all([
           listBidInvitesAction(bidPackage.id),
@@ -1329,11 +1341,11 @@ export function BidPackageDetailClientNew({
 
     setSavingLevelingId(submission.id)
     try {
-      const updated = await updateBidSubmissionLevelingAction(projectId, bidPackage.id, {
+      const updated = unwrapAction(await updateBidSubmissionLevelingAction(projectId, bidPackage.id, {
         bid_submission_id: submission.id,
         leveled_adjustment_cents: adjustmentCents,
         leveling_notes: draft.notes.trim() || null,
-      })
+      }))
       setSubmissionList((prev) => prev.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)))
       setDetailSubmission((prev) => (prev?.id === updated.id ? { ...prev, ...updated } : prev))
       await loadBidActivity()
@@ -1388,12 +1400,12 @@ export function BidPackageDetailClientNew({
 
     setAnsweringRfiId(rfi.id)
     try {
-      const result = await answerBidPackageRfiAction(projectId, bidPackage.id, {
+      const result = unwrapAction(await answerBidPackageRfiAction(projectId, bidPackage.id, {
         bid_package_id: bidPackage.id,
         rfi_id: rfi.id,
         body,
         broadcast_as_addendum: rfiBroadcastDrafts[rfi.id] ?? true,
-      })
+      }))
       if (result.addendum) {
         setAddendumList((prev) => [...prev, result.addendum!])
       }
@@ -1409,7 +1421,7 @@ export function BidPackageDetailClientNew({
 
   const handlePauseInviteAccess = async (invite: BidInvite) => {
     try {
-      await pauseBidInviteAccessAction(projectId, bidPackage.id, invite.id)
+      unwrapAction(await pauseBidInviteAccessAction(projectId, bidPackage.id, invite.id))
       const refreshed = await listBidInvitesAction(bidPackage.id)
       setInviteList(refreshed)
       toast.success("Invite access paused")
@@ -1420,7 +1432,7 @@ export function BidPackageDetailClientNew({
 
   const handleResumeInviteAccess = async (invite: BidInvite) => {
     try {
-      await resumeBidInviteAccessAction(projectId, bidPackage.id, invite.id)
+      unwrapAction(await resumeBidInviteAccessAction(projectId, bidPackage.id, invite.id))
       const refreshed = await listBidInvitesAction(bidPackage.id)
       setInviteList(refreshed)
       toast.success("Invite access resumed")
@@ -1431,7 +1443,7 @@ export function BidPackageDetailClientNew({
 
   const handleRevokeInviteAccess = async (invite: BidInvite) => {
     try {
-      await revokeBidInviteAccessAction(projectId, bidPackage.id, invite.id)
+      unwrapAction(await revokeBidInviteAccessAction(projectId, bidPackage.id, invite.id))
       const refreshed = await listBidInvitesAction(bidPackage.id)
       setInviteList(refreshed)
       toast.success("Invite access revoked")
@@ -1442,7 +1454,7 @@ export function BidPackageDetailClientNew({
 
   const handleSetInviteRequireAccount = async (invite: BidInvite, requireAccount: boolean) => {
     try {
-      await setBidInviteRequireAccountAction(projectId, bidPackage.id, invite.id, requireAccount)
+      unwrapAction(await setBidInviteRequireAccountAction(projectId, bidPackage.id, invite.id, requireAccount))
       const refreshed = await listBidInvitesAction(bidPackage.id)
       setInviteList(refreshed)
       toast.success(requireAccount ? "Account required enabled" : "Link-only access enabled")
@@ -1453,7 +1465,7 @@ export function BidPackageDetailClientNew({
 
   const handlePauseInviteAccounts = async (invite: BidInvite) => {
     try {
-      await pauseBidInviteAccountGrantsAction(projectId, bidPackage.id, invite.id)
+      unwrapAction(await pauseBidInviteAccountGrantsAction(projectId, bidPackage.id, invite.id))
       const refreshed = await listBidInvitesAction(bidPackage.id)
       setInviteList(refreshed)
       toast.success("Linked accounts paused")
@@ -1464,7 +1476,7 @@ export function BidPackageDetailClientNew({
 
   const handleResumeInviteAccounts = async (invite: BidInvite) => {
     try {
-      await resumeBidInviteAccountGrantsAction(projectId, bidPackage.id, invite.id)
+      unwrapAction(await resumeBidInviteAccountGrantsAction(projectId, bidPackage.id, invite.id))
       const refreshed = await listBidInvitesAction(bidPackage.id)
       setInviteList(refreshed)
       toast.success("Linked accounts resumed")
@@ -1475,7 +1487,7 @@ export function BidPackageDetailClientNew({
 
   const handleRevokeInviteAccounts = async (invite: BidInvite) => {
     try {
-      await revokeBidInviteAccountGrantsAction(projectId, bidPackage.id, invite.id)
+      unwrapAction(await revokeBidInviteAccountGrantsAction(projectId, bidPackage.id, invite.id))
       const refreshed = await listBidInvitesAction(bidPackage.id)
       setInviteList(refreshed)
       toast.success("Linked accounts revoked")
@@ -1487,11 +1499,11 @@ export function BidPackageDetailClientNew({
   const handleAddendum = () => {
     startAddingAddendum(async () => {
       try {
-        const addendum = await createBidAddendumAction(projectId, {
+        const addendum = unwrapAction(await createBidAddendumAction(projectId, {
           bid_package_id: bidPackage.id,
           title: addendumTitle.trim() || null,
           message: addendumMessage.trim() || null,
-        })
+        }))
         setAddendumList((prev) => [...prev, addendum])
         setAddendumTitle("")
         setAddendumMessage("")
@@ -1528,9 +1540,10 @@ export function BidPackageDetailClientNew({
   const handleAward = () => {
     if (!selectedSubmission) return
     const awardedSubmissionId = selectedSubmission.id
+    const awardedCompanyName = selectedSubmission.invite?.company?.name ?? null
     startAwarding(async () => {
       try {
-        await awardBidSubmissionAction(projectId, bidPackage.id, awardedSubmissionId)
+        const result = unwrapAction(await awardBidSubmissionAction(projectId, bidPackage.id, awardedSubmissionId))
         setCurrent((prev) => ({ ...prev, status: "awarded" }))
         setStatus("awarded")
         setSubmissionList((prev) =>
@@ -1550,8 +1563,27 @@ export function BidPackageDetailClientNew({
         setAwardDialogOpen(false)
         setSelectedSubmission(null)
         toast.success("Bid awarded and commitment created")
+        setPostAwardCommitment({
+          id: result.commitmentId,
+          title: `${current.title} - Award`,
+          companyName: awardedCompanyName,
+        })
       } catch (error: any) {
         toast.error("Failed to award bid", { description: error?.message ?? "Please try again." })
+      }
+    })
+  }
+
+  const handleApproveAndSendSubcontract = () => {
+    const commitment = postAwardCommitment
+    if (!commitment) return
+    startAwarding(async () => {
+      try {
+        unwrapAction(await updateProjectCommitmentAction(projectId, commitment.id, { status: "approved" }))
+        setPostAwardCommitment(null)
+        setSubcontractCommitment(commitment)
+      } catch (error: any) {
+        toast.error("Unable to approve commitment", { description: error?.message ?? "Please try again." })
       }
     })
   }
@@ -1563,8 +1595,8 @@ export function BidPackageDetailClientNew({
         formData.append("file", file)
         formData.append("projectId", projectId)
         formData.append("category", "plans")
-        const uploaded = await uploadFileAction(formData)
-        await attachFileAction(uploaded.id, "bid_addendum", addendumId, projectId)
+        const uploaded = unwrapAction(await uploadFileAction(formData))
+        unwrapAction(await attachFileAction(uploaded.id, "bid_addendum", addendumId, projectId))
       }
       await loadAddendumAttachments()
     },
@@ -1573,7 +1605,7 @@ export function BidPackageDetailClientNew({
 
   const handleAddendumDetach = useCallback(
     async (linkId: string) => {
-      await detachFileLinkAction(linkId)
+      unwrapAction(await detachFileLinkAction(linkId))
       await loadAddendumAttachments()
     },
     [loadAddendumAttachments]
@@ -3345,6 +3377,52 @@ export function BidPackageDetailClientNew({
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+
+        <Dialog open={postAwardCommitment !== null} onOpenChange={(open) => { if (!open) setPostAwardCommitment(null) }}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Send the subcontract now?</DialogTitle>
+              <DialogDescription>
+                {postAwardCommitment?.companyName ?? "The awarded vendor"} has a draft commitment. Approving it
+                commits the cost against the budget and lets you send the subcontract for signature.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" disabled={isAwarding} onClick={() => setPostAwardCommitment(null)}>
+                Later
+              </Button>
+              <Button disabled={isAwarding} onClick={handleApproveAndSendSubcontract}>
+                {isAwarding && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Approve &amp; send subcontract
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <EnvelopeWizard
+          open={subcontractCommitment !== null}
+          onOpenChange={(open) => {
+            if (!open) setSubcontractCommitment(null)
+          }}
+          sourceEntity={
+            subcontractCommitment
+              ? ({
+                  type: "subcontract",
+                  id: subcontractCommitment.id,
+                  project_id: projectId,
+                  title: subcontractCommitment.title,
+                  document_type: "contract",
+                } satisfies EnvelopeWizardSourceEntity)
+              : null
+          }
+          sourceLabel="Commitment"
+          sheetTitle="Send subcontract for signature"
+          sheetDescription="Upload the subcontract or PO and send it to the awarded vendor for execution."
+          onEnvelopeSent={() => {
+            setSubcontractCommitment(null)
+            toast.success("Subcontract sent for signature")
+          }}
+        />
       </div>
     </TooltipProvider>
   )

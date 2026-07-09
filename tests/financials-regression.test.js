@@ -55,6 +55,14 @@ test("cost-driven projects can promote approved sources into the billable ledger
   )
   assert.doesNotThrow(() =>
     assertCostSourceCanEnterBillableLedger({
+      billingModel: "time_and_materials",
+      sourceType: "time_entry",
+      sourceStatus: "client_approved",
+      clientCostApprovalRequired: false,
+    }),
+  )
+  assert.doesNotThrow(() =>
+    assertCostSourceCanEnterBillableLedger({
       billingModel: "cost_plus_gmp",
       sourceType: "time_entry",
       sourceStatus: "client_approved",
@@ -82,7 +90,7 @@ test("cost-driven projects can promote approved sources into the billable ledger
   )
 })
 
-test("vendor bill billability is explicit and fixed-price allocations remain blocked", () => {
+test("vendor bill billability defaults on for cost-driven projects and fixed-price allocations remain blocked", () => {
   const vendorBillSource = require("node:fs").readFileSync(
     require("node:path").join(__dirname, "../lib/services/vendor-bills.ts"),
     "utf8",
@@ -92,10 +100,78 @@ test("vendor bill billability is explicit and fixed-price allocations remain blo
     "utf8",
   )
 
-  assert.match(vendorBillSource, /billingModelByProject[\s\S]*line\.billable_to_customer === true/)
+  assert.match(vendorBillSource, /billingModelByProject[\s\S]*line\.billable_to_customer !== false/)
   assert.match(costPlusSource, /metadata\?\.billable_to_customer === true/)
   assert.match(vendorBillSource, /voidBillableCostsForVendorBill[\s\S]*replaceBillLineCoding/)
   assert.match(vendorBillSource, /voidJobCostEntriesForVendorBill[\s\S]*replaceBillLineCoding/)
+})
+
+test("approved-cost invoices cannot be edited directly and release billing-period locks", () => {
+  const invoiceSource = fs.readFileSync(path.join(__dirname, "../lib/services/invoices.ts"), "utf8")
+  const billingPeriodSource = fs.readFileSync(path.join(__dirname, "../lib/services/billing-periods.ts"), "utf8")
+
+  assert.match(invoiceSource, /Approved-cost invoices are controlled by the cost ledger/)
+  assert.match(invoiceSource, /releaseInvoiceFromBillingPeriod/)
+  assert.match(billingPeriodSource, /released_invoice_id/)
+  assert.match(billingPeriodSource, /billing_period_id:\s*null/)
+})
+
+test("cost-plus ledger carries budget-line and GMP classification on billable costs", () => {
+  const costPlusSource = fs.readFileSync(path.join(__dirname, "../lib/services/cost-plus.ts"), "utf8")
+  const jobCostSource = fs.readFileSync(path.join(__dirname, "../lib/services/job-cost-actuals.ts"), "utf8")
+  const migrationSource = fs.readFileSync(
+    path.join(__dirname, "../supabase/migrations/20260707192900_cost_plus_integrity_hardening.sql"),
+    "utf8",
+  )
+
+  assert.match(costPlusSource, /resolveGmpClassificationForCostSource/)
+  assert.match(costPlusSource, /budget_line_id/)
+  assert.match(jobCostSource, /gmp_classification/)
+  assert.match(migrationSource, /add column if not exists budget_line_id/)
+})
+
+test("cost-plus guardrails cover locked costs, direct change orders, manual adjustments, and tie-outs", () => {
+  const costPlusSource = fs.readFileSync(path.join(__dirname, "../lib/services/cost-plus.ts"), "utf8")
+  const invoiceSource = fs.readFileSync(path.join(__dirname, "../lib/services/invoices.ts"), "utf8")
+  const trustCenterSource = fs.readFileSync(path.join(__dirname, "../lib/services/trust-center.ts"), "utf8")
+  const actionsSource = fs.readFileSync(path.join(__dirname, "../app/(app)/projects/[id]/financials/actions.ts"), "utf8")
+  const reviewQueueSource = fs.readFileSync(path.join(__dirname, "../components/cost-inbox/review-queue-table.tsx"), "utf8")
+
+  assert.match(costPlusSource, /currently locked by invoice creation/)
+  assert.match(invoiceSource, /Do not invoice change orders directly/)
+  assert.match(costPlusSource, /createManualBillableAdjustment/)
+  assert.match(actionsSource, /createManualBillableAdjustmentAction/)
+  assert.match(reviewQueueSource, /adjustmentDialogOpen/)
+  assert.match(trustCenterSource, /incurred_billable_tieout/)
+})
+
+test("cost-plus trust center has a real route for incurred versus billable tie-out", () => {
+  const trustCenterTypes = fs.readFileSync(path.join(__dirname, "../lib/financials/trust-center-types.ts"), "utf8")
+  const trustCenterPage = fs.readFileSync(
+    path.join(__dirname, "../app/(app)/projects/[id]/financials/trust-center/page.tsx"),
+    "utf8",
+  )
+  const projectNav = fs.readFileSync(path.join(__dirname, "../components/layout/project-nav-items.ts"), "utf8")
+
+  assert.match(trustCenterTypes, /incurred_billable_tieout/)
+  assert.doesNotMatch(trustCenterPage, /redirect\(/)
+  assert.match(trustCenterPage, /TrustCenterTab/)
+  assert.match(projectNav, /trust-center/)
+})
+
+test("markup and retainage policies are explicit in cost-plus billing", () => {
+  const costPlusSource = fs.readFileSync(path.join(__dirname, "../lib/services/cost-plus.ts"), "utf8")
+  const projectSetupSource = fs.readFileSync(path.join(__dirname, "../lib/services/project-financial-setup.ts"), "utf8")
+  const migrationSource = fs.readFileSync(
+    path.join(__dirname, "../supabase/migrations/20260707192900_cost_plus_integrity_hardening.sql"),
+    "utf8",
+  )
+
+  assert.match(costPlusSource, /contractRule[\s\S]*rawContractMarkup[\s\S]*defaultCostCodeMarkup/)
+  assert.match(costPlusSource, /applyRetainageToInvoiceDraft\([\s\S]*retainageAppliesToFee = false/)
+  assert.match(costPlusSource, /!retainageAppliesToFee && isInvoiceDraftFeeLine/)
+  assert.match(projectSetupSource, /retainageAppliesToFee: z\.boolean\(\)\.default\(false\)/)
+  assert.match(migrationSource, /retainage_applies_to_fee boolean not null default false/)
 })
 
 test("approved-cost invoice idempotency key is stable, sorted, and sensitive to invoice facts", () => {

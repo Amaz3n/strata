@@ -8,6 +8,8 @@ import type {
   FinalizeUploadedFileInput,
 } from "@/app/(app)/documents/types"
 
+import { unwrapAction } from "@/lib/action-result"
+
 type UploadStage = "preparing" | "uploading" | "finalizing"
 type UploadProgress = { loaded: number; total: number; percent: number }
 
@@ -107,14 +109,14 @@ export async function uploadDocumentFileDirect(
 
   options.onStage?.("finalizing")
   const { onProgress: _onProgress, onStage: _onStage, ...finalizeOptions } = options
-  return finalizeUploadedFileAction({
+  return unwrapAction(await finalizeUploadedFileAction({
     ...finalizeOptions,
     fileName: file.name,
     fileSize: file.size,
     mimeType: contentType,
     checksum,
     storagePath,
-  })
+  }))
 }
 
 async function uploadSinglePart(

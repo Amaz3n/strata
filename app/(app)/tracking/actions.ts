@@ -5,6 +5,16 @@ import { headers } from "next/headers"
 import { requireOrgMembership } from "@/lib/auth/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
+import { actionError, type ActionResult } from "@/lib/action-result"
+
+async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
+  try {
+    return { success: true, data: await fn() }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
 const DEFAULT_TRACKED_DEMO_ORG_IDS = ["7982e17e-501e-4640-b410-f6d2385391f8"]
 const DEFAULT_TRACKED_DEMO_EMAILS = ["demo@arcnaples.com"]
 
@@ -53,37 +63,39 @@ function routeLabel(pathname: string) {
 }
 
 export async function recordDemoPageViewAction(pathname: string) {
-  const normalizedPathname = normalizePathname(pathname)
-  const { orgId, user } = await requireOrgMembership()
+  return run(async () => {
+      const normalizedPathname = normalizePathname(pathname)
+      const { orgId, user } = await requireOrgMembership()
 
-  if (!trackedDemoOrgIds().includes(orgId) || !trackedDemoEmails().includes((user.email ?? "").toLowerCase())) {
-    return { tracked: false }
-  }
+      if (!trackedDemoOrgIds().includes(orgId) || !trackedDemoEmails().includes((user.email ?? "").toLowerCase())) {
+        return { tracked: false }
+      }
 
-  const headerStore = await headers()
-  const userAgent = headerStore.get("user-agent") ?? null
-  const referer = headerStore.get("referer") ?? null
+      const headerStore = await headers()
+      const userAgent = headerStore.get("user-agent") ?? null
+      const referer = headerStore.get("referer") ?? null
 
-  const supabase = createServiceSupabaseClient()
-  const { error } = await supabase.from("events").insert({
-    org_id: orgId,
-    event_type: "demo_page_view",
-    entity_type: "usage",
-    payload: {
-      actor_id: user.id,
-      actor_email: user.email ?? null,
-      path: normalizedPathname,
-      label: routeLabel(normalizedPathname),
-      user_agent: userAgent,
-      referer,
-    },
-    channel: "activity",
+      const supabase = createServiceSupabaseClient()
+      const { error } = await supabase.from("events").insert({
+        org_id: orgId,
+        event_type: "demo_page_view",
+        entity_type: "usage",
+        payload: {
+          actor_id: user.id,
+          actor_email: user.email ?? null,
+          path: normalizedPathname,
+          label: routeLabel(normalizedPathname),
+          user_agent: userAgent,
+          referer,
+        },
+        channel: "activity",
+      })
+
+      if (error) {
+        console.error("Failed to record demo page view", error)
+        return { tracked: false }
+      }
+
+      return { tracked: true }
   })
-
-  if (error) {
-    console.error("Failed to record demo page view", error)
-    return { tracked: false }
-  }
-
-  return { tracked: true }
 }

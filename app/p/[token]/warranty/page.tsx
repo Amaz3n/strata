@@ -22,5 +22,5 @@ export default async function WarrantyPortalPage({ params }: Params) {
 
   const requests = await listWarrantyRequestsForPortal(access.org_id, access.project_id).catch(() => [])
 
-  return <WarrantyPortalClient token={token} projectId={access.project_id} requests={requests} />
+  return <WarrantyPortalClient token={token} requests={requests} />
 }

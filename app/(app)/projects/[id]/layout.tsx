@@ -4,6 +4,8 @@ import { notFound } from "next/navigation"
 import { ProjectContextSetter } from "@/components/layout/project-context-setter"
 import { getProjectAction } from "./actions"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ProjectLayoutProps {
   children: React.ReactNode
   params: Promise<{ id: string }>

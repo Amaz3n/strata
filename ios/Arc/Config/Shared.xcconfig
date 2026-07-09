@@ -8,5 +8,11 @@
 //
 //     ARC_SUPABASE_URL = https:/$()/your-project.supabase.co
 //
+// Supabase publishable values are safe to ship in the client. Keep them here so
+// direct-to-device Xcode installs have auth configured even outside an Xcode
+// launched debug session.
+ARC_SUPABASE_URL = https:/$()/gzlfiskfkvqgpzqldnwk.supabase.co
+ARC_SUPABASE_PUBLISHABLE_KEY = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd6bGZpc2tma3ZxZ3B6cWxkbndrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ0OTU5ODMsImV4cCI6MjA4MDA3MTk4M30.SjfF7YmxgJHMC-3MqXkFk727b39lZGV22Q5K2UuVmto
+
 // Pull the local-only secret values in from Secrets.xcconfig (git-ignored).
 #include? "Secrets.xcconfig"

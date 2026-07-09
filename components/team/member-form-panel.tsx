@@ -44,6 +44,8 @@ import type {
   TeamMember,
 } from "@/lib/types"
 
+import { unwrapAction } from "@/lib/action-result"
+
 type PermissionPreset = "standard" | "project_manager" | "field" | "office_finance" | "custom"
 
 const PRESET_GRANTS: Record<Exclude<PermissionPreset, "custom">, string[]> = {
@@ -259,6 +261,7 @@ export function MemberFormPanel({
   const [email, setEmail] = useState("")
   const [fullName, setFullName] = useState(member?.user.full_name ?? "")
   const [role, setRole] = useState<OrgRole>(defaultRole as OrgRole)
+  const [projectScope, setProjectScope] = useState<"all" | "assigned">(member?.project_scope ?? "all")
   const [overrides, setOverrides] = useState<MemberPermissionOverride[]>(initialOverrides)
   const [preset, setPreset] = useState<PermissionPreset>(detectPreset(initialOverrides))
   const [search, setSearch] = useState("")
@@ -323,8 +326,15 @@ export function MemberFormPanel({
   const selectedRoleOption = normalizedRoleOptions.find((option) => option.key === role)
   const roleMeta = ROLE_META[role]
 
+  // Roles that carry org.admin see every project regardless of scope, so the
+  // Assigned-only toggle is meaningless (and hidden) for them.
+  const ADMIN_ROLE_KEYS = new Set(["org_owner", "org_admin", "org_office_admin"])
+  const scopeApplies = !ADMIN_ROLE_KEYS.has(role)
+  const effectiveScope: "all" | "assigned" = scopeApplies ? projectScope : "all"
+
   const hasNameChange = isEdit && fullName.trim() !== (member?.user.full_name ?? "")
   const hasRoleChange = isEdit && role !== member?.role
+  const hasScopeChange = isEdit && effectiveScope !== (member?.project_scope ?? "all")
   const hasPermissionChange =
     isEdit &&
     JSON.stringify(role === "org_user" ? overrides : []) !==
@@ -340,7 +350,7 @@ export function MemberFormPanel({
       laborIsBillableDefault !== (member?.labor_is_billable_default ?? true))
 
   const hasChanges = isEdit
-    ? (canEditProfile && hasNameChange) || (canEditRoleField && (hasRoleChange || hasPermissionChange)) || (canManageMembers && hasLaborChange)
+    ? (canEditProfile && hasNameChange) || (canEditRoleField && (hasRoleChange || hasScopeChange || hasPermissionChange)) || (canManageMembers && hasLaborChange)
     : Boolean(email.trim())
 
   const submit = () => {
@@ -351,11 +361,12 @@ export function MemberFormPanel({
       }
       startTransition(async () => {
         try {
-          const result = await inviteTeamMemberAction({
+          const result = unwrapAction(await inviteTeamMemberAction({
             email,
             role,
+            projectScope: effectiveScope,
             permissionOverrides: role === "org_user" ? overrides : [],
-          })
+          }))
           if (result?.tempPassword) {
             toast({ title: "Invite created (dev)", description: `Temp password: ${result.tempPassword}` })
           } else {
@@ -379,21 +390,22 @@ export function MemberFormPanel({
     startTransition(async () => {
       try {
         if (canEditProfile && hasNameChange) {
-          await updateMemberProfileAction(member.user.id, { full_name: fullName.trim() })
+          unwrapAction(await updateMemberProfileAction(member.user.id, { full_name: fullName.trim() }))
         }
-        if (canEditRoleField && (hasRoleChange || hasPermissionChange)) {
-          await updateMemberRoleAction(member.id, {
+        if (canEditRoleField && (hasRoleChange || hasScopeChange || hasPermissionChange)) {
+          unwrapAction(await updateMemberRoleAction(member.id, {
             role,
+            projectScope: effectiveScope,
             permissionOverrides: role === "org_user" ? overrides : [],
-          })
+          }))
         }
         if (canManageMembers && hasLaborChange) {
-          await updateMemberLaborSettingsAction(member.id, {
+          unwrapAction(await updateMemberLaborSettingsAction(member.id, {
             labor_cost_rate_cents: nextLaborCostRateCents,
             labor_bill_rate_cents: nextLaborBillRateCents,
             labor_burden_multiplier: nextLaborBurdenMultiplier,
             labor_is_billable_default: laborIsBillableDefault,
-          })
+          }))
         }
         toast({ title: "Member updated" })
         if (onSuccess) onSuccess()
@@ -581,6 +593,62 @@ export function MemberFormPanel({
               })}
             </div>
           </section>
+
+          {scopeApplies ? (
+            <>
+              <Separator />
+              <section className="space-y-4">
+                <SectionHeader
+                  title="Project access"
+                  description="Limit this member to the projects they're explicitly assigned to, or give them the whole portfolio."
+                />
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {(
+                    [
+                      {
+                        value: "all" as const,
+                        label: "All projects",
+                        description: "Sees and works across every project in the company.",
+                      },
+                      {
+                        value: "assigned" as const,
+                        label: "Assigned only",
+                        description: "Only sees projects they're added to as a project member.",
+                      },
+                    ]
+                  ).map((option) => {
+                    const active = projectScope === option.value
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => canEditRoleField && setProjectScope(option.value)}
+                        disabled={!canEditRoleField}
+                        className={cn(
+                          "flex h-full flex-col gap-1 rounded-lg border p-4 text-left transition-colors",
+                          active
+                            ? "border-primary bg-primary/5 ring-1 ring-primary/30"
+                            : "border-border/70 bg-background hover:border-border hover:bg-muted/40",
+                          !canEditRoleField && "cursor-not-allowed opacity-70",
+                        )}
+                      >
+                        <div className="flex items-center justify-between">
+                          <p className="text-sm font-semibold">{option.label}</p>
+                          <div
+                            className={cn(
+                              "h-4 w-4 rounded-full border-2",
+                              active ? "border-primary bg-primary" : "border-muted-foreground/40",
+                            )}
+                          />
+                        </div>
+                        <p className="text-xs text-muted-foreground">{option.description}</p>
+                      </button>
+                    )
+                  })}
+                </div>
+              </section>
+            </>
+          ) : null}
 
           {role === "org_user" && permissionOptions.length > 0 ? (
             <>

@@ -16,6 +16,8 @@ import { Textarea } from "@/components/ui/textarea"
 import type { ProjectGmpControlSummary, ProjectGmpSnapshotTrendPoint } from "@/lib/services/gmp-control"
 import { cn } from "@/lib/utils"
 
+import { unwrapAction } from "@/lib/action-result"
+
 const chartConfig = {
   eac: { label: "Inside-GMP EAC", color: "hsl(var(--chart-1))" },
   gmp: { label: "Revised GMP", color: "hsl(var(--chart-2))" },
@@ -110,11 +112,11 @@ export function GmpControlSection({
     if (!canDrawDown || drawdownCents == null) return
     startTransition(async () => {
       try {
-        await recordGmpContingencyDrawdownAction({
+        unwrapAction(await recordGmpContingencyDrawdownAction({
           projectId,
           amountCents: drawdownCents,
           reason: reason.trim(),
-        })
+        }))
         setAmount("")
         setReason("")
         toast.success("Contingency drawdown recorded")

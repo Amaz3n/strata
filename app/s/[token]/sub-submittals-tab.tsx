@@ -14,6 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { SubmitPackageDialog } from "./submittals/submit-package-dialog"
 
 interface SubSubmittalsTabProps {
   submittals: Submittal[]
@@ -29,9 +30,11 @@ const statusColors: Record<string, string> = {
   resubmit: "bg-orange-500/20 text-orange-500 border-orange-500/30",
 }
 
+const OPEN_FOR_SUBMISSION = new Set(["draft", "pending", "submitted", "in_review", "revise_resubmit"])
+
 export function SubSubmittalsTab({ submittals, token }: SubSubmittalsTabProps) {
   const [selected, setSelected] = useState<Submittal | null>(null)
-  void token
+  const [submitFor, setSubmitFor] = useState<Submittal | null>(null)
 
   if (submittals.length === 0) {
     return (
@@ -81,18 +84,32 @@ export function SubSubmittalsTab({ submittals, token }: SubSubmittalsTabProps) {
                     Due {formatLocalDate(sub.due_date, "MMM d, yyyy")}
                   </p>
                 )}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setSelected(sub)}
-                >
-                  View Details
-                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setSelected(sub)}
+                  >
+                    View Details
+                  </Button>
+                  {OPEN_FOR_SUBMISSION.has(sub.status) && !sub.superseded_by_id && (
+                    <Button size="sm" onClick={() => setSubmitFor(sub)}>
+                      Submit documents
+                    </Button>
+                  )}
+                </div>
               </div>
             </CardContent>
           </Card>
         ))}
       </div>
+
+      <SubmitPackageDialog
+        token={token}
+        submittal={submitFor}
+        open={!!submitFor}
+        onOpenChange={(open) => (open ? null : setSubmitFor(null))}
+      />
 
       <Dialog
         open={!!selected}

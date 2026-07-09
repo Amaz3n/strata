@@ -26,6 +26,8 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Plus, CheckSquare, CalendarDays, MoreHorizontal } from "@/components/icons"
 import { cn } from "@/lib/utils"
 
+import { unwrapAction } from "@/lib/action-result"
+
 type PunchStatus = "open" | "in_progress" | "ready_for_review" | "closed"
 
 const statusLabels: Record<PunchStatus, string> = {
@@ -115,7 +117,7 @@ export function PunchTab({
   const handleQuickStatus = (item: ProjectPunchItem, status: PunchStatus) => {
     startTransition(async () => {
       try {
-        const updated = await updateProjectPunchItemAction(projectId, item.id, { status })
+        const updated = unwrapAction(await updateProjectPunchItemAction(projectId, item.id, { status }))
         setItems((prev) => prev.map((p) => (p.id === item.id ? updated : p)))
       } catch (error: any) {
         console.error(error)
@@ -501,8 +503,8 @@ function PunchItemSheet({
       formData.append("category", file.type.startsWith("image/") ? "photos" : "other")
       formData.append("shareWithClients", shareWithClients ? "true" : "false")
 
-      const uploaded = await uploadFileAction(formData)
-      await attachFileAction(uploaded.id, "punch_item", item.id, projectId, linkRole)
+      const uploaded = unwrapAction(await uploadFileAction(formData))
+      unwrapAction(await attachFileAction(uploaded.id, "punch_item", item.id, projectId, linkRole))
     }
     const links = await listAttachmentsAction("punch_item", item.id)
     setAttachments(
@@ -521,7 +523,7 @@ function PunchItemSheet({
   }
 
   const handleDetach = async (linkId: string) => {
-    await detachFileLinkAction(linkId)
+    unwrapAction(await detachFileLinkAction(linkId))
     if (!item) return
     const links = await listAttachmentsAction("punch_item", item.id)
     setAttachments(
@@ -552,7 +554,7 @@ function PunchItemSheet({
             toast.error("Add verification evidence before closing this item.")
             return
           }
-          const updated = await updateProjectPunchItemAction(projectId, item.id, {
+          const updated = unwrapAction(await updateProjectPunchItemAction(projectId, item.id, {
             title: title.trim(),
             description: description.trim() || null,
             location: location.trim() || null,
@@ -562,14 +564,14 @@ function PunchItemSheet({
             status,
             verification_required: verificationRequired,
             verification_notes: verificationNotes.trim() || null,
-          })
+          }))
           toast.success("Punch item updated")
           onUpdated(updated)
           onOpenChange(false)
           return
         }
 
-        const created = await createProjectPunchItemAction(projectId, {
+        const created = unwrapAction(await createProjectPunchItemAction(projectId, {
           title: title.trim(),
           description: description.trim() || null,
           location: location.trim() || null,
@@ -577,7 +579,7 @@ function PunchItemSheet({
           due_date: dueDate ? format(dueDate, "yyyy-MM-dd") : null,
           assigned_to: assignedTo === "__none__" ? null : assignedTo,
           verification_required: verificationRequired,
-        })
+        }))
         toast.success("Punch item created")
         onCreated(created)
         onOpenChange(false)

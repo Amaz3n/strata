@@ -35,6 +35,8 @@ import { PortalInviteDialog } from "@/components/contacts/portal-invite-dialog"
 import { Filter, MoreHorizontal, Plus, Search } from "@/components/icons"
 import { useToast } from "@/hooks/use-toast"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ContactsTableProps {
   contacts: Contact[]
   companies: Company[]
@@ -120,7 +122,7 @@ export function ContactsTable({
     }
     setImporting(true)
     try {
-      const result = await importContactsCsvAction(importCsv)
+      const result = unwrapAction(await importContactsCsvAction(importCsv))
       router.refresh()
       toast({ title: "Contacts imported", description: `${result.created} contacts added.` })
       setImportOpen(false)
@@ -143,7 +145,7 @@ export function ContactsTable({
           })
           return
         }
-        await archiveContactAction(contactId)
+        unwrapAction(await archiveContactAction(contactId))
         router.refresh()
         toast({ title: "Contact archived" })
       } catch (error) {

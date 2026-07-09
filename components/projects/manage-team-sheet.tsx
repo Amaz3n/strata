@@ -61,6 +61,8 @@ import {
   Briefcase,
 } from "@/components/icons"
 
+import { unwrapAction } from "@/lib/action-result"
+
 export interface ManageTeamSheetProps {
   projectId: string
   open: boolean
@@ -177,7 +179,7 @@ export function ManageTeamSheet({
 
     setLoading(true)
     try {
-      const added = await addProjectMembersAction(projectId, { userIds: [userId], roleId })
+      const added = unwrapAction(await addProjectMembersAction(projectId, { userIds: [userId], roleId }))
       setTeamMembers((prev) => {
         const map = new Map(prev.map((m) => [m.user_id, m]))
         added.forEach((m) => map.set(m.user_id, m))
@@ -196,7 +198,7 @@ export function ManageTeamSheet({
   async function handleRemoveMember(memberId: string) {
     setLoading(true)
     try {
-      await removeProjectMemberAction(projectId, memberId)
+      unwrapAction(await removeProjectMemberAction(projectId, memberId))
       setTeamMembers((prev) => prev.filter((m) => m.id !== memberId))
       toast.success("Removed from project")
       await loadTeamDirectory()
@@ -211,7 +213,7 @@ export function ManageTeamSheet({
   async function handleRoleChange(memberId: string, roleId: string) {
     setLoading(true)
     try {
-      const updated = await updateProjectMemberRoleAction(projectId, memberId, roleId)
+      const updated = unwrapAction(await updateProjectMemberRoleAction(projectId, memberId, roleId))
       setTeamMembers((prev) => prev.map((m) => (m.id === memberId ? updated : m)))
       toast.success("Role updated")
     } catch (error) {
@@ -225,12 +227,12 @@ export function ManageTeamSheet({
   async function handleAssignVendor(entity: { type: "company" | "contact"; id: string }) {
     setLoading(true)
     try {
-      await addProjectVendorAction(projectId, {
+      unwrapAction(await addProjectVendorAction(projectId, {
         project_id: projectId,
         company_id: entity.type === "company" ? entity.id : undefined,
         contact_id: entity.type === "contact" ? entity.id : undefined,
         role: selectedVendorRole,
-      })
+      }))
       await refreshProjectVendors()
       toast.success("Added to project")
     } catch (error) {
@@ -244,7 +246,7 @@ export function ManageTeamSheet({
   async function handleRemoveVendor(vendorId: string) {
     setLoading(true)
     try {
-      await removeProjectVendorAction(projectId, vendorId)
+      unwrapAction(await removeProjectVendorAction(projectId, vendorId))
       setProjectVendorsState((prev) => prev.filter((v) => v.id !== vendorId))
       toast.success("Removed from project")
     } catch (error) {
@@ -260,11 +262,11 @@ export function ManageTeamSheet({
 
     setLoading(true)
     try {
-      await createAndAssignVendorAction(projectId, {
+      unwrapAction(await createAndAssignVendorAction(projectId, {
         kind: quickCreateType,
         name: quickCreateName.trim(),
         role: selectedVendorRole,
-      })
+      }))
       await refreshProjectVendors()
       setQuickCreateName("")
       setAddMode(null)

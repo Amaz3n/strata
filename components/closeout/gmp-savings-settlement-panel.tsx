@@ -12,6 +12,8 @@ import { Button } from "@/components/ui/button"
 import type { ProjectGmpControlSummary } from "@/lib/services/gmp-control"
 import { cn } from "@/lib/utils"
 
+import { unwrapAction } from "@/lib/action-result"
+
 function formatMoney(cents?: number | null) {
   return ((cents ?? 0) / 100).toLocaleString("en-US", {
     style: "currency",
@@ -48,7 +50,7 @@ export function GmpSavingsSettlementPanel({
   function handleSettle() {
     startTransition(async () => {
       try {
-        await settleGmpSavingsAction(projectId)
+        unwrapAction(await settleGmpSavingsAction(projectId))
         toast.success("GMP savings settled")
         router.refresh()
       } catch (error) {

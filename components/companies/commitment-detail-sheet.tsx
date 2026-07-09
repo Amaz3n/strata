@@ -39,6 +39,8 @@ import { useToast } from "@/hooks/use-toast";
 import { formatMoneyFromCents } from "@/components/companies/company-detail-ui";
 import { commitmentStatusMeta } from "@/components/companies/commitment-status";
 
+import { unwrapAction } from "@/lib/action-result"
+
 const STATUS_OPTIONS = [
   { value: "draft", label: "Draft" },
   { value: "approved", label: "Approved" },
@@ -158,14 +160,14 @@ export function CommitmentDetailSheet({
       formData.append("file", file);
       formData.append("projectId", projectId);
       formData.append("category", "financials");
-      const uploaded = await uploadFileAction(formData);
-      await attachFileAction(uploaded.id, "commitment", commitmentId, projectId, linkRole);
+      const uploaded = unwrapAction(await uploadFileAction(formData));
+      unwrapAction(await attachFileAction(uploaded.id, "commitment", commitmentId, projectId, linkRole));
     }
     await refreshAttachments();
   };
 
   const handleDetach = async (linkId: string) => {
-    await detachFileLinkAction(linkId);
+    unwrapAction(await detachFileLinkAction(linkId));
     await refreshAttachments();
   };
 
@@ -188,7 +190,7 @@ export function CommitmentDetailSheet({
     }
     startTransition(async () => {
       try {
-        await updateCompanyCommitmentAction(commitmentId, {
+        unwrapAction(await updateCompanyCommitmentAction(commitmentId, {
           title: form.title.trim(),
           contract_number: form.contract_number.trim() || null,
           total_cents: Math.round(totalDollars * 100),
@@ -198,7 +200,7 @@ export function CommitmentDetailSheet({
           end_date: form.end_date || undefined,
           scope: form.scope.trim() || null,
           terms: form.terms.trim() || null,
-        });
+        }));
         toast({ title: "Commitment updated" });
         onOpenChange(false);
         router.refresh();

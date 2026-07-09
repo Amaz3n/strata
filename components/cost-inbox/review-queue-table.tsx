@@ -42,6 +42,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Textarea } from "@/components/ui/textarea"
 import {
   approveInboxExpenseAction,
   approveInboxTimeEntryAction,
@@ -51,6 +52,7 @@ import {
   sendInboxTimeEntryClientApprovalAction,
 } from "@/app/(app)/projects/[id]/cost-inbox/actions"
 import {
+  createManualBillableAdjustmentAction,
   createProjectBillingPeriodAction,
   generateInvoiceFromCostsAction,
 } from "@/app/(app)/projects/[id]/financials/actions"
@@ -58,6 +60,8 @@ import { cn } from "@/lib/utils"
 import type { ProjectFeeBillingSummary } from "@/lib/services/fee-billing"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import { ReviewDetailOverlays, type ReviewOverlayTarget } from "./review-detail-overlays"
+
+import { unwrapAction } from "@/lib/action-result"
 
 interface CostCodeOption {
   id: string
@@ -154,6 +158,13 @@ export function ReviewQueueTable({
   const [periodName, setPeriodName] = useState("")
   const [periodStart, setPeriodStart] = useState("")
   const [periodEnd, setPeriodEnd] = useState("")
+  const [adjustmentDialogOpen, setAdjustmentDialogOpen] = useState(false)
+  const [adjustmentAmount, setAdjustmentAmount] = useState("")
+  const [adjustmentDate, setAdjustmentDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [adjustmentCostCodeId, setAdjustmentCostCodeId] = useState(NO_COST_CODE)
+  const [adjustmentGmpClassification, setAdjustmentGmpClassification] = useState<"inside_gmp" | "outside_gmp">("inside_gmp")
+  const [adjustmentDescription, setAdjustmentDescription] = useState("")
+  const [adjustmentReason, setAdjustmentReason] = useState("")
   const [billingPeriodId, setBillingPeriodId] = useState<string>(() => {
     const activePeriod = billingPeriods.find((period) => ["open", "reviewing", "reopened"].includes(period.status))
     return activePeriod?.id ?? NO_BILLING_PERIOD
@@ -411,18 +422,18 @@ export function ReviewQueueTable({
     if (!isReady(item)) return
     const costCodeId = selectedCostCodeId(item)
     if (item.kind === "time") {
-      await approveInboxTimeEntryAction(projectId, item.recordId, {
+      unwrapAction(await approveInboxTimeEntryAction(projectId, item.recordId, {
         costCodeId,
         isBillable: item.sourceRecord.is_billable ?? true,
         isOvertime: item.sourceRecord.is_overtime ?? false,
         otMultiplier: item.sourceRecord.ot_multiplier ?? 1.5,
-      })
+      }))
     }
-    if (item.kind === "expense") await approveInboxExpenseAction(projectId, item.recordId, { costCodeId })
+    if (item.kind === "expense") unwrapAction(await approveInboxExpenseAction(projectId, item.recordId, { costCodeId }))
     if (item.kind === "vendor_bill")
-      await approveInboxVendorBillAction(projectId, item.recordId, {
+      unwrapAction(await approveInboxVendorBillAction(projectId, item.recordId, {
         costCodeId,
-      })
+      }))
     setCompletedIds((current) => new Set(current).add(item.id))
     setSelectedIds((current) => {
       const next = new Set(current)
@@ -443,8 +454,8 @@ export function ReviewQueueTable({
   }
 
   async function performReject(item: QueueItem) {
-    if (item.kind === "time") await rejectInboxTimeEntryAction(projectId, item.recordId)
-    if (item.kind === "expense") await rejectInboxExpenseAction(projectId, item.recordId)
+    if (item.kind === "time") unwrapAction(await rejectInboxTimeEntryAction(projectId, item.recordId))
+    if (item.kind === "expense") unwrapAction(await rejectInboxExpenseAction(projectId, item.recordId))
     setCompletedIds((current) => new Set(current).add(item.id))
     setSelectedIds((current) => {
       const next = new Set(current)
@@ -468,7 +479,7 @@ export function ReviewQueueTable({
     if (item.kind !== "time") return
     startTransition(async () => {
       try {
-        const result = await sendInboxTimeEntryClientApprovalAction(projectId, item.recordId)
+        const result = unwrapAction(await sendInboxTimeEntryClientApprovalAction(projectId, item.recordId))
         toast.success("Approval email sent", { description: result.sent_to })
       } catch (error: any) {
         toast.error("Could not send approval email", {
@@ -528,12 +539,12 @@ export function ReviewQueueTable({
     if (!periodStart || !periodEnd) return
     startTransition(async () => {
       try {
-        const period = await createProjectBillingPeriodAction({
+        const period = unwrapAction(await createProjectBillingPeriodAction({
           projectId,
           name: periodName.trim() || undefined,
           periodStart,
           periodEnd,
-        })
+        }))
         setBillingPeriodId(period.id)
         setPeriodDialogOpen(false)
         setPeriodName("")
@@ -549,13 +560,51 @@ export function ReviewQueueTable({
     })
   }
 
+  function createManualAdjustment() {
+    const amountCents = Math.round(Number(adjustmentAmount) * 100)
+    if (!Number.isFinite(amountCents) || amountCents === 0) {
+      toast.error("Enter a non-zero adjustment amount")
+      return
+    }
+    if (!adjustmentDescription.trim() || !adjustmentReason.trim()) {
+      toast.error("Description and reason are required")
+      return
+    }
+
+    startTransition(async () => {
+      try {
+        unwrapAction(await createManualBillableAdjustmentAction({
+          projectId,
+          costCodeId: adjustmentCostCodeId === NO_COST_CODE ? null : adjustmentCostCodeId,
+          occurredOn: adjustmentDate,
+          description: adjustmentDescription.trim(),
+          reason: adjustmentReason.trim(),
+          amountCents,
+          gmpClassification: adjustmentGmpClassification,
+        }))
+        setAdjustmentDialogOpen(false)
+        setAdjustmentAmount("")
+        setAdjustmentDescription("")
+        setAdjustmentReason("")
+        setAdjustmentCostCodeId(NO_COST_CODE)
+        setAdjustmentGmpClassification("inside_gmp")
+        toast.success("Adjustment added")
+        router.refresh()
+      } catch (error: any) {
+        toast.error("Could not add adjustment", {
+          description: error?.message,
+        })
+      }
+    })
+  }
+
   function createInvoiceFromItems(invoiceItems: QueueItem[]) {
     if (invoiceItems.length === 0) return
     startTransition(async () => {
       try {
         const today = new Date().toISOString().slice(0, 10)
         const costIds = invoiceItems.map((item) => item.recordId)
-        const result = await generateInvoiceFromCostsAction({
+        const result = unwrapAction(await generateInvoiceFromCostsAction({
           projectId,
           billingPeriodId: billingPeriodId === NO_BILLING_PERIOD ? null : billingPeriodId,
           dateRange: dateRangeForSelectedPeriod(billingPeriods, billingPeriodId, today),
@@ -563,7 +612,7 @@ export function ReviewQueueTable({
           groupBy: "cost_code",
           includeAllowanceVariances: false,
           dryRun: true,
-        })
+        }))
         setInvoicePreview(result)
         setInvoicePreviewCostIds(costIds)
         setOverrideGmpCap(false)
@@ -585,7 +634,7 @@ export function ReviewQueueTable({
     startTransition(async () => {
       try {
         const today = new Date().toISOString().slice(0, 10)
-        const result = await generateInvoiceFromCostsAction({
+        const result = unwrapAction(await generateInvoiceFromCostsAction({
           projectId,
           billingPeriodId: billingPeriodId === NO_BILLING_PERIOD ? null : billingPeriodId,
           dateRange: dateRangeForSelectedPeriod(billingPeriods, billingPeriodId, today),
@@ -596,7 +645,7 @@ export function ReviewQueueTable({
           overrideGmpCap,
           dryRun: false,
           idempotencyKey: crypto.randomUUID(),
-        })
+        }))
         setCompletedIds((current) => {
           const next = new Set(current)
           for (const costId of invoicePreviewCostIds) next.add(`billable_cost:${costId}`)
@@ -642,6 +691,7 @@ export function ReviewQueueTable({
         billingPeriodId={billingPeriodId}
         onBillingPeriodChange={setBillingPeriodId}
         onCreatePeriodClick={() => setPeriodDialogOpen(true)}
+        onAdjustmentClick={() => setAdjustmentDialogOpen(true)}
       />
       <BulkActionBar
         selectedCount={selectedItems.length}
@@ -733,6 +783,96 @@ export function ReviewQueueTable({
         onIncludeEarnedFeeChange={setIncludeEarnedFee}
         onConfirm={confirmInvoiceFromPreview}
       />
+      <Dialog open={adjustmentDialogOpen} onOpenChange={setAdjustmentDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Manual billable adjustment</DialogTitle>
+            <DialogDescription>Add a controller-approved credit or charge to the billable-cost ledger.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label htmlFor="adjustment-amount">Amount</Label>
+                <Input
+                  id="adjustment-amount"
+                  inputMode="decimal"
+                  value={adjustmentAmount}
+                  onChange={(event) => setAdjustmentAmount(event.target.value)}
+                  placeholder="-250.00"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="adjustment-date">Date</Label>
+                <Input
+                  id="adjustment-date"
+                  type="date"
+                  value={adjustmentDate}
+                  onChange={(event) => setAdjustmentDate(event.target.value)}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Cost code</Label>
+                <Select value={adjustmentCostCodeId} onValueChange={setAdjustmentCostCodeId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Cost code" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_COST_CODE}>Uncoded</SelectItem>
+                    {costCodes.map((code) => (
+                      <SelectItem key={code.id} value={code.id}>
+                        {formatCostCode(code)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>GMP class</Label>
+                <Select
+                  value={adjustmentGmpClassification}
+                  onValueChange={(value) => setAdjustmentGmpClassification(value as "inside_gmp" | "outside_gmp")}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="inside_gmp">Inside GMP</SelectItem>
+                    <SelectItem value="outside_gmp">Outside GMP</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="adjustment-description">Description</Label>
+              <Input
+                id="adjustment-description"
+                value={adjustmentDescription}
+                onChange={(event) => setAdjustmentDescription(event.target.value)}
+                placeholder="Courtesy credit"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="adjustment-reason">Reason</Label>
+              <Textarea
+                id="adjustment-reason"
+                value={adjustmentReason}
+                onChange={(event) => setAdjustmentReason(event.target.value)}
+                placeholder="Why this adjustment is being added"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={isPending} onClick={() => setAdjustmentDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button disabled={isPending} onClick={createManualAdjustment}>
+              Add adjustment
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={periodDialogOpen} onOpenChange={setPeriodDialogOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
@@ -960,6 +1100,7 @@ function ReviewHeader({
   billingPeriodId,
   onBillingPeriodChange,
   onCreatePeriodClick,
+  onAdjustmentClick,
 }: {
   summary: {
     needsReviewCount: number
@@ -978,6 +1119,7 @@ function ReviewHeader({
   billingPeriodId: string
   onBillingPeriodChange: (value: string) => void
   onCreatePeriodClick: () => void
+  onAdjustmentClick: () => void
 }) {
   const selected = billingPeriods.find((period) => period.id === billingPeriodId)
 
@@ -1040,6 +1182,10 @@ function ReviewHeader({
             {selected.status}
           </Badge>
         ) : null}
+        <Button size="sm" variant="outline" onClick={onAdjustmentClick}>
+          <Plus className="mr-1.5 h-3.5 w-3.5" />
+          Adjustment
+        </Button>
         <Button size="sm" asChild>
           <Link href={`/projects/${projectId}/financials/receivables?tab=close`}>Close &amp; Bill</Link>
         </Button>

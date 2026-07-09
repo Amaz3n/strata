@@ -111,7 +111,7 @@ function ScrollRegion({ children, className }: { children: React.ReactNode; clas
 const TH = "microlabel sticky top-0 z-10 bg-card border-b px-4 py-2.5 text-left whitespace-nowrap"
 
 export function PayablesDesk({ data }: { data: OrgPayablesDeskData }) {
-  const { stats, horizon, queue, vendors } = data
+  const { stats, horizon, queue, vendors, inboundBillsEmail } = data
   const [filter, setFilter] = React.useState<WindowKey | null>(null)
 
   const allClear = stats.openCount === 0
@@ -135,6 +135,35 @@ export function PayablesDesk({ data }: { data: OrgPayablesDeskData }) {
         <div className="mt-1.5 font-mono text-4xl tabular-nums tracking-tight sm:text-5xl">
           {money(stats.outstandingCents)}
         </div>
+        {stats.retainedCents > 0 || stats.pendingApprovalCount > 0 || inboundBillsEmail ? (
+          <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
+            {stats.pendingApprovalCount > 0 ? (
+              <span>
+                <span className="font-mono font-medium tabular-nums text-warning">{money(stats.pendingApprovalCents)}</span>{" "}
+                awaiting approval · {stats.pendingApprovalCount} {stats.pendingApprovalCount === 1 ? "bill" : "bills"}
+              </span>
+            ) : null}
+            {stats.retainedCents > 0 ? (
+              <span>
+                <span className="font-mono font-medium tabular-nums text-foreground">{money(stats.retainedCents)}</span>{" "}
+                retention held
+              </span>
+            ) : null}
+            {inboundBillsEmail ? (
+              <span>
+                Vendors can email bills to{" "}
+                <button
+                  type="button"
+                  className="font-mono font-medium text-foreground underline-offset-2 hover:underline"
+                  title="Copy address"
+                  onClick={() => void navigator.clipboard.writeText(inboundBillsEmail)}
+                >
+                  {inboundBillsEmail}
+                </button>
+              </span>
+            ) : null}
+          </div>
+        ) : null}
       </header>
 
       {allClear ? (

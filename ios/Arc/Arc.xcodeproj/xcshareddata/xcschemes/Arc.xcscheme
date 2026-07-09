@@ -74,7 +74,7 @@
          </EnvironmentVariable>
          <EnvironmentVariable
             key = "ARC_API_BASE_URL"
-            value = "https://unreproachably-preparoxysmal-talon.ngrok-free.dev/api/mobile/v1"
+            value = "https://app.arcnaples.com/api/mobile/v1"
             isEnabled = "YES">
          </EnvironmentVariable>
       </EnvironmentVariables>

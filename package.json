@@ -8,6 +8,7 @@
     "db:schema:check": "bash ./scripts/check-schema-sync.sh",
     "lint": "eslint .",
     "test:financials": "node --test tests/financials-regression.test.js tests/qbo-import-reliability.test.js",
+    "test:auth": "node --test tests/authorization-policy.test.js",
     "test:mobile": "node --test tests/mobile-api-contract.test.js",
     "start": "next start"
   },
@@ -88,6 +89,7 @@
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.4.449",
     "qrcode": "^1.5.4",
+    "radix-ui": "^1.6.1",
     "react": "19.2.0",
     "react-day-picker": "9.8.0",
     "react-dom": "19.2.0",

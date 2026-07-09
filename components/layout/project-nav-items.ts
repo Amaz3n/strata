@@ -70,6 +70,7 @@ const FINANCIAL_SECTIONS = new Set<ProjectSection>([
   "change-orders",
   "reports",
   "cost-inbox",
+  "trust-center",
 ])
 
 export const BUILD_SECTIONS = new Set<ProjectSection>([
@@ -208,6 +209,12 @@ function buildFinancialSubs(
       url: url("/financials/payables"),
       isActive: section === "payables",
       requiredAny: ["bill.read", "commitment.read"],
+    },
+    {
+      title: "Trust Center",
+      url: url("/financials/trust-center"),
+      isActive: section === "trust-center",
+      requiredAny: ["invoice.read", "budget.read", "bill.read"],
     },
     {
       title: "Expenses",

@@ -57,6 +57,7 @@ export interface ProjectFinancialSetupStatusResult {
     labor_burden_multiplier?: number | null
     rate_schedule_id?: string | null
     retainage_percent?: number | null
+    retainage_applies_to_fee?: boolean | null
   } | null
   issues: ProjectFinancialSetupIssue[]
 }
@@ -77,6 +78,7 @@ type ContractLike = {
   labor_burden_multiplier?: number | null
   rate_schedule_id?: string | null
   retainage_percent?: number | null
+  retainage_applies_to_fee?: boolean | null
   open_book?: boolean | null
   requires_client_cost_approval?: boolean | null
   parent_contract_id?: string | null
@@ -96,6 +98,7 @@ const financialSetupInputSchema = z.object({
   billingModel: z.enum(["fixed_price", "cost_plus_percent", "cost_plus_fixed_fee", "cost_plus_gmp", "time_and_materials"]),
   totalContractValueCents: z.number().int().nonnegative().optional().nullable(),
   retainagePercent: z.number().min(0).max(100).optional().nullable(),
+  retainageAppliesToFee: z.boolean().default(false),
   markupPercent: z.number().min(0).max(200).optional().nullable(),
   gmpCents: z.number().int().nonnegative().optional().nullable(),
   contingencyCents: z.number().int().nonnegative().optional().nullable(),
@@ -138,6 +141,7 @@ const MATERIAL_CONTRACT_TERM_KEYS = [
   "labor_burden_multiplier",
   "rate_schedule_id",
   "retainage_percent",
+  "retainage_applies_to_fee",
 ] as const
 
 type MaterialContractTermKey = (typeof MATERIAL_CONTRACT_TERM_KEYS)[number]
@@ -154,6 +158,7 @@ const MATERIAL_CONTRACT_TERM_DEFAULTS: Partial<Record<MaterialContractTermKey, u
   labor_burden_multiplier: 1,
   rate_schedule_id: null,
   retainage_percent: 0,
+  retainage_applies_to_fee: false,
 }
 
 function fixedFeeCentsFrom(contract?: ContractLike | null, settings?: ProjectFinancialSettings | null) {
@@ -202,6 +207,7 @@ function contractTermSnapshot(args: {
     labor_burden_multiplier: contract.labor_burden_multiplier ?? 1,
     rate_schedule_id: contract.rate_schedule_id ?? contract.snapshot?.rate_schedule_id ?? null,
     retainage_percent: contract.retainage_percent ?? 0,
+    retainage_applies_to_fee: contract.retainage_applies_to_fee ?? contract.snapshot?.retainage_applies_to_fee ?? false,
   } satisfies Record<MaterialContractTermKey, unknown>
 }
 
@@ -442,7 +448,7 @@ export async function getProjectFinancialSettings({
 async function getActiveContract(params: { supabase: SupabaseClient; orgId: string; projectId: string }): Promise<ContractLike | null> {
   const { data, error } = await params.supabase
     .from("contracts")
-    .select("id, title, contract_type, total_cents, currency, markup_percent, gmp_cents, contingency_cents, fixed_fee_cents, fee_presentation, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, rate_schedule_id, retainage_percent, open_book, requires_client_cost_approval, parent_contract_id, snapshot")
+    .select("id, title, contract_type, total_cents, currency, markup_percent, gmp_cents, contingency_cents, fixed_fee_cents, fee_presentation, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, rate_schedule_id, retainage_percent, retainage_applies_to_fee, open_book, requires_client_cost_approval, parent_contract_id, snapshot")
     .eq("org_id", params.orgId)
     .eq("project_id", params.projectId)
     .eq("status", "active")
@@ -551,6 +557,7 @@ export async function getProjectFinancialSetupStatus({
           labor_burden_multiplier: contract.labor_burden_multiplier ?? null,
           rate_schedule_id: contract.rate_schedule_id ?? contract.snapshot?.rate_schedule_id ?? null,
           retainage_percent: contract.retainage_percent ?? null,
+          retainage_applies_to_fee: contract.retainage_applies_to_fee ?? contract.snapshot?.retainage_applies_to_fee ?? false,
         }
       : null,
     issues,
@@ -684,6 +691,7 @@ export async function saveProjectFinancialSetup(input: FinancialSetupInput, orgI
     requires_client_cost_approval: parsed.clientCostApprovalRequired,
     open_book: parsed.openBookRequired,
     retainage_percent: parsed.retainagePercent ?? 0,
+    retainage_applies_to_fee: parsed.retainageAppliesToFee,
     snapshot: {
       ...existingContractSnapshot,
       billing_setup_source: "financial_setup_wizard",
@@ -691,6 +699,7 @@ export async function saveProjectFinancialSetup(input: FinancialSetupInput, orgI
       rate_schedule_id: parsed.billingModel === "time_and_materials" ? parsed.rateScheduleId ?? existingContract?.rate_schedule_id ?? null : null,
       paid_costs_required: parsed.paidCostsRequired,
       proof_required: parsed.proofRequired,
+      retainage_applies_to_fee: parsed.retainageAppliesToFee,
     },
   }
 
@@ -758,6 +767,7 @@ export async function saveProjectFinancialSetup(input: FinancialSetupInput, orgI
       client_cost_approval_required: parsed.clientCostApprovalRequired,
       open_book_required: parsed.openBookRequired,
       cost_codes_enabled: parsed.costCodesEnabled,
+      retainage_applies_to_fee: parsed.retainageAppliesToFee,
       contract_action: contractSave.action,
       contract_id: contractId,
       material_contract_changes: contractSave.materialChanges,

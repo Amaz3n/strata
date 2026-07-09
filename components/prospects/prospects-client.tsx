@@ -43,6 +43,8 @@ import { useToast } from "@/hooks/use-toast"
 import { formatMoneyCents } from "@/lib/utils"
 import { ChevronLeft, ChevronRight, Edit, Filter, MoreHorizontal, Plus, Search, Trash2, Users, X } from "@/components/icons"
 
+import { unwrapAction } from "@/lib/action-result"
+
 export type ProspectTableFilter = "active" | "all" | ProspectStatus | "stalled" | "followup_due"
 
 /** Statuses considered open/in-flight. Closed states (won, lost) are excluded from the default view. */
@@ -191,7 +193,7 @@ export function ProspectsClient({
     const target = deleteTarget
     startTransition(async () => {
       try {
-        await deleteProspectAction(target.id)
+        unwrapAction(await deleteProspectAction(target.id))
         toast({ title: "Prospect deleted" })
         setDeleteTarget(null)
         router.refresh()

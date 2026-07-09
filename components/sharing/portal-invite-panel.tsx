@@ -12,6 +12,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { cn } from "@/lib/utils"
 import type { Contact, PortalAccessToken, Project, ProjectVendor } from "@/lib/types"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface PortalInvitePanelProps {
   project: Project
   contacts: Contact[]
@@ -116,11 +118,11 @@ export function PortalInvitePanel({ project, contacts, projectVendors, onInviteS
 
     startTransition(async () => {
       try {
-        const result = await sendPortalInviteAction({
+        const result = unwrapAction(await sendPortalInviteAction({
           contactId: selectedContactId,
           projectId: project.id,
           portalType,
-        })
+        }))
         onInviteSent(result.token)
 
         if (result.email_sent) {

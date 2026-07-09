@@ -11,6 +11,8 @@ import type { Contact, Project } from "@/lib/types"
 import { sendPortalInviteAction } from "@/app/(app)/contacts/actions"
 import { useToast } from "@/hooks/use-toast"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface PortalInviteDialogProps {
   contact?: Contact
   projects: Project[]
@@ -28,7 +30,7 @@ export function PortalInviteDialog({ contact, projects, open, onOpenChange }: Po
     if (!contact?.id || !projectId) return
     startTransition(async () => {
       try {
-        const result = await sendPortalInviteAction({ contactId: contact.id, projectId, portalType })
+        const result = unwrapAction(await sendPortalInviteAction({ contactId: contact.id, projectId, portalType }))
         toast({
           title: result.email_sent ? "Portal invite sent" : "Invite created, but email was not sent",
           description: result.email_sent ? `Sent to ${result.sent_to}` : "Check email configuration before relying on this invite.",

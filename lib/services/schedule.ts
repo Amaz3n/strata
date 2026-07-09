@@ -28,6 +28,7 @@ import { inspectionMetadataSchema } from "@/lib/validation/inspections"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
+import { requirePermission, requireProjectPermission } from "@/lib/services/permissions"
 
 // ============================================================================
 // SCHEDULE ITEMS
@@ -113,7 +114,8 @@ async function loadDependencyDetails(supabase: SupabaseClient, orgId: string): P
 }
 
 export async function listScheduleItems(orgId?: string): Promise<ScheduleItem[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("schedule.read", { supabase, orgId: resolvedOrgId, userId })
   return listScheduleItemsWithClient(supabase, resolvedOrgId)
 }
 
@@ -174,7 +176,8 @@ export async function listProjectScheduleItemsWithClient(
 export async function getProjectScheduleSummaries(
   orgId?: string,
 ): Promise<Record<string, ProjectScheduleSummary>> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("schedule.read", { supabase, orgId: resolvedOrgId, userId })
   return getProjectScheduleSummariesWithClient(supabase, resolvedOrgId)
 }
 
@@ -233,7 +236,8 @@ export async function getProjectScheduleSummariesWithClient(
 }
 
 export async function listScheduleItemsByProject(projectId: string, orgId?: string): Promise<ScheduleItem[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "schedule.read")
   const dependencyMap = await loadDependencies(supabase, resolvedOrgId)
 
   const { data, error } = await supabase
@@ -261,7 +265,7 @@ export async function getScheduleItemWithDetails(itemId: string, orgId?: string)
   assignments: ScheduleAssignment[]
   dependency_details: ScheduleDependency[]
 }> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
 
   const { data, error } = await supabase
     .from("schedule_items")
@@ -280,6 +284,8 @@ export async function getScheduleItemWithDetails(itemId: string, orgId?: string)
     throw new Error("Schedule item not found")
   }
 
+  await requireProjectPermission(userId, data.project_id, "schedule.read")
+
   const [dependencyMap, assignments, dependencyDetails] = await Promise.all([
     loadDependencies(supabase, resolvedOrgId),
     listAssignmentsByItem(itemId, resolvedOrgId),
@@ -295,6 +301,7 @@ export async function getScheduleItemWithDetails(itemId: string, orgId?: string)
 
 export async function createScheduleItem({ input, orgId }: { input: ScheduleItemInput; orgId?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, input.project_id, "schedule.edit")
 
   const { data, error } = await supabase
     .from("schedule_items")
@@ -401,6 +408,8 @@ export async function updateScheduleItem({
   if (existing.error || !existing.data) {
     throw new Error("Schedule item not found or not accessible")
   }
+
+  await requireProjectPermission(userId, existing.data.project_id, "schedule.edit")
 
   const updateData: Record<string, any> = {}
   
@@ -598,7 +607,8 @@ export async function setScheduleItemAssignee({
     | null
   orgId?: string
 }) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "schedule.edit")
 
   // Clear existing assignments for this item
   await supabase.from("schedule_assignments").delete().eq("org_id", resolvedOrgId).eq("schedule_item_id", itemId)
@@ -646,6 +656,8 @@ export async function deleteScheduleItem(itemId: string, orgId?: string): Promis
     throw new Error("Schedule item not found")
   }
 
+  await requireProjectPermission(userId, existing.data.project_id, "schedule.edit")
+
   const { error } = await supabase
     .from("schedule_items")
     .delete()
@@ -667,8 +679,9 @@ export async function deleteScheduleItem(itemId: string, orgId?: string): Promis
 }
 
 export async function bulkUpdateScheduleItems(updates: ScheduleBulkUpdate, orgId?: string): Promise<ScheduleItem[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
-  
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("schedule.edit", { supabase, orgId: resolvedOrgId, userId })
+
   const results: ScheduleItem[] = []
   const dependencyMap = await loadDependencies(supabase, resolvedOrgId)
 
@@ -710,7 +723,8 @@ export async function bulkUpdateScheduleItems(updates: ScheduleBulkUpdate, orgId
 
 export async function createDependency(input: ScheduleDependencyInput, projectId: string, orgId?: string): Promise<ScheduleDependency> {
   const parsed = scheduleDependencyInputSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "schedule.edit")
 
   const { data, error } = await supabase
     .from("schedule_dependencies")
@@ -741,7 +755,8 @@ export async function createDependency(input: ScheduleDependencyInput, projectId
 }
 
 export async function deleteDependency(dependencyId: string, orgId?: string): Promise<void> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("schedule.edit", { supabase, orgId: resolvedOrgId, userId })
 
   const { error } = await supabase
     .from("schedule_dependencies")
@@ -755,7 +770,8 @@ export async function deleteDependency(dependencyId: string, orgId?: string): Pr
 }
 
 export async function listDependenciesByProject(projectId: string, orgId?: string): Promise<ScheduleDependency[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "schedule.read")
 
   const { data, error } = await supabase
     .from("schedule_dependencies")
@@ -783,7 +799,8 @@ export async function listDependenciesByProject(projectId: string, orgId?: strin
 // ============================================================================
 
 export async function listAssignmentsByItem(itemId: string, orgId?: string): Promise<ScheduleAssignment[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("schedule.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("schedule_assignments")
@@ -824,7 +841,8 @@ export async function listAssignmentsByItem(itemId: string, orgId?: string): Pro
 }
 
 export async function listAssignmentsByProject(projectId: string, orgId?: string): Promise<ScheduleAssignment[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "schedule.read")
 
   const { data, error } = await supabase
     .from("schedule_assignments")
@@ -866,7 +884,8 @@ export async function listAssignmentsByProject(projectId: string, orgId?: string
 
 export async function createAssignment(input: ScheduleAssignmentInput, projectId: string, orgId?: string): Promise<ScheduleAssignment> {
   const parsed = scheduleAssignmentInputSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "schedule.edit")
 
   const { data, error } = await supabase
     .from("schedule_assignments")
@@ -920,7 +939,8 @@ export async function createAssignment(input: ScheduleAssignmentInput, projectId
 }
 
 export async function deleteAssignment(assignmentId: string, orgId?: string): Promise<void> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("schedule.edit", { supabase, orgId: resolvedOrgId, userId })
 
   const { error } = await supabase
     .from("schedule_assignments")
@@ -938,7 +958,8 @@ export async function deleteAssignment(assignmentId: string, orgId?: string): Pr
 // ============================================================================
 
 export async function listBaselinesByProject(projectId: string, orgId?: string): Promise<ScheduleBaseline[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "schedule.read")
 
   const { data, error } = await supabase
     .from("schedule_baselines")
@@ -967,9 +988,10 @@ export async function listBaselinesByProject(projectId: string, orgId?: string):
 
 export async function createBaseline(input: ScheduleBaselineInput, orgId?: string): Promise<ScheduleBaseline> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, input.project_id, "schedule.baseline.manage")
 
   // Get current schedule items to snapshot
-  const items = await listScheduleItemsByProject(input.project_id, resolvedOrgId)
+  const items = await listProjectScheduleItemsWithClient(supabase, resolvedOrgId, input.project_id)
 
   // If this will be active, deactivate other baselines first
   if (input.is_active) {
@@ -1013,7 +1035,8 @@ export async function createBaseline(input: ScheduleBaselineInput, orgId?: strin
 }
 
 export async function setActiveBaseline(baselineId: string, projectId: string, orgId?: string): Promise<void> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "schedule.baseline.manage")
 
   // Deactivate all baselines for this project
   await supabase
@@ -1035,7 +1058,8 @@ export async function setActiveBaseline(baselineId: string, projectId: string, o
 }
 
 export async function deleteBaseline(baselineId: string, orgId?: string): Promise<void> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("schedule.baseline.manage", { supabase, orgId: resolvedOrgId, userId })
 
   const { error } = await supabase
     .from("schedule_baselines")
@@ -1053,7 +1077,8 @@ export async function deleteBaseline(baselineId: string, orgId?: string): Promis
 // ============================================================================
 
 export async function listTemplates(orgId?: string): Promise<ScheduleTemplate[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("schedule.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("schedule_templates")
@@ -1082,6 +1107,7 @@ export async function listTemplates(orgId?: string): Promise<ScheduleTemplate[]>
 
 export async function createTemplate(input: ScheduleTemplateInput, orgId?: string): Promise<ScheduleTemplate> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("schedule.edit", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("schedule_templates")
@@ -1118,7 +1144,8 @@ export async function createTemplate(input: ScheduleTemplateInput, orgId?: strin
 }
 
 export async function applyTemplate(templateId: string, projectId: string, orgId?: string): Promise<ScheduleItem[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "schedule.edit")
 
   const { data: template, error } = await supabase
     .from("schedule_templates")
@@ -1155,7 +1182,8 @@ export async function applyTemplate(templateId: string, projectId: string, orgId
 }
 
 export async function deleteTemplate(templateId: string, orgId?: string): Promise<void> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("schedule.edit", { supabase, orgId: resolvedOrgId, userId })
 
   const { error } = await supabase
     .from("schedule_templates")
@@ -1193,7 +1221,8 @@ export async function getScheduleChangeOrderImpacts(
   scheduleItemId: string,
   orgId?: string
 ): Promise<ScheduleItemChangeOrder[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("schedule.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("schedule_item_change_orders")
@@ -1219,7 +1248,8 @@ export async function getScheduleChangeOrderImpactsByProject(
   projectId: string,
   orgId?: string
 ): Promise<ScheduleItemChangeOrder[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "schedule.read")
 
   // Get all schedule items for this project
   const { data: scheduleItems } = await supabase
@@ -1280,6 +1310,8 @@ export async function applyChangeOrderToSchedule({
   if (itemError || !scheduleItem) {
     throw new Error("Schedule item not found")
   }
+
+  await requireProjectPermission(userId, scheduleItem.project_id, "schedule.edit")
 
   // Verify the change order exists
   const { data: changeOrder, error: coError } = await supabase
@@ -1354,6 +1386,7 @@ export async function removeChangeOrderFromSchedule(
   orgId?: string
 ): Promise<void> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("schedule.edit", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: fetchError } = await supabase
     .from("schedule_item_change_orders")
@@ -1435,7 +1468,8 @@ export async function getTotalScheduleImpact(
   scheduleItemId: string,
   orgId?: string
 ): Promise<{ total_days: number; pending_days: number; applied_days: number }> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("schedule.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("schedule_item_change_orders")
@@ -1473,7 +1507,8 @@ export async function getDrawMilestones(
   projectId: string,
   orgId?: string
 ): Promise<ScheduleItem[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "schedule.read")
   const dependencyMap = await loadDependencies(supabase, resolvedOrgId)
 
   const { data, error } = await supabase
@@ -1645,6 +1680,7 @@ export async function updateScheduleItemCosts({
   orgId?: string
 }): Promise<ScheduleItem> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("schedule.edit", { supabase, orgId: resolvedOrgId, userId })
 
   const updateData: Record<string, any> = {}
   if (costCodeId !== undefined) updateData.cost_code_id = costCodeId
@@ -1705,7 +1741,8 @@ export async function getScheduleBudgetSummary(
     item_count: number
   }>
 }> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "schedule.read")
 
   const { data: items, error } = await supabase
     .from("schedule_items")

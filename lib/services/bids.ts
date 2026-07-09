@@ -780,6 +780,200 @@ export async function listBidPackages(projectId: string, orgId?: string): Promis
   return decorateBidPackageSummaries(supabase, resolvedOrgId, (data ?? []).map(mapBidPackage))
 }
 
+export interface BuyoutSummaryRow {
+  bid_package_id: string
+  title: string
+  cost_code_code: string | null
+  company_name: string | null
+  budget_cents: number | null
+  awarded_total_cents: number | null
+  commitment_id: string | null
+  commitment_status: string | null
+  executed_at: string | null
+  out_for_signature: boolean
+}
+
+/**
+ * Per-package buyout status for a project: what was budgeted, what it was
+ * awarded for, and how far the subcontract has progressed (approved → out for
+ * signature → executed). Only awarded packages appear.
+ */
+export async function getProjectBuyoutSummary(projectId: string, orgId?: string): Promise<BuyoutSummaryRow[]> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
+  await ensureProjectInOrg(projectId, resolvedOrgId, supabase)
+
+  const { data: packages, error: packagesError } = await supabase
+    .from("bid_packages")
+    .select("id, title, cost_code_id, budget_line_id, cost_code:cost_codes(code)")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+    .eq("status", "awarded")
+
+  if (packagesError) {
+    throw new Error(`Failed to load buyout packages: ${packagesError.message}`)
+  }
+  if (!packages || packages.length === 0) return []
+
+  const packageIds = packages.map((row: any) => row.id as string)
+
+  const { data: awards, error: awardsError } = await supabase
+    .from("bid_awards")
+    .select("bid_package_id, awarded_commitment_id")
+    .eq("org_id", resolvedOrgId)
+    .in("bid_package_id", packageIds)
+
+  if (awardsError) {
+    throw new Error(`Failed to load bid awards: ${awardsError.message}`)
+  }
+
+  const commitmentIds = (awards ?? [])
+    .map((award: any) => award.awarded_commitment_id as string | null)
+    .filter((id: string | null): id is string => Boolean(id))
+
+  const commitmentById = new Map<string, any>()
+  const envelopeCommitmentIds = new Set<string>()
+  if (commitmentIds.length > 0) {
+    const [commitmentsResult, envelopesResult] = await Promise.all([
+      supabase
+        .from("commitments")
+        .select("id, status, total_cents, executed_at, company:companies(name)")
+        .eq("org_id", resolvedOrgId)
+        .in("id", commitmentIds),
+      supabase
+        .from("envelopes")
+        .select("source_entity_id, status")
+        .eq("org_id", resolvedOrgId)
+        .eq("source_entity_type", "subcontract")
+        .in("source_entity_id", commitmentIds)
+        .not("status", "in", '("draft","voided")'),
+    ])
+
+    if (commitmentsResult.error) {
+      throw new Error(`Failed to load buyout commitments: ${commitmentsResult.error.message}`)
+    }
+    for (const row of commitmentsResult.data ?? []) {
+      commitmentById.set(row.id as string, row)
+    }
+    for (const row of envelopesResult.data ?? []) {
+      if (row.source_entity_id) envelopeCommitmentIds.add(row.source_entity_id as string)
+    }
+  }
+
+  // Budget amounts come from the mapped budget line when the package has one.
+  const budgetLineIds = packages
+    .map((row: any) => row.budget_line_id as string | null)
+    .filter((id: string | null): id is string => Boolean(id))
+  const budgetAmountByLine = new Map<string, number>()
+  if (budgetLineIds.length > 0) {
+    const { data: budgetLines, error: budgetError } = await supabase
+      .from("budget_lines")
+      .select("id, amount_cents")
+      .eq("org_id", resolvedOrgId)
+      .in("id", budgetLineIds)
+    if (budgetError) {
+      throw new Error(`Failed to load buyout budget lines: ${budgetError.message}`)
+    }
+    for (const row of budgetLines ?? []) {
+      budgetAmountByLine.set(row.id as string, row.amount_cents ?? 0)
+    }
+  }
+
+  const awardByPackage = new Map<string, string | null>()
+  for (const award of awards ?? []) {
+    awardByPackage.set(award.bid_package_id as string, (award.awarded_commitment_id as string | null) ?? null)
+  }
+
+  return packages.map((row: any) => {
+    const commitmentId = awardByPackage.get(row.id) ?? null
+    const commitment = commitmentId ? commitmentById.get(commitmentId) : null
+    return {
+      bid_package_id: row.id as string,
+      title: row.title as string,
+      cost_code_code: (row.cost_code?.code as string | undefined) ?? null,
+      company_name: (commitment?.company?.name as string | undefined) ?? null,
+      budget_cents: row.budget_line_id ? (budgetAmountByLine.get(row.budget_line_id) ?? null) : null,
+      awarded_total_cents: (commitment?.total_cents as number | undefined) ?? null,
+      commitment_id: commitmentId,
+      commitment_status: (commitment?.status as string | undefined) ?? null,
+      executed_at: (commitment?.executed_at as string | undefined) ?? null,
+      out_for_signature: commitmentId ? envelopeCommitmentIds.has(commitmentId) : false,
+    }
+  })
+}
+
+export interface ProspectBidQuote {
+  submission_id: string
+  bid_package_id: string
+  package_title: string
+  trade: string | null
+  company_name: string | null
+  total_cents: number
+}
+
+/**
+ * Current, priced sub bids across a prospect's bid packages — offered in the
+ * estimate builder so a line's cost basis can come straight from a real quote.
+ */
+export async function listProspectBidQuotes(prospectId: string, orgId?: string): Promise<ProspectBidQuote[]> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
+  await ensureProspectInOrg(prospectId, resolvedOrgId, supabase)
+
+  const { data: packages, error: packagesError } = await supabase
+    .from("bid_packages")
+    .select("id, title, trade")
+    .eq("org_id", resolvedOrgId)
+    .eq("prospect_id", prospectId)
+
+  if (packagesError) {
+    throw new Error(`Failed to load prospect bid packages: ${packagesError.message}`)
+  }
+  if (!packages || packages.length === 0) return []
+
+  const packageById = new Map(packages.map((row: any) => [row.id as string, row]))
+
+  const { data: submissions, error: submissionsError } = await supabase
+    .from("bid_submissions")
+    .select(
+      `id, total_cents, is_current, status,
+       invite:bid_invites!inner(bid_package_id, company:companies(name))`,
+    )
+    .eq("org_id", resolvedOrgId)
+    .eq("is_current", true)
+    .not("total_cents", "is", null)
+    .in(
+      "bid_invites.bid_package_id",
+      packages.map((row: any) => row.id as string),
+    )
+
+  if (submissionsError) {
+    throw new Error(`Failed to load prospect bid quotes: ${submissionsError.message}`)
+  }
+
+  return (submissions ?? [])
+    .map((row: any) => {
+      const invite = Array.isArray(row.invite) ? row.invite[0] : row.invite
+      const pkg = invite ? packageById.get(invite.bid_package_id as string) : null
+      if (!pkg) return null
+      const company = invite?.company
+        ? Array.isArray(invite.company)
+          ? invite.company[0]
+          : invite.company
+        : null
+      return {
+        submission_id: row.id as string,
+        bid_package_id: pkg.id as string,
+        package_title: pkg.title as string,
+        trade: (pkg.trade as string | null) ?? null,
+        company_name: (company?.name as string | undefined) ?? null,
+        total_cents: row.total_cents as number,
+      }
+    })
+    .filter((row): row is ProspectBidQuote => row !== null)
+    .sort((a, b) => a.package_title.localeCompare(b.package_title) || a.total_cents - b.total_cents)
+}
+
 export async function listProspectBidPackages(prospectId: string, orgId?: string): Promise<BidPackage[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })

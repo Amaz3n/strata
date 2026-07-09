@@ -44,7 +44,7 @@ import {
   setInvoiceScheduleActive,
   type InvoiceScheduleFrequency,
 } from "@/lib/services/invoice-schedules"
-import { actionError, type ActionResult } from "@/lib/action-result"
+import { unwrapAction, actionError, type ActionResult  } from "@/lib/action-result"
 
 const INVOICE_PDF_TEMPLATE_VERSION = 2
 

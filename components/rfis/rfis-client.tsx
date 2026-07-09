@@ -7,6 +7,8 @@ import { toast } from "sonner"
 import { useIsMobile } from "@/hooks/use-mobile"
 import type { Company, Contact, Project, Rfi } from "@/lib/types"
 import type { RfiInput } from "@/lib/validation/rfis"
+import { unwrapAction } from "@/lib/action-result"
+import { downloadCsv } from "@/lib/csv"
 import { createRfiAction, listRfisAction } from "@/app/(app)/rfis/actions"
 import { RfiForm } from "@/components/rfis/rfi-form"
 import { RfiDetailSheet } from "@/components/rfis/rfi-detail-sheet"
@@ -106,7 +108,7 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
   async function handleCreate(values: RfiInput, options: { sendNow: boolean }) {
     startTransition(async () => {
       try {
-        const created = await createRfiAction({ ...values, send_now: options.sendNow })
+        const created = unwrapAction(await createRfiAction({ ...values, send_now: options.sendNow }))
         setItems((prev) => [created, ...prev])
         setSheetOpen(false)
         toast.success(options.sendNow ? "RFI sent" : "RFI saved as draft", { description: created.subject })
@@ -117,6 +119,44 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
         })
       }
     })
+  }
+
+  function handleExportCsv() {
+    const rows = filtered.map((rfi) => ({
+      number: rfi.rfi_number,
+      subject: rfi.subject,
+      status: statusLabels[rfi.status] ?? rfi.status,
+      priority: rfi.priority ?? "normal",
+      project: projects.find((p) => p.id === rfi.project_id)?.name ?? "",
+      assignee: rfi.assigned_to
+        ? contacts.find((c) => c.id === rfi.assigned_to)?.full_name ?? ""
+        : rfi.assigned_company_id
+          ? companies.find((c) => c.id === rfi.assigned_company_id)?.name ?? ""
+          : "",
+      sent: rfi.submitted_at ? formatDate(rfi.submitted_at) : "",
+      due: rfi.due_date ? formatDate(rfi.due_date) : "",
+      answered: rfi.answered_at ? formatDate(rfi.answered_at) : "",
+      closed: rfi.closed_at ? formatDate(rfi.closed_at) : "",
+      cost_impact: rfi.cost_impact_cents != null ? (rfi.cost_impact_cents / 100).toFixed(2) : "",
+      schedule_impact_days: rfi.schedule_impact_days ?? "",
+      question: rfi.question,
+    }))
+    downloadCsv(`rfi-log-${format(new Date(), "yyyy-MM-dd")}.csv`, rows, [
+      { key: "number", header: "RFI #" },
+      { key: "subject", header: "Subject" },
+      { key: "status", header: "Status" },
+      { key: "priority", header: "Priority" },
+      { key: "project", header: "Project" },
+      { key: "assignee", header: "Ball in Court" },
+      { key: "sent", header: "Sent" },
+      { key: "due", header: "Due" },
+      { key: "answered", header: "Answered" },
+      { key: "closed", header: "Closed" },
+      { key: "cost_impact", header: "Cost Impact ($)" },
+      { key: "schedule_impact_days", header: "Schedule Impact (days)" },
+      { key: "question", header: "Question" },
+    ])
+    toast.success(`Exported ${rows.length} RFI${rows.length === 1 ? "" : "s"} to CSV`)
   }
 
   const refreshRfis = useCallback(async () => {
@@ -221,6 +261,9 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
             </div>
           </div>
           <div className="flex w-full gap-2 sm:w-auto">
+            <Button variant="outline" onClick={handleExportCsv} disabled={filtered.length === 0} className="w-full sm:w-auto">
+              Export CSV
+            </Button>
             <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
               <Plus className="mr-2 h-4 w-4" />
               New RFI

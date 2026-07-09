@@ -10,6 +10,8 @@ import {
 } from "@/app/(app)/documents/actions"
 import { UnifiedDocumentsLayout } from "@/components/documents"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ProjectFilesPageProps {
   params: Promise<{ id: string }>
   searchParams: Promise<{ path?: string }>

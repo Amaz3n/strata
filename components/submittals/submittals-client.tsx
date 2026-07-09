@@ -5,8 +5,10 @@ import { format } from "date-fns"
 import { toast } from "sonner"
 
 import { useIsMobile } from "@/hooks/use-mobile"
-import type { Project, Submittal } from "@/lib/types"
+import type { Company, Project, Submittal } from "@/lib/types"
 import type { SubmittalInput } from "@/lib/validation/submittals"
+import { unwrapAction } from "@/lib/action-result"
+import { downloadCsv } from "@/lib/csv"
 import { createSubmittalAction } from "@/app/(app)/submittals/actions"
 import { SubmittalForm } from "@/components/submittals/submittal-form"
 import { SubmittalDetailSheet } from "@/components/submittals/submittal-detail-sheet"
@@ -20,47 +22,67 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Plus, MoreHorizontal, FileText, Building2, Calendar } from "@/components/icons"
 import { cn, parseLocalDate, formatLocalDate, isDateExpired } from "@/lib/utils"
 
-type StatusKey = "draft" | "submitted" | "in_review" | "approved" | "rejected" | string
+type StatusKey =
+  | "draft"
+  | "pending"
+  | "submitted"
+  | "in_review"
+  | "approved"
+  | "approved_as_noted"
+  | "revise_resubmit"
+  | "rejected"
+  | string
 
 const statusLabels: Record<string, string> = {
   draft: "Draft",
+  pending: "Pending",
   submitted: "Submitted",
   in_review: "In review",
   approved: "Approved",
+  approved_as_noted: "Approved as noted",
+  revise_resubmit: "Revise & resubmit",
   rejected: "Rejected",
 }
 
 const statusStyles: Record<string, string> = {
   draft: "bg-muted text-muted-foreground border-muted",
+  pending: "bg-muted text-muted-foreground border-muted",
   submitted: "bg-blue-500/15 text-blue-600 border-blue-500/30",
   in_review: "bg-warning/20 text-warning border-warning/40",
   approved: "bg-success/20 text-success border-success/30",
+  approved_as_noted: "bg-success/15 text-success border-success/25",
+  revise_resubmit: "bg-orange-500/15 text-orange-600 border-orange-500/30",
   rejected: "bg-destructive/20 text-destructive border-destructive/30",
 }
 
 const statusDot: Record<string, string> = {
   draft: "bg-muted-foreground/40",
+  pending: "bg-muted-foreground/40",
   submitted: "bg-blue-500",
   in_review: "bg-amber-500",
   approved: "bg-emerald-500",
+  approved_as_noted: "bg-emerald-500",
+  revise_resubmit: "bg-orange-500",
   rejected: "bg-rose-500",
 }
 
 const mobileFilterOrder: Array<"all" | StatusKey> = [
   "all",
-  "draft",
+  "pending",
   "submitted",
   "in_review",
   "approved",
+  "revise_resubmit",
   "rejected",
 ]
 
 const shortStatusLabel: Record<string, string> = {
   all: "All",
-  draft: "Draft",
+  pending: "Pending",
   submitted: "Submitted",
   in_review: "In review",
   approved: "Approved",
+  revise_resubmit: "Resubmit",
   rejected: "Rejected",
 }
 
@@ -75,9 +97,10 @@ function formatDate(date?: string | null) {
 interface SubmittalsClientProps {
   submittals: Submittal[]
   projects: Project[]
+  companies: Company[]
 }
 
-export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps) {
+export function SubmittalsClient({ submittals, projects, companies }: SubmittalsClientProps) {
   const isMobile = useIsMobile()
   const [items, setItems] = useState<Submittal[]>(submittals)
   const [search, setSearch] = useState("")
@@ -97,30 +120,90 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
     const safeItems = items ?? []
     const term = search.toLowerCase()
     return safeItems.filter((item) => {
+      // Only current revisions in the log; history lives in the detail sheet.
+      if (item.superseded_by_id) return false
       const matchesProject = filterProjectId === "all" || item.project_id === filterProjectId
       const matchesStatus = statusFilter === "all" || item.status === statusFilter
       const matchesSearch =
         term.length === 0 ||
-        [String(item.submittal_number ?? ""), item.title ?? "", item.description ?? ""].some((value) =>
-          value.toLowerCase().includes(term),
+        [String(item.submittal_number ?? ""), item.title ?? "", item.description ?? "", item.spec_section ?? ""].some(
+          (value) => value.toLowerCase().includes(term),
         )
       return matchesProject && matchesStatus && matchesSearch
     })
   }, [items, search, statusFilter, filterProjectId])
 
+  const companyName = (companyId?: string | null) =>
+    companyId ? companies.find((c) => c.id === companyId)?.name ?? null : null
+
+  function ballInCourt(submittal: Submittal): string {
+    if (submittal.status === "approved" || submittal.status === "approved_as_noted" || submittal.status === "rejected") {
+      return "—"
+    }
+    if (submittal.status === "submitted" || submittal.status === "in_review") return "GC review"
+    return companyName(submittal.assigned_company_id) ?? "Internal"
+  }
 
   async function handleCreate(values: SubmittalInput) {
     startTransition(async () => {
       try {
-        const created = await createSubmittalAction(values)
+        const created = unwrapAction(await createSubmittalAction(values))
         setItems((prev) => [created, ...prev])
         setSheetOpen(false)
         toast.success("Submittal created", { description: created.title })
-      } catch (error: any) {
+      } catch (error) {
         console.error(error)
-        toast.error("Could not create submittal", { description: error?.message ?? "Please try again." })
+        toast.error("Could not create submittal", {
+          description: error instanceof Error ? error.message : "Please try again.",
+        })
       }
     })
+  }
+
+  function handleUpdated(updated: Submittal) {
+    setSelectedSubmittal(updated)
+    setItems((prev) => {
+      const exists = prev.some((item) => item.id === updated.id)
+      const next = exists ? prev.map((item) => (item.id === updated.id ? updated : item)) : [updated, ...prev]
+      // A resubmission supersedes its predecessor locally too.
+      return next.map((item) =>
+        updated.supersedes_submittal_id && item.id === updated.supersedes_submittal_id
+          ? { ...item, superseded_by_id: updated.id }
+          : item,
+      )
+    })
+  }
+
+  function handleExportCsv() {
+    const rows = filtered.map((submittal) => ({
+      number: submittal.revision > 0 ? `${submittal.submittal_number} Rev ${submittal.revision}` : submittal.submittal_number,
+      title: submittal.title,
+      type: submittal.submittal_type?.replace(/_/g, " ") ?? "",
+      spec_section: submittal.spec_section ?? "",
+      status: statusLabels[submittal.status] ?? submittal.status,
+      ball_in_court: ballInCourt(submittal),
+      responsible: companyName(submittal.assigned_company_id) ?? "",
+      submitted: submittal.submitted_at ? formatDate(submittal.submitted_at) : "",
+      review_due: submittal.due_date ? formatDate(submittal.due_date) : "",
+      required_on_site: submittal.required_on_site ? formatDate(submittal.required_on_site) : "",
+      lead_time_days: submittal.lead_time_days ?? "",
+      decided: submittal.decision_at ? formatDate(submittal.decision_at) : "",
+    }))
+    downloadCsv(`submittal-log-${format(new Date(), "yyyy-MM-dd")}.csv`, rows, [
+      { key: "number", header: "Submittal #" },
+      { key: "title", header: "Title" },
+      { key: "type", header: "Type" },
+      { key: "spec_section", header: "Spec Section" },
+      { key: "status", header: "Status" },
+      { key: "ball_in_court", header: "Ball in Court" },
+      { key: "responsible", header: "Responsible Company" },
+      { key: "submitted", header: "Submitted" },
+      { key: "review_due", header: "Review Due" },
+      { key: "required_on_site", header: "Required On Site" },
+      { key: "lead_time_days", header: "Lead Time (days)" },
+      { key: "decided", header: "Decided" },
+    ])
+    toast.success(`Exported ${rows.length} submittal${rows.length === 1 ? "" : "s"} to CSV`)
   }
 
   return (
@@ -129,6 +212,7 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
         open={sheetOpen}
         onOpenChange={setSheetOpen}
         projects={projects}
+        companies={companies}
         defaultProjectId={filterProjectId !== "all" ? filterProjectId : projects[0]?.id}
         onSubmit={handleCreate}
         isSubmitting={isPending}
@@ -137,12 +221,10 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
       <SubmittalDetailSheet
         submittal={selectedSubmittal}
         project={projects.find((p) => p.id === selectedSubmittal?.project_id)}
+        companies={companies}
         open={detailSheetOpen}
         onOpenChange={setDetailSheetOpen}
-        onUpdate={(updated) => {
-          setSelectedSubmittal(updated)
-          setItems((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
-        }}
+        onUpdate={handleUpdated}
       />
 
       <div className="-mx-4 -mb-4 -mt-6 flex h-[calc(100svh-3.5rem)] min-h-0 flex-col overflow-hidden bg-background">
@@ -202,7 +284,18 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All statuses</SelectItem>
-                  {(["draft", "submitted", "in_review", "approved", "rejected"] as StatusKey[]).map((status) => (
+                  {(
+                    [
+                      "draft",
+                      "pending",
+                      "submitted",
+                      "in_review",
+                      "approved",
+                      "approved_as_noted",
+                      "revise_resubmit",
+                      "rejected",
+                    ] as StatusKey[]
+                  ).map((status) => (
                     <SelectItem key={status} value={status}>
                       {statusLabels[status]}
                     </SelectItem>
@@ -212,6 +305,9 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
             </div>
           </div>
           <div className="flex w-full gap-2 sm:w-auto">
+            <Button variant="outline" onClick={handleExportCsv} disabled={filtered.length === 0} className="w-full sm:w-auto">
+              Export CSV
+            </Button>
             <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
               <Plus className="mr-2 h-4 w-4" />
               New submittal
@@ -303,10 +399,11 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
               <TableHeader>
             <TableRow className="bg-muted/40 hover:bg-muted/40">
               <TableHead className="w-[88px] text-left pl-4">No.</TableHead>
-              <TableHead className="w-[40%] min-w-[320px]">Title</TableHead>
-              <TableHead className="hidden md:table-cell w-[184px] text-center">Type</TableHead>
+              <TableHead className="w-[32%] min-w-[280px]">Title</TableHead>
+              <TableHead className="hidden md:table-cell w-[160px] text-center">Ball in Court</TableHead>
               <TableHead className="hidden sm:table-cell w-[128px] text-center">Status</TableHead>
-              <TableHead className="hidden lg:table-cell w-[112px] text-center">Due Date</TableHead>
+              <TableHead className="hidden lg:table-cell w-[112px] text-center">Review Due</TableHead>
+              <TableHead className="hidden lg:table-cell w-[112px] text-center">On Site</TableHead>
               <TableHead className="hidden xl:table-cell w-[100px] text-center">Spec</TableHead>
               <TableHead className="w-[92px] pr-2" />
             </TableRow>
@@ -319,15 +416,21 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
                 onClick={() => handleSubmittalClick(submittal)}
               >
                 <TableCell className="text-center px-2">
-                  <span className="text-sm font-semibold">{submittal.submittal_number}</span>
+                  <span className="text-sm font-semibold">
+                    {submittal.submittal_number}
+                    {submittal.revision > 0 ? <span className="text-xs font-normal text-muted-foreground"> R{submittal.revision}</span> : null}
+                  </span>
                 </TableCell>
                 <TableCell className="min-w-0">
                   <span className="text-sm font-medium truncate block">{submittal.title}</span>
+                  {submittal.submittal_type ? (
+                    <span className="text-xs text-muted-foreground truncate block capitalize mt-0.5">
+                      {submittal.submittal_type.replace(/_/g, " ")}
+                    </span>
+                  ) : null}
                 </TableCell>
                 <TableCell className="hidden md:table-cell text-center">
-                  <span className="text-xs text-muted-foreground truncate block capitalize">
-                    {submittal.submittal_type?.replace(/_/g, " ") || "—"}
-                  </span>
+                  <span className="text-xs text-muted-foreground truncate block">{ballInCourt(submittal)}</span>
                 </TableCell>
                 <TableCell className="hidden sm:table-cell text-center">
                   <div className="flex flex-col gap-1 items-center">
@@ -337,8 +440,22 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
                   </div>
                 </TableCell>
                 <TableCell className="hidden lg:table-cell text-center">
-                  <span className="text-xs text-muted-foreground">
+                  <span
+                    className={cn(
+                      "text-xs",
+                      submittal.due_date &&
+                        !submittal.decision_status &&
+                        isDateExpired(submittal.due_date)
+                        ? "font-medium text-destructive"
+                        : "text-muted-foreground",
+                    )}
+                  >
                     {submittal.due_date ? formatDate(submittal.due_date) : "—"}
+                  </span>
+                </TableCell>
+                <TableCell className="hidden lg:table-cell text-center">
+                  <span className="text-xs text-muted-foreground">
+                    {submittal.required_on_site ? formatDate(submittal.required_on_site) : "—"}
                   </span>
                 </TableCell>
                 <TableCell className="hidden xl:table-cell text-center">
@@ -367,7 +484,7 @@ export function SubmittalsClient({ submittals, projects }: SubmittalsClientProps
             ))}
             {filtered.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7} className="h-48 text-center text-muted-foreground hover:bg-transparent">
+                <TableCell colSpan={8} className="h-48 text-center text-muted-foreground hover:bg-transparent">
                   <div className="flex flex-col items-center gap-3">
                     <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                       <FileText className="h-6 w-6" />

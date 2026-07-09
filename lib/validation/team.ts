@@ -8,9 +8,12 @@ export const orgRoleKeySchema = z
   .min(1, "Role is required")
   .regex(/^[a-z_]+$/, "Invalid role key") satisfies z.ZodType<OrgRole>
 
+export const projectScopeSchema = z.enum(["all", "assigned"])
+
 export const inviteMemberSchema = z.object({
   email: z.string().email("A valid email is required"),
   role: orgRoleKeySchema.default("org_user"),
+  projectScope: projectScopeSchema.default("all"),
   permissionOverrides: z
     .array(
       z.object({
@@ -23,6 +26,7 @@ export const inviteMemberSchema = z.object({
 
 export const updateMemberRoleSchema = z.object({
   role: orgRoleKeySchema,
+  projectScope: projectScopeSchema.optional(),
   permissionOverrides: z
     .array(
       z.object({

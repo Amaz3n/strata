@@ -17,6 +17,8 @@ import { Lock, MoreHorizontal, UserPlus, Users } from "@/components/icons"
 import { useToast } from "@/hooks/use-toast"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 
+import { unwrapAction } from "@/lib/action-result"
+
 const statusColors: Record<string, string> = {
   active: "bg-success/20 text-success border-success/30",
   invited: "bg-chart-3/20 text-chart-3 border-chart-3/30",
@@ -131,7 +133,7 @@ export function TeamTable({ className, tableWrapperClassName, members, canManage
 
     startTransition(async () => {
       try {
-        await removeMemberAction(membershipId)
+        unwrapAction(await removeMemberAction(membershipId))
         toast({ title: "Member removed" })
         refreshData()
       } catch (error) {
@@ -154,7 +156,7 @@ export function TeamTable({ className, tableWrapperClassName, members, canManage
 
     startTransition(async () => {
       try {
-        await resendInviteAction(membershipId)
+        unwrapAction(await resendInviteAction(membershipId))
         toast({ title: "Invite resent" })
         refreshData()
       } catch (error) {

@@ -16,6 +16,8 @@ import { trackInCrmAction } from "@/app/(app)/pipeline/actions"
 import { Mail, Phone, Loader2, Contact as ContactIcon, Send } from "@/components/icons"
 import { useToast } from "@/hooks/use-toast"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ContactDetail {
   contact: Contact
   assignments: Awaited<ReturnType<typeof getContactAction>>["assignments"]
@@ -54,7 +56,7 @@ export function ContactDetailSheet({ contactId, open, onOpenChange, onEditContac
     if (!contact) return
     setIsTrackingCrm(true)
     try {
-      await trackInCrmAction(contact.id)
+      unwrapAction(await trackInCrmAction(contact.id))
       router.refresh()
       toast({ title: "Contact tracked in Pipeline" })
       router.push("/pipeline?view=prospects")

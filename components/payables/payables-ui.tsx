@@ -12,10 +12,10 @@ export function vendorLabel(bill: VendorBillSummary) {
 export function billBadge(status?: string) {
   const normalized = (status ?? "pending").toLowerCase()
   const map: Record<string, { label: string; tone: string }> = {
-    paid: { label: "Paid", tone: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20" },
-    partial: { label: "Partial", tone: "bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20" },
-    approved: { label: "Approved", tone: "bg-indigo-500/10 text-indigo-700 dark:text-indigo-400 border-indigo-500/20" },
-    pending: { label: "Pending", tone: "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20" },
+    paid: { label: "Paid", tone: "bg-success/10 text-success border-success/20" },
+    partial: { label: "Partial", tone: "bg-primary/10 text-primary border-primary/20" },
+    approved: { label: "Approved", tone: "bg-accent text-accent-foreground border-border" },
+    pending: { label: "Pending", tone: "bg-warning/10 text-warning border-warning/20" },
   }
   const config = map[normalized] ?? map.pending
   return <Badge variant="outline" className={`text-[10px] font-bold uppercase tracking-tight ${config.tone}`}>{config.label}</Badge>
@@ -26,7 +26,7 @@ export function payableTypeBadge(bill: VendorBillSummary) {
   return (
     <Badge
       variant="outline"
-      className="border-violet-500/20 bg-violet-500/10 text-[10px] font-bold uppercase tracking-tight text-violet-700 dark:text-violet-400"
+      className="border-border bg-accent text-[10px] font-bold uppercase tracking-tight text-accent-foreground"
     >
       Vendor credit
     </Badge>
@@ -36,10 +36,10 @@ export function payableTypeBadge(bill: VendorBillSummary) {
 export function qboBadge(status?: string, error?: string) {
   const normalized = (status ?? "not_synced").toLowerCase()
   const map: Record<string, { label: string; tone: string }> = {
-    synced: { label: "Synced to QuickBooks", tone: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/20" },
-    pending: { label: "Pending Sync", tone: "bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20" },
+    synced: { label: "Synced to QuickBooks", tone: "bg-success/10 text-success border-success/20" },
+    pending: { label: "Pending Sync", tone: "bg-primary/10 text-primary border-primary/20" },
     error: { label: "Sync Error", tone: "bg-destructive/10 text-destructive border-destructive/20" },
-    needs_review: { label: "Requires Review", tone: "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20" },
+    needs_review: { label: "Requires Review", tone: "bg-warning/10 text-warning border-warning/20" },
     skipped: { label: "Sync Disabled", tone: "bg-muted text-muted-foreground border-border" },
     not_synced: { label: "Not Synced", tone: "bg-muted text-muted-foreground border-border" },
   }
@@ -50,13 +50,13 @@ export function qboBadge(status?: string, error?: string) {
 export function qboVendorLinkBadge(bill: VendorBillSummary) {
   if (bill.qbo_vendor_id) {
     return (
-      <Badge variant="outline" className="border-emerald-500/20 bg-emerald-500/10 text-[10px] font-bold uppercase text-emerald-700">
+      <Badge variant="outline" className="border-success/20 bg-success/10 text-[10px] font-bold uppercase text-success">
         QBO linked
       </Badge>
     )
   }
   return (
-    <Badge variant="outline" className="border-amber-500/20 bg-amber-500/10 text-[10px] font-bold uppercase text-amber-700">
+    <Badge variant="outline" className="border-warning/20 bg-warning/10 text-[10px] font-bold uppercase text-warning">
       QBO needed
     </Badge>
   )
@@ -80,7 +80,7 @@ export function dueDateClassName(dueDate?: string | null, status?: string | null
   return cn(
     "tabular-nums",
     due.isOverdue && "font-semibold text-destructive",
-    due.isDueSoon && "font-medium text-amber-700 dark:text-amber-300",
+    due.isDueSoon && "font-medium text-warning",
     !due.isOverdue && !due.isDueSoon && "text-muted-foreground",
   )
 }

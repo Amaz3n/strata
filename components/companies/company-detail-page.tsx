@@ -100,6 +100,8 @@ import { ToastAction } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 
+import { unwrapAction } from "@/lib/action-result"
+
 function formatType(value?: string) {
   if (!value) return "Other";
   return value
@@ -460,7 +462,7 @@ export function CompanyDetailPage({
 
   const restoreArchivedCompany = async () => {
     try {
-      await restoreCompanyAction(company.id);
+      unwrapAction(await restoreCompanyAction(company.id));
       toast({ title: "Company restored" });
       router.push(`/companies/${company.id}`);
       router.refresh();
@@ -482,7 +484,7 @@ export function CompanyDetailPage({
           });
           return;
         }
-        await archiveCompanyAction(company.id);
+        unwrapAction(await archiveCompanyAction(company.id));
         setArchiveDialogOpen(false);
         toast({
           title: "Company archived",
@@ -842,9 +844,7 @@ export function CompanyDetailPage({
               className={cn("lg:col-start-1 lg:row-start-1", dimClass)}
             />
             <CompanyPayables
-              companyId={company.id}
               vendorBills={vendorBills}
-              canEdit={canEdit}
               stagger={2}
               fill
               className={cn("lg:col-start-2 lg:row-start-1", dimClass)}

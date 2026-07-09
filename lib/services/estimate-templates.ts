@@ -5,8 +5,7 @@ import { requireOrgContext } from "@/lib/services/context"
 /**
  * Saved estimate templates — a reusable set of sections + line items a builder
  * can seed a new estimate from. Brand/boilerplate (terms, intro, accent) live in
- * org settings; templates intentionally only carry the line structure so they stay
- * compatible with {@link createEstimateFromTemplate}.
+ * org settings; templates intentionally only carry the line structure.
  */
 
 const templateLineSchema = z.object({

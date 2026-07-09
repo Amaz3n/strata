@@ -11,11 +11,12 @@ import { AppPageContent } from "@/components/layout/app-page-content"
 import { PlatformSessionControl } from "@/components/layout/platform-session-control"
 import { ReleaseNotesAnnouncement } from "@/components/layout/release-notes-announcement"
 import { OrgInactiveScreen } from "@/components/layout/org-inactive-screen"
+import { TrialStatusBanner } from "@/components/layout/trial-status-banner"
 import { DemoUsageTracker } from "@/components/layout/demo-usage-tracker"
 import { OptimisticPathProvider } from "@/lib/navigation/optimistic-pathname"
 import { getCurrentUserAction } from "../actions/user"
 import { getCrmDashboardStats } from "@/lib/services/crm"
-import { getOrgAccessState } from "@/lib/services/access"
+import { getOrgAccessState, type OrgAccessState } from "@/lib/services/access"
 import { getCurrentPlatformAccess } from "@/lib/services/platform-access"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { getPlatformSessionState } from "@/lib/services/platform-session"
@@ -33,7 +34,7 @@ export default async function AppLayout({
   const [currentUser, crmStats, access, platformAccess, permissionResult, platformSessionState, releaseNotesSummary, navigationBadgeCounts] = await Promise.all([
     getCurrentUserAction(),
     getCrmDashboardStats().catch(() => null),
-    getOrgAccessState().catch(() => ({ status: "unknown", locked: false })),
+    getOrgAccessState().catch((): OrgAccessState => ({ status: "unknown", locked: false })),
     getCurrentPlatformAccess().catch(() => ({ canAccessPlatform: false, roles: [], isEnvSuperadmin: false })),
     getCurrentUserPermissions().catch(() => ({ permissions: [] as string[] })),
     getPlatformSessionState().catch(() => ({
@@ -51,7 +52,15 @@ export default async function AppLayout({
   const pipelineBadgeCount = crmStats ? crmStats.followUpsOverdue + crmStats.followUpsDueToday : 0
 
   if (access.locked) {
-    return <OrgInactiveScreen orgName={"orgName" in access ? access.orgName ?? null : null} reason={"reason" in access ? access.reason : undefined} />
+    return (
+      <OrgInactiveScreen
+        orgName={"orgName" in access ? access.orgName ?? null : null}
+        reason={"reason" in access ? access.reason : undefined}
+        hasPrice={"hasPrice" in access ? access.hasPrice : undefined}
+        checkoutUrl={"checkoutUrl" in access ? access.checkoutUrl : undefined}
+        supportEmail="support@arcnaples.com"
+      />
+    )
   }
 
   return (
@@ -76,6 +85,7 @@ export default async function AppLayout({
                 platformSessionControlDesktop={<PlatformSessionControl access={platformAccess} state={platformSessionState} />}
                 platformSessionControlMobile={<PlatformSessionControl access={platformAccess} state={platformSessionState} />}
               />
+              <TrialStatusBanner access={access} />
               <AppPageContent>{children}</AppPageContent>
             </PageTitleProvider>
           </SidebarInset>

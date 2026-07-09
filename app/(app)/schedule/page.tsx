@@ -28,6 +28,8 @@ import { GanttScrollArea } from "./gantt-scroll-area"
 import "@/components/schedule/gantt.css"
 import "./schedule-gantt.css"
 
+import { unwrapAction } from "@/lib/action-result"
+
 export const dynamic = "force-dynamic"
 
 /* ── Desk doctrine ────────────────────────────────────────────────────────

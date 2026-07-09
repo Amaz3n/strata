@@ -143,6 +143,24 @@ export async function createStripeCustomer(params: { email: string; name: string
   })
 }
 
+export async function createStripePrice(params: {
+  productId: string
+  unitAmount: number
+  currency: string
+  interval: "month" | "year"
+  nickname?: string
+  metadata?: Record<string, string>
+}) {
+  return getStripe().prices.create({
+    product: params.productId,
+    unit_amount: params.unitAmount,
+    currency: params.currency,
+    recurring: { interval: params.interval },
+    nickname: params.nickname,
+    metadata: params.metadata,
+  })
+}
+
 export async function createStripeConnectedAccount(params: {
   orgId: string
   email?: string | null
@@ -238,6 +256,32 @@ export async function createStripeCheckoutSession(params: {
     },
     metadata: params.metadata,
   })
+}
+
+export async function createStripeInvoiceSubscription(params: {
+  customerId: string
+  priceId: string
+  daysUntilDue: number
+  metadata?: Record<string, string>
+  trialEnd?: string | null
+}) {
+  const trialEndTimestamp =
+    params.trialEnd && new Date(params.trialEnd) > new Date()
+      ? Math.floor(new Date(params.trialEnd).getTime() / 1000)
+      : undefined
+
+  return getStripe().subscriptions.create({
+    customer: params.customerId,
+    items: [{ price: params.priceId }],
+    collection_method: "send_invoice",
+    days_until_due: params.daysUntilDue,
+    trial_end: trialEndTimestamp,
+    metadata: params.metadata,
+  })
+}
+
+export async function retrieveStripeSubscription(subscriptionId: string) {
+  return getStripe().subscriptions.retrieve(subscriptionId)
 }
 
 export async function createStripeBillingPortalSession(customerId: string, returnUrl: string) {

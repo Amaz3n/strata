@@ -60,6 +60,42 @@ export function PortalActionsTab({ data, token, portalType }: PortalActionsTabPr
         </CardContent>
       </Card>
 
+      {portalType === "client" && (
+        <Card>
+          <CardHeader className="pb-2 flex flex-row items-center justify-between">
+            <CardTitle className="text-base">Decisions</CardTitle>
+            {data.pendingDecisions.length > 0 && (
+              <a href={`/p/${token}/decisions`} className="text-sm text-primary">
+                Review & decide
+              </a>
+            )}
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {data.pendingDecisions.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No decisions awaiting you</p>
+            ) : (
+              data.pendingDecisions.slice(0, 3).map((decision) => (
+                <a
+                  key={decision.id}
+                  href={`/p/${token}/decisions`}
+                  className="block py-2 border-b last:border-0 hover:bg-muted/50 -mx-2 px-2 rounded"
+                >
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium">{decision.title}</p>
+                    <Badge variant="outline" className="text-xs">Pending</Badge>
+                  </div>
+                  {decision.due_date && (
+                    <p className="text-xs text-muted-foreground">
+                      Needed by {format(new Date(`${decision.due_date}T00:00:00`), "MMM d")}
+                    </p>
+                  )}
+                </a>
+              ))
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader className="pb-2 flex flex-row items-center justify-between">
           <CardTitle className="text-base">Selections</CardTitle>

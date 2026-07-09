@@ -123,6 +123,8 @@ import { DrawingViewer } from "./drawing-viewer"
 import { RevisionReviewDialog } from "./revision-review-dialog"
 import { CreateFromDrawingDialog } from "./create-from-drawing-dialog"
 
+import { unwrapAction } from "@/lib/action-result"
+
 type ProjectOption = { id: string; name: string }
 
 interface DrawingsSetsViewProps {
@@ -793,7 +795,7 @@ export function DrawingsSetsView({
       )
 
       setUploadStage("Processing PDF…")
-      const { set: newSet, draftRevisionId } = await createDrawingSetFromUpload({
+      const { set: newSet, draftRevisionId } = unwrapAction(await createDrawingSetFromUpload({
         projectId: selectedProjectId,
         fileName: uploadFile.name,
         storagePath,
@@ -804,7 +806,7 @@ export function DrawingsSetsView({
         issuedDate: issuanceDate || undefined,
         receivedFrom: issuanceSource.trim() || undefined,
         notes: issuanceNotes.trim() || undefined,
-      })
+      }))
 
       setSets((prev) => {
         const withoutCurrent = prev.filter((set) => set.id !== newSet.id)
@@ -899,7 +901,7 @@ export function DrawingsSetsView({
     if (!setToDelete) return
     setIsDeleting(true)
     try {
-      await deleteDrawingSetAction(setToDelete.id)
+      unwrapAction(await deleteDrawingSetAction(setToDelete.id))
       setSets((prev) => prev.filter((s) => s.id !== setToDelete.id))
       setSheetsBySet((prev) => {
         const next = new Map(prev)
@@ -921,7 +923,7 @@ export function DrawingsSetsView({
     if (!sheetToDelete) return
     setIsDeleting(true)
     try {
-      await deleteDrawingSheetAction(sheetToDelete.id)
+      unwrapAction(await deleteDrawingSheetAction(sheetToDelete.id))
       setSheetsBySet((prev) => {
         const next = new Map(prev)
         for (const [k, list] of next) {
@@ -968,7 +970,7 @@ export function DrawingsSetsView({
 
       await Promise.all(
         originalSheets.map((sheet) =>
-          updateDrawingSheetAction(sheet.id, { discipline: nextDiscipline }),
+          updateDrawingSheetAction(sheet.id, { discipline: nextDiscipline }).then(unwrapAction),
         ),
       )
 
@@ -991,7 +993,7 @@ export function DrawingsSetsView({
     try {
       await Promise.all(
         disciplineGroupToDelete.sheets.map((sheet) =>
-          deleteDrawingSheetAction(sheet.id),
+          deleteDrawingSheetAction(sheet.id).then(unwrapAction),
         ),
       )
       setSheetsBySet((curr) => {
@@ -1031,7 +1033,7 @@ export function DrawingsSetsView({
         sheet_title: renameSheetTitle.trim() || undefined,
       }
 
-      await updateDrawingSheetAction(sheetToRename.id, updates)
+      unwrapAction(await updateDrawingSheetAction(sheetToRename.id, updates))
       setSheetsBySet((curr) => {
         const next = new Map(curr)
         for (const [setId, list] of next) {
@@ -1057,7 +1059,7 @@ export function DrawingsSetsView({
 
   const handleRetry = async (setId: string) => {
     try {
-      await retryProcessingAction(setId)
+      unwrapAction(await retryProcessingAction(setId))
       toast.success("Processing restarted")
       await refreshSets()
     } catch {
@@ -1127,7 +1129,7 @@ export function DrawingsSetsView({
         selectedProjectId,
         orgId,
       )
-      const { draftRevisionId } = await createDrawingSetFromUpload({
+      const { draftRevisionId } = unwrapAction(await createDrawingSetFromUpload({
         projectId: selectedProjectId,
         fileName: revisionFile.name,
         storagePath,
@@ -1139,7 +1141,7 @@ export function DrawingsSetsView({
         receivedFrom: sheetRevisionSource.trim() || undefined,
         notes: sheetRevisionNotes.trim() || undefined,
         targetSheetId: revisionTargetSheet.id,
-      })
+      }))
 
       await Promise.all([refreshSets(), refreshPendingDraft()])
       setReviewRevisionId(draftRevisionId)
@@ -1185,7 +1187,7 @@ export function DrawingsSetsView({
         return next
       })
       try {
-        await updateDrawingSheetAction(sheetId, { discipline })
+        unwrapAction(await updateDrawingSheetAction(sheetId, { discipline }))
         toast.success(`Moved to ${disciplineLabel(discipline)}`)
       } catch (err) {
         console.error(err)
@@ -1317,7 +1319,7 @@ export function DrawingsSetsView({
     markup: Omit<DrawingMarkup, "id" | "org_id" | "created_at" | "updated_at">,
   ) => {
     try {
-      const created = await createDrawingMarkupAction(markup)
+      const created = unwrapAction(await createDrawingMarkupAction(markup))
       setViewerMarkups((prev) => [...prev, created])
       if (viewerSheet) {
         const cached = viewerSheetCacheRef.current.get(viewerSheet.id)
@@ -1337,7 +1339,7 @@ export function DrawingsSetsView({
 
   const handleDeleteMarkup = async (markupId: string) => {
     try {
-      await deleteDrawingMarkupAction(markupId)
+      unwrapAction(await deleteDrawingMarkupAction(markupId))
       setViewerMarkups((prev) => prev.filter((m) => m.id !== markupId))
       if (viewerSheet) {
         const cached = viewerSheetCacheRef.current.get(viewerSheet.id)
@@ -1392,7 +1394,7 @@ export function DrawingsSetsView({
       let entityId: string | null = null
 
       if (input.entityType === "task") {
-        const created = await createTaskFromDrawingAction(pinProjectId, {
+        const created = unwrapAction(await createTaskFromDrawingAction(pinProjectId, {
           title: input.title,
           description: input.description,
           priority:
@@ -1402,10 +1404,10 @@ export function DrawingsSetsView({
                 ? "low"
                 : "normal",
           status: "todo",
-        })
+        }))
         entityId = created.id
       } else if (input.entityType === "rfi") {
-        const created = await createRfiFromDrawingAction({
+        const created = unwrapAction(await createRfiFromDrawingAction({
           projectId: pinProjectId,
           subject: input.subject ?? input.title,
           question: input.question ?? input.description ?? "",
@@ -1415,31 +1417,31 @@ export function DrawingsSetsView({
               : input.priority === "low"
                 ? "low"
                 : "normal",
-        })
+        }))
         entityId = created.id
       } else if (input.entityType === "punch_list") {
-        const created = await createPunchItemFromDrawingAction({
+        const created = unwrapAction(await createPunchItemFromDrawingAction({
           projectId: pinProjectId,
           title: input.title,
           description: input.description,
           location: input.location,
           severity: input.priority,
-        })
+        }))
         entityId = created.id
       } else if (input.entityType === "issue") {
-        const created = await createTaskFromDrawingAction(pinProjectId, {
+        const created = unwrapAction(await createTaskFromDrawingAction(pinProjectId, {
           title: input.title,
           description: input.description,
           priority: "high",
           status: "todo",
           tags: ["issue"],
-        })
+        }))
         entityId = created.id
       }
 
       if (!entityId) throw new Error("Unsupported entity type")
 
-      const pin = await createDrawingPinAction({
+      const pin = unwrapAction(await createDrawingPinAction({
         project_id: pinProjectId,
         drawing_sheet_id: viewerSheet.id,
         x_position: createPosition.x,
@@ -1448,7 +1450,7 @@ export function DrawingsSetsView({
         entity_id: entityId,
         label: input.title,
         status: "open",
-      })
+      }))
 
       setViewerPins((prev) => [...prev, pin])
       if (viewerSheet) {

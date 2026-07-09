@@ -38,6 +38,8 @@ import {
   type LucideIcon,
 } from "@/components/icons"
 
+import { unwrapAction } from "@/lib/action-result"
+
 const statusLabels: Record<string, string> = {
   missing: "Missing",
   in_progress: "In progress",
@@ -349,12 +351,12 @@ export function CloseoutClient({
     }
     startTransition(async () => {
       try {
-        const created = await createCloseoutItemAction({
+        const created = unwrapAction(await createCloseoutItemAction({
           project_id: projectId,
           closeout_package_id: closeoutPackage.id,
           title: newTitle.trim(),
           status: "missing",
-        })
+        }))
         setRows((prev) => [{ ...created, attachment_count: 0 }, ...prev])
         setNewTitle("")
         toast.success("Closeout item added")
@@ -367,7 +369,7 @@ export function CloseoutClient({
   function handleStatusChange(item: CloseoutItem, status: string) {
     startTransition(async () => {
       try {
-        const updated = await updateCloseoutItemAction(item.id, projectId, { status })
+        const updated = unwrapAction(await updateCloseoutItemAction(item.id, projectId, { status }))
         mergeRow(updated)
       } catch (error: any) {
         toast.error("Unable to update item", { description: error?.message ?? "Try again." })
@@ -379,11 +381,11 @@ export function CloseoutClient({
     if (!selectedItem) return
     startTransition(async () => {
       try {
-        const updated = await updateCloseoutItemAction(selectedItem.id, projectId, {
+        const updated = unwrapAction(await updateCloseoutItemAction(selectedItem.id, projectId, {
           responsible_party: draft.responsible_party || null,
           due_date: draft.due_date || null,
           notes: draft.notes || null,
-        })
+        }))
         mergeRow(updated)
         toast.success("Closeout item updated")
       } catch (error: any) {
@@ -407,15 +409,15 @@ export function CloseoutClient({
       formData.append("projectId", projectId)
       formData.append("category", "other")
 
-      const uploaded = await uploadFileAction(formData)
-      await attachFileAction(uploaded.id, "closeout_item", selectedItem.id, projectId, linkRole)
+      const uploaded = unwrapAction(await uploadFileAction(formData))
+      unwrapAction(await attachFileAction(uploaded.id, "closeout_item", selectedItem.id, projectId, linkRole))
     }
     await refreshAttachments(selectedItem.id)
   }
 
   async function handleDetach(linkId: string) {
     if (!selectedItem) return
-    await detachFileLinkAction(linkId)
+    unwrapAction(await detachFileLinkAction(linkId))
     await refreshAttachments(selectedItem.id)
   }
 

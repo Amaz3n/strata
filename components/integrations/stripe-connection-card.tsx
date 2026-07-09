@@ -14,6 +14,8 @@ import { Card, CardContent } from "@/components/ui/card"
 import type { StripeConnectedAccount } from "@/lib/services/stripe-connected-accounts"
 import { cn } from "@/lib/utils"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface Props {
   connection: StripeConnectedAccount | null
   canManage?: boolean
@@ -57,7 +59,7 @@ export function StripeConnectionCard({ connection, canManage = false, onConnecti
     setError(null)
     startStarting(async () => {
       try {
-        const result = await createStripeConnectedAccountOnboardingLinkAction()
+        const result = unwrapAction(await createStripeConnectedAccountOnboardingLinkAction())
         if (result?.url) {
           window.location.href = result.url
           return
@@ -73,7 +75,7 @@ export function StripeConnectionCard({ connection, canManage = false, onConnecti
     setError(null)
     startRefreshing(async () => {
       try {
-        const refreshed = await refreshStripeConnectedAccountAction()
+        const refreshed = unwrapAction(await refreshStripeConnectedAccountAction())
         onConnectionChange?.(refreshed)
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unable to refresh Stripe status.")
@@ -85,7 +87,7 @@ export function StripeConnectionCard({ connection, canManage = false, onConnecti
     setError(null)
     startOpeningDashboard(async () => {
       try {
-        const result = await createStripeDashboardLoginLinkAction()
+        const result = unwrapAction(await createStripeDashboardLoginLinkAction())
         if (result?.url) {
           window.location.href = result.url
           return

@@ -33,6 +33,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  Attachment,
+  AttachmentMedia,
+  AttachmentContent,
+  AttachmentTitle,
+  AttachmentDescription,
+  AttachmentActions,
+  AttachmentAction,
+} from "@/components/ui/attachment"
 import { uploadDocumentFileDirect } from "@/lib/services/files-client"
 import type { FileCategory } from "@/components/files/types"
 
@@ -95,6 +104,18 @@ function FileTypeIcon({ file }: { file: File }) {
   if (extension === "zip") return <FileArchive className={className} />
   if (["csv", "xls", "xlsx"].includes(extension ?? "")) return <FileSpreadsheet className={className} />
   return <FileText className={className} />
+}
+
+function ImageThumb({ file }: { file: File }) {
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    const objectUrl = URL.createObjectURL(file)
+    setUrl(objectUrl)
+    return () => URL.revokeObjectURL(objectUrl)
+  }, [file])
+  if (!url) return <ImageIcon className="h-4 w-4" />
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={url} alt="" />
 }
 
 export function UploadDialog({
@@ -381,68 +402,76 @@ export function UploadDialog({
                   </div>
                 )}
 
-                <div className="max-h-72 overflow-y-auto p-2">
-                  {queue.map((item) => (
-                    <div
-                      key={item.id}
-                      className="flex items-center gap-3 rounded-md px-2 py-2.5 transition hover:bg-muted/50"
-                    >
-                      <div
-                        className={cn(
-                          "flex h-9 w-9 shrink-0 items-center justify-center rounded-md border bg-muted/40 text-muted-foreground",
-                          item.status === "success" && "border-emerald-200 bg-emerald-50 text-emerald-600",
-                          item.status === "error" && "border-destructive/20 bg-destructive/10 text-destructive",
-                          item.status === "uploading" && "border-primary/30 bg-primary/10 text-primary"
-                        )}
+                <div className="max-h-72 space-y-1.5 overflow-y-auto p-2">
+                  {queue.map((item) => {
+                    const isImage = item.file.type.startsWith("image/")
+                    const showThumb = isImage && item.status === "queued"
+                    const attachmentState =
+                      item.status === "uploading"
+                        ? "uploading"
+                        : item.status === "success"
+                          ? "done"
+                          : item.status === "error"
+                            ? "error"
+                            : "idle"
+                    return (
+                      <Attachment
+                        key={item.id}
+                        state={attachmentState}
+                        className="w-full"
                       >
-                        {item.status === "uploading" ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : item.status === "success" ? (
-                          <CheckCircle2 className="h-4 w-4" />
-                        ) : item.status === "error" ? (
-                          <AlertTriangle className="h-4 w-4" />
-                        ) : (
-                          <FileTypeIcon file={item.file} />
-                        )}
-                      </div>
-
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-sm font-medium">{item.file.name}</div>
-                        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-                          <span>{formatFileSize(item.file.size)}</span>
-                          {item.status === "uploading" && (
-                            <span className="capitalize">
-                              {item.stage ?? "uploading"} {item.progress}%
-                              {item.loaded > 0 && item.startedAt
-                                ? ` · ${(item.loaded / 1024 / 1024 / Math.max((performance.now() - item.startedAt) / 1000, 0.5)).toFixed(1)} MB/s`
-                                : ""}
-                            </span>
+                        <AttachmentMedia variant={showThumb ? "image" : "icon"}>
+                          {item.status === "uploading" ? (
+                            <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                          ) : item.status === "success" ? (
+                            <CheckCircle2 className="h-4 w-4 text-success" />
+                          ) : item.status === "error" ? (
+                            <AlertTriangle className="h-4 w-4" />
+                          ) : showThumb ? (
+                            <ImageThumb file={item.file} />
+                          ) : (
+                            <FileTypeIcon file={item.file} />
                           )}
-                          {item.error && <span className="text-destructive">{item.error}</span>}
-                        </div>
-                        {item.status === "uploading" && (
-                          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
-                            <div
-                              className="h-full rounded-full bg-primary transition-[width]"
-                              style={{ width: `${Math.max(2, item.progress)}%` }}
-                            />
-                          </div>
-                        )}
-                      </div>
+                        </AttachmentMedia>
 
-                      {item.status === "queued" && !isUploading && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 shrink-0"
-                          onClick={() => removeFile(item.id)}
-                          aria-label={`Remove ${item.file.name}`}
-                        >
-                          <X className="h-4 w-4" />
-                        </Button>
-                      )}
-                    </div>
-                  ))}
+                        <AttachmentContent>
+                          <AttachmentTitle>{item.file.name}</AttachmentTitle>
+                          <AttachmentDescription>
+                            {item.status === "error"
+                              ? item.error ?? "Upload failed"
+                              : item.status === "uploading"
+                                ? `${item.stage ?? "uploading"} · ${item.progress}%${
+                                    item.loaded > 0 && item.startedAt
+                                      ? ` · ${(item.loaded / 1024 / 1024 / Math.max((performance.now() - item.startedAt) / 1000, 0.5)).toFixed(1)} MB/s`
+                                      : ""
+                                  }`
+                                : item.status === "success"
+                                  ? `${formatFileSize(item.file.size)} · Uploaded`
+                                  : formatFileSize(item.file.size)}
+                          </AttachmentDescription>
+                          {item.status === "uploading" && (
+                            <div className="mt-2 h-1.5 overflow-hidden bg-muted">
+                              <div
+                                className="h-full bg-primary transition-[width]"
+                                style={{ width: `${Math.max(2, item.progress)}%` }}
+                              />
+                            </div>
+                          )}
+                        </AttachmentContent>
+
+                        {item.status === "queued" && !isUploading && (
+                          <AttachmentActions className="pr-1.5">
+                            <AttachmentAction
+                              onClick={() => removeFile(item.id)}
+                              aria-label={`Remove ${item.file.name}`}
+                            >
+                              <X className="h-4 w-4" />
+                            </AttachmentAction>
+                          </AttachmentActions>
+                        )}
+                      </Attachment>
+                    )
+                  })}
                 </div>
               </div>
             )}

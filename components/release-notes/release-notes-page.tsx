@@ -61,6 +61,8 @@ import type {
 } from "@/lib/services/release-notes"
 import { cn } from "@/lib/utils"
 
+import { unwrapAction } from "@/lib/action-result"
+
 const CATEGORY_META: Record<
   ReleaseNoteCategory,
   { label: string; icon: typeof Sparkles; className: string }
@@ -474,7 +476,7 @@ export function ReleaseNotesPage(props: ReaderProps | ManageProps) {
     startTransition(async () => {
       try {
         if (editor.id) {
-          const updated = await updateReleaseNoteAction(editor.id, input)
+          const updated = unwrapAction(await updateReleaseNoteAction(editor.id, input))
           setNotes((current) =>
             (current as AdminReleaseNote[]).map((note) =>
               note.id === updated.id ? updated : note,
@@ -482,7 +484,7 @@ export function ReleaseNotesPage(props: ReaderProps | ManageProps) {
           )
           toast({ title: "Entry updated" })
         } else {
-          const created = await createReleaseNoteAction(input)
+          const created = unwrapAction(await createReleaseNoteAction(input))
           setNotes((current) => [created, ...(current as AdminReleaseNote[])])
           toast({ title: "Entry published" })
         }
@@ -503,7 +505,7 @@ export function ReleaseNotesPage(props: ReaderProps | ManageProps) {
 
     startTransition(async () => {
       try {
-        await deleteReleaseNoteAction(target.id)
+        unwrapAction(await deleteReleaseNoteAction(target.id))
         setNotes((current) => current.filter((note) => note.id !== target.id))
         toast({ title: "Entry deleted" })
       } catch (error) {

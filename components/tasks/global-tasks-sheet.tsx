@@ -25,6 +25,8 @@ import {
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 
+import { unwrapAction } from "@/lib/action-result"
+
 export function GlobalTasksSheet() {
   const [mounted, setMounted] = useState(false)
   const [open, setOpen] = useState(false)
@@ -68,7 +70,7 @@ export function GlobalTasksSheet() {
 
     setIsCreating(true)
     try {
-      const created = await createTaskAction({ title })
+      const created = unwrapAction(await createTaskAction({ title }))
       setTasks((prev) => [created, ...prev])
       setInputValue("")
     } catch {
@@ -95,7 +97,7 @@ export function GlobalTasksSheet() {
     )
 
     try {
-      await updateTaskAction(task.id, { status: nextStatus })
+      unwrapAction(await updateTaskAction(task.id, { status: nextStatus }))
     } catch {
       setTasks(previousTasks)
       toast.error("Failed to update task")
@@ -107,7 +109,7 @@ export function GlobalTasksSheet() {
     setTasks((prev) => prev.filter((task) => task.id !== taskId))
 
     try {
-      await deleteTaskAction(taskId)
+      unwrapAction(await deleteTaskAction(taskId))
     } catch {
       setTasks(previousTasks)
       toast.error("Failed to delete task")

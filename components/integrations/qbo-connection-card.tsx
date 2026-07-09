@@ -20,8 +20,11 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { qboHomepageUrl } from "@/lib/integrations/accounting/qbo-links"
 import type { QBOConnection } from "@/lib/services/qbo-connection"
 import { cn } from "@/lib/utils"
+
+import { unwrapAction } from "@/lib/action-result"
 
 interface Props {
   connection: QBOConnection | null
@@ -93,7 +96,7 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
   const handleConnect = async () => {
     setIsConnecting(true)
     try {
-      const result = await connectQBOAction()
+      const result = unwrapAction(await connectQBOAction())
       if (result?.authUrl) {
         const secure = window.location.protocol === "https:"
         if (result.state) {
@@ -147,7 +150,7 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
   const handleDisconnect = () => {
     if (!confirm("Disconnect QuickBooks? Existing synced data will remain in QBO.")) return
     startDisconnect(async () => {
-      await disconnectQBOAction()
+      unwrapAction(await disconnectQBOAction())
       window.location.reload()
     })
   }
@@ -201,7 +204,7 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
     setSettings((prev) => ({ ...prev, [key]: value }))
     startUpdate(async () => {
       try {
-        await updateQBOSettingsAction({ [key]: value })
+        unwrapAction(await updateQBOSettingsAction({ [key]: value }))
       } catch (err) {
         console.error("Failed to update QBO setting", err)
       }
@@ -211,7 +214,7 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
   const handleRefreshToken = () => {
     startTokenRefresh(async () => {
       try {
-        await refreshQBOTokenAction()
+        unwrapAction(await refreshQBOTokenAction())
         await loadDiagnostics()
         window.location.reload()
       } catch (error) {
@@ -223,7 +226,7 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
   const handleRetryFailed = () => {
     startRetryFailed(async () => {
       try {
-        await retryFailedQBOJobsAction()
+        unwrapAction(await retryFailedQBOJobsAction())
         await loadDiagnostics()
       } catch (error) {
         setError(error instanceof Error ? error.message : "Failed to retry failed sync jobs")
@@ -283,7 +286,7 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
             ) : (
               <>
                 <Button variant="outline" size="sm" asChild>
-                  <a href="https://qbo.intuit.com/app/homepage" target="_blank" rel="noopener noreferrer">
+                  <a href={qboHomepageUrl()} target="_blank" rel="noopener noreferrer">
                     Open QBO
                     <ExternalLink className="ml-1 size-3.5" />
                   </a>

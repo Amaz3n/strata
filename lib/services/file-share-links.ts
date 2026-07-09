@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto"
 
 import { requireOrgContext } from "@/lib/services/context"
+import { requirePermission } from "@/lib/services/permissions"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -80,6 +81,7 @@ export async function createFileShareLink(
   orgId?: string,
 ): Promise<FileShareLink> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.share", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: file, error: fileError } = await supabase
     .from("files")
@@ -142,7 +144,8 @@ export async function listFileShareLinks(
   fileId: string,
   orgId?: string,
 ): Promise<FileShareLink[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("file_share_links")
@@ -163,6 +166,7 @@ export async function revokeFileShareLink(
   orgId?: string,
 ): Promise<void> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.share", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: fetchError } = await supabase
     .from("file_share_links")

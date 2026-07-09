@@ -12,6 +12,7 @@ const legacyTabRoutes: Record<string, string> = {
   "cost-plus": "review",
   inbox: "review",
   review: "review",
+  "trust-center": "trust-center",
 }
 
 export default async function ProjectFinancialsLandingPage({ params, searchParams }: ProjectFinancialsPageProps) {

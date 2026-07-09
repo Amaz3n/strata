@@ -1,5 +1,7 @@
 import { format } from "date-fns"
 
+import { qboTxnUrl } from "@/lib/integrations/accounting/qbo-links"
+
 /** A single cost-allocation split within an expense (mirrors vendor bill_lines). */
 export interface ProjectExpenseLine {
   id?: string
@@ -113,9 +115,5 @@ export function readyForQboSync(expense: ProjectExpense) {
 }
 
 export function qboDeepLink(expense: ProjectExpense) {
-  if (!expense.qbo_id) return null
-  if (expense.qbo_transaction_type === "bill") {
-    return `https://qbo.intuit.com/app/bill?txnId=${expense.qbo_id}`
-  }
-  return `https://qbo.intuit.com/app/expense?txnId=${expense.qbo_id}`
+  return qboTxnUrl(expense.qbo_transaction_type === "bill" ? "bill" : "expense", expense.qbo_id)
 }

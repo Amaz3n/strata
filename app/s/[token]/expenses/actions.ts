@@ -59,6 +59,7 @@ export async function submitPortalExpenseAction(token: string, formData: FormDat
       paymentMethod: (String(formData.get("payment_method") || "") || null) as any,
       receiptFileId,
       isBillable: formData.get("is_billable") === "on",
+      allowDuplicate: false,
     },
   })
 }

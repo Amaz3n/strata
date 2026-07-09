@@ -2,6 +2,7 @@ import type { FileCategory, FileSource } from "@/lib/validation/files"
 import type { FileInput, FileUpdate, FileListFilters } from "@/lib/validation/files"
 import { fileInputSchema, fileUpdateSchema, fileListFiltersSchema } from "@/lib/validation/files"
 import { requireOrgContext } from "@/lib/services/context"
+import { requirePermission, requireProjectPermission } from "@/lib/services/permissions"
 import { createFilesDownloadUrl, deleteFilesObjects } from "@/lib/storage/files-storage"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
@@ -294,7 +295,8 @@ export async function listProjectFolderPermissions(
   projectId: string,
   orgId?: string
 ): Promise<ProjectFolderPermissions[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "docs.read")
 
   const { data, error } = await supabase
     .from("project_file_folder_permissions")
@@ -365,7 +367,8 @@ export async function listFiles(
   orgId?: string
 ): Promise<{ data: FileRecord[]; count: number; hasMore: boolean }> {
   const parsed = fileListFiltersSchema.parse(filters)
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
   const searchTerm = parsed.search?.trim().slice(0, 120)
   const sourceMatchedFileIds = searchTerm
     ? await findFileIdsBySourceSearch(searchTerm, resolvedOrgId).catch((error) => {
@@ -485,7 +488,8 @@ export async function listFiles(
  * Get a single file by ID
  */
 export async function getFile(fileId: string, orgId?: string): Promise<FileRecord | null> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("files")
@@ -514,6 +518,7 @@ export async function getFile(fileId: string, orgId?: string): Promise<FileRecor
 export async function createFileRecord(input: FileInput, orgId?: string): Promise<FileRecord> {
   const parsed = fileInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.upload", { supabase, orgId: resolvedOrgId, userId })
   const normalizedFolderPath = normalizeFolderPath(parsed.folder_path)
   const defaultFolderPath = parsed.project_id
     ? getDefaultFolderForCategory(parsed.category)
@@ -602,6 +607,7 @@ export async function updateFile(
 ): Promise<FileRecord> {
   const parsed = fileUpdateSchema.parse(updates)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.upload", { supabase, orgId: resolvedOrgId, userId })
 
   // Fetch existing file for audit
   const { data: existing, error: fetchError } = await supabase
@@ -666,6 +672,7 @@ export async function updateFile(
  */
 export async function archiveFile(fileId: string, orgId?: string): Promise<FileRecord> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.delete", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: fetchError } = await supabase
     .from("files")
@@ -722,6 +729,7 @@ export async function archiveFile(fileId: string, orgId?: string): Promise<FileR
  */
 export async function unarchiveFile(fileId: string, orgId?: string): Promise<FileRecord> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.delete", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: fetchError } = await supabase
     .from("files")
@@ -770,6 +778,7 @@ export async function unarchiveFile(fileId: string, orgId?: string): Promise<Fil
  */
 export async function deleteFile(fileId: string, orgId?: string): Promise<void> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.delete", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: fetchError } = await supabase
     .from("files")
@@ -854,7 +863,8 @@ export async function getSignedUrl(
   expiresIn: number = 600,
   orgId?: string
 ): Promise<string> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.download", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: file, error } = await supabase
     .from("files")
@@ -924,7 +934,8 @@ export async function listFolders(
   projectId?: string,
   orgId?: string
 ): Promise<string[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
 
   if (projectId) {
     const { data: rpcFolders, error: rpcError } = await supabase.rpc("list_project_document_folders", {
@@ -1017,7 +1028,8 @@ export async function listChildFolders(
   parentPath?: string,
   orgId?: string,
 ): Promise<FolderChild[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "docs.read")
   const normalizedParentPath = normalizeFolderPath(parentPath)
 
   const { data: rpcFolders, error: rpcError } = await supabase.rpc("list_project_child_folders", {
@@ -1103,6 +1115,7 @@ export async function createProjectFolder(
   orgId?: string
 ): Promise<string> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "docs.upload")
   const normalizedPath = normalizeFolderPath(folderPath)
 
   if (!normalizedPath || normalizedPath === "/") {
@@ -1145,7 +1158,8 @@ export async function getProjectFolderPermissions(
   folderPath: string,
   orgId?: string
 ): Promise<ProjectFolderPermissions> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "docs.read")
   const normalizedPath = normalizeFolderPath(folderPath)
 
   if (!normalizedPath || normalizedPath === "/") {
@@ -1189,6 +1203,7 @@ export async function setProjectFolderPermissions(
   orgId?: string
 ): Promise<ProjectFolderPermissions> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "docs.upload")
   const normalizedPath = normalizeFolderPath(folderPath)
 
   if (!normalizedPath || normalizedPath === "/") {
@@ -1236,7 +1251,8 @@ export async function applyFolderPermissionsToExistingFiles(
   folderPath: string,
   orgId?: string
 ): Promise<number> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "docs.upload")
   const normalizedPath = normalizeFolderPath(folderPath)
 
   if (!normalizedPath || normalizedPath === "/") {
@@ -1293,6 +1309,7 @@ export async function renameProjectFolder(
   orgId?: string
 ): Promise<{ affectedFiles: number }> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "docs.upload")
   const normalizedOldPath = normalizeFolderPath(oldPath)
   if (!normalizedOldPath || normalizedOldPath === "/") {
     throw new Error("Cannot rename root folder")
@@ -1507,6 +1524,7 @@ export async function deleteEmptyProjectFolder(
   orgId?: string
 ): Promise<void> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "docs.delete")
   const normalizedPath = normalizeFolderPath(folderPath)
   if (!normalizedPath || normalizedPath === "/") {
     throw new Error("Cannot delete root folder")
@@ -1684,7 +1702,8 @@ export async function listFileTimeline(
   limit: number = 80,
   orgId?: string
 ): Promise<FileTimelineEvent[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
 
   const [accessResult, auditResult, versionEventsResult] = await Promise.all([
     supabase
@@ -1825,7 +1844,8 @@ export async function getFileCounts(
   projectId?: string,
   orgId?: string
 ): Promise<Record<string, number>> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
   const expiringBeforeIso = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
   const loadTrashCount = async () => {
     let trashQuery = supabase

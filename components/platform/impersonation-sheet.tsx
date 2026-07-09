@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Eye } from "@/components/icons"
 import { ImpersonationPanel } from "@/components/platform/impersonation-panel"
+import { unwrapAction } from "@/lib/action-result"
 
 interface ActiveImpersonation {
   active: boolean
@@ -21,6 +22,10 @@ interface ImpersonationSheetProps {
 
 export function ImpersonationSheet({ orgs, session }: ImpersonationSheetProps) {
   const [open, setOpen] = useState(false)
+
+  async function endImpersonation() {
+    unwrapAction(await endImpersonationAction())
+  }
 
   return (
     <>
@@ -55,7 +60,7 @@ export function ImpersonationSheet({ orgs, session }: ImpersonationSheetProps) {
                     </p>
                   ) : null}
                 </div>
-                <form action={endImpersonationAction}>
+                <form action={endImpersonation}>
                   <Button size="sm" variant="destructive" type="submit">
                     End session
                   </Button>

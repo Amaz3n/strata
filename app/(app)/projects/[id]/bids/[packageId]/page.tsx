@@ -11,6 +11,8 @@ import { BidPackageDetailClientNew } from "@/components/bids/bid-package-detail-
 import { listProjectVendors } from "@/lib/services/project-vendors"
 import { listCostCodes } from "@/lib/services/cost-codes"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface BidPackageDetailPageProps {
   params: Promise<{ id: string; packageId: string }>
 }

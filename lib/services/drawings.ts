@@ -26,6 +26,7 @@ import {
   drawingRevisionListFiltersSchema,
 } from "@/lib/validation/drawings"
 import { requireOrgContext } from "@/lib/services/context"
+import { requirePermission, requireProjectPermission } from "@/lib/services/permissions"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { buildDrawingsImageUrl } from "@/lib/storage/drawings-urls"
@@ -424,7 +425,8 @@ export async function getDrawingRegisterSnapshot(
   revisionId: string,
   orgId?: string
 ): Promise<DrawingSheet[]> {
-  const { supabase } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase.rpc("drawing_register_snapshot", {
     p_set_id: drawingSetId,
@@ -487,7 +489,8 @@ export async function listDrawingSets(
   orgId?: string
 ): Promise<DrawingSet[]> {
   const parsed = drawingSetListFiltersSchema.parse(filters)
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
 
   let query = supabase
     .from("drawing_sets")
@@ -533,7 +536,8 @@ export async function getDrawingSet(
   setId: string,
   orgId?: string
 ): Promise<DrawingSet | null> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("drawing_sets")
@@ -568,6 +572,7 @@ export async function createDrawingSet(
 ): Promise<DrawingSet> {
   const parsed = drawingSetInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, parsed.project_id, "drawing.upload")
 
   const { data, error } = await supabase
     .from("drawing_sets")
@@ -638,6 +643,8 @@ export async function updateDrawingSet(
     throw new Error("Drawing set not found")
   }
 
+  await requireProjectPermission(userId, existing.project_id, "drawing.upload")
+
   const updateData: Record<string, any> = {}
   if (parsed.title !== undefined) updateData.title = parsed.title
   if (parsed.description !== undefined) updateData.description = parsed.description
@@ -695,6 +702,8 @@ export async function deleteDrawingSet(setId: string, orgId?: string): Promise<v
     throw new Error("Drawing set not found")
   }
 
+  await requireProjectPermission(userId, existing.project_id, "drawing.upload")
+
   // Collect derived-storage paths before the cascade removes the version rows.
   const { data: setVersions } = await supabase
     .from("drawing_sheet_versions")
@@ -751,7 +760,8 @@ export async function listDrawingRevisions(
   orgId?: string
 ): Promise<DrawingRevision[]> {
   const parsed = drawingRevisionListFiltersSchema.parse(filters)
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
 
   let query = supabase
     .from("drawing_revisions")
@@ -797,7 +807,8 @@ export async function getDrawingRevision(
   revisionId: string,
   orgId?: string
 ): Promise<DrawingRevision | null> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("drawing_revisions")
@@ -829,6 +840,7 @@ export async function createDrawingRevision(
 ): Promise<DrawingRevision> {
   const parsed = drawingRevisionInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, parsed.project_id, "drawing.upload")
 
   const { data, error } = await supabase
     .from("drawing_revisions")
@@ -891,6 +903,8 @@ export async function updateDrawingRevision(
     throw new Error("Drawing revision not found")
   }
 
+  await requireProjectPermission(userId, existing.project_id, "drawing.upload")
+
   const updateData: Record<string, any> = {}
   if (parsed.revision_label !== undefined) updateData.revision_label = parsed.revision_label
   if (parsed.issued_date !== undefined) updateData.issued_date = parsed.issued_date
@@ -950,6 +964,8 @@ export async function deleteDrawingRevision(
     throw new Error("Drawing revision not found")
   }
 
+  await requireProjectPermission(userId, existing.project_id, "drawing.upload")
+
   const { error } = await supabase
     .from("drawing_revisions")
     .delete()
@@ -982,7 +998,8 @@ export async function listDrawingSheets(
   orgId?: string
 ): Promise<DrawingSheet[]> {
   const parsed = drawingSheetListFiltersSchema.parse(filters)
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
 
   let query = supabase
     .from("drawing_sheets")
@@ -1048,6 +1065,9 @@ export async function listDrawingSheetsWithUrls(
   filters: Partial<DrawingSheetListFilters> = {},
   orgId?: string
 ): Promise<DrawingSheet[]> {
+  const { orgId: guardOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { orgId: guardOrgId, userId })
+
   // Foundation v2: prefer the denormalized list view (single query, counts included).
   if (process.env.NEXT_PUBLIC_FEATURE_TILED_VIEWER === "true") {
     try {
@@ -1223,7 +1243,8 @@ export async function getDrawingSheet(
   sheetId: string,
   orgId?: string
 ): Promise<DrawingSheet | null> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("drawing_sheets")
@@ -1260,6 +1281,7 @@ export async function createDrawingSheet(
 ): Promise<DrawingSheet> {
   const parsed = drawingSheetInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, parsed.project_id, "drawing.upload")
 
   const { data, error } = await supabase
     .from("drawing_sheets")
@@ -1327,6 +1349,8 @@ export async function updateDrawingSheet(
     throw new Error("Drawing sheet not found")
   }
 
+  await requireProjectPermission(userId, existing.project_id, "drawing.upload")
+
   const updateData: Record<string, any> = {}
   if (parsed.sheet_number !== undefined) updateData.sheet_number = parsed.sheet_number
   if (parsed.sheet_title !== undefined) updateData.sheet_title = parsed.sheet_title
@@ -1383,6 +1407,7 @@ export async function bulkUpdateSheetSharing(
   orgId?: string
 ): Promise<void> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.upload", { supabase, orgId: resolvedOrgId, userId })
 
   const updateData: Record<string, any> = {}
   if (sharing.share_with_clients !== undefined) {
@@ -1427,6 +1452,8 @@ export async function deleteDrawingSheet(sheetId: string, orgId?: string): Promi
   if (fetchError || !existing) {
     throw new Error("Drawing sheet not found")
   }
+
+  await requireProjectPermission(userId, existing.project_id, "drawing.upload")
 
   const { data: sheetVersions } = await supabase
     .from("drawing_sheet_versions")
@@ -1475,7 +1502,8 @@ export async function listSheetVersions(
   sheetId: string,
   orgId?: string
 ): Promise<DrawingSheetVersion[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("drawing_sheet_versions")
@@ -1510,7 +1538,8 @@ export async function listSheetVersionsWithUrls(
   expiresIn: number = 3600,
   orgId?: string
 ): Promise<DrawingSheetVersion[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("drawing_sheet_versions")
@@ -1578,6 +1607,7 @@ export async function createSheetVersion(
 ): Promise<DrawingSheetVersion> {
   const parsed = drawingSheetVersionInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.upload", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("drawing_sheet_versions")
@@ -1624,7 +1654,8 @@ export async function getDisciplineCounts(
   projectId: string,
   orgId?: string
 ): Promise<Record<string, number>> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "drawing.read")
 
   const { data, error } = await supabase
     .from("drawing_sheets")
@@ -1653,7 +1684,8 @@ export async function getSheetSignedUrl(
   expiresIn: number = 3600,
   orgId?: string
 ): Promise<string | null> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
 
   // Get the sheet with its current revision's version
   const { data: sheet } = await supabase
@@ -1758,7 +1790,8 @@ export async function getDraftRevisionStatus(
   revisionId: string,
   orgId?: string,
 ): Promise<RevisionDraftStatus | null> {
-  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { orgId: resolvedOrgId, userId })
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("drawing_revisions")
@@ -1774,7 +1807,8 @@ export async function getPendingDraftRevision(
   projectId: string,
   orgId?: string,
 ): Promise<RevisionDraftStatus | null> {
-  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "drawing.read")
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("drawing_revisions")
@@ -1790,7 +1824,8 @@ export async function getPendingDraftRevision(
 }
 
 export async function getRevisionDiff(revisionId: string, orgId?: string): Promise<RevisionDiff> {
-  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { orgId: resolvedOrgId, userId })
   const supabase = createServiceSupabaseClient()
 
   const revision = await getDraftRevisionStatus(revisionId, resolvedOrgId)
@@ -1912,6 +1947,7 @@ export async function publishRevision(input: PublishRevisionInput, orgId?: strin
     .eq("id", input.revisionId)
     .single()
   if (revError || !revision) throw new Error(`Revision not found: ${revError?.message}`)
+  await requireProjectPermission(userId, revision.project_id, "drawing.upload")
   if (revision.status === "published") throw new Error("Revision already published")
 
   const { error: publishError } = await supabase.rpc("publish_drawing_revision", {
@@ -1942,7 +1978,7 @@ export async function publishRevision(input: PublishRevisionInput, orgId?: strin
 }
 
 export async function discardRevision(revisionId: string, orgId?: string): Promise<void> {
-  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const supabase = createServiceSupabaseClient()
 
   const { data: revision, error: revError } = await supabase
@@ -1952,6 +1988,7 @@ export async function discardRevision(revisionId: string, orgId?: string): Promi
     .eq("id", revisionId)
     .single()
   if (revError || !revision) throw new Error(`Revision not found: ${revError?.message}`)
+  await requireProjectPermission(userId, revision.project_id, "drawing.upload")
   if (revision.status === "published") throw new Error("Cannot discard a published revision")
 
   const { data: draftVersions } = await supabase

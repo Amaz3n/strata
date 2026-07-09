@@ -105,6 +105,8 @@ import { useIsTouchDevice } from "@/lib/hooks/use-is-touch-device"
 import { TiledDrawingViewer, type ImageToScreenMatrix, type TileManifest } from "./viewer/tiled-drawing-viewer"
 import { SVGOverlay } from "./viewer/svg-overlay"
 
+import { unwrapAction } from "@/lib/action-result"
+
 // Dynamically import PDF components to avoid SSR issues
 interface PDFViewerProps {
   file: string

@@ -28,6 +28,8 @@ import {
 import { useToast } from "@/hooks/use-toast"
 import { Loader2, User, Phone, Mail, Briefcase, Building2, MapPin, FileText } from "@/components/icons"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface AddProspectDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -205,7 +207,7 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
     startTransition(async () => {
       try {
         if (prospect) {
-          await updateProspectAction(prospect.id, {
+          unwrapAction(await updateProspectAction(prospect.id, {
             name: name.trim(),
             source: source.trim() || null,
             notes: notes.trim() || null,
@@ -215,13 +217,13 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
             timeline_preference: timeline ?? null,
             jobsite_location: jobsite ?? null,
             status: status,
-          })
+          }))
 
           const existingContact = prospect.primary_contact ?? prospect.contacts?.[0]
           if (existingContact) {
-            await updateProspectContactAction(existingContact.id, { ...contactPayload, is_primary: true })
+            unwrapAction(await updateProspectContactAction(existingContact.id, { ...contactPayload, is_primary: true }))
           } else if (contactName.trim() || phone.trim() || email.trim()) {
-            await createProspectContactAction(prospect.id, { ...contactPayload, is_primary: true })
+            unwrapAction(await createProspectContactAction(prospect.id, { ...contactPayload, is_primary: true }))
           }
 
           router.refresh()
@@ -230,7 +232,7 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
           return
         }
 
-        await createProspectAction({
+        unwrapAction(await createProspectAction({
           name: name.trim(),
           source: source.trim() || undefined,
           notes: notes.trim() || undefined,
@@ -241,7 +243,7 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
           jobsite_location: jobsite,
           status: status,
           primary_contact: { ...contactPayload, is_primary: true },
-        })
+        }))
         router.refresh()
         toast({ title: "Prospect created" })
         reset()

@@ -29,6 +29,16 @@ import { requireOrgContext } from "@/lib/services/context"
 import { requireAnyPermission } from "@/lib/services/permissions"
 import { sendProjectPortalInviteEmail } from "@/lib/services/mailer"
 
+import { actionError, type ActionResult } from "@/lib/action-result"
+
+async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
+  try {
+    return { success: true, data: await fn() }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
 function parseCsvLine(line: string): string[] {
   const result: string[] = []
   let current = ""
@@ -75,63 +85,75 @@ function normalizeContactType(value?: string) {
 }
 
 export async function listContactsAction(filters?: unknown) {
-  const parsed = contactFiltersSchema.parse(filters ?? undefined) ?? undefined
-  return listContacts(undefined, parsed)
+      const parsed = contactFiltersSchema.parse(filters ?? undefined) ?? undefined
+      return listContacts(undefined, parsed)
 }
 
 export async function createContactAction(input: unknown) {
-  const parsed = contactInputSchema.parse(input)
-  const contact = await createContact({ input: parsed })
-  revalidatePath("/contacts")
-  revalidatePath("/directory")
-  return contact
+  return run(async () => {
+      const parsed = contactInputSchema.parse(input)
+      const contact = await createContact({ input: parsed })
+      revalidatePath("/contacts")
+      revalidatePath("/directory")
+      return contact
+  })
 }
 
 export async function updateContactAction(contactId: string, input: unknown) {
-  const parsed = contactUpdateSchema.parse(input)
-  const contact = await updateContact({ contactId, input: parsed })
-  revalidatePath("/contacts")
-  revalidatePath("/directory")
-  return contact
+  return run(async () => {
+      const parsed = contactUpdateSchema.parse(input)
+      const contact = await updateContact({ contactId, input: parsed })
+      revalidatePath("/contacts")
+      revalidatePath("/directory")
+      return contact
+  })
 }
 
 export async function archiveContactAction(contactId: string) {
-  await archiveContact(contactId)
-  revalidatePath("/contacts")
-  revalidatePath("/directory")
-  return true
+  return run(async () => {
+      await archiveContact(contactId)
+      revalidatePath("/contacts")
+      revalidatePath("/directory")
+      return true
+  })
 }
 
 export async function restoreContactAction(contactId: string) {
-  await restoreContact(contactId)
-  revalidatePath("/contacts")
-  revalidatePath("/directory")
-  return true
+  return run(async () => {
+      await restoreContact(contactId)
+      revalidatePath("/contacts")
+      revalidatePath("/directory")
+      return true
+  })
 }
 
 export async function linkContactToCompanyAction(input: unknown) {
-  const parsed = contactCompanyLinkSchema.parse(input)
-  await linkContactToCompany(parsed)
-  revalidatePath("/contacts")
-  revalidatePath("/directory")
-  return true
+  return run(async () => {
+      const parsed = contactCompanyLinkSchema.parse(input)
+      await linkContactToCompany(parsed)
+      revalidatePath("/contacts")
+      revalidatePath("/directory")
+      return true
+  })
 }
 
 export async function unlinkContactFromCompanyAction(contactId: string, companyId: string) {
-  await unlinkContactFromCompany({ contactId, companyId })
-  revalidatePath("/contacts")
-  revalidatePath("/directory")
-  return true
+  return run(async () => {
+      await unlinkContactFromCompany({ contactId, companyId })
+      revalidatePath("/contacts")
+      revalidatePath("/directory")
+      return true
+  })
 }
 
 export async function contactAssignmentsAction(contactId: string) {
-  return getContactAssignments(contactId)
+      return getContactAssignments(contactId)
 }
 
 export async function getContactAction(contactId: string) {
-  const contact = await getContact(contactId)
-  const assignments = await getContactAssignments(contactId)
-  return { contact, assignments }
+      const contact = await getContact(contactId)
+      const assignments = await getContactAssignments(contactId)
+      return { contact, assignments }
 }
 
 export async function sendPortalInviteAction({
@@ -143,147 +165,151 @@ export async function sendPortalInviteAction({
   projectId: string
   portalType?: "client" | "sub"
 }) {
-  const contact = await getContact(contactId)
-  if (!contact.email) {
-    throw new Error("This contact needs an email before you can send a portal invite")
-  }
+  return run(async () => {
+      const contact = await getContact(contactId)
+      if (!contact.email) {
+        throw new Error("This contact needs an email before you can send a portal invite")
+      }
 
-  const resolvedCompanyId =
-    portalType === "sub"
-      ? (contact.primary_company_id ?? contact.company_details[0]?.id ?? undefined)
-      : undefined
+      const resolvedCompanyId =
+        portalType === "sub"
+          ? (contact.primary_company_id ?? contact.company_details[0]?.id ?? undefined)
+          : undefined
 
-  if (portalType === "sub" && !resolvedCompanyId) {
-    throw new Error("This subcontractor contact needs a company before you can send a sub portal invite")
-  }
+      if (portalType === "sub" && !resolvedCompanyId) {
+        throw new Error("This subcontractor contact needs a company before you can send a sub portal invite")
+      }
 
-  const { supabase, orgId, userId } = await requireOrgContext()
-  await requireAnyPermission(["org.member", "directory.write", "project.manage"], {
-    supabase,
-    orgId,
-    userId,
+      const { supabase, orgId, userId } = await requireOrgContext()
+      await requireAnyPermission(["org.member", "directory.write", "project.manage"], {
+        supabase,
+        orgId,
+        userId,
+      })
+
+      let token =
+        await findReusablePortalAccessToken({
+          projectId,
+          portalType,
+          contactId,
+          companyId: resolvedCompanyId,
+          orgId,
+        }) ??
+        await createPortalAccessToken({
+          projectId,
+          portalType,
+          contactId,
+          companyId: resolvedCompanyId,
+          permissions: {},
+          requireAccount: false,
+          orgId,
+        })
+
+      if (token.require_account) {
+        await setPortalTokenRequireAccount({
+          tokenId: token.id,
+          requireAccount: false,
+          orgId,
+        })
+        token = { ...token, require_account: false }
+      }
+
+      const [{ data: projectRow }, { data: orgRow }] = await Promise.all([
+        supabase
+          .from("projects")
+          .select("id, name")
+          .eq("org_id", orgId)
+          .eq("id", projectId)
+          .maybeSingle(),
+        supabase
+          .from("orgs")
+          .select("id, name, logo_url")
+          .eq("id", orgId)
+          .maybeSingle(),
+      ])
+
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "")
+      const portalPath = `/${portalType === "sub" ? "s" : "p"}/${token.token}`
+      const portalUrl = appUrl ? `${appUrl}${portalPath}` : portalPath
+      const emailSent = await sendProjectPortalInviteEmail({
+        to: contact.email,
+        recipientName: contact.full_name?.trim() || null,
+        projectName: projectRow?.name ?? "your project",
+        portalType,
+        orgName: orgRow?.name ?? "Arc",
+        orgLogoUrl: (orgRow as any)?.logo_url ?? null,
+        portalLink: portalUrl,
+      })
+
+      revalidatePath(`/projects/${projectId}`)
+      revalidatePath("/contacts")
+      revalidatePath("/directory")
+
+      return {
+        token,
+        portal_url: portalUrl,
+        sent_to: contact.email,
+        email_sent: emailSent,
+      }
   })
-
-  let token =
-    await findReusablePortalAccessToken({
-      projectId,
-      portalType,
-      contactId,
-      companyId: resolvedCompanyId,
-      orgId,
-    }) ??
-    await createPortalAccessToken({
-      projectId,
-      portalType,
-      contactId,
-      companyId: resolvedCompanyId,
-      permissions: {},
-      requireAccount: false,
-      orgId,
-    })
-
-  if (token.require_account) {
-    await setPortalTokenRequireAccount({
-      tokenId: token.id,
-      requireAccount: false,
-      orgId,
-    })
-    token = { ...token, require_account: false }
-  }
-
-  const [{ data: projectRow }, { data: orgRow }] = await Promise.all([
-    supabase
-      .from("projects")
-      .select("id, name")
-      .eq("org_id", orgId)
-      .eq("id", projectId)
-      .maybeSingle(),
-    supabase
-      .from("orgs")
-      .select("id, name, logo_url")
-      .eq("id", orgId)
-      .maybeSingle(),
-  ])
-
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "")
-  const portalPath = `/${portalType === "sub" ? "s" : "p"}/${token.token}`
-  const portalUrl = appUrl ? `${appUrl}${portalPath}` : portalPath
-  const emailSent = await sendProjectPortalInviteEmail({
-    to: contact.email,
-    recipientName: contact.full_name?.trim() || null,
-    projectName: projectRow?.name ?? "your project",
-    portalType,
-    orgName: orgRow?.name ?? "Arc",
-    orgLogoUrl: (orgRow as any)?.logo_url ?? null,
-    portalLink: portalUrl,
-  })
-
-  revalidatePath(`/projects/${projectId}`)
-  revalidatePath("/contacts")
-  revalidatePath("/directory")
-
-  return {
-    token,
-    portal_url: portalUrl,
-    sent_to: contact.email,
-    email_sent: emailSent,
-  }
 }
 
 export async function importContactsCsvAction(csvText: string) {
-  if (!csvText?.trim()) return { created: 0 }
+  return run(async () => {
+      if (!csvText?.trim()) return { created: 0 }
 
-  const { supabase, orgId } = await requireOrgContext()
-  const rows = parseCsv(csvText)
+      const { supabase, orgId } = await requireOrgContext()
+      const rows = parseCsv(csvText)
 
-  if (!rows.length) return { created: 0 }
+      if (!rows.length) return { created: 0 }
 
-  const insertPayload = rows
-    .map((row) => {
-      const contact_type = normalizeContactType(row.contact_type)
-      const payload = {
-        full_name: row.full_name || row.name || "",
-        email: row.email || undefined,
-        phone: row.phone || undefined,
-        address: row.address || undefined,
-        role: row.role || undefined,
-        contact_type,
-        external_crm_id: row.external_crm_id || undefined,
-        crm_source: row.crm_source || undefined,
-        preferred_contact_method: row.preferred_contact_method || undefined,
-        notes: row.notes || undefined,
+      const insertPayload = rows
+        .map((row) => {
+          const contact_type = normalizeContactType(row.contact_type)
+          const payload = {
+            full_name: row.full_name || row.name || "",
+            email: row.email || undefined,
+            phone: row.phone || undefined,
+            address: row.address || undefined,
+            role: row.role || undefined,
+            contact_type,
+            external_crm_id: row.external_crm_id || undefined,
+            crm_source: row.crm_source || undefined,
+            preferred_contact_method: row.preferred_contact_method || undefined,
+            notes: row.notes || undefined,
+          }
+          const parsed = contactInputSchema.safeParse(payload)
+          if (!parsed.success) return null
+
+          return {
+            org_id: orgId,
+            full_name: parsed.data.full_name,
+            email: parsed.data.email ?? null,
+            phone: parsed.data.phone ?? null,
+            address: parsed.data.address ? { formatted: parsed.data.address } : null,
+            role: parsed.data.role ?? null,
+            contact_type: parsed.data.contact_type ?? "subcontractor",
+            primary_company_id: parsed.data.primary_company_id ?? null,
+            external_crm_id: parsed.data.external_crm_id ?? null,
+            crm_source: parsed.data.crm_source ?? null,
+            metadata: {
+              has_portal_access: parsed.data.has_portal_access ?? false,
+              preferred_contact_method: parsed.data.preferred_contact_method,
+              notes: parsed.data.notes,
+            },
+          }
+        })
+        .filter(Boolean)
+
+      if (!insertPayload.length) return { created: 0 }
+
+      const { error } = await supabase.from("contacts").insert(insertPayload)
+      if (error) {
+        throw new Error(`Failed to import contacts: ${error.message}`)
       }
-      const parsed = contactInputSchema.safeParse(payload)
-      if (!parsed.success) return null
 
-      return {
-        org_id: orgId,
-        full_name: parsed.data.full_name,
-        email: parsed.data.email ?? null,
-        phone: parsed.data.phone ?? null,
-        address: parsed.data.address ? { formatted: parsed.data.address } : null,
-        role: parsed.data.role ?? null,
-        contact_type: parsed.data.contact_type ?? "subcontractor",
-        primary_company_id: parsed.data.primary_company_id ?? null,
-        external_crm_id: parsed.data.external_crm_id ?? null,
-        crm_source: parsed.data.crm_source ?? null,
-        metadata: {
-          has_portal_access: parsed.data.has_portal_access ?? false,
-          preferred_contact_method: parsed.data.preferred_contact_method,
-          notes: parsed.data.notes,
-        },
-      }
-    })
-    .filter(Boolean)
-
-  if (!insertPayload.length) return { created: 0 }
-
-  const { error } = await supabase.from("contacts").insert(insertPayload)
-  if (error) {
-    throw new Error(`Failed to import contacts: ${error.message}`)
-  }
-
-  revalidatePath("/contacts")
-  revalidatePath("/directory")
-  return { created: insertPayload.length }
- }
+      revalidatePath("/contacts")
+      revalidatePath("/directory")
+      return { created: insertPayload.length }
+  })
+}

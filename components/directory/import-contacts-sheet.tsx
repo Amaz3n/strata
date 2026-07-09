@@ -50,6 +50,8 @@ import {
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ImportContactsSheetProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -432,12 +434,12 @@ export function ImportContactsSheet({ open, onOpenChange }: ImportContactsSheetP
     }
     setIsImporting(true);
     try {
-      const res = await importDirectoryAction({
+      const res = unwrapAction(await importDirectoryAction({
         mode,
         rows: buildRows(),
         defaultContactType,
         defaultCompanyType,
-      });
+      }));
       setResult(res);
       const made = res.contactsCreated + res.companiesCreated;
       if (made > 0) {

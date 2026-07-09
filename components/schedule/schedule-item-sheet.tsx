@@ -97,6 +97,8 @@ import {
 } from "lucide-react"
 import { DateRange } from "react-day-picker"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ScheduleItemSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -600,8 +602,8 @@ export function ScheduleItemSheet({
       formData.append("category", file.type.startsWith("image/") ? "photos" : "other")
       formData.append("shareWithClients", shareInspectionAttachmentsWithClients ? "true" : "false")
 
-      const uploaded = await uploadFileAction(formData)
-      await attachFileAction(uploaded.id, "schedule_item", item.id, item.project_id, linkRole)
+      const uploaded = unwrapAction(await uploadFileAction(formData))
+      unwrapAction(await attachFileAction(uploaded.id, "schedule_item", item.id, item.project_id, linkRole))
     }
 
     const links = await listAttachmentsAction("schedule_item", item.id)
@@ -621,7 +623,7 @@ export function ScheduleItemSheet({
   }
 
   const handleDetachInspection = async (linkId: string) => {
-    await detachFileLinkAction(linkId)
+    unwrapAction(await detachFileLinkAction(linkId))
     if (!item) return
     const links = await listAttachmentsAction("schedule_item", item.id)
     setInspectionAttachments(

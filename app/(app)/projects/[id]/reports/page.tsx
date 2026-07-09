@@ -6,6 +6,8 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { Card } from "@/components/ui/card"
 import { getProjectAction } from "@/app/(app)/projects/[id]/actions"
 
+import { unwrapAction } from "@/lib/action-result"
+
 export const dynamic = "force-dynamic"
 
 interface PageProps {

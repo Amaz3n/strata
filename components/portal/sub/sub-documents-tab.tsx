@@ -12,6 +12,8 @@ import type { FileCategory } from "@/components/files/types"
 import type { FileMetadata } from "@/lib/types"
 import { logPortalFileAccessClientAction } from "@/app/(app)/documents/actions"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface SubDocumentsTabProps {
   files: FileMetadata[]
   canDownload?: boolean

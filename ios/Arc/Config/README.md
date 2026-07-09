@@ -27,7 +27,7 @@ stay in your Vercel/server env.
 
 ## Files
 
-- `Shared.xcconfig` — common, non-secret; `#include`d by the others. Committed.
+- `Shared.xcconfig` — common, non-secret public defaults; `#include`d by the others. Committed.
 - `Debug.xcconfig` — local dev (points API at `127.0.0.1:3000`). Committed.
 - `Release.xcconfig` — TestFlight / App Store (prod API). Committed.
 - `Secrets.example.xcconfig` — template. Committed.
@@ -35,8 +35,8 @@ stay in your Vercel/server env.
 
 ## First-time setup
 
-1. `cp Secrets.example.xcconfig Secrets.xcconfig` and fill in the Supabase
-   values (copy them from your web `.env` / Supabase dashboard).
+1. Optional: `cp Secrets.example.xcconfig Secrets.xcconfig` for local-only
+   overrides such as a different Supabase project or Sentry DSN.
 2. In Xcode: select the **Arc** project → **Info** tab → **Configurations**.
    Set **Debug** → "Based on Configuration File" → `Debug`, and **Release** →
    `Release` (do this for both the project and the Arc target rows). One-time.

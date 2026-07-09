@@ -13,6 +13,8 @@ import {
   type EmailNotificationTypeSettings,
 } from '@/lib/types/notifications'
 
+import { unwrapAction } from "@/lib/action-result"
+
 const DEFAULT_EMAIL_TYPE_SETTINGS = Object.fromEntries(
   EMAIL_NOTIFICATION_TYPES.map((type) => [type.key, true]),
 ) as EmailNotificationTypeSettings
@@ -62,7 +64,7 @@ export function NotificationPreferences() {
 
     setIsSaving(true)
     try {
-      await updateNotificationPreferencesAction(nextPrefs)
+      unwrapAction(await updateNotificationPreferencesAction(nextPrefs))
       toast.success('Notification preferences saved')
     } catch (error) {
       console.error('Failed to save notification preferences:', error)

@@ -40,6 +40,8 @@ import Link from "next/link"
 import packageJson from "@/package.json"
 import { cn } from "@/lib/utils"
 
+import { unwrapAction } from "@/lib/action-result"
+
 const sections = [
   {
     value: "profile",
@@ -657,6 +659,7 @@ export function SettingsWindow({
   const isActive = billingStatus === "active"
   const isTrialing = billingStatus === "trialing"
   const isPastDue = billingStatus === "past_due"
+  const hasStripeCustomer = Boolean(billing?.subscription?.external_customer_id)
   const needsSubscription = !isActive
   const formattedTrialEnd = trialEndsAt
     ? new Date(trialEndsAt).toLocaleDateString(undefined, {
@@ -687,7 +690,7 @@ export function SettingsWindow({
     setCheckoutLoading(true)
     setBillingActionError(null)
     try {
-      const { url } = await createCheckoutSessionAction(selectedPlanCode)
+      const { url } = unwrapAction(await createCheckoutSessionAction(selectedPlanCode))
       if (url) {
         window.location.href = url
       } else {
@@ -705,7 +708,7 @@ export function SettingsWindow({
     setPortalLoading(true)
     setBillingActionError(null)
     try {
-      const { url } = await createBillingPortalSessionAction()
+      const { url } = unwrapAction(await createBillingPortalSessionAction())
       if (url) {
         window.location.href = url
       } else {
@@ -733,7 +736,7 @@ export function SettingsWindow({
     setOrganizationError(null)
 
     startOrganizationSave(async () => {
-      const result = await updateOrganizationSettingsAction({
+      const result = unwrapAction(await updateOrganizationSettingsAction({
         section,
         name: organizationForm.name,
         billingEmail: organizationForm.billingEmail,
@@ -752,7 +755,7 @@ export function SettingsWindow({
         estimateIntroTemplate: organizationForm.estimateIntroTemplate,
         estimateBuilderSignerMode: organizationForm.estimateBuilderSignerMode,
         estimateBuilderSignerUserId: organizationForm.estimateBuilderSignerUserId || null,
-      })
+      }))
 
       if (result?.error) {
         setOrganizationError(result.error)
@@ -781,7 +784,7 @@ export function SettingsWindow({
     startLogoUpdate(async () => {
       const payload = new FormData()
       payload.set("logo", file)
-      const result = await updateOrganizationLogoAction(payload)
+      const result = unwrapAction(await updateOrganizationLogoAction(payload))
 
       if (result?.error) {
         setOrganizationError(result.error)
@@ -807,7 +810,7 @@ export function SettingsWindow({
     startLogoUpdate(async () => {
       const payload = new FormData()
       payload.set("remove", "true")
-      const result = await updateOrganizationLogoAction(payload)
+      const result = unwrapAction(await updateOrganizationLogoAction(payload))
 
       if (result?.error) {
         setOrganizationError(result.error)
@@ -851,7 +854,7 @@ export function SettingsWindow({
     startProfilePhotoUpdate(async () => {
       const payload = new FormData()
       payload.set("avatar", file)
-      const result = await updateUserAvatarAction(payload)
+      const result = unwrapAction(await updateUserAvatarAction(payload))
 
       if (result?.error) {
         setProfileError(result.error)
@@ -909,9 +912,9 @@ export function SettingsWindow({
                   </Button>
                 </div>
               )}
-              {tab === "billing" && canManageBilling && isActive && (
+              {tab === "billing" && canManageBilling && hasStripeCustomer && (
                 <Button onClick={handleManageBilling} disabled={portalLoading} size="sm" className="gap-2">
-                  {portalLoading ? "Opening..." : "Open billing portal"}
+                  {portalLoading ? "Opening..." : "Manage billing"}
                   <ArrowRight className="h-3.5 w-3.5" />
                 </Button>
               )}

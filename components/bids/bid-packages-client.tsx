@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
-import type { BidPackage } from "@/lib/services/bids"
+import type { BidPackage, BuyoutSummaryRow } from "@/lib/services/bids"
 import type { CostCode } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -32,6 +32,8 @@ import { createBidPackageAction } from "@/app/(app)/projects/[id]/bids/actions"
 import { createProspectBidPackageAction } from "@/app/(app)/pipeline/prospects/[prospectId]/bids/actions"
 import { BidStatusBadge } from "@/components/bids/bid-status-badge"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface BidPackagesClientProps {
   projectId?: string
   prospectId?: string
@@ -47,6 +49,7 @@ interface BidPackagesClientProps {
     budget_line_id?: string | null
     amount_cents?: number | null
   } | null
+  buyoutRows?: BuyoutSummaryRow[]
 }
 
 const NO_TRADE_VALUE = "__none__"
@@ -101,6 +104,7 @@ export function BidPackagesClient({
   detailBasePath,
   createDescription,
   initialDraft = null,
+  buyoutRows = [],
 }: BidPackagesClientProps) {
   const router = useRouter()
   const [items, setItems] = useState(packages)
@@ -197,8 +201,8 @@ export function BidPackagesClient({
           due_at: dueDate ? combineDateAndTime(dueDate, dueTime).toISOString() : null,
         }
         const created = projectId
-          ? await createBidPackageAction(projectId, payload)
-          : await createProspectBidPackageAction(prospectId ?? "", payload)
+          ? unwrapAction(await createBidPackageAction(projectId, payload))
+          : unwrapAction(await createProspectBidPackageAction(prospectId ?? "", payload))
         setItems((prev) => [created, ...prev])
         toast.success("Bid package created")
         resetForm()
@@ -421,6 +425,76 @@ export function BidPackagesClient({
           </TableBody>
         </Table>
       </div>
+
+      {buyoutRows.length > 0 ? (
+        <div className="space-y-2">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-sm font-semibold">Buyout</h2>
+            <p className="text-xs text-muted-foreground">
+              Awarded packages: budget vs. award, and how far each subcontract has progressed.
+            </p>
+          </div>
+          <div className="rounded-lg border overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow className="divide-x">
+                  <TableHead className="px-4 py-3">Package</TableHead>
+                  <TableHead className="px-4 py-3">Vendor</TableHead>
+                  <TableHead className="px-4 py-3 text-right">Budget</TableHead>
+                  <TableHead className="px-4 py-3 text-right">Awarded</TableHead>
+                  <TableHead className="px-4 py-3 text-right">Variance</TableHead>
+                  <TableHead className="px-4 py-3 text-center">Subcontract</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {buyoutRows.map((row) => {
+                  const variance =
+                    row.budget_cents != null && row.awarded_total_cents != null
+                      ? row.awarded_total_cents - row.budget_cents
+                      : null
+                  return (
+                    <TableRow key={row.bid_package_id} className="divide-x">
+                      <TableCell className="px-4 py-3">
+                        <span className="font-medium">{row.title}</span>
+                        {row.cost_code_code ? (
+                          <span className="ml-2 text-xs text-muted-foreground">{row.cost_code_code}</span>
+                        ) : null}
+                      </TableCell>
+                      <TableCell className="px-4 py-3 text-muted-foreground">{row.company_name ?? "—"}</TableCell>
+                      <TableCell className="px-4 py-3 text-right text-sm tabular-nums">
+                        {formatCurrency(row.budget_cents)}
+                      </TableCell>
+                      <TableCell className="px-4 py-3 text-right text-sm tabular-nums">
+                        {formatCurrency(row.awarded_total_cents)}
+                      </TableCell>
+                      <TableCell
+                        className={cn(
+                          "px-4 py-3 text-right text-sm tabular-nums",
+                          variance != null && variance > 0 ? "text-rose-600" : "text-emerald-600",
+                          variance == null && "text-muted-foreground",
+                        )}
+                      >
+                        {variance == null ? "—" : `${variance > 0 ? "+" : ""}${formatCurrency(variance)}`}
+                      </TableCell>
+                      <TableCell className="px-4 py-3 text-center">
+                        {row.executed_at ? (
+                          <Badge variant="secondary">Executed</Badge>
+                        ) : row.out_for_signature ? (
+                          <Badge variant="outline">Out for signature</Badge>
+                        ) : row.commitment_status === "approved" ? (
+                          <Badge variant="outline">Not sent</Badge>
+                        ) : (
+                          <Badge variant="outline">{row.commitment_status ?? "—"}</Badge>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

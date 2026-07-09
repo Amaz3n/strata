@@ -13,6 +13,8 @@ import {
   deleteProjectScheduleItemAction,
 } from "../actions"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ProjectScheduleClientProps {
   projectId: string
   initialItems: ScheduleItem[]
@@ -30,18 +32,18 @@ export function ProjectScheduleClient({ projectId, initialItems }: ProjectSchedu
         focusItemId={focusItemId}
         items={items}
         onItemCreate={async (item) => {
-          const created = await createProjectScheduleItemAction(projectId, item)
+          const created = unwrapAction(await createProjectScheduleItemAction(projectId, item))
           setItems((prev) => [...prev, created])
           toast.success("Schedule item created", { description: created.name })
           return created
         }}
         onItemUpdate={async (id, updates) => {
-          const updated = await updateProjectScheduleItemAction(projectId, id, updates)
+          const updated = unwrapAction(await updateProjectScheduleItemAction(projectId, id, updates))
           setItems((prev) => prev.map((item) => (item.id === id ? updated : item)))
           return updated
         }}
         onItemsBulkUpdate={async (updates) => {
-          const updatedItems = await bulkUpdateProjectScheduleItemsAction(projectId, { items: updates })
+          const updatedItems = unwrapAction(await bulkUpdateProjectScheduleItemsAction(projectId, { items: updates }))
           if (updatedItems.length > 0) {
             const updatedMap = new Map(updatedItems.map((item) => [item.id, item]))
             setItems((prev) => prev.map((item) => updatedMap.get(item.id) ?? item))
@@ -49,7 +51,7 @@ export function ProjectScheduleClient({ projectId, initialItems }: ProjectSchedu
           return updatedItems
         }}
         onItemDelete={async (id) => {
-          await deleteProjectScheduleItemAction(projectId, id)
+          unwrapAction(await deleteProjectScheduleItemAction(projectId, id))
           setItems((prev) => prev.filter((item) => item.id !== id))
           toast.success("Schedule item deleted")
         }}

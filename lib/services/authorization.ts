@@ -2,15 +2,9 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { isPlatformAdminId } from "@/lib/auth/platform"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { decideAuthorization, type AuthorizationReasonCode } from "@/lib/services/authorization-policy"
 
-export type AuthorizationReasonCode =
-  | "allow_superadmin"
-  | "allow_permission"
-  | "deny_missing_permission"
-  | "deny_unknown_permission"
-  | "deny_no_org_membership"
-  | "deny_no_project_membership"
-  | "deny_invalid_context"
+export type { AuthorizationReasonCode }
 
 export interface AuthorizationDecision {
   allowed: boolean
@@ -118,7 +112,7 @@ async function fetchOrgPermissions({
 }) {
   const { data, error } = await supabase
     .from("memberships")
-    .select("id, role:roles!inner(permissions:role_permissions(permission_key))")
+    .select("id, project_scope, role:roles!inner(permissions:role_permissions(permission_key))")
     .eq("org_id", orgId)
     .eq("user_id", userId)
     .eq("status", "active")
@@ -127,16 +121,20 @@ async function fetchOrgPermissions({
     throw new Error(`Unable to load org permissions: ${error.message}`)
   }
 
-  const rows = (data ?? []) as (PermissionRow & { id?: string })[]
+  const rows = (data ?? []) as (PermissionRow & { id?: string; project_scope?: string })[]
   const permissions = unique(rows.flatMap((row) => normalizePermissionRow(row)))
   const membershipIds = rows.map((row) => row.id).filter((id): id is string => Boolean(id))
   const overrides = await fetchMembershipPermissionOverrides({ supabase, membershipIds })
+  // 'assigned' on any active membership row restricts this user to explicit
+  // project_members rows even when their org role grants project.read/manage.
+  const assignedOnly = rows.some((row) => row.project_scope === "assigned")
 
   return {
     permissions,
     grants: overrides.grants,
     denies: overrides.denies,
     hasMembership: rows.length > 0,
+    assignedOnly,
   }
 }
 
@@ -320,6 +318,7 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
   let resolvedOrgId = input.orgId
   let hasOrgMembership = false
   let hasProjectMembership = false
+  let orgAssignedOnly = false
 
   if (input.projectId) {
     const projectResult = await fetchProjectPermissions({
@@ -342,6 +341,7 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     })
     scopesEvaluated.push("org")
     hasOrgMembership = orgResult.hasMembership
+    orgAssignedOnly = orgResult.assignedOnly
     orgPermissionSet.push(...orgResult.permissions, ...orgResult.grants)
     permissionSet.push(...orgResult.permissions)
     permissionSet.push(...orgResult.grants)
@@ -368,26 +368,17 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     }
   }
 
-  const denied = unique(deniedPermissions)
-  const permissions = unique(permissionSet).filter((permission) => !denied.includes(permission))
-  const hasAllProjectAccess =
-    orgPermissionSet.includes("*") ||
-    orgPermissionSet.includes("org.admin") ||
-    orgPermissionSet.includes("project.read") ||
-    orgPermissionSet.includes("project.manage")
-  const blockedByProjectScope = Boolean(input.projectId && !hasProjectMembership && !hasAllProjectAccess)
-  const allowed =
-    !blockedByProjectScope &&
-    !denied.includes(input.permission) &&
-    (permissions.includes(input.permission) || permissions.includes("*"))
-
-  let reasonCode: AuthorizationReasonCode = allowed ? "allow_permission" : "deny_missing_permission"
-
-  if (!allowed && input.projectId && !hasProjectMembership) {
-    reasonCode = "deny_no_project_membership"
-  } else if (!allowed && resolvedOrgId && !hasOrgMembership) {
-    reasonCode = "deny_no_org_membership"
-  }
+  const { allowed, reasonCode, permissions } = decideAuthorization({
+    permission: input.permission,
+    hasProjectScope: Boolean(input.projectId),
+    hasResolvedOrg: Boolean(resolvedOrgId),
+    permissionSet,
+    orgPermissionSet,
+    deniedPermissions,
+    hasProjectMembership,
+    hasOrgMembership,
+    assignedOnly: orgAssignedOnly,
+  })
 
   const decision: AuthorizationDecision = {
     allowed,

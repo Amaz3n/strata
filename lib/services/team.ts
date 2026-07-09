@@ -38,10 +38,79 @@ function normalizeRoleLabel(label: string | null | undefined, roleKey: string) {
     .join(" ")
 }
 
+// Role ids whose role grants org.admin — used for the last-admin guard.
+async function orgAdminRoleIds(client: SupabaseClient): Promise<Set<string>> {
+  const { data, error } = await client
+    .from("role_permissions")
+    .select("role_id")
+    .eq("permission_key", "org.admin")
+  if (error) {
+    throw new Error(`Failed to resolve admin roles: ${error.message}`)
+  }
+  return new Set((data ?? []).map((row: any) => row.role_id as string).filter(Boolean))
+}
+
+// Blocks demoting/removing the last member who can administer the org, so an org
+// can never be left with no admin (and no one able to manage members or billing).
+async function assertNotLastOrgAdmin({
+  client,
+  orgId,
+  membershipId,
+  nextRoleId,
+}: {
+  client: SupabaseClient
+  orgId: string
+  membershipId: string
+  // The role id the member will hold after this change; null when being removed.
+  nextRoleId: string | null
+}) {
+  const adminRoleIds = await orgAdminRoleIds(client)
+  if (adminRoleIds.size === 0) return
+
+  // If the member keeps an admin role, nothing to guard.
+  if (nextRoleId && adminRoleIds.has(nextRoleId)) return
+
+  const { data, error } = await client
+    .from("memberships")
+    .select("id, role_id")
+    .eq("org_id", orgId)
+    .eq("status", "active")
+  if (error) {
+    throw new Error(`Failed to verify org admins: ${error.message}`)
+  }
+
+  const admins = (data ?? []).filter((row: any) => adminRoleIds.has(row.role_id as string))
+  const targetIsAdmin = admins.some((row: any) => row.id === membershipId)
+  const otherAdmins = admins.filter((row: any) => row.id !== membershipId)
+
+  if (targetIsAdmin && otherAdmins.length === 0) {
+    throw new Error(
+      "This is the last administrator for the organization. Assign another admin before changing or removing this one.",
+    )
+  }
+}
+
+// Org roles an admin may assign through the member picker, most- to least-privileged.
+// org_owner is excluded on purpose (ownership transfer is a separate flow).
+export const ASSIGNABLE_ORG_ROLE_KEYS = [
+  "org_admin",
+  "org_office_admin",
+  "org_bookkeeper",
+  "org_project_lead",
+  "org_estimator",
+  "org_user",
+  "org_viewer",
+] as const
+
 function defaultRoleDescription(roleKey: string) {
   const descriptions: Record<string, string> = {
     org_admin: "Full company access, including settings, billing, team, all projects, approvals, and financial workflows.",
+    org_office_admin: "Administrative control across projects, members, and business operations.",
+    org_bookkeeper: "Accounts payable/receivable. Enters bills and invoices, but cannot approve payments or release funds.",
+    org_project_lead: "Project delivery and field coordination across projects.",
+    org_estimator: "Preconstruction: bids, proposals, and the sales pipeline. No active-job financials.",
     org_user: "Internal team member. Access is scoped by project assignments and optional permission overrides.",
+    org_viewer: "Read-only visibility for stakeholders and observers.",
   }
 
   return descriptions[roleKey]
@@ -128,29 +197,21 @@ export async function listAssignableOrgRoles(orgId?: string): Promise<OrgRoleOpt
     throw new Error(`Failed to load assignable org roles: ${error.message}`)
   }
 
-  const allowedRoleKeys = new Set(["org_admin", "org_user"])
-  const options = (data ?? [])
-    .filter((row: any) => typeof row?.key === "string" && allowedRoleKeys.has(row.key))
-    .map((row: any) => ({
-      key: row.key as string,
-      label: normalizeRoleLabel((row.label as string | null) ?? null, row.key as string),
-      description: ((row.description as string | null) ?? undefined) ?? defaultRoleDescription(row.key as string),
-    }))
+  const rowsByKey = new Map((data ?? []).map((row: any) => [row.key as string, row]))
 
-  if (options.length > 0) {
-    return Array.from(allowedRoleKeys)
-      .map((key) => options.find((option) => option.key === key))
-      .filter((option) => option != null) as OrgRoleOption[]
+  // Ordered most- to least-privileged. org_owner is intentionally excluded:
+  // ownership transfers through a dedicated flow, not the member role picker.
+  const options: OrgRoleOption[] = []
+  for (const key of ASSIGNABLE_ORG_ROLE_KEYS) {
+    const row = rowsByKey.get(key)
+    if (!row) continue
+    options.push({
+      key,
+      label: normalizeRoleLabel((row.label as string | null) ?? null, key),
+      description: ((row.description as string | null) ?? undefined) ?? defaultRoleDescription(key),
+    })
   }
-
-  return [
-    {
-      key: "org_admin",
-      label: "Admin",
-      description: defaultRoleDescription("org_admin"),
-    },
-    { key: "org_user", label: "User", description: defaultRoleDescription("org_user") },
-  ]
+  return options
 }
 
 function getAuthRedirectBaseUrl() {
@@ -246,7 +307,7 @@ export async function createOrgMemberInvite(input: {
     })
     .select(
       `
-      id, org_id, user_id, role_id, status, last_active_at, created_at, invited_by,
+      id, org_id, user_id, role_id, status, project_scope, last_active_at, created_at, invited_by,
       user:app_users!memberships_user_id_fkey(id, email, full_name, avatar_url),
       role:roles!memberships_role_id_fkey(key, label),
       invited_by_user:app_users!memberships_invited_by_fkey(id, email, full_name, avatar_url)
@@ -410,7 +471,7 @@ function mapTeamMember(
 ): TeamMember {
   const user = row.user || row.users
   const invitedBy = row.invited_by_user || row.invited_by
-  const roleKey = row.role?.key ?? "org_project_lead"
+  const roleKey = row.role?.key ?? "org_user"
 
   return {
     id: row.id,
@@ -422,6 +483,7 @@ function mapTeamMember(
     },
     role: roleKey,
     role_label: normalizeRoleLabel((row.role?.label as string | null) ?? null, roleKey),
+    project_scope: row.project_scope === "assigned" ? "assigned" : "all",
     permission_overrides: permissionOverridesByMembership[row.id] ?? [],
     status: row.status ?? "invited",
     labor_cost_rate_cents: row.labor_cost_rate_cents ?? 0,
@@ -476,7 +538,7 @@ export async function listTeamMembers(
     .from("memberships")
     .select(
       `
-      id, org_id, user_id, role_id, status, last_active_at, created_at, invited_by,
+      id, org_id, user_id, role_id, status, project_scope, last_active_at, created_at, invited_by,
       labor_cost_rate_cents, labor_bill_rate_cents, labor_burden_multiplier, labor_is_billable_default,
       user:app_users!memberships_user_id_fkey(id, email, full_name, avatar_url),
       role:roles!memberships_role_id_fkey(key, label),
@@ -693,13 +755,14 @@ export async function inviteTeamMember({
       user_id: targetUserId,
       role_id: roleId,
       status: "invited",
+      project_scope: parsed.projectScope,
       invited_by: userId,
       invite_token: inviteToken,
       invite_token_expires_at: inviteTokenExpiresAt.toISOString(),
     })
     .select(
       `
-      id, org_id, user_id, role_id, status, last_active_at, created_at, invited_by,
+      id, org_id, user_id, role_id, status, project_scope, last_active_at, created_at, invited_by,
       user:app_users!memberships_user_id_fkey(id, email, full_name, avatar_url),
       role:roles!memberships_role_id_fkey(key, label),
       invited_by_user:app_users!memberships_invited_by_fkey(id, email, full_name, avatar_url)
@@ -753,15 +816,17 @@ export async function inviteTeamMember({
 export async function updateMemberRole({
   membershipId,
   role,
+  projectScope,
   permissionOverrides,
   orgId,
 }: {
   membershipId: string
   role: OrgRole
+  projectScope?: "all" | "assigned"
   permissionOverrides?: MemberPermissionOverride[]
   orgId?: string
 }) {
-  const parsed = updateMemberRoleSchema.parse({ role, permissionOverrides })
+  const parsed = updateMemberRoleSchema.parse({ role, projectScope, permissionOverrides })
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAuthorization({
     permission: "org.admin",
@@ -786,14 +851,22 @@ export async function updateMemberRole({
     throw new Error("Membership not found")
   }
 
+  // Never let the org lose its last admin via a demotion.
+  await assertNotLastOrgAdmin({ client: serviceClient, orgId: resolvedOrgId, membershipId, nextRoleId: roleId })
+
+  const updatePayload: { role_id: string; project_scope?: string } = { role_id: roleId }
+  if (parsed.projectScope !== undefined) {
+    updatePayload.project_scope = parsed.projectScope
+  }
+
   const { data, error } = await supabase
     .from("memberships")
-    .update({ role_id: roleId })
+    .update(updatePayload)
     .eq("org_id", resolvedOrgId)
     .eq("id", membershipId)
     .select(
       `
-      id, org_id, user_id, role_id, status, last_active_at, created_at, invited_by,
+      id, org_id, user_id, role_id, status, project_scope, last_active_at, created_at, invited_by,
       user:app_users!memberships_user_id_fkey(id, email, full_name, avatar_url),
       role:roles!memberships_role_id_fkey(key, label)
     `,
@@ -856,7 +929,7 @@ async function updateMemberStatus(membershipId: string, status: "active" | "invi
     .eq("id", membershipId)
     .select(
       `
-      id, org_id, user_id, role_id, status, last_active_at, created_at, invited_by,
+      id, org_id, user_id, role_id, status, project_scope, last_active_at, created_at, invited_by,
       user:app_users!memberships_user_id_fkey(id, email, full_name, avatar_url),
       role:roles!memberships_role_id_fkey(key, label)
     `,
@@ -913,6 +986,14 @@ export async function removeMember(membershipId: string, orgId?: string) {
   if (fetchError || !membership) {
     throw new Error("Membership not found")
   }
+
+  // Never let the org lose its last admin via a removal.
+  await assertNotLastOrgAdmin({
+    client: createServiceSupabaseClient(),
+    orgId: resolvedOrgId,
+    membershipId,
+    nextRoleId: null,
+  })
 
   const { count: projectAssignments, error: projectError } = await supabase
     .from("project_members")

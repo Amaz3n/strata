@@ -5,6 +5,7 @@ import {
   type JobCostActualByCostCode,
   type JobCostGroupBy,
 } from "@/lib/financials/job-cost-rules"
+import { resolveGmpClassificationForCostSource, type GmpClassification } from "@/lib/financials/gmp-classification"
 import { calculateTimeEntryCostCents } from "@/lib/financials/job-cost-calculations"
 import { requireOrgContext } from "@/lib/services/context"
 
@@ -29,6 +30,7 @@ export interface JobCostEntry {
   cost_cents: number
   status: "pending" | "approved" | "posted" | "voided"
   is_billable: boolean
+  gmp_classification?: GmpClassification | null
   billable_cost_id?: string | null
   invoice_id?: string | null
   metadata?: Record<string, any>
@@ -50,7 +52,7 @@ async function findBillableCostForSource(args: {
 }) {
   const { data, error } = await args.supabase
     .from("billable_costs")
-    .select("id, is_billable, invoice_id, status")
+    .select("id, is_billable, invoice_id, status, gmp_classification")
     .eq("org_id", args.orgId)
     .eq("source_type", args.sourceType)
     .eq("source_id", args.sourceId)
@@ -77,6 +79,7 @@ async function upsertJobCostEntry(
     cost_cents: number
     status?: "pending" | "approved" | "posted" | "voided"
     is_billable?: boolean
+    gmp_classification?: GmpClassification | null
     billable_cost_id?: string | null
     invoice_id?: string | null
     metadata?: Record<string, any>
@@ -94,6 +97,7 @@ async function upsertJobCostEntry(
     cost_cents: Math.round(payload.cost_cents),
     status: payload.status ?? "posted",
     is_billable: payload.is_billable ?? false,
+    gmp_classification: payload.gmp_classification ?? "inside_gmp",
     billable_cost_id: payload.billable_cost_id ?? null,
     invoice_id: payload.invoice_id ?? null,
     metadata: payload.metadata ?? {},
@@ -142,6 +146,15 @@ export async function postJobCostEntryFromBillLine(args: { billLineId: string; o
   })
 
   const costCents = Math.round(Number(line.unit_cost_cents ?? 0) * Number(line.quantity ?? 1))
+  const gmpClassification =
+    billable?.gmp_classification ??
+    (await resolveGmpClassificationForCostSource({
+      supabase,
+      orgId: resolvedOrgId,
+      projectId: lineProjectId,
+      budgetLineId: (line as any).budget_line_id ?? null,
+      costCodeId: line.cost_code_id ?? null,
+    }))
   return upsertJobCostEntry(supabase, {
     org_id: resolvedOrgId,
     project_id: lineProjectId,
@@ -152,10 +165,12 @@ export async function postJobCostEntryFromBillLine(args: { billLineId: string; o
     incurred_on: bill.bill_date ?? bill.approved_at ?? bill.created_at,
     cost_cents: costCents,
     is_billable: Boolean(billable?.id && billable.is_billable !== false && billable.status !== "excluded"),
+    gmp_classification: gmpClassification,
     billable_cost_id: billable?.id ?? null,
     invoice_id: billable?.invoice_id ?? null,
     metadata: {
       ...(line.metadata ?? {}),
+      gmp_classification: gmpClassification,
       source_label: "vendor_bill_line",
       bill_id: bill.id,
       bill_number: bill.bill_number ?? null,
@@ -185,6 +200,15 @@ export async function postJobCostEntryFromProjectExpense(args: { expenseId: stri
     sourceType: "project_expense",
     sourceId: expense.id,
   })
+  const gmpClassification =
+    billable?.gmp_classification ??
+    (await resolveGmpClassificationForCostSource({
+      supabase,
+      orgId: resolvedOrgId,
+      projectId: expense.project_id,
+      budgetLineId: expense.budget_line_id ?? null,
+      costCodeId: expense.cost_code_id ?? null,
+    }))
 
   return upsertJobCostEntry(supabase, {
     org_id: resolvedOrgId,
@@ -196,10 +220,12 @@ export async function postJobCostEntryFromProjectExpense(args: { expenseId: stri
     incurred_on: expense.expense_date,
     cost_cents: Number(expense.amount_cents ?? 0) + Number(expense.tax_cents ?? 0),
     is_billable: Boolean(billable?.id && billable.is_billable !== false && billable.status !== "excluded"),
+    gmp_classification: gmpClassification,
     billable_cost_id: expense.billable_cost_id ?? billable?.id ?? null,
     invoice_id: billable?.invoice_id ?? null,
     metadata: {
       ...(expense.metadata ?? {}),
+      gmp_classification: gmpClassification,
       source_label: "project_expense",
       expense_status: expense.status,
       description: expense.description ?? expense.vendor_name_text ?? null,
@@ -238,6 +264,15 @@ export async function postJobCostEntryFromExpenseLine(args: { expenseLineId: str
     sourceType: "project_expense_line",
     sourceId: line.id,
   })
+  const gmpClassification =
+    billable?.gmp_classification ??
+    (await resolveGmpClassificationForCostSource({
+      supabase,
+      orgId: resolvedOrgId,
+      projectId: lineProjectId,
+      budgetLineId: (line as any).budget_line_id ?? null,
+      costCodeId: line.cost_code_id ?? null,
+    }))
 
   return upsertJobCostEntry(supabase, {
     org_id: resolvedOrgId,
@@ -249,10 +284,12 @@ export async function postJobCostEntryFromExpenseLine(args: { expenseLineId: str
     incurred_on: expense.expense_date,
     cost_cents: Number(line.amount_cents ?? 0),
     is_billable: Boolean(billable?.id && billable.is_billable !== false && billable.status !== "excluded"),
+    gmp_classification: gmpClassification,
     billable_cost_id: billable?.id ?? null,
     invoice_id: billable?.invoice_id ?? null,
     metadata: {
       ...(line.metadata ?? {}),
+      gmp_classification: gmpClassification,
       source_label: "project_expense_line",
       expense_id: expense.id,
       expense_status: expense.status,
@@ -284,6 +321,15 @@ export async function postJobCostEntryFromTimeEntry(args: { timeEntryId: string;
     sourceType: "time_entry",
     sourceId: entry.id,
   })
+  const gmpClassification =
+    billable?.gmp_classification ??
+    (await resolveGmpClassificationForCostSource({
+      supabase,
+      orgId: resolvedOrgId,
+      projectId: entry.project_id,
+      budgetLineId: entry.budget_line_id ?? null,
+      costCodeId: entry.cost_code_id ?? null,
+    }))
 
   return upsertJobCostEntry(supabase, {
     org_id: resolvedOrgId,
@@ -295,10 +341,12 @@ export async function postJobCostEntryFromTimeEntry(args: { timeEntryId: string;
     incurred_on: entry.work_date,
     cost_cents: calculateTimeEntryCostCents(entry),
     is_billable: Boolean(billable?.id && billable.is_billable !== false && billable.status !== "excluded"),
+    gmp_classification: gmpClassification,
     billable_cost_id: entry.billable_cost_id ?? billable?.id ?? null,
     invoice_id: billable?.invoice_id ?? null,
     metadata: {
       ...(entry.metadata ?? {}),
+      gmp_classification: gmpClassification,
       source_label: "time_entry",
       time_entry_status: entry.status,
       worker_user_id: entry.worker_user_id ?? null,

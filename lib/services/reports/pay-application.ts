@@ -1,5 +1,6 @@
 import { renderPayApplicationPdf, type PayApplicationPdfData } from "@/lib/pdfs/pay-application"
 import { requireOrgContext } from "@/lib/services/context"
+import { requireProjectPermission } from "@/lib/services/permissions"
 
 const BILLED_DRAW_STATUSES = new Set(["invoiced", "partial", "paid"])
 
@@ -70,7 +71,8 @@ export async function getDrawPayApplicationReport({
   drawId: string
   orgId?: string
 }): Promise<DrawPayApplicationReport> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "report.read")
 
   const [
     { data: drawRows, error: drawsError },

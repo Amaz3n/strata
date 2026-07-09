@@ -1,15 +1,17 @@
 "use client"
 
-import { useActionState, useMemo, useState } from "react"
+import { useActionState, useState } from "react"
 import { useRouter } from "next/navigation"
 
 import { provisionPlatformOrgAction } from "@/app/(app)/platform/actions"
-import { AlertCircle, CheckCircle, Copy, ExternalLink, Plus, Trash2, UserPlus } from "@/components/icons"
+import { AlertCircle, CheckCircle, ChevronDown, Copy, ExternalLink, Plus, Trash2, UserPlus } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import { Switch } from "@/components/ui/switch"
 
 interface PlanOption {
   code: string
@@ -57,30 +59,19 @@ function slugify(value: string) {
     .replace(/^-+|-+$/g, "")
 }
 
-function formatPlanPrice(plan: PlanOption) {
-  if (plan.amountCents == null) return "custom"
-  const amount = `$${(plan.amountCents / 100).toFixed(0)}`
-  if (!plan.interval) return amount
-  return `${amount}/${plan.interval === "monthly" ? "mo" : plan.interval === "yearly" ? "yr" : plan.interval}`
-}
-
 export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }: ProvisionOrgSheetProps) {
+  void plans
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [state, formAction, pending] = useActionState(action, initialState)
   const [orgName, setOrgName] = useState("")
   const [slug, setSlug] = useState("")
   const [billingModel, setBillingModel] = useState<"subscription" | "license">("subscription")
-  const [createCheckout, setCreateCheckout] = useState(true)
+  const [priceOpen, setPriceOpen] = useState(false)
+  const [collectionMethod, setCollectionMethod] = useState<"checkout" | "invoice">("checkout")
   const [sendInvites, setSendInvites] = useState(false)
+  const [seedSampleProject, setSeedSampleProject] = useState(true)
   const [teamMembers, setTeamMembers] = useState<TeamMemberDraft[]>([])
-
-  const subscriptionPlans = useMemo(
-    () => plans.filter((plan) => plan.isActive && plan.pricingModel === "subscription"),
-    [plans],
-  )
-  const checkoutReadyPlans = subscriptionPlans.filter((plan) => Boolean(plan.stripePriceId))
-  const defaultPlanCode = checkoutReadyPlans[0]?.code ?? subscriptionPlans[0]?.code ?? ""
 
   const addTeamMember = () => {
     setTeamMembers((current) => [
@@ -122,7 +113,7 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
         >
           <SheetHeader className="border-b bg-muted/30 px-6 pb-4 pt-6">
             <SheetTitle>New Client Onboarding</SheetTitle>
-            <SheetDescription>Create the org, invite initial people, and generate the first subscription checkout link.</SheetDescription>
+            <SheetDescription>Create workspace access first. Add billing only when the deal is already closed.</SheetDescription>
           </SheetHeader>
 
           <form
@@ -136,8 +127,80 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
               <div className="flex flex-col gap-7">
                 <section className="flex flex-col gap-4">
                   <div>
-                    <h3 className="text-sm font-medium">Organization</h3>
+                    <h3 className="text-sm font-medium">Access</h3>
                     <p className="mt-1 text-sm text-muted-foreground">This creates the customer workspace before billing starts.</p>
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="flex flex-col gap-2">
+                      <Label htmlFor="platform-billing-model">Billing model</Label>
+                      <select
+                        id="platform-billing-model"
+                        name="billingModel"
+                        value={billingModel}
+                        onChange={(event) => setBillingModel(event.target.value as "subscription" | "license")}
+                        className={selectClassName}
+                      >
+                        <option value="subscription">Subscription</option>
+                        <option value="license">License</option>
+                      </select>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <Label htmlFor="platform-trial-days">Trial days</Label>
+                      <Input id="platform-trial-days" name="trialDays" type="number" min="1" max="60" defaultValue="30" />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 border bg-muted/20 px-4 py-3">
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="platform-seed-sample-project" className="text-sm font-medium">
+                        Seed sample project
+                      </Label>
+                      <p className="text-sm text-muted-foreground">Adds a Naples remodel sample so the workspace is useful on first login.</p>
+                    </div>
+                    <Switch
+                      id="platform-seed-sample-project"
+                      checked={seedSampleProject}
+                      onCheckedChange={setSeedSampleProject}
+                    />
+                    <input type="hidden" name="seedSampleProject" value={seedSampleProject ? "true" : "false"} />
+                  </div>
+                </section>
+
+                <section className="flex flex-col gap-4">
+                  <div>
+                    <h3 className="text-sm font-medium">Primary Owner</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">This person is added as the organization owner. You can send the workspace invite now or defer it.</p>
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="flex flex-col gap-2">
+                      <Label htmlFor="platform-full-name">Full name</Label>
+                      <Input id="platform-full-name" name="fullName" placeholder="Jordan Lee" required />
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <Label htmlFor="platform-primary-email">Email</Label>
+                      <Input id="platform-primary-email" name="primaryEmail" type="email" placeholder="owner@acme.com" required />
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3 border bg-muted/20 px-4 py-3">
+                    <Checkbox
+                      id="platform-send-invites"
+                      checked={sendInvites}
+                      onCheckedChange={(checked) => setSendInvites(checked === true)}
+                    />
+                    <div className="grid gap-1.5 leading-none">
+                      <Label htmlFor="platform-send-invites" className="text-sm font-medium">
+                        Send workspace invites now
+                      </Label>
+                      <p className="text-sm text-muted-foreground">
+                        Leave this off to prepare the org before the client gets access.
+                      </p>
+                    </div>
+                    <input type="hidden" name="sendInvites" value={sendInvites ? "true" : "false"} />
+                  </div>
+                </section>
+
+                <section className="flex flex-col gap-4">
+                  <div>
+                    <h3 className="text-sm font-medium">Organization</h3>
                   </div>
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="flex flex-col gap-2">
@@ -169,39 +232,6 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
                         required
                       />
                     </div>
-                  </div>
-                </section>
-
-                <section className="flex flex-col gap-4">
-                  <div>
-                    <h3 className="text-sm font-medium">Primary Owner</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">This person is added as the organization owner. You can send the workspace invite now or defer it.</p>
-                  </div>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <div className="flex flex-col gap-2">
-                      <Label htmlFor="platform-full-name">Full name</Label>
-                      <Input id="platform-full-name" name="fullName" placeholder="Jordan Lee" required />
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      <Label htmlFor="platform-primary-email">Email</Label>
-                      <Input id="platform-primary-email" name="primaryEmail" type="email" placeholder="owner@acme.com" required />
-                    </div>
-                  </div>
-                  <div className="flex items-start gap-3 border bg-muted/20 px-4 py-3">
-                    <Checkbox
-                      id="platform-send-invites"
-                      checked={sendInvites}
-                      onCheckedChange={(checked) => setSendInvites(checked === true)}
-                    />
-                    <div className="grid gap-1.5 leading-none">
-                      <Label htmlFor="platform-send-invites" className="text-sm font-medium">
-                        Send workspace invites now
-                      </Label>
-                      <p className="text-sm text-muted-foreground">
-                        Leave this off to collect payment first and manually prepare the org before the client gets access.
-                      </p>
-                    </div>
-                    <input type="hidden" name="sendInvites" value={sendInvites ? "true" : "false"} />
                   </div>
                 </section>
 
@@ -268,71 +298,55 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
                   )}
                 </section>
 
-                <section className="flex flex-col gap-4">
-                  <div>
-                    <h3 className="text-sm font-medium">Billing</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">For subscriptions, generate the Stripe Checkout link you will send to the client.</p>
-                  </div>
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <div className="flex flex-col gap-2">
-                      <Label htmlFor="platform-billing-model">Billing model</Label>
-                      <select
-                        id="platform-billing-model"
-                        name="billingModel"
-                        value={billingModel}
-                        onChange={(event) => setBillingModel(event.target.value as "subscription" | "license")}
-                        className={selectClassName}
-                      >
-                        <option value="subscription">Subscription</option>
-                        <option value="license">License</option>
-                      </select>
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      <Label htmlFor="platform-trial-days">Trial days</Label>
-                      <Input id="platform-trial-days" name="trialDays" type="number" min="1" max="30" defaultValue="7" />
-                    </div>
-                  </div>
-
-                  {billingModel === "subscription" && (
-                    <div className="flex flex-col gap-4 border bg-muted/20 p-4">
-                      <div className="grid gap-4 md:grid-cols-[1fr_auto]">
-                        <div className="flex flex-col gap-2">
-                          <Label htmlFor="platform-plan-code">Plan</Label>
-                          <select id="platform-plan-code" name="planCode" defaultValue={defaultPlanCode} className={selectClassName}>
-                            {subscriptionPlans.length === 0 ? (
-                              <option value="">No active subscription plans</option>
-                            ) : (
-                              subscriptionPlans.map((plan) => (
-                                <option key={plan.code} value={plan.code} disabled={!plan.stripePriceId}>
-                                  {plan.name} ({formatPlanPrice(plan)})
-                                  {plan.packageType === "custom" ? ` - custom package, ${plan.featureKeys?.length ?? 0} features` : " - full access"}
-                                  {!plan.stripePriceId ? " - missing Stripe price" : ""}
-                                </option>
-                              ))
-                            )}
-                          </select>
+                {billingModel === "subscription" && (
+                  <section className="flex flex-col gap-4">
+                    <Collapsible open={priceOpen} onOpenChange={setPriceOpen} className="border bg-muted/20">
+                      <CollapsibleTrigger asChild>
+                        <button type="button" className="flex w-full items-center justify-between px-4 py-3 text-left">
+                          <span>
+                            <span className="block text-sm font-medium">Set price now</span>
+                            <span className="block text-sm text-muted-foreground">Use only when the deal is already closed.</span>
+                          </span>
+                          <ChevronDown className={`size-4 transition-transform ${priceOpen ? "rotate-180" : ""}`} />
+                        </button>
+                      </CollapsibleTrigger>
+                      <CollapsibleContent className="border-t px-4 py-4">
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <div className="flex flex-col gap-2">
+                            <Label htmlFor="platform-amount-dollars">Amount</Label>
+                            <Input id="platform-amount-dollars" name="amountDollars" type="number" min="1" step="1" placeholder="2500" />
+                          </div>
+                          <div className="flex flex-col gap-2">
+                            <Label htmlFor="platform-interval">Interval</Label>
+                            <select id="platform-interval" name="interval" defaultValue="month" className={selectClassName}>
+                              <option value="month">Monthly</option>
+                              <option value="year">Annual</option>
+                            </select>
+                          </div>
+                          <div className="flex flex-col gap-2 md:col-span-2">
+                            <Label htmlFor="platform-collection-method">Payment method</Label>
+                            <select
+                              id="platform-collection-method"
+                              name="collectionMethod"
+                              value={collectionMethod}
+                              onChange={(event) => setCollectionMethod(event.target.value as "checkout" | "invoice")}
+                              className={selectClassName}
+                            >
+                              <option value="checkout">Card - send checkout link</option>
+                              <option value="invoice">ACH invoice - Stripe emails it</option>
+                            </select>
+                          </div>
+                          {collectionMethod === "invoice" && (
+                            <div className="flex flex-col gap-2">
+                              <Label htmlFor="platform-net-days">Net days</Label>
+                              <Input id="platform-net-days" name="netDays" type="number" min="1" max="90" defaultValue="30" />
+                            </div>
+                          )}
                         </div>
-                        <div className="flex items-end gap-2 pb-2">
-                          <Checkbox
-                            id="platform-create-checkout"
-                            checked={createCheckout}
-                            onCheckedChange={(checked) => setCreateCheckout(checked === true)}
-                          />
-                          <Label htmlFor="platform-create-checkout" className="text-sm font-normal">
-                            Create Checkout link
-                          </Label>
-                          <input type="hidden" name="createCheckout" value={createCheckout ? "true" : "false"} />
-                        </div>
-                      </div>
-                      {checkoutReadyPlans.length === 0 && (
-                        <div className="flex items-start gap-2 border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-                          <AlertCircle className="mt-0.5 size-4" />
-                          <span>Add a Stripe Price ID to an active plan before creating subscription checkout links.</span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </section>
+                      </CollapsibleContent>
+                    </Collapsible>
+                  </section>
+                )}
 
                 {state.error && (
                   <div className="flex items-start gap-2 border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
@@ -379,7 +393,7 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
               <Button type="button" variant="outline" onClick={() => setOpen(false)}>
                 Close
               </Button>
-              <Button type="submit" disabled={pending || (billingModel === "subscription" && createCheckout && checkoutReadyPlans.length === 0)}>
+              <Button type="submit" disabled={pending}>
                 {pending ? "Creating..." : "Create Client"}
               </Button>
             </div>

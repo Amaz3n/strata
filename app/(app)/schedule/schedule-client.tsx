@@ -42,6 +42,8 @@ import {
   listDependenciesForProjectsAction,
 } from "./actions"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ScheduleClientProps {
   scheduleItems: ScheduleItem[]
   projects: Project[]
@@ -466,7 +468,7 @@ export function ScheduleClient({ scheduleItems, projects }: ScheduleClientProps)
   // Handlers
   const handleItemCreate = useCallback(
     async (item: Partial<ScheduleItem>) => {
-      const created = await createScheduleItemAction(item)
+      const created = unwrapAction(await createScheduleItemAction(item))
       setItems((prev) => [...prev, created])
       toast.success("Schedule item created", { description: created.name })
       return created
@@ -476,7 +478,7 @@ export function ScheduleClient({ scheduleItems, projects }: ScheduleClientProps)
 
   const handleItemUpdate = useCallback(
     async (id: string, updates: Partial<ScheduleItem>) => {
-      const updated = await updateScheduleItemAction(id, updates)
+      const updated = unwrapAction(await updateScheduleItemAction(id, updates))
       setItems((prev) => prev.map((item) => (item.id === id ? updated : item)))
       return updated
     },
@@ -485,7 +487,7 @@ export function ScheduleClient({ scheduleItems, projects }: ScheduleClientProps)
 
   const handleItemsBulkUpdate = useCallback(
     async (updates: { id: string; start_date?: string; end_date?: string; sort_order?: number; progress?: number; status?: ScheduleItem["status"] }[]) => {
-      const updatedItems = await bulkUpdateScheduleItemsAction({ items: updates })
+      const updatedItems = unwrapAction(await bulkUpdateScheduleItemsAction({ items: updates }))
       if (updatedItems.length > 0) {
         const updatedMap = new Map(updatedItems.map((item) => [item.id, item]))
         setItems((prev) => prev.map((item) => updatedMap.get(item.id) ?? item))
@@ -496,7 +498,7 @@ export function ScheduleClient({ scheduleItems, projects }: ScheduleClientProps)
   )
 
   const handleItemDelete = useCallback(async (id: string) => {
-    await deleteScheduleItemAction(id)
+    unwrapAction(await deleteScheduleItemAction(id))
     setItems((prev) => prev.filter((item) => item.id !== id))
     toast.success("Schedule item deleted")
   }, [])

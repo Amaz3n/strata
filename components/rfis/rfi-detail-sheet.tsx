@@ -46,7 +46,18 @@ import {
   uploadFileAction,
   attachFileAction,
 } from "@/app/(app)/documents/actions"
-import { addRfiResponseAction, decideRfiAction, listRfiResponsesAction, sendRfiAction } from "@/app/(app)/rfis/actions"
+import {
+  addRfiResponseAction,
+  closeRfiAction,
+  convertRfiToChangeOrderAction,
+  decideRfiAction,
+  getRfiLinkedChangeOrderAction,
+  listRfiResponsesAction,
+  reopenRfiAction,
+  sendRfiAction,
+} from "@/app/(app)/rfis/actions"
+import { unwrapAction } from "@/lib/action-result"
+import type { RfiLinkedChangeOrder } from "@/lib/services/rfis"
 import { rfiResponseInputSchema, rfiDecisionSchema, type RfiResponseInput, type RfiDecisionInput } from "@/lib/validation/rfis"
 
 const statusLabels: Record<string, string> = {
@@ -88,6 +99,7 @@ export function RfiDetailSheet({
   const [showResponseForm, setShowResponseForm] = useState(false)
   const [responses, setResponses] = useState<RfiResponse[]>([])
   const [isLoadingResponses, setIsLoadingResponses] = useState(false)
+  const [linkedChangeOrder, setLinkedChangeOrder] = useState<RfiLinkedChangeOrder | null>(null)
 
   const responseForm = useForm<RfiResponseInput>({
     resolver: zodResolver(rfiResponseInputSchema),
@@ -165,27 +177,37 @@ export function RfiDetailSheet({
     }
   }, [rfi])
 
+  const loadLinkedChangeOrder = useCallback(async () => {
+    if (!rfi) return
+    try {
+      setLinkedChangeOrder(unwrapAction(await getRfiLinkedChangeOrderAction(rfi.id)))
+    } catch (error) {
+      console.error("Failed to load linked change order:", error)
+      setLinkedChangeOrder(null)
+    }
+  }, [rfi])
+
   // Load attachments when sheet opens
   useEffect(() => {
     if (open && rfi) {
       ;(async () => {
         if (rfi.attachment_file_id) {
           try {
-            await attachFileAction(
+            unwrapAction(await attachFileAction(
               rfi.attachment_file_id,
               "rfi",
               rfi.id,
               rfi.project_id,
               "legacy_attachment",
-            )
+            ))
           } catch (error) {
             console.warn("Failed to backfill legacy RFI attachment link", error)
           }
         }
-        await Promise.all([loadAttachments(), loadResponses()])
+        await Promise.all([loadAttachments(), loadResponses(), loadLinkedChangeOrder()])
       })()
     }
-  }, [open, rfi, loadAttachments, loadResponses])
+  }, [open, rfi, loadAttachments, loadResponses, loadLinkedChangeOrder])
 
   const handleAttach = useCallback(
     async (files: File[], linkRole?: string) => {
@@ -197,8 +219,8 @@ export function RfiDetailSheet({
         formData.append("projectId", rfi.project_id)
         formData.append("category", "rfis")
 
-        const uploaded = await uploadFileAction(formData)
-        await attachFileAction(uploaded.id, "rfi", rfi.id, rfi.project_id, linkRole)
+        const uploaded = unwrapAction(await uploadFileAction(formData))
+        unwrapAction(await attachFileAction(uploaded.id, "rfi", rfi.id, rfi.project_id, linkRole))
       }
 
       await loadAttachments()
@@ -208,7 +230,7 @@ export function RfiDetailSheet({
 
   const handleDetach = useCallback(
     async (linkId: string) => {
-      await detachFileLinkAction(linkId)
+      unwrapAction(await detachFileLinkAction(linkId))
       await loadAttachments()
     },
     [loadAttachments]
@@ -219,14 +241,14 @@ export function RfiDetailSheet({
 
     setIsSubmitting(true)
     try {
-      await addRfiResponseAction(values)
+      unwrapAction(await addRfiResponseAction(values))
       toast.success("Response added", { description: "Your response has been recorded." })
       setShowResponseForm(false)
       responseForm.reset()
       await Promise.all([loadResponses(), onUpdate?.()])
-    } catch (error: any) {
+    } catch (error) {
       console.error("Failed to add response:", error)
-      toast.error("Failed to add response", { description: error?.message ?? "Please try again." })
+      toast.error("Failed to add response", { description: error instanceof Error ? error.message : "Please try again." })
     } finally {
       setIsSubmitting(false)
     }
@@ -237,12 +259,12 @@ export function RfiDetailSheet({
 
     setIsSubmitting(true)
     try {
-      await decideRfiAction(values)
+      unwrapAction(await decideRfiAction(values))
       toast.success("Decision recorded", { description: "The RFI decision has been recorded." })
       await onUpdate?.()
-    } catch (error: any) {
+    } catch (error) {
       console.error("Failed to record decision:", error)
-      toast.error("Failed to record decision", { description: error?.message ?? "Please try again." })
+      toast.error("Failed to record decision", { description: error instanceof Error ? error.message : "Please try again." })
     } finally {
       setIsSubmitting(false)
     }
@@ -252,12 +274,65 @@ export function RfiDetailSheet({
     if (!rfi) return
     setIsSubmitting(true)
     try {
-      await sendRfiAction(rfi.id)
+      unwrapAction(await sendRfiAction(rfi.id))
       toast.success("RFI sent", { description: "Portal and email notifications were sent." })
       await onUpdate?.()
-    } catch (error: any) {
+    } catch (error) {
       console.error("Failed to send RFI:", error)
-      toast.error("Failed to send RFI", { description: error?.message ?? "Please try again." })
+      toast.error("Failed to send RFI", { description: error instanceof Error ? error.message : "Please try again." })
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const handleClose = async () => {
+    if (!rfi) return
+    setIsSubmitting(true)
+    try {
+      unwrapAction(await closeRfiAction(rfi.id))
+      toast.success("RFI closed")
+      await onUpdate?.()
+    } catch (error) {
+      toast.error("Failed to close RFI", { description: error instanceof Error ? error.message : "Please try again." })
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const handleReopen = async () => {
+    if (!rfi) return
+    setIsSubmitting(true)
+    try {
+      unwrapAction(await reopenRfiAction(rfi.id))
+      toast.success("RFI reopened")
+      await onUpdate?.()
+    } catch (error) {
+      toast.error("Failed to reopen RFI", { description: error instanceof Error ? error.message : "Please try again." })
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const handleConvertToChangeOrder = async () => {
+    if (!rfi) return
+    setIsSubmitting(true)
+    try {
+      const changeOrder = unwrapAction(await convertRfiToChangeOrderAction(rfi.id))
+      toast.success("Draft change order created", {
+        description: "Review it under the project's change orders.",
+      })
+      setLinkedChangeOrder({
+        id: changeOrder.id,
+        co_number: changeOrder.co_number ?? null,
+        title: changeOrder.title,
+        status: changeOrder.status,
+        total_cents: changeOrder.total_cents ?? null,
+      })
+      await onUpdate?.()
+    } catch (error) {
+      toast.error("Failed to create change order", {
+        description: error instanceof Error ? error.message : "Please try again.",
+      })
     } finally {
       setIsSubmitting(false)
     }
@@ -336,12 +411,6 @@ export function RfiDetailSheet({
             {rfi.spec_reference && (
               <Badge variant="outline" className="text-xs">Spec: {rfi.spec_reference}</Badge>
             )}
-            {typeof rfi.schedule_impact_days === "number" && (
-              <Badge variant="outline" className="text-xs">Schedule impact: {rfi.schedule_impact_days}d</Badge>
-            )}
-            {typeof rfi.cost_impact_cents === "number" && (
-              <Badge variant="outline" className="text-xs">Cost impact: ${(rfi.cost_impact_cents / 100).toLocaleString()}</Badge>
-            )}
           </div>
 
           <div className="rounded-lg border bg-muted/20 p-3 space-y-2">
@@ -355,11 +424,23 @@ export function RfiDetailSheet({
                 <p className="break-all">Recipients: {sentToEmails.join(", ")}</p>
               ) : null}
             </div>
-            {rfi.status === "draft" ? (
-              <Button size="sm" onClick={handleSendDraft} disabled={isSubmitting}>
-                {isSubmitting ? "Sending..." : "Send Now"}
-              </Button>
-            ) : null}
+            <div className="flex gap-2">
+              {rfi.status === "draft" ? (
+                <Button size="sm" onClick={handleSendDraft} disabled={isSubmitting}>
+                  {isSubmitting ? "Sending..." : "Send Now"}
+                </Button>
+              ) : null}
+              {rfi.status === "answered" ? (
+                <Button size="sm" variant="outline" onClick={handleClose} disabled={isSubmitting}>
+                  Close RFI
+                </Button>
+              ) : null}
+              {rfi.status === "closed" ? (
+                <Button size="sm" variant="outline" onClick={handleReopen} disabled={isSubmitting}>
+                  Reopen
+                </Button>
+              ) : null}
+            </div>
           </div>
 
           <Separator />
@@ -406,6 +487,51 @@ export function RfiDetailSheet({
               )}
             </div>
           </div>
+
+          {/* Cost/schedule impact → change order */}
+          {(typeof rfi.cost_impact_cents === "number" || typeof rfi.schedule_impact_days === "number" || linkedChangeOrder) && (
+            <div className="space-y-2">
+              <h4 className="text-sm font-medium">Impact</h4>
+              <div className="rounded-lg border p-4 space-y-3">
+                <div className="flex flex-wrap gap-4 text-sm">
+                  <div>
+                    <p className="text-xs text-muted-foreground">Cost impact</p>
+                    <p className="font-medium tabular-nums">
+                      {typeof rfi.cost_impact_cents === "number"
+                        ? `$${(rfi.cost_impact_cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2 })}`
+                        : "—"}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Schedule impact</p>
+                    <p className="font-medium tabular-nums">
+                      {typeof rfi.schedule_impact_days === "number" ? `${rfi.schedule_impact_days} days` : "—"}
+                    </p>
+                  </div>
+                </div>
+                {linkedChangeOrder ? (
+                  <div className="flex items-center justify-between border-t pt-3 text-sm">
+                    <div className="min-w-0">
+                      <p className="truncate font-medium">
+                        {linkedChangeOrder.co_number ? `CO #${linkedChangeOrder.co_number} — ` : ""}
+                        {linkedChangeOrder.title}
+                      </p>
+                      <p className="text-xs text-muted-foreground capitalize">{linkedChangeOrder.status.replace(/_/g, " ")}</p>
+                    </div>
+                    {linkedChangeOrder.total_cents != null && (
+                      <span className="shrink-0 text-sm font-medium tabular-nums">
+                        ${(linkedChangeOrder.total_cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2 })}
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <Button variant="outline" size="sm" onClick={handleConvertToChangeOrder} disabled={isSubmitting}>
+                    {isSubmitting ? "Creating..." : "Create draft change order"}
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Decision info */}
           {rfi.decision_status && (

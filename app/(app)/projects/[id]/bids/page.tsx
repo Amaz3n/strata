@@ -2,10 +2,12 @@ import { Suspense } from "react"
 import { notFound } from "next/navigation"
 import { PageLayout } from "@/components/layout/page-layout"
 import { getOrgCompaniesAction, getProjectAction } from "../actions"
-import { listBidPackagesAction } from "./actions"
+import { getProjectBuyoutSummaryAction, listBidPackagesAction } from "./actions"
 import { BidPackagesClient } from "@/components/bids/bid-packages-client"
 import { listCostCodes } from "@/lib/services/cost-codes"
 import { Skeleton } from "@/components/ui/skeleton"
+
+import { unwrapAction } from "@/lib/action-result"
 
 interface ProjectBidsPageProps {
   params: Promise<{ id: string }>
@@ -85,10 +87,11 @@ async function ProjectBidsData({
     notFound()
   }
 
-  const [packages, companies, costCodes] = await Promise.all([
+  const [packages, companies, costCodes, buyoutRows] = await Promise.all([
     listBidPackagesAction(id),
     getOrgCompaniesAction(),
     listCostCodes().catch(() => []),
+    getProjectBuyoutSummaryAction(id).catch(() => []),
   ])
 
   const tradeMap = new Map<string, string>()
@@ -109,6 +112,7 @@ async function ProjectBidsData({
       tradeOptions={tradeOptions}
       costCodes={costCodes}
       initialDraft={initialDraft}
+      buyoutRows={buyoutRows}
     />
   )
 }

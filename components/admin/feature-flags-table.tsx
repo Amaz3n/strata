@@ -38,6 +38,8 @@ import { Textarea } from "@/components/ui/textarea"
 import { useToast } from "@/hooks/use-toast"
 import type { FeatureFlag, FeatureFlagOrganization } from "@/lib/services/admin"
 
+import { unwrapAction } from "@/lib/action-result"
+
 const FLAG_PRESETS = [
   {
     key: "billing_autopilot",
@@ -172,7 +174,7 @@ export function FeatureFlagsTable({
         }
 
         if (form.flagId) {
-          await updateFeatureFlagAction({ ...input, flagId: form.flagId })
+          unwrapAction(await updateFeatureFlagAction({ ...input, flagId: form.flagId }))
           setFlags((current) =>
             current.map((flag) =>
               flag.id === form.flagId
@@ -188,7 +190,7 @@ export function FeatureFlagsTable({
           )
           toast({ title: "Feature flag updated" })
         } else {
-          const created = await createFeatureFlagAction(input)
+          const created = unwrapAction(await createFeatureFlagAction(input))
           setFlags((current) => [...current, created])
           toast({
             title: "Feature flag created",
@@ -212,7 +214,7 @@ export function FeatureFlagsTable({
     setBusyKey(flag.id)
     startTransition(async () => {
       try {
-        await toggleFeatureFlag(flag.id, flag.orgId, flag.flagKey, !flag.enabled)
+        unwrapAction(await toggleFeatureFlag(flag.id, flag.orgId, flag.flagKey, !flag.enabled))
         setFlags((current) =>
           current.map((item) => item.id === flag.id ? { ...item, enabled: !item.enabled } : item),
         )
@@ -237,7 +239,7 @@ export function FeatureFlagsTable({
     setBusyKey(deleteTarget.id)
     startTransition(async () => {
       try {
-        await deleteFeatureFlagAction({ flagId: deleteTarget.id, orgId: deleteTarget.orgId })
+        unwrapAction(await deleteFeatureFlagAction({ flagId: deleteTarget.id, orgId: deleteTarget.orgId }))
         setFlags((current) => current.filter((flag) => flag.id !== deleteTarget.id))
         toast({ title: "Feature flag deleted" })
         setDeleteTarget(null)

@@ -101,6 +101,8 @@ import type {
 } from "@/app/(app)/drawings/types";
 import { uploadDocumentFileDirect } from "@/lib/services/files-client";
 
+import { unwrapAction } from "@/lib/action-result"
+
 function dispatchNavRefresh() {
   window.dispatchEvent(new CustomEvent("docs-nav-refresh"));
 }
@@ -892,9 +894,9 @@ function UnifiedDocumentsLayoutInner() {
       setIsMoving(true);
       try {
         if (normalizedTarget) {
-          await createFolderAction(projectId, normalizedTarget);
+          unwrapAction(await createFolderAction(projectId, normalizedTarget));
         }
-        await bulkMoveFilesAction(fileIds, normalizedTarget, true);
+        unwrapAction(await bulkMoveFilesAction(fileIds, normalizedTarget, true));
         toast.success(
           `Moved ${fileIds.length} file${fileIds.length === 1 ? "" : "s"} to ${sourceLabel}`,
           { id: toastId },
@@ -1043,7 +1045,7 @@ function UnifiedDocumentsLayoutInner() {
       >,
     ) => {
       try {
-        const created = await createDrawingMarkupAction(markup);
+        const created = unwrapAction(await createDrawingMarkupAction(markup));
         setDrawingViewerMarkups((prev) => [...prev, created]);
         toast.success("Markup saved");
       } catch (error) {
@@ -1056,7 +1058,7 @@ function UnifiedDocumentsLayoutInner() {
 
   const handleDrawingMarkupDelete = useCallback(async (markupId: string) => {
     try {
-      await deleteDrawingMarkupAction(markupId);
+      unwrapAction(await deleteDrawingMarkupAction(markupId));
       setDrawingViewerMarkups((prev) =>
         prev.filter((item) => item.id !== markupId),
       );
@@ -1115,7 +1117,7 @@ function UnifiedDocumentsLayoutInner() {
         let entityId: string | null = null;
 
         if (input.entityType === "task") {
-          const created = await createTaskFromDrawingAction(targetProjectId, {
+          const created = unwrapAction(await createTaskFromDrawingAction(targetProjectId, {
             title: input.title,
             description: input.description,
             priority:
@@ -1125,10 +1127,10 @@ function UnifiedDocumentsLayoutInner() {
                   ? "low"
                   : "normal",
             status: "todo",
-          });
+          }));
           entityId = created.id;
         } else if (input.entityType === "rfi") {
-          const created = await createRfiFromDrawingAction({
+          const created = unwrapAction(await createRfiFromDrawingAction({
             projectId: targetProjectId,
             subject: input.subject ?? input.title,
             question: input.question ?? input.description ?? "",
@@ -1138,25 +1140,25 @@ function UnifiedDocumentsLayoutInner() {
                 : input.priority === "low"
                   ? "low"
                   : "normal",
-          });
+          }));
           entityId = created.id;
         } else if (input.entityType === "punch_list") {
-          const created = await createPunchItemFromDrawingAction({
+          const created = unwrapAction(await createPunchItemFromDrawingAction({
             projectId: targetProjectId,
             title: input.title,
             description: input.description,
             location: input.location,
             severity: input.priority,
-          });
+          }));
           entityId = created.id;
         } else if (input.entityType === "issue") {
-          const created = await createTaskFromDrawingAction(targetProjectId, {
+          const created = unwrapAction(await createTaskFromDrawingAction(targetProjectId, {
             title: input.title,
             description: input.description,
             priority: "high",
             status: "todo",
             tags: ["issue"],
-          });
+          }));
           entityId = created.id;
         }
 
@@ -1164,7 +1166,7 @@ function UnifiedDocumentsLayoutInner() {
           throw new Error("Unsupported entity type");
         }
 
-        const createdPin = await createDrawingPinAction({
+        const createdPin = unwrapAction(await createDrawingPinAction({
           project_id: targetProjectId,
           drawing_sheet_id: drawingViewerSheet.id,
           x_position: createFromDrawingPosition.x,
@@ -1173,7 +1175,7 @@ function UnifiedDocumentsLayoutInner() {
           entity_id: entityId,
           label: input.title,
           status: "open",
-        });
+        }));
 
         setDrawingViewerPins((prev) => [...prev, createdPin]);
         setDrawingViewerHighlightedPinId(createdPin.id);
@@ -1197,7 +1199,7 @@ function UnifiedDocumentsLayoutInner() {
 
     setIsCreatingFolder(true);
     try {
-      await createFolderAction(projectId, normalized);
+      unwrapAction(await createFolderAction(projectId, normalized));
       toast.success(`Created folder ${normalized}`);
       setCreateFolderDialogOpen(false);
       setNewFolderPath("");
@@ -1223,7 +1225,7 @@ function UnifiedDocumentsLayoutInner() {
 
     setIsRenaming(true);
     try {
-      await updateFileAction(renameFile.id, { file_name: nextName });
+      unwrapAction(await updateFileAction(renameFile.id, { file_name: nextName }));
       toast.success("File renamed");
       setRenameDialogOpen(false);
       setRenameFile(null);
@@ -1260,10 +1262,10 @@ function UnifiedDocumentsLayoutInner() {
     if (!shareFile) return;
     setIsSavingShare(true);
     try {
-      await updateFileAction(shareFile.id, {
+      unwrapAction(await updateFileAction(shareFile.id, {
         share_with_clients: shareWithClients,
         share_with_subs: shareWithSubs,
-      });
+      }));
       toast.success("Sharing updated");
       setShareDialogOpen(false);
       setShareFile(null);
@@ -1288,12 +1290,12 @@ function UnifiedDocumentsLayoutInner() {
               now.getTime() +
                 (shareLinkExpiry === "7d" ? 7 : 30) * 24 * 60 * 60 * 1000,
             ).toISOString();
-      const link = await createFileShareLinkAction({
+      const link = unwrapAction(await createFileShareLinkAction({
         file_id: shareFile.id,
         label: shareLinkLabel.trim() || null,
         expires_at,
         allow_download: shareLinkAllowDownload,
-      });
+      }));
       setShareLinks((prev) => [link, ...prev]);
       setShareLinkLabel("");
       const origin =
@@ -1329,7 +1331,7 @@ function UnifiedDocumentsLayoutInner() {
   const handleRevokeShareLink = useCallback(async (link: FileShareLink) => {
     setRevokingShareLinkId(link.id);
     try {
-      await revokeFileShareLinkAction(link.id);
+      unwrapAction(await revokeFileShareLinkAction(link.id));
       setShareLinks((prev) =>
         prev.map((item) =>
           item.id === link.id
@@ -1365,7 +1367,7 @@ function UnifiedDocumentsLayoutInner() {
 
     setIsDeleting(true);
     try {
-      await bulkDeleteFilesAction(deleteFileIds);
+      unwrapAction(await bulkDeleteFilesAction(deleteFileIds));
       toast.success(
         `Moved ${deleteFileIds.length} file${deleteFileIds.length === 1 ? "" : "s"} to trash`,
       );
@@ -1456,7 +1458,7 @@ function UnifiedDocumentsLayoutInner() {
       formData.append("file", file);
       if (label) formData.append("label", label);
       if (notes) formData.append("notes", notes);
-      await uploadFileVersionAction(formData);
+      unwrapAction(await uploadFileVersionAction(formData));
       const versions = await listFileVersionsAction(fileId);
       setVersionsByFile((prev) => ({
         ...prev,
@@ -1510,7 +1512,7 @@ function UnifiedDocumentsLayoutInner() {
   const handleMakeCurrentVersion = useCallback(
     async (versionId: string) => {
       if (!viewerFile) return;
-      await makeVersionCurrentAction(viewerFile.id, versionId);
+      unwrapAction(await makeVersionCurrentAction(viewerFile.id, versionId));
       const versions = await listFileVersionsAction(viewerFile.id);
       setVersionsByFile((prev) => ({
         ...prev,
@@ -1528,7 +1530,7 @@ function UnifiedDocumentsLayoutInner() {
 
   const handleUpdateVersion = useCallback(
     async (versionId: string, updates: { label?: string; notes?: string }) => {
-      await updateFileVersionAction(versionId, updates);
+      unwrapAction(await updateFileVersionAction(versionId, updates));
       if (viewerFile) {
         const versions = await listFileVersionsAction(viewerFile.id);
         setVersionsByFile((prev) => ({
@@ -1542,7 +1544,7 @@ function UnifiedDocumentsLayoutInner() {
 
   const handleDeleteVersion = useCallback(
     async (versionId: string) => {
-      await deleteFileVersionAction(versionId);
+      unwrapAction(await deleteFileVersionAction(versionId));
       if (viewerFile) {
         const versions = await listFileVersionsAction(viewerFile.id);
         setVersionsByFile((prev) => ({
@@ -1567,7 +1569,7 @@ function UnifiedDocumentsLayoutInner() {
     if (!folderRenamePath || !folderRenameValue.trim()) return;
     setIsRenamingFolder(true);
     try {
-      await renameFolderAction(projectId, folderRenamePath, folderRenameValue.trim());
+      unwrapAction(await renameFolderAction(projectId, folderRenamePath, folderRenameValue.trim()));
       setFolderRenameOpen(false);
       await refreshFiles();
       await refreshFolderPermissions();
@@ -1588,7 +1590,7 @@ function UnifiedDocumentsLayoutInner() {
     if (!folderDeletePath) return;
     setIsDeletingFolder(true);
     try {
-      await deleteFolderAction(projectId, folderDeletePath);
+      unwrapAction(await deleteFolderAction(projectId, folderDeletePath));
       setFolderDeleteOpen(false);
       await refreshFiles();
       await refreshFolderPermissions();
@@ -1613,7 +1615,7 @@ function UnifiedDocumentsLayoutInner() {
     if (!folderSharePath) return;
     setIsSavingFolderShare(true);
     try {
-      await updateFolderPermissionsAction(
+      unwrapAction(await updateFolderPermissionsAction(
         projectId,
         folderSharePath,
         {
@@ -1621,7 +1623,7 @@ function UnifiedDocumentsLayoutInner() {
           share_with_subs: folderShareWithSubs,
         },
         applyToExisting
-      );
+      ));
       setFolderShareOpen(false);
       await refreshFolderPermissions();
       if (applyToExisting) {

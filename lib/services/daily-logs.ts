@@ -3,6 +3,7 @@ import type { DailyLogInput } from "@/lib/validation/daily-logs"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
+import { requirePermission, requireProjectPermission } from "@/lib/services/permissions"
 
 function mapDailyLog(row: any): DailyLog {
   const weather = row.weather ?? {}
@@ -26,7 +27,8 @@ function mapDailyLog(row: any): DailyLog {
 }
 
 export async function listDailyLogs(orgId?: string): Promise<DailyLog[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("daily_log.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("daily_logs")
@@ -44,6 +46,7 @@ export async function listDailyLogs(orgId?: string): Promise<DailyLog[]> {
 
 export async function createDailyLog({ input, orgId }: { input: DailyLogInput; orgId?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, input.project_id, "daily_log.write")
 
   const { data, error } = await supabase
     .from("daily_logs")

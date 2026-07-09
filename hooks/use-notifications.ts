@@ -7,6 +7,8 @@ import { toast } from 'sonner'
 import { getUserNotificationsAction, getUnreadCountAction, markNotificationAsReadAction } from '@/app/(app)/settings/actions'
 import type { NotificationRecord, NotificationType } from '@/lib/types/notifications'
 
+import { unwrapAction } from "@/lib/action-result"
+
 export function useNotifications() {
   const [notifications, setNotifications] = useState<NotificationRecord[]>([])
   const [unreadCount, setUnreadCount] = useState(0)
@@ -90,7 +92,7 @@ export function useNotifications() {
 
   const markAsRead = async (notificationId: string) => {
     try {
-      await markNotificationAsReadAction(notificationId)
+      unwrapAction(await markNotificationAsReadAction(notificationId))
 
       // Update local state
       setNotifications(prev =>

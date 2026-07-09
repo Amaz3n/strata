@@ -67,6 +67,8 @@ import { ConvertProspectSheet } from "./convert-prospect-sheet"
 import { EstimateCreateSheet, type EstimateSheetInitial, type EstimateTemplateOption } from "@/components/estimates/estimate-create-sheet"
 import { EstimateActivitySheet } from "@/components/estimates/estimate-activity-sheet"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ProspectDetailSheetProps {
   prospectId?: string
   contactId?: string
@@ -390,7 +392,7 @@ export function ProspectDetailSheet({
     if (!prospect) return
     setCreating(true)
     try {
-      const estimate = await createEstimateAction({ ...input, prospect_id: prospect.id })
+      const estimate = unwrapAction(await createEstimateAction({ ...input, prospect_id: prospect.id }))
       const recipient = createData?.contacts.find((c) => c.id === estimate.recipient_contact_id)
       setEstimates((prev) => [{ ...estimate, recipient_name: recipient?.full_name ?? null }, ...prev])
       setCreateOpen(false)
@@ -407,7 +409,7 @@ export function ProspectDetailSheet({
   async function handleSend(estimateId: string) {
     setSendingId(estimateId)
     try {
-      const result = await sendEstimateAction(estimateId)
+      const result = unwrapAction(await sendEstimateAction(estimateId))
       setEstimates((prev) => prev.map((e) => (e.id === estimateId ? { ...e, status: "sent" } : e)))
       await copyToClipboard(result.url)
       toast({
@@ -474,7 +476,7 @@ export function ProspectDetailSheet({
     if (!reviseTarget) return
     setRevising(true)
     try {
-      await createEstimateVersionAction(reviseTarget.estimateId, { ...input, prospect_id: prospect?.id })
+      unwrapAction(await createEstimateVersionAction(reviseTarget.estimateId, { ...input, prospect_id: prospect?.id }))
       setReviseOpen(false)
       setReviseTarget(null)
       toast({ title: "New version created", description: "Send the revised estimate when it's ready." })
@@ -1000,7 +1002,7 @@ function FollowUpControl({
   const apply = (next: Date | null) => {
     startTransition(async () => {
       try {
-        await setProspectFollowUpAction(prospectId, next ? next.toISOString() : null)
+        unwrapAction(await setProspectFollowUpAction(prospectId, next ? next.toISOString() : null))
         await onChanged()
         setOpen(false)
         toast({ title: next ? "Follow-up scheduled" : "Follow-up cleared" })

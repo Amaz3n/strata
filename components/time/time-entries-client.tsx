@@ -24,6 +24,8 @@ import {
 import { TimeEntryForm } from "@/components/time/time-entry-form"
 import type { TeamMember } from "@/lib/types"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface CostCodeOption {
   id: string
   code?: string | null
@@ -163,7 +165,7 @@ export function TimeEntriesClient({
     return new Promise<void>((resolve, reject) => {
       startTransition(async () => {
         try {
-          const next = await createMyTimeEntryAction(projectId, formData)
+          const next = unwrapAction(await createMyTimeEntryAction(projectId, formData))
           setItems((next as TimeEntry[]) ?? [])
           setSheetOpen(false)
           toast.success("Time submitted for review")
@@ -185,7 +187,7 @@ export function TimeEntriesClient({
     return new Promise<void>((resolve, reject) => {
       startTransition(async () => {
         try {
-          const next = await createTimeEntriesAction(projectId, formData)
+          const next = unwrapAction(await createTimeEntriesAction(projectId, formData))
           setItems((next as TimeEntry[]) ?? [])
           setSheetOpen(false)
           toast.success(payload.crew.length > 1 ? `${payload.crew.length} entries submitted` : "Time entry submitted")
@@ -202,7 +204,7 @@ export function TimeEntriesClient({
   function copyApprovalLink(entryId: string) {
     startTransition(async () => {
       try {
-        const result = await createTimeEntryApprovalLinkFormAction(projectId, entryId)
+        const result = unwrapAction(await createTimeEntryApprovalLinkFormAction(projectId, entryId))
         await navigator.clipboard?.writeText(result.url)
         toast.success("Client approval link copied")
       } catch (error: any) {

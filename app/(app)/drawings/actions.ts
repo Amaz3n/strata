@@ -103,6 +103,16 @@ import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import type { UploadReviewSheet } from "./types"
 
+import { unwrapAction, actionError, type ActionResult  } from "@/lib/action-result"
+
+async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
+  try {
+    return { success: true, data: await fn() }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
 type TargetDrawingSheet = {
   id: string
   sheet_number: string
@@ -120,14 +130,14 @@ type TargetDrawingSheet = {
 export async function listDrawingSetsAction(
   filters: Partial<DrawingSetListFilters> = {}
 ): Promise<DrawingSet[]> {
-  return listDrawingSets(filters)
+      return listDrawingSets(filters)
 }
 
 /**
  * Get a single drawing set
  */
 export async function getDrawingSetAction(setId: string): Promise<DrawingSet | null> {
-  return getDrawingSet(setId)
+      return getDrawingSet(setId)
 }
 
 /**
@@ -135,12 +145,14 @@ export async function getDrawingSetAction(setId: string): Promise<DrawingSet | n
  */
 export async function createDrawingSetAction(
   input: DrawingSetInput
-): Promise<DrawingSet> {
-  await requireAnyPermission(["drawing.upload", "org.admin"])
-  const result = await createDrawingSet(input)
-  revalidatePath("/drawings")
-  revalidatePath(`/projects/${input.project_id}`)
-  return result
+): Promise<ActionResult<DrawingSet>> {
+  return run(async () => {
+      await requireAnyPermission(["drawing.upload", "org.admin"])
+      const result = await createDrawingSet(input)
+      revalidatePath("/drawings")
+      revalidatePath(`/projects/${input.project_id}`)
+      return result
+  })
 }
 
 /**
@@ -149,25 +161,29 @@ export async function createDrawingSetAction(
 export async function updateDrawingSetAction(
   setId: string,
   updates: DrawingSetUpdate
-): Promise<DrawingSet> {
-  await requireAnyPermission(["drawing.upload", "org.admin"])
-  const result = await updateDrawingSet(setId, updates)
-  revalidatePath("/drawings")
-  revalidatePath(`/projects/${result.project_id}`)
-  return result
+): Promise<ActionResult<DrawingSet>> {
+  return run(async () => {
+      await requireAnyPermission(["drawing.upload", "org.admin"])
+      const result = await updateDrawingSet(setId, updates)
+      revalidatePath("/drawings")
+      revalidatePath(`/projects/${result.project_id}`)
+      return result
+  })
 }
 
 /**
  * Delete a drawing set
  */
-export async function deleteDrawingSetAction(setId: string): Promise<void> {
-  await requireAnyPermission(["docs.delete", "org.admin"])
-  const set = await getDrawingSet(setId)
-  await deleteDrawingSet(setId)
-  revalidatePath("/drawings")
-  if (set?.project_id) {
-    revalidatePath(`/projects/${set.project_id}`)
-  }
+export async function deleteDrawingSetAction(setId: string): Promise<ActionResult<void>> {
+  return run(async () => {
+      await requireAnyPermission(["docs.delete", "org.admin"])
+      const set = await getDrawingSet(setId)
+      await deleteDrawingSet(setId)
+      revalidatePath("/drawings")
+      if (set?.project_id) {
+        revalidatePath(`/projects/${set.project_id}`)
+      }
+  })
 }
 
 /**
@@ -189,222 +205,224 @@ export async function createDrawingSetFromUpload(input: {
   receivedFrom?: string
   notes?: string
   targetSheetId?: string
-}): Promise<{ set: DrawingSet; draftRevisionId: string }> {
-  const { supabase, orgId } = await requireOrgContext()
-  await requireAnyPermission(["drawing.upload", "org.admin"])
-  const { data: project, error: projectError } = await supabase
-    .from("projects")
-    .select("id, name")
-    .eq("org_id", orgId)
-    .eq("id", input.projectId)
-    .maybeSingle()
+}): Promise<ActionResult<{ set: DrawingSet; draftRevisionId: string }>> {
+  return run(async () => {
+      const { supabase, orgId } = await requireOrgContext()
+      await requireAnyPermission(["drawing.upload", "org.admin"])
+      const { data: project, error: projectError } = await supabase
+        .from("projects")
+        .select("id, name")
+        .eq("org_id", orgId)
+        .eq("id", input.projectId)
+        .maybeSingle()
 
-  if (projectError || !project) {
-    throw new Error("Invalid project scope for drawing upload")
-  }
+      if (projectError || !project) {
+        throw new Error("Invalid project scope for drawing upload")
+      }
 
-  const normalizedStoragePath = ensureOrgScopedPath(orgId, input.storagePath)
-  const allowedPrefixes = [
-    `${orgId}/${input.projectId}/drawings/uploads/`,
-    `${orgId}/${input.projectId}/drawings/sets/`,
-  ]
+      const normalizedStoragePath = ensureOrgScopedPath(orgId, input.storagePath)
+      const allowedPrefixes = [
+        `${orgId}/${input.projectId}/drawings/uploads/`,
+        `${orgId}/${input.projectId}/drawings/sets/`,
+      ]
 
-  if (!allowedPrefixes.some((prefix) => normalizedStoragePath.startsWith(prefix))) {
-    throw new Error("Invalid drawing upload path for project scope")
-  }
+      if (!allowedPrefixes.some((prefix) => normalizedStoragePath.startsWith(prefix))) {
+        throw new Error("Invalid drawing upload path for project scope")
+      }
 
-  let targetSheet: TargetDrawingSheet | null = null
-  if (input.targetSheetId) {
-    const { data, error } = await supabase
-      .from("drawing_sheets")
-      .select("id, sheet_number, sheet_title, discipline")
-      .eq("org_id", orgId)
-      .eq("project_id", input.projectId)
-      .eq("id", input.targetSheetId)
-      .maybeSingle()
+      let targetSheet: TargetDrawingSheet | null = null
+      if (input.targetSheetId) {
+        const { data, error } = await supabase
+          .from("drawing_sheets")
+          .select("id, sheet_number, sheet_title, discipline")
+          .eq("org_id", orgId)
+          .eq("project_id", input.projectId)
+          .eq("id", input.targetSheetId)
+          .maybeSingle()
 
-    if (error || !data) {
-      throw new Error("Invalid target sheet for drawing revision")
-    }
-    targetSheet = data as TargetDrawingSheet
-  }
+        if (error || !data) {
+          throw new Error("Invalid target sheet for drawing revision")
+        }
+        targetSheet = data as TargetDrawingSheet
+      }
 
-  // Create file record for the uploaded PDF
-  const fileRecord = await createFileRecord({
-    project_id: input.projectId,
-    file_name: input.fileName,
-    storage_path: normalizedStoragePath,
-    mime_type: input.mimeType,
-    size_bytes: input.fileSize,
-    visibility: "private",
-    category: "plans",
-    source: "upload",
-  })
-
-  // Single register per project: reuse the project's canonical (oldest) set.
-  // An upload processes into a DRAFT revision and never mutates the live set or
-  // its sheets — nothing changes until the user publishes. So the live set stays
-  // 'ready' the whole time; draft progress is tracked on the revision row.
-  const { data: existingSets, error: existingSetsError } = await supabase
-    .from("drawing_sets")
-    .select("id")
-    .eq("org_id", orgId)
-    .eq("project_id", input.projectId)
-    .order("created_at", { ascending: true })
-    .limit(1)
-
-  if (existingSetsError) {
-    throw new Error(`Failed to load existing drawing sets: ${existingSetsError.message}`)
-  }
-
-  // Only one in-flight draft per project: require publishing/discarding first.
-  const { data: pendingDrafts, error: pendingError } = await supabase
-    .from("drawing_revisions")
-    .select("id")
-    .eq("org_id", orgId)
-    .eq("project_id", input.projectId)
-    .in("status", ["processing", "draft"])
-    .limit(1)
-
-  if (pendingError) {
-    throw new Error(`Failed to check pending revisions: ${pendingError.message}`)
-  }
-  if (pendingDrafts && pendingDrafts.length > 0) {
-    throw new Error("A revision is already pending review. Publish or discard it before uploading another.")
-  }
-
-  let drawingSet: DrawingSet
-
-  if (existingSets && existingSets.length > 0) {
-    const canonicalSetId = existingSets[0].id as string
-    const { error: updateError } = await supabase
-      .from("drawing_sets")
-      .update({ source_file_id: fileRecord.id, status: "ready", processing_stage: "ready" })
-      .eq("org_id", orgId)
-      .eq("id", canonicalSetId)
-
-    if (updateError) {
-      throw new Error(`Failed to prepare drawing set: ${updateError.message}`)
-    }
-
-    const reusedSet = await getDrawingSet(canonicalSetId)
-    if (!reusedSet) {
-      throw new Error("Prepared drawing set could not be loaded")
-    }
-    drawingSet = reusedSet
-  } else {
-    drawingSet = await createDrawingSet({
-      project_id: input.projectId,
-      title: input.title || `${project.name} Drawings`,
-      set_type: input.setType as any,
-      source_file_id: fileRecord.id,
-    })
-
-    const { error: stageError } = await supabase
-      .from("drawing_sets")
-      .update({ status: "ready", processing_stage: "ready" })
-      .eq("org_id", orgId)
-      .eq("id", drawingSet.id)
-
-    if (stageError) {
-      console.warn("Failed to set initial set status:", stageError.message)
-    }
-  }
-
-  // Create the draft revision the worker will process into. Default label is a
-  // sensible issuance name the user can rename at publish time.
-  const { count: publishedCount } = await supabase
-    .from("drawing_revisions")
-    .select("*", { count: "exact", head: true })
-    .eq("org_id", orgId)
-    .eq("project_id", input.projectId)
-    .eq("status", "published")
-
-  const defaultLabel = !publishedCount ? "Initial Set" : `Revision ${publishedCount + 1}`
-  const cleanLabel = input.issuanceLabel?.trim() || defaultLabel
-
-  const { data: draftRevision, error: draftError } = await supabase
-    .from("drawing_revisions")
-    .insert({
-      org_id: orgId,
-      project_id: input.projectId,
-      drawing_set_id: drawingSet.id,
-      revision_label: cleanLabel,
-      issuance_type: input.issuanceType ?? "revision",
-      status: "processing",
-      processing_stage: "queued",
-      issued_date: input.issuedDate || new Date().toISOString(),
-      issued_by: input.issuedBy?.trim() || null,
-      received_from: input.receivedFrom?.trim() || null,
-      notes: input.notes?.trim() || null,
-      source_file_id: fileRecord.id,
-    })
-    .select("id")
-    .single()
-
-  if (draftError || !draftRevision) {
-    throw new Error(`Failed to create draft revision: ${draftError?.message}`)
-  }
-
-  const draftRevisionId = draftRevision.id as string
-  const drawingsVisionConfig = await getPlatformAiFeatureDefaultConfig({
-    supabase,
-    feature: "drawings_vision",
-  })
-
-  // Trigger processing via outbox system
-  try {
-    console.log(`[Upload] Queueing processing jobs for drawing set: ${drawingSet.id}`)
-
-    // Queue a job to process the drawing set and create individual sheets
-    const { error: jobError } = await supabase
-      .from("outbox")
-      .insert({
-        org_id: orgId,
-        job_type: "process_drawing_set",
-        payload: {
-          drawingSetId: drawingSet.id,
-          projectId: input.projectId,
-          sourceFileId: fileRecord.id,
-          storagePath: fileRecord.storage_path,
-          draftRevisionId,
-          orgId: orgId,
-          targetSheetId: targetSheet?.id,
-          aiVision: {
-            provider: drawingsVisionConfig.provider,
-            model: drawingsVisionConfig.model,
-            source: drawingsVisionConfig.source,
-          },
-        },
-        run_at: new Date().toISOString(),
+      // Create file record for the uploaded PDF
+      const fileRecord = await createFileRecord({
+        project_id: input.projectId,
+        file_name: input.fileName,
+        storage_path: normalizedStoragePath,
+        mime_type: input.mimeType,
+        size_bytes: input.fileSize,
+        visibility: "private",
+        category: "plans",
+        source: "upload",
       })
 
-    if (jobError) {
-      console.error("Failed to queue processing job:", jobError)
-      // Mark the draft revision failed so the review UI can react.
-      await supabase
-        .from("drawing_revisions")
-        .update({ processing_stage: "failed", error_message: "Failed to queue processing job" })
+      // Single register per project: reuse the project's canonical (oldest) set.
+      // An upload processes into a DRAFT revision and never mutates the live set or
+      // its sheets — nothing changes until the user publishes. So the live set stays
+      // 'ready' the whole time; draft progress is tracked on the revision row.
+      const { data: existingSets, error: existingSetsError } = await supabase
+        .from("drawing_sets")
+        .select("id")
         .eq("org_id", orgId)
-        .eq("id", draftRevisionId)
-    } else {
-      console.log(`[Upload] Successfully queued processing job for drawing set: ${drawingSet.id}`)
-      // Best-effort fast path; the process-outbox cron drains the queue if
-      // this kick fails, so the job is never lost.
-      const trigger = await triggerDrawingsPipeline()
-      if (!trigger.triggered) {
-        console.warn("[Upload] Drawings pipeline kick failed (cron will pick up):", trigger.error)
+        .eq("project_id", input.projectId)
+        .order("created_at", { ascending: true })
+        .limit(1)
+
+      if (existingSetsError) {
+        throw new Error(`Failed to load existing drawing sets: ${existingSetsError.message}`)
       }
-    }
-  } catch (error) {
-    console.error("Failed to queue processing job:", error)
-    // The draft revision stays in "processing" - the cron retries it.
-  }
 
-  revalidatePath("/drawings")
-  revalidatePath(`/projects/${input.projectId}`)
+      // Only one in-flight draft per project: require publishing/discarding first.
+      const { data: pendingDrafts, error: pendingError } = await supabase
+        .from("drawing_revisions")
+        .select("id")
+        .eq("org_id", orgId)
+        .eq("project_id", input.projectId)
+        .in("status", ["processing", "draft"])
+        .limit(1)
 
-  return { set: drawingSet, draftRevisionId }
+      if (pendingError) {
+        throw new Error(`Failed to check pending revisions: ${pendingError.message}`)
+      }
+      if (pendingDrafts && pendingDrafts.length > 0) {
+        throw new Error("A revision is already pending review. Publish or discard it before uploading another.")
+      }
+
+      let drawingSet: DrawingSet
+
+      if (existingSets && existingSets.length > 0) {
+        const canonicalSetId = existingSets[0].id as string
+        const { error: updateError } = await supabase
+          .from("drawing_sets")
+          .update({ source_file_id: fileRecord.id, status: "ready", processing_stage: "ready" })
+          .eq("org_id", orgId)
+          .eq("id", canonicalSetId)
+
+        if (updateError) {
+          throw new Error(`Failed to prepare drawing set: ${updateError.message}`)
+        }
+
+        const reusedSet = await getDrawingSet(canonicalSetId)
+        if (!reusedSet) {
+          throw new Error("Prepared drawing set could not be loaded")
+        }
+        drawingSet = reusedSet
+      } else {
+        drawingSet = await createDrawingSet({
+          project_id: input.projectId,
+          title: input.title || `${project.name} Drawings`,
+          set_type: input.setType as any,
+          source_file_id: fileRecord.id,
+        })
+
+        const { error: stageError } = await supabase
+          .from("drawing_sets")
+          .update({ status: "ready", processing_stage: "ready" })
+          .eq("org_id", orgId)
+          .eq("id", drawingSet.id)
+
+        if (stageError) {
+          console.warn("Failed to set initial set status:", stageError.message)
+        }
+      }
+
+      // Create the draft revision the worker will process into. Default label is a
+      // sensible issuance name the user can rename at publish time.
+      const { count: publishedCount } = await supabase
+        .from("drawing_revisions")
+        .select("*", { count: "exact", head: true })
+        .eq("org_id", orgId)
+        .eq("project_id", input.projectId)
+        .eq("status", "published")
+
+      const defaultLabel = !publishedCount ? "Initial Set" : `Revision ${publishedCount + 1}`
+      const cleanLabel = input.issuanceLabel?.trim() || defaultLabel
+
+      const { data: draftRevision, error: draftError } = await supabase
+        .from("drawing_revisions")
+        .insert({
+          org_id: orgId,
+          project_id: input.projectId,
+          drawing_set_id: drawingSet.id,
+          revision_label: cleanLabel,
+          issuance_type: input.issuanceType ?? "revision",
+          status: "processing",
+          processing_stage: "queued",
+          issued_date: input.issuedDate || new Date().toISOString(),
+          issued_by: input.issuedBy?.trim() || null,
+          received_from: input.receivedFrom?.trim() || null,
+          notes: input.notes?.trim() || null,
+          source_file_id: fileRecord.id,
+        })
+        .select("id")
+        .single()
+
+      if (draftError || !draftRevision) {
+        throw new Error(`Failed to create draft revision: ${draftError?.message}`)
+      }
+
+      const draftRevisionId = draftRevision.id as string
+      const drawingsVisionConfig = await getPlatformAiFeatureDefaultConfig({
+        supabase,
+        feature: "drawings_vision",
+      })
+
+      // Trigger processing via outbox system
+      try {
+        console.log(`[Upload] Queueing processing jobs for drawing set: ${drawingSet.id}`)
+
+        // Queue a job to process the drawing set and create individual sheets
+        const { error: jobError } = await supabase
+          .from("outbox")
+          .insert({
+            org_id: orgId,
+            job_type: "process_drawing_set",
+            payload: {
+              drawingSetId: drawingSet.id,
+              projectId: input.projectId,
+              sourceFileId: fileRecord.id,
+              storagePath: fileRecord.storage_path,
+              draftRevisionId,
+              orgId: orgId,
+              targetSheetId: targetSheet?.id,
+              aiVision: {
+                provider: drawingsVisionConfig.provider,
+                model: drawingsVisionConfig.model,
+                source: drawingsVisionConfig.source,
+              },
+            },
+            run_at: new Date().toISOString(),
+          })
+
+        if (jobError) {
+          console.error("Failed to queue processing job:", jobError)
+          // Mark the draft revision failed so the review UI can react.
+          await supabase
+            .from("drawing_revisions")
+            .update({ processing_stage: "failed", error_message: "Failed to queue processing job" })
+            .eq("org_id", orgId)
+            .eq("id", draftRevisionId)
+        } else {
+          console.log(`[Upload] Successfully queued processing job for drawing set: ${drawingSet.id}`)
+          // Best-effort fast path; the process-outbox cron drains the queue if
+          // this kick fails, so the job is never lost.
+          const trigger = await triggerDrawingsPipeline()
+          if (!trigger.triggered) {
+            console.warn("[Upload] Drawings pipeline kick failed (cron will pick up):", trigger.error)
+          }
+        }
+      } catch (error) {
+        console.error("Failed to queue processing job:", error)
+        // The draft revision stays in "processing" - the cron retries it.
+      }
+
+      revalidatePath("/drawings")
+      revalidatePath(`/projects/${input.projectId}`)
+
+      return { set: drawingSet, draftRevisionId }
+  })
 }
 
 /**
@@ -412,168 +430,67 @@ export async function createDrawingSetFromUpload(input: {
  * processing job for the revision (idempotent: already-processed pages are
  * skipped by the pipeline).
  */
-export async function retryDraftRevisionAction(revisionId: string): Promise<void> {
-  const { supabase, orgId } = await requireOrgContext()
-  await requireAnyPermission(["drawing.upload", "org.admin"])
+export async function retryDraftRevisionAction(revisionId: string): Promise<ActionResult<void>> {
+  return run(async () => {
+      const { supabase, orgId } = await requireOrgContext()
+      await requireAnyPermission(["drawing.upload", "org.admin"])
 
-  const { data: revision, error } = await supabase
-    .from("drawing_revisions")
-    .select("id, project_id, drawing_set_id, status, processing_stage, source_file_id")
-    .eq("org_id", orgId)
-    .eq("id", revisionId)
-    .maybeSingle()
-  if (error || !revision) {
-    throw new Error("Revision not found")
-  }
-  if (revision.status === "published") {
-    throw new Error("Revision is already published")
-  }
+      const { data: revision, error } = await supabase
+        .from("drawing_revisions")
+        .select("id, project_id, drawing_set_id, status, processing_stage, source_file_id")
+        .eq("org_id", orgId)
+        .eq("id", revisionId)
+        .maybeSingle()
+      if (error || !revision) {
+        throw new Error("Revision not found")
+      }
+      if (revision.status === "published") {
+        throw new Error("Revision is already published")
+      }
 
-  if (!revision.source_file_id) {
-    throw new Error("Revision has no source file to reprocess")
-  }
+      if (!revision.source_file_id) {
+        throw new Error("Revision has no source file to reprocess")
+      }
 
-  const { data: fileData } = await supabase
-    .from("files")
-    .select("storage_path")
-    .eq("id", revision.source_file_id)
-    .single()
-  if (!fileData?.storage_path) {
-    throw new Error("Source file not found")
-  }
+      const { data: fileData } = await supabase
+        .from("files")
+        .select("storage_path")
+        .eq("id", revision.source_file_id)
+        .single()
+      if (!fileData?.storage_path) {
+        throw new Error("Source file not found")
+      }
 
-  await supabase
-    .from("drawing_revisions")
-    .update({ status: "processing", processing_stage: "queued", error_message: null })
-    .eq("org_id", orgId)
-    .eq("id", revisionId)
+      await supabase
+        .from("drawing_revisions")
+        .update({ status: "processing", processing_stage: "queued", error_message: null })
+        .eq("org_id", orgId)
+        .eq("id", revisionId)
 
-  // Clear any stuck jobs for this revision, then requeue the split job. The
-  // pipeline skips pages that already have versions, so this is safe.
-  await supabase
-    .from("outbox")
-    .update({ status: "completed", last_error: "Superseded by manual retry" })
-    .in("job_type", ["process_drawing_set", "process_drawing_page"])
-    .in("status", ["pending", "failed"])
-    .contains("payload", { draftRevisionId: revisionId })
+      // Clear any stuck jobs for this revision, then requeue the split job. The
+      // pipeline skips pages that already have versions, so this is safe.
+      await supabase
+        .from("outbox")
+        .update({ status: "completed", last_error: "Superseded by manual retry" })
+        .in("job_type", ["process_drawing_set", "process_drawing_page"])
+        .in("status", ["pending", "failed"])
+        .contains("payload", { draftRevisionId: revisionId })
 
-  const drawingsVisionConfig = await getPlatformAiFeatureDefaultConfig({
-    supabase,
-    feature: "drawings_vision",
-  })
+      const drawingsVisionConfig = await getPlatformAiFeatureDefaultConfig({
+        supabase,
+        feature: "drawings_vision",
+      })
 
-  const { error: jobError } = await supabase.from("outbox").insert({
-    org_id: orgId,
-    job_type: "process_drawing_set",
-    payload: {
-      drawingSetId: revision.drawing_set_id,
-      orgId,
-      projectId: revision.project_id,
-      sourceFileId: revision.source_file_id,
-      storagePath: fileData.storage_path,
-      draftRevisionId: revisionId,
-      aiVision: {
-        provider: drawingsVisionConfig.provider,
-        model: drawingsVisionConfig.model,
-        source: drawingsVisionConfig.source,
-      },
-    },
-    run_at: new Date().toISOString(),
-  })
-  if (jobError) {
-    throw new Error(`Failed to requeue processing: ${jobError.message}`)
-  }
-
-  await triggerDrawingsPipeline()
-  revalidatePath("/drawings")
-  revalidatePath(`/projects/${revision.project_id}`)
-}
-
-/**
- * Retry processing a failed drawing set. Also handles the common case where
- * the failure lives on the pending draft revision rather than the set row.
- */
-export async function retryProcessingAction(setId: string): Promise<DrawingSet> {
-  const { supabase, orgId } = await requireOrgContext()
-  await requireAnyPermission(["drawing.upload", "org.admin"])
-
-  const set = await getDrawingSet(setId)
-  if (!set) {
-    throw new Error("Drawing set not found")
-  }
-
-  if (set.status !== "failed") {
-    // Single-register flow: the set stays "ready" while a draft revision
-    // processes, so look for a failed/stuck draft revision to retry instead.
-    const { data: failedRevision } = await supabase
-      .from("drawing_revisions")
-      .select("id")
-      .eq("org_id", orgId)
-      .eq("project_id", set.project_id)
-      .in("status", ["processing", "draft"])
-      .in("processing_stage", ["failed", "worker_unavailable", "queued"])
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-
-    if (failedRevision) {
-      await retryDraftRevisionAction(failedRevision.id)
-      return set
-    }
-
-    throw new Error("Can only retry failed drawing sets")
-  }
-
-  // Reset status to processing
-  const updated = await updateDrawingSet(setId, {
-    status: "processing",
-    error_message: null,
-    processed_pages: 0,
-  })
-
-  await supabase
-    .from("drawing_sets")
-    .update({
-      processing_stage: "queued",
-      total_pages: null,
-      processed_at: null,
-    })
-    .eq("org_id", orgId)
-    .eq("id", setId)
-
-  // Get the source file path
-  if (!set.source_file_id) {
-    throw new Error("No source file found for this drawing set")
-  }
-
-  const { data: fileData } = await supabase
-    .from("files")
-    .select("storage_path")
-    .eq("id", set.source_file_id)
-    .single()
-
-  if (!fileData?.storage_path) {
-    throw new Error("Source file not found")
-  }
-
-  const drawingsVisionConfig = await getPlatformAiFeatureDefaultConfig({
-    supabase,
-    feature: "drawings_vision",
-  })
-
-  // Queue processing again (worker path supports R2-backed uploads)
-  try {
-    const { error: jobError } = await supabase
-      .from("outbox")
-      .insert({
+      const { error: jobError } = await supabase.from("outbox").insert({
         org_id: orgId,
         job_type: "process_drawing_set",
         payload: {
-          drawingSetId: set.id,
+          drawingSetId: revision.drawing_set_id,
           orgId,
-          projectId: set.project_id,
-          sourceFileId: set.source_file_id,
+          projectId: revision.project_id,
+          sourceFileId: revision.source_file_id,
           storagePath: fileData.storage_path,
+          draftRevisionId: revisionId,
           aiVision: {
             provider: drawingsVisionConfig.provider,
             model: drawingsVisionConfig.model,
@@ -582,27 +499,132 @@ export async function retryProcessingAction(setId: string): Promise<DrawingSet> 
         },
         run_at: new Date().toISOString(),
       })
-
-    if (jobError) {
-      console.error("Failed to queue drawing processing:", jobError)
-      await updateDrawingSet(set.id, {
-        status: "failed",
-        error_message: "Failed to queue processing",
-      })
-    } else {
-      const trigger = await triggerDrawingsPipeline()
-      if (!trigger.triggered) {
-        console.warn("[Retry] Drawings pipeline kick failed (cron will pick up):", trigger.error)
+      if (jobError) {
+        throw new Error(`Failed to requeue processing: ${jobError.message}`)
       }
-    }
-  } catch (error) {
-    console.error("Failed to queue drawing processing:", error)
-  }
 
-  revalidatePath("/drawings")
-  revalidatePath(`/projects/${set.project_id}`)
+      await triggerDrawingsPipeline()
+      revalidatePath("/drawings")
+      revalidatePath(`/projects/${revision.project_id}`)
+  })
+}
 
-  return updated
+/**
+ * Retry processing a failed drawing set. Also handles the common case where
+ * the failure lives on the pending draft revision rather than the set row.
+ */
+export async function retryProcessingAction(setId: string): Promise<ActionResult<DrawingSet>> {
+  return run(async () => {
+      const { supabase, orgId } = await requireOrgContext()
+      await requireAnyPermission(["drawing.upload", "org.admin"])
+
+      const set = await getDrawingSet(setId)
+      if (!set) {
+        throw new Error("Drawing set not found")
+      }
+
+      if (set.status !== "failed") {
+        // Single-register flow: the set stays "ready" while a draft revision
+        // processes, so look for a failed/stuck draft revision to retry instead.
+        const { data: failedRevision } = await supabase
+          .from("drawing_revisions")
+          .select("id")
+          .eq("org_id", orgId)
+          .eq("project_id", set.project_id)
+          .in("status", ["processing", "draft"])
+          .in("processing_stage", ["failed", "worker_unavailable", "queued"])
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+
+        if (failedRevision) {
+          unwrapAction(await retryDraftRevisionAction(failedRevision.id))
+          return set
+        }
+
+        throw new Error("Can only retry failed drawing sets")
+      }
+
+      // Reset status to processing
+      const updated = await updateDrawingSet(setId, {
+        status: "processing",
+        error_message: null,
+        processed_pages: 0,
+      })
+
+      await supabase
+        .from("drawing_sets")
+        .update({
+          processing_stage: "queued",
+          total_pages: null,
+          processed_at: null,
+        })
+        .eq("org_id", orgId)
+        .eq("id", setId)
+
+      // Get the source file path
+      if (!set.source_file_id) {
+        throw new Error("No source file found for this drawing set")
+      }
+
+      const { data: fileData } = await supabase
+        .from("files")
+        .select("storage_path")
+        .eq("id", set.source_file_id)
+        .single()
+
+      if (!fileData?.storage_path) {
+        throw new Error("Source file not found")
+      }
+
+      const drawingsVisionConfig = await getPlatformAiFeatureDefaultConfig({
+        supabase,
+        feature: "drawings_vision",
+      })
+
+      // Queue processing again (worker path supports R2-backed uploads)
+      try {
+        const { error: jobError } = await supabase
+          .from("outbox")
+          .insert({
+            org_id: orgId,
+            job_type: "process_drawing_set",
+            payload: {
+              drawingSetId: set.id,
+              orgId,
+              projectId: set.project_id,
+              sourceFileId: set.source_file_id,
+              storagePath: fileData.storage_path,
+              aiVision: {
+                provider: drawingsVisionConfig.provider,
+                model: drawingsVisionConfig.model,
+                source: drawingsVisionConfig.source,
+              },
+            },
+            run_at: new Date().toISOString(),
+          })
+
+        if (jobError) {
+          console.error("Failed to queue drawing processing:", jobError)
+          await updateDrawingSet(set.id, {
+            status: "failed",
+            error_message: "Failed to queue processing",
+          })
+        } else {
+          const trigger = await triggerDrawingsPipeline()
+          if (!trigger.triggered) {
+            console.warn("[Retry] Drawings pipeline kick failed (cron will pick up):", trigger.error)
+          }
+        }
+      } catch (error) {
+        console.error("Failed to queue drawing processing:", error)
+      }
+
+      revalidatePath("/drawings")
+      revalidatePath(`/projects/${set.project_id}`)
+
+      return updated
+  })
 }
 
 // ============================================================================
@@ -615,7 +637,7 @@ export async function retryProcessingAction(setId: string): Promise<DrawingSet> 
 export async function listDrawingRevisionsAction(
   filters: Partial<DrawingRevisionListFilters> = {}
 ): Promise<DrawingRevision[]> {
-  return listDrawingRevisions(filters)
+      return listDrawingRevisions(filters)
 }
 
 /**
@@ -624,7 +646,7 @@ export async function listDrawingRevisionsAction(
 export async function getDrawingRevisionAction(
   revisionId: string
 ): Promise<DrawingRevision | null> {
-  return getDrawingRevision(revisionId)
+      return getDrawingRevision(revisionId)
 }
 
 /**
@@ -632,12 +654,14 @@ export async function getDrawingRevisionAction(
  */
 export async function createDrawingRevisionAction(
   input: DrawingRevisionInput
-): Promise<DrawingRevision> {
-  await requireAnyPermission(["drawing.upload", "org.admin"])
-  const result = await createDrawingRevision(input)
-  revalidatePath("/drawings")
-  revalidatePath(`/projects/${input.project_id}`)
-  return result
+): Promise<ActionResult<DrawingRevision>> {
+  return run(async () => {
+      await requireAnyPermission(["drawing.upload", "org.admin"])
+      const result = await createDrawingRevision(input)
+      revalidatePath("/drawings")
+      revalidatePath(`/projects/${input.project_id}`)
+      return result
+  })
 }
 
 /**
@@ -646,25 +670,29 @@ export async function createDrawingRevisionAction(
 export async function updateDrawingRevisionAction(
   revisionId: string,
   updates: DrawingRevisionUpdate
-): Promise<DrawingRevision> {
-  await requireAnyPermission(["drawing.upload", "org.admin"])
-  const result = await updateDrawingRevision(revisionId, updates)
-  revalidatePath("/drawings")
-  revalidatePath(`/projects/${result.project_id}`)
-  return result
+): Promise<ActionResult<DrawingRevision>> {
+  return run(async () => {
+      await requireAnyPermission(["drawing.upload", "org.admin"])
+      const result = await updateDrawingRevision(revisionId, updates)
+      revalidatePath("/drawings")
+      revalidatePath(`/projects/${result.project_id}`)
+      return result
+  })
 }
 
 /**
  * Delete a revision
  */
-export async function deleteDrawingRevisionAction(revisionId: string): Promise<void> {
-  await requireAnyPermission(["docs.delete", "org.admin"])
-  const revision = await getDrawingRevision(revisionId)
-  await deleteDrawingRevision(revisionId)
-  revalidatePath("/drawings")
-  if (revision?.project_id) {
-    revalidatePath(`/projects/${revision.project_id}`)
-  }
+export async function deleteDrawingRevisionAction(revisionId: string): Promise<ActionResult<void>> {
+  return run(async () => {
+      await requireAnyPermission(["docs.delete", "org.admin"])
+      const revision = await getDrawingRevision(revisionId)
+      await deleteDrawingRevision(revisionId)
+      revalidatePath("/drawings")
+      if (revision?.project_id) {
+        revalidatePath(`/projects/${revision.project_id}`)
+      }
+  })
 }
 
 // ============================================================================
@@ -677,7 +705,7 @@ export async function deleteDrawingRevisionAction(revisionId: string): Promise<v
 export async function listDrawingSheetsAction(
   filters: Partial<DrawingSheetListFilters> = {}
 ): Promise<DrawingSheet[]> {
-  return listDrawingSheetsWithUrls(filters)
+      return listDrawingSheetsWithUrls(filters)
 }
 
 /**
@@ -686,7 +714,7 @@ export async function listDrawingSheetsAction(
 export async function listDrawingSheetsWithUrlsAction(
   filters: Partial<DrawingSheetListFilters> = {}
 ): Promise<DrawingSheet[]> {
-  return listDrawingSheetsWithUrls(filters)
+      return listDrawingSheetsWithUrls(filters)
 }
 
 /**
@@ -696,7 +724,7 @@ export async function getDrawingRegisterSnapshotAction(
   drawingSetId: string,
   revisionId: string
 ): Promise<DrawingSheet[]> {
-  return getDrawingRegisterSnapshot(drawingSetId, revisionId)
+      return getDrawingRegisterSnapshot(drawingSetId, revisionId)
 }
 
 /**
@@ -705,7 +733,7 @@ export async function getDrawingRegisterSnapshotAction(
 export async function getDrawingSheetAction(
   sheetId: string
 ): Promise<DrawingSheet | null> {
-  return getDrawingSheet(sheetId)
+      return getDrawingSheet(sheetId)
 }
 
 /**
@@ -713,12 +741,14 @@ export async function getDrawingSheetAction(
  */
 export async function createDrawingSheetAction(
   input: DrawingSheetInput
-): Promise<DrawingSheet> {
-  await requireAnyPermission(["drawing.upload", "org.admin"])
-  const result = await createDrawingSheet(input)
-  revalidatePath("/drawings")
-  revalidatePath(`/projects/${input.project_id}`)
-  return result
+): Promise<ActionResult<DrawingSheet>> {
+  return run(async () => {
+      await requireAnyPermission(["drawing.upload", "org.admin"])
+      const result = await createDrawingSheet(input)
+      revalidatePath("/drawings")
+      revalidatePath(`/projects/${input.project_id}`)
+      return result
+  })
 }
 
 /**
@@ -727,16 +757,18 @@ export async function createDrawingSheetAction(
 export async function updateDrawingSheetAction(
   sheetId: string,
   updates: DrawingSheetUpdate
-): Promise<DrawingSheet> {
-  const changesSharing =
-    updates.share_with_clients !== undefined || updates.share_with_subs !== undefined
-  await requireAnyPermission(
-    changesSharing ? ["docs.share", "org.admin"] : ["drawing.upload", "org.admin"],
-  )
-  const result = await updateDrawingSheet(sheetId, updates)
-  revalidatePath("/drawings")
-  revalidatePath(`/projects/${result.project_id}`)
-  return result
+): Promise<ActionResult<DrawingSheet>> {
+  return run(async () => {
+      const changesSharing =
+        updates.share_with_clients !== undefined || updates.share_with_subs !== undefined
+      await requireAnyPermission(
+        changesSharing ? ["docs.share", "org.admin"] : ["drawing.upload", "org.admin"],
+      )
+      const result = await updateDrawingSheet(sheetId, updates)
+      revalidatePath("/drawings")
+      revalidatePath(`/projects/${result.project_id}`)
+      return result
+  })
 }
 
 /**
@@ -745,23 +777,27 @@ export async function updateDrawingSheetAction(
 export async function bulkUpdateSheetSharingAction(
   sheetIds: string[],
   sharing: { share_with_clients?: boolean; share_with_subs?: boolean }
-): Promise<void> {
-  await requireAnyPermission(["docs.share", "org.admin"])
-  await bulkUpdateSheetSharing(sheetIds, sharing)
-  revalidatePath("/drawings")
+): Promise<ActionResult<void>> {
+  return run(async () => {
+      await requireAnyPermission(["docs.share", "org.admin"])
+      await bulkUpdateSheetSharing(sheetIds, sharing)
+      revalidatePath("/drawings")
+  })
 }
 
 /**
  * Delete a sheet
  */
-export async function deleteDrawingSheetAction(sheetId: string): Promise<void> {
-  await requireAnyPermission(["docs.delete", "org.admin"])
-  const sheet = await getDrawingSheet(sheetId)
-  await deleteDrawingSheet(sheetId)
-  revalidatePath("/drawings")
-  if (sheet?.project_id) {
-    revalidatePath(`/projects/${sheet.project_id}`)
-  }
+export async function deleteDrawingSheetAction(sheetId: string): Promise<ActionResult<void>> {
+  return run(async () => {
+      await requireAnyPermission(["docs.delete", "org.admin"])
+      const sheet = await getDrawingSheet(sheetId)
+      await deleteDrawingSheet(sheetId)
+      revalidatePath("/drawings")
+      if (sheet?.project_id) {
+        revalidatePath(`/projects/${sheet.project_id}`)
+      }
+  })
 }
 
 /**
@@ -770,14 +806,14 @@ export async function deleteDrawingSheetAction(sheetId: string): Promise<void> {
 export async function getDisciplineCountsAction(
   projectId: string
 ): Promise<Record<string, number>> {
-  return getDisciplineCounts(projectId)
+      return getDisciplineCounts(projectId)
 }
 
 /**
  * Get signed URL for a sheet's current file
  */
 export async function getSheetDownloadUrlAction(sheetId: string): Promise<string | null> {
-  return getSheetSignedUrl(sheetId)
+      return getSheetSignedUrl(sheetId)
 }
 
 /**
@@ -798,76 +834,76 @@ export async function getSheetOptimizedImageUrlsAction(
   width: number | null
   height: number | null
 } | null> {
-  const { supabase, orgId } = await requireOrgContext()
-  const { data: sheet, error: sheetError } = await supabase
-    .from("drawing_sheets")
-    .select("id, current_revision_id")
-    .eq("org_id", orgId)
-    .eq("id", sheetId)
-    .single()
+      const { supabase, orgId } = await requireOrgContext()
+      const { data: sheet, error: sheetError } = await supabase
+        .from("drawing_sheets")
+        .select("id, current_revision_id")
+        .eq("org_id", orgId)
+        .eq("id", sheetId)
+        .single()
 
-  if (sheetError) {
-    throw new Error(`Failed to load sheet: ${sheetError.message}`)
-  }
+      if (sheetError) {
+        throw new Error(`Failed to load sheet: ${sheetError.message}`)
+      }
 
-  if (!sheet?.current_revision_id) return null
+      if (!sheet?.current_revision_id) return null
 
-  const { data: version, error: versionError } = await supabase
-    .from("drawing_sheet_versions")
-    .select(
-      "thumb_path, medium_path, full_path, tile_manifest_path, tiles_base_path, thumbnail_url, medium_url, full_url, image_width, image_height, created_at"
-    )
-    .eq("org_id", orgId)
-    .eq("drawing_sheet_id", sheetId)
-    .eq("drawing_revision_id", sheet.current_revision_id)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
+      const { data: version, error: versionError } = await supabase
+        .from("drawing_sheet_versions")
+        .select(
+          "thumb_path, medium_path, full_path, tile_manifest_path, tiles_base_path, thumbnail_url, medium_url, full_url, image_width, image_height, created_at"
+        )
+        .eq("org_id", orgId)
+        .eq("drawing_sheet_id", sheetId)
+        .eq("drawing_revision_id", sheet.current_revision_id)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
 
-  if (versionError) {
-    throw new Error(`Failed to load sheet version: ${versionError.message}`)
-  }
+      if (versionError) {
+        throw new Error(`Failed to load sheet version: ${versionError.message}`)
+      }
 
-  const buildPublicImageUrl = (path?: string | null) => buildDrawingsImageUrl(path)
+      const buildPublicImageUrl = (path?: string | null) => buildDrawingsImageUrl(path)
 
-  const maybeSignLegacy = async (value: string | null | undefined): Promise<string | null> => {
-    if (!value) return null
-    if (value.includes("token=")) return value
-    // If value is already pointing to drawings-images and public, return as-is
-    if (value.includes("/drawings-images/")) return value
+      const maybeSignLegacy = async (value: string | null | undefined): Promise<string | null> => {
+        if (!value) return null
+        if (value.includes("token=")) return value
+        // If value is already pointing to drawings-images and public, return as-is
+        if (value.includes("/drawings-images/")) return value
 
-    const storagePath = extractProjectFilesPath(value)
-    if (!storagePath) return value
+        const storagePath = extractProjectFilesPath(value)
+        if (!storagePath) return value
 
-    try {
-      return await getDrawingPdfSignedUrl({
-        supabase,
-        orgId,
-        path: storagePath,
-        expiresIn,
-      })
-    } catch (error) {
-      console.error("Failed to sign image URL:", error)
-      return null
-    }
-  }
+        try {
+          return await getDrawingPdfSignedUrl({
+            supabase,
+            orgId,
+            path: storagePath,
+            expiresIn,
+          })
+        } catch (error) {
+          console.error("Failed to sign image URL:", error)
+          return null
+        }
+      }
 
-  const [thumbnailUrl, mediumUrl, fullUrl] = await Promise.all([
-    buildPublicImageUrl((version as any)?.thumb_path) ??
-      buildPublicImageUrl((version as any)?.thumbnail_path) ??
-      maybeSignLegacy((version as any)?.thumbnail_url),
-    buildPublicImageUrl((version as any)?.medium_path) ??
-      maybeSignLegacy((version as any)?.medium_url),
-    buildPublicImageUrl((version as any)?.full_path) ?? maybeSignLegacy((version as any)?.full_url),
-  ])
+      const [thumbnailUrl, mediumUrl, fullUrl] = await Promise.all([
+        buildPublicImageUrl((version as any)?.thumb_path) ??
+          buildPublicImageUrl((version as any)?.thumbnail_path) ??
+          maybeSignLegacy((version as any)?.thumbnail_url),
+        buildPublicImageUrl((version as any)?.medium_path) ??
+          maybeSignLegacy((version as any)?.medium_url),
+        buildPublicImageUrl((version as any)?.full_path) ?? maybeSignLegacy((version as any)?.full_url),
+      ])
 
-  return {
-    thumbnailUrl,
-    mediumUrl,
-    fullUrl,
-    width: (version as any)?.image_width ?? null,
-    height: (version as any)?.image_height ?? null,
-  }
+      return {
+        thumbnailUrl,
+        mediumUrl,
+        fullUrl,
+        width: (version as any)?.image_width ?? null,
+        height: (version as any)?.image_height ?? null,
+      }
 }
 
 function extractProjectFilesPath(urlOrPath: string): string | null {
@@ -901,7 +937,7 @@ function extractProjectFilesPath(urlOrPath: string): string | null {
 export async function listSheetVersionsAction(
   sheetId: string
 ): Promise<DrawingSheetVersion[]> {
-  return listSheetVersions(sheetId)
+      return listSheetVersions(sheetId)
 }
 
 /**
@@ -910,7 +946,7 @@ export async function listSheetVersionsAction(
 export async function listSheetVersionsWithUrlsAction(
   sheetId: string
 ): Promise<DrawingSheetVersion[]> {
-  return listSheetVersionsWithUrls(sheetId)
+      return listSheetVersionsWithUrls(sheetId)
 }
 
 /**
@@ -918,11 +954,13 @@ export async function listSheetVersionsWithUrlsAction(
  */
 export async function createSheetVersionAction(
   input: DrawingSheetVersionInput
-): Promise<DrawingSheetVersion> {
-  await requireAnyPermission(["drawing.upload", "org.admin"])
-  const result = await createSheetVersion(input)
-  revalidatePath("/drawings")
-  return result
+): Promise<ActionResult<DrawingSheetVersion>> {
+  return run(async () => {
+      await requireAnyPermission(["drawing.upload", "org.admin"])
+      const result = await createSheetVersion(input)
+      revalidatePath("/drawings")
+      return result
+  })
 }
 
 // ============================================================================
@@ -935,94 +973,98 @@ export async function createSheetVersionAction(
 export async function listProjectsForDrawingsAction(): Promise<
   Array<{ id: string; name: string }>
 > {
-  const { supabase, orgId } = await requireOrgContext()
+      const { supabase, orgId } = await requireOrgContext()
 
-  const { data, error } = await supabase
-    .from("projects")
-    .select("id, name")
-    .eq("org_id", orgId)
-    .in("status", ["active", "on_hold"])
-    .order("name", { ascending: true })
+      const { data, error } = await supabase
+        .from("projects")
+        .select("id, name")
+        .eq("org_id", orgId)
+        .in("status", ["active", "on_hold"])
+        .order("name", { ascending: true })
 
-  if (error) {
-    console.error("Failed to list projects:", error.message)
-    return []
-  }
+      if (error) {
+        console.error("Failed to list projects:", error.message)
+        return []
+      }
 
-  return data ?? []
+      return data ?? []
 }
 
 /**
  * Queue tile generation for sheets that don't have tiles yet
  */
-export async function queueTileGenerationForExistingSheetsAction(): Promise<{
+export async function queueTileGenerationForExistingSheetsAction(): Promise<ActionResult<{
   queued: number
-}> {
-  // Queueing uses service role to avoid RLS/NOT NULL issues.
-  const { supabase, orgId } = await requireOrgContext()
-  await requireAnyPermission(["org.admin"])
-  const service = createServiceSupabaseClient()
+}>> {
+  return run(async () => {
+      // Queueing uses service role to avoid RLS/NOT NULL issues.
+      const { supabase, orgId } = await requireOrgContext()
+      await requireAnyPermission(["org.admin"])
+      const service = createServiceSupabaseClient()
 
-  // Find sheet versions that don't have tiles generated yet
-  const { data: sheetVersions, error } = await supabase
-    .from("drawing_sheet_versions")
-    .select("id")
-    .eq("org_id", orgId)
-    .is("tile_manifest", null)
-    .not("file_id", "is", null)
-    .order("created_at", { ascending: true })
-    .limit(500)
+      // Find sheet versions that don't have tiles generated yet
+      const { data: sheetVersions, error } = await supabase
+        .from("drawing_sheet_versions")
+        .select("id")
+        .eq("org_id", orgId)
+        .is("tile_manifest", null)
+        .not("file_id", "is", null)
+        .order("created_at", { ascending: true })
+        .limit(500)
 
-  if (error) {
-    throw new Error(`Failed to find sheets needing tiles: ${error.message}`)
-  }
+      if (error) {
+        throw new Error(`Failed to find sheets needing tiles: ${error.message}`)
+      }
 
-  if (!sheetVersions?.length) {
-    return { queued: 0 }
-  }
+      if (!sheetVersions?.length) {
+        return { queued: 0 }
+      }
 
-  // Queue tile generation jobs
-  const jobs = sheetVersions.map((sv) => ({
-    org_id: orgId,
-    event_id: null,
-    job_type: "generate_drawing_tiles",
-    status: "pending",
-    retry_count: 0,
-    last_error: "",
-    payload: { sheetVersionId: sv.id },
-    run_at: new Date().toISOString(),
-  }))
+      // Queue tile generation jobs
+      const jobs = sheetVersions.map((sv) => ({
+        org_id: orgId,
+        event_id: null,
+        job_type: "generate_drawing_tiles",
+        status: "pending",
+        retry_count: 0,
+        last_error: "",
+        payload: { sheetVersionId: sv.id },
+        run_at: new Date().toISOString(),
+      }))
 
-  const { error: insertError } = await service
-    .from("outbox")
-    .insert(jobs)
+      const { error: insertError } = await service
+        .from("outbox")
+        .insert(jobs)
 
-  if (insertError) {
-    throw new Error(`Failed to queue tile generation jobs: ${insertError.message}`)
-  }
+      if (insertError) {
+        throw new Error(`Failed to queue tile generation jobs: ${insertError.message}`)
+      }
 
-  const trigger = await triggerDrawingsPipeline()
-  if (!trigger.triggered) {
-    console.warn("[TileBackfill] Drawings pipeline kick failed (cron will pick up):", trigger.error)
-  }
+      const trigger = await triggerDrawingsPipeline()
+      if (!trigger.triggered) {
+        console.warn("[TileBackfill] Drawings pipeline kick failed (cron will pick up):", trigger.error)
+      }
 
-  revalidatePath("/drawings")
-  revalidatePath("/drawings/debug")
+      revalidatePath("/drawings")
+      revalidatePath("/drawings/debug")
 
-  return { queued: jobs.length }
+      return { queued: jobs.length }
+  })
 }
 
 /**
  * Refresh the drawing sheets list materialized view
  */
-export async function refreshDrawingSheetsListAction(): Promise<void> {
-  await requireOrgContext()
-  const supabase = createServiceSupabaseClient()
+export async function refreshDrawingSheetsListAction(): Promise<ActionResult<void>> {
+  return run(async () => {
+      await requireOrgContext()
+      const supabase = createServiceSupabaseClient()
 
-  const { error } = await supabase.rpc("refresh_drawing_sheets_list")
-  if (error) {
-    throw new Error(`Failed to refresh drawing sheets list: ${error.message}`)
-  }
+      const { error } = await supabase.rpc("refresh_drawing_sheets_list")
+      if (error) {
+        throw new Error(`Failed to refresh drawing sheets list: ${error.message}`)
+      }
+  })
 }
 
 /**
@@ -1035,68 +1077,68 @@ export async function getProcessingStatusAction(setId: string): Promise<{
   processing_stage?: string
   error_message?: string
 }> {
-  const set = await getDrawingSet(setId)
-  if (!set) {
-    throw new Error("Drawing set not found")
-  }
+      const set = await getDrawingSet(setId)
+      if (!set) {
+        throw new Error("Drawing set not found")
+      }
 
-  return {
-    status: set.status,
-    processed_pages: set.processed_pages,
-    total_pages: set.total_pages,
-    processing_stage: set.processing_stage,
-    error_message: set.error_message,
-  }
+      return {
+        status: set.status,
+        processed_pages: set.processed_pages,
+        total_pages: set.total_pages,
+        processing_stage: set.processing_stage,
+        error_message: set.error_message,
+      }
 }
 
 export async function listUploadedSheetsAction(
   sourceFileId: string
 ): Promise<UploadReviewSheet[]> {
-  const { orgId } = await requireOrgContext()
-  const service = createServiceSupabaseClient()
+      const { orgId } = await requireOrgContext()
+      const service = createServiceSupabaseClient()
 
-  const { data: versions, error: versionsError } = await service
-    .from("drawing_sheet_versions")
-    .select("drawing_sheet_id")
-    .eq("org_id", orgId)
-    .eq("file_id", sourceFileId)
+      const { data: versions, error: versionsError } = await service
+        .from("drawing_sheet_versions")
+        .select("drawing_sheet_id")
+        .eq("org_id", orgId)
+        .eq("file_id", sourceFileId)
 
-  if (versionsError) {
-    throw new Error(`Failed to load uploaded sheets: ${versionsError.message}`)
-  }
+      if (versionsError) {
+        throw new Error(`Failed to load uploaded sheets: ${versionsError.message}`)
+      }
 
-  const sheetIds = Array.from(
-    new Set(
-      (versions ?? [])
-        .map((row) => row.drawing_sheet_id)
-        .filter((value): value is string => typeof value === "string"),
-    ),
-  )
+      const sheetIds = Array.from(
+        new Set(
+          (versions ?? [])
+            .map((row) => row.drawing_sheet_id)
+            .filter((value): value is string => typeof value === "string"),
+        ),
+      )
 
-  if (sheetIds.length === 0) return []
+      if (sheetIds.length === 0) return []
 
-  const { data: sheets, error: sheetsError } = await service
-    .from("drawing_sheets")
-    .select(
-      "id, drawing_set_id, sheet_number, sheet_title, discipline, sort_order, updated_at",
-    )
-    .eq("org_id", orgId)
-    .in("id", sheetIds)
-    .order("sort_order", { ascending: true })
+      const { data: sheets, error: sheetsError } = await service
+        .from("drawing_sheets")
+        .select(
+          "id, drawing_set_id, sheet_number, sheet_title, discipline, sort_order, updated_at",
+        )
+        .eq("org_id", orgId)
+        .in("id", sheetIds)
+        .order("sort_order", { ascending: true })
 
-  if (sheetsError) {
-    throw new Error(`Failed to load uploaded sheet rows: ${sheetsError.message}`)
-  }
+      if (sheetsError) {
+        throw new Error(`Failed to load uploaded sheet rows: ${sheetsError.message}`)
+      }
 
-  return (sheets ?? []).map((sheet) => ({
-    id: sheet.id,
-    drawing_set_id: sheet.drawing_set_id,
-    sheet_number: sheet.sheet_number,
-    sheet_title: sheet.sheet_title ?? undefined,
-    discipline: sheet.discipline ?? undefined,
-    sort_order: sheet.sort_order ?? 0,
-    updated_at: sheet.updated_at,
-  }))
+      return (sheets ?? []).map((sheet) => ({
+        id: sheet.id,
+        drawing_set_id: sheet.drawing_set_id,
+        sheet_number: sheet.sheet_number,
+        sheet_title: sheet.sheet_title ?? undefined,
+        discipline: sheet.discipline ?? undefined,
+        sort_order: sheet.sort_order ?? 0,
+        updated_at: sheet.updated_at,
+      }))
 }
 
 // ============================================================================
@@ -1106,29 +1148,33 @@ export async function listUploadedSheetsAction(
 export async function getDraftRevisionStatusAction(
   revisionId: string,
 ): Promise<RevisionDraftStatus | null> {
-  return getDraftRevisionStatus(revisionId)
+      return getDraftRevisionStatus(revisionId)
 }
 
 export async function getPendingDraftRevisionAction(
   projectId: string,
 ): Promise<RevisionDraftStatus | null> {
-  return getPendingDraftRevision(projectId)
+      return getPendingDraftRevision(projectId)
 }
 
 export async function getRevisionDiffAction(revisionId: string): Promise<RevisionDiff> {
-  return getRevisionDiff(revisionId)
+      return getRevisionDiff(revisionId)
 }
 
-export async function publishRevisionAction(input: PublishRevisionInput): Promise<void> {
-  await requireAnyPermission(["drawing.upload", "org.admin"])
-  await publishRevision(input)
-  revalidatePath("/drawings")
+export async function publishRevisionAction(input: PublishRevisionInput): Promise<ActionResult<void>> {
+  return run(async () => {
+      await requireAnyPermission(["drawing.upload", "org.admin"])
+      await publishRevision(input)
+      revalidatePath("/drawings")
+  })
 }
 
-export async function discardRevisionAction(revisionId: string): Promise<void> {
-  await requireAnyPermission(["drawing.upload", "org.admin"])
-  await discardRevision(revisionId)
-  revalidatePath("/drawings")
+export async function discardRevisionAction(revisionId: string): Promise<ActionResult<void>> {
+  return run(async () => {
+      await requireAnyPermission(["drawing.upload", "org.admin"])
+      await discardRevision(revisionId)
+      revalidatePath("/drawings")
+  })
 }
 
 // ============================================================================
@@ -1141,7 +1187,7 @@ export async function discardRevisionAction(revisionId: string): Promise<void> {
 export async function listDrawingMarkupsAction(
   filters: Partial<DrawingMarkupListFilters> = {}
 ): Promise<DrawingMarkup[]> {
-  return listDrawingMarkups(filters)
+      return listDrawingMarkups(filters)
 }
 
 /**
@@ -1150,7 +1196,7 @@ export async function listDrawingMarkupsAction(
 export async function getDrawingMarkupAction(
   markupId: string
 ): Promise<DrawingMarkup | null> {
-  return getDrawingMarkup(markupId)
+      return getDrawingMarkup(markupId)
 }
 
 /**
@@ -1158,10 +1204,12 @@ export async function getDrawingMarkupAction(
  */
 export async function createDrawingMarkupAction(
   input: DrawingMarkupInput
-): Promise<DrawingMarkup> {
-  const result = await createDrawingMarkup(input)
-  revalidatePath("/drawings")
-  return result
+): Promise<ActionResult<DrawingMarkup>> {
+  return run(async () => {
+      const result = await createDrawingMarkup(input)
+      revalidatePath("/drawings")
+      return result
+  })
 }
 
 /**
@@ -1170,18 +1218,22 @@ export async function createDrawingMarkupAction(
 export async function updateDrawingMarkupAction(
   markupId: string,
   updates: DrawingMarkupUpdate
-): Promise<DrawingMarkup> {
-  const result = await updateDrawingMarkup(markupId, updates)
-  revalidatePath("/drawings")
-  return result
+): Promise<ActionResult<DrawingMarkup>> {
+  return run(async () => {
+      const result = await updateDrawingMarkup(markupId, updates)
+      revalidatePath("/drawings")
+      return result
+  })
 }
 
 /**
  * Delete a markup
  */
-export async function deleteDrawingMarkupAction(markupId: string): Promise<void> {
-  await deleteDrawingMarkup(markupId)
-  revalidatePath("/drawings")
+export async function deleteDrawingMarkupAction(markupId: string): Promise<ActionResult<void>> {
+  return run(async () => {
+      await deleteDrawingMarkup(markupId)
+      revalidatePath("/drawings")
+  })
 }
 
 /**
@@ -1190,7 +1242,7 @@ export async function deleteDrawingMarkupAction(markupId: string): Promise<void>
 export async function getMarkupCountsByTypeAction(
   sheetId: string
 ): Promise<Record<MarkupType, number>> {
-  return getMarkupCountsByType(sheetId)
+      return getMarkupCountsByType(sheetId)
 }
 
 // ============================================================================
@@ -1203,7 +1255,7 @@ export async function getMarkupCountsByTypeAction(
 export async function listDrawingPinsAction(
   filters: Partial<DrawingPinListFilters> = {}
 ): Promise<DrawingPin[]> {
-  return listDrawingPins(filters)
+      return listDrawingPins(filters)
 }
 
 /**
@@ -1212,7 +1264,7 @@ export async function listDrawingPinsAction(
 export async function listDrawingPinsWithEntitiesAction(
   sheetId: string
 ): Promise<DrawingPin[]> {
-  return listDrawingPinsWithEntities(sheetId)
+      return listDrawingPinsWithEntities(sheetId)
 }
 
 /**
@@ -1221,7 +1273,7 @@ export async function listDrawingPinsWithEntitiesAction(
 export async function getDrawingPinAction(
   pinId: string
 ): Promise<DrawingPin | null> {
-  return getDrawingPin(pinId)
+      return getDrawingPin(pinId)
 }
 
 /**
@@ -1231,7 +1283,7 @@ export async function getPinsForEntityAction(
   entityType: PinEntityType,
   entityId: string
 ): Promise<DrawingPin[]> {
-  return getPinsForEntity(entityType, entityId)
+      return getPinsForEntity(entityType, entityId)
 }
 
 /**
@@ -1239,10 +1291,12 @@ export async function getPinsForEntityAction(
  */
 export async function createDrawingPinAction(
   input: DrawingPinInput
-): Promise<DrawingPin> {
-  const result = await createDrawingPin(input)
-  revalidatePath("/drawings")
-  return result
+): Promise<ActionResult<DrawingPin>> {
+  return run(async () => {
+      const result = await createDrawingPin(input)
+      revalidatePath("/drawings")
+      return result
+  })
 }
 
 /**
@@ -1251,18 +1305,22 @@ export async function createDrawingPinAction(
 export async function updateDrawingPinAction(
   pinId: string,
   updates: DrawingPinUpdate
-): Promise<DrawingPin> {
-  const result = await updateDrawingPin(pinId, updates)
-  revalidatePath("/drawings")
-  return result
+): Promise<ActionResult<DrawingPin>> {
+  return run(async () => {
+      const result = await updateDrawingPin(pinId, updates)
+      revalidatePath("/drawings")
+      return result
+  })
 }
 
 /**
  * Delete a pin
  */
-export async function deleteDrawingPinAction(pinId: string): Promise<void> {
-  await deleteDrawingPin(pinId)
-  revalidatePath("/drawings")
+export async function deleteDrawingPinAction(pinId: string): Promise<ActionResult<void>> {
+  return run(async () => {
+      await deleteDrawingPin(pinId)
+      revalidatePath("/drawings")
+  })
 }
 
 /**
@@ -1271,9 +1329,11 @@ export async function deleteDrawingPinAction(pinId: string): Promise<void> {
 export async function deletePinForEntityAction(
   entityType: PinEntityType,
   entityId: string
-): Promise<void> {
-  await deletePinForEntity(entityType, entityId)
-  revalidatePath("/drawings")
+): Promise<ActionResult<void>> {
+  return run(async () => {
+      await deletePinForEntity(entityType, entityId)
+      revalidatePath("/drawings")
+  })
 }
 
 // ============================================================================
@@ -1281,8 +1341,10 @@ export async function deletePinForEntityAction(
 // ============================================================================
 
 export async function createTaskFromDrawingAction(projectId: string, input: unknown) {
-  const task = await createProjectTaskAction(projectId, input)
-  return task
+  return run(async () => {
+      const task = unwrapAction(await createProjectTaskAction(projectId, input))
+      return task
+  })
 }
 
 export async function createRfiFromDrawingAction(input: {
@@ -1291,16 +1353,18 @@ export async function createRfiFromDrawingAction(input: {
   question: string
   priority?: "low" | "normal" | "high" | "urgent"
 }) {
-  return createRfi({
-    input: {
-      project_id: input.projectId,
-      subject: input.subject,
-      question: input.question,
-      status: "open",
-      priority: input.priority ?? "normal",
-      due_date: null,
-      attachment_file_id: null,
-    },
+  return run(async () => {
+      return createRfi({
+        input: {
+          project_id: input.projectId,
+          subject: input.subject,
+          question: input.question,
+          status: "open",
+          priority: input.priority ?? "normal",
+          due_date: null,
+          attachment_file_id: null,
+        },
+      })
   })
 }
 
@@ -1311,48 +1375,50 @@ export async function createPunchItemFromDrawingAction(input: {
   location?: string
   severity?: string
 }) {
-  const { supabase, orgId, userId } = await requireOrgContext()
+  return run(async () => {
+      const { supabase, orgId, userId } = await requireOrgContext()
 
-  const payload = {
-    org_id: orgId,
-    project_id: input.projectId,
-    title: input.title,
-    description: input.description ?? null,
-    location: input.location ?? null,
-    severity: input.severity ?? null,
-    status: "open",
-  }
+      const payload = {
+        org_id: orgId,
+        project_id: input.projectId,
+        title: input.title,
+        description: input.description ?? null,
+        location: input.location ?? null,
+        severity: input.severity ?? null,
+        status: "open",
+      }
 
-  const { data, error } = await supabase
-    .from("punch_items")
-    .insert(payload)
-    .select("id, org_id, project_id, title, description, status, due_date, severity, location, resolved_at")
-    .single()
+      const { data, error } = await supabase
+        .from("punch_items")
+        .insert(payload)
+        .select("id, org_id, project_id, title, description, status, due_date, severity, location, resolved_at")
+        .single()
 
-  if (error || !data) {
-    throw new Error(`Failed to create punch item: ${error?.message}`)
-  }
+      if (error || !data) {
+        throw new Error(`Failed to create punch item: ${error?.message}`)
+      }
 
-  await recordEvent({
-    orgId,
-    eventType: "punch_item_created",
-    entityType: "punch_item",
-    entityId: data.id,
-    payload: { title: input.title, project_id: input.projectId },
+      await recordEvent({
+        orgId,
+        eventType: "punch_item_created",
+        entityType: "punch_item",
+        entityId: data.id,
+        payload: { title: input.title, project_id: input.projectId },
+      })
+
+      await recordAudit({
+        orgId,
+        actorId: userId,
+        action: "insert",
+        entityType: "punch_item",
+        entityId: data.id,
+        after: payload as any,
+      })
+
+      revalidatePath(`/projects/${input.projectId}`)
+
+      return data
   })
-
-  await recordAudit({
-    orgId,
-    actorId: userId,
-    action: "insert",
-    entityType: "punch_item",
-    entityId: data.id,
-    after: payload as any,
-  })
-
-  revalidatePath(`/projects/${input.projectId}`)
-
-  return data
 }
 
 /**
@@ -1362,9 +1428,11 @@ export async function syncPinStatusAction(
   entityType: PinEntityType,
   entityId: string,
   newStatus: PinStatus
-): Promise<void> {
-  await syncPinStatus(entityType, entityId, newStatus)
-  revalidatePath("/drawings")
+): Promise<ActionResult<void>> {
+  return run(async () => {
+      await syncPinStatus(entityType, entityId, newStatus)
+      revalidatePath("/drawings")
+  })
 }
 
 /**
@@ -1373,7 +1441,7 @@ export async function syncPinStatusAction(
 export async function getPinCountsByStatusAction(
   sheetId: string
 ): Promise<Record<string, number>> {
-  return getPinCountsByStatus(sheetId)
+      return getPinCountsByStatus(sheetId)
 }
 
 /**
@@ -1382,7 +1450,7 @@ export async function getPinCountsByStatusAction(
 export async function getPinCountsByEntityTypeAction(
   sheetId: string
 ): Promise<Record<PinEntityType, number>> {
-  return getPinCountsByEntityType(sheetId)
+      return getPinCountsByEntityType(sheetId)
 }
 
 /**
@@ -1392,5 +1460,5 @@ export async function getPinCountsByEntityTypeAction(
 export async function getSheetStatusCountsAction(
   sheetIds: string[]
 ): Promise<Record<string, SheetStatusCounts>> {
-  return getSheetStatusCounts({ sheetIds })
+      return getSheetStatusCounts({ sheetIds })
 }

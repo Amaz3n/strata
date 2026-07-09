@@ -86,7 +86,7 @@ export function ContractSummaryCard({ contract, approvedChangeOrdersTotalCents, 
             label="Retainage"
             value={
               contract.retainage_percent
-                ? `${contract.retainage_percent}%${contract.retainage_release_trigger ? ` • ${contract.retainage_release_trigger}` : ""}`
+                ? `${contract.retainage_percent}%${contract.retainage_applies_to_fee ? " • fees included" : " • costs only"}${contract.retainage_release_trigger ? ` • ${contract.retainage_release_trigger}` : ""}`
                 : "—"
             }
             compact={compact}

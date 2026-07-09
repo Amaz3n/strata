@@ -12,6 +12,8 @@ import { ReceiptText, AlertCircle } from "lucide-react"
 import { releaseProjectRetainageAction } from "@/app/(app)/projects/[id]/actions"
 import { Progress } from "@/components/ui/progress"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ReleaseRetainageSheetProps {
   projectId: string
   totalHeldCents: number
@@ -36,11 +38,11 @@ export function ReleaseRetainageSheet({
   const handleRelease = () => {
     startTransition(async () => {
       try {
-        await releaseProjectRetainageAction(projectId, {
+        unwrapAction(await releaseProjectRetainageAction(projectId, {
           amount_cents: amountCents,
           title: title.trim(),
           notes: notes.trim() || undefined,
-        })
+        }))
         toast.success("Retainage release invoice generated")
         onOpenChange(false)
         setAmountDollars("")

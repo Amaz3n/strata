@@ -337,7 +337,7 @@ const [sheetOpen, setSheetOpen] = useState(false)
   const handleSendToClient = (changeOrder: ChangeOrder) => {
     startTransition(async () => {
       try {
-        const result = await publishChangeOrderAction(changeOrder.id)
+        const result = unwrapAction(await publishChangeOrderAction(changeOrder.id))
         setItems((prev) => prev.map((item) => (item.id === changeOrder.id ? { ...item, ...result.changeOrder } : item)))
         setSelectedChangeOrder((current) => current?.id === changeOrder.id ? { ...current, ...result.changeOrder } : current)
         toast.success(result.email_sent ? "Change order emailed to client" : "Change order published to client portal", {
@@ -495,7 +495,7 @@ const [sheetOpen, setSheetOpen] = useState(false)
     startTransition(async () => {
       try {
         if (editingChangeOrder) {
-          const updated = await updateChangeOrderAction(editingChangeOrder.id, values)
+          const updated = unwrapAction(await updateChangeOrderAction(editingChangeOrder.id, values))
           const mergedUpdated = { ...editingChangeOrder, ...updated }
           setItems((prev) => prev.map((item) => (item.id === mergedUpdated.id ? mergedUpdated : item)))
           if (selectedChangeOrder?.id === updated.id) {
@@ -505,7 +505,7 @@ const [sheetOpen, setSheetOpen] = useState(false)
           setEditingChangeOrder(null)
           toast.success("Change order updated")
         } else {
-          const created = await createChangeOrderAction(values)
+          const created = unwrapAction(await createChangeOrderAction(values))
           setItems((prev) => [created, ...prev])
           setSheetOpen(false)
           toast.success("Change order saved", {
@@ -530,7 +530,7 @@ const [sheetOpen, setSheetOpen] = useState(false)
 
     startTransition(async () => {
       try {
-        const updated = await voidChangeOrderAction(changeOrder.id)
+        const updated = unwrapAction(await voidChangeOrderAction(changeOrder.id))
         setItems((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
         if (selectedChangeOrder?.id === updated.id) {
           setSelectedChangeOrder(updated)
@@ -555,7 +555,7 @@ const [sheetOpen, setSheetOpen] = useState(false)
 
     startTransition(async () => {
       try {
-        await deleteChangeOrderAction(changeOrder.id)
+        unwrapAction(await deleteChangeOrderAction(changeOrder.id))
         setItems((prev) => prev.filter((item) => item.id !== changeOrder.id))
         toast.success("Change order deleted")
       } catch (error: any) {

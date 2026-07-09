@@ -69,6 +69,8 @@ import {
 } from "@/lib/validation/drawings";
 import { useDocuments } from "./documents-context";
 
+import { unwrapAction } from "@/lib/action-result"
+
 const DRAWING_SET_TYPES = Object.entries(DRAWING_SET_TYPE_LABELS);
 const DISCIPLINE_OPTIONS = Object.entries(DISCIPLINE_LABELS) as Array<
   [DrawingDiscipline, string]
@@ -259,11 +261,11 @@ export function SheetsContent({
     }
     setSavingSet(true);
     try {
-      await updateDrawingSetAction(editingSet.id, {
+      unwrapAction(await updateDrawingSetAction(editingSet.id, {
         title,
         description: setDescription.trim() || null,
         set_type: setType,
-      });
+      }));
       await refreshDrawingSets();
       dispatchNavRefresh();
       toast.success("Drawing set updated");
@@ -280,7 +282,7 @@ export function SheetsContent({
     async (setId: string) => {
       setRetryingSetId(setId);
       try {
-        await retryProcessingAction(setId);
+        unwrapAction(await retryProcessingAction(setId));
         await refreshDrawingSets();
         dispatchNavRefresh();
         toast.success("Set processing retried");
@@ -298,7 +300,7 @@ export function SheetsContent({
     if (!deletingSet) return;
     setDeletingSetPending(true);
     try {
-      await deleteDrawingSetAction(deletingSet.id);
+      unwrapAction(await deleteDrawingSetAction(deletingSet.id));
       await Promise.all([refreshDrawingSets(), refreshFiles()]);
       dispatchNavRefresh();
       toast.success("Drawing set deleted");
@@ -341,7 +343,7 @@ export function SheetsContent({
         projectId,
       );
       const nextTitle = `${setRevisionTarget.title} (${label})`;
-      const { set: newSet } = await createDrawingSetFromUpload({
+      const { set: newSet } = unwrapAction(await createDrawingSetFromUpload({
         projectId,
         title: nextTitle,
         setType: setRevisionTarget.set_type ?? "general",
@@ -349,13 +351,13 @@ export function SheetsContent({
         storagePath,
         fileSize: setRevisionFile.size,
         mimeType: setRevisionFile.type || "application/pdf",
-      });
+      }));
       const revisionNote = setRevisionNotesValue.trim();
-      await updateDrawingSetAction(newSet.id, {
+      unwrapAction(await updateDrawingSetAction(newSet.id, {
         description: revisionNote
           ? `Revision of ${setRevisionTarget.title}: ${revisionNote}`
           : `Revision of ${setRevisionTarget.title}`,
-      });
+      }));
       await Promise.all([refreshDrawingSets(), refreshFiles()]);
       dispatchNavRefresh();
       setSelectedDrawingSet(newSet.id, newSet.title);
@@ -395,12 +397,12 @@ export function SheetsContent({
     }
     setSavingSheet(true);
     try {
-      await updateDrawingSheetAction(editingSheet.sheet.id, {
+      unwrapAction(await updateDrawingSheetAction(editingSheet.sheet.id, {
         sheet_number: nextSheetNumber,
         sheet_title: sheetTitle.trim() || null,
         discipline: (sheetDiscipline.trim() ||
           null) as DrawingDiscipline | null,
-      });
+      }));
       await Promise.all([
         loadSheets(selectedSet.id, true),
         refreshDrawingSets(),
@@ -427,7 +429,7 @@ export function SheetsContent({
     if (!deletingSheet || !selectedSet) return;
     setDeletingSheetPending(true);
     try {
-      await deleteDrawingSheetAction(deletingSheet.sheet.id);
+      unwrapAction(await deleteDrawingSheetAction(deletingSheet.sheet.id));
       await Promise.all([
         loadSheets(selectedSet.id, true),
         refreshDrawingSets(),
@@ -498,15 +500,15 @@ export function SheetsContent({
         `Drawing version for ${versionTarget.sheet.sheet_number}`,
       );
 
-      const uploaded = await uploadFileAction(formData);
-      const revision = await createDrawingRevisionAction({
+      const uploaded = unwrapAction(await uploadFileAction(formData));
+      const revision = unwrapAction(await createDrawingRevisionAction({
         project_id: projectId,
         drawing_set_id: selectedSet.id,
         revision_label: cleanRevisionLabel,
         issued_date: new Date().toISOString().slice(0, 10),
         notes: revisionNotes.trim() || undefined,
-      });
-      await createSheetVersionAction({
+      }));
+      unwrapAction(await createSheetVersionAction({
         drawing_sheet_id: versionTarget.sheet.id,
         drawing_revision_id: revision.id,
         file_id: uploaded.id,
@@ -514,10 +516,10 @@ export function SheetsContent({
           source: "documents-sheet-version",
           original_file_name: versionFile.name,
         },
-      });
-      await updateDrawingSheetAction(versionTarget.sheet.id, {
+      }));
+      unwrapAction(await updateDrawingSheetAction(versionTarget.sheet.id, {
         current_revision_id: revision.id,
-      });
+      }));
       await Promise.all([
         loadSheets(selectedSet.id, true),
         refreshDrawingSets(),

@@ -19,6 +19,8 @@ import { addTouchAction } from "@/app/(app)/crm/actions"
 import { useToast } from "@/hooks/use-toast"
 import type { TouchType } from "@/lib/validation/crm"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface AddTouchDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -77,12 +79,12 @@ export function AddTouchDialog({ open, onOpenChange, contactId, contactName }: A
 
     startTransition(async () => {
       try {
-        await addTouchAction({
+        unwrapAction(await addTouchAction({
           contact_id: contactId,
           touch_type: touchType,
           title: title.trim(),
           description: description.trim() || undefined,
-        })
+        }))
         router.refresh()
         toast({ title: "Activity recorded" })
         reset()

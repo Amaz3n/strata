@@ -22,6 +22,8 @@ import { useToast } from "@/hooks/use-toast"
 import { listAttachmentsAction, detachFileLinkAction, uploadFileAction, attachFileAction } from "@/app/(app)/documents/actions"
 import type { CostCode } from "@/lib/types"
 
+import { unwrapAction } from "@/lib/action-result"
+
 function formatMoneyFromCents(cents?: number | null) {
   const dollars = (cents ?? 0) / 100
   return dollars.toLocaleString("en-US", { style: "currency", currency: "USD" })
@@ -88,22 +90,22 @@ function CommitmentLineForm({
     startTransition(async () => {
       try {
         if (line) {
-          await updateCommitmentLineAction(line.id, {
+          unwrapAction(await updateCommitmentLineAction(line.id, {
             cost_code_id: form.cost_code_id,
             description: form.description.trim(),
             quantity,
             unit: form.unit.trim(),
             unit_cost_cents: unitCostCents,
-          })
+          }))
           toast({ title: "Updated", description: "Line item updated successfully." })
         } else {
-          await createCommitmentLineAction(commitmentId, {
+          unwrapAction(await createCommitmentLineAction(commitmentId, {
             cost_code_id: form.cost_code_id,
             description: form.description.trim(),
             quantity,
             unit: form.unit.trim(),
             unit_cost_cents: unitCostCents,
-          })
+          }))
           toast({ title: "Created", description: "Line item added successfully." })
         }
         onSuccess()
@@ -226,6 +228,9 @@ export function ProjectCommitmentsClient({
   const [attachmentsLoading, setAttachmentsLoading] = useState(false)
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [signatureCommitment, setSignatureCommitment] = useState<CommitmentSummary | null>(null)
+  // Draft commitments must be approved before the subcontract can go out for
+  // signature (the server enforces this); this dialog folds both into one step.
+  const [approveBeforeSend, setApproveBeforeSend] = useState<CommitmentSummary | null>(null)
 
   const [selectedCommitment, setSelectedCommitment] = useState<CommitmentSummary | null>(null)
   const [commitmentLines, setCommitmentLines] = useState<CommitmentLine[]>([])
@@ -315,7 +320,7 @@ export function ProjectCommitmentsClient({
 
     startTransition(async () => {
       try {
-        await createProjectCommitmentAction(projectId, {
+        unwrapAction(await createProjectCommitmentAction(projectId, {
           project_id: projectId,
           company_id: createForm.company_id,
           title: createForm.title.trim(),
@@ -325,7 +330,7 @@ export function ProjectCommitmentsClient({
           retainage_percent: retainagePercent,
           scope: createForm.scope.trim() || null,
           terms: createForm.terms.trim() || null,
-        })
+        }))
         toast({ title: "Commitment created" })
         setCreateOpen(false)
       } catch (error) {
@@ -370,7 +375,7 @@ export function ProjectCommitmentsClient({
 
     startTransition(async () => {
       try {
-        await updateProjectCommitmentAction(projectId, selectedCommitment.id, {
+        unwrapAction(await updateProjectCommitmentAction(projectId, selectedCommitment.id, {
           title: editForm.title.trim(),
           status: editForm.status,
           total_cents: totalCents,
@@ -378,7 +383,7 @@ export function ProjectCommitmentsClient({
           retainage_percent: retainagePercent,
           scope: editForm.scope.trim() || null,
           terms: editForm.terms.trim() || null,
-        })
+        }))
         toast({ title: "Commitment updated" })
         setEditOpen(false)
         setSelectedCommitment(null)
@@ -419,8 +424,8 @@ export function ProjectCommitmentsClient({
       formData.append("projectId", projectId)
       formData.append("category", "financials")
 
-      const uploaded = await uploadFileAction(formData)
-      await attachFileAction(uploaded.id, "commitment", selectedCommitment.id, projectId, linkRole)
+      const uploaded = unwrapAction(await uploadFileAction(formData))
+      unwrapAction(await attachFileAction(uploaded.id, "commitment", selectedCommitment.id, projectId, linkRole))
     }
 
     const links = await listAttachmentsAction("commitment", selectedCommitment.id)
@@ -441,7 +446,7 @@ export function ProjectCommitmentsClient({
 
   const handleDetach = async (linkId: string) => {
     if (!selectedCommitment) return
-    await detachFileLinkAction(linkId)
+    unwrapAction(await detachFileLinkAction(linkId))
     const links = await listAttachmentsAction("commitment", selectedCommitment.id)
     setAttachments(
       links.map((link) => ({
@@ -613,7 +618,9 @@ export function ProjectCommitmentsClient({
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() => setSignatureCommitment(c)}
+                        onClick={() =>
+                          c.status === "draft" ? setApproveBeforeSend(c) : setSignatureCommitment(c)
+                        }
                       >
                         Sign
                       </Button>
@@ -915,6 +922,48 @@ export function ProjectCommitmentsClient({
                 {isPending ? "Saving..." : "Save"}
               </Button>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={approveBeforeSend !== null} onOpenChange={(open) => { if (!open) setApproveBeforeSend(null) }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Approve commitment to send</DialogTitle>
+            <DialogDescription>
+              A subcontract goes out for signature only after the commitment is approved, so the
+              counterparty is signing a number you have committed to.
+            </DialogDescription>
+          </DialogHeader>
+          {approveBeforeSend ? (
+            <div className="rounded-md border px-4 py-3 text-sm">
+              <div className="font-medium">{approveBeforeSend.title}</div>
+              <div className="mt-1 text-muted-foreground">
+                {approveBeforeSend.company_name ?? "—"} · {formatMoneyFromCents(approveBeforeSend.total_cents)}
+              </div>
+            </div>
+          ) : null}
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" disabled={isPending} onClick={() => setApproveBeforeSend(null)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={isPending}
+              onClick={() => {
+                const commitment = approveBeforeSend
+                if (!commitment) return
+                startTransition(async () => {
+                  try {
+                    unwrapAction(await updateProjectCommitmentAction(projectId, commitment.id, { status: "approved" }))
+                    setApproveBeforeSend(null)
+                    setSignatureCommitment({ ...commitment, status: "approved" })
+                  } catch (error) {
+                    toast({ title: "Unable to approve commitment", description: (error as Error).message })
+                  }
+                })
+              }}
+            >
+              {isPending ? "Approving..." : "Approve & continue"}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

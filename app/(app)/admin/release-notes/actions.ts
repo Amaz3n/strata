@@ -10,6 +10,16 @@ import {
   type ReleaseNoteInput,
 } from "@/lib/services/release-notes"
 
+import { actionError, type ActionResult } from "@/lib/action-result"
+
+async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
+  try {
+    return { success: true, data: await fn() }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
 const categorySchema = z.enum(["new", "improved", "fixed", "admin", "mobile"])
 const visibilitySchema = z.enum(["quiet", "badge", "announce"])
 
@@ -51,17 +61,23 @@ function parseInput(input: unknown): ReleaseNoteInput {
 }
 
 export async function createReleaseNoteAction(input: unknown) {
-  await requireReleaseNotesAdmin()
-  return createReleaseNote(parseInput(input))
+  return run(async () => {
+      await requireReleaseNotesAdmin()
+      return createReleaseNote(parseInput(input))
+  })
 }
 
 export async function updateReleaseNoteAction(id: string, input: unknown) {
-  await requireReleaseNotesAdmin()
-  return updateReleaseNote(id, parseInput(input))
+  return run(async () => {
+      await requireReleaseNotesAdmin()
+      return updateReleaseNote(id, parseInput(input))
+  })
 }
 
 export async function deleteReleaseNoteAction(id: string) {
-  await requireReleaseNotesAdmin()
-  await deleteReleaseNote(z.string().uuid().parse(id))
-  return { success: true }
+  return run(async () => {
+      await requireReleaseNotesAdmin()
+      await deleteReleaseNote(z.string().uuid().parse(id))
+      return { success: true }
+  })
 }

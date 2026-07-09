@@ -23,6 +23,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton"
 import { Plus, Calendar, List } from "@/components/icons"
 
+import { unwrapAction } from "@/lib/action-result"
+
 const statusLabels: Record<string, string> = {
   pending: "Pending",
   selected: "Selected",
@@ -93,7 +95,7 @@ export function SelectionsBuilderClient({ data, projects }: Props) {
   async function handleCreate(values: SelectionInput) {
     startTransition(async () => {
       try {
-        const created = await createSelectionAction(values)
+        const created = unwrapAction(await createSelectionAction(values))
         setItems((prev) => [created, ...prev])
         setSheetOpen(false)
         toast.success("Selection created")
@@ -321,8 +323,8 @@ function SelectionAttachments({ selection }: { selection: Selection }) {
       formData.append("projectId", selection.project_id)
       formData.append("category", "other")
 
-      const uploaded = await uploadFileAction(formData)
-      await attachFileAction(uploaded.id, "selection", selection.id, selection.project_id, linkRole)
+      const uploaded = unwrapAction(await uploadFileAction(formData))
+      unwrapAction(await attachFileAction(uploaded.id, "selection", selection.id, selection.project_id, linkRole))
     }
 
     const links = await listAttachmentsAction("selection", selection.id)
@@ -342,7 +344,7 @@ function SelectionAttachments({ selection }: { selection: Selection }) {
   }
 
   const handleDetach = async (linkId: string) => {
-    await detachFileLinkAction(linkId)
+    unwrapAction(await detachFileLinkAction(linkId))
     const links = await listAttachmentsAction("selection", selection.id)
     setAttachments(
       links.map((link) => ({

@@ -15,6 +15,8 @@ import { TradeBadge } from "@/components/companies/trade-badge"
 import { MapPin, Phone, Mail, Link2, Loader2 } from "@/components/icons"
 import { useToast } from "@/hooks/use-toast"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface CompanyDetail {
   company: Company
   projects: { id: string; name: string }[]

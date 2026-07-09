@@ -38,6 +38,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface PortalLinkCreatorProps {
   projectId: string
   project: Project
@@ -306,11 +308,11 @@ export function PortalLinkCreator({
       try {
         if (shareMethod === "email" && selectedContactId && selectedContactId !== "generic") {
           // --- Method A: Secure Email-First Access ---
-          const result = await sendPortalInviteAction({
+          const result = unwrapAction(await sendPortalInviteAction({
             contactId: selectedContactId,
             projectId: projectId,
             portalType,
-          })
+          }))
           
           setLastCreated(result.token)
           onCreated(result.token)
@@ -327,7 +329,7 @@ export function PortalLinkCreator({
           }
         } else {
           // --- Method B: Direct Access Link ---
-          const token = await createPortalTokenAction({
+          const token = unwrapAction(await createPortalTokenAction({
             project_id: projectId,
             portal_type: portalType,
             company_id: portalType === "sub" ? companyId : undefined,
@@ -335,7 +337,7 @@ export function PortalLinkCreator({
             expires_at: expiresAt || null,
             permissions,
             pin: requirePin ? pin : undefined,
-          })
+          }))
 
           setLastCreated(token)
           onCreated(token)

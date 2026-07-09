@@ -19,7 +19,7 @@ import { Calendar } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from "@/components/ui/command"
 import { Spinner } from "@/components/ui/spinner"
-import { Settings, CalendarDays, Plus, Check, ArrowLeft, ArrowRight } from "@/components/icons"
+import { Settings, CalendarDays, Plus, Check, ArrowLeft, ArrowRight, Trash2 } from "@/components/icons"
 import { GooglePlacesAutocomplete } from "@/components/ui/google-places-autocomplete"
 import {
   ProjectFinancialSetupFields,
@@ -30,7 +30,10 @@ import {
   type FinancialSetupValue,
 } from "@/components/projects/project-financial-setup-fields"
 import { listProjectQboClassesAction, searchProjectQboCustomersAction, createProjectQboCustomerAction } from "@/app/(app)/projects/actions"
+import { removeSampleProjectAction } from "@/app/(app)/projects/[id]/actions"
 import type { QBOClassOption, QBOCustomerOption } from "@/lib/integrations/accounting/qbo-api"
+
+import { unwrapAction } from "@/lib/action-result"
 
 const STATUS_OPTIONS: { label: string; value: Project["status"] }[] = [
   { label: "Active", value: "active" },
@@ -111,6 +114,8 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
   const [financialSetup, setFinancialSetup] = useState<FinancialSetupValue>(() => financialSetupFromProject(project, contract))
   const [step, setStep] = useState<"details" | "financials">(initialStep)
   const [saving, setSaving] = useState(false)
+  const [removingSample, setRemovingSample] = useState(false)
+  const isSampleProject = Boolean(project.financial_settings?.metadata?.is_sample)
   const financialMessages = validateFinancialSetup(financialSetup)
   // The contact backing the unified "Client" field — also the auto QBO customer name when none is set explicitly.
   const selectedClientContact = clientId ? contacts.find((contact) => contact.id === clientId) ?? null : null
@@ -209,14 +214,14 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
     if (!name || creatingCustomer) return
     setCreatingCustomer(true)
     try {
-      const created = await createProjectQboCustomerAction({
+      const created = unwrapAction(await createProjectQboCustomerAction({
         name,
         email: newCustomer.email.trim() || null,
         line1: newCustomer.line1.trim() || null,
         city: newCustomer.city.trim() || null,
         state: newCustomer.state.trim() || null,
         postalCode: newCustomer.postalCode.trim() || null,
-      })
+      }))
       selectQboCustomer(created)
       setNewCustomer({ name: "", email: "", line1: "", city: "", state: "", postalCode: "" })
       toast.success(`Created "${created.name}" in QuickBooks`)
@@ -268,6 +273,20 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
       toast.error("Could not save changes")
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleRemoveSampleProject = async () => {
+    if (removingSample) return
+    setRemovingSample(true)
+    try {
+      unwrapAction(await removeSampleProjectAction(project.id))
+      toast.success("Sample project removed")
+      onOpenChange(false)
+    } catch (error: any) {
+      toast.error("Could not remove sample project", { description: error?.message ?? "Try again." })
+    } finally {
+      setRemovingSample(false)
     }
   }
 
@@ -742,6 +761,27 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
 
           {/* Footer */}
           <div className="flex-shrink-0 border-t bg-muted/30 p-4">
+            {isSampleProject ? (
+              <div className="mb-3 border border-destructive/30 bg-destructive/5 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Sample project</p>
+                    <p className="text-xs text-muted-foreground">Remove the seeded onboarding project and related sample data.</p>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    className="rounded-none"
+                    disabled={removingSample}
+                    onClick={handleRemoveSampleProject}
+                  >
+                    <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+                    {removingSample ? "Removing..." : "Remove"}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
             <div className="flex gap-2">
               {step === "details" ? (
                 <>

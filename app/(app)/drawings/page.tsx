@@ -5,6 +5,8 @@ import { DrawingsSetsView } from "@/components/drawings"
 import { listDrawingSets, listDrawingSheetsWithUrls } from "@/lib/services/drawings"
 import { listProjectsForDrawingsAction } from "./actions"
 
+import { unwrapAction } from "@/lib/action-result"
+
 // desk-rule: reachable via dashboard/search/feature flows only, not workspace nav.
 interface DrawingsPageProps {
   searchParams: Promise<{ project?: string; set?: string; sheetId?: string }>

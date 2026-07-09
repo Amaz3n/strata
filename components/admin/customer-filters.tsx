@@ -1,20 +1,20 @@
 "use client"
 
 import { useState } from "react"
+import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Search, Filter, X, Plus, UserPlus } from "@/components/icons"
+import { X, Plus } from "@/components/icons"
 
 interface CustomerFiltersProps {
   search: string
   status: string
   plan: string
-  onProvision?: () => void
 }
 
-export function CustomerFilters({ search, status, plan, onProvision }: CustomerFiltersProps) {
+export function CustomerFilters({ search, status, plan }: CustomerFiltersProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
 
@@ -92,11 +92,13 @@ export function CustomerFilters({ search, status, plan, onProvision }: CustomerF
           </Button>
         )}
         <Button
-          onClick={onProvision}
+          asChild
           size="sm"
         >
-          <Plus className="h-4 w-4 mr-2" />
-          Provision Customer
+          <Link href="/platform">
+            <Plus className="h-4 w-4 mr-2" />
+            New Customer
+          </Link>
         </Button>
       </div>
     </div>

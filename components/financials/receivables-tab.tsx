@@ -25,6 +25,8 @@ import {
   updateProjectFeeProgressAction,
 } from "@/app/(app)/projects/[id]/financials/actions"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface CloseWorkflowData {
   periods: ProjectBillingPeriod[]
   selectedPeriod: ProjectBillingPeriod | null
@@ -165,12 +167,12 @@ export function ReceivablesTab({
   function handleFeeProgressSave(input: { scheduleId: string; percentComplete: number; totalFeeCents?: number }) {
     startFeeTransition(async () => {
       try {
-        const next = await updateProjectFeeProgressAction({
+        const next = unwrapAction(await updateProjectFeeProgressAction({
           projectId,
           scheduleId: input.scheduleId,
           percentComplete: input.percentComplete,
           totalFeeCents: input.totalFeeCents,
-        })
+        }))
         setFeeSummary(next)
         toast.success("Fee progress saved")
         router.refresh()
@@ -185,13 +187,13 @@ export function ReceivablesTab({
   function handleFeeInvoiceCreate(input: { scheduleId: string; amountCents: number }) {
     startFeeTransition(async () => {
       try {
-        const result = await createProjectFeeInvoiceAction({
+        const result = unwrapAction(await createProjectFeeInvoiceAction({
           projectId,
           scheduleId: input.scheduleId,
           amountCents: input.amountCents,
           status: "saved",
           clientVisible: false,
-        })
+        }))
         setFeeSummary(result.feeSummary)
         setLocalInvoices((current) => [
           result.invoice,

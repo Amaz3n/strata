@@ -29,6 +29,8 @@ import {
 } from "@/app/(app)/companies/actions"
 import { useToast } from "@/hooks/use-toast"
 
+import { unwrapAction } from "@/lib/action-result"
+
 const COMPANY_TYPES: { label: string; value: Company["company_type"] }[] = [
   { label: "Subcontractor", value: "subcontractor" },
   { label: "Supplier", value: "supplier" },
@@ -158,9 +160,9 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
     startTransition(async () => {
       try {
         if (company) {
-          await updateCompanyAction(company.id, payload)
+          unwrapAction(await updateCompanyAction(company.id, payload))
         } else {
-          await createCompanyAction(payload)
+          unwrapAction(await createCompanyAction(payload))
         }
         router.refresh()
         toast({ title: company ? "Company updated" : "Company created" })
@@ -196,7 +198,7 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
     if (!company || !vendor) return
     startAccountingTransition(async () => {
       try {
-        await linkCompanyQboVendorAction(company.id, vendor)
+        unwrapAction(await linkCompanyQboVendorAction(company.id, vendor))
         setQboVendorOpen(false)
         router.refresh()
         toast({ title: "QuickBooks vendor linked" })
@@ -210,7 +212,7 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
     if (!company) return
     startAccountingTransition(async () => {
       try {
-        const updated = await createQboVendorForCompanyAction(company.id)
+        const updated = unwrapAction(await createQboVendorForCompanyAction(company.id))
         setFormState((prev) => ({
           ...prev,
           qbo_vendor_id: updated.qbo_vendor_id ?? "",

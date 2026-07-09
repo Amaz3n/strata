@@ -1,5 +1,10 @@
 import { createHmac, randomBytes } from "crypto"
 
+import {
+  estimateLineAmountCents,
+  resolveAcceptedOptions,
+  type AcceptedOptions,
+} from "@/lib/financials/estimate-totals"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { requireOrgContext } from "@/lib/services/context"
@@ -432,6 +437,8 @@ export type EstimatePortalData = {
   is_current_version: boolean
   /** Cover note shown above the line items. */
   intro: string | null
+  /** Percent tax rate applied to the base subtotal and accepted add-ons. */
+  tax_rate: number
   /** How much pricing breakdown the client sees. */
   pricing_display: PricingDisplayMode
   /** Hex accent color for the document chrome. */
@@ -452,12 +459,7 @@ export type EstimatePhotoView = {
   caption: string | null
 }
 
-export type AcceptedOptions = {
-  ids: string[]
-  optional_total_cents: number
-  base_total_cents: number
-  accepted_total_cents: number
-}
+export type { AcceptedOptions } from "@/lib/financials/estimate-totals"
 
 export type EstimatePortalLine = {
   id: string
@@ -470,49 +472,18 @@ export type EstimatePortalLine = {
   notes: string | null
   /** Client-selectable upgrade/add-on, excluded from the base total. */
   is_optional: boolean
+  /** Allowance line: included in the total as a placeholder budget. */
+  is_allowance: boolean
   /** Computed extended amount (qty × unit + markup). */
   amount_cents: number | null
 }
 
-/** Extended amount for a line: qty × unit cost, plus markup. Groups have no amount. */
-function lineAmountCents(it: any): number | null {
-  if ((it.item_type ?? "line") === "group") return null
-  const base = (it.unit_cost_cents ?? 0) * (it.quantity ?? 1)
-  return Math.round(base + (base * (it.markup_pct ?? 0)) / 100)
-}
+const lineAmountCents = estimateLineAmountCents
 
 function normalizePricingDisplay(value: unknown): PricingDisplayMode {
   return typeof value === "string" && (PRICING_DISPLAY_MODES as readonly string[]).includes(value)
     ? (value as PricingDisplayMode)
     : "itemized"
-}
-
-/**
- * Recomputes which optional add-ons a client accepted and the resulting total,
- * authoritatively, from the persisted line items (never trusting a client total).
- */
-export function resolveAcceptedOptions(
-  items: any[],
-  baseTotalCents: number,
-  selectedIds: string[],
-): AcceptedOptions {
-  const selected = new Set(selectedIds)
-  const ids: string[] = []
-  let optionalTotal = 0
-  for (const it of items ?? []) {
-    if ((it.item_type ?? "line") === "group") continue
-    if (!it.metadata?.is_optional) continue
-    if (selected.has(it.id)) {
-      ids.push(it.id)
-      optionalTotal += lineAmountCents(it) ?? 0
-    }
-  }
-  return {
-    ids,
-    optional_total_cents: optionalTotal,
-    base_total_cents: baseTotalCents,
-    accepted_total_cents: baseTotalCents + optionalTotal,
-  }
 }
 
 /** Resolves persisted photo storage paths to short-lived signed URLs for portal display. */
@@ -564,6 +535,7 @@ function mapEstimatePortalData(
       markup_pct: it.markup_pct,
       notes: typeof it.metadata?.notes === "string" ? it.metadata.notes : null,
       is_optional: it.metadata?.is_optional === true,
+      is_allowance: it.metadata?.is_allowance === true,
       amount_cents: lineAmountCents(it),
     }))
 
@@ -571,6 +543,7 @@ function mapEstimatePortalData(
 
   return {
     intro: typeof metadata.intro === "string" ? metadata.intro : null,
+    tax_rate: Number(metadata.tax_rate ?? 0) || 0,
     pricing_display: normalizePricingDisplay(metadata.display?.pricing),
     accent_color: extras.accentColor ?? null,
     font_family: extras.fontFamily ?? null,
@@ -798,6 +771,10 @@ export async function renderEstimatePdfByToken(
   const acceptedOptions = (metadata.accepted_options as AcceptedOptions | null) ?? null
   const isSigned = Boolean((estimate as any).client_signed_at || (estimate as any).builder_signed_at)
   const totalForPdf = isSigned && acceptedOptions ? acceptedOptions.accepted_total_cents : estimate.total_cents
+  const taxForPdf =
+    isSigned && acceptedOptions
+      ? (estimate.tax_cents ?? 0) + (acceptedOptions.optional_tax_cents ?? 0)
+      : estimate.tax_cents
 
   const pdf = await renderEstimatePdf({
     orgName: branding.name ?? undefined,
@@ -817,7 +794,7 @@ export async function renderEstimatePdfByToken(
     acceptedOptionalIds: acceptedOptions?.ids ?? null,
     hideUnacceptedOptionals: isSigned,
     subtotalCents: estimate.subtotal_cents,
-    taxCents: estimate.tax_cents,
+    taxCents: taxForPdf,
     totalCents: totalForPdf,
     validUntil: estimate.valid_until,
     documentLabel: signers ? ((estimate as any).executed_at ? "Executed Estimate" : "Client-Signed Estimate") : undefined,
@@ -921,7 +898,9 @@ async function generateExecutedEstimateArtifact({
       acceptedOptionalIds: executedAccepted?.ids ?? null,
       hideUnacceptedOptionals: true,
       subtotalCents: estimate.subtotal_cents,
-      taxCents: estimate.tax_cents,
+      taxCents: executedAccepted
+        ? (estimate.tax_cents ?? 0) + (executedAccepted.optional_tax_cents ?? 0)
+        : estimate.tax_cents,
       totalCents: executedAccepted ? executedAccepted.accepted_total_cents : estimate.total_cents,
       validUntil: estimate.valid_until,
       signers: [
@@ -1284,7 +1263,9 @@ async function issueBuilderEstimateSigningEnvelope(input: {
     acceptedOptionalIds: builderAccepted?.ids ?? null,
     hideUnacceptedOptionals: true,
     subtotalCents: estimate.subtotal_cents,
-    taxCents: estimate.tax_cents,
+    taxCents: builderAccepted
+      ? (estimate.tax_cents ?? 0) + (builderAccepted.optional_tax_cents ?? 0)
+      : estimate.tax_cents,
     totalCents: builderAccepted ? builderAccepted.accepted_total_cents : estimate.total_cents,
     validUntil: estimate.valid_until,
     signers: [
@@ -1999,10 +1980,12 @@ export async function submitEstimateDecision(input: {
 
     // Authoritatively resolve which optional add-ons the client accepted and the
     // resulting total, recomputed server-side from the persisted line items.
+    const taxRate = Number(((estimate as any).metadata as Record<string, any> | null)?.tax_rate ?? 0) || 0
     const accepted = resolveAcceptedOptions(
       (estimate as any).items ?? [],
       (estimate as any).total_cents ?? 0,
       input.selected_optional_ids ?? [],
+      taxRate,
     )
     const existingMetadata = ((estimate as any).metadata as Record<string, any> | null) ?? {}
     update.metadata = { ...existingMetadata, accepted_options: accepted }
@@ -2025,14 +2008,21 @@ export async function submitEstimateDecision(input: {
     }
   }
 
-  const { error: updateError } = await supabase
+  // Precondition on status so a concurrent decision (double-click, two tabs)
+  // can't re-sign or overwrite an already-recorded outcome.
+  const { data: updatedRows, error: updateError } = await supabase
     .from("estimates")
     .update(update)
     .eq("id", estimate.id)
     .eq("org_id", estimate.org_id)
+    .not("status", "in", '("client_signed","executed","converted_to_project")')
+    .select("id")
 
   if (updateError) {
     throw new Error(`Failed to record decision: ${updateError.message}`)
+  }
+  if (!updatedRows || updatedRows.length === 0) {
+    throw new Error("This estimate has already been signed.")
   }
 
   let builderSigningResult:

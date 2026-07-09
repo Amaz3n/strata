@@ -16,6 +16,9 @@ export const warrantyRequestUpdateSchema = z.object({
   description: z.string().max(2000).optional().nullable(),
   priority: warrantyPrioritySchema.optional(),
   status: warrantyStatusSchema.optional(),
+  assigned_company_id: z.string().uuid().optional().nullable(),
+  scheduled_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid date format").optional().nullable(),
+  resolution_note: z.string().max(2000).optional().nullable(),
 })
 
 export type WarrantyRequestInput = z.infer<typeof warrantyRequestInputSchema>

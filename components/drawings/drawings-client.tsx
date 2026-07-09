@@ -108,6 +108,8 @@ import { RecentSheetsSection, useRecentSheets } from "./recent-sheets-section"
 import { SheetCard } from "./sheet-card"
 import { DrawingsEmptyState } from "./drawings-empty-state"
 
+import { unwrapAction } from "@/lib/action-result"
+
 type ViewMode = "grid" | "list"
 type TabMode = "sets" | "sheets"
 
@@ -573,7 +575,7 @@ export function DrawingsClient({
       )
 
       setUploadProgress({ stage: "Processing PDF...", current: 0, total: 1 })
-      const { set: newSet } = await createDrawingSetFromUpload({
+      const { set: newSet } = unwrapAction(await createDrawingSetFromUpload({
         projectId: selectedProject,
         title: uploadTitle,
       setType: uploadSetType,
@@ -581,7 +583,7 @@ export function DrawingsClient({
         storagePath,
         fileSize: uploadFile.size,
         mimeType: uploadFile.type,
-      })
+      }))
 
       setSets((prev) => [newSet, ...prev])
 
@@ -760,7 +762,7 @@ export function DrawingsClient({
   // Handle markup actions
   const handleSaveMarkup = async (markup: Omit<DrawingMarkup, "id" | "org_id" | "created_at" | "updated_at">) => {
     try {
-      const newMarkup = await createDrawingMarkupAction(markup)
+      const newMarkup = unwrapAction(await createDrawingMarkupAction(markup))
       setViewerMarkups(prev => [...prev, newMarkup])
       toast.success("Markup saved")
     } catch (error) {
@@ -771,7 +773,7 @@ export function DrawingsClient({
 
   const handleDeleteMarkup = async (markupId: string) => {
     try {
-      await deleteDrawingMarkupAction(markupId)
+      unwrapAction(await deleteDrawingMarkupAction(markupId))
       setViewerMarkups(prev => prev.filter(m => m.id !== markupId))
       toast.success("Markup deleted")
     } catch (error) {
@@ -824,38 +826,38 @@ export function DrawingsClient({
 
       let entityId: string | null = null
       if (input.entityType === "task") {
-        const created = await createTaskFromDrawingAction(projectId, {
+        const created = unwrapAction(await createTaskFromDrawingAction(projectId, {
           title: input.title,
           description: input.description,
           priority: input.priority === "high" ? "high" : input.priority === "low" ? "low" : "normal",
           status: "todo",
-        })
+        }))
         entityId = created.id
       } else if (input.entityType === "rfi") {
-        const created = await createRfiFromDrawingAction({
+        const created = unwrapAction(await createRfiFromDrawingAction({
           projectId,
           subject: input.subject ?? input.title,
           question: input.question ?? input.description ?? "",
           priority: input.priority === "high" ? "high" : input.priority === "low" ? "low" : "normal",
-        })
+        }))
         entityId = created.id
       } else if (input.entityType === "punch_list") {
-        const created = await createPunchItemFromDrawingAction({
+        const created = unwrapAction(await createPunchItemFromDrawingAction({
           projectId,
           title: input.title,
           description: input.description,
           location: input.location,
           severity: input.priority,
-        })
+        }))
         entityId = created.id
       } else if (input.entityType === "issue") {
-        const created = await createTaskFromDrawingAction(projectId, {
+        const created = unwrapAction(await createTaskFromDrawingAction(projectId, {
           title: input.title,
           description: input.description,
           priority: "high",
           status: "todo",
           tags: ["issue"],
-        })
+        }))
         entityId = created.id
       }
 
@@ -863,7 +865,7 @@ export function DrawingsClient({
         throw new Error("Unsupported entity type")
       }
 
-      const pin = await createDrawingPinAction({
+      const pin = unwrapAction(await createDrawingPinAction({
         project_id: projectId,
         drawing_sheet_id: viewerSheet.id,
         x_position: createFromDrawingPosition.x,
@@ -872,7 +874,7 @@ export function DrawingsClient({
         entity_id: entityId,
         label: input.title,
         status: "open",
-      })
+      }))
 
       setViewerPins(prev => [...prev, pin])
       setCreateFromDrawingOpen(false)
@@ -891,7 +893,7 @@ export function DrawingsClient({
 
     setIsDeleting(true)
     try {
-      await deleteDrawingSetAction(setToDelete.id)
+      unwrapAction(await deleteDrawingSetAction(setToDelete.id))
       setSets((prev) => prev.filter((s) => s.id !== setToDelete.id))
       await fetchSheets()
       toast.success("Drawing set deleted")
@@ -907,7 +909,7 @@ export function DrawingsClient({
   // Handle retry processing
   const handleRetry = async (setId: string) => {
     try {
-      await retryProcessingAction(setId)
+      unwrapAction(await retryProcessingAction(setId))
       toast.success("Processing restarted")
       await fetchSets()
     } catch (error) {
@@ -920,12 +922,12 @@ export function DrawingsClient({
     if (selectedIds.size === 0) return
 
     try {
-      await bulkUpdateSheetSharingAction(
+      unwrapAction(await bulkUpdateSheetSharingAction(
         Array.from(selectedIds),
         shareWith === "clients"
           ? { share_with_clients: true }
           : { share_with_subs: true }
-      )
+      ))
       toast.success(`${selectedIds.size} sheets shared`)
       setSelectedIds(new Set())
       await fetchSheets()

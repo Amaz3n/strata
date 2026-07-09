@@ -439,7 +439,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
         const retryErrorMessage = retryError instanceof QBOError ? retryError.message : retryError?.message ?? "Stale sync token retry failed"
         await supabase.from("invoices").update({ qbo_sync_status: "error" }).eq("id", invoiceId)
         await markSyncRecordError(orgId, "invoice", invoiceId, retryErrorMessage)
-        await markConnectionError(orgId, retryErrorMessage)
+        await markConnectionErrorIfConnectionLevel(orgId, retryError, retryErrorMessage)
         logQBO("error", "invoice_sync_stale_token_retry_failed", {
           orgId,
           invoiceId,
@@ -533,7 +533,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
         const retryErrorMessage = retryError instanceof QBOError ? retryError.message : retryError?.message ?? "DocNumber conflict"
         await supabase.from("invoices").update({ qbo_sync_status: "error" }).eq("id", invoiceId)
         await markSyncRecordError(orgId, "invoice", invoiceId, retryErrorMessage)
-        await markConnectionError(orgId, retryErrorMessage)
+        await markConnectionErrorIfConnectionLevel(orgId, retryError, retryErrorMessage)
         logQBO("error", "invoice_sync_docnumber_retry_failed", {
           orgId,
           invoiceId,
@@ -551,7 +551,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
     const errorMessage = err instanceof QBOError ? err.message : String(err)
     await supabase.from("invoices").update({ qbo_sync_status: "error" }).eq("id", invoiceId)
     await markSyncRecordError(orgId, "invoice", invoiceId, errorMessage)
-    await markConnectionError(orgId, errorMessage)
+    await markConnectionErrorIfConnectionLevel(orgId, err, errorMessage)
     logQBO("error", "invoice_sync_failed", {
       orgId,
       invoiceId,
@@ -663,7 +663,7 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string) {
   } catch (error: any) {
     const message = error instanceof QBOError ? error.message : error?.message ?? String(error)
     await markSyncRecordError(orgId, "payment", paymentId, message)
-    await markConnectionError(orgId, message)
+    await markConnectionErrorIfConnectionLevel(orgId, error, message)
     logQBO("error", "payment_sync_failed", {
       orgId,
       paymentId,
@@ -895,7 +895,7 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string) 
       .eq("org_id", orgId)
       .eq("id", expenseId)
     await markSyncRecordError(orgId, "project_expense", expenseId, message)
-    await markConnectionError(orgId, message)
+    await markConnectionErrorIfConnectionLevel(orgId, error, message)
     logQBO("error", "project_expense_sync_failed", {
       orgId,
       expenseId,
@@ -1147,7 +1147,7 @@ export async function syncVendorBillToQBO(billId: string, orgId: string) {
       .eq("org_id", orgId)
       .eq("id", billId)
     await markSyncRecordError(orgId, "bill", billId, message)
-    await markConnectionError(orgId, message)
+    await markConnectionErrorIfConnectionLevel(orgId, error, message)
     logQBO("error", "vendor_bill_sync_failed", {
       orgId,
       billId,
@@ -1260,7 +1260,7 @@ export async function syncBillPaymentToQBO(paymentId: string, orgId: string) {
   } catch (error: any) {
     const message = error instanceof QBOError ? error.message : error?.message ?? String(error)
     await markSyncRecordError(orgId, "bill_payment", paymentId, message)
-    await markConnectionError(orgId, message)
+    await markConnectionErrorIfConnectionLevel(orgId, error, message)
     logQBO("error", "bill_payment_sync_failed", {
       orgId,
       paymentId,
@@ -1802,6 +1802,21 @@ async function markConnectionHealthy(orgId: string) {
     })
     .eq("org_id", orgId)
     .eq("status", "active")
+}
+
+/**
+ * Connection health must only react to failures of the connection itself (auth,
+ * permissions, rate limits, Intuit outages, network). A validation fault on one
+ * entity — a deleted account ref, a bad amount — is that entity's problem and is
+ * already surfaced on its own qbo_sync_status; it must not flip the whole org's
+ * QBO connection into an error state.
+ */
+async function markConnectionErrorIfConnectionLevel(orgId: string, error: unknown, message: string) {
+  if (error instanceof QBOError) {
+    const connectionLevel = error.isAuthError || error.isPermissionError || error.isRateLimit || error.status >= 500
+    if (!connectionLevel) return
+  }
+  await markConnectionError(orgId, message)
 }
 
 async function markConnectionError(orgId: string, error: string) {

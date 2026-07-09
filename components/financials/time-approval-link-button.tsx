@@ -7,6 +7,8 @@ import { toast } from "sonner"
 import { createTimeEntryApprovalLinkFormAction } from "@/app/(app)/projects/[id]/time/actions"
 import { Button } from "@/components/ui/button"
 
+import { unwrapAction } from "@/lib/action-result"
+
 export function TimeApprovalLinkButton({ projectId, timeEntryId }: { projectId: string; timeEntryId: string }) {
   const [isPending, startTransition] = useTransition()
 
@@ -18,7 +20,7 @@ export function TimeApprovalLinkButton({ projectId, timeEntryId }: { projectId: 
       onClick={() => {
         startTransition(async () => {
           try {
-            const result = await createTimeEntryApprovalLinkFormAction(projectId, timeEntryId)
+            const result = unwrapAction(await createTimeEntryApprovalLinkFormAction(projectId, timeEntryId))
             await navigator.clipboard?.writeText(result.url)
             toast.success("Client approval link copied")
           } catch (error: any) {

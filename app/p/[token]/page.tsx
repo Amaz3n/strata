@@ -78,6 +78,7 @@ export default async function ClientPortalPage({ params }: PortalPageProps) {
     permissions: access.permissions,
     portalType: "client",
     companyId: access.company_id,
+    contactId: access.contact_id ?? null,
     scopedRfiId: access.scoped_rfi_id ?? null,
     portalToken: token,
   })

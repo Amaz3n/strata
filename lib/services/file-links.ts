@@ -1,6 +1,7 @@
 import type { FileLinkInput } from "@/lib/validation/files"
 import { fileLinkInputSchema } from "@/lib/validation/files"
 import { requireOrgContext } from "@/lib/services/context"
+import { requirePermission } from "@/lib/services/permissions"
 import { recordAudit } from "@/lib/services/audit"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { buildInternalFileUrl, type FileRecord, type FileWithUrls } from "@/lib/services/files"
@@ -79,6 +80,7 @@ export async function attachFile(
 ): Promise<FileLink> {
   const parsed = fileLinkInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.upload", { supabase, orgId: resolvedOrgId, userId })
 
   // Verify file exists and belongs to org
   const { data: file, error: fileError } = await supabase
@@ -220,6 +222,7 @@ export async function detachFile(
   orgId?: string
 ): Promise<void> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.upload", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: fetchError } = await supabase
     .from("file_links")
@@ -259,6 +262,7 @@ export async function detachFile(
  */
 export async function detachFileById(linkId: string, orgId?: string): Promise<void> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.upload", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: fetchError } = await supabase
     .from("file_links")
@@ -298,7 +302,8 @@ export async function listAttachments(
   entityId: string,
   orgId?: string
 ): Promise<FileLinkWithFile[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("file_links")
@@ -348,7 +353,8 @@ export async function listAttachments(
  * List all links for a file
  */
 export async function listFileLinks(fileId: string, orgId?: string): Promise<FileLink[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("file_links")
@@ -373,7 +379,8 @@ export async function listFileLinkSummary(
 ): Promise<FileLinkSummary[]> {
   if (fileIds.length === 0) return []
 
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("file_links")
@@ -408,7 +415,8 @@ export async function listFileLinkSummary(
  * Check if a file is attached to any entities
  */
 export async function hasAttachments(fileId: string, orgId?: string): Promise<boolean> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { count, error } = await supabase
     .from("file_links")
@@ -431,7 +439,8 @@ export async function getAttachmentCount(
   entityId: string,
   orgId?: string
 ): Promise<number> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { count, error } = await supabase
     .from("file_links")

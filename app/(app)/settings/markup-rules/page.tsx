@@ -9,7 +9,19 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { createMarkupRuleFormAction, deleteMarkupRuleFormAction, listMarkupRuleOptionsAction, listMarkupRulesAction } from "./actions"
 
+import { unwrapAction } from "@/lib/action-result"
+
 export const dynamic = "force-dynamic"
+
+async function createMarkupRuleForm(formData: FormData) {
+  "use server"
+  unwrapAction(await createMarkupRuleFormAction(formData))
+}
+
+async function deleteMarkupRuleForm(ruleId: string) {
+  "use server"
+  unwrapAction(await deleteMarkupRuleFormAction(ruleId))
+}
 
 export default async function MarkupRulesPage() {
   const [rules, options] = await Promise.all([
@@ -39,7 +51,7 @@ export default async function MarkupRulesPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <form action={createMarkupRuleFormAction} className="grid gap-4 lg:grid-cols-[160px_1fr_1fr_140px_150px_150px_auto] lg:items-end">
+            <form action={createMarkupRuleForm} className="grid gap-4 lg:grid-cols-[160px_1fr_1fr_140px_150px_150px_auto] lg:items-end">
               <div className="space-y-2">
                 <Label>Scope</Label>
                 <Select name="scope" defaultValue="org">
@@ -115,7 +127,7 @@ export default async function MarkupRulesPage() {
                     <TableCell>{rule.markup_percent}%</TableCell>
                     <TableCell>{formatRange(rule.effective_from, rule.effective_to)}</TableCell>
                     <TableCell className="text-right">
-                      <form action={deleteMarkupRuleFormAction.bind(null, rule.id)}>
+                      <form action={deleteMarkupRuleForm.bind(null, rule.id)}>
                         <Button size="icon" variant="ghost" aria-label="Delete markup rule">
                           <Trash2 className="h-4 w-4" />
                         </Button>

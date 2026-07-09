@@ -25,6 +25,7 @@ import {
   listBidPackageRfiResponses,
   answerBidPackageRfi,
   listBidPackageActivity,
+  getProjectBuyoutSummary,
 } from "@/lib/services/bids"
 import {
   pauseBidInviteAccountGrants,
@@ -32,80 +33,112 @@ import {
   revokeBidInviteAccountGrants,
 } from "@/lib/services/external-portal-auth"
 
+import { actionError, type ActionResult } from "@/lib/action-result"
+
+async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
+  try {
+    return { success: true, data: await fn() }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
 export async function listBidPackagesAction(projectId: string) {
-  return listBidPackages(projectId)
+      return listBidPackages(projectId)
+}
+
+export async function getProjectBuyoutSummaryAction(projectId: string) {
+      return getProjectBuyoutSummary(projectId)
 }
 
 export async function getBidPackageAction(bidPackageId: string) {
-  return getBidPackage(bidPackageId)
+      return getBidPackage(bidPackageId)
 }
 
 export async function createBidPackageAction(projectId: string, input: unknown) {
-  const created = await createBidPackage({
-    input: { ...(input as any), project_id: projectId },
+  return run(async () => {
+      const created = await createBidPackage({
+        input: { ...(input as any), project_id: projectId },
+      })
+      revalidatePath(`/projects/${projectId}/bids`)
+      return created
   })
-  revalidatePath(`/projects/${projectId}/bids`)
-  return created
 }
 
 export async function updateBidPackageAction(bidPackageId: string, projectId: string, input: unknown) {
-  const updated = await updateBidPackage({ bidPackageId, input })
-  revalidatePath(`/projects/${projectId}/bids`)
-  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
-  return updated
+  return run(async () => {
+      const updated = await updateBidPackage({ bidPackageId, input })
+      revalidatePath(`/projects/${projectId}/bids`)
+      revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+      return updated
+  })
 }
 
 export async function listBidInvitesAction(bidPackageId: string) {
-  return listBidInvites(bidPackageId)
+      return listBidInvites(bidPackageId)
 }
 
 export async function createBidInviteAction(projectId: string, input: unknown) {
-  const invite = await createBidInvite({ input })
-  revalidatePath(`/projects/${projectId}/bids`)
-  revalidatePath(`/projects/${projectId}/bids/${invite.bid_package_id}`)
-  return invite
+  return run(async () => {
+      const invite = await createBidInvite({ input })
+      revalidatePath(`/projects/${projectId}/bids`)
+      revalidatePath(`/projects/${projectId}/bids/${invite.bid_package_id}`)
+      return invite
+  })
 }
 
 export async function bulkCreateBidInvitesAction(projectId: string, bidPackageId: string, input: unknown) {
-  const result = await bulkCreateBidInvites({ input })
-  revalidatePath(`/projects/${projectId}/bids`)
-  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
-  return result
+  return run(async () => {
+      const result = await bulkCreateBidInvites({ input })
+      revalidatePath(`/projects/${projectId}/bids`)
+      revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+      return result
+  })
 }
 
 export async function generateBidInviteLinkAction(projectId: string, bidPackageId: string, inviteId: string) {
-  const result = await generateBidInviteLink(inviteId)
-  revalidatePath(`/projects/${projectId}/bids`)
-  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
-  return result
+  return run(async () => {
+      const result = await generateBidInviteLink(inviteId)
+      revalidatePath(`/projects/${projectId}/bids`)
+      revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+      return result
+  })
 }
 
 export async function resendBidInviteAction(projectId: string, bidPackageId: string, inviteId: string) {
-  const result = await resendBidInvite({ inviteId })
-  revalidatePath(`/projects/${projectId}/bids`)
-  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
-  return result
+  return run(async () => {
+      const result = await resendBidInvite({ inviteId })
+      revalidatePath(`/projects/${projectId}/bids`)
+      revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+      return result
+  })
 }
 
 export async function pauseBidInviteAccessAction(projectId: string, bidPackageId: string, inviteId: string) {
-  await pauseBidInviteAccess(inviteId)
-  revalidatePath(`/projects/${projectId}/bids`)
-  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
-  return { success: true }
+  return run(async () => {
+      await pauseBidInviteAccess(inviteId)
+      revalidatePath(`/projects/${projectId}/bids`)
+      revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+      return { success: true }
+  })
 }
 
 export async function resumeBidInviteAccessAction(projectId: string, bidPackageId: string, inviteId: string) {
-  await resumeBidInviteAccess(inviteId)
-  revalidatePath(`/projects/${projectId}/bids`)
-  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
-  return { success: true }
+  return run(async () => {
+      await resumeBidInviteAccess(inviteId)
+      revalidatePath(`/projects/${projectId}/bids`)
+      revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+      return { success: true }
+  })
 }
 
 export async function revokeBidInviteAccessAction(projectId: string, bidPackageId: string, inviteId: string) {
-  await revokeBidInviteAccess(inviteId)
-  revalidatePath(`/projects/${projectId}/bids`)
-  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
-  return { success: true }
+  return run(async () => {
+      await revokeBidInviteAccess(inviteId)
+      revalidatePath(`/projects/${projectId}/bids`)
+      revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+      return { success: true }
+  })
 }
 
 export async function setBidInviteRequireAccountAction(
@@ -114,78 +147,94 @@ export async function setBidInviteRequireAccountAction(
   inviteId: string,
   requireAccount: boolean,
 ) {
-  await setBidInviteRequireAccount({ inviteId, requireAccount })
-  revalidatePath(`/projects/${projectId}/bids`)
-  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
-  return { success: true }
+  return run(async () => {
+      await setBidInviteRequireAccount({ inviteId, requireAccount })
+      revalidatePath(`/projects/${projectId}/bids`)
+      revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+      return { success: true }
+  })
 }
 
 export async function pauseBidInviteAccountGrantsAction(projectId: string, bidPackageId: string, inviteId: string) {
-  await pauseBidInviteAccountGrants(inviteId)
-  revalidatePath(`/projects/${projectId}/bids`)
-  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
-  return { success: true }
+  return run(async () => {
+      await pauseBidInviteAccountGrants(inviteId)
+      revalidatePath(`/projects/${projectId}/bids`)
+      revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+      return { success: true }
+  })
 }
 
 export async function resumeBidInviteAccountGrantsAction(projectId: string, bidPackageId: string, inviteId: string) {
-  await resumeBidInviteAccountGrants(inviteId)
-  revalidatePath(`/projects/${projectId}/bids`)
-  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
-  return { success: true }
+  return run(async () => {
+      await resumeBidInviteAccountGrants(inviteId)
+      revalidatePath(`/projects/${projectId}/bids`)
+      revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+      return { success: true }
+  })
 }
 
 export async function revokeBidInviteAccountGrantsAction(projectId: string, bidPackageId: string, inviteId: string) {
-  await revokeBidInviteAccountGrants(inviteId)
-  revalidatePath(`/projects/${projectId}/bids`)
-  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
-  return { success: true }
+  return run(async () => {
+      await revokeBidInviteAccountGrants(inviteId)
+      revalidatePath(`/projects/${projectId}/bids`)
+      revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+      return { success: true }
+  })
 }
 
 export async function listBidAddendaAction(bidPackageId: string) {
-  return listBidAddenda(bidPackageId)
+      return listBidAddenda(bidPackageId)
 }
 
 export async function createBidAddendumAction(projectId: string, input: unknown) {
-  const addendum = await createBidAddendum({ input })
-  revalidatePath(`/projects/${projectId}/bids/${addendum.bid_package_id}`)
-  return addendum
+  return run(async () => {
+      const addendum = await createBidAddendum({ input })
+      revalidatePath(`/projects/${projectId}/bids/${addendum.bid_package_id}`)
+      return addendum
+  })
 }
 
 export async function listBidSubmissionsAction(bidPackageId: string) {
-  return listBidSubmissions(bidPackageId)
+      return listBidSubmissions(bidPackageId)
 }
 
 export async function createManualBidSubmissionAction(projectId: string, bidPackageId: string, input: unknown) {
-  const submission = await createManualBidSubmission({ input })
-  revalidatePath(`/projects/${projectId}/bids`)
-  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
-  return submission
+  return run(async () => {
+      const submission = await createManualBidSubmission({ input })
+      revalidatePath(`/projects/${projectId}/bids`)
+      revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+      return submission
+  })
 }
 
 export async function updateBidSubmissionLevelingAction(projectId: string, bidPackageId: string, input: unknown) {
-  const submission = await updateBidSubmissionLeveling({ input })
-  revalidatePath(`/projects/${projectId}/bids`)
-  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
-  return submission
+  return run(async () => {
+      const submission = await updateBidSubmissionLeveling({ input })
+      revalidatePath(`/projects/${projectId}/bids`)
+      revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+      return submission
+  })
 }
 
 export async function listBidPackageRfisAction(bidPackageId: string) {
-  return listBidPackageRfis(bidPackageId)
+      return listBidPackageRfis(bidPackageId)
 }
 
 export async function listBidPackageRfiResponsesAction(rfiId: string) {
-  return listBidPackageRfiResponses({ rfiId })
+      return listBidPackageRfiResponses({ rfiId })
 }
 
 export async function answerBidPackageRfiAction(projectId: string, bidPackageId: string, input: unknown) {
-  const result = await answerBidPackageRfi({ input })
-  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
-  revalidatePath(`/projects/${projectId}/rfis`)
-  return result
+  return run(async () => {
+      const result = await answerBidPackageRfi({ input })
+      revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+      revalidatePath(`/projects/${projectId}/rfis`)
+      return result
+  })
 }
 
 export async function listBidPackageActivityAction(bidPackageId: string) {
-  return listBidPackageActivity(bidPackageId)
+      return listBidPackageActivity(bidPackageId)
 }
 
 export async function awardBidSubmissionAction(
@@ -194,17 +243,19 @@ export async function awardBidSubmissionAction(
   bidSubmissionId: string,
   notes?: string | null,
 ) {
-  const result = await awardBidSubmission({
-    input: {
-      bid_submission_id: bidSubmissionId,
-      notes: notes ?? null,
-    },
+  return run(async () => {
+      const result = await awardBidSubmission({
+        input: {
+          bid_submission_id: bidSubmissionId,
+          notes: notes ?? null,
+        },
+      })
+      revalidatePath(`/projects/${projectId}/bids`)
+      revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
+      revalidatePath(`/projects/${projectId}/commitments`)
+      revalidatePath(`/projects/${projectId}/financials`)
+      revalidatePath(`/projects/${projectId}/financials/budget`)
+      revalidatePath(`/projects/${projectId}/budget`)
+      return result
   })
-  revalidatePath(`/projects/${projectId}/bids`)
-  revalidatePath(`/projects/${projectId}/bids/${bidPackageId}`)
-  revalidatePath(`/projects/${projectId}/commitments`)
-  revalidatePath(`/projects/${projectId}/financials`)
-  revalidatePath(`/projects/${projectId}/financials/budget`)
-  revalidatePath(`/projects/${projectId}/budget`)
-  return result
 }

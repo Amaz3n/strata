@@ -7,37 +7,34 @@ import { vendorBillStatusUpdateSchema } from "@/lib/validation/vendor-bills"
 import { createCommitment, createCommitmentLine, listCompanyCommitments, updateCommitment } from "@/lib/services/commitments"
 import { listCostCodes } from "@/lib/services/cost-codes"
 import { listVendorBillsForCompany, updateVendorBillStatus } from "@/lib/services/vendor-bills"
-import { AuthorizationError } from "@/lib/services/authorization"
 
-function rethrowTypedAuthError(error: unknown): never {
-  if (error instanceof AuthorizationError) {
-    throw new Error(`AUTH_FORBIDDEN:${error.reasonCode}`)
+import { actionError, type ActionResult } from "@/lib/action-result"
+
+async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
+  try {
+    return { success: true, data: await fn() }
+  } catch (error) {
+    return actionError(error)
   }
-  throw error
 }
 
+
 export async function listCompanyCommitmentsAction(companyId: string) {
-  try {
-    return await listCompanyCommitments(companyId)
-  } catch (error) {
-    rethrowTypedAuthError(error)
-  }
+  return await listCompanyCommitments(companyId)
 }
 
 export async function createCompanyCommitmentAction(input: unknown) {
-  try {
+  return run(async () => {
     const parsed = commitmentInputSchema.parse(input)
     const result = await createCommitment({ input: parsed })
     revalidatePath(`/companies/${parsed.company_id}`)
     revalidatePath("/directory")
     return result
-  } catch (error) {
-    rethrowTypedAuthError(error)
-  }
+  })
 }
 
 export async function createCompanyCommitmentWithLineAction(input: unknown) {
-  try {
+  return run(async () => {
     const payload = input as { commitment?: unknown; line?: unknown }
     const commitmentInput = commitmentInputSchema.parse(payload.commitment)
     const lineInput = commitmentLineInputSchema.parse(payload.line)
@@ -48,46 +45,32 @@ export async function createCompanyCommitmentWithLineAction(input: unknown) {
     revalidatePath(`/projects/${commitmentInput.project_id}/vendors`)
     revalidatePath("/directory")
     return result
-  } catch (error) {
-    rethrowTypedAuthError(error)
-  }
+  })
 }
 
 export async function listCompanyCommitmentCostCodesAction() {
-  try {
-    return await listCostCodes()
-  } catch (error) {
-    rethrowTypedAuthError(error)
-  }
+  return await listCostCodes()
 }
 
 export async function updateCompanyCommitmentAction(commitmentId: string, input: unknown) {
-  try {
+  return run(async () => {
     const parsed = commitmentUpdateSchema.parse(input)
     const result = await updateCommitment({ commitmentId, input: parsed })
     revalidatePath("/directory")
     return result
-  } catch (error) {
-    rethrowTypedAuthError(error)
-  }
+  })
 }
 
 export async function listCompanyVendorBillsAction(companyId: string) {
-  try {
-    return await listVendorBillsForCompany(companyId)
-  } catch (error) {
-    rethrowTypedAuthError(error)
-  }
+  return await listVendorBillsForCompany(companyId)
 }
 
 export async function updateVendorBillStatusAction(billId: string, companyId: string, input: unknown) {
-  try {
+  return run(async () => {
     const parsed = vendorBillStatusUpdateSchema.parse(input)
     const updated = await updateVendorBillStatus({ billId, input: parsed })
     revalidatePath(`/companies/${companyId}`)
     revalidatePath("/directory")
     return updated
-  } catch (error) {
-    rethrowTypedAuthError(error)
-  }
+  })
 }

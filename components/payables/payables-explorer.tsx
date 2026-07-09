@@ -4,7 +4,6 @@ import { type ReactNode, useMemo, useState } from "react"
 import {
   Check,
   CheckCircle2,
-  ChevronsUpDown,
   MoreHorizontal,
   Plus,
   Receipt,
@@ -18,7 +17,6 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,11 +26,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import { isVendorCredit, summarizePayables } from "@/lib/financials/payables-rules"
 import type { ComplianceRules, ComplianceStatusSummary, CostCode } from "@/lib/types"
+import { CodingCombobox } from "@/components/financials/workspace/coding-combobox"
 import { filterPayables, payableQueueCounts, type PayableQueue } from "./payables-filters"
 import { billBadge, dueDateClassName, getDueState, payableTypeBadge, vendorLabel } from "./payables-ui"
 
@@ -50,14 +48,11 @@ interface PayablesExplorerProps {
   onAddPayable?: () => void
   onViewDetails?: (bill: VendorBillSummary) => void
   onApprove?: (bill: VendorBillSummary) => void
-  onRecordPayment?: (bill: VendorBillSummary) => void
   onSyncQbo?: (bill: VendorBillSummary) => void
   onOpenSyncSheet?: () => void
   onDelete?: (bill: VendorBillSummary) => void
   onBulkApprove?: (bills: VendorBillSummary[]) => void
   onBulkSyncQbo?: (bills: VendorBillSummary[]) => void
-  onViewFiles?: (bill: VendorBillSummary) => void
-  onEditVendor?: (bill: VendorBillSummary) => void
   onSelectCostCode?: (bill: VendorBillSummary, costCodeId: string | null) => void
   onSelectQboExpenseAccount?: (bill: VendorBillSummary, accountId: string) => void
   toolbarLeading?: ReactNode
@@ -75,14 +70,11 @@ export function PayablesExplorer({
   onAddPayable,
   onViewDetails,
   onApprove,
-  onRecordPayment,
   onSyncQbo,
   onOpenSyncSheet,
   onDelete,
   onBulkApprove,
   onBulkSyncQbo,
-  onViewFiles,
-  onEditVendor,
   onSelectCostCode,
   onSelectQboExpenseAccount,
   toolbarLeading,
@@ -280,7 +272,7 @@ export function PayablesExplorer({
                 <TableCell className="px-4 py-2 text-right cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => onViewDetails?.(bill)}>
                   <div className="text-sm font-semibold tabular-nums">{formatCurrency(bill.project_amount_cents ?? bill.total_cents ?? 0)}</div>
                   {bill.is_shared ? (
-                    <div className="text-[10px] font-medium text-indigo-600 dark:text-indigo-400">of {formatCurrency(bill.total_cents ?? 0)} shared</div>
+                    <div className="text-[10px] font-medium text-primary">of {formatCurrency(bill.total_cents ?? 0)} shared</div>
                   ) : null}
                 </TableCell>
                 <TableCell className="px-4 py-2">
@@ -293,7 +285,7 @@ export function PayablesExplorer({
                 </TableCell>
                 {accountingEnabled ? (
                   <TableCell className="p-0">
-                    <PayableVendorLinkCell bill={bill} onEditVendor={onEditVendor} />
+                    <PayableVendorLinkCell bill={bill} onEditVendor={onViewDetails} />
                   </TableCell>
                 ) : null}
                 {accountingEnabled ? (
@@ -326,7 +318,7 @@ export function PayablesExplorer({
                       variant="outline"
                       className={cn(
                         "h-9 w-9 rounded-md bg-background",
-                        bill.status === "pending" ? "border-emerald-600 text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700" : "border-muted text-muted-foreground opacity-70",
+                        bill.status === "pending" ? "border-success text-success hover:bg-success/10" : "border-muted text-muted-foreground opacity-70",
                       )}
                       disabled={bill.status !== "pending" || isVendorCredit(bill)}
                       onClick={() => onApprove?.(bill)}
@@ -338,7 +330,7 @@ export function PayablesExplorer({
                       bill={bill}
                       accountingEnabled={accountingEnabled}
                       onEdit={onViewDetails}
-                      onViewFiles={onViewFiles}
+                      onViewFiles={onViewDetails}
                       onSyncQbo={onSyncQbo}
                       onDelete={onDelete}
                     />
@@ -405,8 +397,8 @@ function PayableVendorLinkCell({
         className={cn(
           "shrink-0 text-[10px] font-bold uppercase",
           bill.qbo_vendor_id
-            ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-700"
-            : "border-amber-500/20 bg-amber-500/10 text-amber-700",
+            ? "border-success/20 bg-success/10 text-success"
+            : "border-warning/20 bg-warning/10 text-warning",
         )}
       >
         {bill.qbo_vendor_id ? "Linked" : "Needed"}
@@ -433,40 +425,24 @@ function PayableQboAccountCombobox({
   const selectedPath = selected?.fullyQualifiedName ?? bill.qbo_expense_account_name ?? "QuickBooks category"
 
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
-      <PopoverTrigger asChild>
-        <Button type="button" variant="ghost" role="combobox" aria-expanded={open} className="h-full min-h-11 w-full justify-between gap-2 rounded-none px-3 py-2 text-left">
-          <span className="min-w-0">
-            <span className="block truncate text-sm font-medium text-foreground">{selectedName}</span>
-            <span className="block truncate text-[11px] text-muted-foreground">{selectedPath}</span>
-          </span>
-          <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] min-w-[300px] p-0" align="start">
-        <Command>
-          <CommandInput placeholder="Search QBO accounts..." />
-          <CommandList className="max-h-72 overflow-y-auto">
-            <CommandEmpty>No accounts found.</CommandEmpty>
-            <CommandGroup heading="Accounts">
-              {accounts.map((account) => {
-                const label = account.fullyQualifiedName ?? account.name
-                const selectedAccount = account.id === bill.qbo_expense_account_id
-                return (
-                  <CommandItem key={account.id} value={label} onSelect={() => onSelect(account.id)}>
-                    <Check className={cn("size-4", selectedAccount ? "opacity-100" : "opacity-0")} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate">{account.name}</span>
-                      <span className="block truncate text-xs text-muted-foreground">{label}</span>
-                    </span>
-                  </CommandItem>
-                )
-              })}
-            </CommandGroup>
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
+    <CodingCombobox
+      open={open}
+      onOpenChange={onOpenChange}
+      triggerLabel={selectedName}
+      triggerSublabel={selectedPath}
+      searchPlaceholder="Search QBO accounts..."
+      groupHeading="Accounts"
+      emptyLabel="No accounts found."
+      options={accounts.map((account) => ({
+        id: account.id,
+        label: account.name,
+        sublabel: account.fullyQualifiedName ?? account.name,
+        searchValue: account.fullyQualifiedName ?? account.name,
+      }))}
+      selectedId={bill.qbo_expense_account_id ?? null}
+      onSelect={(accountId) => accountId && onSelect(accountId)}
+      contentMinWidthClass="min-w-[300px]"
+    />
   )
 }
 
@@ -484,47 +460,22 @@ function PayableCostCodeCombobox({
   onSelect: (costCodeId: string | null) => void
 }) {
   const selected = bill.actual_cost_code_id ? costCodes.find((code) => code.id === bill.actual_cost_code_id) : null
+
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
-      <PopoverTrigger asChild>
-        <Button type="button" variant="ghost" role="combobox" aria-expanded={open} className="h-full min-h-11 w-full justify-between gap-2 rounded-none px-3 py-2 text-left">
-          <span className="min-w-0">
-            <span className="block truncate text-sm font-medium text-foreground">{selected?.code ?? bill.actual_cost_code_code ?? "Choose code"}</span>
-            <span className="block truncate text-[11px] text-muted-foreground">{selected ? costCodeLabel(selected) : bill.actual_cost_code_name ?? "Project cost code"}</span>
-          </span>
-          <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] min-w-[260px] p-0" align="start">
-        <Command>
-          <CommandInput placeholder="Search cost codes..." />
-          <CommandList className="max-h-72 overflow-y-auto">
-            <CommandEmpty>No cost codes found.</CommandEmpty>
-            <CommandGroup heading="Cost codes">
-              <CommandItem value="No cost code" onSelect={() => onSelect(null)}>
-                <Check className={cn("size-4", bill.actual_cost_code_id ? "opacity-0" : "opacity-100")} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate">No cost code</span>
-                  <span className="block truncate text-xs text-muted-foreground">Leave uncoded</span>
-                </span>
-              </CommandItem>
-              {costCodes.map((code) => {
-                const selectedCode = code.id === bill.actual_cost_code_id
-                return (
-                  <CommandItem key={code.id} value={costCodeLabel(code)} onSelect={() => onSelect(code.id)}>
-                    <Check className={cn("size-4", selectedCode ? "opacity-100" : "opacity-0")} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate">{code.code}</span>
-                      <span className="block truncate text-xs text-muted-foreground">{costCodeLabel(code)}</span>
-                    </span>
-                  </CommandItem>
-                )
-              })}
-            </CommandGroup>
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
+    <CodingCombobox
+      open={open}
+      onOpenChange={onOpenChange}
+      triggerLabel={selected?.code ?? bill.actual_cost_code_code ?? "Choose code"}
+      triggerSublabel={selected ? costCodeLabel(selected) : bill.actual_cost_code_name ?? "Project cost code"}
+      searchPlaceholder="Search cost codes..."
+      groupHeading="Cost codes"
+      emptyLabel="No cost codes found."
+      options={costCodes.map((code) => ({ id: code.id, label: code.code ?? costCodeLabel(code), sublabel: costCodeLabel(code), searchValue: costCodeLabel(code) }))}
+      selectedId={bill.actual_cost_code_id ?? null}
+      clearOption={{ label: "No cost code", sublabel: "Leave uncoded" }}
+      onSelect={onSelect}
+      contentMinWidthClass="min-w-[260px]"
+    />
   )
 }
 

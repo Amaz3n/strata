@@ -69,6 +69,8 @@ import type {
 } from "@/lib/services/drawings"
 import { toRenderableDrawingsUrl } from "./viewer/tiled-drawing-viewer"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface RevisionReviewDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -224,7 +226,7 @@ export function RevisionReviewDialog({
     if (!diff) return
     setPublishing(true)
     try {
-      await publishRevisionAction({
+      unwrapAction(await publishRevisionAction({
         revisionId,
         label: label.trim() || undefined,
         issuanceType,
@@ -233,7 +235,7 @@ export function RevisionReviewDialog({
         notes: notes.trim() || undefined,
         decisions,
         sheetEdits: edits,
-      })
+      }))
       toast.success("Issuance published")
       onPublished()
       onOpenChange(false)
@@ -248,7 +250,7 @@ export function RevisionReviewDialog({
   const handleRetry = async () => {
     setPublishing(true)
     try {
-      await retryDraftRevisionAction(revisionId)
+      unwrapAction(await retryDraftRevisionAction(revisionId))
       toast.success("Reprocessing started")
       setFailed(null)
       setProcessing(true)
@@ -264,7 +266,7 @@ export function RevisionReviewDialog({
   const handleDiscard = async () => {
     setPublishing(true)
     try {
-      await discardRevisionAction(revisionId)
+      unwrapAction(await discardRevisionAction(revisionId))
       toast.success("Draft discarded")
       onDiscarded()
       onOpenChange(false)

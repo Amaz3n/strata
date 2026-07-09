@@ -18,6 +18,8 @@ import { changeLeadStatusAction } from "@/app/(app)/crm/actions"
 import { useToast } from "@/hooks/use-toast"
 import type { LeadStatus } from "@/lib/validation/crm"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ChangeStatusDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void

@@ -1,4 +1,5 @@
 import { requireOrgContext } from "@/lib/services/context"
+import { requirePermission } from "@/lib/services/permissions"
 import { getBudgetWithActuals } from "@/lib/services/budgets"
 import { todayIsoDateOnly } from "@/lib/services/reports/dates"
 
@@ -34,7 +35,8 @@ export async function getForecastReport({
   asOf?: string
   orgId?: string
 }): Promise<ForecastReport> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("report.read", { supabase, orgId: resolvedOrgId, userId })
   const asOfDate = asOf ?? todayIsoDateOnly()
 
   const budgetData = await getBudgetWithActuals(projectId, resolvedOrgId)

@@ -8,18 +8,32 @@ import {
 } from "@/lib/services/compliance"
 import type { ComplianceRequirementTemplateItem, ComplianceRules } from "@/lib/types"
 
+import { actionError, type ActionResult } from "@/lib/action-result"
+
+async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
+  try {
+    return { success: true, data: await fn() }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
 export async function getComplianceRulesAction() {
-  return getComplianceRules()
+      return getComplianceRules()
 }
 
 export async function updateComplianceRulesAction(rules: ComplianceRules) {
-  return updateComplianceRules({ rules })
+  return run(async () => {
+      return updateComplianceRules({ rules })
+  })
 }
 
 export async function getDefaultComplianceRequirementsAction() {
-  return getDefaultComplianceRequirements()
+      return getDefaultComplianceRequirements()
 }
 
 export async function updateDefaultComplianceRequirementsAction(requirements: ComplianceRequirementTemplateItem[]) {
-  return updateDefaultComplianceRequirements({ requirements })
+  return run(async () => {
+      return updateDefaultComplianceRequirements({ requirements })
+  })
 }

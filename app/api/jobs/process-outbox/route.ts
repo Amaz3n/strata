@@ -30,6 +30,7 @@ import {
 import { runDrawingsPipeline } from "@/lib/services/drawings-pipeline"
 import { downloadFilesObject, uploadFilesObject } from "@/lib/storage/files-storage"
 import { reindexEntity, removeFromIndex } from "@/lib/services/search-index"
+import { processInboundBillEmail } from "@/lib/services/payables-email-ingest"
 import type { SearchEntityType } from "@/lib/services/search-config"
 
 // Use @napi-rs/canvas's DOMMatrix, DOMPoint, DOMRect, ImageData, Path2D for PDF.js
@@ -458,7 +459,7 @@ async function processOutboxQueue(request: NextRequest) {
   const { data: jobs, error } = await supabase
     .from("outbox")
     .select("*")
-    .in("job_type", ["deliver_notification", "deliver_push", "send_daily_log_mention_email", "send_esign_executed_email", "send_bid_email", "process_esign_execution_side_effects", "refresh_drawing_sheets_list", "index_file", "generate_file_preview", "reindex_search", "remove_search_index"])
+    .in("job_type", ["deliver_notification", "deliver_push", "send_daily_log_mention_email", "send_esign_executed_email", "send_bid_email", "process_esign_execution_side_effects", "refresh_drawing_sheets_list", "index_file", "generate_file_preview", "reindex_search", "remove_search_index", "process_inbound_bill_email"])
     .eq("status", "pending")
     .lte("run_at", now)
     .order("created_at", { ascending: false })
@@ -503,6 +504,8 @@ async function processOutboxQueue(request: NextRequest) {
         await reindexSearchJob(supabase, job)
       } else if (job.job_type === "remove_search_index") {
         await removeSearchIndexJob(supabase, job)
+      } else if (job.job_type === "process_inbound_bill_email") {
+        await processInboundBillEmailJob(job)
       } else {
         await supabase
           .from("outbox")
@@ -1085,6 +1088,13 @@ function readSearchIndexJobRef(job: any): { entityType: SearchEntityType; entity
 async function reindexSearchJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
   const { entityType, entityId } = readSearchIndexJobRef(job)
   await reindexEntity({ orgId: job.org_id, entityType, entityId }, supabase)
+}
+
+async function processInboundBillEmailJob(job: any) {
+  const payload = job.payload ?? {}
+  const emailId = typeof payload.email_id === "string" ? payload.email_id : null
+  if (!emailId) throw new Error("Missing email_id for inbound bill job")
+  await processInboundBillEmail({ orgId: job.org_id, emailId })
 }
 
 async function removeSearchIndexJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {

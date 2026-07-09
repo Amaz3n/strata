@@ -1,4 +1,5 @@
 import { requireOrgContext } from "@/lib/services/context"
+import { requirePermission } from "@/lib/services/permissions"
 import { applyReportingExclusion, getReportingExcludedProjectIds } from "@/lib/services/reporting-scope"
 import { todayIsoDateOnly } from "@/lib/services/reports/dates"
 
@@ -41,7 +42,8 @@ export async function getPaymentsLedgerReport({
   kind: PaymentsLedgerKind
   orgId?: string
 }): Promise<PaymentsLedgerReport> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("report.read", { supabase, orgId: resolvedOrgId, userId })
   const asOfDate = asOf ?? todayIsoDateOnly()
   const excludedProjectIds = projectId ? [] : await getReportingExcludedProjectIds(supabase, resolvedOrgId)
 

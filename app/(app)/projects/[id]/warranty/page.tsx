@@ -4,7 +4,10 @@ import { notFound } from "next/navigation"
 import { PageLayout } from "@/components/layout/page-layout"
 import { getProjectAction } from "../actions"
 import { listWarrantyRequestsAction } from "@/app/(app)/warranty/actions"
+import { listCompaniesAction } from "@/app/(app)/companies/actions"
 import { WarrantyClient } from "@/components/warranty/warranty-client"
+
+import { unwrapAction } from "@/lib/action-result"
 
 interface ProjectWarrantyPageProps {
   params: Promise<{ id: string }>
@@ -47,11 +50,7 @@ async function ProjectWarrantyData({ id }: { id: string }) {
 
   if (!project) notFound()
 
-  const requests = await listWarrantyRequestsAction(id)
+  const [requests, companies] = await Promise.all([listWarrantyRequestsAction(id), listCompaniesAction()])
 
-  return (
-    <div className="space-y-6">
-      <WarrantyClient projectId={project.id} requests={requests} />
-    </div>
-  )
+  return <WarrantyClient projectId={project.id} requests={requests} companies={companies} />
 }

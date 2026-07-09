@@ -15,6 +15,8 @@ import type { Contact, Contract, Project } from "@/lib/types"
 import type { ProjectInput } from "@/lib/validation/projects"
 import type { ProjectFinancialSetupStatusResult } from "@/lib/services/project-financial-setup"
 
+import { unwrapAction } from "@/lib/action-result"
+
 // Conditional financial-setup notice. Renders nothing once the project's billing
 // setup is complete; when blocking/warning issues remain it shows a slim banner
 // whose CTA opens the two-step project sheet at the financial-setup step.
@@ -57,7 +59,7 @@ export function FinancialSetupStatusBanner({ setup }: { setup: ProjectFinancialS
   }
 
   async function handleSave(input: Partial<ProjectInput>) {
-    const updated = await updateProjectAction(setup.projectId, input)
+    const updated = unwrapAction(await updateProjectAction(setup.projectId, input))
     setProject(updated)
     router.refresh()
   }

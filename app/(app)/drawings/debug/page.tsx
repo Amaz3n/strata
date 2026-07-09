@@ -8,6 +8,8 @@ import { CheckCircle2, XCircle, AlertCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { queueTileGenerationForExistingSheetsAction } from "@/app/(app)/drawings/actions"
 
+import { unwrapAction } from "@/lib/action-result"
+
 export const dynamic = 'force-dynamic'
 
 export default async function DrawingsDebugPage() {
@@ -141,7 +143,7 @@ export default async function DrawingsDebugPage() {
         <CardContent className="flex flex-col gap-3">
           <form action={async () => {
             "use server"
-            await queueTileGenerationForExistingSheetsAction()
+            unwrapAction(await queueTileGenerationForExistingSheetsAction())
           }}>
             <Button type="submit" variant="default">
               Queue tile generation jobs

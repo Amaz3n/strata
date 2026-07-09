@@ -3,7 +3,7 @@
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 
-import type { Project } from "@/lib/types"
+import type { Company, Project } from "@/lib/types"
 import { submittalInputSchema, type SubmittalInput } from "@/lib/validation/submittals"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -30,10 +30,13 @@ import { format } from "date-fns"
 import { cn, parseLocalDate, formatLocalDate } from "@/lib/utils"
 import { FileText, Calendar } from "@/components/icons"
 
+const NONE_COMPANY = "__none__"
+
 interface SubmittalFormProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   projects: Project[]
+  companies: Company[]
   defaultProjectId?: string
   onSubmit: (values: SubmittalInput) => Promise<void>
   isSubmitting?: boolean
@@ -45,34 +48,33 @@ export function SubmittalForm({
   open,
   onOpenChange,
   projects,
+  companies,
   defaultProjectId,
   onSubmit,
   isSubmitting,
 }: SubmittalFormProps) {
+  const defaultValues: SubmittalFormValues = {
+    project_id: defaultProjectId ?? projects[0]?.id ?? "",
+    title: "",
+    description: "",
+    status: "submitted",
+    spec_section: "",
+    submittal_type: "",
+    due_date: "",
+    required_on_site: null,
+    lead_time_days: null,
+    assigned_company_id: null,
+    attachment_file_id: null,
+  }
+
   const form = useForm<SubmittalFormValues>({
     resolver: zodResolver(submittalInputSchema),
-    defaultValues: {
-      project_id: defaultProjectId ?? projects[0]?.id ?? "",
-      title: "",
-      description: "",
-      status: "submitted",
-      spec_section: "",
-      submittal_type: "",
-      due_date: "",
-    },
+    defaultValues,
   })
 
   const handleSubmit = form.handleSubmit(async (values) => {
-    await onSubmit(values as unknown as SubmittalInput)
-    form.reset({
-      project_id: defaultProjectId ?? projects[0]?.id ?? "",
-      title: "",
-      description: "",
-      status: "submitted",
-      spec_section: "",
-      submittal_type: "",
-      due_date: "",
-    })
+    await onSubmit(values as SubmittalInput)
+    form.reset(defaultValues)
   })
 
   return (
@@ -124,6 +126,35 @@ export function SubmittalForm({
                 )}
               />
 
+              <FormField
+                control={form.control}
+                name="assigned_company_id"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Responsible company</FormLabel>
+                    <Select
+                      onValueChange={(value) => field.onChange(value === NONE_COMPANY ? null : value)}
+                      value={field.value ?? NONE_COMPANY}
+                    >
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Who submits this?" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value={NONE_COMPANY}>Internal / unassigned</SelectItem>
+                        {companies.map((company) => (
+                          <SelectItem key={company.id} value={company.id}>
+                            {company.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
               <div className="grid gap-4 md:grid-cols-2">
                 <FormField
                   control={form.control}
@@ -139,10 +170,9 @@ export function SubmittalForm({
                         </FormControl>
                         <SelectContent>
                           <SelectItem value="draft">Draft</SelectItem>
+                          <SelectItem value="pending">Pending submission</SelectItem>
                           <SelectItem value="submitted">Submitted</SelectItem>
                           <SelectItem value="in_review">In review</SelectItem>
-                          <SelectItem value="approved">Approved</SelectItem>
-                          <SelectItem value="rejected">Rejected</SelectItem>
                         </SelectContent>
                       </Select>
                       <FormMessage />
@@ -155,7 +185,7 @@ export function SubmittalForm({
                   name="due_date"
                   render={({ field }) => (
                     <FormItem className="flex flex-col">
-                      <FormLabel>Due date</FormLabel>
+                      <FormLabel>Review due</FormLabel>
                       <Popover>
                         <PopoverTrigger asChild>
                           <FormControl>
@@ -178,6 +208,61 @@ export function SubmittalForm({
                           />
                         </PopoverContent>
                       </Popover>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <FormField
+                  control={form.control}
+                  name="required_on_site"
+                  render={({ field }) => (
+                    <FormItem className="flex flex-col">
+                      <FormLabel>Required on site</FormLabel>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <FormControl>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className={cn("w-full justify-start text-left font-normal", !field.value && "text-muted-foreground")}
+                            >
+                              <Calendar className="mr-2 h-4 w-4" />
+                              {field.value ? formatLocalDate(field.value, "PPP") : "Pick a date"}
+                            </Button>
+                          </FormControl>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <CalendarPicker
+                            mode="single"
+                            selected={field.value ? parseLocalDate(field.value) ?? undefined : undefined}
+                            onSelect={(date) => field.onChange(date ? format(date, "yyyy-MM-dd") : null)}
+                            initialFocus
+                          />
+                        </PopoverContent>
+                      </Popover>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="lead_time_days"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Lead time (days)</FormLabel>
+                      <FormControl>
+                        <Input
+                          type="number"
+                          min={0}
+                          placeholder="e.g. 42"
+                          value={field.value ?? ""}
+                          onChange={(e) => field.onChange(e.target.value === "" ? null : Number(e.target.value))}
+                        />
+                      </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -242,11 +327,3 @@ export function SubmittalForm({
     </Sheet>
   )
 }
-
-
-
-
-
-
-
-

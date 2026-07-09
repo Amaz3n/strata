@@ -92,6 +92,8 @@ import { FileMetadataSheet } from "./file-metadata-sheet"
 import type { FileVersionInfo } from "@/components/files/version-history-panel"
 import { FileActivitySheet } from "./file-activity-sheet"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface UploadQueueItem {
   id: string
   fileName: string
@@ -435,7 +437,7 @@ export function DocumentsCenterClient({
               }
               formData.append("folderPath", uploadFolderPath)
 
-              await uploadFileAction(formData)
+              unwrapAction(await uploadFileAction(formData))
               uploaded = true
               successCount += 1
               setUploadQueue((prev) =>
@@ -544,7 +546,7 @@ export function DocumentsCenterClient({
     try {
       await Promise.all(
         Array.from(selectedIds).map((fileId) =>
-          updateFileAction(fileId, { folder_path: target })
+          updateFileAction(fileId, { folder_path: target }).then(unwrapAction)
         )
       )
       toast.success(`Moved ${selectedIds.size} file${selectedIds.size > 1 ? "s" : ""}`)
@@ -647,7 +649,7 @@ export function DocumentsCenterClient({
 
     setIsDeleting(true)
     try {
-      await deleteFileAction(fileToDelete.id)
+      unwrapAction(await deleteFileAction(fileToDelete.id))
       toast.success(`Deleted ${fileToDelete.file_name}`)
       setDeleteDialogOpen(false)
       setFileToDelete(null)
@@ -692,7 +694,7 @@ export function DocumentsCenterClient({
       formData.append("file", file)
       if (label) formData.append("label", label)
       if (notes) formData.append("notes", notes)
-      await uploadFileVersionAction(formData)
+      unwrapAction(await uploadFileVersionAction(formData))
       await fetchVersions(viewerFile.id)
       await fetchFiles()
     },
@@ -702,7 +704,7 @@ export function DocumentsCenterClient({
   const handleMakeCurrentVersion = useCallback(
     async (versionId: string) => {
       if (!viewerFile) return
-      await makeVersionCurrentAction(viewerFile.id, versionId)
+      unwrapAction(await makeVersionCurrentAction(viewerFile.id, versionId))
       await fetchVersions(viewerFile.id)
       await fetchFiles()
     },
@@ -718,7 +720,7 @@ export function DocumentsCenterClient({
 
   const handleUpdateVersion = useCallback(
     async (versionId: string, updates: { label?: string; notes?: string }) => {
-      await updateFileVersionAction(versionId, updates)
+      unwrapAction(await updateFileVersionAction(versionId, updates))
       if (viewerFile) {
         await fetchVersions(viewerFile.id)
       }
@@ -728,7 +730,7 @@ export function DocumentsCenterClient({
 
   const handleDeleteVersion = useCallback(
     async (versionId: string) => {
-      await deleteFileVersionAction(versionId)
+      unwrapAction(await deleteFileVersionAction(versionId))
       if (viewerFile) {
         await fetchVersions(viewerFile.id)
         await fetchFiles()
@@ -750,7 +752,7 @@ export function DocumentsCenterClient({
   const handleSaveMetadata = useCallback(
     async (fileId: string, updates: FileUpdate) => {
       try {
-        await updateFileAction(fileId, updates)
+        unwrapAction(await updateFileAction(fileId, updates))
         toast.success("File updated")
         setMetadataSheetOpen(false)
         setFileToEdit(null)

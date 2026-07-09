@@ -66,6 +66,7 @@ export type NotificationType =
   | "commitment_created"
   | "commitment_updated"
   | "recipient_signed"
+  | "payable_email_ingest"
 
 export const EMAIL_NOTIFICATION_TYPES = [
   {

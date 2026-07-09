@@ -13,6 +13,8 @@ import {
   listProspectBidSubmissionsAction,
 } from "../actions"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ProspectBidPackageDetailPageProps {
   params: Promise<{ prospectId: string; packageId: string }>
 }

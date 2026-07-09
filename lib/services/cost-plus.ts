@@ -9,6 +9,7 @@ import {
   loadApprovalGateSettings,
 } from "@/lib/financials/approval-gates"
 import { assertCostSourceCanEnterBillableLedger } from "@/lib/financials/billable-ledger-rules"
+import { resolveGmpClassificationForCostSource } from "@/lib/financials/gmp-classification"
 import {
   resolveContractFeePresentation,
   resolveProjectBillingModel,
@@ -53,11 +54,13 @@ import { supportsApprovedCostInvoicing } from "@/lib/financials/billing-model"
 import {
   approvalDecisionSchema,
   generateInvoiceFromCostsInputSchema,
+  manualBillableAdjustmentInputSchema,
   markupRuleInputSchema,
   projectExpenseInputSchema,
   timeEntryInputSchema,
   timeEntryUpdateSchema,
   type GenerateInvoiceFromCostsInput,
+  type ManualBillableAdjustmentInput,
   type MarkupRuleInput,
   type ProjectExpenseInput,
   type TimeEntryInput,
@@ -81,6 +84,7 @@ export interface BillableCost {
   org_id: string
   project_id: string
   cost_code_id?: string | null
+  budget_line_id?: string | null
   cost_code_code?: string | null
   cost_code_name?: string | null
   source_type: CostSourceType
@@ -186,13 +190,21 @@ function formatCurrencyCents(cents: number) {
   })}`
 }
 
-function applyRetainageToInvoiceDraft(draft: InvoiceDraft, retainagePercent: number | null | undefined): InvoiceDraft {
+function isInvoiceDraftFeeLine(line: InvoiceDraftLine) {
+  return line.unit === "fee" || Boolean(line.metadata?.fee_line_kind)
+}
+
+function applyRetainageToInvoiceDraft(
+  draft: InvoiceDraft,
+  retainagePercent: number | null | undefined,
+  retainageAppliesToFee = false,
+): InvoiceDraft {
   const effectivePercent = Number(retainagePercent ?? 0)
   if (!Number.isFinite(effectivePercent) || effectivePercent <= 0 || draft.totals.billable_cents <= 0) return draft
 
   const retainageBaseCents = draft.lines.reduce((sum, line) => {
     if (line.unit === "retainage") return sum
-    if (line.metadata?.fee_line_kind === "fixed_fee_earned") return sum
+    if (!retainageAppliesToFee && isInvoiceDraftFeeLine(line)) return sum
     return sum + Number(line.billable_cents ?? 0)
   }, 0)
   const retainageCents = Math.round(Math.max(retainageBaseCents, 0) * (effectivePercent / 100))
@@ -211,6 +223,7 @@ function applyRetainageToInvoiceDraft(draft: InvoiceDraft, retainagePercent: num
       system_generated_kind: "retainage_hold",
       retainage_percent: effectivePercent,
       retainage_amount_cents: retainageCents,
+      retainage_applies_to_fee: retainageAppliesToFee,
     },
   }
 
@@ -237,6 +250,7 @@ function mapBillableCost(row: any): BillableCost {
     org_id: row.org_id,
     project_id: row.project_id,
     cost_code_id: row.cost_code_id ?? null,
+    budget_line_id: row.budget_line_id ?? null,
     cost_code_code: costCode.code ?? null,
     cost_code_name: costCode.name ?? null,
     source_type: row.source_type,
@@ -390,7 +404,7 @@ async function requireProjectFinancialAccess({
 export async function getProjectCostContract(supabase: SupabaseClient, orgId: string, projectId: string) {
   const { data, error } = await supabase
     .from("contracts")
-    .select("id, status, contract_type, markup_percent, gmp_cents, fixed_fee_cents, fee_presentation, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, requires_client_cost_approval, open_book, retainage_percent, rate_schedule_id, snapshot")
+    .select("id, status, contract_type, markup_percent, gmp_cents, fixed_fee_cents, fee_presentation, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, requires_client_cost_approval, open_book, retainage_percent, retainage_applies_to_fee, rate_schedule_id, snapshot")
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .eq("status", "active")
@@ -483,14 +497,15 @@ async function ensureAllowanceOverageBillableCosts({
     .select("id, name, budget_cents, used_cents, overage_handling")
     .eq("org_id", orgId)
     .eq("project_id", projectId)
-    .gt("used_cents", 0)
 
   if (error) throw new Error(`Failed to load allowances: ${error.message}`)
 
   for (const allowance of allowances ?? []) {
-    const overageCents = Number(allowance.used_cents ?? 0) - Number(allowance.budget_cents ?? 0)
-    if (overageCents <= 0) continue
-    if (allowance.overage_handling === "absorb" || allowance.overage_handling === "client_direct") continue
+    const rawOverageCents = Number(allowance.used_cents ?? 0) - Number(allowance.budget_cents ?? 0)
+    const overageCents =
+      allowance.overage_handling === "absorb" || allowance.overage_handling === "client_direct"
+        ? 0
+        : Math.max(0, rawOverageCents)
 
     const { data: existingRows, error: existingError } = await supabase
       .from("billable_costs")
@@ -506,7 +521,7 @@ async function ensureAllowanceOverageBillableCosts({
     )
     const postedOverageCents = allowanceRows.reduce((sum: number, row: any) => sum + Number(row.cost_cents ?? 0), 0)
     const deltaCents = overageCents - postedOverageCents
-    if (deltaCents <= 0) continue
+    if (deltaCents === 0) continue
 
     const markup = await resolveMarkupPercent({
       supabase,
@@ -527,19 +542,26 @@ async function ensureAllowanceOverageBillableCosts({
       description:
         sequence === 1
           ? `Allowance overage: ${allowance.name ?? "Allowance"}`
-          : `Allowance overage (additional): ${allowance.name ?? "Allowance"}`,
+          : deltaCents < 0
+            ? `Allowance overage credit: ${allowance.name ?? "Allowance"}`
+            : `Allowance overage (additional): ${allowance.name ?? "Allowance"}`,
       cost_cents: deltaCents,
       markup_percent_resolved: markup.percent,
       markup_cents: calculateMarkupCents(deltaCents, markup.percent),
       is_billable: true,
+      gmp_classification: "inside_gmp",
       status: "open",
       metadata: {
+        gmp_classification: "inside_gmp",
         allowance_id: allowance.id,
         allowance_name: allowance.name ?? null,
         allowance_budget_cents: allowance.budget_cents ?? 0,
         allowance_used_cents: allowance.used_cents ?? 0,
         allowance_overage_cents: overageCents,
+        raw_allowance_overage_cents: rawOverageCents,
         previously_posted_overage_cents: postedOverageCents,
+        delta_cents: deltaCents,
+        adjustment_kind: deltaCents < 0 ? "credit" : "charge",
         sequence,
         markup_source: markup.source,
       },
@@ -642,20 +664,6 @@ export async function resolveMarkupPercentsBatch(args: {
     const costCode = cost.costCodeId ? costCodeById.get(cost.costCodeId) : null
     const costCodeCategory = cost.costCodeCategory ?? costCode?.category ?? null
     const costWithCategory = { ...cost, costCodeCategory }
-    const defaultCostCodeMarkup = Number(costCode?.default_markup_percent)
-    if (costCode?.default_markup_percent != null && costCode.default_markup_percent !== "" && Number.isFinite(defaultCostCodeMarkup)) {
-      return { percent: defaultCostCodeMarkup, source: "cost_code" }
-    }
-
-    if (cost.costCodeId) {
-      const costCodeRule = rules.find(
-        (rule: any) =>
-          rule.scope === "cost_code" &&
-          rule.cost_code_id === cost.costCodeId &&
-          matchesRule(rule, costWithCategory),
-      )
-      if (costCodeRule) return { percent: Number(costCodeRule.markup_percent), source: "cost_code" }
-    }
 
     if (args.contractId) {
       const contractRule = rules.find(
@@ -671,6 +679,21 @@ export async function resolveMarkupPercentsBatch(args: {
       if (rawContractMarkup != null && rawContractMarkup !== "" && Number.isFinite(contractMarkup)) {
         return { percent: contractMarkup, source: "contract" }
       }
+    }
+
+    const defaultCostCodeMarkup = Number(costCode?.default_markup_percent)
+    if (costCode?.default_markup_percent != null && costCode.default_markup_percent !== "" && Number.isFinite(defaultCostCodeMarkup)) {
+      return { percent: defaultCostCodeMarkup, source: "cost_code" }
+    }
+
+    if (cost.costCodeId) {
+      const costCodeRule = rules.find(
+        (rule: any) =>
+          rule.scope === "cost_code" &&
+          rule.cost_code_id === cost.costCodeId &&
+          matchesRule(rule, costWithCategory),
+      )
+      if (costCodeRule) return { percent: Number(costCodeRule.markup_percent), source: "cost_code" }
     }
 
     const orgRule = rules.find((rule: any) => rule.scope === "org" && matchesRule(rule, costWithCategory))
@@ -725,7 +748,7 @@ export async function upsertBillableCostFromBillLine(args: { billLineId: string;
   const { data: line, error } = await supabase
     .from("bill_lines")
     .select(`
-      id, org_id, bill_id, project_id, cost_code_id, description, quantity, unit_cost_cents, metadata,
+      id, org_id, bill_id, project_id, cost_code_id, budget_line_id, description, quantity, unit_cost_cents, metadata,
       cost_code:cost_codes(id, category, is_reimbursable_default),
       bill:vendor_bills(id, org_id, project_id, bill_number, bill_date, status, commitment:commitments(company_id))
     `)
@@ -759,6 +782,13 @@ export async function upsertBillableCostFromBillLine(args: { billLineId: string;
   const isBillable =
     (line as any).metadata?.billable_to_customer === true &&
     (line as any).cost_code?.is_reimbursable_default !== false
+  const gmpClassification = await resolveGmpClassificationForCostSource({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId,
+    budgetLineId: (line as any).budget_line_id ?? null,
+    costCodeId: line.cost_code_id ?? null,
+  })
 
   return insertOrReturnBillableCost(
     supabase,
@@ -767,6 +797,7 @@ export async function upsertBillableCostFromBillLine(args: { billLineId: string;
       org_id: resolvedOrgId,
       project_id: projectId,
       cost_code_id: line.cost_code_id ?? null,
+      budget_line_id: (line as any).budget_line_id ?? null,
       source_type: "vendor_bill_line",
       source_id: line.id,
       source_company_id: bill.commitment?.company_id ?? null,
@@ -776,9 +807,11 @@ export async function upsertBillableCostFromBillLine(args: { billLineId: string;
       markup_percent_resolved: markup.percent,
       markup_cents: calculateMarkupCents(costCents, markup.percent),
       is_billable: isBillable,
+      gmp_classification: gmpClassification,
       status: isBillable ? "open" : "excluded",
       metadata: {
         markup_source: markup.source,
+        gmp_classification: gmpClassification,
         bill_id: bill.id,
         bill_number: bill.bill_number,
         rate_schedule_id: markup.scheduleId,
@@ -822,6 +855,13 @@ export async function upsertBillableCostFromExpense(args: { expenseId: string; o
     lineOverride: expense.markup_percent_override,
   })
   const isBillable = expense.is_billable !== false && (expense as any).cost_code?.is_reimbursable_default !== false
+  const gmpClassification = await resolveGmpClassificationForCostSource({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: expense.project_id,
+    budgetLineId: expense.budget_line_id ?? null,
+    costCodeId: expense.cost_code_id ?? null,
+  })
 
   const billable = await insertOrReturnBillableCost(
     supabase,
@@ -830,6 +870,7 @@ export async function upsertBillableCostFromExpense(args: { expenseId: string; o
       org_id: resolvedOrgId,
       project_id: expense.project_id,
       cost_code_id: expense.cost_code_id ?? null,
+      budget_line_id: expense.budget_line_id ?? null,
       source_type: "project_expense",
       source_id: expense.id,
       source_company_id: expense.vendor_company_id ?? null,
@@ -839,9 +880,11 @@ export async function upsertBillableCostFromExpense(args: { expenseId: string; o
       markup_percent_resolved: markup.percent,
       markup_cents: calculateMarkupCents(costCents, markup.percent),
       is_billable: isBillable,
+      gmp_classification: gmpClassification,
       status: isBillable ? "open" : "excluded",
       metadata: {
         markup_source: markup.source,
+        gmp_classification: gmpClassification,
         receipt_file_id: expense.receipt_file_id ?? null,
         rate_schedule_id: markup.scheduleId,
         billing_rate_id: markup.rateId,
@@ -860,7 +903,7 @@ export async function upsertBillableCostFromExpenseLine(args: { expenseLineId: s
   const { data: line, error } = await supabase
     .from("project_expense_lines")
     .select(`
-      id, org_id, expense_id, project_id, cost_code_id, description, amount_cents,
+      id, org_id, expense_id, project_id, cost_code_id, budget_line_id, description, amount_cents,
       cost_code:cost_codes(id, category, is_reimbursable_default),
       expense:project_expenses(id, org_id, project_id, expense_date, status, is_billable, markup_percent_override, vendor_company_id, vendor_name_text, description, receipt_file_id)
     `)
@@ -895,6 +938,13 @@ export async function upsertBillableCostFromExpenseLine(args: { expenseLineId: s
     lineOverride: expense.markup_percent_override,
   })
   const isBillable = expense.is_billable !== false && (line as any).cost_code?.is_reimbursable_default !== false
+  const gmpClassification = await resolveGmpClassificationForCostSource({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: lineProjectId,
+    budgetLineId: (line as any).budget_line_id ?? null,
+    costCodeId: line.cost_code_id ?? null,
+  })
 
   return insertOrReturnBillableCost(
     supabase,
@@ -903,6 +953,7 @@ export async function upsertBillableCostFromExpenseLine(args: { expenseLineId: s
       org_id: resolvedOrgId,
       project_id: lineProjectId,
       cost_code_id: line.cost_code_id ?? null,
+      budget_line_id: (line as any).budget_line_id ?? null,
       source_type: "project_expense_line",
       source_id: line.id,
       source_company_id: expense.vendor_company_id ?? null,
@@ -912,9 +963,11 @@ export async function upsertBillableCostFromExpenseLine(args: { expenseLineId: s
       markup_percent_resolved: markup.percent,
       markup_cents: calculateMarkupCents(costCents, markup.percent),
       is_billable: isBillable,
+      gmp_classification: gmpClassification,
       status: isBillable ? "open" : "excluded",
       metadata: {
         markup_source: markup.source,
+        gmp_classification: gmpClassification,
         expense_id: expense.id,
         receipt_file_id: expense.receipt_file_id ?? null,
         rate_schedule_id: markup.scheduleId,
@@ -977,6 +1030,13 @@ export async function upsertBillableCostFromTimeEntry(args: { timeEntryId: strin
   const isBillable = entry.is_billable !== false && (entry as any).cost_code?.is_reimbursable_default !== false
   const markupCents = tmRate ? tmRate.billableCents - costCents : calculateMarkupCents(costCents, markup.percent)
   const billableCents = tmRate ? tmRate.billableCents : costCents + markupCents
+  const gmpClassification = await resolveGmpClassificationForCostSource({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: entry.project_id,
+    budgetLineId: entry.budget_line_id ?? null,
+    costCodeId: entry.cost_code_id ?? null,
+  })
 
   const billable = await insertOrReturnBillableCost(
     supabase,
@@ -985,6 +1045,7 @@ export async function upsertBillableCostFromTimeEntry(args: { timeEntryId: strin
       org_id: resolvedOrgId,
       project_id: entry.project_id,
       cost_code_id: entry.cost_code_id ?? null,
+      budget_line_id: entry.budget_line_id ?? null,
       source_type: "time_entry",
       source_id: entry.id,
       source_company_id: entry.worker_company_id ?? null,
@@ -995,9 +1056,11 @@ export async function upsertBillableCostFromTimeEntry(args: { timeEntryId: strin
       markup_cents: markupCents,
       billable_cents: billableCents,
       is_billable: isBillable,
+      gmp_classification: gmpClassification,
       status: isBillable ? "open" : "excluded",
       metadata: {
         markup_source: markup.source,
+        gmp_classification: gmpClassification,
         billing_method: tmRate ? "time_and_materials_rate" : "cost_plus_markup",
         worker_name: entry.worker_name,
         hours: entry.hours,
@@ -1726,10 +1789,41 @@ async function resyncApprovedExpenseLedger(
   await postJobCostEntryFromProjectExpense({ expenseId: args.expenseId, orgId })
 }
 
+export const DUPLICATE_EXPENSE_ERROR_PREFIX = "POSSIBLE_DUPLICATE_EXPENSE:"
+
 export async function createProjectExpense(input: ProjectExpenseInput, orgId?: string) {
   const parsed = projectExpenseInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireProjectFinancialAccess({ supabase, orgId: resolvedOrgId, userId, projectId: parsed.projectId, permission: "bill.write" })
+
+  // The same receipt snapped twice (two field users, or a retry) is the most
+  // common real-world duplicate: same project, date, and amount, with a
+  // matching vendor when both sides have one. The caller confirms to override.
+  if (!parsed.allowDuplicate) {
+    const { data: candidates, error: duplicateError } = await supabase
+      .from("project_expenses")
+      .select("id, vendor_name_text, amount_cents, tax_cents, status")
+      .eq("org_id", resolvedOrgId)
+      .eq("project_id", parsed.projectId)
+      .eq("expense_date", toDateOnly(parsed.expenseDate))
+      .eq("amount_cents", parsed.amountCents)
+      .neq("status", "rejected")
+      .limit(10)
+    if (duplicateError) throw new Error(`Failed to check for duplicate expenses: ${duplicateError.message}`)
+
+    const normalizedVendor = parsed.vendorNameText?.trim().toLowerCase() || null
+    const duplicate = (candidates ?? []).find((row) => {
+      const existingVendor = (row.vendor_name_text as string | null)?.trim().toLowerCase() || null
+      return !normalizedVendor || !existingVendor || existingVendor === normalizedVendor
+    })
+    if (duplicate) {
+      throw new Error(
+        `${DUPLICATE_EXPENSE_ERROR_PREFIX} An expense for ${
+          duplicate.vendor_name_text ?? "this vendor"
+        } on this date with the same amount already exists.`,
+      )
+    }
+  }
 
   const payload = {
     org_id: resolvedOrgId,
@@ -2107,11 +2201,15 @@ export async function voidBillableCostsForVendorBill({ billId, orgId }: { billId
 
   if (error) throw new Error(`Failed to load billable costs for bill: ${error.message}`)
   for (const cost of costs ?? []) {
+    if (cost.status === "locked") {
+      throw new Error("Vendor bill costs are currently locked by invoice creation. Refresh and try again.")
+    }
     if (cost.status === "billed") {
       const creditPayload = {
         org_id: resolvedOrgId,
         project_id: cost.project_id,
         cost_code_id: cost.cost_code_id ?? null,
+        budget_line_id: cost.budget_line_id ?? null,
         source_type: "manual_adjustment",
         source_id: randomUUID(),
         source_company_id: cost.source_company_id ?? null,
@@ -2121,8 +2219,10 @@ export async function voidBillableCostsForVendorBill({ billId, orgId }: { billId
         markup_percent_resolved: cost.markup_percent_resolved ?? 0,
         markup_cents: -Math.abs(cost.markup_cents ?? 0),
         is_billable: true,
+        gmp_classification: cost.gmp_classification ?? cost.metadata?.gmp_classification ?? "inside_gmp",
         status: "open",
         metadata: {
+          gmp_classification: cost.gmp_classification ?? cost.metadata?.gmp_classification ?? "inside_gmp",
           adjustment_reason: "vendor_bill_voided_after_billing",
           original_billable_cost_id: cost.id,
           original_bill_id: billId,
@@ -2138,6 +2238,82 @@ export async function voidBillableCostsForVendorBill({ billId, orgId }: { billId
       if (voidError) throw new Error(`Failed to void billable cost: ${voidError.message}`)
     }
   }
+}
+
+export async function createManualBillableAdjustment(
+  input: ManualBillableAdjustmentInput,
+  orgId?: string,
+): Promise<BillableCost> {
+  const parsed = manualBillableAdjustmentInputSchema.parse(input)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectFinancialAccess({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    projectId: parsed.projectId,
+    permission: "invoice.write",
+  })
+
+  const contract = await getProjectCostContract(supabase, resolvedOrgId, parsed.projectId)
+  if (!isCostPlusContract(contract)) throw new Error("Manual billable adjustments are only available on cost-driven projects.")
+
+  const occurredOn = parsed.occurredOn ? toDateOnly(parsed.occurredOn) : toDateOnly(new Date())
+  const classification =
+    parsed.gmpClassification ??
+    (await resolveGmpClassificationForCostSource({
+      supabase,
+      orgId: resolvedOrgId,
+      projectId: parsed.projectId,
+      budgetLineId: parsed.budgetLineId ?? null,
+      costCodeId: parsed.costCodeId ?? null,
+    }))
+  const markup = await resolveMaterialMarkupForContract({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: parsed.projectId,
+    contract,
+    costCodeId: parsed.costCodeId ?? null,
+    occurredOn,
+    lineOverride: parsed.markupPercentOverride ?? null,
+  })
+  const markupCents = calculateMarkupCents(parsed.amountCents, markup.percent)
+  const payload = {
+    org_id: resolvedOrgId,
+    project_id: parsed.projectId,
+    cost_code_id: parsed.costCodeId ?? null,
+    budget_line_id: parsed.budgetLineId ?? null,
+    source_type: "manual_adjustment",
+    source_id: randomUUID(),
+    source_company_id: null,
+    occurred_on: occurredOn,
+    description: parsed.description,
+    cost_cents: parsed.amountCents,
+    markup_percent_resolved: markup.percent,
+    markup_cents: markupCents,
+    billable_cents: parsed.amountCents + markupCents,
+    is_billable: true,
+    gmp_classification: classification,
+    status: "open",
+    metadata: {
+      adjustment_reason: parsed.reason,
+      created_by: userId,
+      markup_source: markup.source,
+      gmp_classification: classification,
+      manual_adjustment: true,
+    },
+  }
+
+  const created = await insertOrReturnBillableCost(supabase, resolvedOrgId, payload, "manual_adjustment")
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "insert",
+    entityType: "billable_cost",
+    entityId: created.id,
+    after: created as unknown as Record<string, unknown>,
+    source: "manual_billable_adjustment",
+  })
+  return created
 }
 
 export function buildInvoiceDraft({
@@ -2435,14 +2611,17 @@ export async function generateInvoiceFromCosts(
     )
   }
 
-  const excludedCountQuery = supabase
+  let excludedCountQuery = supabase
     .from("billable_costs")
     .select("id", { count: "exact", head: true })
     .eq("org_id", resolvedOrgId)
     .eq("project_id", parsed.projectId)
     .eq("status", "excluded")
-    .gte("occurred_on", from)
-    .lte("occurred_on", to)
+  if (parsed.billableCostIds?.length) {
+    excludedCountQuery = excludedCountQuery.in("id", parsed.billableCostIds)
+  } else {
+    excludedCountQuery = excludedCountQuery.gte("occurred_on", from).lte("occurred_on", to)
+  }
   const { count: excludedCount } = await excludedCountQuery
 
   let preparedFeeBilling: PreparedProjectFeeBilling | null = null
@@ -2476,6 +2655,7 @@ export async function generateInvoiceFromCosts(
   const preview = applyRetainageToInvoiceDraft(
     earnedFeeCents > 0 ? appendEarnedFeeLineToDraft(costDraft, earnedFeeCents) : costDraft,
     contract.retainage_percent,
+    Boolean(contract.retainage_applies_to_fee ?? contract.snapshot?.retainage_applies_to_fee ?? false),
   )
   const warnings: Array<{ code: string; message: string; billableCostId?: string }> = []
   let gmpCapOverridden = false
@@ -2558,6 +2738,7 @@ export async function generateInvoiceFromCosts(
       include_earned_fee: earnedFeeCents > 0,
       earned_fee_cents: earnedFeeCents > 0 ? earnedFeeCents : null,
       retainage_percent: contract.retainage_percent ?? null,
+      retainage_applies_to_fee: Boolean(contract.retainage_applies_to_fee ?? contract.snapshot?.retainage_applies_to_fee ?? false),
       retainage_amount_cents: preview.totals.retainage_cents ?? null,
       gross_billable_cents: preview.totals.gross_billable_cents ?? preview.totals.billable_cents,
       gmp_cap_overridden: gmpCapOverridden,

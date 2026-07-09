@@ -30,6 +30,8 @@ import type {
 } from "@/lib/services/release-notes"
 import type { FeatureFlagOrganization } from "@/lib/services/admin"
 
+import { unwrapAction } from "@/lib/action-result"
+
 type FormState = {
   id?: string
   slug: string
@@ -162,11 +164,11 @@ export function ReleaseNotesAdmin({
     startTransition(async () => {
       try {
         if (form.id) {
-          const updated = await updateReleaseNoteAction(form.id, input)
+          const updated = unwrapAction(await updateReleaseNoteAction(form.id, input))
           setNotes((current) => current.map((note) => (note.id === updated.id ? updated : note)))
           toast({ title: "Release note updated" })
         } else {
-          const created = await createReleaseNoteAction(input)
+          const created = unwrapAction(await createReleaseNoteAction(input))
           setNotes((current) => [created, ...current])
           toast({ title: "Release note created" })
         }

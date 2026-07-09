@@ -3,20 +3,24 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { SubmittalsClient } from "@/components/submittals/submittals-client"
 import { listSubmittalsAction } from "./actions"
 import { listProjectsAction } from "@/app/(app)/projects/actions"
+import { listCompaniesAction } from "@/app/(app)/companies/actions"
 import { Skeleton } from "@/components/ui/skeleton"
+
+import { unwrapAction } from "@/lib/action-result"
 
 // desk-rule: reachable via dashboard/search/feature flows only, not workspace nav.
 export const dynamic = 'force-dynamic'
 
 async function SubmittalsData() {
-  const [submittals, projects] = await Promise.all([
+  const [submittals, projects, companies] = await Promise.all([
     listSubmittalsAction(),
     listProjectsAction(),
+    listCompaniesAction(),
   ])
 
   return (
     <div className="space-y-6">
-      <SubmittalsClient submittals={submittals} projects={projects} />
+      <SubmittalsClient submittals={submittals} projects={projects} companies={companies} />
     </div>
   )
 }

@@ -7,6 +7,8 @@ import { listProjectExpensesPageAction } from "@/app/(app)/projects/[id]/expense
 import { PageLayout } from "@/components/layout/page-layout"
 import { ExpensesClient } from "@/components/expenses/expenses-client"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface Props {
   params: Promise<{ id: string }>
 }

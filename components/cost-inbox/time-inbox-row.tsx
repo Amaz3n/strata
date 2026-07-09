@@ -16,6 +16,8 @@ import {
   rejectInboxTimeEntryAction,
 } from "@/app/(app)/projects/[id]/cost-inbox/actions"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface CostCodeOption {
   id: string
   code?: string | null
@@ -78,7 +80,7 @@ export function TimeInboxRow({ projectId, entry, costCodes }: Props) {
   function save() {
     startTransition(async () => {
       try {
-        await categorizeInboxTimeEntryAction(projectId, entry.id, payload())
+        unwrapAction(await categorizeInboxTimeEntryAction(projectId, entry.id, payload()))
         toast.success("Saved")
       } catch (error: any) {
         toast.error("Could not save", { description: error?.message })
@@ -93,7 +95,7 @@ export function TimeInboxRow({ projectId, entry, costCodes }: Props) {
     }
     startTransition(async () => {
       try {
-        await categorizeAndApproveInboxTimeEntryAction(projectId, entry.id, payload())
+        unwrapAction(await categorizeAndApproveInboxTimeEntryAction(projectId, entry.id, payload()))
         toast.success("Approved")
       } catch (error: any) {
         toast.error("Could not approve", { description: error?.message })
@@ -104,7 +106,7 @@ export function TimeInboxRow({ projectId, entry, costCodes }: Props) {
   function reject() {
     startTransition(async () => {
       try {
-        await rejectInboxTimeEntryAction(projectId, entry.id)
+        unwrapAction(await rejectInboxTimeEntryAction(projectId, entry.id))
         toast.success("Rejected")
       } catch (error: any) {
         toast.error("Could not reject", { description: error?.message })

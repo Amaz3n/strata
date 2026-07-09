@@ -2,23 +2,30 @@
 
 import Link from "next/link"
 import { type DragEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react"
-import { usePathname, useSearchParams } from "next/navigation"
 import { toast } from "sonner"
 
 import { useIsMobile } from "@/hooks/use-mobile"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { Check, CheckCircle2, ChevronLeft, ChevronRight, ChevronsUpDown, Clock, ExternalLink, MoreHorizontal, Plus, Receipt, RefreshCcw, Sparkles, Upload, XCircle } from "@/components/icons"
+import { CheckCircle2, ChevronLeft, ChevronRight, Clock, ExternalLink, MoreHorizontal, Plus, Receipt, RefreshCcw, Sparkles, Upload, XCircle } from "@/components/icons"
 
 import {
   createMyExpenseAction,
@@ -34,6 +41,8 @@ import {
 } from "@/app/(app)/projects/[id]/expenses/actions"
 import { getFileAction, getFileDownloadUrlAction } from "@/app/(app)/documents/actions"
 import { ExpenseForm } from "@/components/expenses/expense-form"
+import { CodingCombobox } from "@/components/financials/workspace/coding-combobox"
+import { useWorkspaceParam } from "@/components/financials/workspace/use-workspace-param"
 import { FileViewer } from "@/components/files/file-viewer"
 import type { FileWithDetails } from "@/components/files/types"
 import { QboSyncSheet } from "@/components/integrations/qbo-sync-sheet"
@@ -44,6 +53,7 @@ import {
   costCodeLabel,
   formatCurrency,
   formatDate,
+  readyForQboSync,
   signedExpenseAmountCents,
   statusLabels,
   statusStyles,
@@ -51,6 +61,8 @@ import {
   type ProjectExpense,
 } from "@/components/expenses/expense-shared"
 import { cn } from "@/lib/utils"
+
+import { unwrapAction } from "@/lib/action-result"
 
 interface ExpensesClientProps {
   projectId: string
@@ -70,10 +82,10 @@ type ExpensePage = {
 }
 
 const qboStatusStyles: Record<string, string> = {
-  pending: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-  synced: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+  pending: "border-warning/30 bg-warning/10 text-warning",
+  synced: "border-success/30 bg-success/10 text-success",
   error: "border-destructive/30 bg-destructive/10 text-destructive",
-  needs_review: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+  needs_review: "border-warning/30 bg-warning/10 text-warning",
   skipped: "border-muted bg-muted text-muted-foreground",
 }
 
@@ -132,7 +144,6 @@ function AccountCombobox({
   context,
   open,
   disabled,
-  saving,
   onOpenChange,
   onSelect,
 }: {
@@ -140,7 +151,6 @@ function AccountCombobox({
   context: ExpenseAccountingContext | null
   open: boolean
   disabled?: boolean
-  saving?: boolean
   onOpenChange: (open: boolean) => void
   onSelect: (accountId: string) => void
 }) {
@@ -150,42 +160,25 @@ function AccountCombobox({
   const selectedPath = selectedAccount?.fullyQualifiedName ?? expense.qbo_expense_account_name ?? "QBO category"
 
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
-      <PopoverTrigger asChild>
-        <Button type="button" variant="ghost" role="combobox" aria-expanded={open} disabled={disabled} className="h-full min-h-11 w-full justify-between gap-2 rounded-none px-3 py-2 text-left">
-          <span className="flex min-w-0 items-center">
-            <span className="min-w-0">
-              <span className="block truncate text-sm font-medium text-foreground">{selectedName}</span>
-              <span className="block truncate text-[11px] text-muted-foreground">{selectedPath}</span>
-            </span>
-          </span>
-          <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] min-w-[320px] p-0" align="start">
-        <Command>
-          <CommandInput placeholder="Search accounts..." />
-          <CommandList>
-            <CommandEmpty>No accounts found.</CommandEmpty>
-            <CommandGroup heading="Accounts">
-              {accounts.map((account) => {
-                const label = accountLabel(account)
-                const selected = account.id === expense.qbo_expense_account_id
-                return (
-                  <CommandItem key={account.id} value={`${label} ${account.accountType ?? ""}`} onSelect={() => onSelect(account.id)}>
-                    <Check className={cn("size-4", selected ? "opacity-100" : "opacity-0")} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate">{account.name}</span>
-                      <span className="block truncate text-xs text-muted-foreground">{account.fullyQualifiedName ?? account.accountType ?? label}</span>
-                    </span>
-                  </CommandItem>
-                )
-              })}
-            </CommandGroup>
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
+    <CodingCombobox
+      open={open}
+      onOpenChange={onOpenChange}
+      disabled={disabled}
+      triggerLabel={selectedName}
+      triggerSublabel={selectedPath}
+      searchPlaceholder="Search accounts..."
+      groupHeading="Accounts"
+      emptyLabel="No accounts found."
+      options={accounts.map((account) => ({
+        id: account.id,
+        label: account.name,
+        sublabel: account.fullyQualifiedName ?? account.accountType ?? accountLabel(account),
+        searchValue: `${accountLabel(account)} ${account.accountType ?? ""}`,
+      }))}
+      selectedId={expense.qbo_expense_account_id ?? null}
+      onSelect={(accountId) => accountId && onSelect(accountId)}
+      contentMinWidthClass="min-w-[320px]"
+    />
   )
 }
 
@@ -194,7 +187,6 @@ function VendorCombobox({
   context,
   open,
   disabled,
-  saving,
   onOpenChange,
   onSelect,
 }: {
@@ -202,56 +194,27 @@ function VendorCombobox({
   context: ExpenseAccountingContext | null
   open: boolean
   disabled?: boolean
-  saving?: boolean
   onOpenChange: (open: boolean) => void
   onSelect: (vendorId: string) => void
 }) {
   const vendors = context?.vendors ?? []
-  const selectedLabel = expense.qbo_vendor_name ?? vendorOf(expense)
 
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
-      <PopoverTrigger asChild>
-        <Button type="button" variant="ghost" role="combobox" aria-expanded={open} disabled={disabled} className="h-full min-h-11 w-full justify-between gap-2 rounded-none px-3 py-2 text-left">
-          <span className="flex min-w-0 items-center">
-            <span className="min-w-0">
-              <span className="block truncate text-sm font-medium text-foreground">{selectedLabel}</span>
-              <span className="block truncate text-[11px] text-muted-foreground">QuickBooks vendor</span>
-            </span>
-          </span>
-          <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] min-w-[260px] p-0" align="start">
-        <Command>
-          <CommandInput placeholder="Search vendors..." />
-          <CommandList>
-            <CommandEmpty>No vendors found.</CommandEmpty>
-            <CommandGroup heading="Vendors">
-              <CommandItem value="Auto match/create" onSelect={() => onSelect(AUTO_QBO_VENDOR)}>
-                <Check className={cn("size-4", expense.qbo_vendor_id ? "opacity-0" : "opacity-100")} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate">Auto match/create</span>
-                  <span className="block truncate text-xs text-muted-foreground">Use the merchant name on sync</span>
-                </span>
-              </CommandItem>
-              {vendors.map((vendor) => {
-                const selected = vendor.id === expense.qbo_vendor_id
-                return (
-                  <CommandItem key={vendor.id} value={vendor.name} onSelect={() => onSelect(vendor.id)}>
-                    <Check className={cn("size-4", selected ? "opacity-100" : "opacity-0")} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate">{vendor.name}</span>
-                      <span className="block truncate text-xs text-muted-foreground">QuickBooks vendor</span>
-                    </span>
-                  </CommandItem>
-                )
-              })}
-            </CommandGroup>
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
+    <CodingCombobox
+      open={open}
+      onOpenChange={onOpenChange}
+      disabled={disabled}
+      triggerLabel={expense.qbo_vendor_name ?? vendorOf(expense)}
+      triggerSublabel="QuickBooks vendor"
+      searchPlaceholder="Search vendors..."
+      groupHeading="Vendors"
+      emptyLabel="No vendors found."
+      options={vendors.map((vendor) => ({ id: vendor.id, label: vendor.name, sublabel: "QuickBooks vendor" }))}
+      selectedId={expense.qbo_vendor_id ?? null}
+      clearOption={{ label: "Auto match/create", sublabel: "Use the merchant name on sync" }}
+      onSelect={(vendorId) => onSelect(vendorId ?? AUTO_QBO_VENDOR)}
+      contentMinWidthClass="min-w-[260px]"
+    />
   )
 }
 
@@ -260,7 +223,6 @@ function CostCodeCombobox({
   context,
   open,
   disabled,
-  saving,
   onOpenChange,
   onSelect,
 }: {
@@ -268,56 +230,28 @@ function CostCodeCombobox({
   context: ExpenseAccountingContext | null
   open: boolean
   disabled?: boolean
-  saving?: boolean
   onOpenChange: (open: boolean) => void
   onSelect: (costCodeId: string | null) => void
 }) {
-  const costCodes = context?.costCodes ?? []
+  const costCodes = (context?.costCodes ?? []) as { id: string; code?: string | null; name?: string | null }[]
   const selected = expense.cost_code ?? null
 
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
-      <PopoverTrigger asChild>
-        <Button type="button" variant="ghost" role="combobox" aria-expanded={open} disabled={disabled} className="h-full min-h-11 w-full justify-between gap-2 rounded-none px-3 py-2 text-left">
-          <span className="flex min-w-0 items-center">
-            <span className="min-w-0">
-              <span className="block truncate text-sm font-medium text-foreground">{selected?.code ?? "Choose code"}</span>
-              <span className="block truncate text-[11px] text-muted-foreground">{selected ? costCodeLabel(selected) : "Project cost code"}</span>
-            </span>
-          </span>
-          <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] min-w-[260px] p-0" align="start">
-        <Command>
-          <CommandInput placeholder="Search cost codes..." />
-          <CommandList>
-            <CommandEmpty>No cost codes found.</CommandEmpty>
-            <CommandGroup heading="Cost codes">
-              <CommandItem value="No cost code" onSelect={() => onSelect(null)}>
-                <Check className={cn("size-4", expense.cost_code_id ? "opacity-0" : "opacity-100")} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate">No cost code</span>
-                  <span className="block truncate text-xs text-muted-foreground">Leave uncoded</span>
-                </span>
-              </CommandItem>
-              {costCodes.map((code: any) => {
-                const selectedCode = code.id === expense.cost_code_id
-                return (
-                  <CommandItem key={code.id} value={costCodeLabel(code)} onSelect={() => onSelect(code.id)}>
-                    <Check className={cn("size-4", selectedCode ? "opacity-100" : "opacity-0")} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate">{code.code}</span>
-                      <span className="block truncate text-xs text-muted-foreground">{costCodeLabel(code)}</span>
-                    </span>
-                  </CommandItem>
-                )
-              })}
-            </CommandGroup>
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
+    <CodingCombobox
+      open={open}
+      onOpenChange={onOpenChange}
+      disabled={disabled}
+      triggerLabel={selected?.code ?? "Choose code"}
+      triggerSublabel={selected ? costCodeLabel(selected) : "Project cost code"}
+      searchPlaceholder="Search cost codes..."
+      groupHeading="Cost codes"
+      emptyLabel="No cost codes found."
+      options={costCodes.map((code) => ({ id: code.id, label: code.code ?? costCodeLabel(code), sublabel: costCodeLabel(code), searchValue: costCodeLabel(code) }))}
+      selectedId={expense.cost_code_id ?? null}
+      clearOption={{ label: "No cost code", sublabel: "Leave uncoded" }}
+      onSelect={onSelect}
+      contentMinWidthClass="min-w-[260px]"
+    />
   )
 }
 
@@ -374,10 +308,16 @@ interface PendingReceipt {
   file: File
 }
 
+const DUPLICATE_EXPENSE_MARKER = "POSSIBLE_DUPLICATE_EXPENSE:"
+
+interface DuplicatePrompt {
+  payload: CreateMyExpenseInput
+  receipt: File | null
+  message: string
+}
+
 export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) {
   const isMobile = useIsMobile()
-  const pathname = usePathname()
-  const searchParams = useSearchParams()
   const [items, setItems] = useState<ProjectExpense[]>(initialPage.items)
   const [pagination, setPagination] = useState({
     page: initialPage.page,
@@ -406,22 +346,7 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
   const dragDepthRef = useRef(0)
   const [isPending, startTransition] = useTransition()
 
-  const [workspaceExpenseId, setWorkspaceExpenseId] = useState<string | null>(searchParams.get("expense"))
-
-  const urlExpenseId = searchParams.get("expense")
-  useEffect(() => {
-    setWorkspaceExpenseId(urlExpenseId)
-  }, [urlExpenseId])
-
-  function openExpense(expenseId: string | null) {
-    setWorkspaceExpenseId(expenseId)
-    if (typeof window === "undefined") return
-    const params = new URLSearchParams(window.location.search)
-    if (expenseId) params.set("expense", expenseId)
-    else params.delete("expense")
-    const query = params.toString()
-    window.history.replaceState(null, "", query ? `${pathname}?${query}` : pathname)
-  }
+  const [workspaceExpenseId, openExpense] = useWorkspaceParam("expense")
 
   const filtered = items
   const pageStart = pagination.total === 0 ? 0 : (pagination.page - 1) * pagination.pageSize + 1
@@ -504,6 +429,8 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
     }
   }, [projectId])
 
+  const [duplicatePrompt, setDuplicatePrompt] = useState<DuplicatePrompt | null>(null)
+
   async function handleCreate(payload: CreateMyExpenseInput, receipt: File | null) {
     const formData = new FormData()
     formData.append("payload", JSON.stringify(payload))
@@ -512,15 +439,25 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
     return new Promise<void>((resolve, reject) => {
       startTransition(async () => {
         try {
-          await createMyExpenseAction(projectId, formData)
+          unwrapAction(await createMyExpenseAction(projectId, formData))
           await loadExpensesPage(1)
           setSheetOpen(false)
           toast.success("Receipt submitted for review")
           resolve()
         } catch (error: any) {
+          const message: string = error?.message ?? ""
+          if (message.includes(DUPLICATE_EXPENSE_MARKER)) {
+            setDuplicatePrompt({
+              payload,
+              receipt,
+              message: message.split(DUPLICATE_EXPENSE_MARKER).pop()!.trim(),
+            })
+            reject(error)
+            return
+          }
           console.error(error)
           toast.error("Could not submit receipt", {
-            description: error?.message ?? "Please try again.",
+            description: message || "Please try again.",
           })
           reject(error)
         }
@@ -531,7 +468,7 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
   async function handleExtract(receipt: File): Promise<ReceiptExtractionResult> {
     const formData = new FormData()
     formData.append("receipt", receipt)
-    return extractExpenseReceiptAction(projectId, formData)
+    return unwrapAction(await extractExpenseReceiptAction(projectId, formData))
   }
 
   async function openReceiptPreview(expense: ProjectExpense) {
@@ -623,7 +560,7 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
   function syncExpense(expenseId: string) {
     startTransition(async () => {
       try {
-        await syncProjectExpenseToQBOAction(projectId, expenseId)
+        unwrapAction(await syncProjectExpenseToQBOAction(projectId, expenseId))
         toast.success("Expense synced to QuickBooks")
         refresh()
       } catch (error: any) {
@@ -632,6 +569,29 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
         })
         refresh()
       }
+    })
+  }
+
+  const selectedExpenses = useMemo(
+    () => items.filter((expense) => selectedIds.includes(expense.id)),
+    [items, selectedIds],
+  )
+  const bulkSyncable = selectedExpenses.filter(readyForQboSync)
+
+  function bulkSyncExpenses(expenses: ProjectExpense[]) {
+    startTransition(async () => {
+      let synced = 0
+      for (const expense of expenses) {
+        try {
+          unwrapAction(await syncProjectExpenseToQBOAction(projectId, expense.id))
+          synced += 1
+        } catch (error: any) {
+          toast.error(error?.message ?? "QuickBooks sync failed", { description: vendorOf(expense) })
+        }
+      }
+      if (synced > 0) toast.success(`${synced} expense${synced === 1 ? "" : "s"} synced`)
+      setSelectedIds([])
+      refresh()
     })
   }
 
@@ -656,7 +616,7 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
       ),
     )
     try {
-      await updateProjectExpenseAccountingAction(projectId, expense.id, {
+      unwrapAction(await updateProjectExpenseAccountingAction(projectId, expense.id, {
         qboTransactionType: "purchase",
         qboExpenseAccountId: account.id,
         qboExpenseAccountName: accountLabel(account),
@@ -666,7 +626,7 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
         qboApAccountName: null,
         qboVendorId: qboVendor?.id ?? expense.qbo_vendor_id ?? null,
         qboVendorName: qboVendor ? accountLabel(qboVendor) : (expense.qbo_vendor_name ?? null),
-      })
+      }))
       await loadExpensesPage(pagination.page)
       toast.success("QuickBooks account saved")
     } catch (error: any) {
@@ -696,7 +656,7 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
       ),
     )
     try {
-      await updateProjectExpenseAccountingAction(projectId, expense.id, {
+      unwrapAction(await updateProjectExpenseAccountingAction(projectId, expense.id, {
         qboTransactionType: "purchase",
         qboExpenseAccountId: expense.qbo_expense_account_id ?? null,
         qboExpenseAccountName: expense.qbo_expense_account_name ?? null,
@@ -706,7 +666,7 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
         qboApAccountName: null,
         qboVendorId: qboVendor?.id ?? null,
         qboVendorName: qboVendor ? accountLabel(qboVendor) : null,
-      })
+      }))
       await loadExpensesPage(pagination.page)
       toast.success("QuickBooks vendor saved")
     } catch (error: any) {
@@ -723,7 +683,7 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
     setSavingMemoExpenseId(expense.id)
     setItems((current) => current.map((item) => (item.id === expense.id ? { ...item, description } : item)))
     try {
-      await updateProjectExpenseDetailsAction(projectId, expense.id, { description })
+      unwrapAction(await updateProjectExpenseDetailsAction(projectId, expense.id, { description }))
       await loadExpensesPage(pagination.page)
     } catch (error: any) {
       toast.error("Could not save memo", { description: error?.message ?? "Please try again." })
@@ -749,7 +709,7 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
       ),
     )
     try {
-      await updateProjectExpenseDetailsAction(projectId, expense.id, { costCodeId })
+      unwrapAction(await updateProjectExpenseDetailsAction(projectId, expense.id, { costCodeId }))
       await loadExpensesPage(pagination.page)
       toast.success("Cost code saved")
     } catch (error: any) {
@@ -897,6 +857,30 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
         isSubmitting={isPending}
       />
 
+      <AlertDialog open={Boolean(duplicatePrompt)} onOpenChange={(open) => !open && setDuplicatePrompt(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Possible duplicate expense</AlertDialogTitle>
+            <AlertDialogDescription>
+              {duplicatePrompt?.message} Create it anyway?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Don&rsquo;t create</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const prompt = duplicatePrompt
+                setDuplicatePrompt(null)
+                if (!prompt) return
+                void handleCreate({ ...prompt.payload, allowDuplicate: true }, prompt.receipt).catch(() => {})
+              }}
+            >
+              Create anyway
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <QboSyncSheet open={syncSheetOpen} onOpenChange={setSyncSheetOpen} projectId={projectId} />
 
       <ExpenseWorkspace
@@ -980,6 +964,27 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
           </div>
         </div>
 
+        {selectedIds.length > 0 ? (
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b bg-muted/20 px-4 py-2 text-sm">
+            <span className="font-medium">{selectedIds.length} selected</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={isPending || bulkSyncable.length === 0 || !accountingContext?.qboConnected}
+                onClick={() => bulkSyncExpenses(bulkSyncable)}
+              >
+                <ExternalLink className="mr-2 h-4 w-4" />
+                Sync {bulkSyncable.length || ""} to QuickBooks
+              </Button>
+              <Button type="button" variant="ghost" size="sm" onClick={() => setSelectedIds([])}>
+                Clear
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
         {isMobile ? (
           <div className="min-h-0 flex-1 overflow-auto p-4">
             <div className="space-y-3">
@@ -1012,7 +1017,6 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
                           context={accountingContext}
                           open={openAccountExpenseId === expense.id}
                           disabled={!accountingContext?.qboConnected || savingAccountExpenseId === expense.id}
-                          saving={savingAccountExpenseId === expense.id}
                           onOpenChange={(open) => setOpenAccountExpenseId(open ? expense.id : null)}
                           onSelect={(accountId) => void saveExpenseAccount(expense, accountId)}
                         />
@@ -1102,7 +1106,6 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
                           context={accountingContext}
                           open={openAccountExpenseId === expense.id}
                           disabled={!accountingContext?.qboConnected || savingAccountExpenseId === expense.id}
-                          saving={savingAccountExpenseId === expense.id}
                           onOpenChange={(open) => setOpenAccountExpenseId(open ? expense.id : null)}
                           onSelect={(accountId) => void saveExpenseAccount(expense, accountId)}
                         />
@@ -1142,7 +1145,6 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
                           context={accountingContext}
                           open={openVendorExpenseId === expense.id}
                           disabled={!accountingContext?.qboConnected || savingVendorExpenseId === expense.id}
-                          saving={savingVendorExpenseId === expense.id}
                           onOpenChange={(open) => setOpenVendorExpenseId(open ? expense.id : null)}
                           onSelect={(vendorId) => void saveExpenseVendor(expense, vendorId)}
                         />
@@ -1154,7 +1156,6 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
                             context={accountingContext}
                             open={openCostCodeExpenseId === expense.id}
                             disabled={savingCostCodeExpenseId === expense.id}
-                            saving={savingCostCodeExpenseId === expense.id}
                             onOpenChange={(open) => setOpenCostCodeExpenseId(open ? expense.id : null)}
                             onSelect={(costCodeId) => void saveExpenseCostCode(expense, costCodeId)}
                           />

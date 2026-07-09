@@ -39,6 +39,8 @@ import {
   Trash2,
 } from "@/components/icons"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface CostCodeManagerProps {
   costCodes: CostCode[]
   canManage?: boolean
@@ -217,7 +219,7 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
     if (!canManage) return
     startTransition(async () => {
       try {
-        await seedCostCodesAction()
+        unwrapAction(await seedCostCodesAction())
         const refreshed = await listCostCodesAction(true)
         applyCodes(refreshed)
         toast.success("Default cost codes added")
@@ -238,7 +240,7 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
       try {
         const defaultMarkupPercent = normalizeMarkup(form.default_markup_percent)
         if (sheet.mode === "create") {
-          await createCostCodeAction({
+          unwrapAction(await createCostCodeAction({
             code: form.code,
             name: form.name,
             parent_id: normalizeOptional(form.parent_id),
@@ -247,10 +249,10 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
             unit: normalizeOptional(form.unit),
             is_reimbursable_default: form.is_reimbursable_default,
             default_markup_percent: defaultMarkupPercent,
-          })
+          }))
           toast.success("Cost code created")
         } else {
-          await updateCostCodeAction({
+          unwrapAction(await updateCostCodeAction({
             id: sheet.code.id,
             code: form.code,
             name: form.name,
@@ -261,7 +263,7 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
             is_reimbursable_default: form.is_reimbursable_default,
             default_markup_percent: defaultMarkupPercent,
             is_active: sheet.code.is_active !== false,
-          })
+          }))
           toast.success("Cost code updated")
         }
         const refreshed = await listCostCodesAction(true)
@@ -277,7 +279,7 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
     if (!canManage) return
     startTransition(async () => {
       try {
-        await setCostCodeActiveAction(code.id, code.is_active === false)
+        unwrapAction(await setCostCodeActiveAction(code.id, code.is_active === false))
         const refreshed = await listCostCodesAction(true)
         applyCodes(refreshed)
         toast.success(code.is_active === false ? "Cost code restored" : "Cost code archived")

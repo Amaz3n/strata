@@ -44,6 +44,8 @@ import {
   type LucideIcon,
 } from "@/components/icons"
 
+import { unwrapAction } from "@/lib/action-result"
+
 function isInsuranceDoc(code: string) {
   return code.includes("coi") || code.includes("insurance") || code.includes("umbrella")
 }
@@ -261,8 +263,8 @@ export function ComplianceSettings({
       try {
         let nextRules = rules
         let nextDefaults = defaults
-        if (rulesDirty) nextRules = await updateComplianceRulesAction(rules)
-        if (reqsDirty) nextDefaults = (await updateDefaultComplianceRequirementsAction(buildRequirements())) ?? buildRequirements()
+        if (rulesDirty) nextRules = unwrapAction(await updateComplianceRulesAction(rules))
+        if (reqsDirty) nextDefaults = (unwrapAction(await updateDefaultComplianceRequirementsAction(buildRequirements()))) ?? buildRequirements()
         setRules(nextRules)
         setSavedRules(nextRules)
         setDefaults(nextDefaults)

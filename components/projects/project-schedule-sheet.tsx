@@ -12,6 +12,8 @@ import { getProjectScheduleItemsAction } from "@/app/(app)/projects/actions"
 import type { ProjectScheduleSummary, ScheduleItem } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ProjectScheduleSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void

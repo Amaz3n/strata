@@ -9,6 +9,8 @@ import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Layers, MapPin } from "@/components/icons"
 
+import { unwrapAction } from "@/lib/action-result"
+
 export function LinkedDrawings({
   projectId,
   entityType,

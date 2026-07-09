@@ -9,6 +9,8 @@ import { FILE_CATEGORIES } from "@/components/files/types"
 import { logPortalFileAccessClientAction } from "@/app/(app)/documents/actions"
 import type { ClientPortalData } from "@/lib/types"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface PortalDocumentsTabProps {
   data: ClientPortalData
   token: string

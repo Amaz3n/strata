@@ -8,13 +8,12 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { ChevronDown, Users, Trash2, CreditCard } from "@/components/icons"
+import { ChevronDown, Users, Trash2, CreditCard, Copy, ExternalLink } from "@/components/icons"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import Link from "next/link"
 import { formatDistanceToNow } from "date-fns"
 import { CustomerSheet } from "./customer-sheet"
-import { ProvisionCustomerSheet } from "./provision-customer-sheet"
 import { CustomerFilters } from "./customer-filters"
 import { deleteOrganizationAction } from "@/app/(app)/admin/customers/actions"
 import {
@@ -35,6 +34,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+
+import { unwrapAction } from "@/lib/action-result"
 
 interface Customer {
   id: string
@@ -57,6 +58,9 @@ interface Customer {
     trialEndsAt: string | null
     externalCustomerId: string | null
     externalSubscriptionId: string | null
+    checkoutUrl: string | null
+    collectionMethod: string | null
+    netDays: number | null
   } | null
 }
 
@@ -77,7 +81,7 @@ interface CustomersClientProps {
   plan: string
   page: number
   subscriptionPlans: SubscriptionPlan[]
-  onProvision: (formData: FormData) => Promise<any>
+  onActivateBilling: (formData: FormData) => Promise<{ success?: boolean; error?: string; checkoutUrl?: string | null; planCode?: string }>
   onExtendTrial: (formData: FormData) => Promise<void>
   onUpdateCustomer: (formData: FormData) => Promise<void>
   onUpdateSubscription: (formData: FormData) => Promise<void>
@@ -95,7 +99,7 @@ export function CustomersClient({
   plan,
   page,
   subscriptionPlans,
-  onProvision,
+  onActivateBilling,
   onExtendTrial,
   onUpdateCustomer,
   onUpdateSubscription,
@@ -104,11 +108,13 @@ export function CustomersClient({
 }: CustomersClientProps) {
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
   const [sheetOpen, setSheetOpen] = useState(false)
-  const [provisionOpen, setProvisionOpen] = useState(false)
-  const [provisioning, setProvisioning] = useState(false)
   const [billingCustomer, setBillingCustomer] = useState<Customer | null>(null)
   const [billingStatus, setBillingStatus] = useState("active")
   const [savingBilling, startSavingBilling] = useTransition()
+  const [activateCustomer, setActivateCustomer] = useState<Customer | null>(null)
+  const [activationMethod, setActivationMethod] = useState<"checkout" | "invoice">("checkout")
+  const [activationResult, setActivationResult] = useState<{ checkoutUrl?: string | null; message?: string } | null>(null)
+  const [activatingBilling, startActivatingBilling] = useTransition()
 
   const [customerToDelete, setCustomerToDelete] = useState<Customer | null>(null)
   const [deleteConfirmationText, setDeleteConfirmationText] = useState("")
@@ -119,7 +125,7 @@ export function CustomersClient({
 
     startDeleting(async () => {
       try {
-        const result = await deleteOrganizationAction(customerToDelete.id)
+        const result = unwrapAction(await deleteOrganizationAction(customerToDelete.id))
         if (result.error) {
           toast.error("Failed to delete organization", { description: result.error })
         } else {
@@ -140,19 +146,40 @@ export function CustomersClient({
     setSheetOpen(true)
   }
 
-  const handleProvision = async (formData: FormData) => {
-    setProvisioning(true)
-    try {
-      await onProvision(formData)
-      window.location.reload()
-    } finally {
-      setProvisioning(false)
-    }
-  }
-
   const openBillingEditor = (customer: Customer) => {
     setBillingCustomer(customer)
     setBillingStatus(customer.subscription?.status ?? "active")
+  }
+
+  const openBillingActivation = (customer: Customer) => {
+    setActivateCustomer(customer)
+    setActivationMethod("checkout")
+    setActivationResult(null)
+  }
+
+  const handleActivateBillingSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const formData = new FormData(event.currentTarget)
+
+    startActivatingBilling(async () => {
+      const result = await onActivateBilling(formData)
+      if (result.error) {
+        toast.error("Failed to activate billing", { description: result.error })
+        return
+      }
+
+      const message = result.checkoutUrl
+        ? "Checkout link created."
+        : "Stripe invoice subscription created."
+      setActivationResult({ checkoutUrl: result.checkoutUrl, message })
+      toast.success("Billing activated", { description: message })
+    })
+  }
+
+  const copyPaymentLink = async (url?: string | null) => {
+    if (!url) return
+    await navigator.clipboard.writeText(url)
+    toast.success("Payment link copied")
   }
 
   const handleBillingSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -182,7 +209,6 @@ export function CustomersClient({
         search={search}
         status={status}
         plan={plan}
-        onProvision={() => setProvisionOpen(true)}
       />
 
       <div className="rounded-lg border overflow-hidden">
@@ -215,7 +241,15 @@ export function CustomersClient({
                 </TableCell>
               </TableRow>
             ) : (
-              customers.map((customer) => (
+              customers.map((customer) => {
+                const canActivateBilling =
+                  customer.billingModel === "subscription" &&
+                  customer.subscription?.status !== "active" &&
+                  (!customer.subscription?.planCode || customer.subscription.status === "trialing")
+                const canCopyPaymentLink =
+                  Boolean(customer.subscription?.checkoutUrl) && customer.subscription?.status !== "active"
+
+                return (
                 <TableRow key={customer.id} className="divide-x">
                   <TableCell className="px-4 py-4">
                     <div className="flex items-center gap-3">
@@ -298,6 +332,18 @@ export function CustomersClient({
                           <CreditCard className="mr-2 h-4 w-4" />
                           Edit Billing
                         </DropdownMenuItem>
+                        {canActivateBilling && (
+                          <DropdownMenuItem onClick={() => openBillingActivation(customer)}>
+                            <CreditCard className="mr-2 h-4 w-4" />
+                            Activate Billing
+                          </DropdownMenuItem>
+                        )}
+                        {canCopyPaymentLink && (
+                          <DropdownMenuItem onClick={() => copyPaymentLink(customer.subscription?.checkoutUrl)}>
+                            <Copy className="mr-2 h-4 w-4" />
+                            Copy Payment Link
+                          </DropdownMenuItem>
+                        )}
                         <form action={onExtendTrial}>
                           <input type="hidden" name="orgId" value={customer.id} />
                           <input type="hidden" name="trialDays" value="7" />
@@ -355,7 +401,8 @@ export function CustomersClient({
                     </DropdownMenu>
                   </TableCell>
                 </TableRow>
-              ))
+                )
+              })
             )}
           </TableBody>
         </Table>
@@ -402,13 +449,6 @@ export function CustomersClient({
         open={sheetOpen}
         onOpenChange={setSheetOpen}
         onUpdateCustomer={onUpdateCustomer}
-      />
-
-      <ProvisionCustomerSheet
-        open={provisionOpen}
-        onOpenChange={setProvisionOpen}
-        onProvision={handleProvision}
-        loading={provisioning}
       />
 
       <Dialog open={Boolean(billingCustomer)} onOpenChange={(open) => !open && setBillingCustomer(null)}>
@@ -515,6 +555,86 @@ export function CustomersClient({
                 </Button>
                 <Button type="submit" disabled={savingBilling}>
                   {savingBilling ? "Saving..." : "Save Billing"}
+                </Button>
+              </DialogFooter>
+            </form>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(activateCustomer)} onOpenChange={(open) => !open && setActivateCustomer(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Activate billing</DialogTitle>
+            <DialogDescription>
+              Create the custom Stripe price and billing setup for {activateCustomer?.name}.
+            </DialogDescription>
+          </DialogHeader>
+          {activateCustomer ? (
+            <form onSubmit={handleActivateBillingSubmit} className="space-y-5">
+              <input type="hidden" name="orgId" value={activateCustomer.id} />
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="activate-amount">Amount</Label>
+                  <Input id="activate-amount" name="amountDollars" type="number" min="1" step="1" placeholder="2500" required />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="activate-interval">Interval</Label>
+                  <Select name="interval" defaultValue="month">
+                    <SelectTrigger id="activate-interval">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="month">Monthly</SelectItem>
+                      <SelectItem value="year">Annual</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="activate-method">Payment method</Label>
+                <Select name="collectionMethod" value={activationMethod} onValueChange={(value) => setActivationMethod(value as "checkout" | "invoice")}>
+                  <SelectTrigger id="activate-method">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="checkout">Card - send checkout link</SelectItem>
+                    <SelectItem value="invoice">ACH invoice - Stripe emails it</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {activationMethod === "invoice" ? (
+                <div className="space-y-2">
+                  <Label htmlFor="activate-net-days">Net days</Label>
+                  <Input id="activate-net-days" name="netDays" type="number" min="1" max="90" defaultValue="30" />
+                </div>
+              ) : null}
+
+              {activationResult ? (
+                <div className="border bg-muted/20 px-4 py-3 text-sm">
+                  <p className="font-medium">{activationResult.message}</p>
+                  {activationResult.checkoutUrl ? (
+                    <div className="mt-3 flex gap-2">
+                      <Input value={activationResult.checkoutUrl} readOnly />
+                      <Button type="button" variant="outline" size="icon" onClick={() => copyPaymentLink(activationResult.checkoutUrl)} aria-label="Copy payment link">
+                        <Copy />
+                      </Button>
+                      <Button type="button" variant="outline" size="icon" asChild aria-label="Open payment link">
+                        <a href={activationResult.checkoutUrl} target="_blank" rel="noreferrer">
+                          <ExternalLink />
+                        </a>
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setActivateCustomer(null)} disabled={activatingBilling}>
+                  Close
+                </Button>
+                <Button type="submit" disabled={activatingBilling}>
+                  {activatingBilling ? "Activating..." : "Activate Billing"}
                 </Button>
               </DialogFooter>
             </form>

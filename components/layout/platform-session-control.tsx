@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import type { PlatformAccessState } from "@/lib/services/platform-access"
 import type { PlatformSessionState } from "@/lib/services/platform-session"
+import { unwrapAction } from "@/lib/action-result"
 
 function formatDateTime(value?: string | null) {
   if (!value) return "-"
@@ -23,6 +24,14 @@ export function PlatformSessionControl({
   access: PlatformAccessState
   state: PlatformSessionState
 }) {
+  async function endImpersonation() {
+    unwrapAction(await endImpersonationAction())
+  }
+
+  async function clearOrgContext() {
+    unwrapAction(await clearOrgContextAction())
+  }
+
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
@@ -87,14 +96,14 @@ export function PlatformSessionControl({
 
         <div className="flex flex-wrap gap-2">
           {showImpersonation ? (
-            <form action={endImpersonationAction}>
+            <form action={endImpersonation}>
               <Button size="sm" variant="destructive" type="submit">
                 End impersonation
               </Button>
             </form>
           ) : null}
           {showContext ? (
-            <form action={clearOrgContextAction}>
+            <form action={clearOrgContext}>
               <Button size="sm" variant="outline" type="submit">
                 Exit org context
               </Button>

@@ -1,5 +1,5 @@
 import { requireOrgContext } from "@/lib/services/context"
-import { requireAuthorization } from "@/lib/services/authorization"
+import { requireProjectPermission } from "@/lib/services/permissions"
 import { getBudgetWithActuals } from "@/lib/services/budgets"
 import { getOrgBilling } from "@/lib/services/orgs"
 
@@ -99,14 +99,9 @@ export async function getProjectProfitabilityReport({
 }): Promise<ProjectProfitabilityReport> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
 
-  await requireAuthorization({
-    permission: "invoice.read",
-    userId,
-    orgId: resolvedOrgId,
-    supabase,
-    resourceType: "project",
-    resourceId: projectId,
-  })
+  // Profitability exposes margin — gate on the margin permission, project-scoped so
+  // an "assigned only" member must belong to the project.
+  await requireProjectPermission(userId, projectId, "financials.margin.read")
 
   const [projectResult, invoicesResult, jobCostResult, budgetData, orgBilling] = await Promise.all([
     supabase.from("projects").select("id, name").eq("org_id", resolvedOrgId).eq("id", projectId).maybeSingle(),

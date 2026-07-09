@@ -67,6 +67,8 @@ import { AlertTriangle, Ban, Download, Eye, Mail, MoreHorizontal, RefreshCcw, Tr
 import { useIsMobile } from "@/hooks/use-mobile"
 import { cn } from "@/lib/utils"
 
+import { unwrapAction } from "@/lib/action-result"
+
 type QueueFilter = "all" | "waiting" | "executed" | "expiring" | "drafts" | "voided"
 type SignatureHubRow = {
   envelope_id: string
@@ -463,7 +465,7 @@ export function SignaturesHubClient({
   const handleResendReminder = async (row: SignatureHubRow) => {
     if (!row.next_pending_request_id) return
     await withPendingAction(row.envelope_id, async () => {
-      await sendDocumentSigningReminderAction(row.next_pending_request_id as string)
+      unwrapAction(await sendDocumentSigningReminderAction(row.next_pending_request_id as string))
       toast.success("Reminder sent")
     })
   }
@@ -477,10 +479,10 @@ export function SignaturesHubClient({
   const handleConfirmVoid = async () => {
     if (!selectedRow) return
     await withPendingAction(selectedRow.envelope_id, async () => {
-      await voidEnvelopeAction({ 
+      unwrapAction(await voidEnvelopeAction({ 
         envelopeId: selectedRow.envelope_id, 
         reason: voidReason || "Voided from signatures hub" 
-      })
+      }))
       toast.success("Envelope voided")
       setVoidDialogOpen(false)
     })
@@ -495,7 +497,7 @@ export function SignaturesHubClient({
 
   const handleSignMyself = async (row: SignatureHubRow) => {
     await withPendingAction(row.envelope_id, async () => {
-      const result = await createMySigningLinkAction({ envelopeId: row.envelope_id })
+      const result = unwrapAction(await createMySigningLinkAction({ envelopeId: row.envelope_id }))
       window.open(result.url, "_blank", "noopener,noreferrer")
     })
   }
@@ -518,7 +520,7 @@ export function SignaturesHubClient({
     formData.append("signer_name", offlineSignerName)
     formData.append("note", offlineNote)
     await withPendingAction(selectedRow.envelope_id, async () => {
-      await markEnvelopeSignedOfflineAction({ envelopeId: selectedRow.envelope_id, formData })
+      unwrapAction(await markEnvelopeSignedOfflineAction({ envelopeId: selectedRow.envelope_id, formData }))
       toast.success("Signed copy recorded")
       setOfflineDialogOpen(false)
     })
@@ -532,7 +534,7 @@ export function SignaturesHubClient({
   const handleConfirmDuplicatePacket = async () => {
     if (!selectedRow) return
     await withPendingAction(selectedRow.envelope_id, async () => {
-      await resendEnvelopeAction({ envelopeId: selectedRow.envelope_id })
+      unwrapAction(await resendEnvelopeAction({ envelopeId: selectedRow.envelope_id }))
       toast.success("New signature copy sent")
       setResendDialogOpen(false)
     })
@@ -551,7 +553,7 @@ export function SignaturesHubClient({
   const handleConfirmDelete = async () => {
     if (!selectedRow) return
     await withPendingAction(selectedRow.envelope_id, async () => {
-      await deleteDraftDocumentAction({ documentId: selectedRow.document_id })
+      unwrapAction(await deleteDraftDocumentAction({ documentId: selectedRow.document_id }))
       toast.success("Draft deleted")
       setDeleteDialogOpen(false)
     })
@@ -723,14 +725,14 @@ export function SignaturesHubClient({
     try {
       const expiryDays = Math.max(1, Math.min(180, Number(bulkExpiresInDays) || 14))
       const expiresAt = new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000).toISOString()
-      const result = await bulkSendTemplateEnvelopesAction({
+      const result = unwrapAction(await bulkSendTemplateEnvelopesAction({
         templateId: bulkTemplateId,
         projectId: newEnvelopeProjectId,
         recipients,
         expires_at: expiresAt,
         reminder_enabled: bulkRemindersEnabled,
         reminder_interval_days: Math.max(1, Math.min(30, Number(bulkReminderIntervalDays) || 3)),
-      })
+      }))
       toast.success(`Bulk send complete: ${result.sent} sent${result.failed ? `, ${result.failed} failed` : ""}`)
       setBulkDialogOpen(false)
       router.refresh()

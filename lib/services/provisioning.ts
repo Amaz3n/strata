@@ -21,8 +21,8 @@ function normalizeSlug(slug: string) {
 }
 
 function resolveTrialDays(input?: number | null) {
-  if (!input || Number.isNaN(input)) return 7
-  return Math.max(1, Math.min(30, input))
+  if (!input || Number.isNaN(input)) return 30
+  return Math.max(1, Math.min(60, input))
 }
 
 function getTrialEnd(trialDays: number) {

@@ -388,3 +388,91 @@ export async function linkInvoiceToBillingPeriod(args: {
 
   if (updateError) throw new Error(`Failed to update billing period invoice links: ${updateError.message}`)
 }
+
+export async function releaseInvoiceFromBillingPeriod(args: {
+  supabase: SupabaseClient
+  orgId: string
+  invoiceId: string
+}) {
+  const { data: invoice, error: invoiceError } = await args.supabase
+    .from("invoices")
+    .select("id, project_id, billing_period_id, metadata")
+    .eq("org_id", args.orgId)
+    .eq("id", args.invoiceId)
+    .maybeSingle()
+
+  if (invoiceError) throw new Error(`Failed to load invoice billing period link: ${invoiceError.message}`)
+
+  const metadata = (invoice?.metadata as Record<string, any> | null) ?? {}
+  const billingPeriodId = invoice?.billing_period_id ?? metadata.billing_period_id ?? null
+  const projectId = invoice?.project_id ?? metadata.project_id ?? null
+  if (!billingPeriodId || !projectId) return
+
+  const { data: period, error: periodError } = await args.supabase
+    .from("project_billing_periods")
+    .select("invoice_ids, status, metadata")
+    .eq("org_id", args.orgId)
+    .eq("project_id", projectId)
+    .eq("id", billingPeriodId)
+    .maybeSingle()
+
+  if (periodError) throw new Error(`Failed to load billing period for release: ${periodError.message}`)
+  if (!period) return
+
+  const nextInvoiceIds = (Array.isArray(period.invoice_ids) ? period.invoice_ids : []).filter(
+    (id: string) => id !== args.invoiceId,
+  )
+  const now = new Date().toISOString()
+
+  const { error: invoiceUpdateError } = await args.supabase
+    .from("invoices")
+    .update({ billing_period_id: null })
+    .eq("org_id", args.orgId)
+    .eq("id", args.invoiceId)
+
+  if (invoiceUpdateError) {
+    throw new Error(`Failed to clear invoice billing period link: ${invoiceUpdateError.message}`)
+  }
+
+  const { error: costsUpdateError } = await args.supabase
+    .from("billable_costs")
+    .update({ billing_period_id: null })
+    .eq("org_id", args.orgId)
+    .eq("project_id", projectId)
+    .eq("billing_period_id", billingPeriodId)
+    .eq("invoice_id", args.invoiceId)
+
+  if (costsUpdateError) {
+    throw new Error(`Failed to clear billed cost period links: ${costsUpdateError.message}`)
+  }
+
+  const nextStatus =
+    nextInvoiceIds.length > 0
+      ? "invoiced"
+      : period.status === "open" || period.status === "reviewing"
+        ? period.status
+        : "reopened"
+
+  const periodUpdatePayload: Record<string, any> = {
+    invoice_ids: nextInvoiceIds,
+    status: nextStatus,
+    metadata: {
+      ...((period.metadata as Record<string, any> | null) ?? {}),
+      last_invoice_id: nextInvoiceIds[nextInvoiceIds.length - 1] ?? null,
+      released_invoice_id: args.invoiceId,
+      released_at: now,
+    },
+  }
+  if (nextStatus === "reopened") periodUpdatePayload.reopened_at = now
+
+  const { error: periodUpdateError } = await args.supabase
+    .from("project_billing_periods")
+    .update(periodUpdatePayload)
+    .eq("org_id", args.orgId)
+    .eq("project_id", projectId)
+    .eq("id", billingPeriodId)
+
+  if (periodUpdateError) {
+    throw new Error(`Failed to release billing period invoice link: ${periodUpdateError.message}`)
+  }
+}

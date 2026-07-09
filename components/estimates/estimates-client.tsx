@@ -26,6 +26,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { EstimateCreateSheet } from "@/components/estimates/estimate-create-sheet"
 import { EstimateActivitySheet } from "@/components/estimates/estimate-activity-sheet"
 
+import { unwrapAction } from "@/lib/action-result"
+
 type StatusKey =
   | "draft"
   | "sent"
@@ -122,7 +124,7 @@ export function EstimatesClient({
   async function handleCreate(input: EstimateInput) {
     startCreating(async () => {
       try {
-        const estimate = await createEstimateAction(input)
+        const estimate = unwrapAction(await createEstimateAction(input))
         const recipient = contacts.find((contact) => contact.id === estimate.recipient_contact_id)
         setItems((prev) => [{ ...estimate, recipient_name: recipient?.full_name ?? null }, ...prev])
         setCreateOpen(false)
@@ -160,7 +162,7 @@ export function EstimatesClient({
   async function handleSend(estimateId: string) {
     setSendingId(estimateId)
     try {
-      const result = await sendEstimateAction(estimateId)
+      const result = unwrapAction(await sendEstimateAction(estimateId))
       setItems((prev) => prev.map((item) => (item.id === estimateId ? { ...item, status: "sent" } : item)))
       await copyToClipboard(result.url)
       toast.success(result.emailSent ? "Estimate sent to client" : "Estimate marked sent", {
@@ -188,7 +190,7 @@ export function EstimatesClient({
   async function handleRevise(estimateId: string) {
     setRevisingId(estimateId)
     try {
-      const revised = await reviseEstimateAction(estimateId)
+      const revised = unwrapAction(await reviseEstimateAction(estimateId))
       const recipient = contacts.find((contact) => contact.id === revised.recipient_contact_id)
       setItems((prev) => [
         { ...revised, recipient_name: recipient?.full_name ?? null },
@@ -206,7 +208,7 @@ export function EstimatesClient({
   async function handleDuplicate(estimateId: string) {
     setDuplicatingId(estimateId)
     try {
-      const duplicated = await duplicateEstimateAction(estimateId)
+      const duplicated = unwrapAction(await duplicateEstimateAction(estimateId))
       setItems((prev) => [duplicated, ...prev])
       toast.success("New estimate version created")
     } catch (error: any) {
@@ -219,7 +221,7 @@ export function EstimatesClient({
 
   async function handleStatus(estimateId: string, status: "draft" | "sent" | "approved" | "rejected") {
     try {
-      const updated = await updateEstimateStatusAction(estimateId, status)
+      const updated = unwrapAction(await updateEstimateStatusAction(estimateId, status))
       setItems((prev) => prev.map((item) => (item.id === estimateId ? { ...item, status: updated.status } : item)))
       toast.success(`Marked as ${status}`)
     } catch (error: any) {

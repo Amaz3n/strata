@@ -16,6 +16,8 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 
+import { unwrapAction } from "@/lib/action-result"
+
 export type AiProvider = "openai" | "anthropic" | "google"
 export type AiFeature = "search" | "document_extraction" | "drawings_vision"
 export type AiSource = "platform" | "env" | "default"
@@ -182,7 +184,7 @@ function ModelRoutingTab({ initialConfigs, canManage }: { initialConfigs: AiFeat
     if (!config) return
     setPendingFeature(feature)
     startTransition(async () => {
-      const result = await updatePlatformAiDefaultsAction({ feature, provider: config.provider, model: config.model.trim() })
+      const result = unwrapAction(await updatePlatformAiDefaultsAction({ feature, provider: config.provider, model: config.model.trim() }))
       setPendingFeature(null)
       if (result?.error) {
         toast.error(result.error)
@@ -197,7 +199,7 @@ function ModelRoutingTab({ initialConfigs, canManage }: { initialConfigs: AiFeat
     if (!canManage || isPending) return
     setPendingFeature(feature)
     startTransition(async () => {
-      const result = await clearPlatformAiDefaultsAction({ feature })
+      const result = unwrapAction(await clearPlatformAiDefaultsAction({ feature }))
       setPendingFeature(null)
       if (result?.error) {
         toast.error(result.error)
@@ -318,7 +320,7 @@ function OrgAccessTab({ orgs: initialOrgs, canManage }: { orgs: OrgAiSearchAcces
     setPendingOrgId(orgId)
     setOrgs((prev) => prev.map((o) => (o.orgId === orgId ? { ...o, enabled: next } : o)))
     startTransition(async () => {
-      const result = await setAiSearchAccessAction({ orgId, enabled: next })
+      const result = unwrapAction(await setAiSearchAccessAction({ orgId, enabled: next }))
       if (result?.error) {
         toast.error(result.error)
         setOrgs((prev) => prev.map((o) => (o.orgId === orgId ? { ...o, enabled: !next } : o)))

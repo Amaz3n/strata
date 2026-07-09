@@ -8,6 +8,8 @@ import { GmpSavingsSettlementPanel } from "@/components/closeout/gmp-savings-set
 import { Skeleton } from "@/components/ui/skeleton"
 import { getProjectGmpControlSummary } from "@/lib/services/gmp-control"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ProjectCloseoutPageProps {
   params: Promise<{ id: string }>
 }

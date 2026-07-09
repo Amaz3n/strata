@@ -4,6 +4,7 @@ import Stripe from "stripe"
 import {
   constructWebhookEvent,
   mapStripeEventToDomain,
+  retrieveStripeSubscription,
   retrieveStripeChargeWithBalanceTransaction,
 } from "@/lib/integrations/payments/stripe"
 import { recordPayment, recordPaymentReversal, resolvePaymentReversal } from "@/lib/services/payments"
@@ -108,6 +109,26 @@ export async function POST(request: NextRequest) {
       event.type === "customer.subscription.deleted"
     ) {
       await upsertSubscriptionFromStripe(event.data.object as any)
+      await supabase
+        .from("webhook_events")
+        .update({ status: "processed", processed_at: new Date().toISOString() })
+        .eq("provider", "stripe")
+        .eq("provider_event_id", event.id)
+      return NextResponse.json({ received: true })
+    }
+
+    if (event.type === "invoice.paid" || event.type === "invoice.payment_failed") {
+      const invoice = event.data.object as Stripe.Invoice
+      const subscriptionId =
+        typeof invoice.subscription === "string"
+          ? invoice.subscription
+          : invoice.subscription?.id
+
+      if (subscriptionId) {
+        const subscription = await retrieveStripeSubscription(subscriptionId)
+        await upsertSubscriptionFromStripe(subscription as any)
+      }
+
       await supabase
         .from("webhook_events")
         .update({ status: "processed", processed_at: new Date().toISOString() })

@@ -67,6 +67,8 @@ import {
 import { ArrowLeft, ArrowRight } from "@/components/icons"
 import { cn } from "@/lib/utils"
 
+import { unwrapAction } from "@/lib/action-result"
+
 const statusColors: Record<ProjectStatus, string> = {
   planning: "bg-chart-3/20 text-chart-3 border-chart-3/30",
   bidding: "bg-blue-500/20 text-blue-600 border-blue-500/30",
@@ -304,7 +306,7 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries }: 
     setIsCreating(true)
     try {
       const payload = normalizeProjectInput({ ...values, ...financialSetupToProjectInput(createFinancialSetup) })
-      const created = await createProjectAction(payload)
+      const created = unwrapAction(await createProjectAction(payload))
       setProjectsState((prev) => [created, ...prev])
       createForm.reset({
         name: "",
@@ -339,7 +341,7 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries }: 
     setIsUpdating(true)
     try {
       const payload = normalizeProjectInput({ ...values, ...financialSetupToProjectInput(editFinancialSetup) })
-      const updated = await updateProjectAction(editingProject.id, payload)
+      const updated = unwrapAction(await updateProjectAction(editingProject.id, payload))
       setProjectsState((prev) => prev.map((p) => (p.id === updated.id ? updated : p)))
       toast.success("Project updated", { description: updated.name })
       setEditSheetOpen(false)
@@ -356,7 +358,7 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries }: 
     if (!deletingProject) return
     setIsDeleting(true)
     try {
-      await deleteProjectAction(deletingProject.id)
+      unwrapAction(await deleteProjectAction(deletingProject.id))
       setProjectsState((prev) => prev.filter((p) => p.id !== deletingProject.id))
       toast.success("Project deleted")
       setDeleteDialogOpen(false)
@@ -857,14 +859,14 @@ function ProjectFormSheet({
     if (!name || creatingCustomer) return
     setCreatingCustomer(true)
     try {
-      const created = await createProjectQboCustomerAction({
+      const created = unwrapAction(await createProjectQboCustomerAction({
         name,
         email: newCustomer.email.trim() || null,
         line1: newCustomer.line1.trim() || null,
         city: newCustomer.city.trim() || null,
         state: newCustomer.state.trim() || null,
         postalCode: newCustomer.postalCode.trim() || null,
-      })
+      }))
       selectQboCustomer(created)
       setNewCustomer({ name: "", email: "", line1: "", city: "", state: "", postalCode: "" })
       toast.success(`Created "${created.name}" in QuickBooks`)

@@ -87,6 +87,8 @@ import {
   X,
 } from "@/components/icons"
 
+import { unwrapAction } from "@/lib/action-result"
+
 // ============================================
 // TYPES & CONSTANTS
 // ============================================
@@ -1111,8 +1113,8 @@ function TaskDetailSheet({ open, onOpenChange, task, team, projects, onUpdate, o
       }
       formData.append("category", "other")
 
-      const uploaded = await uploadFileAction(formData)
-      await attachFileAction(uploaded.id, "task", task.id, task.project_id ?? undefined, linkRole)
+      const uploaded = unwrapAction(await uploadFileAction(formData))
+      unwrapAction(await attachFileAction(uploaded.id, "task", task.id, task.project_id ?? undefined, linkRole))
     }
 
     const links = await listAttachmentsAction("task", task.id)
@@ -1132,7 +1134,7 @@ function TaskDetailSheet({ open, onOpenChange, task, team, projects, onUpdate, o
   }
 
   const handleDetach = async (linkId: string) => {
-    await detachFileLinkAction(linkId)
+    unwrapAction(await detachFileLinkAction(linkId))
     const links = await listAttachmentsAction("task", task.id)
     setAttachments(
       links.map((link) => ({

@@ -21,6 +21,10 @@ export const estimateLineInputSchema = z.object({
   notes: z.string().optional(),
   /** Client-selectable upgrade/add-on; excluded from the base total. */
   is_optional: z.boolean().optional(),
+  /** Allowance line: included in the total as a placeholder budget the client can reallocate. */
+  is_allowance: z.boolean().optional(),
+  /** Sub bid this line's cost basis was pulled from (estimate builder "Use bid"). */
+  source_bid_submission_id: z.string().uuid().optional(),
 })
 
 export const estimateInputSchema = z.object({

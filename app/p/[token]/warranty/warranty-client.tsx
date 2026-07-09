@@ -36,11 +36,9 @@ function statusBadge(status?: string) {
 
 export function WarrantyPortalClient({
   token,
-  projectId,
   requests: initialRequests,
 }: {
   token: string
-  projectId: string
   requests: WarrantyRequest[]
 }) {
   const { toast } = useToast()
@@ -51,6 +49,7 @@ export function WarrantyPortalClient({
     description: "",
     priority: "normal",
   })
+  const [photo, setPhoto] = useState<File | null>(null)
 
   const handleSubmit = () => {
     if (!form.title.trim()) {
@@ -60,17 +59,22 @@ export function WarrantyPortalClient({
 
     startTransition(async () => {
       try {
-        const created = await createWarrantyRequestPortalAction(token, {
-          project_id: projectId,
-          title: form.title.trim(),
-          description: form.description.trim() || null,
-          priority: form.priority,
-        })
+        const formData = new FormData()
+        formData.append("title", form.title.trim())
+        if (form.description.trim()) formData.append("description", form.description.trim())
+        formData.append("priority", form.priority)
+        if (photo) formData.append("photo", photo)
+
+        const created = await createWarrantyRequestPortalAction(token, formData)
         setRequests((prev) => [created, ...prev])
         setForm({ title: "", description: "", priority: "normal" })
+        setPhoto(null)
         toast({ title: "Warranty request submitted" })
-      } catch (error: any) {
-        toast({ title: "Unable to submit request", description: error?.message ?? "Try again." })
+      } catch (error) {
+        toast({
+          title: "Unable to submit request",
+          description: error instanceof Error ? error.message : "Try again.",
+        })
       }
     })
   }
@@ -104,6 +108,14 @@ export function WarrantyPortalClient({
               ))}
             </SelectContent>
           </Select>
+          <div className="space-y-1">
+            <Input
+              type="file"
+              accept="image/*"
+              onChange={(e) => setPhoto(e.target.files?.[0] ?? null)}
+            />
+            <p className="text-xs text-muted-foreground">Attach a photo of the issue (optional)</p>
+          </div>
           <div className="flex justify-end">
             <Button onClick={handleSubmit} disabled={isPending}>
               {isPending ? "Submitting..." : "Submit request"}

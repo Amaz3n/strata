@@ -20,17 +20,20 @@ enum AppEnvironment: String, CaseIterable, Sendable {
 
     var apiBaseURL: URL {
         // Allow overriding the base URL (e.g. an HTTPS tunnel to localhost when
-        // testing on a physical device) via the Xcode scheme env var or Info.plist.
-        if let override = configuredURL(environmentKey: "ARC_API_BASE_URL", plistKey: "ArcAPIBaseURL") {
+        // testing on a physical device) via the Xcode scheme env var.
+        if let override = configuredEnvironmentURL("ARC_API_BASE_URL") {
             return override
         }
+
         switch self {
         case .development:
-            return URL(string: "http://127.0.0.1:3000/api/mobile/v1")!
+            return configuredPlistURL("ArcAPIBaseURL")
+                ?? URL(string: "http://127.0.0.1:3000/api/mobile/v1")!
         case .staging:
             return URL(string: "https://staging.arcnaples.com/api/mobile/v1")!
         case .production:
-            return URL(string: "https://app.arcnaples.com/api/mobile/v1")!
+            return configuredPlistURL("ArcAPIBaseURL")
+                ?? URL(string: "https://app.arcnaples.com/api/mobile/v1")!
         }
     }
 
@@ -66,6 +69,20 @@ enum AppEnvironment: String, CaseIterable, Sendable {
 
     private func configuredURL(environmentKey: String, plistKey: String) -> URL? {
         guard let value = configuredValue(environmentKey: environmentKey, plistKey: plistKey) else { return nil }
+        return URL(string: value)
+    }
+
+    private func configuredEnvironmentURL(_ key: String) -> URL? {
+        guard let value = ProcessInfo.processInfo.environment[key],
+              !value.isEmpty,
+              !value.hasPrefix("$(") else { return nil }
+        return URL(string: value)
+    }
+
+    private func configuredPlistURL(_ key: String) -> URL? {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: key) as? String,
+              !value.isEmpty,
+              !value.hasPrefix("$(") else { return nil }
         return URL(string: value)
     }
 

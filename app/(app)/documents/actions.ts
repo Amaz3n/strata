@@ -61,6 +61,16 @@ import type { FinalizeUploadedFileInput } from "./types"
 import { deleteFilesObjects, downloadFilesObject } from "@/lib/storage/files-storage"
 import { suggestDocumentFileNameFromBytes } from "@/lib/services/document-ai-rename"
 
+import { actionError, type ActionResult } from "@/lib/action-result"
+
+async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
+  try {
+    return { success: true, data: await fn() }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
 function hashBytes(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex")
 }
@@ -177,61 +187,61 @@ async function getUniqueFileName({
 export async function listFilesAction(
   filters: Partial<FileListFilters> = {}
 ): Promise<{ data: FileWithUrls[]; count: number; hasMore: boolean }> {
-  return listFilesWithUrls(filters)
+      return listFilesWithUrls(filters)
 }
 
 /**
  * Get a single file by ID
  */
 export async function getFileAction(fileId: string): Promise<FileRecord | null> {
-  return getFile(fileId)
+      return getFile(fileId)
 }
 
 export async function suggestFileNameAction(
   fileId: string,
 ): Promise<{ ok: true; fileName: string } | { ok: false; error: string }> {
-  try {
-    const { supabase, orgId } = await requireOrgContext()
-    const { data: file, error } = await supabase
-      .from("files")
-      .select("id, org_id, storage_path, file_name, mime_type")
-      .eq("org_id", orgId)
-      .eq("id", fileId)
-      .maybeSingle()
+      try {
+        const { supabase, orgId } = await requireOrgContext()
+        const { data: file, error } = await supabase
+          .from("files")
+          .select("id, org_id, storage_path, file_name, mime_type")
+          .eq("org_id", orgId)
+          .eq("id", fileId)
+          .maybeSingle()
 
-    if (error || !file) {
-      return { ok: false, error: "File not found" }
-    }
+        if (error || !file) {
+          return { ok: false, error: "File not found" }
+        }
 
-    const bytes = await downloadFilesObject({
-      supabase,
-      orgId,
-      path: file.storage_path,
-    })
-    const suggestion = await suggestDocumentFileNameFromBytes({
-      bytes,
-      fileName: file.file_name,
-      mimeType: file.mime_type,
-    })
-    return { ok: true, fileName: suggestion.suggestedFileName }
-  } catch (error: any) {
-    console.warn("[Documents] AI rename failed", error)
-    return { ok: false, error: error?.message ?? "Could not suggest a file name" }
-  }
+        const bytes = await downloadFilesObject({
+          supabase,
+          orgId,
+          path: file.storage_path,
+        })
+        const suggestion = await suggestDocumentFileNameFromBytes({
+          bytes,
+          fileName: file.file_name,
+          mimeType: file.mime_type,
+        })
+        return { ok: true, fileName: suggestion.suggestedFileName }
+      } catch (error: any) {
+        console.warn("[Documents] AI rename failed", error)
+        return { ok: false, error: error?.message ?? "Could not suggest a file name" }
+      }
 }
 
 /**
  * Get file counts by category
  */
 export async function getFileCountsAction(projectId?: string): Promise<Record<string, number>> {
-  return getFileCounts(projectId)
+      return getFileCounts(projectId)
 }
 
 /**
  * Get distinct folder paths
  */
 export async function listFoldersAction(projectId?: string): Promise<string[]> {
-  return listFolders(projectId)
+      return listFolders(projectId)
 }
 
 /**
@@ -241,7 +251,7 @@ export async function listChildFoldersAction(
   projectId: string,
   parentPath?: string,
 ): Promise<FolderChild[]> {
-  return listChildFolders(projectId, parentPath)
+      return listChildFolders(projectId, parentPath)
 }
 
 /**
@@ -250,7 +260,7 @@ export async function listChildFoldersAction(
 export async function listProjectFolderPermissionsAction(
   projectId: string
 ): Promise<ProjectFolderPermissions[]> {
-  return listProjectFolderPermissions(projectId)
+      return listProjectFolderPermissions(projectId)
 }
 
 /**
@@ -259,11 +269,13 @@ export async function listProjectFolderPermissionsAction(
 export async function createFolderAction(
   projectId: string,
   folderPath: string
-): Promise<string[]> {
-  await createProjectFolder(projectId, folderPath)
-  revalidatePath("/documents")
-  revalidatePath(`/projects/${projectId}`)
-  return listFolders(projectId)
+): Promise<ActionResult<string[]>> {
+  return run(async () => {
+      await createProjectFolder(projectId, folderPath)
+      revalidatePath("/documents")
+      revalidatePath(`/projects/${projectId}`)
+      return listFolders(projectId)
+  })
 }
 
 /**
@@ -273,7 +285,7 @@ export async function getFolderPermissionsAction(
   projectId: string,
   folderPath: string
 ): Promise<{ path: string; share_with_clients: boolean; share_with_subs: boolean; updated_at?: string }> {
-  return getProjectFolderPermissions(projectId, folderPath)
+      return getProjectFolderPermissions(projectId, folderPath)
 }
 
 /**
@@ -284,18 +296,20 @@ export async function updateFolderPermissionsAction(
   folderPath: string,
   permissions: { share_with_clients: boolean; share_with_subs: boolean },
   applyToExistingFiles: boolean = false
-): Promise<{ affectedFiles: number }> {
-  await setProjectFolderPermissions(projectId, folderPath, permissions)
+): Promise<ActionResult<{ affectedFiles: number }>> {
+  return run(async () => {
+      await setProjectFolderPermissions(projectId, folderPath, permissions)
 
-  let affectedFiles = 0
-  if (applyToExistingFiles) {
-    affectedFiles = await applyFolderPermissionsToExistingFiles(projectId, folderPath)
-  }
+      let affectedFiles = 0
+      if (applyToExistingFiles) {
+        affectedFiles = await applyFolderPermissionsToExistingFiles(projectId, folderPath)
+      }
 
-  revalidatePath("/documents")
-  revalidatePath(`/projects/${projectId}`)
+      revalidatePath("/documents")
+      revalidatePath(`/projects/${projectId}`)
 
-  return { affectedFiles }
+      return { affectedFiles }
+  })
 }
 
 /**
@@ -305,11 +319,13 @@ export async function renameFolderAction(
   projectId: string,
   oldPath: string,
   newName: string
-): Promise<{ affectedFiles: number }> {
-  const result = await renameProjectFolder(projectId, oldPath, newName)
-  revalidatePath("/documents")
-  revalidatePath(`/projects/${projectId}`)
-  return result
+): Promise<ActionResult<{ affectedFiles: number }>> {
+  return run(async () => {
+      const result = await renameProjectFolder(projectId, oldPath, newName)
+      revalidatePath("/documents")
+      revalidatePath(`/projects/${projectId}`)
+      return result
+  })
 }
 
 /**
@@ -318,10 +334,12 @@ export async function renameFolderAction(
 export async function deleteFolderAction(
   projectId: string,
   folderPath: string
-): Promise<void> {
-  await deleteEmptyProjectFolder(projectId, folderPath)
-  revalidatePath("/documents")
-  revalidatePath(`/projects/${projectId}`)
+): Promise<ActionResult<void>> {
+  return run(async () => {
+      await deleteEmptyProjectFolder(projectId, folderPath)
+      revalidatePath("/documents")
+      revalidatePath(`/projects/${projectId}`)
+  })
 }
 
 /**
@@ -329,10 +347,12 @@ export async function deleteFolderAction(
  */
 export async function createFileShareLinkAction(
   input: CreateFileShareLinkInput,
-): Promise<FileShareLink> {
-  const result = await createFileShareLink(input)
-  revalidatePath("/documents")
-  return result
+): Promise<ActionResult<FileShareLink>> {
+  return run(async () => {
+      const result = await createFileShareLink(input)
+      revalidatePath("/documents")
+      return result
+  })
 }
 
 /**
@@ -341,15 +361,17 @@ export async function createFileShareLinkAction(
 export async function listFileShareLinksAction(
   fileId: string,
 ): Promise<FileShareLink[]> {
-  return listFileShareLinks(fileId)
+      return listFileShareLinks(fileId)
 }
 
 /**
  * Revoke a share link.
  */
-export async function revokeFileShareLinkAction(linkId: string): Promise<void> {
-  await revokeFileShareLink(linkId)
-  revalidatePath("/documents")
+export async function revokeFileShareLinkAction(linkId: string): Promise<ActionResult<void>> {
+  return run(async () => {
+      await revokeFileShareLink(linkId)
+      revalidatePath("/documents")
+  })
 }
 
 /**
@@ -358,49 +380,55 @@ export async function revokeFileShareLinkAction(linkId: string): Promise<void> {
 export async function updateFileAction(
   fileId: string,
   updates: FileUpdate
-): Promise<FileRecord> {
-  const result = await updateFile(fileId, updates)
-  revalidatePath("/documents")
-  if (result.project_id) {
-    revalidatePath(`/projects/${result.project_id}`)
-  }
-  return result
+): Promise<ActionResult<FileRecord>> {
+  return run(async () => {
+      const result = await updateFile(fileId, updates)
+      revalidatePath("/documents")
+      if (result.project_id) {
+        revalidatePath(`/projects/${result.project_id}`)
+      }
+      return result
+  })
 }
 
 /**
  * Archive a file
  */
-export async function archiveFileAction(fileId: string): Promise<FileRecord> {
-  const result = await archiveFile(fileId)
-  revalidatePath("/documents")
-  if (result.project_id) {
-    revalidatePath(`/projects/${result.project_id}`)
-  }
-  return result
+export async function archiveFileAction(fileId: string): Promise<ActionResult<FileRecord>> {
+  return run(async () => {
+      const result = await archiveFile(fileId)
+      revalidatePath("/documents")
+      if (result.project_id) {
+        revalidatePath(`/projects/${result.project_id}`)
+      }
+      return result
+  })
 }
 
 /**
  * Unarchive a file
  */
 export async function unarchiveFileAction(fileId: string): Promise<FileRecord> {
-  const result = await unarchiveFile(fileId)
-  revalidatePath("/documents")
-  if (result.project_id) {
-    revalidatePath(`/projects/${result.project_id}`)
-  }
-  return result
+      const result = await unarchiveFile(fileId)
+      revalidatePath("/documents")
+      if (result.project_id) {
+        revalidatePath(`/projects/${result.project_id}`)
+      }
+      return result
 }
 
 /**
  * Delete a file permanently
  */
-export async function deleteFileAction(fileId: string): Promise<void> {
-  const file = await getFile(fileId)
-  await deleteFile(fileId)
-  revalidatePath("/documents")
-  if (file?.project_id) {
-    revalidatePath(`/projects/${file.project_id}`)
-  }
+export async function deleteFileAction(fileId: string): Promise<ActionResult<void>> {
+  return run(async () => {
+      const file = await getFile(fileId)
+      await deleteFile(fileId)
+      revalidatePath("/documents")
+      if (file?.project_id) {
+        revalidatePath(`/projects/${file.project_id}`)
+      }
+  })
 }
 
 /**
@@ -410,77 +438,81 @@ export async function bulkMoveFilesAction(
   fileIds: string[],
   folderPath: string | null,
   applyFolderDefaults: boolean = true
-): Promise<void> {
-  const uniqueIds = Array.from(new Set(fileIds)).filter(Boolean)
-  if (uniqueIds.length === 0) return
+): Promise<ActionResult<void>> {
+  return run(async () => {
+      const uniqueIds = Array.from(new Set(fileIds)).filter(Boolean)
+      if (uniqueIds.length === 0) return
 
-  const targetFolder = folderPath && folderPath.trim().length > 0
-    ? normalizeFolderPath(folderPath) ?? null
-    : null
-  const projectIds = new Set<string>()
-  const folderDefaultsCache = new Map<string, { share_with_clients: boolean; share_with_subs: boolean }>()
+      const targetFolder = folderPath && folderPath.trim().length > 0
+        ? normalizeFolderPath(folderPath) ?? null
+        : null
+      const projectIds = new Set<string>()
+      const folderDefaultsCache = new Map<string, { share_with_clients: boolean; share_with_subs: boolean }>()
 
-  await Promise.all(
-    uniqueIds.map(async (fileId) => {
-      const existing = await getFile(fileId)
-      if (existing?.project_id) {
-        projectIds.add(existing.project_id)
+      await Promise.all(
+        uniqueIds.map(async (fileId) => {
+          const existing = await getFile(fileId)
+          if (existing?.project_id) {
+            projectIds.add(existing.project_id)
+          }
+          const updates: FileUpdate = { folder_path: targetFolder }
+
+          if (applyFolderDefaults && targetFolder && existing?.project_id) {
+            const cacheKey = `${existing.project_id}:${targetFolder}`
+            if (!folderDefaultsCache.has(cacheKey)) {
+              const defaults = await getProjectFolderPermissions(existing.project_id, targetFolder)
+              folderDefaultsCache.set(cacheKey, {
+                share_with_clients: defaults.share_with_clients,
+                share_with_subs: defaults.share_with_subs,
+              })
+            }
+            const defaults = folderDefaultsCache.get(cacheKey)!
+            updates.share_with_clients = defaults.share_with_clients
+            updates.share_with_subs = defaults.share_with_subs
+          }
+
+          await updateFile(fileId, updates)
+        })
+      )
+
+      revalidatePath("/documents")
+      for (const projectId of projectIds) {
+        revalidatePath(`/projects/${projectId}`)
       }
-      const updates: FileUpdate = { folder_path: targetFolder }
-
-      if (applyFolderDefaults && targetFolder && existing?.project_id) {
-        const cacheKey = `${existing.project_id}:${targetFolder}`
-        if (!folderDefaultsCache.has(cacheKey)) {
-          const defaults = await getProjectFolderPermissions(existing.project_id, targetFolder)
-          folderDefaultsCache.set(cacheKey, {
-            share_with_clients: defaults.share_with_clients,
-            share_with_subs: defaults.share_with_subs,
-          })
-        }
-        const defaults = folderDefaultsCache.get(cacheKey)!
-        updates.share_with_clients = defaults.share_with_clients
-        updates.share_with_subs = defaults.share_with_subs
-      }
-
-      await updateFile(fileId, updates)
-    })
-  )
-
-  revalidatePath("/documents")
-  for (const projectId of projectIds) {
-    revalidatePath(`/projects/${projectId}`)
-  }
+  })
 }
 
 /**
  * Move files to trash/archive. Permanent deletion remains available through
  * deleteFileAction for explicit purge flows.
  */
-export async function bulkDeleteFilesAction(fileIds: string[]): Promise<void> {
-  const uniqueIds = Array.from(new Set(fileIds)).filter(Boolean)
-  if (uniqueIds.length === 0) return
+export async function bulkDeleteFilesAction(fileIds: string[]): Promise<ActionResult<void>> {
+  return run(async () => {
+      const uniqueIds = Array.from(new Set(fileIds)).filter(Boolean)
+      if (uniqueIds.length === 0) return
 
-  const projectIds = new Set<string>()
-  const files = await Promise.all(uniqueIds.map((fileId) => getFile(fileId)))
-  for (const file of files) {
-    if (file?.project_id) {
-      projectIds.add(file.project_id)
-    }
-  }
+      const projectIds = new Set<string>()
+      const files = await Promise.all(uniqueIds.map((fileId) => getFile(fileId)))
+      for (const file of files) {
+        if (file?.project_id) {
+          projectIds.add(file.project_id)
+        }
+      }
 
-  await Promise.all(uniqueIds.map((fileId) => archiveFile(fileId)))
+      await Promise.all(uniqueIds.map((fileId) => archiveFile(fileId)))
 
-  revalidatePath("/documents")
-  for (const projectId of projectIds) {
-    revalidatePath(`/projects/${projectId}`)
-  }
+      revalidatePath("/documents")
+      for (const projectId of projectIds) {
+        revalidatePath(`/projects/${projectId}`)
+      }
+  })
 }
 
 /**
  * Get signed download URL
  */
 export async function getFileDownloadUrlAction(fileId: string): Promise<string> {
-  return getSignedUrl(fileId)
+      return getSignedUrl(fileId)
 }
 
 /**
@@ -491,25 +523,25 @@ export async function logFileAccessAction(
   action: "view" | "download" | "share" | "unshare" | "print",
   metadata: Record<string, any> = {}
 ): Promise<void> {
-  const { supabase, orgId, userId } = await requireOrgContext()
-  const headerStore = await headers()
-  const forwardedFor = headerStore.get("x-forwarded-for") ?? ""
-  const ipAddress = forwardedFor.split(",")[0]?.trim() || headerStore.get("x-real-ip") || undefined
-  const userAgent = headerStore.get("user-agent") ?? undefined
+      const { supabase, orgId, userId } = await requireOrgContext()
+      const headerStore = await headers()
+      const forwardedFor = headerStore.get("x-forwarded-for") ?? ""
+      const ipAddress = forwardedFor.split(",")[0]?.trim() || headerStore.get("x-real-ip") || undefined
+      const userAgent = headerStore.get("user-agent") ?? undefined
 
-  const { error } = await supabase.from("file_access_events").insert({
-    org_id: orgId,
-    file_id: fileId,
-    actor_user_id: userId,
-    action,
-    ip_address: ipAddress,
-    user_agent: userAgent,
-    metadata,
-  })
+      const { error } = await supabase.from("file_access_events").insert({
+        org_id: orgId,
+        file_id: fileId,
+        actor_user_id: userId,
+        action,
+        ip_address: ipAddress,
+        user_agent: userAgent,
+        metadata,
+      })
 
-  if (error) {
-    throw new Error(`Failed to log file access: ${error.message}`)
-  }
+      if (error) {
+        throw new Error(`Failed to log file access: ${error.message}`)
+      }
 }
 
 /**
@@ -521,36 +553,36 @@ export async function logPortalFileAccessAction(
   action: "view" | "download" | "share" | "unshare" | "print",
   metadata: Record<string, any> = {}
 ): Promise<void> {
-  const supabase = createServiceSupabaseClient()
-  const headerStore = await headers()
-  const forwardedFor = headerStore.get("x-forwarded-for") ?? ""
-  const ipAddress = forwardedFor.split(",")[0]?.trim() || headerStore.get("x-real-ip") || undefined
-  const userAgent = headerStore.get("user-agent") ?? undefined
+      const supabase = createServiceSupabaseClient()
+      const headerStore = await headers()
+      const forwardedFor = headerStore.get("x-forwarded-for") ?? ""
+      const ipAddress = forwardedFor.split(",")[0]?.trim() || headerStore.get("x-real-ip") || undefined
+      const userAgent = headerStore.get("user-agent") ?? undefined
 
-  // Get org_id from portal token
-  const { data: portalToken, error: tokenError } = await supabase
-    .from("portal_access_tokens")
-    .select("org_id")
-    .eq("id", portalTokenId)
-    .single()
+      // Get org_id from portal token
+      const { data: portalToken, error: tokenError } = await supabase
+        .from("portal_access_tokens")
+        .select("org_id")
+        .eq("id", portalTokenId)
+        .single()
 
-  if (tokenError || !portalToken) {
-    throw new Error(`Invalid portal token: ${tokenError?.message || "Token not found"}`)
-  }
+      if (tokenError || !portalToken) {
+        throw new Error(`Invalid portal token: ${tokenError?.message || "Token not found"}`)
+      }
 
-  const { error } = await supabase.from("file_access_events").insert({
-    org_id: portalToken.org_id,
-    file_id: fileId,
-    portal_token_id: portalTokenId,
-    action,
-    ip_address: ipAddress,
-    user_agent: userAgent,
-    metadata,
-  })
+      const { error } = await supabase.from("file_access_events").insert({
+        org_id: portalToken.org_id,
+        file_id: fileId,
+        portal_token_id: portalTokenId,
+        action,
+        ip_address: ipAddress,
+        user_agent: userAgent,
+        metadata,
+      })
 
-  if (error) {
-    throw new Error(`Failed to log portal file access: ${error.message}`)
-  }
+      if (error) {
+        throw new Error(`Failed to log portal file access: ${error.message}`)
+      }
 }
 
 /**
@@ -562,23 +594,23 @@ export async function logPortalFileAccessClientAction(
   action: "view" | "download" | "share" | "unshare" | "print",
   metadata: Record<string, any> = {}
 ): Promise<void> {
-  try {
-    await fetch("/api/portal/log-file-access", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        fileId,
-        portalToken,
-        action,
-        metadata,
-      }),
-    })
-  } catch (error) {
-    // Silently fail to avoid disrupting user experience
-    console.warn("Failed to log portal file access:", error)
-  }
+      try {
+        await fetch("/api/portal/log-file-access", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            fileId,
+            portalToken,
+            action,
+            metadata,
+          }),
+        })
+      } catch (error) {
+        // Silently fail to avoid disrupting user experience
+        console.warn("Failed to log portal file access:", error)
+      }
 }
 
 /**
@@ -588,7 +620,7 @@ export async function listFileAccessEventsAction(
   fileId: string,
   limit: number = 50
 ): Promise<FileAccessEvent[]> {
-  return listFileAccessEvents(fileId, limit)
+      return listFileAccessEvents(fileId, limit)
 }
 
 /**
@@ -606,7 +638,7 @@ export async function listFileTimelineAction(
   actor_email?: string
   details?: string
 }>> {
-  return listFileTimeline(fileId, limit)
+      return listFileTimeline(fileId, limit)
 }
 
 /**
@@ -615,364 +647,368 @@ export async function listFileTimelineAction(
 export async function listFileLinkSummaryAction(
   fileIds: string[]
 ): Promise<FileLinkSummary[]> {
-  return listFileLinkSummary(fileIds)
+      return listFileLinkSummary(fileIds)
 }
 
 /**
  * Upload a new file
  */
-export async function uploadFileAction(formData: FormData): Promise<FileWithUrls> {
-  const { supabase, orgId, userId } = await requireOrgContext()
+export async function uploadFileAction(formData: FormData): Promise<ActionResult<FileWithUrls>> {
+  return run(async () => {
+      const { supabase, orgId, userId } = await requireOrgContext()
 
-  const file = formData.get("file") as File
-  const projectId = formData.get("projectId") as string | null
-  const category = formData.get("category") as FileCategory | null
-  const visibility = formData.get("visibility") as "public" | "private" | null
-  const description = formData.get("description") as string | null
-  const hasExplicitFolderPath = formData.has("folderPath")
-  const folderPath = formData.get("folderPath") as string | null
-  const shareWithClientsRaw = formData.get("shareWithClients") as string | null
-  const shareWithSubsRaw = formData.get("shareWithSubs") as string | null
-  const tagsString = formData.get("tags") as string | null
-  const tags = tagsString ? tagsString.split(",").map((t) => t.trim()).filter(Boolean) : []
+      const file = formData.get("file") as File
+      const projectId = formData.get("projectId") as string | null
+      const category = formData.get("category") as FileCategory | null
+      const visibility = formData.get("visibility") as "public" | "private" | null
+      const description = formData.get("description") as string | null
+      const hasExplicitFolderPath = formData.has("folderPath")
+      const folderPath = formData.get("folderPath") as string | null
+      const shareWithClientsRaw = formData.get("shareWithClients") as string | null
+      const shareWithSubsRaw = formData.get("shareWithSubs") as string | null
+      const tagsString = formData.get("tags") as string | null
+      const tags = tagsString ? tagsString.split(",").map((t) => t.trim()).filter(Boolean) : []
 
-  if (!file) {
-    throw new Error("No file provided")
-  }
+      if (!file) {
+        throw new Error("No file provided")
+      }
 
-  if (projectId) {
-    const { data: project, error: projectError } = await supabase
-      .from("projects")
-      .select("id")
-      .eq("org_id", orgId)
-      .eq("id", projectId)
-      .maybeSingle()
+      if (projectId) {
+        const { data: project, error: projectError } = await supabase
+          .from("projects")
+          .select("id")
+          .eq("org_id", orgId)
+          .eq("id", projectId)
+          .maybeSingle()
 
-    if (projectError || !project) {
-      throw new Error("Invalid project scope for upload")
-    }
-  }
+        if (projectError || !project) {
+          throw new Error("Invalid project scope for upload")
+        }
+      }
 
-  const bytes = Buffer.from(await file.arrayBuffer())
-  const checksum = hashBytes(bytes)
+      const bytes = Buffer.from(await file.arrayBuffer())
+      const checksum = hashBytes(bytes)
 
-  // Infer category from mime type/filename if not provided
-  const inferredCategory = category ?? inferCategory(file.name, file.type)
-  const explicitFolderPath = normalizeFolderPath(folderPath)
-  const resolvedFolderPath = hasExplicitFolderPath
-    ? explicitFolderPath === "/" ? undefined : explicitFolderPath
-    : projectId
-      ? getDefaultFolderForCategory(inferredCategory)
-      : undefined
+      // Infer category from mime type/filename if not provided
+      const inferredCategory = category ?? inferCategory(file.name, file.type)
+      const explicitFolderPath = normalizeFolderPath(folderPath)
+      const resolvedFolderPath = hasExplicitFolderPath
+        ? explicitFolderPath === "/" ? undefined : explicitFolderPath
+        : projectId
+          ? getDefaultFolderForCategory(inferredCategory)
+          : undefined
 
-  await assertNoDuplicateFile({
-    supabase,
-    orgId,
-    projectId,
-    folderPath: resolvedFolderPath,
-    checksum,
+      await assertNoDuplicateFile({
+        supabase,
+        orgId,
+        projectId,
+        folderPath: resolvedFolderPath,
+        checksum,
+      })
+
+      const resolvedFileName = await getUniqueFileName({
+        supabase,
+        orgId,
+        projectId,
+        folderPath: resolvedFolderPath,
+        fileName: file.name,
+      })
+
+      // Generate unique storage path
+      const timestamp = Date.now()
+      const safeName = resolvedFileName.replace(/[^a-zA-Z0-9.-]/g, "_")
+      const storagePath = projectId
+        ? `${orgId}/${projectId}/${timestamp}_${safeName}`
+        : `${orgId}/general/${timestamp}_${safeName}`
+
+      await uploadFilesObject({
+        supabase,
+        orgId,
+        path: storagePath,
+        bytes,
+        contentType: file.type,
+        upsert: false,
+      })
+
+      let resolvedShareWithClients = shareWithClientsRaw === "true"
+      let resolvedShareWithSubs = shareWithSubsRaw === "true"
+
+      if (projectId && resolvedFolderPath) {
+        const defaults = await getProjectFolderPermissions(projectId, resolvedFolderPath)
+        if (shareWithClientsRaw === null) {
+          resolvedShareWithClients = defaults.share_with_clients
+        }
+        if (shareWithSubsRaw === null) {
+          resolvedShareWithSubs = defaults.share_with_subs
+        }
+      }
+
+      // Create file record
+      const record = await createFileRecord({
+        project_id: projectId || undefined,
+        file_name: resolvedFileName,
+        storage_path: storagePath,
+        mime_type: file.type,
+        size_bytes: file.size,
+        checksum,
+        visibility: visibility === "private" ? "private" : "public",
+        category: inferredCategory,
+        folder_path: resolvedFolderPath,
+        description: description || undefined,
+        tags,
+        source: "upload",
+        share_with_clients: resolvedShareWithClients,
+        share_with_subs: resolvedShareWithSubs,
+      })
+
+      await createInitialVersion({
+        fileId: record.id,
+        storagePath,
+        fileName: resolvedFileName,
+        mimeType: file.type,
+        sizeBytes: file.size,
+        checksum,
+      })
+
+      const downloadUrl = buildInternalFileUrl(record.id)
+      const thumbnailUrl = file.type.startsWith("image/") ? downloadUrl : undefined
+
+      revalidatePath("/documents")
+      if (projectId) {
+        revalidatePath(`/projects/${projectId}`)
+      }
+
+      return {
+        ...record,
+        download_url: downloadUrl,
+        thumbnail_url: thumbnailUrl,
+      }
   })
-
-  const resolvedFileName = await getUniqueFileName({
-    supabase,
-    orgId,
-    projectId,
-    folderPath: resolvedFolderPath,
-    fileName: file.name,
-  })
-
-  // Generate unique storage path
-  const timestamp = Date.now()
-  const safeName = resolvedFileName.replace(/[^a-zA-Z0-9.-]/g, "_")
-  const storagePath = projectId
-    ? `${orgId}/${projectId}/${timestamp}_${safeName}`
-    : `${orgId}/general/${timestamp}_${safeName}`
-
-  await uploadFilesObject({
-    supabase,
-    orgId,
-    path: storagePath,
-    bytes,
-    contentType: file.type,
-    upsert: false,
-  })
-
-  let resolvedShareWithClients = shareWithClientsRaw === "true"
-  let resolvedShareWithSubs = shareWithSubsRaw === "true"
-
-  if (projectId && resolvedFolderPath) {
-    const defaults = await getProjectFolderPermissions(projectId, resolvedFolderPath)
-    if (shareWithClientsRaw === null) {
-      resolvedShareWithClients = defaults.share_with_clients
-    }
-    if (shareWithSubsRaw === null) {
-      resolvedShareWithSubs = defaults.share_with_subs
-    }
-  }
-
-  // Create file record
-  const record = await createFileRecord({
-    project_id: projectId || undefined,
-    file_name: resolvedFileName,
-    storage_path: storagePath,
-    mime_type: file.type,
-    size_bytes: file.size,
-    checksum,
-    visibility: visibility === "private" ? "private" : "public",
-    category: inferredCategory,
-    folder_path: resolvedFolderPath,
-    description: description || undefined,
-    tags,
-    source: "upload",
-    share_with_clients: resolvedShareWithClients,
-    share_with_subs: resolvedShareWithSubs,
-  })
-
-  await createInitialVersion({
-    fileId: record.id,
-    storagePath,
-    fileName: resolvedFileName,
-    mimeType: file.type,
-    sizeBytes: file.size,
-    checksum,
-  })
-
-  const downloadUrl = buildInternalFileUrl(record.id)
-  const thumbnailUrl = file.type.startsWith("image/") ? downloadUrl : undefined
-
-  revalidatePath("/documents")
-  if (projectId) {
-    revalidatePath(`/projects/${projectId}`)
-  }
-
-  return {
-    ...record,
-    download_url: downloadUrl,
-    thumbnail_url: thumbnailUrl,
-  }
 }
 
 /**
  * Create a file record after the browser has uploaded the object directly to R2.
  */
-export async function finalizeUploadedFileAction(input: FinalizeUploadedFileInput): Promise<FileWithUrls> {
-  const { supabase, orgId, userId } = await requireOrgContext()
+export async function finalizeUploadedFileAction(input: FinalizeUploadedFileInput): Promise<ActionResult<FileWithUrls>> {
+  return run(async () => {
+      const { supabase, orgId, userId } = await requireOrgContext()
 
-  if (!input.fileName || !input.storagePath) {
-    throw new Error("Missing uploaded file metadata")
-  }
+      if (!input.fileName || !input.storagePath) {
+        throw new Error("Missing uploaded file metadata")
+      }
 
-  const projectId = input.projectId
-  if (projectId) {
-    const { data: project, error: projectError } = await supabase
-      .from("projects")
-      .select("id")
-      .eq("org_id", orgId)
-      .eq("id", projectId)
-      .maybeSingle()
+      const projectId = input.projectId
+      if (projectId) {
+        const { data: project, error: projectError } = await supabase
+          .from("projects")
+          .select("id")
+          .eq("org_id", orgId)
+          .eq("id", projectId)
+          .maybeSingle()
 
-    if (projectError || !project) {
-      throw new Error("Invalid project scope for upload")
-    }
-  }
+        if (projectError || !project) {
+          throw new Error("Invalid project scope for upload")
+        }
+      }
 
-  const normalizedStoragePath = ensureOrgScopedPath(orgId, input.storagePath)
-  const allowedPrefixes = projectId
-    ? [
-        `${orgId}/${projectId}/documents/uploads/`,
-        `${orgId}/${projectId}/drawings/uploads/`,
-        `${orgId}/${projectId}/drawings/sets/`,
-      ]
-    : [`${orgId}/general/documents/uploads/`]
+      const normalizedStoragePath = ensureOrgScopedPath(orgId, input.storagePath)
+      const allowedPrefixes = projectId
+        ? [
+            `${orgId}/${projectId}/documents/uploads/`,
+            `${orgId}/${projectId}/drawings/uploads/`,
+            `${orgId}/${projectId}/drawings/sets/`,
+          ]
+        : [`${orgId}/general/documents/uploads/`]
 
-  if (!allowedPrefixes.some((prefix) => normalizedStoragePath.startsWith(prefix))) {
-    throw new Error("Invalid upload path for project scope")
-  }
+      if (!allowedPrefixes.some((prefix) => normalizedStoragePath.startsWith(prefix))) {
+        throw new Error("Invalid upload path for project scope")
+      }
 
-  const inferredCategory = input.category ?? inferCategory(input.fileName, input.mimeType)
-  const explicitFolderPath = normalizeFolderPath(input.folderPath)
-  const resolvedFolderPath =
-    input.folderPath !== undefined
-      ? explicitFolderPath === "/" ? undefined : explicitFolderPath
-      : projectId
-        ? getDefaultFolderForCategory(inferredCategory)
-        : undefined
+      const inferredCategory = input.category ?? inferCategory(input.fileName, input.mimeType)
+      const explicitFolderPath = normalizeFolderPath(input.folderPath)
+      const resolvedFolderPath =
+        input.folderPath !== undefined
+          ? explicitFolderPath === "/" ? undefined : explicitFolderPath
+          : projectId
+            ? getDefaultFolderForCategory(inferredCategory)
+            : undefined
 
-  let resolvedShareWithClients = input.shareWithClients ?? false
-  let resolvedShareWithSubs = input.shareWithSubs ?? false
+      let resolvedShareWithClients = input.shareWithClients ?? false
+      let resolvedShareWithSubs = input.shareWithSubs ?? false
 
-  if (
-    projectId &&
-    resolvedFolderPath &&
-    (input.shareWithClients === undefined || input.shareWithSubs === undefined)
-  ) {
-    const defaults = await getProjectFolderPermissions(projectId, resolvedFolderPath)
-    resolvedShareWithClients = input.shareWithClients ?? defaults.share_with_clients
-    resolvedShareWithSubs = input.shareWithSubs ?? defaults.share_with_subs
-  }
+      if (
+        projectId &&
+        resolvedFolderPath &&
+        (input.shareWithClients === undefined || input.shareWithSubs === undefined)
+      ) {
+        const defaults = await getProjectFolderPermissions(projectId, resolvedFolderPath)
+        resolvedShareWithClients = input.shareWithClients ?? defaults.share_with_clients
+        resolvedShareWithSubs = input.shareWithSubs ?? defaults.share_with_subs
+      }
 
-  try {
-    await assertNoDuplicateFile({
-      supabase,
-      orgId,
-      projectId,
-      folderPath: resolvedFolderPath,
-      checksum: input.checksum,
-    })
-  } catch (error) {
-    await deleteFilesObjects({
-      supabase,
-      orgId,
-      paths: [normalizedStoragePath],
-    }).catch((cleanupError) => {
-      console.warn("[Documents] Failed to clean up duplicate upload object", cleanupError)
-    })
-    throw error
-  }
+      try {
+        await assertNoDuplicateFile({
+          supabase,
+          orgId,
+          projectId,
+          folderPath: resolvedFolderPath,
+          checksum: input.checksum,
+        })
+      } catch (error) {
+        await deleteFilesObjects({
+          supabase,
+          orgId,
+          paths: [normalizedStoragePath],
+        }).catch((cleanupError) => {
+          console.warn("[Documents] Failed to clean up duplicate upload object", cleanupError)
+        })
+        throw error
+      }
 
-  const resolvedFileName = await getUniqueFileName({
-    supabase,
-    orgId,
-    projectId,
-    folderPath: resolvedFolderPath,
-    fileName: input.fileName,
+      const resolvedFileName = await getUniqueFileName({
+        supabase,
+        orgId,
+        projectId,
+        folderPath: resolvedFolderPath,
+        fileName: input.fileName,
+      })
+
+      const mimeType = input.mimeType || "application/octet-stream"
+      const { data: insertedFile, error: fileError } = await supabase
+        .from("files")
+        .insert({
+          org_id: orgId,
+          project_id: projectId || undefined,
+          file_name: resolvedFileName,
+          storage_path: normalizedStoragePath,
+          mime_type: mimeType,
+          size_bytes: input.fileSize,
+          checksum: input.checksum || undefined,
+          visibility: input.visibility === "private" ? "private" : "public",
+          category: inferredCategory,
+          folder_path: resolvedFolderPath,
+          description: input.description || undefined,
+          tags: input.tags ?? [],
+          source: "upload",
+          share_with_clients: resolvedShareWithClients,
+          share_with_subs: resolvedShareWithSubs,
+          uploaded_by: userId,
+        })
+        .select(`
+          id, org_id, project_id, file_name, storage_path, mime_type, size_bytes,
+          checksum, visibility, category, folder_path, description, tags, source,
+          share_with_clients, share_with_subs, metadata,
+          uploaded_by, archived_at, created_at, updated_at
+        `)
+        .single()
+
+      if (fileError || !insertedFile) {
+        await deleteFilesObjects({
+          supabase,
+          orgId,
+          paths: [normalizedStoragePath],
+        }).catch((cleanupError) => {
+          console.warn("[Documents] Failed to clean up failed upload object", cleanupError)
+        })
+        throw new Error(`Failed to create file record: ${fileError?.message}`)
+      }
+
+      const { data: version, error: versionError } = await supabase
+        .from("doc_versions")
+        .insert({
+          org_id: orgId,
+          file_id: insertedFile.id,
+          version_number: 1,
+          storage_path: normalizedStoragePath,
+          file_name: resolvedFileName,
+          mime_type: mimeType,
+          size_bytes: input.fileSize,
+          checksum: input.checksum || undefined,
+          created_by: userId,
+        })
+        .select("id")
+        .single()
+
+      if (versionError || !version) {
+        await supabase
+          .from("files")
+          .delete()
+          .eq("org_id", orgId)
+          .eq("id", insertedFile.id)
+        await deleteFilesObjects({
+          supabase,
+          orgId,
+          paths: [normalizedStoragePath],
+        }).catch((cleanupError) => {
+          console.warn("[Documents] Failed to clean up failed version upload object", cleanupError)
+        })
+        throw new Error(`Failed to create initial version: ${versionError?.message}`)
+      }
+
+      await supabase
+        .from("files")
+        .update({ current_version_id: version.id })
+        .eq("id", insertedFile.id)
+
+      void triggerFileIndexing(insertedFile.id as string, orgId)
+      void recordAudit({
+        orgId,
+        actorId: userId,
+        action: "insert",
+        entityType: "file",
+        entityId: insertedFile.id as string,
+        after: insertedFile,
+      })
+      void recordEvent({
+        orgId,
+        actorId: userId,
+        eventType: "file_created",
+        entityType: "file",
+        entityId: insertedFile.id as string,
+        payload: {
+          file_name: resolvedFileName,
+          project_id: projectId,
+          category: inferredCategory,
+        },
+      })
+
+      const downloadUrl = buildInternalFileUrl(insertedFile.id as string)
+      const lowerMimeType = mimeType.toLowerCase()
+      const thumbnailUrl =
+        lowerMimeType === "image/heic" || lowerMimeType === "image/heif"
+          ? `/api/files/${insertedFile.id}/preview`
+          : mimeType.startsWith("image/")
+          ? downloadUrl
+          : undefined
+
+      return {
+        id: insertedFile.id as string,
+        org_id: insertedFile.org_id as string,
+        project_id: insertedFile.project_id ?? undefined,
+        file_name: insertedFile.file_name,
+        storage_path: insertedFile.storage_path,
+        mime_type: insertedFile.mime_type ?? undefined,
+        size_bytes: insertedFile.size_bytes ?? undefined,
+        checksum: insertedFile.checksum ?? undefined,
+        visibility: insertedFile.visibility,
+        category: insertedFile.category ?? undefined,
+        folder_path: insertedFile.folder_path ?? undefined,
+        description: insertedFile.description ?? undefined,
+        tags: insertedFile.tags ?? [],
+        source: insertedFile.source ?? undefined,
+        uploaded_by: insertedFile.uploaded_by ?? undefined,
+        share_with_clients: insertedFile.share_with_clients ?? false,
+        share_with_subs: insertedFile.share_with_subs ?? false,
+        metadata: insertedFile.metadata ?? {},
+        archived_at: insertedFile.archived_at ?? undefined,
+        created_at: insertedFile.created_at,
+        updated_at: insertedFile.updated_at,
+        version_number: 1,
+        is_current: true,
+        download_url: downloadUrl,
+        thumbnail_url: thumbnailUrl,
+      }
   })
-
-  const mimeType = input.mimeType || "application/octet-stream"
-  const { data: insertedFile, error: fileError } = await supabase
-    .from("files")
-    .insert({
-      org_id: orgId,
-      project_id: projectId || undefined,
-      file_name: resolvedFileName,
-      storage_path: normalizedStoragePath,
-      mime_type: mimeType,
-      size_bytes: input.fileSize,
-      checksum: input.checksum || undefined,
-      visibility: input.visibility === "private" ? "private" : "public",
-      category: inferredCategory,
-      folder_path: resolvedFolderPath,
-      description: input.description || undefined,
-      tags: input.tags ?? [],
-      source: "upload",
-      share_with_clients: resolvedShareWithClients,
-      share_with_subs: resolvedShareWithSubs,
-      uploaded_by: userId,
-    })
-    .select(`
-      id, org_id, project_id, file_name, storage_path, mime_type, size_bytes,
-      checksum, visibility, category, folder_path, description, tags, source,
-      share_with_clients, share_with_subs, metadata,
-      uploaded_by, archived_at, created_at, updated_at
-    `)
-    .single()
-
-  if (fileError || !insertedFile) {
-    await deleteFilesObjects({
-      supabase,
-      orgId,
-      paths: [normalizedStoragePath],
-    }).catch((cleanupError) => {
-      console.warn("[Documents] Failed to clean up failed upload object", cleanupError)
-    })
-    throw new Error(`Failed to create file record: ${fileError?.message}`)
-  }
-
-  const { data: version, error: versionError } = await supabase
-    .from("doc_versions")
-    .insert({
-      org_id: orgId,
-      file_id: insertedFile.id,
-      version_number: 1,
-      storage_path: normalizedStoragePath,
-      file_name: resolvedFileName,
-      mime_type: mimeType,
-      size_bytes: input.fileSize,
-      checksum: input.checksum || undefined,
-      created_by: userId,
-    })
-    .select("id")
-    .single()
-
-  if (versionError || !version) {
-    await supabase
-      .from("files")
-      .delete()
-      .eq("org_id", orgId)
-      .eq("id", insertedFile.id)
-    await deleteFilesObjects({
-      supabase,
-      orgId,
-      paths: [normalizedStoragePath],
-    }).catch((cleanupError) => {
-      console.warn("[Documents] Failed to clean up failed version upload object", cleanupError)
-    })
-    throw new Error(`Failed to create initial version: ${versionError?.message}`)
-  }
-
-  await supabase
-    .from("files")
-    .update({ current_version_id: version.id })
-    .eq("id", insertedFile.id)
-
-  void triggerFileIndexing(insertedFile.id as string, orgId)
-  void recordAudit({
-    orgId,
-    actorId: userId,
-    action: "insert",
-    entityType: "file",
-    entityId: insertedFile.id as string,
-    after: insertedFile,
-  })
-  void recordEvent({
-    orgId,
-    actorId: userId,
-    eventType: "file_created",
-    entityType: "file",
-    entityId: insertedFile.id as string,
-    payload: {
-      file_name: resolvedFileName,
-      project_id: projectId,
-      category: inferredCategory,
-    },
-  })
-
-  const downloadUrl = buildInternalFileUrl(insertedFile.id as string)
-  const lowerMimeType = mimeType.toLowerCase()
-  const thumbnailUrl =
-    lowerMimeType === "image/heic" || lowerMimeType === "image/heif"
-      ? `/api/files/${insertedFile.id}/preview`
-      : mimeType.startsWith("image/")
-      ? downloadUrl
-      : undefined
-
-  return {
-    id: insertedFile.id as string,
-    org_id: insertedFile.org_id as string,
-    project_id: insertedFile.project_id ?? undefined,
-    file_name: insertedFile.file_name,
-    storage_path: insertedFile.storage_path,
-    mime_type: insertedFile.mime_type ?? undefined,
-    size_bytes: insertedFile.size_bytes ?? undefined,
-    checksum: insertedFile.checksum ?? undefined,
-    visibility: insertedFile.visibility,
-    category: insertedFile.category ?? undefined,
-    folder_path: insertedFile.folder_path ?? undefined,
-    description: insertedFile.description ?? undefined,
-    tags: insertedFile.tags ?? [],
-    source: insertedFile.source ?? undefined,
-    uploaded_by: insertedFile.uploaded_by ?? undefined,
-    share_with_clients: insertedFile.share_with_clients ?? false,
-    share_with_subs: insertedFile.share_with_subs ?? false,
-    metadata: insertedFile.metadata ?? {},
-    archived_at: insertedFile.archived_at ?? undefined,
-    created_at: insertedFile.created_at,
-    updated_at: insertedFile.updated_at,
-    version_number: 1,
-    is_current: true,
-    download_url: downloadUrl,
-    thumbnail_url: thumbnailUrl,
-  }
 }
 
 /**
@@ -984,15 +1020,17 @@ export async function attachFileAction(
   entityId: string,
   projectId?: string,
   linkRole?: string
-): Promise<void> {
-  await attachFile({
-    file_id: fileId,
-    entity_type: entityType,
-    entity_id: entityId,
-    project_id: projectId,
-    link_role: linkRole,
+): Promise<ActionResult<void>> {
+  return run(async () => {
+      await attachFile({
+        file_id: fileId,
+        entity_type: entityType,
+        entity_id: entityId,
+        project_id: projectId,
+        link_role: linkRole,
+      })
+      revalidatePath("/documents")
   })
-  revalidatePath("/documents")
 }
 
 /**
@@ -1002,17 +1040,21 @@ export async function detachFileAction(
   fileId: string,
   entityType: string,
   entityId: string
-): Promise<void> {
-  await detachFile(fileId, entityType, entityId)
-  revalidatePath("/documents")
+): Promise<ActionResult<void>> {
+  return run(async () => {
+      await detachFile(fileId, entityType, entityId)
+      revalidatePath("/documents")
+  })
 }
 
 /**
  * Detach a file link by ID
  */
-export async function detachFileLinkAction(linkId: string): Promise<void> {
-  await detachFileById(linkId)
-  revalidatePath("/documents")
+export async function detachFileLinkAction(linkId: string): Promise<ActionResult<void>> {
+  return run(async () => {
+      await detachFileById(linkId)
+      revalidatePath("/documents")
+  })
 }
 
 /**
@@ -1022,7 +1064,7 @@ export async function listAttachmentsAction(
   entityType: string,
   entityId: string
 ): Promise<FileLinkWithFile[]> {
-  return listAttachments(entityType, entityId)
+      return listAttachments(entityType, entityId)
 }
 
 /**
@@ -1031,21 +1073,21 @@ export async function listAttachmentsAction(
 export async function listProjectsForFilterAction(): Promise<
   Array<{ id: string; name: string }>
 > {
-  const { supabase, orgId } = await requireOrgContext()
+      const { supabase, orgId } = await requireOrgContext()
 
-  const { data, error } = await supabase
-    .from("projects")
-    .select("id, name")
-    .eq("org_id", orgId)
-    .in("status", ["planning", "bidding", "active", "on_hold"])
-    .order("name", { ascending: true })
+      const { data, error } = await supabase
+        .from("projects")
+        .select("id, name")
+        .eq("org_id", orgId)
+        .in("status", ["planning", "bidding", "active", "on_hold"])
+        .order("name", { ascending: true })
 
-  if (error) {
-    console.error("Failed to list projects:", error.message)
-    return []
-  }
+      if (error) {
+        console.error("Failed to list projects:", error.message)
+        return []
+      }
 
-  return data ?? []
+      return data ?? []
 }
 
 // Helper function to infer category from filename and mime type
@@ -1072,48 +1114,50 @@ function inferCategory(fileName: string, mimeType?: string): FileCategory {
  * List all versions for a file
  */
 export async function listFileVersionsAction(fileId: string): Promise<FileVersion[]> {
-  return listVersions(fileId)
+      return listVersions(fileId)
 }
 
 /**
  * Get a specific version
  */
 export async function getFileVersionAction(versionId: string): Promise<FileVersion | null> {
-  return getVersion(versionId)
+      return getVersion(versionId)
 }
 
 /**
  * Get version count for a file
  */
 export async function getVersionCountAction(fileId: string): Promise<number> {
-  return getVersionCount(fileId)
+      return getVersionCount(fileId)
 }
 
 /**
  * Upload a new version of a file
  */
-export async function uploadFileVersionAction(formData: FormData): Promise<FileVersion> {
-  const fileId = formData.get("fileId") as string
-  const file = formData.get("file") as File
-  const label = formData.get("label") as string | null
-  const notes = formData.get("notes") as string | null
+export async function uploadFileVersionAction(formData: FormData): Promise<ActionResult<FileVersion>> {
+  return run(async () => {
+      const fileId = formData.get("fileId") as string
+      const file = formData.get("file") as File
+      const label = formData.get("label") as string | null
+      const notes = formData.get("notes") as string | null
 
-  if (!fileId) {
-    throw new Error("File ID is required")
-  }
+      if (!fileId) {
+        throw new Error("File ID is required")
+      }
 
-  if (!file) {
-    throw new Error("No file provided")
-  }
+      if (!file) {
+        throw new Error("No file provided")
+      }
 
-  const version = await createVersion(fileId, file, {
-    label: label || undefined,
-    notes: notes || undefined,
+      const version = await createVersion(fileId, file, {
+        label: label || undefined,
+        notes: notes || undefined,
+      })
+
+      revalidatePath("/documents")
+
+      return version
   })
-
-  revalidatePath("/documents")
-
-  return version
 }
 
 /**
@@ -1122,9 +1166,11 @@ export async function uploadFileVersionAction(formData: FormData): Promise<FileV
 export async function makeVersionCurrentAction(
   fileId: string,
   versionId: string
-): Promise<void> {
-  await makeVersionCurrent(fileId, versionId)
-  revalidatePath("/documents")
+): Promise<ActionResult<void>> {
+  return run(async () => {
+      await makeVersionCurrent(fileId, versionId)
+      revalidatePath("/documents")
+  })
 }
 
 /**
@@ -1133,23 +1179,27 @@ export async function makeVersionCurrentAction(
 export async function updateFileVersionAction(
   versionId: string,
   updates: { label?: string; notes?: string }
-): Promise<FileVersion> {
-  const version = await updateVersion(versionId, updates)
-  revalidatePath("/documents")
-  return version
+): Promise<ActionResult<FileVersion>> {
+  return run(async () => {
+      const version = await updateVersion(versionId, updates)
+      revalidatePath("/documents")
+      return version
+  })
 }
 
 /**
  * Delete a specific version
  */
-export async function deleteFileVersionAction(versionId: string): Promise<void> {
-  await deleteVersion(versionId)
-  revalidatePath("/documents")
+export async function deleteFileVersionAction(versionId: string): Promise<ActionResult<void>> {
+  return run(async () => {
+      await deleteVersion(versionId)
+      revalidatePath("/documents")
+  })
 }
 
 /**
  * Get signed URL for a specific version
  */
 export async function getVersionDownloadUrlAction(versionId: string): Promise<string> {
-  return getVersionSignedUrl(versionId)
+      return getVersionSignedUrl(versionId)
 }

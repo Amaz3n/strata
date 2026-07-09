@@ -1,4 +1,6 @@
+import { payableOutstandingCents } from "@/lib/financials/payables-rules"
 import { requireOrgContext } from "@/lib/services/context"
+import { orgBillsInboundAddress } from "@/lib/services/payables-email-ingest"
 import { requireAnyPermission } from "@/lib/services/permissions"
 
 const DAY_MS = 86_400_000
@@ -44,6 +46,11 @@ export interface OrgPayablesDeskData {
     dueThisWeekCount: number
     openCount: number
     vendorCount: number
+    /** Retainage held on open bills — payable later, excluded from outstanding. */
+    retainedCents: number
+    /** Portion of outstanding still awaiting approval (not yet a committed outflow). */
+    pendingApprovalCents: number
+    pendingApprovalCount: number
   }
   /** The Cash Horizon: forward windows of outflow. Sums to outstandingCents. */
   horizon: {
@@ -58,6 +65,8 @@ export interface OrgPayablesDeskData {
   vendors: VendorRollup[]
   /** True when more open bills exist than were fetched. */
   truncated: boolean
+  /** Forwarding address for emailed vendor invoices, when the org has a slug. */
+  inboundBillsEmail: string | null
 }
 
 function one<T>(value: T | T[] | null | undefined): T | null {
@@ -87,10 +96,12 @@ export async function loadOrgPayablesDesk(): Promise<OrgPayablesDeskData> {
   const { supabase, orgId, userId } = await requireOrgContext()
   await requireAnyPermission(["bill.read", "payment.read"], { supabase, orgId, userId })
 
+  const { data: org } = await supabase.from("orgs").select("slug").eq("id", orgId).maybeSingle()
+
   const { data, error } = await supabase
     .from("vendor_bills")
     .select(`
-      id, project_id, bill_number, status, bill_date, due_date, total_cents, paid_cents, qbo_vendor_name, metadata, created_at,
+      id, project_id, bill_number, status, bill_date, due_date, total_cents, paid_cents, retainage_cents, qbo_vendor_name, metadata, created_at,
       project:projects(id, name),
       company:companies!vendor_bills_company_id_fkey(id, name)
     `)
@@ -109,15 +120,32 @@ export async function loadOrgPayablesDesk(): Promise<OrgPayablesDeskData> {
   const queue: PayableQueueRow[] = []
 
   let outstandingCents = 0
+  let retainedCents = 0
+  let pendingApprovalCents = 0
+  let pendingApprovalCount = 0
 
   for (const row of data ?? []) {
     const status = String(row.status ?? "pending")
     if (CLOSED_STATUSES.has(status)) continue
+    // Vendor credits reduce cost; they are not an obligation on the desk.
+    if ((row.metadata as Record<string, any> | null)?.source === "vendor_credit") continue
 
     const totalCents = Number(row.total_cents ?? 0)
     const paidCents = Number(row.paid_cents ?? 0)
-    const outstanding = Math.max(0, totalCents - paidCents)
+    const heldRetainage = Math.max(0, Number(row.retainage_cents ?? 0))
+    // Same math the workbench shows: total minus held retainage minus paid.
+    const outstanding = payableOutstandingCents({
+      total_cents: totalCents,
+      paid_cents: paidCents,
+      retainage_cents: heldRetainage,
+    })
+    if (outstanding <= 0 && heldRetainage <= 0) continue
+    if (totalCents - paidCents > 0) retainedCents += heldRetainage
     if (outstanding <= 0) continue
+    if (status === "pending") {
+      pendingApprovalCents += outstanding
+      pendingApprovalCount += 1
+    }
 
     const project = one(row.project)
     const dueDate = (row.due_date as string | null) ?? null
@@ -182,10 +210,14 @@ export async function loadOrgPayablesDesk(): Promise<OrgPayablesDeskData> {
       dueThisWeekCount: horizon.thisWeek.count,
       openCount: queue.length,
       vendorCount: vendors.length,
+      retainedCents,
+      pendingApprovalCents,
+      pendingApprovalCount,
     },
     horizon,
     queue,
     vendors,
     truncated: (data?.length ?? 0) >= FETCH_LIMIT,
+    inboundBillsEmail: org?.slug ? orgBillsInboundAddress(org.slug as string) : null,
   }
 }

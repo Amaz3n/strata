@@ -9,6 +9,7 @@ export type TrustCenterExceptionKind =
   | "approved_unbilled"           // Approved but unbilled costs
   | "billed_without_proof"        // Costs billed without proof
   | "billable_no_job_cost"        // Billable costs not reflected in job-cost actuals
+  | "incurred_billable_tieout"    // Incurred actuals that should have billable ledger treatment
   | "job_cost_unclassified"       // Job-cost actuals not classified billable/non-billable
   | "bill_no_commitment"          // Vendor bills not tied to commitments
   | "payment_unlinked"            // Payments not tied to invoices/bills
@@ -61,6 +62,7 @@ export const TRUST_CENTER_QUEUE_LABELS: Record<TrustCenterExceptionKind, string>
   approved_unbilled: "Approved But Unbilled",
   billed_without_proof: "Billed Without Proof",
   billable_no_job_cost: "Billable Missing Job Cost",
+  incurred_billable_tieout: "Incurred/Billable Tie-Out",
   job_cost_unclassified: "Job Cost Unclassified",
   bill_no_commitment: "Bills Without Commitment",
   payment_unlinked: "Unlinked Payments",
@@ -76,6 +78,7 @@ export const TRUST_CENTER_QUEUE_LABELS: Record<TrustCenterExceptionKind, string>
 export const TRUST_CENTER_QUEUE_ORDER: TrustCenterExceptionKind[] = [
   "invoice_total_mismatch",
   "budget_actual_mismatch",
+  "incurred_billable_tieout",
   "billable_no_job_cost",
   "approved_unbilled",
   "billed_without_proof",

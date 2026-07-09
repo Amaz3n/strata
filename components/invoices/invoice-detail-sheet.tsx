@@ -249,8 +249,8 @@ export function InvoiceDetailSheet({
       }
       formData.append("category", "financials")
 
-      const uploaded = await uploadFileAction(formData)
-      await attachFileAction(uploaded.id, "invoice", invoice.id, invoice.project_id ?? undefined, linkRole)
+      const uploaded = unwrapAction(await uploadFileAction(formData))
+      unwrapAction(await attachFileAction(uploaded.id, "invoice", invoice.id, invoice.project_id ?? undefined, linkRole))
     }
 
     const links = await listAttachmentsAction("invoice", invoice.id)
@@ -259,7 +259,7 @@ export function InvoiceDetailSheet({
 
   const handleDetach = async (linkId: string) => {
     if (!invoice) return
-    await detachFileLinkAction(linkId)
+    unwrapAction(await detachFileLinkAction(linkId))
     const links = await listAttachmentsAction("invoice", invoice.id)
     setAttachments(mapAttachmentLinks(links))
   }
@@ -480,7 +480,7 @@ export function InvoiceDetailSheet({
 
     setRecordingPayment(true)
     try {
-      await recordPaymentAction({
+      unwrapAction(await recordPaymentAction({
         invoice_id: invoice.id,
         provider: "manual",
         provider_payment_id: `manual:${invoice.id}:${Date.now()}`,
@@ -493,7 +493,7 @@ export function InvoiceDetailSheet({
         metadata: {
           source: "arc_manual_invoice_payment",
         },
-      })
+      }))
       toast.success(amountCents >= balanceDue ? "Invoice marked paid" : "Payment recorded")
       setPaymentDialogOpen(false)
       await onPaymentRecorded?.()

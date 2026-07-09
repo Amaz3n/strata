@@ -24,6 +24,8 @@ import {
 } from "@/components/ui/sidebar"
 import { listFoldersAction } from "@/app/(app)/documents/actions"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface DocumentsSidebarNavProps {
   projectId: string
 }

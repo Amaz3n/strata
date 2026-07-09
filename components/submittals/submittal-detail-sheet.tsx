@@ -5,9 +5,11 @@ import { format } from "date-fns"
 import { toast } from "sonner"
 import { formatLocalDate } from "@/lib/utils"
 
-import type { Submittal, Project } from "@/lib/types"
+import type { Company, Submittal, SubmittalItem, Project } from "@/lib/types"
+import { unwrapAction } from "@/lib/action-result"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import {
   Select,
@@ -33,10 +35,17 @@ import {
   uploadFileAction,
   attachFileAction,
 } from "@/app/(app)/documents/actions"
-import { decideSubmittalAction } from "@/app/(app)/submittals/actions"
+import {
+  addSubmittalItemAction,
+  decideSubmittalAction,
+  listSubmittalItemsAction,
+  listSubmittalRevisionsAction,
+  resubmitSubmittalAction,
+} from "@/app/(app)/submittals/actions"
 
 const statusLabels: Record<string, string> = {
   draft: "Draft",
+  pending: "Pending submission",
   submitted: "Submitted",
   in_review: "In Review",
   approved: "Approved",
@@ -47,6 +56,7 @@ const statusLabels: Record<string, string> = {
 
 const statusStyles: Record<string, string> = {
   draft: "bg-muted text-muted-foreground border-muted",
+  pending: "bg-muted text-muted-foreground border-muted",
   submitted: "bg-blue-500/15 text-blue-600 border-blue-500/30",
   in_review: "bg-warning/20 text-warning border-warning/40",
   approved: "bg-success/20 text-success border-success/30",
@@ -58,6 +68,7 @@ const statusStyles: Record<string, string> = {
 interface SubmittalDetailSheetProps {
   submittal: Submittal | null
   project?: Project
+  companies?: Company[]
   open: boolean
   onOpenChange: (open: boolean) => void
   onUpdate?: (submittal: Submittal) => void
@@ -66,20 +77,22 @@ interface SubmittalDetailSheetProps {
 export function SubmittalDetailSheet({
   submittal,
   project,
+  companies = [],
   open,
   onOpenChange,
   onUpdate,
 }: SubmittalDetailSheetProps) {
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
-  const [isLoadingAttachments, setIsLoadingAttachments] = useState(false)
+  const [items, setItems] = useState<SubmittalItem[]>([])
+  const [revisions, setRevisions] = useState<Submittal[]>([])
   const [decisionStatus, setDecisionStatus] = useState("approved")
   const [decisionNote, setDecisionNote] = useState("")
-  const [isDecisionPending, startDecisionTransition] = useTransition()
+  const [itemForm, setItemForm] = useState({ description: "", manufacturer: "", model_number: "" })
+  const [showItemForm, setShowItemForm] = useState(false)
+  const [isPending, startTransition] = useTransition()
 
   const loadAttachments = useCallback(async () => {
     if (!submittal) return
-
-    setIsLoadingAttachments(true)
     try {
       const links = await listAttachmentsAction("submittal", submittal.id)
       setAttachments(
@@ -97,32 +110,50 @@ export function SubmittalDetailSheet({
       )
     } catch (error) {
       console.error("Failed to load attachments:", error)
-    } finally {
-      setIsLoadingAttachments(false)
     }
   }, [submittal])
 
-  // Load attachments when sheet opens
+  const loadItems = useCallback(async () => {
+    if (!submittal) return
+    try {
+      setItems(await listSubmittalItemsAction(submittal.id))
+    } catch (error) {
+      console.error("Failed to load submittal items:", error)
+      setItems([])
+    }
+  }, [submittal])
+
+  const loadRevisions = useCallback(async () => {
+    if (!submittal) return
+    try {
+      const history = await listSubmittalRevisionsAction(submittal.project_id, submittal.submittal_number)
+      setRevisions(history.filter((rev) => rev.id !== submittal.id))
+    } catch (error) {
+      console.error("Failed to load submittal revisions:", error)
+      setRevisions([])
+    }
+  }, [submittal])
+
   useEffect(() => {
     if (open && submittal) {
       ;(async () => {
         if (submittal.attachment_file_id) {
           try {
-            await attachFileAction(
+            unwrapAction(await attachFileAction(
               submittal.attachment_file_id,
               "submittal",
               submittal.id,
               submittal.project_id,
               "legacy_attachment",
-            )
+            ))
           } catch (error) {
             console.warn("Failed to backfill legacy submittal attachment link", error)
           }
         }
-        await loadAttachments()
+        await Promise.all([loadAttachments(), loadItems(), loadRevisions()])
       })()
     }
-  }, [open, submittal, loadAttachments])
+  }, [open, submittal, loadAttachments, loadItems, loadRevisions])
 
   const handleAttach = useCallback(
     async (files: File[], linkRole?: string) => {
@@ -134,8 +165,8 @@ export function SubmittalDetailSheet({
         formData.append("projectId", submittal.project_id)
         formData.append("category", "submittals")
 
-        const uploaded = await uploadFileAction(formData)
-        await attachFileAction(uploaded.id, "submittal", submittal.id, submittal.project_id, linkRole)
+        const uploaded = unwrapAction(await uploadFileAction(formData))
+        unwrapAction(await attachFileAction(uploaded.id, "submittal", submittal.id, submittal.project_id, linkRole))
       }
 
       await loadAttachments()
@@ -145,33 +176,78 @@ export function SubmittalDetailSheet({
 
   const handleDetach = useCallback(
     async (linkId: string) => {
-      await detachFileLinkAction(linkId)
+      unwrapAction(await detachFileLinkAction(linkId))
       await loadAttachments()
     },
     [loadAttachments]
   )
 
-  const handleDecision = useCallback(() => {
+  const handleDecision = () => {
     if (!submittal) return
-
-    startDecisionTransition(async () => {
+    startTransition(async () => {
       try {
-        const updated = await decideSubmittalAction({
-          submittal_id: submittal.id,
-          decision_status: decisionStatus,
-          decision_note: decisionNote.trim() || null,
-        })
-        onUpdate?.(updated as Submittal)
+        const updated = unwrapAction(
+          await decideSubmittalAction({
+            submittal_id: submittal.id,
+            decision_status: decisionStatus,
+            decision_note: decisionNote.trim() || null,
+          }),
+        )
+        onUpdate?.(updated)
         toast.success("Submittal decision recorded")
         setDecisionNote("")
-      } catch (error: any) {
-        console.error("Failed to record submittal decision:", error)
+      } catch (error) {
         toast.error("Failed to record decision", {
-          description: error?.message ?? "Please try again.",
+          description: error instanceof Error ? error.message : "Please try again.",
         })
       }
     })
-  }, [decisionNote, decisionStatus, onUpdate, submittal])
+  }
+
+  const handleResubmit = () => {
+    if (!submittal) return
+    startTransition(async () => {
+      try {
+        const created = unwrapAction(await resubmitSubmittalAction(submittal.id))
+        toast.success(`Revision ${created.revision} created`, {
+          description: "The new revision is now the current submittal.",
+        })
+        onUpdate?.(created)
+      } catch (error) {
+        toast.error("Failed to create revision", {
+          description: error instanceof Error ? error.message : "Please try again.",
+        })
+      }
+    })
+  }
+
+  const handleAddItem = () => {
+    if (!submittal) return
+    if (!itemForm.description.trim()) {
+      toast.error("Description required")
+      return
+    }
+    startTransition(async () => {
+      try {
+        unwrapAction(
+          await addSubmittalItemAction({
+            submittal_id: submittal.id,
+            description: itemForm.description.trim(),
+            manufacturer: itemForm.manufacturer.trim() || undefined,
+            model_number: itemForm.model_number.trim() || undefined,
+          }),
+        )
+        setItemForm({ description: "", manufacturer: "", model_number: "" })
+        setShowItemForm(false)
+        toast.success("Item added")
+        await loadItems()
+      } catch (error) {
+        toast.error("Failed to add item", {
+          description: error instanceof Error ? error.message : "Please try again.",
+        })
+      }
+    })
+  }
 
   if (!submittal) return null
 
@@ -183,14 +259,21 @@ export function SubmittalDetailSheet({
     return format(new Date(date), "MMM d, yyyy")
   }
 
+  const assignedCompanyName = companies.find((c) => c.id === submittal.assigned_company_id)?.name
+  const isSuperseded = Boolean(submittal.superseded_by_id)
+  const isDecided = Boolean(submittal.decision_status)
+  const canResubmit =
+    !isSuperseded && (submittal.decision_status === "revise_resubmit" || submittal.decision_status === "rejected")
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" mobileFullscreen className="sm:max-w-xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] overflow-y-auto shadow-2xl">
         <SheetHeader>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <FileText className="h-5 w-5 text-primary" />
             <SheetTitle>
               Submittal #{submittal.submittal_number}
+              {submittal.revision > 0 ? ` · Rev ${submittal.revision}` : ""}
             </SheetTitle>
             <Badge
               variant="secondary"
@@ -198,6 +281,9 @@ export function SubmittalDetailSheet({
             >
               {statusLabels[submittal.status] ?? submittal.status}
             </Badge>
+            {isSuperseded && (
+              <Badge variant="outline" className="text-xs">Superseded</Badge>
+            )}
           </div>
           <SheetDescription className="text-left">
             {submittal.title}
@@ -213,11 +299,20 @@ export function SubmittalDetailSheet({
                 {project.name}
               </div>
             )}
+            {assignedCompanyName && (
+              <Badge variant="outline" className="text-xs">Ball in court: {assignedCompanyName}</Badge>
+            )}
             {submittal.due_date && (
               <div className="flex items-center gap-1">
                 <Calendar className="h-4 w-4" />
-                Due {formatDate(submittal.due_date)}
+                Review due {formatDate(submittal.due_date)}
               </div>
+            )}
+            {submittal.required_on_site && (
+              <Badge variant="outline" className="text-xs">On site: {formatDate(submittal.required_on_site)}</Badge>
+            )}
+            {typeof submittal.lead_time_days === "number" && (
+              <Badge variant="outline" className="text-xs">Lead time: {submittal.lead_time_days}d</Badge>
             )}
             {submittal.spec_section && (
               <div className="flex items-center gap-1">
@@ -226,8 +321,8 @@ export function SubmittalDetailSheet({
               </div>
             )}
             {submittal.submittal_type && (
-              <Badge variant="outline" className="text-xs">
-                {submittal.submittal_type}
+              <Badge variant="outline" className="text-xs capitalize">
+                {submittal.submittal_type.replace(/_/g, " ")}
               </Badge>
             )}
           </div>
@@ -243,6 +338,71 @@ export function SubmittalDetailSheet({
               </div>
             </div>
           )}
+
+          {/* Submitted items */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <h4 className="text-sm font-medium">Submitted Items</h4>
+              {!isSuperseded && (
+                <Button variant="ghost" size="sm" onClick={() => setShowItemForm((v) => !v)}>
+                  {showItemForm ? "Cancel" : "Add item"}
+                </Button>
+              )}
+            </div>
+            {items.length === 0 && !showItemForm ? (
+              <p className="text-sm text-muted-foreground">Nothing submitted yet.</p>
+            ) : (
+              <div className="space-y-2">
+                {items.map((item) => (
+                  <div key={item.id} className="rounded-lg border p-3 space-y-1">
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <div className="flex items-center gap-2">
+                        <span>#{item.item_number}</span>
+                        {item.created_via_portal ? (
+                          <Badge variant="outline" className="text-[10px]">via portal</Badge>
+                        ) : null}
+                        {item.responder_name ? <span>{item.responder_name}</span> : null}
+                      </div>
+                      <span>{formatDate(item.created_at)}</span>
+                    </div>
+                    <p className="text-sm">{item.description}</p>
+                    {(item.manufacturer || item.model_number) && (
+                      <p className="text-xs text-muted-foreground">
+                        {[item.manufacturer, item.model_number].filter(Boolean).join(" · ")}
+                      </p>
+                    )}
+                    {item.file_name && (
+                      <p className="text-xs text-muted-foreground">Attached: {item.file_name}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            {showItemForm && (
+              <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
+                <Input
+                  placeholder="Item description (e.g. Trane XR14 condenser data sheet)"
+                  value={itemForm.description}
+                  onChange={(e) => setItemForm((prev) => ({ ...prev, description: e.target.value }))}
+                />
+                <div className="grid grid-cols-2 gap-2">
+                  <Input
+                    placeholder="Manufacturer"
+                    value={itemForm.manufacturer}
+                    onChange={(e) => setItemForm((prev) => ({ ...prev, manufacturer: e.target.value }))}
+                  />
+                  <Input
+                    placeholder="Model number"
+                    value={itemForm.model_number}
+                    onChange={(e) => setItemForm((prev) => ({ ...prev, model_number: e.target.value }))}
+                  />
+                </div>
+                <Button size="sm" onClick={handleAddItem} disabled={isPending} className="w-full">
+                  {isPending ? "Adding..." : "Add item"}
+                </Button>
+              </div>
+            )}
+          </div>
 
           {/* Decision info */}
           {submittal.decision_status && (
@@ -261,42 +421,73 @@ export function SubmittalDetailSheet({
                   {submittal.decision_status.replace(/_/g, " ")}
                 </Badge>
                 {submittal.decision_note && (
-                  <p className="text-sm text-muted-foreground">{submittal.decision_note}</p>
+                  <p className="text-sm text-muted-foreground whitespace-pre-wrap">{submittal.decision_note}</p>
                 )}
                 {submittal.decision_at && (
                   <p className="text-xs text-muted-foreground">
                     Reviewed {formatDate(submittal.decision_at)}
                   </p>
                 )}
+                {canResubmit && (
+                  <Button variant="outline" size="sm" onClick={handleResubmit} disabled={isPending}>
+                    {isPending ? "Creating..." : `Resubmit as Rev ${submittal.revision + 1}`}
+                  </Button>
+                )}
               </div>
             </div>
           )}
 
-          <div className="space-y-3">
-            <h4 className="text-sm font-medium">Record Decision</h4>
-            <div className="rounded-lg border p-4 space-y-3">
-              <Select value={decisionStatus} onValueChange={setDecisionStatus}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select decision" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="approved">Approved</SelectItem>
-                  <SelectItem value="approved_as_noted">Approved as Noted</SelectItem>
-                  <SelectItem value="revise_resubmit">Revise & Resubmit</SelectItem>
-                  <SelectItem value="rejected">Rejected</SelectItem>
-                </SelectContent>
-              </Select>
-              <Textarea
-                value={decisionNote}
-                onChange={(event) => setDecisionNote(event.target.value)}
-                placeholder="Reviewer notes, exceptions, or resubmission instructions"
-                rows={3}
-              />
-              <Button onClick={handleDecision} disabled={isDecisionPending} className="w-full">
-                {isDecisionPending ? "Saving..." : "Save decision"}
-              </Button>
+          {/* Record decision — only for undecided, current revisions */}
+          {!isDecided && !isSuperseded && (
+            <div className="space-y-3">
+              <h4 className="text-sm font-medium">Record Decision</h4>
+              <div className="rounded-lg border p-4 space-y-3">
+                <Select value={decisionStatus} onValueChange={setDecisionStatus}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select decision" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="approved">Approved</SelectItem>
+                    <SelectItem value="approved_as_noted">Approved as Noted</SelectItem>
+                    <SelectItem value="revise_resubmit">Revise & Resubmit</SelectItem>
+                    <SelectItem value="rejected">Rejected</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Textarea
+                  value={decisionNote}
+                  onChange={(event) => setDecisionNote(event.target.value)}
+                  placeholder="Reviewer notes, exceptions, or resubmission instructions"
+                  rows={3}
+                />
+                <Button onClick={handleDecision} disabled={isPending} className="w-full">
+                  {isPending ? "Saving..." : "Save decision"}
+                </Button>
+              </div>
             </div>
-          </div>
+          )}
+
+          {/* Revision history */}
+          {revisions.length > 0 && (
+            <div className="space-y-2">
+              <h4 className="text-sm font-medium">Revision History</h4>
+              <div className="space-y-1">
+                {revisions.map((rev) => (
+                  <div key={rev.id} className="flex items-center justify-between rounded-lg border px-3 py-2 text-sm">
+                    <span>Rev {rev.revision}</span>
+                    <div className="flex items-center gap-2">
+                      <Badge
+                        variant="secondary"
+                        className={`text-[10px] capitalize border ${statusStyles[rev.status] ?? ""}`}
+                      >
+                        {statusLabels[rev.status] ?? rev.status}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground">{formatDate(rev.created_at)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <Separator />
 
@@ -320,6 +511,12 @@ export function SubmittalDetailSheet({
               <Clock className="h-3 w-3" />
               Created {formatDate(submittal.created_at)}
             </div>
+            {submittal.submitted_at && (
+              <div className="flex items-center gap-1">
+                <Clock className="h-3 w-3" />
+                Submitted {formatDate(submittal.submitted_at)}
+              </div>
+            )}
             {submittal.reviewed_at && (
               <div className="flex items-center gap-1">
                 <Clock className="h-3 w-3" />

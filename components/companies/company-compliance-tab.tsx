@@ -66,6 +66,8 @@ import { useToast } from "@/hooks/use-toast"
 import { AlertCircle, CalendarDays, CheckCircle2, Clock, ExternalLink, FileText, Loader2, Settings, Upload, XCircle } from "@/components/icons"
 import { cn } from "@/lib/utils"
 
+import { unwrapAction } from "@/lib/action-result"
+
 function formatDate(value?: string | null) {
   if (!value) return "—"
   const d = new Date(value)
@@ -228,7 +230,7 @@ function RequirementsEditor({
             requires_waiver_of_subrogation: requiresWaiverOfSubrogation[dt.id] ?? false,
             notes: notes[dt.id] || undefined,
           }))
-        await setCompanyRequirementsAction(companyId, requirements)
+        unwrapAction(await setCompanyRequirementsAction(companyId, requirements))
         toast({ title: "Requirements updated" })
         onSaved()
         onOpenChange(false)
@@ -540,7 +542,7 @@ function UploadDialog({
         }
 
         const { fileId } = await uploadRes.json()
-        const document = await uploadComplianceDocumentAction({
+        const document = unwrapAction(await uploadComplianceDocumentAction({
           companyId,
           fileId,
           input: {
@@ -554,12 +556,12 @@ function UploadDialog({
             primary_noncontributory: primaryNonContributory,
             waiver_of_subrogation: waiverOfSubrogation,
           },
-        })
+        }))
 
-        await reviewComplianceDocumentAction(document.id, {
+        unwrapAction(await reviewComplianceDocumentAction(document.id, {
           decision: "approved",
           notes: "Uploaded and approved by builder.",
-        })
+        }))
 
         toast({ title: "Document uploaded and approved" })
         resetForm()
@@ -734,11 +736,11 @@ function ReviewDialog({ open, onOpenChange, document, onReviewed }: ReviewDialog
     if (!document) return
     startTransition(async () => {
       try {
-        await reviewComplianceDocumentAction(document.id, {
+        unwrapAction(await reviewComplianceDocumentAction(document.id, {
           decision,
           notes: notes || undefined,
           rejection_reason: decision === "rejected" ? rejectionReason || undefined : undefined,
-        })
+        }))
         toast({
           title: decision === "approved" ? "Document approved" : "Document rejected",
         })
@@ -871,11 +873,11 @@ function WaiverDialog({
     if (!requirement) return
     startTransition(async () => {
       try {
-        await waiveCompanyRequirementAction(companyId, {
+        unwrapAction(await waiveCompanyRequirementAction(companyId, {
           document_type_id: requirement.document_type_id,
           reason: reason || undefined,
           expires_at: expiresAt || undefined,
-        })
+        }))
         toast({ title: "Requirement waived" })
         onSaved()
         onOpenChange(false)
@@ -1037,7 +1039,7 @@ export function CompanyComplianceTab({ company }: { company: Company }) {
     if (!waiverId) return
     startTransition(async () => {
       try {
-        await revokeCompanyRequirementWaiverAction(waiverId)
+        unwrapAction(await revokeCompanyRequirementWaiverAction(waiverId))
         toast({ title: "Waiver removed" })
         loadData()
       } catch (error) {

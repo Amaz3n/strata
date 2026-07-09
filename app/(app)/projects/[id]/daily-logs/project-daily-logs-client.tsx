@@ -22,6 +22,8 @@ import {
   getFileDownloadUrlAction,
 } from "../actions"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ProjectDailyLogsClientProps {
   projectId: string
   projectAddress?: string
@@ -81,7 +83,7 @@ export function ProjectDailyLogsClient({
       if (context?.category) {
         formData.append("category", context.category)
       }
-      const uploaded = await uploadProjectFileAction(projectId, formData)
+      const uploaded = unwrapAction(await uploadProjectFileAction(projectId, formData))
       setFiles((prev) => [uploaded, ...prev])
     }
   }
@@ -115,37 +117,37 @@ export function ProjectDailyLogsClient({
       punchItems={punchItems}
       mentionableUsers={mentionableUsers}
       onUpdateReport={async (date, values) => {
-        const report = await updateDailyReportAction(projectId, date, values)
+        const report = unwrapAction(await updateDailyReportAction(projectId, date, values))
         upsertReport(report)
         return report
       }}
       onSubmitReport={async (reportId) => {
-        const report = await submitDailyReportAction(projectId, reportId)
+        const report = unwrapAction(await submitDailyReportAction(projectId, reportId))
         upsertReport(report)
         return report
       }}
       onReopenReport={async (reportId) => {
-        const report = await reopenDailyReportAction(projectId, reportId)
+        const report = unwrapAction(await reopenDailyReportAction(projectId, reportId))
         upsertReport(report)
         return report
       }}
       onAddManpower={async (date, values) => {
-        const report = await addManpowerAction(projectId, date, values)
+        const report = unwrapAction(await addManpowerAction(projectId, date, values))
         upsertReport(report)
         return report
       }}
       onUpdateManpower={async (manpowerId, values) => {
-        const report = await updateManpowerAction(projectId, manpowerId, values)
+        const report = unwrapAction(await updateManpowerAction(projectId, manpowerId, values))
         upsertReport(report)
         return report
       }}
       onDeleteManpower={async (manpowerId) => {
-        const report = await deleteManpowerAction(projectId, manpowerId)
+        const report = unwrapAction(await deleteManpowerAction(projectId, manpowerId))
         upsertReport(report)
         return report
       }}
       onCreateLog={async (values) => {
-        const created = await createProjectDailyLogAction(projectId, values)
+        const created = unwrapAction(await createProjectDailyLogAction(projectId, values))
         // The create action doesn't join the author; attach the current user so the
         // new log is attributed immediately (a refresh hydrates it from the server).
         const withAuthor: DailyLog =
@@ -191,7 +193,7 @@ export function ProjectDailyLogsClient({
         return withAuthor
       }}
       onCreateComment={async (dailyLogId, values) => {
-        const created = await createDailyLogCommentAction(projectId, dailyLogId, values)
+        const created = unwrapAction(await createDailyLogCommentAction(projectId, dailyLogId, values))
         setDailyLogs((prev) => prev.map((log) => (
           log.id === dailyLogId
             ? { ...log, comments: [...(log.comments ?? []), created] }
@@ -200,7 +202,7 @@ export function ProjectDailyLogsClient({
         return created
       }}
       onUpdateLog={async (dailyLogId, values) => {
-        const updated = await updateProjectDailyLogAction(projectId, dailyLogId, values)
+        const updated = unwrapAction(await updateProjectDailyLogAction(projectId, dailyLogId, values))
         setDailyLogs((prev) => prev.map((log) => (
           log.id === dailyLogId
             ? {
@@ -215,7 +217,7 @@ export function ProjectDailyLogsClient({
         return updated
       }}
       onDeleteLog={async (dailyLogId) => {
-        await deleteProjectDailyLogAction(projectId, dailyLogId)
+        unwrapAction(await deleteProjectDailyLogAction(projectId, dailyLogId))
         setDailyLogs((prev) => prev.filter((log) => log.id !== dailyLogId))
       }}
       onUploadFiles={handleFileUpload}

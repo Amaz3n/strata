@@ -148,6 +148,9 @@ export interface Customer {
     trialEndsAt: string | null
     externalCustomerId: string | null
     externalSubscriptionId: string | null
+    checkoutUrl: string | null
+    collectionMethod: string | null
+    netDays: number | null
   } | null
 }
 
@@ -270,6 +273,9 @@ export async function getCustomers({
         trial_ends_at,
         external_customer_id,
         external_subscription_id,
+        checkout_url,
+        collection_method,
+        net_days,
         plans (
           name,
           amount_cents,
@@ -297,6 +303,9 @@ export async function getCustomers({
         trialEndsAt: subscriptionData.trial_ends_at ?? null,
         externalCustomerId: subscriptionData.external_customer_id ?? null,
         externalSubscriptionId: subscriptionData.external_subscription_id ?? null,
+        checkoutUrl: subscriptionData.checkout_url ?? null,
+        collectionMethod: subscriptionData.collection_method ?? null,
+        netDays: subscriptionData.net_days ?? null,
       }
     }
 

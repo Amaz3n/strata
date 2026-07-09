@@ -23,6 +23,7 @@ export type FinancialSetupValue = {
   billingModel: ProjectBillingModel
   totalContractValue: string
   retainagePercent: string
+  retainageAppliesToFee: boolean
   markupPercent: string
   fixedFee: string
   feePresentation: FeePresentation
@@ -108,6 +109,7 @@ export function emptyFinancialSetup(model: ProjectBillingModel = "fixed_price"):
     billingModel: model,
     totalContractValue: "",
     retainagePercent: "0",
+    retainageAppliesToFee: false,
     markupPercent: costDriven ? "0" : "",
     fixedFee: "",
     feePresentation: defaultFeePresentationForBillingModel(model),
@@ -144,6 +146,7 @@ export function financialSetupFromProject(project: Project, contract?: Contract 
     billingModel,
     totalContractValue: centsToMoney(totalCents),
     retainagePercent: numberToField(billingContract?.retainage_percent ?? project.retainage_percent, "0"),
+    retainageAppliesToFee: Boolean(billingContract?.retainage_applies_to_fee ?? contractSnapshot.retainage_applies_to_fee ?? false),
     markupPercent: numberToField(billingContract?.markup_percent, costDriven ? "0" : ""),
     fixedFee: centsToMoney(billingContract?.fixed_fee_cents ?? legacyFixedFeeCents),
     feePresentation:
@@ -234,6 +237,7 @@ export function financialSetupToProjectInput(value: FinancialSetupValue): Partia
       value.billingModel === "time_and_materials" ? "time_materials" : costDriven ? "cost_plus" : "fixed",
     total_contract_value_cents: moneyToCents(value.totalContractValue),
     retainage_percent: fieldToNumber(value.retainagePercent, 0) ?? 0,
+    retainage_applies_to_fee: value.retainageAppliesToFee,
     markup_percent: usesMarkup ? fieldToNumber(value.markupPercent, 0) : null,
     gmp_cents: isGmp ? moneyToCents(value.gmp) : null,
     contingency_cents: isGmp ? moneyToCents(value.contingency) : null,
@@ -271,7 +275,7 @@ export function ProjectFinancialSetupFields({
 
   const rules = [
     { id: "openBookRequired" as const, title: "Open book", detail: "Expose approved cost detail for cost-driven billing.", icon: FileText },
-    { id: "clientCostApprovalRequired" as const, title: "Client cost approval", detail: "Require owner approval before approved-cost invoicing.", icon: ClipboardCheck },
+    { id: "clientCostApprovalRequired" as const, title: "Client time approval", detail: "Require owner approval before approved labor time can be billed.", icon: ClipboardCheck },
     { id: "paidCostsRequired" as const, title: "Paid costs only", detail: "Block billing unpaid vendor bill costs.", icon: ReceiptText },
     { id: "proofRequired" as const, title: "Proof required", detail: "Require receipts, bills, or time attachments before billing.", icon: FileCheck2 },
   ]
@@ -320,6 +324,21 @@ export function ProjectFinancialSetupFields({
           <Field label="Retainage %" htmlFor="fin-retainage">
             <PercentInput id="fin-retainage" value={value.retainagePercent} onChange={(next) => update("retainagePercent", next)} />
           </Field>
+          {costDriven ? (
+            <div className="flex items-center justify-between gap-4 rounded-md border p-3 sm:col-span-2">
+              <div className="min-w-0">
+                <Label htmlFor="retainageAppliesToFee" className="text-sm font-medium">
+                  Apply retainage to fee
+                </Label>
+                <p className="mt-0.5 text-xs text-muted-foreground">Hold retainage on builder fee and markup lines.</p>
+              </div>
+              <Switch
+                id="retainageAppliesToFee"
+                checked={value.retainageAppliesToFee}
+                onCheckedChange={(checked) => update("retainageAppliesToFee", checked)}
+              />
+            </div>
+          ) : null}
           {usesMarkup ? (
             <Field label="Default markup %" htmlFor="fin-markup">
               <PercentInput id="fin-markup" value={value.markupPercent} onChange={(next) => update("markupPercent", next)} />

@@ -30,6 +30,8 @@ import {
 import { Plus, Trash2, FileText, Edit, LayoutGrid } from "@/components/icons"
 import { cn } from "@/lib/utils"
 
+import { unwrapAction } from "@/lib/action-result"
+
 type LineDraft = {
   item_type: "line" | "group"
   description: string
@@ -124,11 +126,11 @@ export function EstimateTemplatesClient({ initialTemplates, costCodes }: Props) 
     startTransition(async () => {
       try {
         if (editingId === "new") {
-          const created = await createEstimateTemplateAction(payload)
+          const created = unwrapAction(await createEstimateTemplateAction(payload))
           setTemplates((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)))
           toast.success("Template created")
         } else if (editingId) {
-          const updated = await updateEstimateTemplateAction(editingId, payload)
+          const updated = unwrapAction(await updateEstimateTemplateAction(editingId, payload))
           setTemplates((prev) => prev.map((t) => (t.id === updated.id ? updated : t)).sort((a, b) => a.name.localeCompare(b.name)))
           toast.success("Template saved")
         }
@@ -144,7 +146,7 @@ export function EstimateTemplatesClient({ initialTemplates, costCodes }: Props) 
     const target = deleteTarget
     startTransition(async () => {
       try {
-        await deleteEstimateTemplateAction(target.id)
+        unwrapAction(await deleteEstimateTemplateAction(target.id))
         setTemplates((prev) => prev.filter((t) => t.id !== target.id))
         if (editingId === target.id) setEditingId(null)
         toast.success("Template deleted")

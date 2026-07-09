@@ -10,6 +10,8 @@ import { getProspect } from "@/lib/services/prospects"
 
 import { listProspectBidPackagesAction } from "./actions"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ProspectBidsPageProps {
   params: Promise<{ prospectId: string }>
 }

@@ -12,6 +12,8 @@ import {
   updateMyTaskAction,
 } from "./actions"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface TasksPageClientProps {
   initialTasks: Task[]
   projects: Array<{ id: string; name: string }>
@@ -65,9 +67,9 @@ export function TasksPageClient({
           projects={projects}
           team={team}
           initialProjectFilter={initialProjectFilter}
-          onTaskCreate={(input) => createMyTaskAction(input)}
-          onTaskUpdate={(taskId, updates) => updateMyTaskAction(taskId, updates)}
-          onTaskDelete={(taskId) => deleteMyTaskAction(taskId)}
+          onTaskCreate={(input) => createMyTaskAction(input).then(unwrapAction)}
+          onTaskUpdate={(taskId, updates) => updateMyTaskAction(taskId, updates).then(unwrapAction)}
+          onTaskDelete={(taskId) => deleteMyTaskAction(taskId).then(unwrapAction)}
         />
       </div>
     </div>

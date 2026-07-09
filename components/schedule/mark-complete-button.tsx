@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/button"
 import { Check } from "@/components/icons"
 import { updateScheduleItemAction } from "@/app/(app)/schedule/actions"
 
+import { unwrapAction } from "@/lib/action-result"
+
 /**
  * One-click completion for the org Schedule desk's attention list. Per the
  * desk rule it calls the same server action the project workbench uses —
@@ -24,7 +26,7 @@ export function MarkScheduleItemCompleteButton({ itemId, itemName }: { itemId: s
       onClick={() =>
         startTransition(async () => {
           try {
-            await updateScheduleItemAction(itemId, { status: "completed", progress: 100 })
+            unwrapAction(await updateScheduleItemAction(itemId, { status: "completed", progress: 100 }))
             toast.success(`Marked "${itemName}" complete`)
           } catch {
             toast.error("Couldn't mark it complete — try from the project schedule.")

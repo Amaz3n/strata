@@ -10,6 +10,16 @@ import {
 } from "@/lib/services/budget-from-estimate"
 import { requireOrgContext } from "@/lib/services/context"
 
+import { actionError, type ActionResult } from "@/lib/action-result"
+
+async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
+  try {
+    return { success: true, data: await fn() }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
 function revalidateBudgetPages(projectId: string) {
   revalidatePath(`/projects/${projectId}/budget`)
   revalidatePath(`/projects/${projectId}/financials`)
@@ -32,50 +42,62 @@ const upsertBudgetSchema = z.object({
 })
 
 export async function createProjectBudgetAction(input: unknown) {
-  const parsed = upsertBudgetSchema.parse(input)
-  const result = await createBudget(
-    {
-      project_id: parsed.project_id,
-      status: parsed.status ?? "draft",
-      lines: parsed.lines.map((l) => ({ ...l, cost_code_id: l.cost_code_id ?? undefined })),
-    },
-    undefined,
-  )
-  revalidateBudgetPages(parsed.project_id)
-  return result
+  return run(async () => {
+      const parsed = upsertBudgetSchema.parse(input)
+      const result = await createBudget(
+        {
+          project_id: parsed.project_id,
+          status: parsed.status ?? "draft",
+          lines: parsed.lines.map((l) => ({ ...l, cost_code_id: l.cost_code_id ?? undefined })),
+        },
+        undefined,
+      )
+      revalidateBudgetPages(parsed.project_id)
+      return result
+  })
 }
 
 export async function replaceProjectBudgetLinesAction(projectId: string, budgetId: string, linesInput: unknown) {
-  const lines = z.array(budgetLineInputSchema).parse(linesInput)
-  const updated = await replaceBudgetLines({ budgetId, lines })
-  revalidateBudgetPages(projectId)
-  return updated
+  return run(async () => {
+      const lines = z.array(budgetLineInputSchema).parse(linesInput)
+      const updated = await replaceBudgetLines({ budgetId, lines })
+      revalidateBudgetPages(projectId)
+      return updated
+  })
 }
 
 export async function updateProjectBudgetStatusAction(projectId: string, budgetId: string, statusInput: unknown) {
-  const status = z.enum(["draft", "approved", "locked"]).parse(statusInput)
-  const updated = await updateBudgetStatus({ budgetId, status })
-  revalidateBudgetPages(projectId)
-  return updated
+  return run(async () => {
+      const status = z.enum(["draft", "approved", "locked"]).parse(statusInput)
+      const updated = await updateBudgetStatus({ budgetId, status })
+      revalidateBudgetPages(projectId)
+      return updated
+  })
 }
 
 export async function duplicateProjectBudgetVersionAction(projectId: string, fromBudgetId: string) {
-  const created = await duplicateBudgetVersion({ projectId, fromBudgetId })
-  revalidateBudgetPages(projectId)
-  return created
+  return run(async () => {
+      const created = await duplicateBudgetVersion({ projectId, fromBudgetId })
+      revalidateBudgetPages(projectId)
+      return created
+  })
 }
 
 export async function acknowledgeVarianceAlertAction(projectId: string, alertId: string, statusInput?: unknown) {
-  const status = statusInput ? z.enum(["acknowledged", "resolved"]).parse(statusInput) : "acknowledged"
-  const updated = await acknowledgeVarianceAlert(alertId, status)
-  revalidateBudgetPages(projectId)
-  return updated
+  return run(async () => {
+      const status = statusInput ? z.enum(["acknowledged", "resolved"]).parse(statusInput) : "acknowledged"
+      const updated = await acknowledgeVarianceAlert(alertId, status)
+      revalidateBudgetPages(projectId)
+      return updated
+  })
 }
 
 export async function runVarianceScanAction(projectId: string) {
-  const { orgId, userId } = await requireOrgContext()
-  await checkVarianceAlerts(projectId, orgId, undefined, userId)
-  revalidateBudgetPages(projectId)
+  return run(async () => {
+      const { orgId, userId } = await requireOrgContext()
+      await checkVarianceAlerts(projectId, orgId, undefined, userId)
+      revalidateBudgetPages(projectId)
+  })
 }
 
 const progressInputSchema = z.object({
@@ -85,13 +107,15 @@ const progressInputSchema = z.object({
 })
 
 export async function lockBudgetBaselineAction(projectId: string) {
-  const result = await lockBudgetBaseline(projectId)
-  revalidateBudgetPages(projectId)
-  return result
+  return run(async () => {
+      const result = await lockBudgetBaseline(projectId)
+      revalidateBudgetPages(projectId)
+      return result
+  })
 }
 
 export async function listBudgetEstimateSourcesAction(projectId: string) {
-  return listBudgetEstimateSources(projectId)
+      return listBudgetEstimateSources(projectId)
 }
 
 export async function proposeBudgetFromEstimateAction(
@@ -99,7 +123,7 @@ export async function proposeBudgetFromEstimateAction(
   estimateId: string,
   costCodesEnabled: boolean,
 ) {
-  return buildBudgetDraftFromEstimate({ projectId, estimateId, costCodesEnabled })
+      return buildBudgetDraftFromEstimate({ projectId, estimateId, costCodesEnabled })
 }
 
 const applyBudgetSchema = z.object({
@@ -112,46 +136,50 @@ const applyBudgetSchema = z.object({
  * lines if one already exists. Used by "Start from estimate".
  */
 export async function applyBudgetFromEstimateAction(input: unknown) {
-  const parsed = applyBudgetSchema.parse(input)
-  const { supabase, orgId } = await requireOrgContext()
+  return run(async () => {
+      const parsed = applyBudgetSchema.parse(input)
+      const { supabase, orgId } = await requireOrgContext()
 
-  const lines = parsed.lines.map((line) => ({
-    ...line,
-    cost_code_id: line.cost_code_id ?? undefined,
-  }))
+      const lines = parsed.lines.map((line) => ({
+        ...line,
+        cost_code_id: line.cost_code_id ?? undefined,
+      }))
 
-  const { data: latest } = await supabase
-    .from("budgets")
-    .select("id")
-    .eq("org_id", orgId)
-    .eq("project_id", parsed.project_id)
-    .order("version", { ascending: false })
-    .limit(1)
-    .maybeSingle()
+      const { data: latest } = await supabase
+        .from("budgets")
+        .select("id")
+        .eq("org_id", orgId)
+        .eq("project_id", parsed.project_id)
+        .order("version", { ascending: false })
+        .limit(1)
+        .maybeSingle()
 
-  if (latest?.id) {
-    await replaceBudgetLines({ budgetId: latest.id as string, lines })
-  } else {
-    await createBudget({ project_id: parsed.project_id, status: "draft", lines }, orgId)
-  }
+      if (latest?.id) {
+        await replaceBudgetLines({ budgetId: latest.id as string, lines })
+      } else {
+        await createBudget({ project_id: parsed.project_id, status: "draft", lines }, orgId)
+      }
 
-  revalidateBudgetPages(parsed.project_id)
-  return { success: true }
+      revalidateBudgetPages(parsed.project_id)
+      return { success: true }
+  })
 }
 
 export async function updateCostCodeProgressAction(projectId: string, costCodeId: string, input: unknown) {
-  const { orgId, userId } = await requireOrgContext()
-  const parsed = progressInputSchema.parse(input)
-  
-  await updateCostCodeProgress({
-    orgId,
-    userId,
-    projectId,
-    costCodeId,
-    percentComplete: parsed.percent_complete ?? null,
-    estimateRemainingCents: parsed.estimate_remaining_cents ?? null,
-    notes: parsed.notes ?? null,
+  return run(async () => {
+      const { orgId, userId } = await requireOrgContext()
+      const parsed = progressInputSchema.parse(input)
+      
+      await updateCostCodeProgress({
+        orgId,
+        userId,
+        projectId,
+        costCodeId,
+        percentComplete: parsed.percent_complete ?? null,
+        estimateRemainingCents: parsed.estimate_remaining_cents ?? null,
+        notes: parsed.notes ?? null,
+      })
+      
+      revalidateBudgetPages(projectId)
   })
-  
-  revalidateBudgetPages(projectId)
 }

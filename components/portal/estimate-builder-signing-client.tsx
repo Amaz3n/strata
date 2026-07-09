@@ -61,6 +61,7 @@ export function EstimateBuilderSigningClient({
           amount_cents: it.amount_cents,
           notes: it.notes,
           is_optional: it.is_optional,
+          badges: it.is_allowance ? ["Allowance"] : undefined,
         }
       }),
     [estimate.items],

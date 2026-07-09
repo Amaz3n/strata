@@ -20,100 +20,124 @@ import { requireOrgContext } from "@/lib/services/context"
 import { listCostCodes } from "@/lib/services/cost-codes"
 import { listTeamMembers } from "@/lib/services/team"
 
+import { actionError, type ActionResult } from "@/lib/action-result"
+
+async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
+  try {
+    return { success: true, data: await fn() }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
 const NONE = "__none__"
 
 export async function listBillingRateSchedulesAction() {
-  await requirePermissionGuard("org.member")
-  return listBillingRateSchedules()
+      await requirePermissionGuard("org.member")
+      return listBillingRateSchedules()
 }
 
 export async function listBillingRateOverridesAction() {
-  await requirePermissionGuard("org.member")
-  return listBillingRateOverrides()
+      await requirePermissionGuard("org.member")
+      return listBillingRateOverrides()
 }
 
 export async function listBillingRateOptionsAction() {
-  await requirePermissionGuard("org.member")
-  const { supabase, orgId } = await requireOrgContext()
-  const [costCodes, teamMembers, contractsResult] = await Promise.all([
-    listCostCodes(undefined, false),
-    listTeamMembers(undefined, { includeProjectCounts: false }),
-    supabase
-      .from("contracts")
-      .select("id, project_id, title, number, rate_schedule_id, project:projects(id, name)")
-      .eq("org_id", orgId)
-      .eq("status", "active")
-      .eq("contract_type", "time_materials")
-      .order("created_at", { ascending: false }),
-  ])
+      await requirePermissionGuard("org.member")
+      const { supabase, orgId } = await requireOrgContext()
+      const [costCodes, teamMembers, contractsResult] = await Promise.all([
+        listCostCodes(undefined, false),
+        listTeamMembers(undefined, { includeProjectCounts: false }),
+        supabase
+          .from("contracts")
+          .select("id, project_id, title, number, rate_schedule_id, project:projects(id, name)")
+          .eq("org_id", orgId)
+          .eq("status", "active")
+          .eq("contract_type", "time_materials")
+          .order("created_at", { ascending: false }),
+      ])
 
-  if (contractsResult.error) {
-    throw new Error(`Failed to load T&M contracts: ${contractsResult.error.message}`)
-  }
+      if (contractsResult.error) {
+        throw new Error(`Failed to load T&M contracts: ${contractsResult.error.message}`)
+      }
 
-  return {
-    costCodes,
-    teamMembers,
-    contracts: contractsResult.data ?? [],
-  }
+      return {
+        costCodes,
+        teamMembers,
+        contracts: contractsResult.data ?? [],
+      }
 }
 
 export async function createBillingRateScheduleFormAction(formData: FormData) {
-  await requirePermissionGuard("org.admin")
-  await createBillingRateSchedule({
-    name: String(formData.get("name") || ""),
-    description: nullableString(formData.get("description")),
-    status: (String(formData.get("status") || "active") as "draft" | "active" | "archived"),
+  return run(async () => {
+      await requirePermissionGuard("org.admin")
+      await createBillingRateSchedule({
+        name: String(formData.get("name") || ""),
+        description: nullableString(formData.get("description")),
+        status: (String(formData.get("status") || "active") as "draft" | "active" | "archived"),
+      })
+      revalidateBillingRates()
   })
-  revalidateBillingRates()
 }
 
 export async function archiveBillingRateScheduleFormAction(scheduleId: string) {
-  await requirePermissionGuard("org.admin")
-  await archiveBillingRateSchedule(scheduleId)
-  revalidateBillingRates()
+  return run(async () => {
+      await requirePermissionGuard("org.admin")
+      await archiveBillingRateSchedule(scheduleId)
+      revalidateBillingRates()
+  })
 }
 
 export async function assignBillingRateScheduleFormAction(formData: FormData) {
-  await requirePermissionGuard("org.admin")
-  await assignBillingRateScheduleToProject({
-    projectId: requiredString(formData.get("project_id"), "Choose a T&M project."),
-    rateScheduleId: nullableString(formData.get("rate_schedule_id")),
+  return run(async () => {
+      await requirePermissionGuard("org.admin")
+      await assignBillingRateScheduleToProject({
+        projectId: requiredString(formData.get("project_id"), "Choose a T&M project."),
+        rateScheduleId: nullableString(formData.get("rate_schedule_id")),
+      })
+      revalidateBillingRates()
   })
-  revalidateBillingRates()
 }
 
 export async function createBillingRateFormAction(formData: FormData) {
-  await requirePermissionGuard("org.admin")
-  await createBillingRate({
-    scheduleId: requiredString(formData.get("schedule_id"), "Choose a schedule."),
-    ...rateInputFromForm(formData),
+  return run(async () => {
+      await requirePermissionGuard("org.admin")
+      await createBillingRate({
+        scheduleId: requiredString(formData.get("schedule_id"), "Choose a schedule."),
+        ...rateInputFromForm(formData),
+      })
+      revalidateBillingRates()
   })
-  revalidateBillingRates()
 }
 
 export async function deleteBillingRateFormAction(rateId: string) {
-  await requirePermissionGuard("org.admin")
-  await deleteBillingRate(rateId)
-  revalidateBillingRates()
+  return run(async () => {
+      await requirePermissionGuard("org.admin")
+      await deleteBillingRate(rateId)
+      revalidateBillingRates()
+  })
 }
 
 export async function createBillingRateOverrideFormAction(formData: FormData) {
-  await requirePermissionGuard("org.admin")
-  const { projectId, contractId } = parseProjectContract(formData.get("project_contract"))
-  await createBillingRateOverride({
-    projectId,
-    contractId,
-    scheduleId: nullableString(formData.get("schedule_id")),
-    ...rateInputFromForm(formData),
+  return run(async () => {
+      await requirePermissionGuard("org.admin")
+      const { projectId, contractId } = parseProjectContract(formData.get("project_contract"))
+      await createBillingRateOverride({
+        projectId,
+        contractId,
+        scheduleId: nullableString(formData.get("schedule_id")),
+        ...rateInputFromForm(formData),
+      })
+      revalidateBillingRates()
   })
-  revalidateBillingRates()
 }
 
 export async function deleteBillingRateOverrideFormAction(overrideId: string) {
-  await requirePermissionGuard("org.admin")
-  await deleteBillingRateOverride(overrideId)
-  revalidateBillingRates()
+  return run(async () => {
+      await requirePermissionGuard("org.admin")
+      await deleteBillingRateOverride(overrideId)
+      revalidateBillingRates()
+  })
 }
 
 function revalidateBillingRates() {

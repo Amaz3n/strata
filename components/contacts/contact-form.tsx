@@ -19,6 +19,8 @@ import type { Company, Contact } from "@/lib/types"
 import { createContactAction, updateContactAction } from "@/app/(app)/contacts/actions"
 import { useToast } from "@/hooks/use-toast"
 
+import { unwrapAction } from "@/lib/action-result"
+
 const CONTACT_TYPES: { label: string; value: Contact["contact_type"] }[] = [
   { label: "Internal", value: "internal" },
   { label: "Subcontractor", value: "subcontractor" },
@@ -90,9 +92,9 @@ export function ContactForm({
     startTransition(async () => {
       try {
         if (contact) {
-          await updateContactAction(contact.id, payload)
+          unwrapAction(await updateContactAction(contact.id, payload))
         } else {
-          await createContactAction(payload)
+          unwrapAction(await createContactAction(payload))
         }
         router.refresh()
         toast({ title: contact ? "Contact updated" : "Contact created" })

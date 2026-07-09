@@ -47,6 +47,8 @@ import {
 import { commitmentStatusMeta } from "@/components/companies/commitment-status";
 import { CommitmentDetailSheet } from "@/components/companies/commitment-detail-sheet";
 
+import { unwrapAction } from "@/lib/action-result"
+
 type CommitmentFilter = "active" | "previous" | "all";
 
 const FILTERS: Array<[CommitmentFilter, string]> = [
@@ -176,7 +178,7 @@ export function CompanyCommitments({
     startTransition(async () => {
       try {
         const totalCents = Math.round(totalDollars * 100);
-        await createCompanyCommitmentWithLineAction({
+        unwrapAction(await createCompanyCommitmentWithLineAction({
           commitment: {
             project_id: form.project_id,
             company_id: companyId,
@@ -196,7 +198,7 @@ export function CompanyCommitments({
             unit_cost_cents: totalCents,
             retainage_percent: retainage,
           },
-        });
+        }));
         toast({ title: "Commitment created" });
         setCreateOpen(false);
         setForm({

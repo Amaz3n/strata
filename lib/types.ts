@@ -138,6 +138,7 @@ export interface TeamMember {
   user: User
   role: OrgRole
   role_label?: string
+  project_scope?: "all" | "assigned"
   permission_overrides?: MemberPermissionOverride[]
   status: "active" | "invited" | "suspended"
   labor_cost_rate_cents?: number
@@ -277,6 +278,7 @@ export interface Contract {
   requires_client_cost_approval?: boolean | null
   open_book?: boolean | null
   retainage_percent?: number
+  retainage_applies_to_fee?: boolean | null
   retainage_release_trigger?: string
   terms?: string
   effective_date?: string
@@ -1253,6 +1255,13 @@ export interface PunchItem {
   resolved_at?: string | null
 }
 
+export interface DecisionOption {
+  id: string
+  label: string
+  description?: string | null
+  cost_delta_cents?: number | null
+}
+
 export interface Decision {
   id: string
   org_id: string
@@ -1261,8 +1270,15 @@ export interface Decision {
   description?: string
   status: string
   due_date?: string | null
+  options: DecisionOption[]
+  selected_option_id?: string | null
+  decision_note?: string | null
+  notify_contact_id?: string | null
+  requested_at?: string | null
   approved_at?: string | null
   approved_by?: string | null
+  decided_by_contact_id?: string | null
+  decided_via_portal?: boolean | null
   created_at: string
   updated_at: string
 }
@@ -1347,12 +1363,23 @@ export interface Submittal {
   org_id: string
   project_id: string
   submittal_number: number
+  revision: number
+  supersedes_submittal_id?: string | null
+  superseded_by_id?: string | null
   title: string
   description?: string | null
   status: string
   spec_section?: string | null
   submittal_type?: string | null
   due_date?: string | null
+  required_on_site?: string | null
+  lead_time_days?: number | null
+  assigned_company_id?: string | null
+  submitted_by_company_id?: string | null
+  submitted_by_contact_id?: string | null
+  submitted_at?: string | null
+  reviewed_by?: string | null
+  review_notes?: string | null
   reviewed_at?: string | null
   attachment_file_id?: string | null
   last_item_submitted_at?: string | null
@@ -1367,6 +1394,21 @@ export interface Submittal {
   updated_at: string
 }
 
+export interface SubmittalItem {
+  id: string
+  org_id: string
+  submittal_id: string
+  item_number: number
+  description: string
+  manufacturer?: string | null
+  model_number?: string | null
+  file_id?: string | null
+  file_name?: string | null
+  file_download_url?: string | null
+  created_via_portal?: boolean | null
+  responder_name?: string | null
+  created_at: string
+}
 
 export interface PortalFinancialSummary {
   contractTotal: number
@@ -1403,6 +1445,7 @@ export interface ClientPortalData {
   photos: PhotoTimelineEntry[]
   pendingChangeOrders: ChangeOrder[]
   pendingSelections: Selection[]
+  pendingDecisions: Decision[]
   warrantyRequests?: WarrantyRequest[]
   invoices: Invoice[]
   rfis: Rfi[]
@@ -1634,7 +1677,13 @@ export interface WarrantyRequest {
   status: string
   priority?: string | null
   requested_by?: string | null
+  requested_by_name?: string | null
+  assigned_company_id?: string | null
+  scheduled_date?: string | null
+  resolution_note?: string | null
+  dispatched_at?: string | null
   created_at: string
+  updated_at?: string | null
   closed_at?: string | null
 }
 

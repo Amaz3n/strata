@@ -284,12 +284,12 @@ export function DrawScheduleManager({
         }
 
         if (editing) {
-          const updated = await updateProjectDrawAction(projectId, editing.id, payload)
+          const updated = unwrapAction(await updateProjectDrawAction(projectId, editing.id, payload))
           setDraws((prev) => prev.map((d) => (d.id === updated.id ? updated : d)).sort((a, b) => a.draw_number - b.draw_number))
           setSelectedDraw((current) => (current?.id === updated.id ? updated : current))
           toast.success("Draw updated")
         } else {
-          const created = await createProjectDrawAction(projectId, payload)
+          const created = unwrapAction(await createProjectDrawAction(projectId, payload))
           setDraws((prev) => [...prev, created].sort((a, b) => a.draw_number - b.draw_number))
           toast.success("Draw created")
         }
@@ -305,7 +305,7 @@ export function DrawScheduleManager({
   async function handleDelete(draw: DrawSchedule) {
     startSaving(async () => {
       try {
-        await deleteProjectDrawAction(projectId, draw.id)
+        unwrapAction(await deleteProjectDrawAction(projectId, draw.id))
         setDraws((prev) => prev.filter((d) => d.id !== draw.id))
         setSelectedDraw((current) => (current?.id === draw.id ? null : current))
         toast.success("Draw deleted")
@@ -331,7 +331,7 @@ export function DrawScheduleManager({
     startSaving(async () => {
       try {
         const orderedIds = ordered.map((d) => d.id)
-        const updated = await reorderProjectDrawsAction(projectId, orderedIds)
+        const updated = unwrapAction(await reorderProjectDrawsAction(projectId, orderedIds))
         setDraws(updated)
       } catch (err: any) {
         toast.error("Could not reorder draws", { description: err?.message ?? "Please try again." })
@@ -343,7 +343,7 @@ export function DrawScheduleManager({
     setGeneratingInvoiceDrawId(draw.id)
     onInvoiceGenerationStart?.(draw)
     try {
-      const result = await generateInvoiceFromDrawAction(projectId, draw.id)
+      const result = unwrapAction(await generateInvoiceFromDrawAction(projectId, draw.id))
       setDraws((prev) => prev.map((d) => (d.id === result.draw.id ? result.draw : d)))
       setSelectedDraw(result.draw)
       onInvoiceGenerated?.({
@@ -366,7 +366,7 @@ export function DrawScheduleManager({
   async function handleGeneratePayApplication(draw: DrawSchedule) {
     setGeneratingPayAppDrawId(draw.id)
     try {
-      const result = await generateDrawPayApplicationAction(projectId, draw.id)
+      const result = unwrapAction(await generateDrawPayApplicationAction(projectId, draw.id))
       const bytes = Uint8Array.from(atob(result.pdfBase64), (char) => char.charCodeAt(0))
       const blob = new Blob([bytes], { type: "application/pdf" })
       const url = URL.createObjectURL(blob)
@@ -406,7 +406,7 @@ export function DrawScheduleManager({
     if (!selectedDraw) return
     setLinkingInvoiceId(invoiceId)
     try {
-      const result = await linkInvoiceToDrawAction(projectId, selectedDraw.id, invoiceId)
+      const result = unwrapAction(await linkInvoiceToDrawAction(projectId, selectedDraw.id, invoiceId))
       setDraws((prev) => prev.map((d) => (d.id === result.draw.id ? (result.draw as DrawSchedule) : d)))
       setSelectedDraw(result.draw as DrawSchedule)
       setLinkPickerOpen(false)
@@ -423,7 +423,7 @@ export function DrawScheduleManager({
     if (!selectedDraw) return
     setUnlinking(true)
     try {
-      const result = await unlinkInvoiceFromDrawAction(projectId, selectedDraw.id)
+      const result = unwrapAction(await unlinkInvoiceFromDrawAction(projectId, selectedDraw.id))
       setDraws((prev) => prev.map((d) => (d.id === result.draw.id ? (result.draw as DrawSchedule) : d)))
       setSelectedDraw(result.draw as DrawSchedule)
       setLinkedInvoice(null)

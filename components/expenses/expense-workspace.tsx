@@ -23,10 +23,8 @@ import {
   getExpenseAccountingContextAction,
   listExpenseProjectsAction,
   syncProjectExpenseToQBOAction,
-  updateProjectExpenseAccountingAction,
-  updateProjectExpenseDetailsAction,
-  updateProjectExpenseLinesAction,
   updateProjectExpenseReceiptAction,
+  updateProjectExpenseWorkspaceAction,
 } from "@/app/(app)/projects/[id]/expenses/actions"
 import { getFileAction, getFileDownloadUrlAction } from "@/app/(app)/documents/actions"
 import {
@@ -43,6 +41,8 @@ import {
   vendorOf,
   type ProjectExpense,
 } from "./expense-shared"
+
+import { unwrapAction } from "@/lib/action-result"
 
 type ExpenseAccountingContext = Awaited<ReturnType<typeof getExpenseAccountingContextAction>>
 
@@ -278,6 +278,24 @@ export function ExpenseWorkspace({
     }
   }, [selectedExpense, loadReceipt])
 
+  // Keyboard triage: j/k move through the rail. (Escape-to-close is owned by WorkspaceShell.)
+  useEffect(() => {
+    if (!selectedExpense) return
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const tagName = target?.tagName?.toLowerCase()
+      const isTextEntry = tagName === "input" || tagName === "textarea" || target?.getAttribute("role") === "combobox"
+      if (isTextEntry || event.metaKey || event.ctrlKey || event.altKey) return
+      if (event.key === "j" || event.key === "k") {
+        const index = filtered.findIndex((expense) => expense.id === selectedExpense.id)
+        const next = event.key === "j" ? filtered[index + 1] : filtered[index - 1]
+        if (next) onSelect(next.id)
+      }
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [filtered, onSelect, selectedExpense])
+
   if (!selectedExpense) return <WorkspaceShell open={false} onClose={() => onSelect(null)} listPanel={null} documentPane={null}>{null}</WorkspaceShell>
 
   const totalCents = (selectedExpense.amount_cents ?? 0) + (selectedExpense.tax_cents ?? 0)
@@ -297,7 +315,7 @@ export function ExpenseWorkspace({
     if (!file) return
     const formData = new FormData()
     formData.append("receipt", file)
-    const next = await updateProjectExpenseReceiptAction(projectId, selectedExpense.id, formData)
+    const next = unwrapAction(await updateProjectExpenseReceiptAction(projectId, selectedExpense.id, formData))
     const updated = (next as ProjectExpense[]).find((expense) => expense.id === selectedExpense.id)
     await loadReceipt(updated?.receipt_file_id ?? null)
     onChanged()
@@ -307,7 +325,7 @@ export function ExpenseWorkspace({
     // The replace flow calls onAttach (which already swaps the receipt) then onDetach with the
     // OLD file id; ignore that stale id so we only clear when deleting the current receipt.
     if (linkId !== receiptFileIdRef.current) return
-    await updateProjectExpenseReceiptAction(projectId, selectedExpense.id, new FormData())
+    unwrapAction(await updateProjectExpenseReceiptAction(projectId, selectedExpense.id, new FormData()))
     receiptFileIdRef.current = null
     setAttachments([])
     onChanged()
@@ -348,26 +366,28 @@ export function ExpenseWorkspace({
 
     startTransition(async () => {
       try {
-        await updateProjectExpenseDetailsAction(projectId, selectedExpense.id, {
-          description: memo,
-          expenseDate: expenseDate || undefined,
-          paymentMethod: paymentMethod || null,
-          // When split, per-line coding drives job costing; keep the single-line code only otherwise.
-          ...(costCodesEnabled && !isSplit ? { costCodeId: firstLine?.costCodeId || null } : {}),
-          ...(!costCodesEnabled && !isSplit ? { budgetLineId: firstLine?.budgetLineId || null } : {}),
-        })
-        await updateProjectExpenseAccountingAction(projectId, selectedExpense.id, {
-          qboTransactionType: "purchase",
-          qboExpenseAccountId: firstLineAccount?.id ?? null,
-          qboExpenseAccountName: firstLineAccount ? accountLabel(firstLineAccount) : null,
-          qboPaymentAccountId: paymentAccount?.id ?? null,
-          qboPaymentAccountName: paymentAccount ? accountLabel(paymentAccount) : null,
-          qboApAccountId: null,
-          qboApAccountName: null,
-          qboVendorId: qboVendor?.id ?? null,
-          qboVendorName: qboVendor ? accountLabel(qboVendor) : null,
-        })
-        await updateProjectExpenseLinesAction(projectId, selectedExpense.id, lines)
+        unwrapAction(await updateProjectExpenseWorkspaceAction(projectId, selectedExpense.id, {
+          details: {
+            description: memo,
+            expenseDate: expenseDate || undefined,
+            paymentMethod: paymentMethod || null,
+            // When split, per-line coding drives job costing; keep the single-line code only otherwise.
+            ...(costCodesEnabled && !isSplit ? { costCodeId: firstLine?.costCodeId || null } : {}),
+            ...(!costCodesEnabled && !isSplit ? { budgetLineId: firstLine?.budgetLineId || null } : {}),
+          },
+          accounting: {
+            qboTransactionType: "purchase",
+            qboExpenseAccountId: firstLineAccount?.id ?? null,
+            qboExpenseAccountName: firstLineAccount ? accountLabel(firstLineAccount) : null,
+            qboPaymentAccountId: paymentAccount?.id ?? null,
+            qboPaymentAccountName: paymentAccount ? accountLabel(paymentAccount) : null,
+            qboApAccountId: null,
+            qboApAccountName: null,
+            qboVendorId: qboVendor?.id ?? null,
+            qboVendorName: qboVendor ? accountLabel(qboVendor) : null,
+          },
+          lines,
+        }))
         toast.success("Expense saved")
         onChanged()
       } catch (error) {
@@ -469,25 +489,25 @@ export function ExpenseWorkspace({
       </div>
 
       <div className="min-h-0 flex-1 space-y-8 overflow-y-auto px-4 py-6 sm:px-6">
-        {/* Amount hero */}
-        <div className="space-y-4 rounded-xl border bg-muted/10 p-5">
-          <div className="flex items-center justify-between">
+        {/* Amount summary */}
+        <section className="space-y-3 border bg-card p-4">
+          <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
-              <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Total amount</p>
-              <p className="mt-1 text-3xl font-bold tabular-nums tracking-tight">{formatMoneyFromCents(displayTotalCents)}</p>
+              <p className="microlabel">Total amount</p>
+              <p className="mt-1 font-mono text-2xl font-medium tabular-nums tracking-tight">{formatMoneyFromCents(displayTotalCents)}</p>
             </div>
-            <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-right">
-              <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Subtotal</span>
-              <span className="text-sm font-semibold tabular-nums">{formatMoneyFromCents(selectedExpense.amount_cents ?? 0)}</span>
-              <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Tax</span>
-              <span className="text-sm font-semibold tabular-nums">{formatMoneyFromCents(selectedExpense.tax_cents ?? 0)}</span>
+            <div className="grid grid-cols-2 gap-x-6 text-right">
+              <span className="microlabel">Subtotal</span>
+              <span className="microlabel">Tax</span>
+              <span className="mt-1 font-mono text-sm font-medium tabular-nums">{formatMoneyFromCents(selectedExpense.amount_cents ?? 0)}</span>
+              <span className="mt-1 font-mono text-sm font-medium tabular-nums">{formatMoneyFromCents(selectedExpense.tax_cents ?? 0)}</span>
             </div>
           </div>
 
           {qboConnected ? (
             <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3 text-xs">
               <div className="flex items-center gap-2">
-                <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Sync status:</span>
+                <span className="microlabel">Sync status</span>
                 {qboBadge(selectedExpense.qbo_sync_status, selectedExpense.qbo_sync_error)}
                 {qboDeepLink(selectedExpense) ? (
                   <a href={qboDeepLink(selectedExpense)!} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
@@ -502,11 +522,11 @@ export function ExpenseWorkspace({
               ) : null}
             </div>
           ) : null}
-        </div>
+        </section>
 
         {/* Vendor */}
-        <div className="rounded-xl border bg-muted/5 p-4">
-          <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Merchant</Label>
+        <div className="border bg-card p-4">
+          <Label className="microlabel">Merchant</Label>
           <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2">
             <span className="truncate text-base font-semibold">{vendorOf(selectedExpense)}</span>
           </div>
@@ -520,11 +540,11 @@ export function ExpenseWorkspace({
         </div>
 
         {/* Expense details */}
-        <section className="space-y-4 rounded-xl border bg-muted/5 p-4">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Expense details</h3>
+        <section className="space-y-4 border bg-card p-4">
+          <h3 className="microlabel">Expense details</h3>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="flex flex-col space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Date</Label>
+              <Label className="microlabel">Date</Label>
               <Popover>
                 <PopoverTrigger asChild>
                   <Button
@@ -547,7 +567,7 @@ export function ExpenseWorkspace({
               </Popover>
             </div>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Payment method</Label>
+              <Label className="microlabel">Payment method</Label>
               <Select value={paymentMethod || undefined} onValueChange={setPaymentMethod}>
                 <SelectTrigger className="h-10 w-full">
                   <SelectValue placeholder="Select method" />
@@ -563,17 +583,17 @@ export function ExpenseWorkspace({
             </div>
           </div>
           <div className="space-y-1.5">
-            <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Memo</Label>
+            <Label className="microlabel">Memo</Label>
             <Input value={memo} onChange={(event) => setMemo(event.target.value)} placeholder="What was this for?" className="h-10 text-sm" />
           </div>
         </section>
 
         {/* QuickBooks coding */}
         {qboConnected ? (
-          <section className="space-y-4 rounded-xl border bg-muted/5 p-4">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">QuickBooks coding</h3>
+          <section className="space-y-4 border bg-card p-4">
+            <h3 className="microlabel">QuickBooks coding</h3>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">QBO vendor</Label>
+              <Label className="microlabel">QBO vendor</Label>
               <Select value={qboVendorId} onValueChange={setQboVendorId}>
                 <SelectTrigger className="h-10 w-full text-sm">
                   <SelectValue placeholder="Match/create automatically" />
@@ -589,7 +609,7 @@ export function ExpenseWorkspace({
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Paid from</Label>
+              <Label className="microlabel">Paid from</Label>
               <Select value={qboPaymentAccountId || undefined} onValueChange={setQboPaymentAccountId}>
                 <SelectTrigger className="h-10 w-full text-sm">
                   <SelectValue placeholder="Bank or credit card" />
@@ -610,7 +630,7 @@ export function ExpenseWorkspace({
         {/* Line items / cost splits */}
         <section className="space-y-4">
           <div className="flex items-center justify-between">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Line items</h3>
+            <h3 className="microlabel">Line items</h3>
             <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={addSplitLine}>
               <Plus className="mr-1 h-3 w-3" />
               Add line item
@@ -618,18 +638,18 @@ export function ExpenseWorkspace({
           </div>
 
           {isSplitAcrossProjects ? (
-            <div className="flex items-center gap-2 rounded-md bg-indigo-50 px-3 py-1.5 text-[11px] font-medium text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-300">
-              <Layers className="h-3.5 w-3.5" />
+            <div className="flex items-center gap-2 border bg-muted/40 px-3 py-1.5 text-[11px] font-medium text-foreground">
+              <Layers className="h-3.5 w-3.5 text-primary" />
               Split across {distinctSplitProjects.length} projects — one receipt, one QuickBooks transaction.
             </div>
           ) : null}
 
           <div className="space-y-3">
             {splitLines.map((line) => (
-              <div key={line.id} className="relative space-y-3 rounded-xl border bg-background p-4 shadow-sm">
+              <div key={line.id} className="relative space-y-3 border bg-card p-4">
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div>
-                    <Label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Project</Label>
+                    <Label className="microlabel mb-1 block">Project</Label>
                     <Select
                       value={line.projectId}
                       onValueChange={(value) => setSplitLines((prev) => prev.map((item) => (item.id === line.id ? { ...item, projectId: value } : item)))}
@@ -643,7 +663,7 @@ export function ExpenseWorkspace({
                     </Select>
                   </div>
                   <div>
-                    <Label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Amount</Label>
+                    <Label className="microlabel mb-1 block">Amount</Label>
                     <div className="flex gap-2">
                       <div className="relative flex-1">
                         <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-xs text-muted-foreground">$</span>
@@ -671,7 +691,7 @@ export function ExpenseWorkspace({
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   {costCodesEnabled ? (
                     <div>
-                      <Label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Cost code</Label>
+                      <Label className="microlabel mb-1 block">Cost code</Label>
                       <Select
                         value={line.costCodeId || "__none__"}
                         onValueChange={(value) => setSplitLines((prev) => prev.map((item) => (item.id === line.id ? { ...item, costCodeId: value === "__none__" ? "" : value } : item)))}
@@ -689,7 +709,7 @@ export function ExpenseWorkspace({
                     </div>
                   ) : budgetLines.length > 0 ? (
                     <div>
-                      <Label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Budget line</Label>
+                      <Label className="microlabel mb-1 block">Budget line</Label>
                       <Select
                         value={line.budgetLineId || "__none__"}
                         onValueChange={(value) => setSplitLines((prev) => prev.map((item) => (item.id === line.id ? { ...item, budgetLineId: value === "__none__" ? "" : value } : item)))}
@@ -707,7 +727,7 @@ export function ExpenseWorkspace({
                     </div>
                   ) : null}
                   <div className={cn(!costCodesEnabled && budgetLines.length === 0 && "sm:col-span-2")}>
-                    <Label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Description</Label>
+                    <Label className="microlabel mb-1 block">Description</Label>
                     <Input
                       value={line.description}
                       placeholder="Line description..."
@@ -719,7 +739,7 @@ export function ExpenseWorkspace({
 
                 {qboConnected ? (
                   <div className="mt-3 border-t pt-3">
-                    <Label className="mb-1 block text-[9px] font-bold uppercase tracking-widest text-muted-foreground">QBO category</Label>
+                    <Label className="microlabel mb-1 block">QBO category</Label>
                     <Select
                       value={line.qboExpenseAccountId || undefined}
                       onValueChange={(value) => setSplitLines((prev) => prev.map((item) => (item.id === line.id ? { ...item, qboExpenseAccountId: value } : item)))}
@@ -738,7 +758,7 @@ export function ExpenseWorkspace({
           </div>
 
           {splitLines.length > 1 ? (
-            <div className={cn("flex items-center justify-between rounded-md px-3 py-2 text-xs font-medium", splitsBalanced ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-300" : "bg-amber-50 text-amber-700 dark:bg-amber-950/20 dark:text-amber-300")}>
+            <div className={cn("flex items-center justify-between border px-3 py-2 text-xs font-medium tabular-nums", splitsBalanced ? "border-success/20 bg-success/10 text-success" : "border-warning/20 bg-warning/10 text-warning")}>
               <span>Allocated {formatMoneyFromCents(splitTotalCents)} of {formatMoneyFromCents(totalCents)}</span>
               <span>{splitsBalanced ? "Balanced" : `${formatMoneyFromCents(totalCents - splitTotalCents)} unallocated`}</span>
             </div>
@@ -769,7 +789,7 @@ export function ExpenseWorkspace({
         <Button
           variant="ghost"
           disabled={isPending || !canSync || !qboConnected}
-          onClick={() => runAction(() => syncProjectExpenseToQBOAction(projectId, selectedExpense.id), "Expense synced to QuickBooks")}
+          onClick={() => runAction(() => syncProjectExpenseToQBOAction(projectId, selectedExpense.id).then(unwrapAction), "Expense synced to QuickBooks")}
         >
           <ExternalLink className="mr-2 h-4 w-4" />
           Sync to QuickBooks

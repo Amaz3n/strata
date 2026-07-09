@@ -22,9 +22,46 @@ import {
   listBillingRateSchedulesAction,
 } from "./actions"
 
+import { unwrapAction } from "@/lib/action-result"
+
 export const dynamic = "force-dynamic"
 
 const NONE = "__none__"
+
+async function createBillingRateScheduleForm(formData: FormData) {
+  "use server"
+  unwrapAction(await createBillingRateScheduleFormAction(formData))
+}
+
+async function archiveBillingRateScheduleForm(scheduleId: string) {
+  "use server"
+  unwrapAction(await archiveBillingRateScheduleFormAction(scheduleId))
+}
+
+async function assignBillingRateScheduleForm(formData: FormData) {
+  "use server"
+  unwrapAction(await assignBillingRateScheduleFormAction(formData))
+}
+
+async function createBillingRateForm(formData: FormData) {
+  "use server"
+  unwrapAction(await createBillingRateFormAction(formData))
+}
+
+async function deleteBillingRateForm(rateId: string) {
+  "use server"
+  unwrapAction(await deleteBillingRateFormAction(rateId))
+}
+
+async function createBillingRateOverrideForm(formData: FormData) {
+  "use server"
+  unwrapAction(await createBillingRateOverrideFormAction(formData))
+}
+
+async function deleteBillingRateOverrideForm(overrideId: string) {
+  "use server"
+  unwrapAction(await deleteBillingRateOverrideFormAction(overrideId))
+}
 
 export default async function BillingRatesPage() {
   const [schedules, overrides, options] = await Promise.all([
@@ -56,7 +93,7 @@ export default async function BillingRatesPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <form action={createBillingRateScheduleFormAction} className="grid gap-4 md:grid-cols-[1fr_1.5fr_160px_auto] md:items-end">
+            <form action={createBillingRateScheduleForm} className="grid gap-4 md:grid-cols-[1fr_1.5fr_160px_auto] md:items-end">
               <div className="space-y-2">
                 <Label>Name</Label>
                 <Input name="name" required placeholder="Standard T&M 2026" />
@@ -88,7 +125,7 @@ export default async function BillingRatesPage() {
             <CardTitle className="text-base">Assign schedule to project</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <form action={assignBillingRateScheduleFormAction} className="grid gap-4 lg:grid-cols-[minmax(260px,1fr)_minmax(240px,1fr)_auto] lg:items-end">
+            <form action={assignBillingRateScheduleForm} className="grid gap-4 lg:grid-cols-[minmax(260px,1fr)_minmax(240px,1fr)_auto] lg:items-end">
               <div className="space-y-2">
                 <Label>T&M project</Label>
                 <Select name="project_id">
@@ -159,7 +196,7 @@ export default async function BillingRatesPage() {
                   {schedule.description ? <p className="mt-1 text-sm text-muted-foreground">{schedule.description}</p> : null}
                 </div>
                 {schedule.status !== "archived" ? (
-                  <form action={archiveBillingRateScheduleFormAction.bind(null, schedule.id)}>
+                  <form action={archiveBillingRateScheduleForm.bind(null, schedule.id)}>
                     <Button size="sm" variant="outline">
                       <Archive className="h-4 w-4" />
                       Archive
@@ -172,7 +209,7 @@ export default async function BillingRatesPage() {
                 {schedule.status !== "archived" ? (
                   <>
                     <Separator />
-                    <form action={createBillingRateFormAction} className="space-y-4">
+                    <form action={createBillingRateForm} className="space-y-4">
                       <input type="hidden" name="schedule_id" value={schedule.id} />
                       <RateFields options={options} />
                       <div className="flex justify-end">
@@ -199,7 +236,7 @@ export default async function BillingRatesPage() {
             <CardTitle className="text-base">Project overrides</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <form action={createBillingRateOverrideFormAction} className="space-y-4">
+            <form action={createBillingRateOverrideForm} className="space-y-4">
               <div className="grid gap-4 lg:grid-cols-2">
                 <div className="space-y-2">
                   <Label>T&M project</Label>
@@ -260,7 +297,7 @@ export default async function BillingRatesPage() {
                       <TableCell>{rateDisplay(override)}</TableCell>
                       <TableCell>{formatRange(override.effective_from, override.effective_to)}</TableCell>
                       <TableCell className="text-right">
-                        <form action={deleteBillingRateOverrideFormAction.bind(null, override.id)}>
+                        <form action={deleteBillingRateOverrideForm.bind(null, override.id)}>
                           <Button size="icon" variant="ghost" aria-label="Delete project override">
                             <Trash2 className="h-4 w-4" />
                           </Button>
@@ -394,7 +431,7 @@ function RateTable({ rates }: { rates: any[] }) {
               <TableCell>OT {rate.ot_multiplier}x · DT {rate.dt_multiplier}x</TableCell>
               <TableCell>{formatRange(rate.effective_from, rate.effective_to)}</TableCell>
               <TableCell className="text-right">
-                <form action={deleteBillingRateFormAction.bind(null, rate.id)}>
+                <form action={deleteBillingRateForm.bind(null, rate.id)}>
                   <Button size="icon" variant="ghost" aria-label="Delete rate">
                     <Trash2 className="h-4 w-4" />
                   </Button>

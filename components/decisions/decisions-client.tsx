@@ -3,8 +3,13 @@
 import { useMemo, useState, useTransition } from "react"
 import { format } from "date-fns"
 
-import type { Decision } from "@/lib/types"
-import { createDecisionAction, updateDecisionAction } from "@/app/(app)/decisions/actions"
+import type { Decision, DecisionOption } from "@/lib/types"
+import { unwrapAction } from "@/lib/action-result"
+import {
+  createDecisionAction,
+  sendDecisionToClientAction,
+  updateDecisionAction,
+} from "@/app/(app)/decisions/actions"
 import { useIsMobile } from "@/hooks/use-mobile"
 
 import { Badge } from "@/components/ui/badge"
@@ -22,9 +27,10 @@ import { Calendar, FileText, MoreHorizontal, Plus } from "@/components/icons"
 import { cn } from "@/lib/utils"
 
 const statusLabels: Record<string, string> = {
-  requested: "Requested",
-  pending: "Pending",
+  requested: "Draft",
+  pending: "With client",
   approved: "Approved",
+  declined: "Declined",
   revised: "Revised",
 }
 
@@ -32,6 +38,7 @@ const statusStyles: Record<string, string> = {
   requested: "bg-zinc-500/15 text-zinc-600 border-zinc-500/30",
   pending: "bg-warning/20 text-warning border-warning/40",
   approved: "bg-success/20 text-success border-success/30",
+  declined: "bg-destructive/15 text-destructive border-destructive/30",
   revised: "bg-muted text-muted-foreground border-muted",
 }
 
@@ -39,17 +46,31 @@ const statusDot: Record<string, string> = {
   requested: "bg-zinc-400",
   pending: "bg-amber-500",
   approved: "bg-emerald-500",
+  declined: "bg-rose-500",
   revised: "bg-muted-foreground/40",
 }
 
-const filterOrder = ["all", "requested", "pending", "approved", "revised"] as const
+const filterOrder = ["all", "requested", "pending", "approved", "declined"] as const
 
 const shortStatusLabel: Record<string, string> = {
   all: "All",
-  requested: "Requested",
-  pending: "Pending",
+  requested: "Draft",
+  pending: "With client",
   approved: "Approved",
-  revised: "Revised",
+  declined: "Declined",
+}
+
+function costDeltaLabel(cents?: number | null) {
+  if (cents == null || cents === 0) return null
+  const amount = `$${Math.abs(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2 })}`
+  return cents > 0 ? `+${amount}` : `-${amount}`
+}
+
+type OptionFormRow = {
+  id: string
+  label: string
+  description: string
+  cost_delta: string
 }
 
 type DecisionFormState = {
@@ -57,6 +78,27 @@ type DecisionFormState = {
   description: string
   due_date: string
   status: string
+  options: OptionFormRow[]
+}
+
+function optionsToRows(options: DecisionOption[]): OptionFormRow[] {
+  return options.map((option) => ({
+    id: option.id,
+    label: option.label,
+    description: option.description ?? "",
+    cost_delta: option.cost_delta_cents != null ? (option.cost_delta_cents / 100).toString() : "",
+  }))
+}
+
+function rowsToOptions(rows: OptionFormRow[]): DecisionOption[] {
+  return rows
+    .filter((row) => row.label.trim())
+    .map((row) => ({
+      id: row.id,
+      label: row.label.trim(),
+      description: row.description.trim() || null,
+      cost_delta_cents: row.cost_delta.trim() ? Math.round(Number(row.cost_delta) * 100) : null,
+    }))
 }
 
 export function DecisionsClient({
@@ -79,6 +121,7 @@ export function DecisionsClient({
     description: "",
     due_date: "",
     status: "requested",
+    options: [],
   })
 
   const filtered = useMemo(() => {
@@ -99,6 +142,7 @@ export function DecisionsClient({
       description: "",
       due_date: "",
       status: "requested",
+      options: [],
     })
     setDialogOpen(true)
   }
@@ -110,8 +154,27 @@ export function DecisionsClient({
       description: decision.description ?? "",
       due_date: decision.due_date ?? "",
       status: decision.status ?? "requested",
+      options: optionsToRows(decision.options ?? []),
     })
     setDialogOpen(true)
+  }
+
+  const addOptionRow = () => {
+    setForm((prev) => ({
+      ...prev,
+      options: [...prev.options, { id: crypto.randomUUID(), label: "", description: "", cost_delta: "" }],
+    }))
+  }
+
+  const updateOptionRow = (id: string, patch: Partial<OptionFormRow>) => {
+    setForm((prev) => ({
+      ...prev,
+      options: prev.options.map((row) => (row.id === id ? { ...row, ...patch } : row)),
+    }))
+  }
+
+  const removeOptionRow = (id: string) => {
+    setForm((prev) => ({ ...prev, options: prev.options.filter((row) => row.id !== id) }))
   }
 
   const handleSubmit = () => {
@@ -122,29 +185,44 @@ export function DecisionsClient({
           return
         }
 
+        const payload = {
+          title: form.title.trim(),
+          description: form.description.trim() || null,
+          due_date: form.due_date || null,
+          status: form.status,
+          options: rowsToOptions(form.options),
+        }
+
         if (editing) {
-          const updated = await updateDecisionAction(editing.id, projectId, {
-            title: form.title.trim(),
-            description: form.description.trim() || null,
-            due_date: form.due_date || null,
-            status: form.status,
-          })
+          const updated = unwrapAction(await updateDecisionAction(editing.id, projectId, payload))
           setItems((prev) => prev.map((d) => (d.id === updated.id ? updated : d)))
           toast({ title: "Decision updated" })
         } else {
-          const created = await createDecisionAction({
-            project_id: projectId,
-            title: form.title.trim(),
-            description: form.description.trim() || null,
-            due_date: form.due_date || null,
-            status: form.status,
-          })
+          const created = unwrapAction(await createDecisionAction({ project_id: projectId, ...payload }))
           setItems((prev) => [created, ...prev])
           toast({ title: "Decision created" })
         }
         setDialogOpen(false)
-      } catch (error: any) {
-        toast({ title: "Unable to save decision", description: error?.message ?? "Try again." })
+      } catch (error) {
+        toast({
+          title: "Unable to save decision",
+          description: error instanceof Error ? error.message : "Try again.",
+        })
+      }
+    })
+  }
+
+  const handleSendToClient = (decision: Decision) => {
+    startTransition(async () => {
+      try {
+        const updated = unwrapAction(await sendDecisionToClientAction(decision.id, projectId))
+        setItems((prev) => prev.map((d) => (d.id === updated.id ? updated : d)))
+        toast({ title: "Sent to client", description: "They received an email with a secure decision link." })
+      } catch (error) {
+        toast({
+          title: "Unable to send decision",
+          description: error instanceof Error ? error.message : "Try again.",
+        })
       }
     })
   }
@@ -191,6 +269,57 @@ export function DecisionsClient({
                   rows={4}
                 />
               </div>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium leading-none">Options for the client</label>
+                  <Button type="button" variant="ghost" size="sm" onClick={addOptionRow}>
+                    <Plus className="mr-1 h-3.5 w-3.5" />
+                    Add option
+                  </Button>
+                </div>
+                {form.options.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No options — the client will simply approve or decline.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {form.options.map((row, index) => (
+                      <div key={row.id} className="border p-3 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <Input
+                            value={row.label}
+                            onChange={(e) => updateOptionRow(row.id, { label: e.target.value })}
+                            placeholder={`Option ${index + 1} (e.g. Quartz countertop)`}
+                          />
+                          <Input
+                            value={row.cost_delta}
+                            onChange={(e) => updateOptionRow(row.id, { cost_delta: e.target.value })}
+                            placeholder="+/- $"
+                            inputMode="decimal"
+                            className="w-28 text-right tabular-nums"
+                          />
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 shrink-0"
+                            onClick={() => removeOptionRow(row.id)}
+                            aria-label="Remove option"
+                          >
+                            ×
+                          </Button>
+                        </div>
+                        <Input
+                          value={row.description}
+                          onChange={(e) => updateOptionRow(row.id, { description: e.target.value })}
+                          placeholder="Details (optional)"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <label className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
@@ -204,7 +333,7 @@ export function DecisionsClient({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {["requested", "pending", "approved", "revised"].map((status) => (
+                      {["requested", "pending", "approved", "declined"].map((status) => (
                         <SelectItem key={status} value={status}>
                           {statusLabels[status]}
                         </SelectItem>
@@ -244,6 +373,19 @@ export function DecisionsClient({
               <Button variant="outline" className="flex-1" onClick={() => setDialogOpen(false)} disabled={isPending}>
                 Cancel
               </Button>
+              {editing && (editing.status === "requested" || editing.status === "declined") && (
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  onClick={() => {
+                    setDialogOpen(false)
+                    handleSendToClient(editing)
+                  }}
+                  disabled={isPending}
+                >
+                  Send to client
+                </Button>
+              )}
               <Button className="flex-1" onClick={handleSubmit} disabled={isPending}>
                 {isPending ? "Saving..." : editing ? "Save changes" : "Create decision"}
               </Button>
@@ -423,9 +565,22 @@ export function DecisionsClient({
                   >
                     <TableCell className="min-w-0 pl-4">
                       <span className="text-sm font-medium truncate block">{decision.title}</span>
-                      {decision.description ? (
-                        <span className="text-xs text-muted-foreground truncate block mt-0.5">{decision.description}</span>
-                      ) : null}
+                      {(() => {
+                        const selected = decision.options?.find((option) => option.id === decision.selected_option_id)
+                        if (selected) {
+                          const delta = costDeltaLabel(selected.cost_delta_cents)
+                          return (
+                            <span className="text-xs text-muted-foreground truncate block mt-0.5">
+                              {decision.decided_via_portal ? "Client selected: " : "Selected: "}
+                              {selected.label}
+                              {delta ? ` · ${delta}` : ""}
+                            </span>
+                          )
+                        }
+                        return decision.description ? (
+                          <span className="text-xs text-muted-foreground truncate block mt-0.5">{decision.description}</span>
+                        ) : null
+                      })()}
                     </TableCell>
                     <TableCell className="hidden sm:table-cell text-center">
                       <div className="flex flex-col gap-1 items-center">
@@ -457,6 +612,11 @@ export function DecisionsClient({
                             <DropdownMenuItem onClick={() => openEdit(decision)}>
                               Edit
                             </DropdownMenuItem>
+                            {(decision.status === "requested" || decision.status === "declined") && (
+                              <DropdownMenuItem onClick={() => handleSendToClient(decision)}>
+                                Send to client
+                              </DropdownMenuItem>
+                            )}
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </div>

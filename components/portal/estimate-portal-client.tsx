@@ -78,6 +78,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
           amount_cents: it.amount_cents,
           notes: it.notes,
           is_optional: it.is_optional,
+          badges: it.is_allowance ? ["Allowance"] : undefined,
         }
       }),
     [estimate.items],
@@ -94,7 +95,14 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
     setSelectedOptionalIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
 
   const baseTotal = estimate.total_cents ?? 0
-  const selectedOptionalTotal = selectedOptionalIds.reduce((sum, id) => sum + (optionalAmountById.get(id) ?? 0), 0)
+  const selectedOptionalSubtotal = selectedOptionalIds.reduce(
+    (sum, id) => sum + (optionalAmountById.get(id) ?? 0),
+    0,
+  )
+  // Add-ons are taxed at the document rate; mirror the server's acceptance math
+  // so the number the client sees is the number that gets recorded.
+  const selectedOptionalTotal =
+    selectedOptionalSubtotal + Math.round((selectedOptionalSubtotal * (estimate.tax_rate ?? 0)) / 100)
   const displayTotal =
     isApproved && estimate.accepted_options
       ? estimate.accepted_options.accepted_total_cents

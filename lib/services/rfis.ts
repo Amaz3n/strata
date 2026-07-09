@@ -1,12 +1,23 @@
+import type { SupabaseClient } from "@supabase/supabase-js"
+
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
+import { insertWithProjectNumberRetry } from "@/lib/services/project-sequence"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { renderEmailTemplate, sendEmail, getOrgSenderEmail } from "@/lib/services/mailer"
 import { attachFileWithServiceRole } from "@/lib/services/file-links"
 import { attachFile } from "@/lib/services/file-links"
 import { requirePermission } from "@/lib/services/permissions"
-import type { Rfi, RfiResponse } from "@/lib/types"
+import { createChangeOrder } from "@/lib/services/change-orders"
+import { changeOrderInputSchema } from "@/lib/validation/change-orders"
+import {
+  ensurePortalLink,
+  fetchCompanyContacts,
+  fetchContactEmail,
+  fetchUserEmail,
+} from "@/lib/services/portal-links"
+import type { ChangeOrder, Rfi, RfiResponse } from "@/lib/types"
 import type { RfiDecisionInput, RfiInput, RfiResponseInput } from "@/lib/validation/rfis"
 import { RfiNotificationEmail } from "@/lib/emails/rfi-notification-email"
 
@@ -14,19 +25,20 @@ const RFI_SELECT =
   "id, org_id, project_id, rfi_number, subject, question, status, priority, submitted_by, submitted_by_company_id, assigned_to, assigned_company_id, notify_contact_id, submitted_at, sent_to_emails, due_date, answered_at, closed_at, cost_impact_cents, schedule_impact_days, drawing_reference, spec_reference, location, attachment_file_id, last_response_at, decision_status, decision_note, decided_by_user_id, decided_by_contact_id, decided_at, decided_via_portal, decision_portal_token_id, created_at, updated_at"
 
 const RFI_NUMBER_CONFLICT_CONSTRAINT = "rfis_project_id_rfi_number_key"
-const RFI_INSERT_RETRY_LIMIT = 5
+
+const ORG_LIST_CAP = 500
 
 export async function listRfis(orgId?: string, projectId?: string): Promise<Rfi[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("rfi.read", { supabase, orgId: resolvedOrgId, userId })
-  let query = supabase
-    .from("rfis")
-    .select(RFI_SELECT)
-    .eq("org_id", resolvedOrgId)
-    .order("rfi_number", { ascending: true })
+  let query = supabase.from("rfis").select(RFI_SELECT).eq("org_id", resolvedOrgId)
 
   if (projectId) {
-    query = query.eq("project_id", projectId)
+    query = query.eq("project_id", projectId).order("rfi_number", { ascending: true })
+  } else {
+    // Org desk: newest first, capped — the desk ranks recent activity, the
+    // project workbench is the complete log.
+    query = query.order("created_at", { ascending: false }).limit(ORG_LIST_CAP)
   }
 
   const { data, error } = await query
@@ -111,71 +123,29 @@ export async function listRfiResponses({
   })
 }
 
-async function resolveNextRfiNumber(supabase: any, projectId: string) {
-  const { data: nextFromRpc, error: rpcError } = await supabase.rpc("next_rfi_number", {
-    p_project_id: projectId,
-  })
-
-  if (!rpcError && typeof nextFromRpc === "number" && nextFromRpc > 0) {
-    return nextFromRpc
-  }
-
-  const { data: last } = await supabase
-    .from("rfis")
-    .select("rfi_number")
-    .eq("project_id", projectId)
-    .order("rfi_number", { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  return (last?.rfi_number ?? 0) + 1
-}
-
-function isRfiNumberConflict(error: any) {
-  if (!error) return false
-  if (error.code !== "23505") return false
-  if (error.constraint === RFI_NUMBER_CONFLICT_CONSTRAINT) return true
-  const message = typeof error.message === "string" ? error.message : ""
-  return message.includes(RFI_NUMBER_CONFLICT_CONSTRAINT)
-}
-
 async function insertRfiWithNumberRetry({
   supabase,
   projectId,
   payload,
   explicitRfiNumber,
 }: {
-  supabase: any
+  supabase: SupabaseClient
   projectId: string
-  payload: Record<string, any>
+  payload: Record<string, unknown>
   explicitRfiNumber?: number
-}): Promise<{ data: any; insertPayload: Record<string, any> }> {
-  let attempt = 0
-  while (attempt < RFI_INSERT_RETRY_LIMIT) {
-    const rfiNumber = explicitRfiNumber ?? (await resolveNextRfiNumber(supabase, projectId))
-    const insertPayload: Record<string, any> = {
-      ...payload,
-      rfi_number: rfiNumber,
-    }
-
-    const { data, error } = await supabase
-      .from("rfis")
-      .insert(insertPayload)
-      .select(RFI_SELECT)
-      .single()
-
-    if (!error && data) {
-      return { data, insertPayload }
-    }
-
-    if (!isRfiNumberConflict(error) || explicitRfiNumber) {
-      throw new Error(`Failed to create RFI: ${error?.message}`)
-    }
-
-    attempt += 1
-  }
-
-  throw new Error("Failed to create RFI: could not allocate a unique RFI number")
+}) {
+  return insertWithProjectNumberRetry<Rfi>({
+    supabase,
+    table: "rfis",
+    numberColumn: "rfi_number",
+    rpcName: "next_rfi_number",
+    conflictConstraint: RFI_NUMBER_CONFLICT_CONSTRAINT,
+    projectId,
+    payload,
+    select: RFI_SELECT,
+    explicitNumber: explicitRfiNumber,
+    entityLabel: "RFI",
+  })
 }
 
 export async function createRfi({
@@ -240,12 +210,12 @@ export async function createRfi({
     after: insertPayload,
   })
 
-  if (insertPayload.attachment_file_id) {
+  if (input.attachment_file_id) {
     try {
       await attachFile(
         {
-          file_id: insertPayload.attachment_file_id,
-          project_id: insertPayload.project_id,
+          file_id: input.attachment_file_id,
+          project_id: input.project_id,
           entity_type: "rfi",
           entity_id: data.id,
           link_role: "legacy_attachment",
@@ -665,6 +635,228 @@ export async function decideRfi({ orgId, input }: { orgId?: string; input: RfiDe
   return { success: true }
 }
 
+export async function closeRfi({ rfiId, orgId }: { rfiId: string; orgId?: string }): Promise<Rfi> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("rfi.close", { supabase, orgId: resolvedOrgId, userId })
+  const now = new Date().toISOString()
+
+  const { data, error } = await supabase
+    .from("rfis")
+    .update({ status: "closed", closed_at: now })
+    .eq("id", rfiId)
+    .eq("org_id", resolvedOrgId)
+    .neq("status", "closed")
+    .select(RFI_SELECT)
+    .single()
+
+  if (error || !data) {
+    throw new Error(`Failed to close RFI: ${error?.message ?? "Not found or already closed"}`)
+  }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "rfi_closed",
+    entityType: "rfi",
+    entityId: rfiId,
+    payload: { rfi_number: data.rfi_number, project_id: data.project_id },
+  })
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "rfi",
+    entityId: rfiId,
+    after: { status: "closed", closed_at: now },
+  })
+
+  return data as Rfi
+}
+
+export async function reopenRfi({ rfiId, orgId }: { rfiId: string; orgId?: string }): Promise<Rfi> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("rfi.close", { supabase, orgId: resolvedOrgId, userId })
+
+  const { data: existing, error: existingError } = await supabase
+    .from("rfis")
+    .select("id, status, answered_at")
+    .eq("id", rfiId)
+    .eq("org_id", resolvedOrgId)
+    .maybeSingle()
+
+  if (existingError || !existing) {
+    throw new Error(`Failed to load RFI: ${existingError?.message ?? "Not found"}`)
+  }
+  if (existing.status !== "closed") {
+    throw new Error("Only closed RFIs can be reopened")
+  }
+
+  const nextStatus = existing.answered_at ? "answered" : "open"
+  const { data, error } = await supabase
+    .from("rfis")
+    .update({ status: nextStatus, closed_at: null })
+    .eq("id", rfiId)
+    .eq("org_id", resolvedOrgId)
+    .select(RFI_SELECT)
+    .single()
+
+  if (error || !data) {
+    throw new Error(`Failed to reopen RFI: ${error?.message}`)
+  }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "rfi_reopened",
+    entityType: "rfi",
+    entityId: rfiId,
+    payload: { rfi_number: data.rfi_number, project_id: data.project_id },
+  })
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "rfi",
+    entityId: rfiId,
+    after: { status: nextStatus, closed_at: null },
+  })
+
+  return data as Rfi
+}
+
+export interface RfiLinkedChangeOrder {
+  id: string
+  co_number: number | string | null
+  title: string
+  status: string
+  total_cents: number | null
+}
+
+export async function getRfiLinkedChangeOrder({
+  rfiId,
+  orgId,
+}: {
+  rfiId: string
+  orgId?: string
+}): Promise<RfiLinkedChangeOrder | null> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("rfi.read", { supabase, orgId: resolvedOrgId, userId })
+
+  const { data, error } = await supabase
+    .from("change_orders")
+    .select("id, co_number, title, status, total_cents")
+    .eq("org_id", resolvedOrgId)
+    .eq("metadata->>source_rfi_id", rfiId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) {
+    throw new Error(`Failed to load linked change order: ${error.message}`)
+  }
+  return (data as RfiLinkedChangeOrder | null) ?? null
+}
+
+/**
+ * Turns an RFI's cost/schedule impact into a draft change order and links the
+ * two via change_orders.metadata.source_rfi_id. change_order.write is enforced
+ * by createChangeOrder.
+ */
+export async function convertRfiToChangeOrder({
+  rfiId,
+  orgId,
+}: {
+  rfiId: string
+  orgId?: string
+}): Promise<ChangeOrder> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("rfi.read", { supabase, orgId: resolvedOrgId, userId })
+
+  const { data: rfi, error: rfiError } = await supabase
+    .from("rfis")
+    .select("id, project_id, rfi_number, subject, question, decision_note, cost_impact_cents, schedule_impact_days")
+    .eq("id", rfiId)
+    .eq("org_id", resolvedOrgId)
+    .maybeSingle()
+
+  if (rfiError || !rfi) {
+    throw new Error(`Failed to load RFI: ${rfiError?.message ?? "Not found"}`)
+  }
+
+  const { data: alreadyLinked } = await supabase
+    .from("change_orders")
+    .select("id, co_number")
+    .eq("org_id", resolvedOrgId)
+    .eq("metadata->>source_rfi_id", rfiId)
+    .limit(1)
+    .maybeSingle()
+
+  if (alreadyLinked) {
+    throw new Error(
+      `RFI #${rfi.rfi_number} is already linked to change order${alreadyLinked.co_number ? ` #${alreadyLinked.co_number}` : ""}`,
+    )
+  }
+
+  const input = changeOrderInputSchema.parse({
+    project_id: rfi.project_id,
+    title: `RFI #${rfi.rfi_number}: ${rfi.subject}`,
+    summary: `Cost/schedule impact from RFI #${rfi.rfi_number} — ${rfi.subject}`,
+    description: rfi.decision_note ?? rfi.question ?? undefined,
+    days_impact: rfi.schedule_impact_days ?? null,
+    status: "draft",
+    client_visible: false,
+    requires_signature: true,
+    lines: [
+      {
+        description: `RFI #${rfi.rfi_number}: ${rfi.subject}`,
+        quantity: 1,
+        unit: "ls",
+        unit_cost: (rfi.cost_impact_cents ?? 0) / 100,
+      },
+    ],
+  })
+
+  const changeOrder = await createChangeOrder({ input, orgId: resolvedOrgId })
+
+  const { data: coRow } = await supabase
+    .from("change_orders")
+    .select("metadata")
+    .eq("id", changeOrder.id)
+    .eq("org_id", resolvedOrgId)
+    .maybeSingle()
+
+  const mergedMetadata = {
+    ...((coRow?.metadata as Record<string, unknown> | null) ?? {}),
+    source_rfi_id: rfi.id,
+    source_rfi_number: rfi.rfi_number,
+  }
+
+  await supabase
+    .from("change_orders")
+    .update({ metadata: mergedMetadata })
+    .eq("id", changeOrder.id)
+    .eq("org_id", resolvedOrgId)
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "rfi_converted_to_change_order",
+    entityType: "rfi",
+    entityId: rfi.id,
+    payload: { rfi_number: rfi.rfi_number, change_order_id: changeOrder.id, project_id: rfi.project_id },
+  })
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "rfi",
+    entityId: rfi.id,
+    after: { converted_to_change_order_id: changeOrder.id },
+  })
+
+  return changeOrder
+}
+
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"
 
 async function sendRfiEmail({
@@ -717,17 +909,21 @@ async function sendRfiEmail({
 
   const project = Array.isArray(rfi.project) ? rfi.project[0] : rfi.project
   const effectiveNotifyContactId = notifyContactId ?? rfi.notify_contact_id ?? null
+  const rfiPortalCaps = { can_view_rfis: true, can_respond_rfis: true } as const
+  const fallbackPath = `/rfis?project=${rfi.project_id}`
 
-  if (rfi.assigned_to) {
-    const userEmail = await fetchUserEmail(supabase, rfi.assigned_to)
-    if (userEmail?.email) {
-      recipients.push({ email: userEmail.email, name: userEmail.full_name, audience: "internal", portalLink: null })
-    }
-  }
-
-  if (project?.client_id) {
-    const contactEmail = await fetchContactEmail(supabase, project.client_id)
-    if (contactEmail?.email) {
+  await Promise.all([
+    (async () => {
+      if (!rfi.assigned_to) return
+      const userEmail = await fetchUserEmail(supabase, rfi.assigned_to)
+      if (userEmail?.email) {
+        recipients.push({ email: userEmail.email, name: userEmail.full_name, audience: "internal", portalLink: null })
+      }
+    })(),
+    (async () => {
+      if (!project?.client_id) return
+      const contactEmail = await fetchContactEmail(supabase, project.client_id)
+      if (!contactEmail?.email) return
       const link = await ensurePortalLink({
         supabase,
         orgId,
@@ -737,14 +933,15 @@ async function sendRfiEmail({
         companyId: null,
         createdBy: rfi.submitted_by ?? null,
         scopedRfiId: rfi.id,
+        capabilities: rfiPortalCaps,
+        fallbackPath,
       })
       recipients.push({ email: contactEmail.email, name: contactEmail.full_name, audience: "client", portalLink: link })
-    }
-  }
-
-  if (effectiveNotifyContactId) {
-    const notifyContact = await fetchContact(supabase, effectiveNotifyContactId)
-    if (notifyContact?.email) {
+    })(),
+    (async () => {
+      if (!effectiveNotifyContactId) return
+      const notifyContact = await fetchContact(supabase, effectiveNotifyContactId)
+      if (!notifyContact?.email) return
       const portalType = resolveNotifyContactPortalType(notifyContact)
       const link = await ensurePortalLink({
         supabase,
@@ -755,6 +952,8 @@ async function sendRfiEmail({
         companyId: notifyContact.primary_company_id ?? null,
         createdBy: rfi.submitted_by ?? null,
         scopedRfiId: rfi.id,
+        capabilities: rfiPortalCaps,
+        fallbackPath,
       })
       recipients.push({
         email: notifyContact.email,
@@ -762,12 +961,11 @@ async function sendRfiEmail({
         audience: portalType === "sub" ? "sub" : "client",
         portalLink: link,
       })
-    }
-  }
-
-  if (rfi.assigned_company_id) {
-    const companyContacts = await fetchCompanyContacts(supabase, orgId, rfi.assigned_company_id)
-    if (companyContacts.length > 0) {
+    })(),
+    (async () => {
+      if (!rfi.assigned_company_id) return
+      const companyContacts = await fetchCompanyContacts(supabase, orgId, rfi.assigned_company_id)
+      if (companyContacts.length === 0) return
       const link = await ensurePortalLink({
         supabase,
         orgId,
@@ -777,21 +975,23 @@ async function sendRfiEmail({
         companyId: rfi.assigned_company_id,
         createdBy: rfi.submitted_by ?? null,
         scopedRfiId: rfi.id,
+        capabilities: rfiPortalCaps,
+        fallbackPath,
       })
       for (const contact of companyContacts) {
         if (contact.email) {
           recipients.push({ email: contact.email, name: contact.full_name, audience: "sub", portalLink: link })
         }
       }
-    }
-  }
-
-  if (rfi.submitted_by) {
-    const submitterEmail = await fetchUserEmail(supabase, rfi.submitted_by)
-    if (submitterEmail?.email) {
-      recipients.push({ email: submitterEmail.email, name: submitterEmail.full_name, audience: "internal", portalLink: null })
-    }
-  }
+    })(),
+    (async () => {
+      if (!rfi.submitted_by) return
+      const submitterEmail = await fetchUserEmail(supabase, rfi.submitted_by)
+      if (submitterEmail?.email) {
+        recipients.push({ email: submitterEmail.email, name: submitterEmail.full_name, audience: "internal", portalLink: null })
+      }
+    })(),
+  ])
 
   if (recipients.length === 0) {
     console.warn("No recipients for RFI email; skipping", { rfiId })
@@ -840,212 +1040,48 @@ async function sendRfiEmail({
         })
       : null
 
-  const sentRecipients: string[] = []
+  const sendResults = await Promise.all(
+    Array.from(deduped.entries()).map(async ([to, meta]) => {
+      const actionHref =
+        meta.audience === "internal" || !meta.portalLink ? `${APP_URL}/rfis?highlight=${rfi.id}` : meta.portalLink
+      const actionLabel = meta.audience === "internal" ? "Open in Arc" : "Respond in Portal"
 
-  for (const [to, meta] of deduped.entries()) {
-    const actionHref =
-      meta.audience === "internal" || !meta.portalLink ? `${APP_URL}/rfis?highlight=${rfi.id}` : meta.portalLink
-    const actionLabel = meta.audience === "internal" ? "Open in Arc" : "Respond in Portal"
+      const html = await renderEmailTemplate(
+        RfiNotificationEmail({
+          orgName: org?.name ?? null,
+          orgLogoUrl: org?.logo_url ?? null,
+          recipientName: meta.name ?? null,
+          audience: meta.audience,
+          projectName,
+          rfiNumber: rfi.rfi_number,
+          subject: rfi.subject,
+          question: rfi.question,
+          kind,
+          message,
+          decisionStatus: decisionStatus ?? null,
+          decisionNote: decisionNote ?? null,
+          priority: rfi.priority ?? null,
+          dueDate,
+          actionHref,
+          actionLabel,
+        }),
+      )
 
-    const html = await renderEmailTemplate(
-      RfiNotificationEmail({
-        orgName: org?.name ?? null,
-        orgLogoUrl: org?.logo_url ?? null,
-        recipientName: meta.name ?? null,
-        audience: meta.audience,
-        projectName,
-        rfiNumber: rfi.rfi_number,
-        subject: rfi.subject,
-        question: rfi.question,
-        kind,
-        message,
-        decisionStatus: decisionStatus ?? null,
-        decisionNote: decisionNote ?? null,
-        priority: rfi.priority ?? null,
-        dueDate,
-        actionHref,
-        actionLabel,
-      }),
-    )
+      const sent = await sendEmail({
+        to: [to],
+        subject,
+        html,
+        from: getOrgSenderEmail(org?.slug, org?.name),
+      })
+      return sent ? to : null
+    }),
+  )
 
-    const sent = await sendEmail({
-      to: [to],
-      subject,
-      html,
-      from: getOrgSenderEmail(org?.slug, org?.name),
-    })
-    if (sent) {
-      sentRecipients.push(to)
-    }
-  }
-
-  return sentRecipients
-}
-
-async function ensurePortalLink({
-  supabase,
-  orgId,
-  projectId,
-  portalType,
-  contactId,
-  companyId,
-  createdBy,
-  scopedRfiId,
-}: {
-  supabase: any
-  orgId: string
-  projectId: string
-  portalType: "client" | "sub"
-  contactId?: string | null
-  companyId?: string | null
-  createdBy?: string | null
-  scopedRfiId: string
-}) {
-  let query = supabase
-    .from("portal_access_tokens")
-    .select(
-      `
-      token, expires_at, scoped_rfi_id,
-      can_view_schedule, can_view_photos, can_view_documents, can_download_files, can_view_daily_logs, can_view_budget,
-      can_approve_change_orders, can_submit_selections, can_create_punch_items,
-      can_view_invoices, can_pay_invoices, can_view_rfis, can_view_submittals, can_respond_rfis, can_submit_submittals,
-      can_view_commitments, can_view_bills, can_submit_invoices, can_submit_time, can_submit_expenses, can_upload_compliance_docs,
-      can_view_warranty
-      `,
-    )
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .eq("portal_type", portalType)
-    .is("revoked_at", null)
-    .is("paused_at", null)
-    .order("created_at", { ascending: false })
-
-  query = contactId ? query.eq("contact_id", contactId) : query.is("contact_id", null)
-  query = companyId ? query.eq("company_id", companyId) : query.is("company_id", null)
-
-  const { data: existingCandidates, error: existingError } = await query
-  if (existingError) {
-    console.warn("Failed to load existing portal tokens for RFI email", existingError)
-  }
-
-  const now = Date.now()
-  const existing = (existingCandidates ?? []).find((candidate: any) => {
-    const expiresAt = typeof candidate.expires_at === "string" ? Date.parse(candidate.expires_at) : NaN
-    const notExpired = !candidate.expires_at || Number.isNaN(expiresAt) || expiresAt > now
-    return (
-      notExpired &&
-      candidate.scoped_rfi_id === scopedRfiId &&
-      candidate.can_view_schedule === false &&
-      candidate.can_view_photos === false &&
-      candidate.can_view_documents === false &&
-      candidate.can_download_files === false &&
-      candidate.can_view_daily_logs === false &&
-      candidate.can_view_budget === false &&
-      candidate.can_approve_change_orders === false &&
-      candidate.can_submit_selections === false &&
-      candidate.can_create_punch_items === false &&
-      candidate.can_view_invoices === false &&
-      candidate.can_pay_invoices === false &&
-      candidate.can_view_rfis === true &&
-      candidate.can_view_submittals === false &&
-      candidate.can_respond_rfis === true &&
-      candidate.can_submit_submittals === false &&
-      candidate.can_view_commitments === false &&
-      candidate.can_view_bills === false &&
-      candidate.can_submit_invoices === false &&
-      candidate.can_submit_time === false &&
-      candidate.can_submit_expenses === false &&
-      candidate.can_view_warranty === false &&
-      candidate.can_upload_compliance_docs === false
-    )
-  })
-  if (existing?.token) return `${APP_URL}/${portalType === "client" ? "p" : "s"}/${existing.token}`
-
-  const payload = {
-    org_id: orgId,
-    project_id: projectId,
-    portal_type: portalType,
-    contact_id: contactId ?? null,
-    company_id: companyId ?? null,
-    created_by: createdBy ?? null,
-    scoped_rfi_id: scopedRfiId,
-    can_view_schedule: false,
-    can_view_photos: false,
-    can_view_documents: false,
-    can_download_files: false,
-    can_view_daily_logs: false,
-    can_view_budget: false,
-    can_approve_change_orders: false,
-    can_submit_selections: false,
-    can_create_punch_items: false,
-    can_view_warranty: false,
-    can_view_invoices: false,
-    can_pay_invoices: false,
-    can_view_rfis: true,
-    can_view_submittals: false,
-    can_respond_rfis: true,
-    can_submit_submittals: false,
-    can_view_commitments: false,
-    can_view_bills: false,
-    can_submit_invoices: false,
-    can_submit_time: false,
-    can_submit_expenses: false,
-    can_upload_compliance_docs: false,
-  }
-
-  const { data: created, error } = await supabase.from("portal_access_tokens").insert(payload).select("token").single()
-  if (error || !created?.token) {
-    console.warn("Failed to create portal token for RFI email", error)
-    return `${APP_URL}/rfis?project=${projectId}`
-  }
-
-  return `${APP_URL}/${portalType === "client" ? "p" : "s"}/${created.token}`
-}
-
-async function fetchCompanyContacts(
-  supabase: any,
-  orgId: string,
-  companyId: string,
-): Promise<Array<{ id: string; email: string | null; full_name?: string | null }>> {
-  const { data, error } = await supabase
-    .from("contacts")
-    .select("id, email, full_name")
-    .eq("org_id", orgId)
-    .eq("primary_company_id", companyId)
-    .is("metadata->>archived_at", null)
-    .not("email", "is", null)
-    .limit(5)
-
-  if (error) {
-    console.warn("Failed to fetch company contacts for RFI email", error)
-    return []
-  }
-  return (data ?? []) as Array<{ id: string; email: string | null; full_name?: string | null }>
-}
-
-async function fetchUserEmail(supabase: any, userId: string): Promise<{ email: string | null; full_name?: string } | null> {
-  const { data, error } = await supabase.from("app_users").select("email, full_name").eq("id", userId).maybeSingle()
-  if (error) {
-    console.warn("Failed to fetch user email", error)
-    return null
-  }
-  return data
-}
-
-async function fetchContactEmail(
-  supabase: any,
-  contactId: string,
-): Promise<{ email: string | null; full_name?: string } | null> {
-  const { data, error } = await supabase.from("contacts").select("email, full_name").eq("id", contactId).maybeSingle()
-  if (error) {
-    console.warn("Failed to fetch contact email", error)
-    return null
-  }
-  return data
+  return sendResults.filter((to): to is string => to !== null)
 }
 
 async function fetchContact(
-  supabase: any,
+  supabase: SupabaseClient,
   contactId: string,
 ): Promise<{
   id: string
@@ -1064,7 +1100,9 @@ async function fetchContact(
     console.warn("Failed to fetch contact", error)
     return null
   }
-  return data
+  if (!data) return null
+  const company = Array.isArray(data.company) ? data.company[0] ?? null : data.company
+  return { ...data, company }
 }
 
 function resolveNotifyContactPortalType(contact: {

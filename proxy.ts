@@ -9,6 +9,9 @@ const PUBLIC_API_ROUTES = [
   "/api/jobs/backfill-search-index",
   "/api/jobs/rbac-evidence",
   "/api/webhooks/stripe",
+  // Resend inbound-email webhook (emailed vendor bills) — self-authenticates
+  // via the svix signature (RESEND_INBOUND_WEBHOOK_SECRET).
+  "/api/webhooks/resend-inbound",
   // QBO infra routes — no user session; they self-authenticate via CRON_SECRET
   // (crons) or Intuit webhook signature (payment-webhook). Without these, the
   // proxy redirects them to /auth/signin (307) and they never run.

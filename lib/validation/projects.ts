@@ -27,6 +27,7 @@ export const projectInputSchema = z.object({
   savings_split_builder_pct: z.number().min(0).max(100).optional().nullable(),
   labor_burden_multiplier: z.number().min(1).optional().nullable(),
   rate_schedule_id: z.string().uuid().optional().nullable(),
+  retainage_applies_to_fee: z.boolean().optional().nullable(),
   requires_client_cost_approval: z.boolean().optional(),
   open_book: z.boolean().optional(),
   paid_costs_required: z.boolean().optional(),

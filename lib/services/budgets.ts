@@ -6,6 +6,7 @@ import { requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { getProjectJobCostActualsByCostCode } from "@/lib/services/job-cost-actuals"
+import { requirePermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 const budgetLineSchema = z.object({
@@ -1299,6 +1300,7 @@ export async function checkVarianceAlerts(projectId: string, orgId: string, thre
 
 export async function acknowledgeVarianceAlert(alertId: string, status: "acknowledged" | "resolved" = "acknowledged", orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("budget.write", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("variance_alerts")

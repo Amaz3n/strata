@@ -1,3 +1,4 @@
+import type { AcceptedOptions } from "@/lib/financials/estimate-totals"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
@@ -561,6 +562,19 @@ export async function convertExecutedProspectToProject({
     throw new Error(`Estimate must be executed before converting to a project. Current status: ${estimate.status}`)
   }
 
+  // The client may have accepted optional add-ons at signing; the executed
+  // agreement is base + accepted options, so the contract, project value, and
+  // budget must all be built from that scope — not the base document.
+  const acceptedOptions = ((estimate.metadata as Record<string, unknown> | null)?.accepted_options ??
+    null) as AcceptedOptions | null
+  const acceptedOptionalIds = new Set(acceptedOptions?.ids ?? [])
+  const contractTotalCents: number = acceptedOptions?.accepted_total_cents ?? estimate.total_cents ?? 0
+  const contractedItems = ((estimate.items ?? []) as any[]).filter(
+    (item) =>
+      item.item_type === "line" &&
+      (item.metadata?.is_optional !== true || acceptedOptionalIds.has(item.id)),
+  )
+
   // 3. Idempotency Check: check if project already exists for this prospect
   const { data: existingProject, error: projectLookupError } = await supabase
     .from("projects")
@@ -698,7 +712,7 @@ export async function convertExecutedProspectToProject({
         property_type: projectInput.property_type || (prospect.project_type === "commercial" ? "commercial" : "residential"),
         project_type: projectInput.project_type || (prospect.project_type === "new_construction" || prospect.project_type === "remodel" || prospect.project_type === "addition" || prospect.project_type === "renovation" || prospect.project_type === "repair" ? prospect.project_type : "remodel"),
         description: projectInput.description || prospect.notes || undefined,
-        total_value: Math.round(estimate.total_cents / 100),
+        total_value: Math.round(contractTotalCents / 100),
         prospect_id: prospectId,
       },
       orgId: prospect.org_id,
@@ -790,7 +804,7 @@ export async function convertExecutedProspectToProject({
         project_id: projectId,
         title: `${createdProject.name} Contract`,
         status: "active",
-        total_cents: estimate.total_cents,
+        total_cents: contractTotalCents,
         currency: "usd",
         signed_at: estimate.executed_at,
         effective_date: estimate.executed_at ? estimate.executed_at.substring(0, 10) : new Date().toISOString().substring(0, 10),
@@ -825,19 +839,40 @@ export async function convertExecutedProspectToProject({
       })
     }
 
-    // Create budget
+    // Create budget lines from the contracted estimate items (base + accepted
+    // add-ons). Budget lines are the builder's cost basis: qty × unit cost,
+    // with markup (profit) excluded — so the budget header must be the sum of
+    // its lines, not the client-facing contract price.
+    const budgetLines = contractedItems.map((item: any, idx: number) => ({
+      org_id: prospect.org_id,
+      cost_code_id: item.cost_code_id || null,
+      description: item.description,
+      amount_cents: (item.unit_cost_cents || 0) * (item.quantity || 1),
+      sort_order: item.sort_order ?? idx,
+      metadata: {
+        source: "estimate_execution",
+        source_estimate_id: estimateId,
+        source_estimate_item_id: item.id,
+        item_type: item.item_type,
+        ...(item.metadata?.is_optional === true ? { accepted_optional: true } : {}),
+        ...(item.metadata?.is_allowance === true ? { is_allowance: true } : {}),
+      }
+    }))
+    const budgetTotalCents = budgetLines.reduce((sum, line) => sum + line.amount_cents, 0)
+
     const { data: budget, error: budgetError } = await supabase
       .from("budgets")
       .insert({
         org_id: prospect.org_id,
         project_id: projectId,
         status: "approved",
-        total_cents: estimate.total_cents,
+        total_cents: budgetTotalCents,
         currency: "usd",
         metadata: {
           source: "estimate_execution",
           source_estimate_id: estimateId,
           source_contract_id: contract.id,
+          contract_total_cents: contractTotalCents,
         }
       })
       .select("*")
@@ -847,26 +882,10 @@ export async function convertExecutedProspectToProject({
       throw new Error(`Failed to create budget from estimate: ${budgetError?.message}`)
     }
 
-    // Create budget lines from estimate items
-    const budgetLines = (estimate.items || [])
-      .filter((item: any) => item.item_type === "line")
-      .map((item: any, idx: number) => ({
-        org_id: prospect.org_id,
-        budget_id: budget.id,
-        cost_code_id: item.cost_code_id || null,
-        description: item.description,
-        amount_cents: (item.unit_cost_cents || 0) * (item.quantity || 1),
-        sort_order: item.sort_order ?? idx,
-        metadata: {
-          source: "estimate_execution",
-          source_estimate_id: estimateId,
-          source_estimate_item_id: item.id,
-          item_type: item.item_type,
-        }
-      }))
-
     if (budgetLines.length > 0) {
-      const { error: blError } = await supabase.from("budget_lines").insert(budgetLines)
+      const { error: blError } = await supabase
+        .from("budget_lines")
+        .insert(budgetLines.map((line) => ({ ...line, budget_id: budget.id })))
       if (blError) {
         throw new Error(`Failed to create budget lines: ${blError.message}`)
       }

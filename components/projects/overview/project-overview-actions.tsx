@@ -57,6 +57,8 @@ import {
 } from "@/components/icons"
 import { cn } from "@/lib/utils"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ProjectOverviewActionsProps {
   project: Project
   contacts: Contact[]
@@ -147,7 +149,7 @@ export function ProjectOverviewActions({
   async function handleTokenRevoke(tokenId: string) {
     setSharingLoading(true)
     try {
-      await revokePortalTokenAction({ token_id: tokenId, project_id: project.id })
+      unwrapAction(await revokePortalTokenAction({ token_id: tokenId, project_id: project.id }))
       setPortalTokensState((prev) =>
         prev.map((token) =>
           token.id === tokenId ? { ...token, revoked_at: new Date().toISOString() } : token
@@ -165,7 +167,7 @@ export function ProjectOverviewActions({
   async function handleSetPin(tokenId: string, pin: string) {
     setSharingLoading(true)
     try {
-      await setPortalTokenPinAction({ token_id: tokenId, pin })
+      unwrapAction(await setPortalTokenPinAction({ token_id: tokenId, pin }))
       setPortalTokensState((prev) =>
         prev.map((token) => (token.id === tokenId ? { ...token, pin_required: true } : token))
       )
@@ -181,7 +183,7 @@ export function ProjectOverviewActions({
   async function handleTokenPause(tokenId: string) {
     setSharingLoading(true)
     try {
-      await pausePortalTokenAction({ token_id: tokenId, project_id: project.id })
+      unwrapAction(await pausePortalTokenAction({ token_id: tokenId, project_id: project.id }))
       setPortalTokensState((prev) =>
         prev.map((token) => (token.id === tokenId ? { ...token, paused_at: new Date().toISOString() } : token))
       )
@@ -197,7 +199,7 @@ export function ProjectOverviewActions({
   async function handleTokenResume(tokenId: string) {
     setSharingLoading(true)
     try {
-      await resumePortalTokenAction({ token_id: tokenId, project_id: project.id })
+      unwrapAction(await resumePortalTokenAction({ token_id: tokenId, project_id: project.id }))
       setPortalTokensState((prev) =>
         prev.map((token) => (token.id === tokenId ? { ...token, paused_at: null } : token))
       )
@@ -213,7 +215,7 @@ export function ProjectOverviewActions({
   async function handleClearPin(tokenId: string) {
     setSharingLoading(true)
     try {
-      await removePortalTokenPinAction({ token_id: tokenId })
+      unwrapAction(await removePortalTokenPinAction({ token_id: tokenId }))
       setPortalTokensState((prev) =>
         prev.map((token) => (token.id === tokenId ? { ...token, pin_required: false } : token))
       )
@@ -229,7 +231,7 @@ export function ProjectOverviewActions({
   async function handleSetAccountStatus(accountId: string, status: "active" | "paused" | "revoked") {
     setSharingLoading(true)
     try {
-      await setExternalPortalAccountStatusAction({ account_id: accountId, project_id: project.id, status })
+      unwrapAction(await setExternalPortalAccountStatusAction({ account_id: accountId, project_id: project.id, status }))
       setExternalAccounts((prev) =>
         prev.map((account) =>
           account.id === accountId
@@ -275,7 +277,7 @@ export function ProjectOverviewActions({
   }
 
   const handleSaveProject = async (input: Partial<ProjectInput>) => {
-    const updated = await updateProjectSettingsAction(project.id, input)
+    const updated = unwrapAction(await updateProjectSettingsAction(project.id, input))
     setSettingsProject(updated)
     router.refresh()
   }

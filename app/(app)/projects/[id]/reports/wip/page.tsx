@@ -5,6 +5,8 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { WipOverUnderReportView } from "@/components/reports/wip-over-under-report"
 import { getProjectWipOverUnderReport } from "@/lib/services/reports/wip-over-under"
 
+import { unwrapAction } from "@/lib/action-result"
+
 export const dynamic = "force-dynamic"
 
 interface PageProps {

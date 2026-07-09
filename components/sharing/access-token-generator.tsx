@@ -16,6 +16,8 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { CalendarDays, User, Users, Building2 } from "@/components/icons"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface AccessTokenGeneratorProps {
   projectId: string
   onCreated: (token: PortalAccessToken) => void
@@ -71,14 +73,14 @@ export function AccessTokenGenerator({ projectId, onCreated }: AccessTokenGenera
 
     setIsSubmitting(true)
     try {
-      const token = await createPortalTokenAction({
+      const token = unwrapAction(await createPortalTokenAction({
         project_id: projectId,
         portal_type: portalType,
         company_id: portalType === "sub" ? companyId : undefined,
         expires_at: expiresAt || null,
         permissions,
         pin: requirePin ? pin : undefined,
-      })
+      }))
       onCreated(token)
       setPin("")
     } catch (error) {

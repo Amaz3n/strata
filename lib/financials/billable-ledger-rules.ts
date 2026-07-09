@@ -24,7 +24,7 @@ export function assertCostSourceCanEnterBillableLedger(params: {
   }
 
   if (params.sourceType === "time_entry") {
-    const requiredStatus = params.clientCostApprovalRequired ? "client_approved" : "pm_approved"
-    if (params.sourceStatus !== requiredStatus) throw new Error("Time entry is not approved for billing.")
+    const allowedStatuses = params.clientCostApprovalRequired ? ["client_approved"] : ["pm_approved", "client_approved"]
+    if (!allowedStatuses.includes(params.sourceStatus)) throw new Error("Time entry is not approved for billing.")
   }
 }

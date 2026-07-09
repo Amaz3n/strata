@@ -49,6 +49,8 @@ import {
   attachFileAction,
 } from "@/app/(app)/documents/actions"
 
+import { unwrapAction } from "@/lib/action-result"
+
 const statusLabels: Record<string, string> = {
   draft: "Draft",
   pending: "Pending",
@@ -230,7 +232,7 @@ export function ChangeOrderDetailSheet({
     setLinkingInvoices(true)
     try {
       for (const invoiceId of selectedInvoiceIds) {
-        await linkInvoiceToChangeOrderAction(changeOrder.project_id, changeOrder.id, invoiceId)
+        unwrapAction(await linkInvoiceToChangeOrderAction(changeOrder.project_id, changeOrder.id, invoiceId))
       }
       setLinkPickerOpen(false)
       setSelectedInvoiceIds(new Set())
@@ -247,7 +249,7 @@ export function ChangeOrderDetailSheet({
     if (!changeOrder) return
     setUnlinkingInvoiceId(invoiceId)
     try {
-      await unlinkInvoiceFromChangeOrderAction(changeOrder.project_id, changeOrder.id, invoiceId)
+      unwrapAction(await unlinkInvoiceFromChangeOrderAction(changeOrder.project_id, changeOrder.id, invoiceId))
       await loadLinkedInvoices()
       toast.success("Invoice unlinked")
     } catch (error: any) {
@@ -303,8 +305,8 @@ export function ChangeOrderDetailSheet({
         formData.append("projectId", changeOrder.project_id)
         formData.append("category", "contracts")
 
-        const uploaded = await uploadFileAction(formData)
-        await attachFileAction(uploaded.id, "change_order", changeOrder.id, changeOrder.project_id, linkRole)
+        const uploaded = unwrapAction(await uploadFileAction(formData))
+        unwrapAction(await attachFileAction(uploaded.id, "change_order", changeOrder.id, changeOrder.project_id, linkRole))
       }
 
       await loadAttachments()
@@ -314,7 +316,7 @@ export function ChangeOrderDetailSheet({
 
   const handleDetach = useCallback(
     async (linkId: string) => {
-      await detachFileLinkAction(linkId)
+      unwrapAction(await detachFileLinkAction(linkId))
       await loadAttachments()
     },
     [loadAttachments]
@@ -451,17 +453,17 @@ export function ChangeOrderDetailSheet({
         formData.append("file", offlineSignedFile)
         formData.append("projectId", changeOrder.project_id)
         formData.append("category", "contracts")
-        const uploaded = await uploadFileAction(formData)
+        const uploaded = unwrapAction(await uploadFileAction(formData))
         signedFileId = uploaded.id
       }
 
-      const updated = await approveChangeOrderAction(changeOrder.id, {
+      const updated = unwrapAction(await approveChangeOrderAction(changeOrder.id, {
         approvedAt: offlineApprovalDate,
         signerName: offlineSignerName,
         signerEmail: offlineSignerEmail,
         note: offlineApprovalNote,
         signedFileId,
-      })
+      }))
       onUpdate?.(updated)
       setApprovalDialogOpen(false)
       resetOfflineApproval()
@@ -480,7 +482,7 @@ export function ChangeOrderDetailSheet({
     if (!canVoid) return
     setVoiding(true)
     try {
-      const updated = await voidChangeOrderAction(changeOrder.id, voidReason)
+      const updated = unwrapAction(await voidChangeOrderAction(changeOrder.id, voidReason))
       onUpdate?.(updated)
       setVoidDialogOpen(false)
       setVoidReason("")
@@ -500,7 +502,7 @@ export function ChangeOrderDetailSheet({
     if (!changeOrder.project_id) return
     setSendingToClient(true)
     try {
-      const result = await publishChangeOrderAction(changeOrder.id)
+      const result = unwrapAction(await publishChangeOrderAction(changeOrder.id))
       onUpdate?.(result.changeOrder)
       toast.success(result.email_sent ? "Change order emailed to client" : "Change order published to client portal", {
         description: result.email_sent
@@ -518,7 +520,7 @@ export function ChangeOrderDetailSheet({
     if (!changeOrder) return
     setSavingFollowup(true)
     try {
-      const updated = await updateChangeOrderFollowupAction(changeOrder.id, { vendor_impact_status: value })
+      const updated = unwrapAction(await updateChangeOrderFollowupAction(changeOrder.id, { vendor_impact_status: value }))
       onUpdate?.({ ...changeOrder, ...updated })
       toast.success("Vendor impact updated")
     } catch (error: any) {
@@ -546,11 +548,11 @@ export function ChangeOrderDetailSheet({
     if (!changeOrder.project_id || !selectedCommitmentId) return
     setCreatingCommitmentChangeOrder(true)
     try {
-      await createCommitmentChangeOrderFromChangeOrderAction(
+      unwrapAction(await createCommitmentChangeOrderFromChangeOrderAction(
         changeOrder.project_id,
         changeOrder.id,
         selectedCommitmentId,
-      )
+      ))
       await loadSubCostLinks()
       setCommitmentPickerOpen(false)
       toast.success("Commitment change order drafted")

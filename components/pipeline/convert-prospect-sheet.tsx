@@ -31,6 +31,8 @@ import {
 import { Loader2, Hammer, ShieldCheck, CheckCircle2, Briefcase, MapPin, FileText } from "@/components/icons"
 import { useToast } from "@/hooks/use-toast"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ConvertProspectSheetProps {
   prospect: Prospect
   open: boolean
@@ -122,7 +124,7 @@ export function ConvertProspectSheet({
 
     startTransition(async () => {
       try {
-        const result = await convertExecutedProspectAction({
+        const result = unwrapAction(await convertExecutedProspectAction({
           prospectId: prospect.id,
           estimateId: estimate.id,
           projectInput: {
@@ -133,7 +135,7 @@ export function ConvertProspectSheet({
             project_type: projectType,
             description: description || null,
           },
-        })
+        }))
 
         toast({
           title: "Project created",

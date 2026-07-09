@@ -1,4 +1,5 @@
 import { requireOrgContext } from "@/lib/services/context"
+import { requirePermission } from "@/lib/services/permissions"
 import {
   buildFilesPublicUrl,
   deleteFilesObjects,
@@ -39,6 +40,7 @@ export async function createInitialVersion(
   orgId?: string
 ): Promise<FileVersion | null> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.upload", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing } = await supabase
     .from("doc_versions")
@@ -135,7 +137,8 @@ function mapVersion(row: any, currentVersionId?: string): FileVersion {
  * List all versions for a file
  */
 export async function listVersions(fileId: string, orgId?: string): Promise<FileVersion[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
 
   // Get the file to know which version is current
   const { data: file } = await supabase
@@ -168,7 +171,8 @@ export async function listVersions(fileId: string, orgId?: string): Promise<File
  * Get a specific version
  */
 export async function getVersion(versionId: string, orgId?: string): Promise<FileVersion | null> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("doc_versions")
@@ -210,6 +214,7 @@ export async function createVersion(
   orgId?: string
 ): Promise<FileVersion> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.upload", { supabase, orgId: resolvedOrgId, userId })
 
   // Get the existing file record
   const { data: existingFile, error: fileError } = await supabase
@@ -336,6 +341,7 @@ export async function makeVersionCurrent(
   orgId?: string
 ): Promise<void> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.upload", { supabase, orgId: resolvedOrgId, userId })
 
   // Get the version
   const { data: version, error: versionError } = await supabase
@@ -415,6 +421,7 @@ export async function updateVersion(
   orgId?: string
 ): Promise<FileVersion> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.upload", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: fetchError } = await supabase
     .from("doc_versions")
@@ -472,6 +479,7 @@ export async function updateVersion(
  */
 export async function deleteVersion(versionId: string, orgId?: string): Promise<void> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.delete", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: version, error: fetchError } = await supabase
     .from("doc_versions")
@@ -530,7 +538,8 @@ export async function getVersionSignedUrl(
   _expiresIn: number = 3600,
   orgId?: string
 ): Promise<string> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.download", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: version, error } = await supabase
     .from("doc_versions")
@@ -555,7 +564,8 @@ export async function getVersionSignedUrl(
  * Check if a file has any versions
  */
 export async function hasVersions(fileId: string, orgId?: string): Promise<boolean> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { count, error } = await supabase
     .from("doc_versions")
@@ -574,7 +584,8 @@ export async function hasVersions(fileId: string, orgId?: string): Promise<boole
  * Get version count for a file
  */
 export async function getVersionCount(fileId: string, orgId?: string): Promise<number> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("docs.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { count, error } = await supabase
     .from("doc_versions")

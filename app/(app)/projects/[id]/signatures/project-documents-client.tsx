@@ -23,6 +23,8 @@ import { Separator } from "@/components/ui/separator"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { FileText, Plus, Sparkles } from "@/components/icons"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ProjectDocumentsClientProps {
   projectId: string
   initialDocuments: Document[]
@@ -91,13 +93,13 @@ export function ProjectDocumentsClient({ projectId, initialDocuments }: ProjectD
     try {
       const formData = new FormData()
       formData.append("file", form.file)
-      const uploaded = await uploadESignDocumentFileAction(projectId, formData)
-      const document = await createDocumentAction({
+      const uploaded = unwrapAction(await uploadESignDocumentFileAction(projectId, formData))
+      const document = unwrapAction(await createDocumentAction({
         project_id: projectId,
         document_type: form.type,
         title: form.title,
         source_file_id: uploaded.id,
-      })
+      }))
       setDocuments((prev) => [document as Document, ...prev])
       setSelectedId(document.id)
       setCreateOpen(false)
@@ -113,7 +115,7 @@ export function ProjectDocumentsClient({ projectId, initialDocuments }: ProjectD
   const handleSaveFields = async () => {
     if (!selectedDoc) return
     try {
-      await saveDocumentFieldsAction(
+      unwrapAction(await saveDocumentFieldsAction(
         selectedDoc.id,
         1,
         fields.map((field, index) => ({
@@ -129,7 +131,7 @@ export function ProjectDocumentsClient({ projectId, initialDocuments }: ProjectD
           sort_order: field.sort_order ?? index,
           metadata: field.metadata ?? {},
         })),
-      )
+      ))
       toast.success("Fields saved")
     } catch (error: any) {
       console.error(error)

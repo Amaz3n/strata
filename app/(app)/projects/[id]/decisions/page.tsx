@@ -6,6 +6,8 @@ import { listDecisionsAction } from "@/app/(app)/decisions/actions"
 import { DecisionsClient } from "@/components/decisions/decisions-client"
 import { Skeleton } from "@/components/ui/skeleton"
 
+import { unwrapAction } from "@/lib/action-result"
+
 interface ProjectDecisionsPageProps {
   params: Promise<{ id: string }>
 }

@@ -175,7 +175,7 @@ async function loadProjectFeeContext(args: { supabase: SupabaseClient; orgId: st
       .maybeSingle(),
     args.supabase
       .from("contracts")
-      .select("id, title, status, total_cents, fixed_fee_cents, retainage_percent, snapshot")
+      .select("id, title, status, total_cents, fixed_fee_cents, retainage_percent, retainage_applies_to_fee, snapshot")
       .eq("org_id", args.orgId)
       .eq("project_id", args.projectId)
       .eq("status", "active")
@@ -783,7 +783,12 @@ export async function createProjectFeeInvoice(input: CreateFeeInvoiceInput, orgI
   const issueDate = parsed.issueDate ?? today
   const dueDate = parsed.dueDate ?? issueDate
   const status = parsed.status
-  const retainFee = context.contract?.snapshot?.retain_fee === true
+  const retainFee = Boolean(
+    context.contract?.retainage_applies_to_fee ??
+      context.contract?.snapshot?.retainage_applies_to_fee ??
+      context.contract?.snapshot?.retain_fee ??
+      false,
+  )
   const feeRetainagePercent = retainFee ? Number(context.contract?.retainage_percent ?? 0) : 0
   const feeRetainageCents =
     feeRetainagePercent > 0 ? Math.round(Math.max(amountCents, 0) * (feeRetainagePercent / 100)) : 0
@@ -858,6 +863,7 @@ export async function createProjectFeeInvoice(input: CreateFeeInvoiceInput, orgI
     invoiceMetadata: {
         source_type: "fee",
         retain_fee: retainFee,
+        retainage_applies_to_fee: retainFee,
         retainage_percent: feeRetainagePercent > 0 ? feeRetainagePercent : null,
         retainage_amount_cents: feeRetainageCents > 0 ? feeRetainageCents : null,
     },
