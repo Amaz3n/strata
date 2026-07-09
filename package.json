@@ -127,15 +127,5 @@
     "postcss": "$postcss",
     "qs": "6.15.2",
     "ws": "8.21.0"
-  },
-  "pnpm": {
-    "overrides": {
-      "fast-xml-parser": "5.8.0",
-      "lodash": "4.18.1",
-      "markdown-it": "14.2.0",
-      "postcss": "8.5.10",
-      "qs": "6.15.2",
-      "ws": "8.21.0"
-    }
   }
 }
