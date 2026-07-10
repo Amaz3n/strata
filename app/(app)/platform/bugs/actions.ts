@@ -125,14 +125,20 @@ export async function createPlatformBugFromFormAction(formData: FormData) {
         return { error: "Attachments must be images or PDFs." }
       }
 
+      // The org/project selects live inside a Popover that unmounts when closed,
+      // so their fields are absent (null) unless the user opened it. Treat a
+      // missing or "none" value as empty — the schema rejects a bare null.
+      const optionalField = (value: FormDataEntryValue | null) =>
+        value === null || value === "none" ? "" : value
+
       const payload = {
         title: formData.get("title"),
         description: formData.get("description"),
         status: formData.get("status"),
         priority: formData.get("priority"),
-        assigneeUserId: formData.get("assigneeUserId") === "none" ? "" : formData.get("assigneeUserId"),
-        orgId: formData.get("orgId") === "none" ? "" : formData.get("orgId"),
-        projectId: formData.get("projectId") === "none" ? "" : formData.get("projectId"),
+        assigneeUserId: optionalField(formData.get("assigneeUserId")),
+        orgId: optionalField(formData.get("orgId")),
+        projectId: optionalField(formData.get("projectId")),
         attachmentNames: files.map((file) => file.name),
       }
 
