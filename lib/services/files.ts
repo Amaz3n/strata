@@ -134,24 +134,8 @@ export function buildInternalFileUrl(fileId: string): string {
   return `/api/files/${fileId}/raw`
 }
 
-export const DEFAULT_PROJECT_FOLDERS = [
-  "/drawings",
-  "/contracts",
-  "/permits",
-  "/submittals",
-  "/rfis",
-  "/safety",
-  "/financials",
-  "/photos",
-  "/daily-logs",
-  "/messages",
-  "/closeout",
-  "/warranty",
-  "/general",
-] as const
-
 const DEFAULT_FOLDER_BY_CATEGORY: Record<FileCategory, string> = {
-  plans: "/drawings",
+  plans: "/plans",
   contracts: "/contracts",
   permits: "/permits",
   submittals: "/submittals",
@@ -1603,52 +1587,6 @@ async function deleteFolderPathRows(
     if (nestedError.code === "42P01") return
     throw new Error(`Failed to delete nested folder rows: ${nestedError.message}`)
   }
-}
-
-export async function ensureProjectFolders(
-  projectId: string,
-  folderPaths: readonly string[],
-  orgId?: string
-): Promise<string[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  const normalizedPaths = Array.from(
-    new Set(
-      folderPaths
-        .map((path) => normalizeFolderPath(path))
-        .filter((path): path is string => Boolean(path && path !== "/"))
-    )
-  )
-
-  if (normalizedPaths.length === 0) {
-    return []
-  }
-
-  const rows = normalizedPaths.map((path) => ({
-    org_id: resolvedOrgId,
-    project_id: projectId,
-    path,
-    created_by: userId,
-  }))
-
-  const { error } = await supabase
-    .from("project_file_folders")
-    .upsert(rows, { onConflict: "org_id,project_id,path" })
-
-  if (error) {
-    if (error.code === "42P01") {
-      return []
-    }
-    throw new Error(`Failed to seed project folders: ${error.message}`)
-  }
-
-  return normalizedPaths
-}
-
-export async function ensureDefaultProjectFolders(
-  projectId: string,
-  orgId?: string
-): Promise<string[]> {
-  return ensureProjectFolders(projectId, DEFAULT_PROJECT_FOLDERS, orgId)
 }
 
 function describeAuditChange(row: any): { action: string; details?: string } {

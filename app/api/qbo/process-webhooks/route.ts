@@ -3,6 +3,7 @@ import type { QBOClient, QBOPaymentSnapshot } from "@/lib/integrations/accountin
 import { QBOClient as QBOClientFactory } from "@/lib/integrations/accounting/qbo-api"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { logQBO } from "@/lib/services/qbo-logger"
+import { withCronRun } from "@/lib/services/job-runs"
 import { rememberQBOInvoiceNumberCursor } from "@/lib/services/invoice-numbers"
 import { qboPurchaseIsCredit } from "@/lib/integrations/accounting/qbo-import-rules"
 
@@ -929,13 +930,8 @@ async function processQBOWebhookEvents(request: NextRequest) {
   return NextResponse.json({ processed, reconciled })
 }
 
-export async function GET(request: NextRequest) {
-  return processQBOWebhookEvents(request)
-}
-
-export async function POST(request: NextRequest) {
-  return processQBOWebhookEvents(request)
-}
+export const GET = withCronRun("qbo-process-webhooks", processQBOWebhookEvents)
+export const POST = GET
 
 async function markEventProcessed(
   supabase: ReturnType<typeof createServiceSupabaseClient>,

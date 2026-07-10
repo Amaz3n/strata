@@ -9,7 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
-import { Search, X, SlidersHorizontal, ArrowLeft, ArrowRight, Eye, Building2, User, Copy, Check } from "@/components/icons"
+import { Search, X, SlidersHorizontal, ArrowLeft, ArrowRight, Eye, Building2, User, Copy, Check, Download, ExternalLink } from "@/components/icons"
+import Link from "next/link"
 import { DateRangePicker } from "@/components/ui/date-range-picker"
 import type { DateRange } from "react-day-picker"
 import { formatDistanceToNow, format } from "date-fns"
@@ -58,6 +59,28 @@ const entityTypes = [
   { value: "document", label: "Document" },
 ]
 
+// Best-effort deep links from an audit entry into the app. Projects link by
+// id; other entity types land on their listing page.
+function entityHref(entityType: string, entityId: string | null): string | null {
+  if (entityType === "project" && entityId) return `/projects/${entityId}`
+  const listRoutes: Record<string, string> = {
+    invoice: "/invoices",
+    payment: "/payments",
+    vendor_bill: "/payables",
+    task: "/tasks",
+    estimate: "/estimates",
+    proposal: "/proposals",
+    drawing_set: "/drawings",
+    drawing_sheet: "/drawings",
+    document: "/documents",
+    rfi: "/rfis",
+    submittal: "/submittals",
+    change_order: "/change-orders",
+    contact: "/contacts",
+  }
+  return listRoutes[entityType] ?? null
+}
+
 export function AuditLogClient({
   auditLogs,
   totalCount,
@@ -94,7 +117,7 @@ export function AuditLogClient({
     return undefined
   })
 
-  const updateFilters = (updates: any) => {
+  const updateFilters = (updates: Record<string, string | number | undefined>) => {
     const params = new URLSearchParams(searchParams.toString())
 
     Object.entries(updates).forEach(([key, value]) => {
@@ -117,7 +140,7 @@ export function AuditLogClient({
   }
 
   const handleTimePeriodChange = (val: string) => {
-    const updates: any = { timePeriod: val }
+    const updates: Record<string, string | number | undefined> = { timePeriod: val }
 
     if (val === "all") {
       updates.startDate = ""
@@ -179,6 +202,25 @@ export function AuditLogClient({
     (orgId && orgId !== "all") ||
     startDate ||
     endDate
+
+  const exportHref = (() => {
+    const params = new URLSearchParams()
+    const filters: Record<string, string> = {
+      search,
+      action,
+      entityType,
+      user,
+      orgId,
+      timePeriod,
+      startDate,
+      endDate,
+    }
+    for (const [key, value] of Object.entries(filters)) {
+      if (value && value !== "all") params.set(key, value)
+    }
+    const query = params.toString()
+    return `/api/platform/audit-export${query ? `?${query}` : ""}`
+  })()
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-background">
@@ -319,6 +361,12 @@ export function AuditLogClient({
 
           {/* Pagination Toolbar Header */}
           <div className="flex items-center gap-3 shrink-0 self-end xl:self-center">
+            <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" asChild>
+              <a href={exportHref} download>
+                <Download className="h-3.5 w-3.5" />
+                Export CSV
+              </a>
+            </Button>
             <span className="text-xs text-muted-foreground whitespace-nowrap">
               {totalCount > 0 ? (
                 <>
@@ -424,11 +472,21 @@ export function AuditLogClient({
                           )}
                         </div>
                       </TableCell>
-                      <TableCell className="py-3">
+                      <TableCell className="py-3" onClick={(e) => e.stopPropagation()}>
                         {log.projectName ? (
-                          <span className="text-sm truncate max-w-[140px] text-muted-foreground" title={log.projectName}>
-                            {log.projectName}
-                          </span>
+                          log.entityType === "project" && log.entityId ? (
+                            <Link
+                              href={`/projects/${log.entityId}`}
+                              className="text-sm truncate max-w-[140px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                              title={log.projectName}
+                            >
+                              {log.projectName}
+                            </Link>
+                          ) : (
+                            <span className="text-sm truncate max-w-[140px] text-muted-foreground" title={log.projectName}>
+                              {log.projectName}
+                            </span>
+                          )
                         ) : (
                           <span className="text-sm text-muted-foreground/50">-</span>
                         )}
@@ -570,6 +628,14 @@ export function AuditLogClient({
                 <Badge variant={getActionVariant(selectedLog.action)} className="capitalize px-2 py-0.5">
                   {selectedLog.action}
                 </Badge>
+                {entityHref(selectedLog.entityType, selectedLog.entityId) && (
+                  <Button variant="outline" size="sm" className="h-7 gap-1.5 text-xs font-normal ml-auto" asChild>
+                    <Link href={entityHref(selectedLog.entityType, selectedLog.entityId)!}>
+                      <ExternalLink className="h-3.5 w-3.5" />
+                      Open in Arc
+                    </Link>
+                  </Button>
+                )}
               </SheetTitle>
               <SheetDescription className="font-mono text-xs break-all flex items-center gap-1 mt-1">
                 Log ID: {selectedLog.id}

@@ -6,6 +6,7 @@ import {
   runDrawingsPipeline,
 } from "@/lib/services/drawings-pipeline"
 import { triggerDrawingsPipeline } from "@/lib/services/drawings-pipeline-trigger"
+import { withCronRun } from "@/lib/services/job-runs"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
@@ -55,11 +56,6 @@ async function handle(request: NextRequest) {
   return NextResponse.json({ ok: true, message: "Pipeline run started" }, { status: 202 })
 }
 
-export async function POST(request: NextRequest) {
-  return handle(request)
-}
-
 // Vercel Cron sends GET.
-export async function GET(request: NextRequest) {
-  return handle(request)
-}
+export const GET = withCronRun("drawings-pipeline", handle)
+export const POST = GET

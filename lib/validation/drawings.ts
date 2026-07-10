@@ -205,6 +205,74 @@ export const drawingSheetVersionInputSchema = z.object({
 export type DrawingSheetVersionInput = z.infer<typeof drawingSheetVersionInputSchema>
 
 // ============================================================================
+// SHEET CALIBRATION (dimension tool scale)
+// ============================================================================
+
+// Stored under drawing_sheet_versions.extracted_metadata.calibration.
+export const setSheetVersionCalibrationInputSchema = z.object({
+  sheet_version_id: z.string().uuid(),
+  feet_per_image_px: z.number().positive().finite(),
+})
+
+export type SetSheetVersionCalibrationInput = z.infer<typeof setSheetVersionCalibrationInputSchema>
+
+/**
+ * Format a decimal-feet length as feet-and-inches, rounded to the nearest
+ * inch (e.g. 24.5 -> `24'-6"`).
+ */
+export function formatFeetInches(feet: number): string {
+  if (!Number.isFinite(feet) || feet < 0) return ""
+  const totalInches = Math.round(feet * 12)
+  const ft = Math.floor(totalInches / 12)
+  const inches = totalInches % 12
+  return `${ft}'-${inches}"`
+}
+
+/**
+ * Parse a user-entered real-world length into decimal feet. Accepts
+ * `24`, `10.5` (decimal feet), `24'`, `24' 6"`, `24'6`, `24 ft 6 in`,
+ * and inches-only like `8"`. Returns null when unparseable or non-positive.
+ */
+export function parseFeetInches(raw: string): number | null {
+  const input = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+  if (!input) return null
+
+  // Feet marker present, optional inches: 24' 6", 24'6, 24 ft 6 in
+  const feetMatch = input.match(
+    /^(\d+(?:\.\d+)?)\s*(?:'|ft\.?|feet)\s*(?:(\d+(?:\.\d+)?)\s*(?:"|in\.?|inches)?)?$/,
+  )
+  if (feetMatch) {
+    const feet = Number.parseFloat(feetMatch[1])
+    const inches = feetMatch[2] ? Number.parseFloat(feetMatch[2]) : 0
+    if (!Number.isFinite(feet) || !Number.isFinite(inches)) return null
+    const total = feet + inches / 12
+    return total > 0 ? total : null
+  }
+
+  // Inches only: 8", 8 in
+  const inchesMatch = input.match(/^(\d+(?:\.\d+)?)\s*(?:"|in\.?|inches)$/)
+  if (inchesMatch) {
+    const inches = Number.parseFloat(inchesMatch[1])
+    if (!Number.isFinite(inches)) return null
+    return inches > 0 ? inches / 12 : null
+  }
+
+  // Plain number = decimal feet
+  const plainMatch = input.match(/^(\d+(?:\.\d+)?)$/)
+  if (plainMatch) {
+    const feet = Number.parseFloat(plainMatch[1])
+    if (!Number.isFinite(feet)) return null
+    return feet > 0 ? feet : null
+  }
+
+  return null
+}
+
+// ============================================================================
 // LIST FILTER SCHEMAS
 // ============================================================================
 
@@ -242,6 +310,19 @@ export const drawingRevisionListFiltersSchema = z.object({
 })
 
 export type DrawingRevisionListFilters = z.infer<typeof drawingRevisionListFiltersSchema>
+
+// ============================================================================
+// REVISION DISTRIBUTION SCHEMAS
+// ============================================================================
+
+export const distributeRevisionInputSchema = z.object({
+  revision_id: z.string().uuid(),
+  // Portal access token ids (not raw token strings) selected as recipients.
+  token_ids: z.array(z.string().uuid()).min(1).max(100),
+  message: z.string().max(1000).optional(),
+})
+
+export type DistributeRevisionInput = z.infer<typeof distributeRevisionInputSchema>
 
 // ============================================================================
 // DRAWING MARKUP SCHEMAS (Phase 4)
@@ -335,6 +416,7 @@ export const pinEntityTypeSchema = z.enum([
   "daily_log",
   "observation",
   "issue",
+  "photo",
 ])
 
 export type PinEntityType = z.infer<typeof pinEntityTypeSchema>
@@ -348,6 +430,7 @@ export const PIN_ENTITY_TYPE_LABELS: Record<PinEntityType, string> = {
   daily_log: "Daily Log",
   observation: "Observation",
   issue: "Issue",
+  photo: "Photo",
 }
 
 // Pin status values
@@ -413,6 +496,19 @@ export const drawingPinListFiltersSchema = z.object({
 })
 
 export type DrawingPinListFilters = z.infer<typeof drawingPinListFiltersSchema>
+
+// Photo pin creation ("Attach Photo" on a drawing): the image is uploaded
+// through the standard files path first; this input ties it to a location.
+export const createPhotoFromDrawingInputSchema = z.object({
+  project_id: z.string().uuid(),
+  drawing_sheet_id: z.string().uuid(),
+  x_position: z.number().min(0).max(1),
+  y_position: z.number().min(0).max(1),
+  file_id: z.string().uuid(),
+  caption: z.string().max(255).optional(),
+})
+
+export type CreatePhotoFromDrawingInput = z.infer<typeof createPhotoFromDrawingInputSchema>
 
 // Create entity from pin input (for "Create task/RFI from drawing" workflow)
 export const createEntityFromPinInputSchema = z.object({

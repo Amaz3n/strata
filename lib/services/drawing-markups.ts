@@ -23,25 +23,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
-
-async function enqueueSheetsListRefresh(orgId: string) {
-  try {
-    const { supabase } = await requireOrgContext(orgId)
-    await supabase.from("outbox").insert({
-      org_id: orgId,
-      // outbox.event_id may have an FK to events; leave null unless you have a real event row
-      event_id: null,
-      job_type: "refresh_drawing_sheets_list",
-      status: "pending",
-      run_at: new Date().toISOString(),
-      retry_count: 0,
-      last_error: "",
-      payload: {},
-    })
-  } catch (e) {
-    console.error("[drawings] Failed to enqueue drawing_sheets_list refresh:", e)
-  }
-}
+import { enqueueSheetsListRefresh } from "@/lib/services/drawings"
 
 // ============================================================================
 // TYPES
@@ -437,7 +419,8 @@ export async function listDrawingPins(
   orgId?: string
 ): Promise<DrawingPin[]> {
   const parsed = drawingPinListFiltersSchema.parse(filters)
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
 
   let query = supabase
     .from("drawing_pins")
@@ -497,8 +480,8 @@ export async function listDrawingPinsWithEntities(
   sheetId: string,
   orgId?: string
 ): Promise<DrawingPin[]> {
-  const pins = await listDrawingPins({ drawing_sheet_id: sheetId }, orgId)
-  const { supabase } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const pins = await listDrawingPins({ drawing_sheet_id: sheetId }, resolvedOrgId)
 
   // Group pins by entity type for batch fetching
   const pinsByType: Record<PinEntityType, DrawingPin[]> = {
@@ -509,65 +492,121 @@ export async function listDrawingPinsWithEntities(
     daily_log: [],
     observation: [],
     issue: [],
+    photo: [],
   }
 
   for (const pin of pins) {
     pinsByType[pin.entity_type].push(pin)
   }
 
-  // Fetch entity titles for each type
+  // Fetch entity titles for each type in parallel.
+  // NOTE: `observation` and `issue` are in the pin enum but have no backing
+  // tables in the schema yet; their pins fall back to the pin label.
   const entityMap = new Map<string, { title: string; status?: string }>()
 
-  // Fetch tasks
-  if (pinsByType.task.length > 0) {
-    const { data } = await supabase
-      .from("tasks")
-      .select("id, title, status")
-      .in("id", pinsByType.task.map((p) => p.entity_id))
-    for (const task of data ?? []) {
-      entityMap.set(task.id, { title: task.title, status: task.status })
-    }
+  const [tasks, rfis, punchItems, submittals, dailyLogs, photos] = await Promise.all([
+    pinsByType.task.length > 0
+      ? supabase
+          .from("tasks")
+          .select("id, title, status")
+          .eq("org_id", resolvedOrgId)
+          .in("id", pinsByType.task.map((p) => p.entity_id))
+          .then(({ data }) => data ?? [])
+      : Promise.resolve([]),
+    pinsByType.rfi.length > 0
+      ? supabase
+          .from("rfis")
+          .select("id, subject, status")
+          .eq("org_id", resolvedOrgId)
+          .in("id", pinsByType.rfi.map((p) => p.entity_id))
+          .then(({ data }) => data ?? [])
+      : Promise.resolve([]),
+    pinsByType.punch_list.length > 0
+      ? supabase
+          .from("punch_items")
+          .select("id, title, status")
+          .eq("org_id", resolvedOrgId)
+          .in("id", pinsByType.punch_list.map((p) => p.entity_id))
+          .then(({ data }) => data ?? [])
+      : Promise.resolve([]),
+    pinsByType.submittal.length > 0
+      ? supabase
+          .from("submittals")
+          .select("id, title, status")
+          .eq("org_id", resolvedOrgId)
+          .in("id", pinsByType.submittal.map((p) => p.entity_id))
+          .then(({ data }) => data ?? [])
+      : Promise.resolve([]),
+    pinsByType.daily_log.length > 0
+      ? supabase
+          .from("daily_logs")
+          .select("id, log_date, summary")
+          .eq("org_id", resolvedOrgId)
+          .in("id", pinsByType.daily_log.map((p) => p.entity_id))
+          .then(({ data }) => data ?? [])
+      : Promise.resolve([]),
+    // Photos: title is the underlying file name (the pin's own label carries
+    // the caption and wins in the enrichment below when present).
+    pinsByType.photo.length > 0
+      ? (async () => {
+          const { data: photoRows } = await supabase
+            .from("photos")
+            .select("id, file_id")
+            .eq("org_id", resolvedOrgId)
+            .in("id", pinsByType.photo.map((p) => p.entity_id))
+          const fileIds = (photoRows ?? [])
+            .map((row) => row.file_id as string | null)
+            .filter((value): value is string => !!value)
+          const nameByFileId = new Map<string, string>()
+          if (fileIds.length > 0) {
+            const { data: fileRows } = await supabase
+              .from("files")
+              .select("id, file_name")
+              .eq("org_id", resolvedOrgId)
+              .in("id", fileIds)
+            for (const file of fileRows ?? []) {
+              nameByFileId.set(file.id as string, file.file_name as string)
+            }
+          }
+          return (photoRows ?? []).map((row) => ({
+            id: row.id as string,
+            title: nameByFileId.get(row.file_id as string) ?? "Photo",
+          }))
+        })()
+      : Promise.resolve([]),
+  ])
+
+  for (const task of tasks) {
+    entityMap.set(task.id, { title: task.title, status: task.status })
+  }
+  for (const rfi of rfis) {
+    entityMap.set(rfi.id, { title: rfi.subject, status: rfi.status })
+  }
+  for (const item of punchItems) {
+    entityMap.set(item.id, { title: item.title, status: item.status })
+  }
+  for (const submittal of submittals) {
+    entityMap.set(submittal.id, { title: submittal.title, status: submittal.status })
+  }
+  for (const log of dailyLogs) {
+    entityMap.set(log.id, {
+      title: log.summary || `Daily Log ${log.log_date ?? ""}`.trim(),
+    })
+  }
+  for (const photo of photos) {
+    entityMap.set(photo.id, { title: photo.title })
   }
 
-  // Fetch RFIs
-  if (pinsByType.rfi.length > 0) {
-    const { data } = await supabase
-      .from("rfis")
-      .select("id, subject, status")
-      .in("id", pinsByType.rfi.map((p) => p.entity_id))
-    for (const rfi of data ?? []) {
-      entityMap.set(rfi.id, { title: rfi.subject, status: rfi.status })
-    }
-  }
-
-  // Fetch punch list items
-  if (pinsByType.punch_list.length > 0) {
-    const { data } = await supabase
-      .from("punch_list_items")
-      .select("id, title, status")
-      .in("id", pinsByType.punch_list.map((p) => p.entity_id))
-    for (const item of data ?? []) {
-      entityMap.set(item.id, { title: item.title, status: item.status })
-    }
-  }
-
-  // Fetch submittals
-  if (pinsByType.submittal.length > 0) {
-    const { data } = await supabase
-      .from("submittals")
-      .select("id, title, status")
-      .in("id", pinsByType.submittal.map((p) => p.entity_id))
-    for (const submittal of data ?? []) {
-      entityMap.set(submittal.id, { title: submittal.title, status: submittal.status })
-    }
-  }
-
-  // Enrich pins with entity data
+  // Enrich pins with entity data. For photo pins the label IS the caption, so
+  // it takes precedence over the file-name title.
   return pins.map((pin) => {
     const entityData = entityMap.get(pin.entity_id)
     return {
       ...pin,
-      entity_title: entityData?.title ?? pin.label,
+      entity_title:
+        pin.entity_type === "photo"
+          ? pin.label ?? entityData?.title
+          : entityData?.title ?? pin.label,
       entity_status: entityData?.status,
     }
   })
@@ -580,7 +619,8 @@ export async function getDrawingPin(
   pinId: string,
   orgId?: string
 ): Promise<DrawingPin | null> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("drawing_pins")
@@ -623,6 +663,7 @@ export async function createDrawingPin(
 ): Promise<DrawingPin> {
   const parsed = drawingPinInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.markup", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("drawing_pins")
@@ -691,6 +732,7 @@ export async function updateDrawingPin(
 ): Promise<DrawingPin> {
   const parsed = drawingPinUpdateSchema.parse(updates)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.markup", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: fetchError } = await supabase
     .from("drawing_pins")
@@ -750,6 +792,7 @@ export async function updateDrawingPin(
  */
 export async function deleteDrawingPin(pinId: string, orgId?: string): Promise<void> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.markup", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: fetchError } = await supabase
     .from("drawing_pins")
@@ -792,17 +835,34 @@ export async function deletePinForEntity(
   entityId: string,
   orgId?: string
 ): Promise<void> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.markup", { supabase, orgId: resolvedOrgId, userId })
 
-  const { error } = await supabase
+  const { data: deleted, error } = await supabase
     .from("drawing_pins")
     .delete()
     .eq("org_id", resolvedOrgId)
     .eq("entity_type", entityType)
     .eq("entity_id", entityId)
+    .select("*")
 
   if (error) {
     throw new Error(`Failed to delete pin for entity: ${error.message}`)
+  }
+
+  for (const pin of deleted ?? []) {
+    await recordAudit({
+      orgId: resolvedOrgId,
+      actorId: userId,
+      action: "delete",
+      entityType: "drawing_pin",
+      entityId: pin.id as string,
+      before: pin,
+    })
+  }
+
+  if ((deleted?.length ?? 0) > 0) {
+    await enqueueSheetsListRefresh(resolvedOrgId)
   }
 }
 
@@ -815,7 +875,8 @@ export async function syncPinStatus(
   newStatus: PinStatus,
   orgId?: string
 ): Promise<void> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.markup", { supabase, orgId: resolvedOrgId, userId })
 
   const { error } = await supabase
     .from("drawing_pins")
@@ -871,7 +932,8 @@ export async function getPinCountsByStatus(
   sheetId: string,
   orgId?: string
 ): Promise<Record<string, number>> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("drawing_pins")
@@ -899,7 +961,8 @@ export async function getPinCountsByEntityType(
   sheetId: string,
   orgId?: string
 ): Promise<Record<PinEntityType, number>> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("drawing_pins")
@@ -935,7 +998,8 @@ export async function getSheetStatusCounts({
     return {}
   }
 
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
 
   const { data, error } = await supabase
     .from("drawing_pins")

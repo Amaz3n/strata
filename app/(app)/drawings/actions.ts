@@ -35,7 +35,18 @@ import {
   discardRevision,
   getDraftRevisionStatus,
   getPendingDraftRevision,
+  getSheetCalibration,
+  setSheetVersionCalibration,
+  searchSheetContent,
 } from "@/lib/services/drawings"
+import {
+  listRevisionRecipients,
+  distributeRevision,
+} from "@/lib/services/drawings-distribution"
+import type {
+  RevisionRecipientList,
+  DistributeRevisionResult,
+} from "@/lib/services/drawings-distribution"
 import {
   listDrawingMarkups,
   getDrawingMarkup,
@@ -65,6 +76,8 @@ import type {
   RevisionDiff,
   RevisionDraftStatus,
   PublishRevisionInput,
+  SheetCalibration,
+  SheetContentMatch,
 } from "@/lib/services/drawings"
 import type {
   DrawingMarkup,
@@ -81,6 +94,7 @@ import type {
   DrawingSetListFilters,
   DrawingSheetListFilters,
   DrawingRevisionListFilters,
+  DistributeRevisionInput,
   DrawingDiscipline,
   DrawingIssuanceType,
   DrawingMarkupInput,
@@ -92,10 +106,13 @@ import type {
   PinEntityType,
   PinStatus,
   MarkupType,
+  SetSheetVersionCalibrationInput,
+  CreatePhotoFromDrawingInput,
 } from "@/lib/validation/drawings"
-import { createFileRecord } from "@/lib/services/files"
+import { createPhotoFromDrawingInputSchema } from "@/lib/validation/drawings"
+import { createFileRecord, buildInternalFileUrl } from "@/lib/services/files"
 import { triggerDrawingsPipeline } from "@/lib/services/drawings-pipeline-trigger"
-import { requireAnyPermission } from "@/lib/services/permissions"
+import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 import { getPlatformAiFeatureDefaultConfig } from "@/lib/services/ai-config"
 import { createRfi } from "@/lib/services/rfis"
 import { createProjectTaskAction } from "@/app/(app)/projects/[id]/actions"
@@ -360,6 +377,12 @@ export async function createDrawingSetFromUpload(input: {
         .single()
 
       if (draftError || !draftRevision) {
+        // The one-pending-draft-per-project unique index can fire on a
+        // concurrent-upload race that slips past the pre-check above; surface
+        // the same friendly message the pre-check uses.
+        if (draftError?.code === "23505") {
+          throw new Error("A revision is already pending review. Publish or discard it before uploading another.")
+        }
         throw new Error(`Failed to create draft revision: ${draftError?.message}`)
       }
 
@@ -472,7 +495,12 @@ export async function retryDraftRevisionAction(revisionId: string): Promise<Acti
       await supabase
         .from("outbox")
         .update({ status: "completed", last_error: "Superseded by manual retry" })
-        .in("job_type", ["process_drawing_set", "process_drawing_page"])
+        .in("job_type", [
+          "process_drawing_set",
+          "process_drawing_page",
+          "split_drawing_chunk",
+          "enrich_drawing_metadata",
+        ])
         .in("status", ["pending", "failed"])
         .contains("payload", { draftRevisionId: revisionId })
 
@@ -834,7 +862,8 @@ export async function getSheetOptimizedImageUrlsAction(
   width: number | null
   height: number | null
 } | null> {
-      const { supabase, orgId } = await requireOrgContext()
+      const { supabase, orgId, userId } = await requireOrgContext()
+      await requirePermission("drawing.read", { supabase, orgId, userId })
       const { data: sheet, error: sheetError } = await supabase
         .from("drawing_sheets")
         .select("id, current_revision_id")
@@ -947,6 +976,29 @@ export async function listSheetVersionsWithUrlsAction(
   sheetId: string
 ): Promise<DrawingSheetVersion[]> {
       return listSheetVersionsWithUrls(sheetId)
+}
+
+/**
+ * Get the dimension-tool calibration for a sheet's current version.
+ * Null when the sheet has no published version.
+ */
+export async function getSheetCalibrationAction(
+  sheetId: string
+): Promise<SheetCalibration | null> {
+      return getSheetCalibration(sheetId)
+}
+
+/**
+ * Save two-point scale calibration on a sheet version
+ */
+export async function setSheetVersionCalibrationAction(
+  input: SetSheetVersionCalibrationInput
+): Promise<ActionResult<SheetCalibration>> {
+  return run(async () => {
+      const result = await setSheetVersionCalibration(input)
+      revalidatePath("/drawings")
+      return result
+  })
 }
 
 /**
@@ -1094,7 +1146,8 @@ export async function getProcessingStatusAction(setId: string): Promise<{
 export async function listUploadedSheetsAction(
   sourceFileId: string
 ): Promise<UploadReviewSheet[]> {
-      const { orgId } = await requireOrgContext()
+      const { supabase, orgId, userId } = await requireOrgContext()
+      await requirePermission("drawing.read", { supabase, orgId, userId })
       const service = createServiceSupabaseClient()
 
       const { data: versions, error: versionsError } = await service
@@ -1161,6 +1214,13 @@ export async function getRevisionDiffAction(revisionId: string): Promise<Revisio
       return getRevisionDiff(revisionId)
 }
 
+export async function searchSheetContentAction(
+  projectId: string,
+  query: string,
+): Promise<SheetContentMatch[]> {
+      return searchSheetContent(projectId, query)
+}
+
 export async function publishRevisionAction(input: PublishRevisionInput): Promise<ActionResult<void>> {
   return run(async () => {
       await requireAnyPermission(["drawing.upload", "org.admin"])
@@ -1174,6 +1234,25 @@ export async function discardRevisionAction(revisionId: string): Promise<ActionR
       await requireAnyPermission(["drawing.upload", "org.admin"])
       await discardRevision(revisionId)
       revalidatePath("/drawings")
+  })
+}
+
+// ============================================================================
+// REVISION DISTRIBUTION ACTIONS
+// ============================================================================
+
+export async function listRevisionRecipientsAction(
+  revisionId: string,
+): Promise<ActionResult<RevisionRecipientList>> {
+  return run(() => listRevisionRecipients(revisionId))
+}
+
+export async function distributeRevisionAction(
+  input: DistributeRevisionInput,
+): Promise<ActionResult<DistributeRevisionResult>> {
+  return run(async () => {
+    await requireAnyPermission(["drawing.upload", "org.admin"])
+    return distributeRevision(input)
   })
 }
 
@@ -1419,6 +1498,129 @@ export async function createPunchItemFromDrawingAction(input: {
 
       return data
   })
+}
+
+/**
+ * Attach a photo to a drawing location: the image file is already uploaded
+ * via the standard files path; this records the photos row and drops the pin.
+ * Mirrors createTaskFromDrawingAction's shape (create entity, then pin).
+ */
+export async function createPhotoFromDrawingAction(
+  input: CreatePhotoFromDrawingInput
+): Promise<ActionResult<DrawingPin>> {
+  return run(async () => {
+      const parsed = createPhotoFromDrawingInputSchema.parse(input)
+      const { supabase, orgId, userId } = await requireOrgContext()
+      await requirePermission("drawing.markup", { supabase, orgId, userId })
+
+      const { data: file, error: fileError } = await supabase
+        .from("files")
+        .select("id, file_name")
+        .eq("org_id", orgId)
+        .eq("id", parsed.file_id)
+        .eq("project_id", parsed.project_id)
+        .maybeSingle()
+
+      if (fileError || !file) {
+        throw new Error("Uploaded photo file not found")
+      }
+
+      const { data: photo, error: photoError } = await supabase
+        .from("photos")
+        .insert({
+          org_id: orgId,
+          project_id: parsed.project_id,
+          file_id: parsed.file_id,
+          captured_by: userId,
+          taken_at: new Date().toISOString(),
+          tags: ["drawing"],
+        })
+        .select("id")
+        .single()
+
+      if (photoError || !photo) {
+        throw new Error(`Failed to save photo: ${photoError?.message}`)
+      }
+
+      await recordEvent({
+        orgId,
+        eventType: "photo_created",
+        entityType: "photo",
+        entityId: photo.id as string,
+        payload: {
+          project_id: parsed.project_id,
+          drawing_sheet_id: parsed.drawing_sheet_id,
+        },
+      })
+
+      await recordAudit({
+        orgId,
+        actorId: userId,
+        action: "insert",
+        entityType: "photo",
+        entityId: photo.id as string,
+        after: {
+          project_id: parsed.project_id,
+          file_id: parsed.file_id,
+          drawing_sheet_id: parsed.drawing_sheet_id,
+        },
+      })
+
+      const pin = await createDrawingPin({
+        project_id: parsed.project_id,
+        drawing_sheet_id: parsed.drawing_sheet_id,
+        x_position: parsed.x_position,
+        y_position: parsed.y_position,
+        entity_type: "photo",
+        entity_id: photo.id as string,
+        label: parsed.caption?.trim() || file.file_name,
+      })
+
+      revalidatePath("/drawings")
+      return { ...pin, entity_title: pin.label }
+  })
+}
+
+/**
+ * Load the photo behind a photo pin for the viewer popover. The URL is the
+ * authenticated in-app raw route, so no signed URL is minted per pin.
+ */
+export async function getPhotoForPinAction(photoId: string): Promise<{
+  id: string
+  file_id: string
+  file_name: string | null
+  url: string
+  taken_at: string | null
+} | null> {
+      const { supabase, orgId, userId } = await requireOrgContext()
+      await requirePermission("drawing.read", { supabase, orgId, userId })
+
+      const { data: photo, error } = await supabase
+        .from("photos")
+        .select("id, file_id, taken_at")
+        .eq("org_id", orgId)
+        .eq("id", photoId)
+        .maybeSingle()
+
+      if (error) {
+        throw new Error(`Failed to load photo: ${error.message}`)
+      }
+      if (!photo?.file_id) return null
+
+      const { data: file } = await supabase
+        .from("files")
+        .select("id, file_name")
+        .eq("org_id", orgId)
+        .eq("id", photo.file_id)
+        .maybeSingle()
+
+      return {
+        id: photo.id,
+        file_id: photo.file_id,
+        file_name: file?.file_name ?? null,
+        url: buildInternalFileUrl(photo.file_id),
+        taken_at: photo.taken_at ?? null,
+      }
 }
 
 /**

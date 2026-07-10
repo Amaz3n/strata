@@ -19,6 +19,7 @@ import {
   Eye,
   AlertTriangle,
   History,
+  Send,
 } from "lucide-react"
 import {
   disciplineGradientClass,
@@ -108,8 +109,9 @@ import {
   listDrawingRevisionsAction,
   listSheetVersionsAction,
   getPendingDraftRevisionAction,
+  searchSheetContentAction,
 } from "@/app/(app)/drawings/actions"
-import type { RevisionDraftStatus } from "@/lib/services/drawings"
+import type { RevisionDraftStatus, SheetContentMatch } from "@/lib/services/drawings"
 import type {
   DrawingMarkup,
   DrawingPin,
@@ -119,11 +121,18 @@ import type {
   DrawingRevision,
   DrawingSheetVersion,
 } from "@/app/(app)/drawings/types"
-import { DrawingViewer } from "./drawing-viewer"
-import { RevisionReviewDialog } from "./revision-review-dialog"
+import dynamic from "next/dynamic"
+import { RevisionReviewDialog, DistributeRevisionDialog } from "./revision-review-dialog"
 import { CreateFromDrawingDialog } from "./create-from-drawing-dialog"
 
 import { unwrapAction } from "@/lib/action-result"
+
+// The viewer only mounts once a sheet is opened; keep its 2k+ lines (and
+// OpenSeadragon/react-pdf chunks) out of the register's initial bundle.
+const DrawingViewer = dynamic(
+  () => import("./drawing-viewer").then((mod) => mod.DrawingViewer),
+  { ssr: false },
+)
 
 type ProjectOption = { id: string; name: string }
 
@@ -264,6 +273,24 @@ function DisabledUploadMenuItem({
   )
 }
 
+// ts_headline marks hits with <b>…</b>; render them without innerHTML.
+function ContentSnippet({ snippet }: { snippet: string }) {
+  const segments = snippet.split(/<\/?b>/)
+  return (
+    <>
+      {segments.map((segment, i) =>
+        i % 2 === 1 ? (
+          <mark key={i} className="bg-transparent font-medium text-foreground">
+            {segment}
+          </mark>
+        ) : (
+          <span key={i}>{segment}</span>
+        ),
+      )}
+    </>
+  )
+}
+
 function describeProcessingStage(set: DrawingSet | null) {
   const processed = set?.processed_pages ?? 0
   const total = set?.total_pages ?? null
@@ -365,6 +392,11 @@ export function DrawingsSetsView({
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const [isUploading, setIsUploading] = useState(false)
   const [uploadStage, setUploadStage] = useState<string | null>(null)
+  const [uploadTransfer, setUploadTransfer] = useState<{
+    loaded: number
+    total: number
+    percent: number
+  } | null>(null)
   const [issuanceLabel, setIssuanceLabel] = useState("")
   const [issuanceType, setIssuanceType] = useState<DrawingIssuanceType>("revision")
   const [issuanceDate, setIssuanceDate] = useState(() =>
@@ -385,6 +417,8 @@ export function DrawingsSetsView({
   const [uploadedReviewSheets, setUploadedReviewSheets] = useState<UploadReviewSheet[]>([])
   // Draft -> publish revision review
   const [reviewOpen, setReviewOpen] = useState(false)
+  // Post-publish (or on-demand) distribution of a published revision to portals.
+  const [distributeTarget, setDistributeTarget] = useState<{ id: string; label: string | null } | null>(null)
   const [reviewRevisionId, setReviewRevisionId] = useState<string | null>(null)
   const [pendingDraft, setPendingDraft] = useState<RevisionDraftStatus | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -693,6 +727,47 @@ export function DrawingsSetsView({
     })
   }, [activeSheets, search])
 
+  // Full-text content search: matches inside the sheets themselves (notes,
+  // callouts, title-block text), debounced against the same search box.
+  const [contentMatches, setContentMatches] = useState<SheetContentMatch[]>([])
+  const [contentSearchPending, setContentSearchPending] = useState(false)
+  useEffect(() => {
+    const q = search.trim()
+    if (q.length < 3 || !selectedProjectId || revisionFilter !== "current") {
+      setContentMatches([])
+      setContentSearchPending(false)
+      return
+    }
+    let cancelled = false
+    setContentSearchPending(true)
+    const timer = setTimeout(async () => {
+      try {
+        const matches = await searchSheetContentAction(selectedProjectId, q)
+        if (!cancelled) setContentMatches(matches)
+      } catch (err) {
+        console.error("Sheet content search failed:", err)
+        if (!cancelled) setContentMatches([])
+      } finally {
+        if (!cancelled) setContentSearchPending(false)
+      }
+    }, 350)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [search, selectedProjectId, revisionFilter])
+
+  // Content hits on sheets the name filter already shows are redundant.
+  const contentMatchRows = useMemo(() => {
+    const bySheet = new Map(activeSheets.map((s) => [s.id, s]))
+    const nameMatched = new Set(filteredSheets.map((s) => s.id))
+    return contentMatches.flatMap((match) => {
+      const sheet = bySheet.get(match.sheet_id)
+      if (!sheet || nameMatched.has(sheet.id)) return []
+      return [{ match, sheet }]
+    })
+  }, [contentMatches, activeSheets, filteredSheets])
+
   const disciplineGroups = useMemo(() => {
     const map = new Map<string, DrawingSheet[]>()
     for (const sheet of filteredSheets) {
@@ -792,9 +867,18 @@ export function DrawingsSetsView({
         uploadFile,
         selectedProjectId,
         orgId,
+        {
+          onProgress: setUploadTransfer,
+          onStage: (stage) => {
+            if (stage === "preparing") setUploadStage("Preparing upload…")
+            if (stage === "uploading") setUploadStage("Uploading PDF…")
+            if (stage === "finalizing") setUploadStage("Finalizing upload…")
+          },
+        },
       )
 
       setUploadStage("Processing PDF…")
+      setUploadTransfer(null)
       const { set: newSet, draftRevisionId } = unwrapAction(await createDrawingSetFromUpload({
         projectId: selectedProjectId,
         fileName: uploadFile.name,
@@ -830,6 +914,7 @@ export function DrawingsSetsView({
     } finally {
       setIsUploading(false)
       setUploadStage(null)
+      setUploadTransfer(null)
     }
   }
 
@@ -1128,7 +1213,9 @@ export function DrawingsSetsView({
         revisionFile,
         selectedProjectId,
         orgId,
+        { onProgress: setUploadTransfer },
       )
+      setUploadTransfer(null)
       const { draftRevisionId } = unwrapAction(await createDrawingSetFromUpload({
         projectId: selectedProjectId,
         fileName: revisionFile.name,
@@ -1154,6 +1241,7 @@ export function DrawingsSetsView({
       toast.error("Failed to queue sheet revision")
     } finally {
       setSavingSheetRevision(false)
+      setUploadTransfer(null)
     }
   }, [
     selectedProjectId,
@@ -1653,6 +1741,52 @@ export function DrawingsSetsView({
                         reason="There is no draft issuance waiting for review."
                       />
                     )}
+                    <DropdownMenuSeparator />
+                    {registerRevisions.length > 0 ? (
+                      <DropdownMenuItem
+                        onClick={() => {
+                          const target =
+                            revisionFilter !== "current"
+                              ? registerRevisions.find((r) => r.id === revisionFilter)
+                              : registerRevisions[0]
+                          if (!target) return
+                          setDistributeTarget({
+                            id: target.id,
+                            label: issuanceDisplayLabel(target),
+                          })
+                        }}
+                      >
+                        <Send className="mr-2 h-4 w-4" />
+                        {revisionFilter !== "current"
+                          ? "Distribute this issuance"
+                          : "Distribute latest issuance"}
+                      </DropdownMenuItem>
+                    ) : (
+                      <DisabledUploadMenuItem
+                        icon={Send}
+                        label="Distribute issuance"
+                        reason="Publish an issuance before sending it to portal contacts."
+                      />
+                    )}
+                    {selectedProjectId && liveSheets.length > 0 ? (
+                      <DropdownMenuItem
+                        onClick={() => {
+                          window.open(
+                            `/api/drawings/export?projectId=${selectedProjectId}`,
+                            "_blank",
+                          )
+                        }}
+                      >
+                        <Download className="mr-2 h-4 w-4" />
+                        Export set with markups
+                      </DropdownMenuItem>
+                    ) : (
+                      <DisabledUploadMenuItem
+                        icon={Download}
+                        label="Export set with markups"
+                        reason="Publish at least one sheet before exporting the register."
+                      />
+                    )}
                   </DropdownMenuContent>
                 </TooltipProvider>
               </DropdownMenu>
@@ -1889,6 +2023,38 @@ export function DrawingsSetsView({
             </TableBody>
           </Table>
         )}
+
+        {/* Full-text hits inside sheet content (notes, callouts, title blocks). */}
+        {search.trim().length >= 3 && revisionFilter === "current" && (
+          contentSearchPending && contentMatchRows.length === 0 ? (
+            <div className="border-t px-4 py-3 text-xs text-muted-foreground">
+              Searching sheet content…
+            </div>
+          ) : contentMatchRows.length > 0 ? (
+            <div className="border-t">
+              <div className="bg-muted/40 px-4 py-2 text-xs font-medium text-muted-foreground">
+                Found in sheet content
+              </div>
+              <div className="divide-y">
+                {contentMatchRows.map(({ match, sheet }) => (
+                  <button
+                    key={match.version_id}
+                    type="button"
+                    onClick={() => handleViewSheet(sheet)}
+                    className="flex w-full items-baseline gap-3 px-4 py-2 text-left hover:bg-muted/50"
+                  >
+                    <span className="w-20 shrink-0 font-mono text-xs font-medium">
+                      {sheet.sheet_number}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                      <ContentSnippet snippet={match.snippet} />
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null
+        )}
       </div>
 
       <Dialog open={uploadDialogOpen} onOpenChange={setUploadDialogOpen}>
@@ -1986,6 +2152,21 @@ export function DrawingsSetsView({
                     placeholder="Optional package notes"
                   />
                 </div>
+                {isUploading && (
+                  <div className="space-y-2 sm:col-span-2">
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>{uploadStage ?? "Uploading PDF…"}</span>
+                      {uploadTransfer && (
+                        <span className="tabular-nums">
+                          {(uploadTransfer.loaded / 1024 / 1024).toFixed(1)} /{" "}
+                          {(uploadTransfer.total / 1024 / 1024).toFixed(1)} MB ·{" "}
+                          {uploadTransfer.percent}%
+                        </span>
+                      )}
+                    </div>
+                    <Progress value={uploadTransfer?.percent ?? 0} className="h-1.5" />
+                  </div>
+                )}
               </div>
             )}
 
@@ -2459,6 +2640,19 @@ export function DrawingsSetsView({
                 Loading revision details...
               </div>
             )}
+            {savingSheetRevision && uploadTransfer && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                  <span>Uploading PDF…</span>
+                  <span className="tabular-nums">
+                    {(uploadTransfer.loaded / 1024 / 1024).toFixed(1)} /{" "}
+                    {(uploadTransfer.total / 1024 / 1024).toFixed(1)} MB ·{" "}
+                    {uploadTransfer.percent}%
+                  </span>
+                </div>
+                <Progress value={uploadTransfer.percent} className="h-1.5" />
+              </div>
+            )}
             {knownRevisions.length > 0 && (
               <p className="text-[11px] text-muted-foreground">
                 Existing packages:{" "}
@@ -2501,6 +2695,23 @@ export function DrawingsSetsView({
           revisionId={reviewRevisionId}
           onPublished={handleReviewResolved}
           onDiscarded={handleReviewResolved}
+          onDistribute={(revisionId) =>
+            setDistributeTarget({
+              id: revisionId,
+              label: pendingDraft?.id === revisionId ? issuanceDisplayLabel(pendingDraft) : null,
+            })
+          }
+        />
+      )}
+
+      {distributeTarget && (
+        <DistributeRevisionDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setDistributeTarget(null)
+          }}
+          revisionId={distributeTarget.id}
+          revisionLabel={distributeTarget.label}
         />
       )}
 
@@ -2789,7 +3000,15 @@ function SheetRow({
                 }}
               >
                 <Download className="mr-2 h-4 w-4" />
-                Download
+                Download original
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => {
+                  window.open(`/api/drawings/export?sheetId=${sheet.id}`, "_blank")
+                }}
+              >
+                <Download className="mr-2 h-4 w-4" />
+                Download with markups
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">

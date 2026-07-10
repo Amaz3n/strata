@@ -1,16 +1,33 @@
-# Workstream 01 — Product Tiers, Terminology, Commercial Defaults, CSI Cost Codes
+# Workstream 01 — Product Tiers, Project Posture, Terminology, CSI Cost Codes
 
 > Prereq: read `00-MASTER-commercial-expansion.md`. This workstream has no dependencies
 > and unblocks every other one. It is mostly plumbing — resist the urge to redesign UI.
 
+## The two-level posture model (read carefully — this shapes everything)
+
+Many GCs do both residential and commercial work in one company under one Arc
+subscription. So posture lives at TWO levels:
+
+- **Project posture** = `projects.property_type` (existing enum). This is what drives
+  behavior inside a project workbench: terminology, sidebar modules, billing defaults.
+- **Org tier** = new `orgs.product_tier`. Only three jobs: default posture for new
+  projects/prospects, vocabulary on org-level surfaces (org nav, desks), and the
+  marketing/packaging segment shown in platform admin. It never gates anything.
+
+Every helper below is written so a "commercial" org with a residential project (or
+vice versa) behaves correctly per project.
+
 ## Goal
 
-1. An org-level `product_tier` flag (`residential` | `commercial` | `production`) with
-   helpers every other workstream consumes.
-2. A terminology layer so commercial orgs see "Owner" where residential sees "Client,"
-   without forking components.
-3. Commercial-appropriate defaults (project property type, billing posture, nav).
-4. A shipped CSI MasterFormat cost-code library (seedable per org, like the NAHB seed).
+1. An org-level `product_tier` flag (`residential` | `commercial` | `production`) and a
+   **project posture resolver** (`getProjectPosture()`) that every other workstream
+   consumes.
+2. A terminology layer so commercial-posture contexts see "Owner" where residential
+   sees "Client," without forking components.
+3. Posture-appropriate defaults at project/prospect creation (property type, billing
+   basis, retainage) and posture-driven module visibility in the project sidebar.
+4. A shipped CSI MasterFormat cost-code library (seedable per org, like the NAHB seed —
+   mixed orgs can hold BOTH libraries side by side).
 5. A cost-type dimension (labor/material/equipment/subcontract/other) on cost codes and
    budget lines.
 
@@ -46,7 +63,7 @@
 - `projects.property_type` is a USER-DEFINED enum — check its labels with
   `select enum_range(null::property_type)` (or the actual enum name) before touching.
 
-## Phase A — `product_tier` flag
+## Phase A — `product_tier` flag + posture resolver
 
 **Migration** (write to `supabase/migrations/<ts>_org_product_tier.sql`, do not apply):
 
@@ -55,8 +72,14 @@ alter table public.orgs
   add column if not exists product_tier text not null default 'residential'
   check (product_tier in ('residential', 'commercial', 'production'));
 comment on column public.orgs.product_tier is
-  'Product posture: changes terminology, defaults, and module visibility. Never gates data.';
+  'Default posture for new projects + org-surface vocabulary + packaging segment. Never gates data; per-project behavior follows projects.property_type.';
 ```
+
+No project-side migration: `projects.property_type` already exists. First verify its
+enum labels (`select enum_range(null::<actual enum name>)` — find the enum name via
+information_schema) — the plan assumes it has at least `residential` and `commercial`
+values. If it has extra values (e.g., land/multifamily), map them in the resolver
+(multifamily → commercial), don't touch the enum.
 
 **Service layer:**
 
@@ -67,21 +90,38 @@ comment on column public.orgs.product_tier is
 
 ```ts
 export type ProductTier = "residential" | "commercial" | "production";
+export type ProjectPosture = "residential" | "commercial"; // production posture comes later
 export const PRODUCT_TIERS: ProductTier[] = ["residential", "commercial", "production"];
-// display names for platform admin UI
+// display names for platform admin / onboarding UI (packaging only — one product)
 export const PRODUCT_TIER_LABELS: Record<ProductTier, string> = {
   residential: "Arc",           // final branding TBD by human
   commercial: "Arc Commercial",
   production: "Arc Production",
 };
+
+// THE resolver. Pure so client components can use it with data they already have.
+export function getProjectPosture(
+  propertyType: string | null | undefined,
+  orgTier: ProductTier,
+): ProjectPosture {
+  if (propertyType === "commercial") return "commercial";
+  if (propertyType === "residential") return "residential";
+  // unknown/legacy/null property types fall back to the org default:
+  return orgTier === "commercial" ? "commercial" : "residential";
+}
 ```
 
 - Server helper `getOrgProductTier()` colocated with org context (returns the tier from
   the already-loaded org context — do NOT add a new query; piggyback on
-  `requireOrgContext()`'s org row).
+  `requireOrgContext()`'s org row). Project-scoped services already load the project
+  row — pass its `property_type` + the org tier into `getProjectPosture` where needed;
+  never add extra queries for posture.
 - Platform admin: add a tier selector to the customer admin surface
   (`app/(app)/admin/customers/` — there is an actions.ts/page.tsx pair; follow its
-  existing edit patterns). Only platform admins change tier.
+  existing edit patterns). Only platform admins change tier. Org users change a
+  PROJECT's posture simply by editing its property type (existing project edit sheet —
+  verify property_type is editable there; add it if the create sheet has it but the
+  edit sheet doesn't).
 - Emit `recordAudit` + `recordEvent` on tier change.
 
 ## Phase B — Terminology layer
@@ -91,8 +131,8 @@ Single choke point for tier-dependent nouns.
 - New file `lib/terminology.ts`:
 
 ```ts
-import type { ProductTier } from "./product-tier";
-
+// Keyed by POSTURE (project-level noun sets). "production" included now so the
+// map is the only file Production touches later.
 const TERMS = {
   residential: { owner: "Client", owners: "Clients", ownerPortal: "Client portal",
                  fee: "Builder's fee", primeContract: "Contract" },
@@ -103,13 +143,23 @@ const TERMS = {
 } as const;
 
 export type TermKey = keyof (typeof TERMS)["residential"];
-export function terminology(tier: ProductTier) { return TERMS[tier]; }
+export function terminology(posture: keyof typeof TERMS) { return TERMS[posture]; }
 ```
 
-- Thread the tier into client components the same way other org-level context reaches
-  them today (find how org name/logo reach the app shell — likely props from
-  `app/(app)/layout.tsx`; add tier there, and expose a small context/provider ONLY if
-  one already exists for org info. Do not invent a new global store).
+- **Which posture wins where:**
+  - Inside a project workbench (`app/(app)/projects/[id]/**`), portals for that
+    project, and any project-scoped email/PDF: the PROJECT's posture via
+    `getProjectPosture`.
+  - Org-level surfaces (org nav, desks, settings, org-wide reports): the ORG tier.
+    A mixed org that is residential-default therefore still says "Clients" in org
+    nav while its commercial projects say "Owner" inside — that asymmetry is fine
+    and correct; do not try to blend.
+- Thread posture into client components the same way other context reaches them
+  today: the project layout (`app/(app)/projects/[id]/layout.tsx` or the
+  project-detail client) already passes project data down — add posture there; the
+  app shell (`app/(app)/layout.tsx`) passes the org tier for org surfaces. Expose a
+  small context/provider ONLY if one already exists for this kind of info. Do not
+  invent a new global store.
 - **Scope discipline:** do NOT attempt a total sweep in this phase. Convert the ~30
   highest-visibility "Client" strings: app nav, project financials tab labels,
   invoice composer recipient labels, portal-link management UI, "Builder's fee" line
@@ -121,25 +171,43 @@ export function terminology(tier: ProductTier) { return TERMS[tier]; }
 - Emails: `getOrgSenderEmail`/templates that say "your builder" or "client" — same
   triage, top templates only (invoice, change order, RFI, portal invite).
 
-## Phase C — Commercial defaults
+## Phase C — Posture-driven defaults + module visibility
 
-Gate on `getOrgProductTier()`:
+**Creation defaults (keyed on ORG tier — it's the default posture):**
 
-- `convert-prospect-sheet.tsx`: default `property_type` to `"commercial"` for commercial
-  orgs (keep the field editable both ways).
-- Project creation sheet(s): same default; also default project `retainage_percent` to
-  10 for commercial tier (verify the field exists on the create flow; it exists on
+- `convert-prospect-sheet.tsx` and project creation sheet(s): default `property_type`
+  to `"commercial"` for commercial-tier orgs, keep the field prominent and editable
+  both ways — for a mixed company this picker IS the product switch, so make sure it
+  reads as "what kind of job is this," not buried metadata.
+
+**Setup defaults (keyed on the PROJECT's chosen posture, reactively):**
+
+- When the create/convert sheet's property type is set to commercial: default project
+  `retainage_percent` to 10 (verify the field is on the create flow; it exists on
   `projects`).
-- Billing model picker (`lib/financials/billing-model.ts` consumers — find the project
-  financial setup step, see memory: two-step project sheet, `project-financial-setup.ts`):
-  for commercial orgs, order the options fixed_price (progress billing) first,
-  cost_plus_gmp second; hide `time_and_materials` less prominently. Do NOT remove any
-  option for any tier.
-- Nav config: this phase only *prepares* — add a `tiers?: ProductTier[]` field to the
-  nav item config type with default "all tiers." Later workstreams register their new
-  modules with `tiers: ["commercial", "production"]`. Residential-only surfaces
-  (Selections) get `tiers: ["residential", "production"]`.
-- `orgs.locale`-style plumbing check: confirm tier reaches every layout that renders nav.
+- Billing model picker (`lib/financials/billing-model.ts` consumers — the project
+  financial setup step, see memory: two-step project sheet,
+  `project-financial-setup.ts`): for commercial-posture projects, order the options
+  fixed_price (progress billing) first, cost_plus_gmp second; de-emphasize
+  `time_and_materials`. Residential-posture projects keep today's ordering. Do NOT
+  remove any option for any posture.
+
+**Module visibility (the seam later workstreams plug into):**
+
+- Project sidebar nav config: add a `postures?: ProjectPosture[]` field to the
+  project-nav item type, default "all." Later workstreams register their new project
+  modules (meetings, transmittals, inspections, safety) with
+  `postures: ["commercial"]`; Selections gets `postures: ["residential"]`. Hiding
+  only — routes always work, and add a per-project "Modules" override in project
+  settings (simple jsonb on `projects.metadata` — check whether projects has a
+  metadata column first; if not, a `project_module_overrides` approach needs a tiny
+  migration) so a residential project can turn on Meetings if the builder wants it.
+- Org-level nav: an org tier of commercial shows commercial vocabulary; org desks for
+  new modules appear when the org tier is commercial OR any active project has
+  commercial posture (compute cheaply — a single exists-query in the layout's existing
+  nav data load, or piggyback `navigation-badges.ts`).
+- Plumbing check: confirm org tier + project posture reach every layout that renders
+  nav (org shell and project workbench layout).
 
 ## Phase D — CSI MasterFormat seed
 
@@ -165,6 +233,11 @@ Gate on `getOrgProductTier()`:
   settings UI so existing orgs can adopt it (find the cost-codes settings page under
   `app/(app)/settings/` or financials settings; follow whatever import/seed affordance
   NAHB has — if none exists in UI, add a small button for both standards).
+- **Mixed orgs hold both libraries.** Cost codes are org-level and both seeds coexist
+  (`standard` column distinguishes them). Do not scope codes per project. Quality of
+  life: cost-code pickers group by standard, and a commercial-posture project's picker
+  lists the CSI group first (residential-posture lists NAHB first). Pure ordering — no
+  filtering.
 
 ## Phase E — Cost-type dimension
 
@@ -203,14 +276,22 @@ Nullable on purpose — residential orgs never have to touch it.
 ## Acceptance checklist
 
 - [ ] Migration files written (tier column, cost_type) — NOT applied without approval.
-- [ ] Flipping a test org to `commercial` (via admin UI) changes: nav labels
-      (Client→Owner), prospect-convert default property type, billing-mode ordering,
-      "Builder's fee" → "Fee" on a cost-plus invoice preview.
-- [ ] Residential org (default): zero visible change. Verify by loading the main
-      surfaces before/after.
+- [ ] Flipping a test org to `commercial` (via admin UI) changes: org nav labels
+      (Client→Owner), prospect-convert default property type; new projects default to
+      commercial posture with progress-first billing ordering and "Fee" labels.
+- [ ] **Mixed-org test (the key one):** a residential-default org creates one
+      commercial project — inside that project: Owner terminology, commercial billing
+      ordering, commercial modules in sidebar (once later workstreams land, the
+      `postures` field); its sibling residential project and all org-level surfaces:
+      unchanged Client language. Flipping the project's property type flips its
+      posture live.
+- [ ] Residential org (default) with only residential projects: zero visible change.
+      Verify by loading the main surfaces before/after.
 - [ ] `seedCSICostCodes` produces a browsable 2-level CSI tree; new commercial orgs get
-      it automatically; existing orgs can import from settings.
+      it automatically; existing orgs can import from settings; an org holding both
+      NAHB + CSI shows grouped pickers ordered by project posture.
 - [ ] Budget Detailed view shows cost-type column for a budget using CSI codes.
 - [ ] `pnpm lint` clean; `pnpm test:financials` passes.
-- [ ] No inline `product_tier === ...` checks outside `lib/product-tier.ts`,
-      `lib/terminology.ts`, nav config, and default-choosing call sites.
+- [ ] No inline `product_tier === ...` or `property_type === ...` posture checks
+      outside `lib/product-tier.ts`, `lib/terminology.ts`, nav config, and
+      default-choosing call sites.

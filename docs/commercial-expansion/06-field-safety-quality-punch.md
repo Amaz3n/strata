@@ -112,8 +112,10 @@ create table public.inspection_items (
 Numbering via project-sequence RPC. Seed ~6 starter templates in the service (not the
 migration): Site Safety Audit, Fall Protection, Housekeeping, Pre-Pour Concrete,
 Drywall Pre-Cover, MEP Rough-In — each 8–15 real items (write them with domain care).
-Seeding: org settings page button + auto for new commercial-tier orgs (mirror the CSI
-seed hookup from workstream 01).
+Seeding: org settings page button + auto for new commercial-tier orgs or when an org
+creates its first commercial-posture project (mirror the CSI seed hookup from
+workstream 01; templates are org-level, so mixed orgs get them once and reuse
+everywhere).
 
 **Service `lib/services/inspections.ts`:** template CRUD; start-from-template
 (snapshot items); item responses (autosave-friendly single-item update action);
@@ -122,8 +124,9 @@ item" / "create observation" per deficient item (punch inherits photo, location,
 description, and — after Part 3 — company). PDF export via the kit (checklist table,
 photos, signature line).
 
-**UI:** project route `app/(app)/projects/[id]/inspections/` (new; nav-tiered
-commercial, project sidebar). List grouped by kind; run screen = dense checklist with
+**UI:** project route `app/(app)/projects/[id]/inspections/` (new; project sidebar,
+posture-gated `postures: ["commercial"]` per 01, overridable per project). List
+grouped by kind; run screen = dense checklist with
 tap targets sized for tablet (still web; the iOS app is out of scope — note API
 parity as debt). Template library under org settings.
 
@@ -266,6 +269,7 @@ filtering — that's the packet a super hands a sub.
       item (to a company) + 1 observation; inspection result = fail; PDF exports.
 - [ ] Incident (lost_time) → org admins notified; incident PDF prints; observations
       quick-create from a drawing pin works.
-- [ ] Residential orgs: punch unchanged unless they assign a company; no new nav items
-      (tier-gated).
+- [ ] Residential-posture projects: punch unchanged unless they assign a company; no
+      new sidebar items (posture-gated), but a residential project CAN enable
+      Inspections via the Modules override and it works.
 - [ ] `pnpm lint` clean.

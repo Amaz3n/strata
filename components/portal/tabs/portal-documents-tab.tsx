@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { FILE_CATEGORIES } from "@/components/files/types"
+import { PortalDrawingsSection } from "@/components/portal/portal-drawings"
 import { logPortalFileAccessClientAction } from "@/app/(app)/documents/actions"
 import type { ClientPortalData } from "@/lib/types"
 
@@ -18,17 +19,20 @@ interface PortalDocumentsTabProps {
 }
 
 export function PortalDocumentsTab({ data, token, canDownload = true }: PortalDocumentsTabProps) {
+  const sharedFiles = data.sharedFiles
+
   return (
     <div className="space-y-4">
+      <PortalDrawingsSection token={token} canDownload={canDownload} />
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-base">Shared Files</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          {data.sharedFiles.length === 0 ? (
+          {sharedFiles.length === 0 ? (
             <p className="text-sm text-muted-foreground">No files shared yet</p>
           ) : (
-            data.sharedFiles.map((file) => (
+            sharedFiles.map((file) => (
               <div key={file.id} className="flex items-center gap-3 py-2 border-b last:border-0">
                 <FileText className="h-8 w-8 text-muted-foreground shrink-0" />
                 <div className="flex-1 min-w-0">

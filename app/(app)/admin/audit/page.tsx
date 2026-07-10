@@ -62,10 +62,10 @@ async function AuditLogContainer({
       timePeriod={timePeriod}
       startDate={startDate}
       endDate={endDate}
-      organizations={organizations.map((org: any) => ({
+      organizations={organizations.map((org) => ({
         id: org.id,
         name: org.name,
-        slug: org.slug,
+        slug: org.slug ?? "",
       }))}
       users={users}
     />

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createHash } from "node:crypto"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { withCronRun } from "@/lib/services/job-runs"
 
 export const runtime = "nodejs"
 
@@ -27,7 +28,7 @@ function isAuthorizedCronRequest(request: NextRequest) {
   return isVercelCron
 }
 
-export async function POST(request: NextRequest) {
+async function handler(request: NextRequest) {
   if (!isAuthorizedCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
@@ -116,3 +117,7 @@ export async function POST(request: NextRequest) {
 
   return NextResponse.json({ ok: true, snapshot })
 }
+
+// Vercel Cron sends GET.
+export const GET = withCronRun("rbac-evidence", handler)
+export const POST = GET

@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server"
 
 import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
+import { withCronRun } from "@/lib/services/job-runs"
 import { runComplianceAutopilot } from "@/lib/services/compliance-autopilot"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
-export async function POST(request: NextRequest) {
+async function handler(request: NextRequest) {
   if (!isAuthorizedCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
@@ -22,4 +23,5 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ ok: true, ...metrics, intelligenceRefreshFailures })
 }
 
+export const POST = withCronRun("compliance-autopilot", handler)
 export const GET = POST

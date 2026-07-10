@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { logQBO } from "@/lib/services/qbo-logger"
+import { withCronRun } from "@/lib/services/job-runs"
 
 const CRON_SECRET = process.env.CRON_SECRET
 const CDC_ENTITIES = ["Invoice", "Payment", "Purchase", "Bill", "BillPayment"]
@@ -139,12 +140,7 @@ async function processQBOCdc(request: NextRequest) {
   return NextResponse.json({ connections: connections?.length ?? 0, scanned, inserted })
 }
 
-export async function GET(request: NextRequest) {
-  return processQBOCdc(request)
-}
-
-export async function POST(request: NextRequest) {
-  return processQBOCdc(request)
-}
+export const GET = withCronRun("qbo-process-cdc", processQBOCdc)
+export const POST = GET
 
 export const runtime = "nodejs"

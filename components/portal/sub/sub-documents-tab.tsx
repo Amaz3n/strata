@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge"
 import { FILE_CATEGORIES } from "@/components/files/types"
 import type { FileCategory } from "@/components/files/types"
 import type { FileMetadata } from "@/lib/types"
+import { PortalDrawingsSection } from "@/components/portal/portal-drawings"
 import { logPortalFileAccessClientAction } from "@/app/(app)/documents/actions"
 
 import { unwrapAction } from "@/lib/action-result"
@@ -61,18 +62,22 @@ export function SubDocumentsTab({
 
   if (files.length === 0) {
     return (
-      <div className="text-center py-12">
-        <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
-        <p className="text-muted-foreground">No documents shared yet</p>
-        <p className="text-sm text-muted-foreground">
-          Drawings, specs, and other project documents will appear here
-        </p>
+      <div className="space-y-4">
+        {portalToken ? <PortalDrawingsSection token={portalToken} canDownload={canDownload} /> : null}
+        <div className="text-center py-12">
+          <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
+          <p className="text-muted-foreground">No documents shared yet</p>
+          <p className="text-sm text-muted-foreground">
+            Specs and other project documents will appear here
+          </p>
+        </div>
       </div>
     )
   }
 
   return (
     <div className="space-y-4">
+      {portalToken ? <PortalDrawingsSection token={portalToken} canDownload={canDownload} /> : null}
       {/* Search and Filter */}
       <div className="flex gap-2">
         <div className="relative flex-1">

@@ -3,8 +3,11 @@
 import { useEffect, useMemo, useRef } from "react"
 import type { DrawingSheet } from "@/lib/services/drawings"
 
+// Retain a bounded LRU of prefetched Image handles. The browser HTTP cache
+// keeps the bytes; this map only pins decode targets so re-navigation is
+// instant. Unbounded retention on large sets was a memory leak on iPads.
+const MAX_RETAINED_IMAGES = 60
 const retainedImages = new Map<string, HTMLImageElement>()
-const prefetchedUrls = new Set<string>()
 
 function shouldPreloadUrl(url: string) {
   if (!url) return false
@@ -19,13 +22,27 @@ function shouldPreloadUrl(url: string) {
 }
 
 function preloadImage(url: string) {
-  if (!shouldPreloadUrl(url) || prefetchedUrls.has(url)) return
+  if (!shouldPreloadUrl(url)) return
+
+  const existing = retainedImages.get(url)
+  if (existing) {
+    // LRU bump: re-insert as most recently used.
+    retainedImages.delete(url)
+    retainedImages.set(url, existing)
+    return
+  }
+
   const image = new Image()
   image.decoding = "async"
   image.loading = "eager"
   image.src = url
   retainedImages.set(url, image)
-  prefetchedUrls.add(url)
+
+  while (retainedImages.size > MAX_RETAINED_IMAGES) {
+    const oldest = retainedImages.keys().next().value
+    if (oldest === undefined) break
+    retainedImages.delete(oldest)
+  }
 }
 
 function buildRenderableTileBaseUrl(baseUrl: string) {
@@ -92,23 +109,22 @@ function preloadTileWarmSet(sheet: DrawingSheet) {
 }
 
 function warmSheet(sheet: DrawingSheet) {
-  preloadTileWarmSet(sheet)
+  // Tiled sheets: warm only level 0/1 tiles + thumbnail. The tiled viewer
+  // never uses medium/full, so warming them wasted bandwidth on the field.
+  if (sheet.tile_base_url && sheet.tile_manifest) {
+    preloadTileWarmSet(sheet)
+    return
+  }
   if (sheet.image_medium_url) preloadImage(sheet.image_medium_url)
   if (sheet.image_full_url) preloadImage(sheet.image_full_url)
 }
 
 /**
- * Prefetch adjacent sheets for instant navigation
+ * Prefetch adjacent sheets for instant navigation.
  *
- * Phase 3 Performance Optimization:
- * - Preloads medium-res images for previous 2 and next 2 sheets
- * - Then preloads full-res images with lower priority
- * - Uses browser's native image caching
- * - Typical cache hit rate: 95% for sequential browsing
- *
- * Expected results:
- * - Prefetched sheets load in < 50ms
- * - Non-prefetched sheets still benefit from CDN edge caching
+ * Warms only the ±2 neighboring sheets of the current one — sequential
+ * browsing is the dominant pattern, and warming the whole set drowned
+ * bad connections in speculative fetches.
  */
 export function usePrefetchAdjacentSheets(
   currentSheetId: string,
@@ -127,62 +143,19 @@ export function usePrefetchAdjacentSheets(
     const currentIndex = sheets.findIndex((s) => s.id === currentSheetId)
     if (currentIndex === -1) return
 
-    const primaryOrder = [
+    const warmOrder = [
       currentIndex - 1,
       currentIndex + 1,
       currentIndex - 2,
       currentIndex + 2,
     ].filter((i) => i >= 0 && i < sheets.length)
 
-    const secondaryOrder = sheets
-      .map((_, index) => index)
-      .filter(
-        (index) => index !== currentIndex && !primaryOrder.includes(index),
-      )
-
-    const warmIndexes = [...primaryOrder, ...secondaryOrder]
-    const sheetsToWarm = warmIndexes
-      .map((index) => sheets[index])
-      .filter((sheet) => !prefetchedRef.current.has(sheet.id))
-
-    if (sheetsToWarm.length === 0) return
-
-    const primarySheets = sheetsToWarm.slice(0, Math.min(4, sheetsToWarm.length))
-    const remainingSheets = sheetsToWarm.slice(primarySheets.length)
-
-    primarySheets.forEach((sheet) => {
+    for (const index of warmOrder) {
+      const sheet = sheets[index]
+      if (prefetchedRef.current.has(sheet.id)) continue
       warmSheet(sheet)
       prefetchedRef.current.add(sheet.id)
-    })
-
-    const scheduleIdleWarm =
-      typeof window !== "undefined" && "requestIdleCallback" in window
-        ? window.requestIdleCallback.bind(window)
-        : (cb: IdleRequestCallback) =>
-            window.setTimeout(() => {
-              cb({
-                didTimeout: false,
-                timeRemaining: () => 0,
-              } as IdleDeadline)
-            }, 1800)
-
-    const cancelIdleWarm = (handle: any) => {
-      if (typeof window === "undefined") return
-      if ("cancelIdleCallback" in window) {
-        (window as any).cancelIdleCallback(handle)
-      } else {
-        (window as any).clearTimeout(handle)
-      }
     }
-
-    const idleHandle = scheduleIdleWarm(() => {
-      remainingSheets.slice(0, 4).forEach((sheet) => {
-        warmSheet(sheet)
-        prefetchedRef.current.add(sheet.id)
-      })
-    })
-
-    return () => cancelIdleWarm(idleHandle)
   }, [currentSheetId, sheets, enabled])
 
   useEffect(() => {

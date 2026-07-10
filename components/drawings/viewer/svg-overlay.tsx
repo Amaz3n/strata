@@ -1,14 +1,25 @@
 "use client"
 
-import { useMemo } from "react"
+import { memo, useImperativeHandle, useLayoutEffect, useRef } from "react"
+import type { Ref } from "react"
 import type { ImageToScreenMatrix } from "./tiled-drawing-viewer"
 import { cn } from "@/lib/utils"
+import { formatFeetInches } from "@/lib/validation/drawings"
 import type { DrawingMarkup, DrawingPin } from "@/app/(app)/drawings/types"
 
+export interface SVGOverlayHandle {
+  /**
+   * Apply the current image→screen transform. Called directly from OSD's
+   * viewport-change handler (potentially every frame), so it writes straight
+   * to the DOM instead of going through React state.
+   */
+  setTransform: (matrix: ImageToScreenMatrix | null) => void
+}
+
 export interface SVGOverlayProps {
+  ref?: Ref<SVGOverlayHandle>
   className?: string
   container: { width: number; height: number } | null
-  matrix: ImageToScreenMatrix | null
   imageSize: { width: number; height: number }
   markups: DrawingMarkup[]
   draftMarkups?: Array<{
@@ -24,6 +35,8 @@ export interface SVGOverlayProps {
   highlightedPinId?: string
   interactive?: boolean
   onPinClick?: (pin: DrawingPin) => void
+  /** Sheet calibration: dimension labels render as feet-inches when set. */
+  feetPerImagePx?: number | null
 }
 
 type PxPoint = { x: number; y: number }
@@ -32,10 +45,21 @@ function toPxPoint(p: [number, number], imageSize: { width: number; height: numb
   return { x: p[0] * imageSize.width, y: p[1] * imageSize.height }
 }
 
+function toTransformAttr(matrix: ImageToScreenMatrix) {
+  return `matrix(${matrix.a} ${matrix.b} ${matrix.c} ${matrix.d} ${matrix.e} ${matrix.f})`
+}
+
+function dimensionLabel(distImagePx: number, feetPerImagePx?: number | null): string {
+  if (feetPerImagePx && feetPerImagePx > 0) {
+    return formatFeetInches(distImagePx * feetPerImagePx)
+  }
+  return `${Math.round(distImagePx)}px`
+}
+
 export function SVGOverlay({
+  ref,
   className,
   container,
-  matrix,
   imageSize,
   markups,
   draftMarkups = [],
@@ -45,13 +69,41 @@ export function SVGOverlay({
   highlightedPinId,
   interactive = false,
   onPinClick,
+  feetPerImagePx = null,
 }: SVGOverlayProps) {
-  const transform = useMemo(() => {
-    if (!matrix) return null
-    return `matrix(${matrix.a} ${matrix.b} ${matrix.c} ${matrix.d} ${matrix.e} ${matrix.f})`
-  }, [matrix])
+  const gRef = useRef<SVGGElement>(null)
+  const matrixRef = useRef<ImageToScreenMatrix | null>(null)
 
-  if (!container || !transform) return null
+  const applyTransform = () => {
+    const g = gRef.current
+    if (!g) return
+    const matrix = matrixRef.current
+    if (matrix) {
+      g.setAttribute("transform", toTransformAttr(matrix))
+      g.style.visibility = "visible"
+    } else {
+      g.style.visibility = "hidden"
+    }
+  }
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      setTransform: (matrix: ImageToScreenMatrix | null) => {
+        matrixRef.current = matrix
+        applyTransform()
+      },
+    }),
+    []
+  )
+
+  // Re-apply after every commit: React never manages the transform attribute,
+  // so a re-render (markups/pins changed) must not leave a stale/missing one.
+  useLayoutEffect(() => {
+    applyTransform()
+  })
+
+  if (!container) return null
 
   return (
     <svg
@@ -74,15 +126,16 @@ export function SVGOverlay({
         </marker>
       </defs>
 
-      <g transform={transform}>
+      {/* Hidden until the first transform arrives; applyTransform flips it. */}
+      <g ref={gRef} style={{ visibility: "hidden" }}>
         {/* Markups */}
         {showMarkups &&
           markups.map((m) => (
-            <MarkupShape key={m.id} markup={m} imageSize={imageSize} />
+            <MarkupShape key={m.id} markup={m} imageSize={imageSize} feetPerImagePx={feetPerImagePx} />
           ))}
         {showMarkups &&
           draftMarkups.map((m, idx) => (
-            <DraftMarkupShape key={`draft-${idx}`} markup={m} />
+            <DraftMarkupShape key={`draft-${idx}`} markup={m} feetPerImagePx={feetPerImagePx} />
           ))}
 
         {/* Pins */}
@@ -101,8 +154,9 @@ export function SVGOverlay({
   )
 }
 
-function DraftMarkupShape({
+const DraftMarkupShape = memo(function DraftMarkupShape({
   markup,
+  feetPerImagePx,
 }: {
   markup: {
     type: string
@@ -111,6 +165,7 @@ function DraftMarkupShape({
     strokeWidth: number
     text?: string
   }
+  feetPerImagePx?: number | null
 }) {
   const color = markup.color
   const strokeWidth = markup.strokeWidth
@@ -198,7 +253,7 @@ function DraftMarkupShape({
         <g style={{ pointerEvents: "none" }}>
           <line x1={pts[0].x} y1={pts[0].y} x2={pts[1].x} y2={pts[1].y} stroke={color} strokeWidth={strokeWidth} />
           <text x={(pts[0].x + pts[1].x) / 2} y={(pts[0].y + pts[1].y) / 2 - 6} fill={color} fontSize={12}>
-            {Math.round(Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y))}px
+            {dimensionLabel(Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y), feetPerImagePx)}
           </text>
         </g>
       )
@@ -220,14 +275,16 @@ function DraftMarkupShape({
     default:
       return null
   }
-}
+})
 
-function MarkupShape({
+const MarkupShape = memo(function MarkupShape({
   markup,
   imageSize,
+  feetPerImagePx,
 }: {
   markup: DrawingMarkup
   imageSize: { width: number; height: number }
+  feetPerImagePx?: number | null
 }) {
   const data = (markup as any).data as any
   const type = data?.type as string | undefined
@@ -357,7 +414,7 @@ function MarkupShape({
             strokeWidth={strokeWidth}
           />
           <text x={midX} y={midY - 6} fill={color} fontSize={12}>
-            {Math.round(dist)}px
+            {dimensionLabel(dist, feetPerImagePx)}
           </text>
         </g>
       )
@@ -388,9 +445,9 @@ function MarkupShape({
     default:
       return null
   }
-}
+})
 
-function PinMarker({
+const PinMarker = memo(function PinMarker({
   pin,
   isHighlighted,
   onClick,
@@ -426,7 +483,7 @@ function PinMarker({
       <circle cx={0} cy={-14} r={4} fill="#fff" />
     </g>
   )
-}
+})
 
 function getPinColor(status?: string): string {
   switch (status) {
@@ -441,4 +498,3 @@ function getPinColor(status?: string): string {
       return "#3B82F6"
   }
 }
-

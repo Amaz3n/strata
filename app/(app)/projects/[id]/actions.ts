@@ -1,5 +1,6 @@
 "use server"
 
+import { cache } from "react"
 import { revalidatePath } from "next/cache"
 import { recordEvent } from "@/lib/services/events"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -175,7 +176,9 @@ function mapProject(row: any): Project {
   }
 }
 
-export async function getProjectAction(projectId: string): Promise<Project | null> {
+// Request-cached: the project layout and most tabs each load the project row;
+// memoizing here means one query per render instead of one per caller.
+const getProjectCached = cache(async (projectId: string): Promise<Project | null> => {
       const { supabase, orgId, userId } = await requireOrgContext()
       await requireProjectPermission(userId, projectId, "project.read")
 
@@ -197,6 +200,10 @@ export async function getProjectAction(projectId: string): Promise<Project | nul
       }
 
       return mapProject(data)
+})
+
+export async function getProjectAction(projectId: string): Promise<Project | null> {
+  return getProjectCached(projectId)
 }
 
 // Loads the full project (financial_settings + billing_contract joins) for the project settings

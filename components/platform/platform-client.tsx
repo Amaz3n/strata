@@ -4,8 +4,9 @@ import Link from "next/link"
 
 import { Badge } from "@/components/ui/badge"
 import {
+  Activity,
   Users,
-  Building2,
+  User,
   Shield,
   Settings,
   BarChart3,
@@ -40,8 +41,10 @@ interface PlatformClientProps {
 }
 
 const OPERATIONS = [
+  { title: "Ops", description: "Cron heartbeats, outbox, QBO health", href: "/admin/ops", icon: Activity },
   { title: "Issue tracker", description: "Bugs, requests, owner progress", href: "/platform/bugs", icon: Bug },
   { title: "Customers", description: "Orgs, subscriptions, status", href: "/admin/customers", icon: Users },
+  { title: "User activity", description: "Who's using Arc, last active", href: "/admin/users", icon: User },
   { title: "Plans", description: "Subscription plans & pricing", href: "/admin/plans", icon: DollarSign },
   { title: "Support contracts", description: "Support agreements", href: "/admin/support", icon: Shield },
   { title: "Feature flags", description: "Toggle system features", href: "/admin/features", icon: Settings },

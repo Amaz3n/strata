@@ -55,18 +55,25 @@ import {
 } from "@/lib/validation/drawings"
 import type { DrawingDiscipline, DrawingIssuanceType } from "@/lib/validation/drawings"
 import { DISCIPLINE_SORT_ORDER } from "@/lib/utils/drawing-utils"
+import { Textarea } from "@/components/ui/textarea"
 import {
   getDraftRevisionStatusAction,
   getRevisionDiffAction,
   publishRevisionAction,
   discardRevisionAction,
   retryDraftRevisionAction,
+  listRevisionRecipientsAction,
+  distributeRevisionAction,
 } from "@/app/(app)/drawings/actions"
 import type {
   RevisionDiff,
   RevisionDiffSheet,
   RevisionVersionPreview,
 } from "@/lib/services/drawings"
+import type {
+  RevisionDistributionRecipient,
+  RevisionDistributionRecord,
+} from "@/lib/services/drawings-distribution"
 import { toRenderableDrawingsUrl } from "./viewer/tiled-drawing-viewer"
 
 import { unwrapAction } from "@/lib/action-result"
@@ -77,6 +84,8 @@ interface RevisionReviewDialogProps {
   revisionId: string
   onPublished: () => void
   onDiscarded: () => void
+  /** Called after a successful publish so the owner can offer distribution. */
+  onDistribute?: (revisionId: string) => void
 }
 
 type SheetEdit = { sheet_number?: string; sheet_title?: string; discipline?: DrawingDiscipline }
@@ -100,6 +109,7 @@ export function RevisionReviewDialog({
   revisionId,
   onPublished,
   onDiscarded,
+  onDistribute,
 }: RevisionReviewDialogProps) {
   const [diff, setDiff] = useState<RevisionDiff | null>(null)
   const [loading, setLoading] = useState(true)
@@ -239,6 +249,7 @@ export function RevisionReviewDialog({
       toast.success("Issuance published")
       onPublished()
       onOpenChange(false)
+      onDistribute?.(revisionId)
     } catch (err) {
       console.error("Failed to publish issuance:", err)
       toast.error(err instanceof Error ? err.message : "Failed to publish issuance")
@@ -517,6 +528,221 @@ export function RevisionReviewDialog({
         </AlertDialogContent>
       </AlertDialog>
     </>
+  )
+}
+
+// ============================================================================
+// DISTRIBUTION — email portal contacts a link to the current set
+// ============================================================================
+
+interface DistributeRevisionDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  revisionId: string
+  /** Shown in the title so the user knows which issuance they are sending. */
+  revisionLabel?: string | null
+}
+
+function formatDistributionDate(value: string) {
+  return new Date(value).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  })
+}
+
+export function DistributeRevisionDialog({
+  open,
+  onOpenChange,
+  revisionId,
+  revisionLabel,
+}: DistributeRevisionDialogProps) {
+  const [recipients, setRecipients] = useState<RevisionDistributionRecipient[]>([])
+  const [lastDistribution, setLastDistribution] = useState<RevisionDistributionRecord | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [note, setNote] = useState("")
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [sending, setSending] = useState(false)
+
+  const loadRecipients = useCallback(async () => {
+    setLoading(true)
+    setLoadError(null)
+    try {
+      const data = unwrapAction(await listRevisionRecipientsAction(revisionId))
+      setRecipients(data.recipients)
+      setLastDistribution(data.last_distribution)
+      setSelected(new Set(data.recipients.map((r) => r.token_id + " " + r.email)))
+    } catch (err) {
+      console.error("Failed to load distribution recipients:", err)
+      setLoadError(err instanceof Error ? err.message : "Failed to load recipients")
+    } finally {
+      setLoading(false)
+    }
+  }, [revisionId])
+
+  useEffect(() => {
+    if (!open) return
+    setNote("")
+    void loadRecipients()
+  }, [open, loadRecipients])
+
+  const keyOf = (r: RevisionDistributionRecipient) => r.token_id + " " + r.email
+  const toggle = (recipient: RevisionDistributionRecipient, value: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (value) next.add(keyOf(recipient))
+      else next.delete(keyOf(recipient))
+      return next
+    })
+  }
+
+  const selectedRecipients = recipients.filter((r) => selected.has(keyOf(r)))
+  const clients = recipients.filter((r) => r.portal_type === "client")
+  const subs = recipients.filter((r) => r.portal_type === "sub")
+
+  const handleSend = async () => {
+    if (selectedRecipients.length === 0) return
+    setSending(true)
+    try {
+      const result = unwrapAction(
+        await distributeRevisionAction({
+          revision_id: revisionId,
+          token_ids: [...new Set(selectedRecipients.map((r) => r.token_id))],
+          message: note.trim() || undefined,
+        }),
+      )
+      toast.success(
+        `Sent to ${result.sent} recipient${result.sent === 1 ? "" : "s"}` +
+          (result.failed > 0 ? ` (${result.failed} failed)` : ""),
+      )
+      onOpenChange(false)
+    } catch (err) {
+      console.error("Failed to distribute revision:", err)
+      toast.error(err instanceof Error ? err.message : "Failed to send")
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const renderGroup = (title: string, group: RevisionDistributionRecipient[]) => {
+    if (group.length === 0) return null
+    return (
+      <div className="space-y-1">
+        <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+          {title}
+        </p>
+        <div className="divide-y border">
+          {group.map((recipient) => (
+            <label
+              key={keyOf(recipient)}
+              className="flex cursor-pointer items-center gap-3 px-3 py-2 hover:bg-muted/40"
+            >
+              <Checkbox
+                checked={selected.has(keyOf(recipient))}
+                onCheckedChange={(v) => toggle(recipient, Boolean(v))}
+                className="shrink-0"
+              />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm">
+                  {recipient.name ?? recipient.company_name ?? recipient.email}
+                  {recipient.name && recipient.company_name && (
+                    <span className="text-muted-foreground"> · {recipient.company_name}</span>
+                  )}
+                </p>
+                <p className="truncate text-xs text-muted-foreground">{recipient.email}</p>
+              </div>
+              <span className="shrink-0 text-xs text-muted-foreground">
+                {recipient.last_accessed_at
+                  ? `Opened portal ${formatDistributionDate(recipient.last_accessed_at)}`
+                  : "Never opened"}
+              </span>
+            </label>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[85vh] w-[min(560px,96vw)] max-w-none flex-col overflow-hidden">
+        <DialogHeader>
+          <DialogTitle>
+            Distribute {revisionLabel ? `“${revisionLabel}”` : "issuance"}
+          </DialogTitle>
+          <DialogDescription>
+            Email portal contacts which sheets changed with a link to the current
+            drawing set. Sends are recorded.
+          </DialogDescription>
+        </DialogHeader>
+
+        {loading ? (
+          <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading portal contacts…
+          </div>
+        ) : loadError ? (
+          <div className="flex flex-col items-center gap-3 border border-destructive/40 bg-destructive/5 p-6 text-center">
+            <AlertTriangle className="h-5 w-5 text-destructive" />
+            <p className="text-sm text-destructive">{loadError}</p>
+            <Button size="sm" variant="outline" onClick={() => void loadRecipients()}>
+              Retry
+            </Button>
+          </div>
+        ) : recipients.length === 0 ? (
+          <div className="border bg-muted/20 p-6 text-center">
+            <p className="text-sm font-medium">No portal contacts with drawings access</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Share sheets or create portal links first, then distribute this
+              issuance from the drawings register.
+            </p>
+          </div>
+        ) : (
+          <div className="flex-1 space-y-4 overflow-y-auto pr-1">
+            {renderGroup("Clients", clients)}
+            {renderGroup("Subcontractors", subs)}
+            <div className="space-y-1.5">
+              <Label htmlFor="distribute-note">Note (optional)</Label>
+              <Textarea
+                id="distribute-note"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="Included in the email, e.g. what to look out for in this issuance."
+                rows={2}
+                maxLength={1000}
+              />
+            </div>
+          </div>
+        )}
+
+        <DialogFooter className="flex-row items-center justify-between gap-2 sm:justify-between">
+          <span className="text-xs text-muted-foreground">
+            {lastDistribution
+              ? `Sent to ${lastDistribution.recipient_count} recipient${lastDistribution.recipient_count === 1 ? "" : "s"} on ${formatDistributionDate(lastDistribution.sent_at)}`
+              : recipients.length > 0
+                ? "Not sent yet"
+                : ""}
+          </span>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={sending}>
+              {recipients.length === 0 ? "Close" : "Skip"}
+            </Button>
+            {recipients.length > 0 && (
+              <Button onClick={handleSend} disabled={sending || selectedRecipients.length === 0}>
+                {sending ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Sending…
+                  </>
+                ) : (
+                  `Send to ${selectedRecipients.length}`
+                )}
+              </Button>
+            )}
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

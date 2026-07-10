@@ -207,7 +207,9 @@ New file `lib/services/prime-sov.ts` (SOV CRUD) and new file
 
 **billing-model.ts:** add `"progress"` to `OwnerBillingBasis`; fixed-price projects
 choose draws vs progress at financial setup (`project-financial-setup.ts` — add the
-choice; commercial tier defaults to progress per workstream 01).
+choice; commercial-POSTURE projects default to progress per workstream 01's
+`getProjectPosture` — key off the project, not the org, so mixed orgs get the right
+default per job).
 
 ## PDFs
 

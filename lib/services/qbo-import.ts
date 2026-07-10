@@ -312,10 +312,27 @@ function extractAppliedVendorCredits(billPayment: any): { qboId: string; amountC
   return extractLinkedQboAmounts(billPayment, "vendorcredit")
 }
 
+/**
+ * Batch-invariant lookups shared by every record in a single importQboRecords run, seeded once per
+ * batch so per-record helpers don't re-query the same org-level data. Scoped to the batch (created
+ * fresh inside importQboRecords, never module-level) so it can't leak across requests or orgs.
+ */
+type QboImportBatchCache = {
+  /** Every org project already linked to a QBO customer: qbo_customer_id -> project id. resolveLineProject appends links it persists mid-batch. */
+  projectByCustomer: Map<string, string>
+  /** project id -> cost_codes_enabled, memoized across records. */
+  projectCostCodesEnabled: Map<string, boolean>
+  /** QBO account/item ref key -> mapped Arc cost code id, memoized across records. */
+  mappedCostCodeByRef: Map<string, string>
+  /** Cost code ids already validated to exist in the org. */
+  validatedCostCodeIds: Set<string>
+}
+
 type ResolvedContext = {
   supabase: ReturnType<typeof createServiceSupabaseClient>
   orgId: string
   userId: string
+  batch: QboImportBatchCache
 }
 
 /** The set of QBO ids already linked to an Arc record, per entity classification. */
@@ -1578,31 +1595,16 @@ async function importExpense(
   const costCodeCtx: CostCodeResolutionContext = {
     ...ctx,
     costCodesByLine: costCodes,
-    projectCostCodesEnabled: new Map(),
-    mappedCostCodeByRef: new Map(),
-    validatedCostCodeIds: new Set(),
+    projectCostCodesEnabled: ctx.batch.projectCostCodesEnabled,
+    mappedCostCodeByRef: ctx.batch.mappedCostCodeByRef,
+    validatedCostCodeIds: ctx.batch.validatedCostCodeIds,
   }
 
   // Resolve each line's customer to an Arc project; lines without a (mappable) customer fall back to
   // the project the user is importing into.
-  const customerIds = Array.from(
-    new Set(
-      expenseLines
-        .map((line) => refValue(lineCustomerRef(line)))
-        .filter((value): value is string => Boolean(value)),
-    ),
-  )
-  const projectByCustomer = new Map<string, string>()
-  if (customerIds.length > 0) {
-    const { data: projectRows } = await supabase
-      .from("projects")
-      .select("id, qbo_customer_id")
-      .eq("org_id", orgId)
-      .in("qbo_customer_id", customerIds)
-    for (const projectRow of projectRows ?? []) {
-      if (projectRow.qbo_customer_id) projectByCustomer.set(String(projectRow.qbo_customer_id), projectRow.id)
-    }
-  }
+  // Customer -> project links are seeded once per import batch (see importQboRecords); the shared
+  // map also picks up links persisted by earlier records in the same batch.
+  const projectByCustomer = ctx.batch.projectByCustomer
   // Resolve every line's target project once (honoring per-line allocations and persisting any new
   // customer→project links the user chose), keyed by line id for the split/non-split paths below.
   const projectByLineId = new Map<string, string>()
@@ -1971,29 +1973,14 @@ async function importExpenseCredit(
   const costCodeCtx: CostCodeResolutionContext = {
     ...ctx,
     costCodesByLine: costCodes,
-    projectCostCodesEnabled: new Map(),
-    mappedCostCodeByRef: new Map(),
-    validatedCostCodeIds: new Set(),
+    projectCostCodesEnabled: ctx.batch.projectCostCodesEnabled,
+    mappedCostCodeByRef: ctx.batch.mappedCostCodeByRef,
+    validatedCostCodeIds: ctx.batch.validatedCostCodeIds,
   }
 
-  const customerIds = Array.from(
-    new Set(
-      expenseLines
-        .map((line) => refValue(lineCustomerRef(line)))
-        .filter((value): value is string => Boolean(value)),
-    ),
-  )
-  const projectByCustomer = new Map<string, string>()
-  if (customerIds.length > 0) {
-    const { data: projectRows } = await supabase
-      .from("projects")
-      .select("id, qbo_customer_id")
-      .eq("org_id", orgId)
-      .in("qbo_customer_id", customerIds)
-    for (const projectRow of projectRows ?? []) {
-      if (projectRow.qbo_customer_id) projectByCustomer.set(String(projectRow.qbo_customer_id), projectRow.id)
-    }
-  }
+  // Customer -> project links are seeded once per import batch (see importQboRecords); the shared
+  // map also picks up links persisted by earlier records in the same batch.
+  const projectByCustomer = ctx.batch.projectByCustomer
 
   const projectByLineId = new Map<string, string>()
   for (const line of expenseLines) {
@@ -2249,9 +2236,9 @@ async function importBill(
   const costCodeCtx: CostCodeResolutionContext = {
     ...ctx,
     costCodesByLine: costCodes,
-    projectCostCodesEnabled: new Map(),
-    mappedCostCodeByRef: new Map(),
-    validatedCostCodeIds: new Set(),
+    projectCostCodesEnabled: ctx.batch.projectCostCodesEnabled,
+    mappedCostCodeByRef: ctx.batch.mappedCostCodeByRef,
+    validatedCostCodeIds: ctx.batch.validatedCostCodeIds,
   }
 
   const { data: billRow, error: billError } = await supabase
@@ -2290,24 +2277,8 @@ async function importBill(
   // split in Arc). Lines without a resolvable customer fall back to the import target project.
   const expenseLines = (qbo.Line ?? []).filter((line: any) => expenseLineDetail(line))
   if (expenseLines.length > 0) {
-    const customerIds = Array.from(
-      new Set(
-        expenseLines
-          .map((line: any) => refValue(expenseLineDetail(line)?.CustomerRef))
-          .filter((value: string | null): value is string => Boolean(value)),
-      ),
-    )
-    const projectByCustomer = new Map<string, string>()
-    if (customerIds.length > 0) {
-      const { data: projectRows } = await supabase
-        .from("projects")
-        .select("id, qbo_customer_id")
-        .eq("org_id", orgId)
-        .in("qbo_customer_id", customerIds)
-      for (const projectRow of projectRows ?? []) {
-        if (projectRow.qbo_customer_id) projectByCustomer.set(String(projectRow.qbo_customer_id), projectRow.id)
-      }
-    }
+    // Customer -> project links are seeded once per import batch (see importQboRecords).
+    const projectByCustomer = ctx.batch.projectByCustomer
 
     const lineRows = []
     for (const [index, line] of expenseLines.entries()) {
@@ -2425,9 +2396,9 @@ async function importVendorCredit(
   const costCodeCtx: CostCodeResolutionContext = {
     ...ctx,
     costCodesByLine: costCodes,
-    projectCostCodesEnabled: new Map(),
-    mappedCostCodeByRef: new Map(),
-    validatedCostCodeIds: new Set(),
+    projectCostCodesEnabled: ctx.batch.projectCostCodesEnabled,
+    mappedCostCodeByRef: ctx.batch.mappedCostCodeByRef,
+    validatedCostCodeIds: ctx.batch.validatedCostCodeIds,
   }
 
   const { data: creditRow, error: creditError } = await supabase
@@ -2468,24 +2439,8 @@ async function importVendorCredit(
 
   const creditLines = (qbo.Line ?? []).filter((line: any) => expenseLineDetail(line))
   if (creditLines.length > 0) {
-    const customerIds = Array.from(
-      new Set(
-        creditLines
-          .map((line: any) => refValue(expenseLineDetail(line)?.CustomerRef))
-          .filter((value: string | null): value is string => Boolean(value)),
-      ),
-    )
-    const projectByCustomer = new Map<string, string>()
-    if (customerIds.length > 0) {
-      const { data: projectRows } = await supabase
-        .from("projects")
-        .select("id, qbo_customer_id")
-        .eq("org_id", orgId)
-        .in("qbo_customer_id", customerIds)
-      for (const projectRow of projectRows ?? []) {
-        if (projectRow.qbo_customer_id) projectByCustomer.set(String(projectRow.qbo_customer_id), projectRow.id)
-      }
-    }
+    // Customer -> project links are seeded once per import batch (see importQboRecords).
+    const projectByCustomer = ctx.batch.projectByCustomer
 
     const lineRows = []
     for (const [index, line] of creditLines.entries()) {
@@ -3135,27 +3090,8 @@ async function importJournalEntry(
 
   // Resolve the Arc project for each line's QBO customer (job), so a JE spanning multiple projects
   // lands its lines in the right places.
-  const customerIds = Array.from(
-    new Set(
-      pending
-        .map((line) => {
-          const entity = line.JournalEntryLineDetail?.Entity
-          return String(entity?.Type ?? "").toLowerCase() === "customer" ? refValue(entity?.EntityRef) : null
-        })
-        .filter((value): value is string => Boolean(value)),
-    ),
-  )
-  const projectByCustomer = new Map<string, string>()
-  if (customerIds.length > 0) {
-    const { data: projectRows } = await supabase
-      .from("projects")
-      .select("id, qbo_customer_id")
-      .eq("org_id", orgId)
-      .in("qbo_customer_id", customerIds)
-    for (const projectRow of projectRows ?? []) {
-      if (projectRow.qbo_customer_id) projectByCustomer.set(String(projectRow.qbo_customer_id), projectRow.id)
-    }
-  }
+  // Customer -> project links are seeded once per import batch (see importQboRecords).
+  const projectByCustomer = ctx.batch.projectByCustomer
 
   const nowIso = new Date().toISOString()
   const jeDate = normalizeDate(qbo.TxnDate) ?? nowIso.split("T")[0]
@@ -3163,9 +3099,9 @@ async function importJournalEntry(
   const costCodeCtx: CostCodeResolutionContext = {
     ...ctx,
     costCodesByLine: costCodes,
-    projectCostCodesEnabled: new Map(),
-    mappedCostCodeByRef: new Map(),
-    validatedCostCodeIds: new Set(),
+    projectCostCodesEnabled: ctx.batch.projectCostCodesEnabled,
+    mappedCostCodeByRef: ctx.batch.mappedCostCodeByRef,
+    validatedCostCodeIds: ctx.batch.validatedCostCodeIds,
   }
 
   for (const line of pending) {
@@ -3310,27 +3246,8 @@ async function importClientDeposit(
 
   // Resolve each income line's QBO customer (job) to an Arc project; lines without a mappable
   // customer fall back to the project the user is importing into.
-  const customerIds = Array.from(
-    new Set(
-      pending
-        .map((line) => {
-          const entity = line.JournalEntryLineDetail?.Entity
-          return String(entity?.Type ?? "").toLowerCase() === "customer" ? refValue(entity?.EntityRef) : null
-        })
-        .filter((value): value is string => Boolean(value)),
-    ),
-  )
-  const projectByCustomer = new Map<string, string>()
-  if (customerIds.length > 0) {
-    const { data: projectRows } = await supabase
-      .from("projects")
-      .select("id, qbo_customer_id")
-      .eq("org_id", orgId)
-      .in("qbo_customer_id", customerIds)
-    for (const projectRow of projectRows ?? []) {
-      if (projectRow.qbo_customer_id) projectByCustomer.set(String(projectRow.qbo_customer_id), projectRow.id)
-    }
-  }
+  // Customer -> project links are seeded once per import batch (see importQboRecords).
+  const projectByCustomer = ctx.batch.projectByCustomer
 
   const nowIso = new Date().toISOString()
   const depositDate = normalizeDate(qbo.TxnDate) ?? nowIso.split("T")[0]
@@ -3611,7 +3528,30 @@ export async function importQboRecords({
   const client = await QBOClient.forOrg(resolvedOrgId)
   if (!client) throw new Error("Couldn't connect to QuickBooks.")
 
-  const ctx: ResolvedContext = { supabase, orgId: resolvedOrgId, userId }
+  // Seed the batch-invariant caches once. The customer->project map replaces the per-record
+  // `projects` lookup every line-allocating helper used to run; resolveLineProject keeps it live by
+  // appending any links it persists mid-batch.
+  const projectByCustomer = new Map<string, string>()
+  const { data: linkedProjects } = await supabase
+    .from("projects")
+    .select("id, qbo_customer_id")
+    .eq("org_id", resolvedOrgId)
+    .not("qbo_customer_id", "is", null)
+  for (const projectRow of linkedProjects ?? []) {
+    if (projectRow.qbo_customer_id) projectByCustomer.set(String(projectRow.qbo_customer_id), projectRow.id)
+  }
+
+  const ctx: ResolvedContext = {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    batch: {
+      projectByCustomer,
+      projectCostCodesEnabled: new Map(),
+      mappedCostCodeByRef: new Map(),
+      validatedCostCodeIds: new Set(),
+    },
+  }
 
   // Order so that documents are imported before the payments that reference them. Client deposits are
   // self-contained (they create their own invoice + payment), so their order is immaterial.
@@ -3641,64 +3581,93 @@ export async function importQboRecords({
   const result: QboImportResult = { imported: 0, skipped: 0, failed: 0, errors: [] }
   const affectedProjectIds = new Set<string>()
 
-  for (const item of ordered) {
-    try {
-      // Project-bound types must name a destination; payments resolve theirs from the linked doc.
-      const isPayment = item.entityType === "payment" || item.entityType === "bill_payment"
-      if (!isPayment && !item.projectId) throw new Error("No destination project selected")
-      const dest = item.projectId as string
-      let outcome: { skipped: boolean }
-      switch (item.entityType) {
-        case "invoice":
-          outcome = await importInvoice(ctx, client, connectionId, dest, item.qboId)
-          break
-        case "expense":
-          outcome = await importExpense(ctx, client, connectionId, dest, item.qboId, item.allocations, item.costCodes)
-          break
-        case "expense_credit":
-          outcome = await importExpenseCredit(ctx, client, connectionId, dest, item.qboId, item.allocations, item.costCodes)
-          break
-        case "bill":
-          outcome = await importBill(ctx, client, connectionId, dest, item.qboId, item.allocations, item.costCodes)
-          break
-        case "vendor_credit":
-          outcome = await importVendorCredit(ctx, client, connectionId, dest, item.qboId, item.allocations, item.costCodes)
-          break
-        case "payment":
-          outcome = await importPayment(ctx, client, connectionId, item.qboId)
-          break
-        case "bill_payment":
-          outcome = await importBillPayment(ctx, client, connectionId, item.qboId)
-          break
-        case "journal_entry":
-          outcome = await importJournalEntry(ctx, client, connectionId, dest, item.qboId, jeExpenseAccountIds, item.allocations, item.costCodes)
-          break
-        case "client_deposit":
-          outcome = await importClientDeposit(ctx, client, connectionId, dest, item.qboId, incomeAccountIds, item.allocations)
-          break
-        default:
-          throw new Error(`Unsupported entity type: ${item.entityType}`)
-      }
-      if (!outcome.skipped) {
-        if (item.projectId) affectedProjectIds.add(item.projectId)
-        for (const projectId of Object.values(item.allocations ?? {})) affectedProjectIds.add(projectId)
-      }
-      if (outcome.skipped) result.skipped += 1
-      else result.imported += 1
-    } catch (error: any) {
-      result.failed += 1
-      result.errors.push({
-        qboId: item.qboId,
-        entityType: item.entityType,
-        message: error?.message ?? "Import failed",
-      })
-      logQBO("warn", "qbo_import_item_failed", {
-        orgId: resolvedOrgId,
-        qboId: item.qboId,
-        entityType: item.entityType,
-        error: error?.message ?? String(error),
-      })
+  const importOne = async (item: (typeof ordered)[number]): Promise<{ skipped: boolean }> => {
+    // Project-bound types must name a destination; payments resolve theirs from the linked doc.
+    const isPayment = item.entityType === "payment" || item.entityType === "bill_payment"
+    if (!isPayment && !item.projectId) throw new Error("No destination project selected")
+    const dest = item.projectId as string
+    switch (item.entityType) {
+      case "invoice":
+        return importInvoice(ctx, client, connectionId, dest, item.qboId)
+      case "expense":
+        return importExpense(ctx, client, connectionId, dest, item.qboId, item.allocations, item.costCodes)
+      case "expense_credit":
+        return importExpenseCredit(ctx, client, connectionId, dest, item.qboId, item.allocations, item.costCodes)
+      case "bill":
+        return importBill(ctx, client, connectionId, dest, item.qboId, item.allocations, item.costCodes)
+      case "vendor_credit":
+        return importVendorCredit(ctx, client, connectionId, dest, item.qboId, item.allocations, item.costCodes)
+      case "payment":
+        return importPayment(ctx, client, connectionId, item.qboId)
+      case "bill_payment":
+        return importBillPayment(ctx, client, connectionId, item.qboId)
+      case "journal_entry":
+        return importJournalEntry(ctx, client, connectionId, dest, item.qboId, jeExpenseAccountIds, item.allocations, item.costCodes)
+      case "client_deposit":
+        return importClientDeposit(ctx, client, connectionId, dest, item.qboId, incomeAccountIds, item.allocations)
+      default:
+        throw new Error(`Unsupported entity type: ${item.entityType}`)
     }
+  }
+
+  // Process records with a bounded worker pool, in two phases so every document finishes before any
+  // payment that might reference it starts — the dependency ordering the old sequential loop
+  // guaranteed. Documents run 4-wide (QBO throttles harder above that); each creates only its own
+  // rows, so they can't contend. Payments stay sequential: applying a payment recalcs the target
+  // invoice/bill balance from a fresh read, and two concurrent payments against the same document
+  // could interleave that read-derive-write and persist a stale balance. Outcomes land in a
+  // preallocated slot per record and are tallied in `ordered` order afterward, so counts and the
+  // errors array keep exactly the shape and order the sequential loop produced; a failed record only
+  // fails its own slot, never the batch.
+  const outcomes = new Array<{ skipped: boolean } | { failedMessage: string }>(ordered.length)
+  // Duplicate selections of the same QBO record dedupe via an "already linked?" pre-check inside each
+  // helper; that only works if duplicates never run concurrently, so chain items sharing a key.
+  const chainByRecord = new Map<string, Promise<unknown>>()
+  const runPhase = async (indices: number[], concurrency: number) => {
+    let cursor = 0
+    const worker = async () => {
+      while (cursor < indices.length) {
+        const index = indices[cursor]
+        cursor += 1
+        const item = ordered[index]
+        try {
+          const recordKey = `${item.entityType}:${item.qboId}`
+          const run = (chainByRecord.get(recordKey) ?? Promise.resolve()).then(() => importOne(item))
+          chainByRecord.set(recordKey, run.catch(() => undefined))
+          outcomes[index] = await run
+        } catch (error) {
+          const message = error instanceof Error ? error.message : null
+          outcomes[index] = { failedMessage: message ?? "Import failed" }
+          logQBO("warn", "qbo_import_item_failed", {
+            orgId: resolvedOrgId,
+            qboId: item.qboId,
+            entityType: item.entityType,
+            error: message ?? String(error),
+          })
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(concurrency, indices.length) }, () => worker()))
+  }
+  const phaseIndices = (phase: number) =>
+    ordered.map((item, index) => (order[item.entityType] === phase ? index : -1)).filter((index) => index !== -1)
+  await runPhase(phaseIndices(0), 4)
+  await runPhase(phaseIndices(1), 1)
+
+  for (const [index, item] of ordered.entries()) {
+    const outcome = outcomes[index]
+    if ("failedMessage" in outcome) {
+      result.failed += 1
+      result.errors.push({ qboId: item.qboId, entityType: item.entityType, message: outcome.failedMessage })
+      continue
+    }
+    if (outcome.skipped) {
+      result.skipped += 1
+      continue
+    }
+    result.imported += 1
+    if (item.projectId) affectedProjectIds.add(item.projectId)
+    for (const projectId of Object.values(item.allocations ?? {})) affectedProjectIds.add(projectId)
   }
 
   result.affectedProjectIds = Array.from(affectedProjectIds)

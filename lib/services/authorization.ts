@@ -1,3 +1,5 @@
+import { cache } from "react"
+import { after } from "next/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { isPlatformAdminId } from "@/lib/auth/platform"
@@ -208,6 +210,22 @@ async function fetchProjectOrgId({ supabase, projectId }: { supabase: SupabaseCl
   return data?.org_id as string | undefined
 }
 
+// Request-scoped memoization: a page render runs authorize() once per permission
+// gate, but the underlying membership/role rows are invariant within a request.
+// Keyed on scalars so React cache() dedupes across every gate in the render.
+const fetchOrgPermissionsCached = cache((orgId: string, userId: string) =>
+  fetchOrgPermissions({ supabase: createServiceSupabaseClient(), orgId, userId }),
+)
+const fetchProjectPermissionsCached = cache((projectId: string, userId: string) =>
+  fetchProjectPermissions({ supabase: createServiceSupabaseClient(), projectId, userId }),
+)
+const fetchPlatformPermissionsCached = cache((userId: string) =>
+  fetchPlatformPermissions({ supabase: createServiceSupabaseClient(), userId }),
+)
+const fetchProjectOrgIdCached = cache((projectId: string) =>
+  fetchProjectOrgId({ supabase: createServiceSupabaseClient(), projectId }),
+)
+
 async function fetchPlatformPermissions({ supabase, userId }: { supabase: SupabaseClient; userId: string }) {
   const nowIso = new Date().toISOString()
 
@@ -255,6 +273,22 @@ async function logAuthorizationDecision(
   }
 }
 
+// Audit writes must not block the request: they were adding a serial round-trip
+// to every permission gate. after() defers past the response; the fallback keeps
+// non-request contexts (outbox worker, scripts) logging inline-but-unawaited.
+function scheduleAuthorizationAudit(
+  supabase: SupabaseClient,
+  input: AuthorizeInput,
+  decision: AuthorizationDecision,
+) {
+  const write = () => logAuthorizationDecision(supabase, input, decision)
+  try {
+    after(write)
+  } catch {
+    void write()
+  }
+}
+
 export async function authorize(input: AuthorizeInput): Promise<AuthorizationDecision> {
   if (!input.userId || !input.permission) {
     return {
@@ -285,7 +319,7 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     }
 
     if (input.logDecision) {
-      await logAuthorizationDecision(catalogSupabase, input, decision)
+      scheduleAuthorizationAudit(catalogSupabase, input, decision)
     }
 
     return decision
@@ -304,7 +338,7 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     }
 
     if (input.logDecision) {
-      await logAuthorizationDecision(catalogSupabase, input, decision)
+      scheduleAuthorizationAudit(catalogSupabase, input, decision)
     }
 
     return decision
@@ -321,24 +355,16 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
   let orgAssignedOnly = false
 
   if (input.projectId) {
-    const projectResult = await fetchProjectPermissions({
-      supabase,
-      projectId: input.projectId,
-      userId: input.userId,
-    })
+    const projectResult = await fetchProjectPermissionsCached(input.projectId, input.userId)
 
     scopesEvaluated.push("project")
     hasProjectMembership = projectResult.hasMembership
-    resolvedOrgId = resolvedOrgId ?? projectResult.orgId ?? (await fetchProjectOrgId({ supabase, projectId: input.projectId }))
+    resolvedOrgId = resolvedOrgId ?? projectResult.orgId ?? (await fetchProjectOrgIdCached(input.projectId))
     permissionSet.push(...projectResult.permissions)
   }
 
   if (resolvedOrgId) {
-    const orgResult = await fetchOrgPermissions({
-      supabase,
-      orgId: resolvedOrgId,
-      userId: input.userId,
-    })
+    const orgResult = await fetchOrgPermissionsCached(resolvedOrgId, input.userId)
     scopesEvaluated.push("org")
     hasOrgMembership = orgResult.hasMembership
     orgAssignedOnly = orgResult.assignedOnly
@@ -348,7 +374,7 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     deniedPermissions.push(...orgResult.denies)
   }
 
-  const platformResult = await fetchPlatformPermissions({ supabase, userId: input.userId })
+  const platformResult = await fetchPlatformPermissionsCached(input.userId)
   if (platformResult.hasMembership) {
     scopesEvaluated.push("platform")
     permissionSet.push(...platformResult.permissions)
@@ -392,7 +418,7 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
   }
 
   if (input.logDecision) {
-    await logAuthorizationDecision(supabase, input, decision)
+    scheduleAuthorizationAudit(supabase, input, decision)
   }
 
   return decision

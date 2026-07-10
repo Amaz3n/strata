@@ -8,6 +8,7 @@ import {
   getEligibleWeeklySnapshotPairs,
   getWeeklySnapshotWeekStart,
 } from "@/lib/services/weekly-executive-snapshot"
+import { withCronRun } from "@/lib/services/job-runs"
 
 export const runtime = "nodejs"
 
@@ -250,10 +251,5 @@ async function executeSnapshotJob(request: NextRequest) {
   })
 }
 
-export async function GET(request: NextRequest) {
-  return executeSnapshotJob(request)
-}
-
-export async function POST(request: NextRequest) {
-  return executeSnapshotJob(request)
-}
+export const GET = withCronRun("weekly-executive-snapshot", executeSnapshotJob)
+export const POST = GET

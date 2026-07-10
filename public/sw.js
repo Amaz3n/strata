@@ -5,8 +5,14 @@ const FILES_CACHE = "project-files-v1"
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url)
 
-  // Tile requests: cache-first, immutable
-  if (url.pathname.includes("/drawings-tiles/") || url.pathname.includes("/drawing-tiles/")) {
+  // Tile requests: cache-first, immutable. Covers both direct CDN tile URLs
+  // (/drawings-tiles/) and the same tiles served through the app proxy
+  // (/api/drawings/tiles/...) — proxied tiles are just as immutable.
+  const isTileRequest =
+    url.pathname.includes("/drawings-tiles/") ||
+    url.pathname.includes("/drawing-tiles/") ||
+    url.pathname.startsWith("/api/drawings/tiles/")
+  if (isTileRequest && event.request.method === "GET") {
     event.respondWith(
       caches.open(TILE_CACHE).then((cache) =>
         cache.match(event.request).then((cached) => {
@@ -26,8 +32,10 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(
       fetch(event.request)
         .then((response) => {
-          const clone = response.clone()
-          caches.open(METADATA_CACHE).then((cache) => cache.put(event.request, clone))
+          if (event.request.method === "GET" && response.ok) {
+            const clone = response.clone()
+            caches.open(METADATA_CACHE).then((cache) => cache.put(event.request, clone))
+          }
           return response
         })
         .catch(() => caches.match(event.request))

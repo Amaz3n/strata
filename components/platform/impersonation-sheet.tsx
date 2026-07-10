@@ -32,7 +32,7 @@ export function ImpersonationSheet({ orgs, session }: ImpersonationSheetProps) {
       <Button variant="outline" size="sm" className="h-8 rounded-none" onClick={() => setOpen(true)}>
         <Eye className="mr-1.5 h-3.5 w-3.5" />
         Impersonate
-        {session.active ? <span className="ml-1.5 h-1.5 w-1.5 rounded-full bg-amber-500" /> : null}
+        {session.active ? <span className="ml-1.5 h-1.5 w-1.5 rounded-full bg-warning" /> : null}
       </Button>
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetContent
@@ -49,9 +49,9 @@ export function ImpersonationSheet({ orgs, session }: ImpersonationSheetProps) {
 
           <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
             {session.active ? (
-              <div className="flex flex-wrap items-center justify-between gap-3 border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-3 border border-warning/30 bg-warning/10 px-4 py-3">
                 <div className="text-sm">
-                  <p className="font-medium text-amber-700 dark:text-amber-200">
+                  <p className="font-medium">
                     Impersonating {session.target ?? "user"}
                   </p>
                   {session.expiresAt ? (

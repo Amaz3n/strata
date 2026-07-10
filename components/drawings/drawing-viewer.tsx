@@ -43,6 +43,9 @@ import {
   PanelRightClose,
   Keyboard,
   MoreVertical,
+  Camera,
+  FileDown,
+  Crosshair,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -76,7 +79,12 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { PIN_ENTITY_TYPE_LABELS, DISCIPLINE_LABELS } from "@/lib/validation/drawings"
+import {
+  PIN_ENTITY_TYPE_LABELS,
+  DISCIPLINE_LABELS,
+  parseFeetInches,
+  formatFeetInches,
+} from "@/lib/validation/drawings"
 import type { DrawingDiscipline } from "@/lib/validation/drawings"
 import {
   disciplineGradientClass,
@@ -91,7 +99,14 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion"
 import type { DrawingSheet, DrawingSheetVersion, DrawingMarkup, DrawingPin, MarkupType } from "@/app/(app)/drawings/types"
-import { listSheetVersionsWithUrlsAction } from "@/app/(app)/drawings/actions"
+import {
+  listSheetVersionsWithUrlsAction,
+  getSheetCalibrationAction,
+  setSheetVersionCalibrationAction,
+  createPhotoFromDrawingAction,
+  getPhotoForPinAction,
+} from "@/app/(app)/drawings/actions"
+import { uploadDocumentFileDirect } from "@/lib/services/files-client"
 import { useDrawingKeyboardShortcuts } from "./use-drawing-keyboard-shortcuts"
 import { KeyboardShortcutsHelp } from "./keyboard-shortcuts-help"
 import { ComparisonViewer } from "./comparison-viewer"
@@ -103,7 +118,7 @@ import { usePrefetchAdjacentSheets } from "./use-prefetch-sheets"
 import { useIsMobile } from "@/components/ui/use-mobile"
 import { useIsTouchDevice } from "@/lib/hooks/use-is-touch-device"
 import { TiledDrawingViewer, type ImageToScreenMatrix, type TileManifest } from "./viewer/tiled-drawing-viewer"
-import { SVGOverlay } from "./viewer/svg-overlay"
+import { SVGOverlay, type SVGOverlayHandle } from "./viewer/svg-overlay"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -383,11 +398,42 @@ export function DrawingViewer({
   const [panStart, setPanStart] = useState({ x: 0, y: 0 })
 
   // Tool state
-  const [activeTool, setActiveTool] = useState<MarkupType | "pan" | "pin" | null>("pan")
+  const [activeTool, setActiveTool] = useState<MarkupType | "pan" | "pin" | "photo" | null>("pan")
   const [selectedColor, setSelectedColor] = useState(MARKUP_COLORS[0])
   const [strokeWidth, setStrokeWidth] = useState(2)
   const [showMarkups, setShowMarkups] = useState(true)
   const [showPins, setShowPins] = useState(true)
+
+  // Calibration state (dimension tool scale, stored per sheet version)
+  const [calibration, setCalibration] = useState<{
+    versionId: string
+    feetPerImagePx: number | null
+  } | null>(null)
+  const [calibrating, setCalibrating] = useState(false)
+  const [calibrationPoints, setCalibrationPoints] = useState<Point[]>([])
+  const [calibrationDialogOpen, setCalibrationDialogOpen] = useState(false)
+  const [calibrationInput, setCalibrationInput] = useState("")
+  const [savingCalibration, setSavingCalibration] = useState(false)
+
+  // Photo pin state
+  const [photoPins, setPhotoPins] = useState<DrawingPin[]>([])
+  const [pendingPhotoPosition, setPendingPhotoPosition] = useState<Point | null>(null)
+  const [photoFile, setPhotoFile] = useState<File | null>(null)
+  const [photoCaption, setPhotoCaption] = useState("")
+  const [photoDialogOpen, setPhotoDialogOpen] = useState(false)
+  const [photoUploading, setPhotoUploading] = useState(false)
+  const [photoUploadPercent, setPhotoUploadPercent] = useState<number | null>(null)
+  const photoInputRef = useRef<HTMLInputElement>(null)
+
+  // Photo pin viewing state
+  const [photoView, setPhotoView] = useState<{
+    pin: DrawingPin
+    loading: boolean
+    url?: string
+    fileName?: string
+    takenAt?: string | null
+    error?: string
+  } | null>(null)
 
   // Drawing state
   const [currentMarkup, setCurrentMarkup] = useState<MarkupInProgress | null>(null)
@@ -440,17 +486,34 @@ export function DrawingViewer({
     setOsdViewer((prev: any | null) => (prev === viewer ? prev : viewer))
   }, [])
 
+  // Pan/zoom hot path: viewport-change fires every frame, so the transform is
+  // pushed straight to the SVG overlay's DOM node via an imperative handle and
+  // kept in a ref for coordinate math. React state only updates for the rare
+  // bits (container resize, visible zoom % change).
+  const osdMatrixRef = useRef<ImageToScreenMatrix | null>(null)
+  const overlayHandleRef = useRef<SVGOverlayHandle | null>(null)
+
+  const setOverlayHandle = useCallback((handle: SVGOverlayHandle | null) => {
+    overlayHandleRef.current = handle
+    // Replay the latest transform when the overlay mounts after the first emit.
+    handle?.setTransform(osdMatrixRef.current)
+  }, [])
+
   const handleOsdTransformChange = useCallback(({ matrix, container, zoom }: any) => {
-    setOsdMatrix(matrix)
-    setOsdContainer(container)
-    setOsdZoom(zoom)
+    osdMatrixRef.current = matrix
+    overlayHandleRef.current?.setTransform(matrix)
+    setOsdContainer((prev) =>
+      prev && prev.width === container.width && prev.height === container.height
+        ? prev
+        : container
+    )
+    setOsdZoom((prev) => (Math.round(prev * 100) === Math.round(zoom * 100) ? prev : zoom))
     if (!tiledPerfMarkedRef.current) {
       tiledPerfMarkedRef.current = true
       markTiming("thumbnailLoad")
       markFullyLoaded()
     }
   }, [markTiming, markFullyLoaded])
-  const [osdMatrix, setOsdMatrix] = useState<ImageToScreenMatrix | null>(null)
   const [osdContainer, setOsdContainer] = useState<{ width: number; height: number } | null>(null)
   const [osdZoom, setOsdZoom] = useState<number>(1)
   const tiledPerfMarkedRef = useRef(false)
@@ -466,6 +529,56 @@ export function DrawingViewer({
     }
     return { width: tileManifest.Image.Size.Width, height: tileManifest.Image.Size.Height }
   }, [sheet, tileManifest])
+
+  // Rendered-image pixel dimensions: the space markup geometry lives in.
+  // Falls back to the displayed content size for legacy PDF/image sheets.
+  const rasterImageSize = useMemo(() => {
+    if (hasTiles && tiledImageSize) return tiledImageSize
+    if (imageWidth && imageHeight) return { width: imageWidth, height: imageHeight }
+    return contentSize
+  }, [hasTiles, tiledImageSize, imageWidth, imageHeight, contentSize])
+
+  // Load the dimension calibration for this sheet's current version.
+  useEffect(() => {
+    let cancelled = false
+    setCalibration(null)
+    getSheetCalibrationAction(sheet.id)
+      .then((cal) => {
+        if (!cancelled && cal) {
+          setCalibration({ versionId: cal.sheet_version_id, feetPerImagePx: cal.feet_per_image_px })
+        }
+      })
+      .catch((error) => {
+        console.error("[DrawingViewer] Failed to load calibration:", error)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [sheet.id])
+
+  // Per-sheet local state resets when navigating between sheets.
+  useEffect(() => {
+    setPhotoPins([])
+    setCalibrating(false)
+    setCalibrationPoints([])
+    setPendingPhotoPosition(null)
+  }, [sheet.id])
+
+  // Escape cancels calibrate mode (capture phase so the viewer doesn't close).
+  useEffect(() => {
+    if (!calibrating) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation()
+        e.preventDefault()
+        setCalibrating(false)
+        setCalibrationPoints([])
+        setCalibrationDialogOpen(false)
+      }
+    }
+    window.addEventListener("keydown", onKey, true)
+    return () => window.removeEventListener("keydown", onKey, true)
+  }, [calibrating])
 
   // Keep OpenSeadragon mouse navigation aligned with the active tool.
   useEffect(() => {
@@ -497,6 +610,7 @@ export function DrawingViewer({
 
   const getNormalizedCoordsFromTiledClient = useCallback(
     (clientX: number, clientY: number): { x: number; y: number } | null => {
+      const osdMatrix = osdMatrixRef.current
       if (!containerRef.current || !osdMatrix || !tiledImageSize) return null
       const rect = containerRef.current.getBoundingClientRect()
       const sx = clientX - rect.left
@@ -517,7 +631,7 @@ export function DrawingViewer({
       if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return null
       return { x: nx, y: ny }
     },
-    [osdMatrix, tiledImageSize]
+    [tiledImageSize]
   )
 
   // Stage 2: Load versions for comparison mode
@@ -635,9 +749,16 @@ export function DrawingViewer({
           // These will open the create dialog - pass to parent
           onCreatePin?.(longPressPosition.x, longPressPosition.y)
           break
-        case "attach-photo":
-          toast.info("Attach photo feature coming soon")
+        case "attach-photo": {
+          const coords =
+            getNormalizedCoordsFromClient(longPressPosition.clientX, longPressPosition.clientY) ?? {
+              x: longPressPosition.x,
+              y: longPressPosition.y,
+            }
+          setPendingPhotoPosition(coords)
+          photoInputRef.current?.click()
           break
+        }
         case "add-measurement":
           setActiveTool("dimension")
           break
@@ -646,7 +767,7 @@ export function DrawingViewer({
       setShowLongPressMenu(false)
       setLongPressPosition(null)
     },
-    [longPressPosition, onCreatePin]
+    [longPressPosition, onCreatePin, getNormalizedCoordsFromClient]
   )
 
   // Stage 2: Handle cluster click - zoom to location
@@ -767,17 +888,61 @@ export function DrawingViewer({
       })
     }
 
+    // Calibration reference: a dot for the first click, a line once both
+    // points are placed.
+    if (calibrating && calibrationPoints.length > 0) {
+      const px = calibrationPoints.map(toPx)
+      if (px.length === 1) {
+        drafts.push({
+          type: "circle",
+          points: [px[0], { x: px[0].x + 6, y: px[0].y }],
+          color: "#3B82F6",
+          strokeWidth: 2,
+          text: undefined,
+        })
+      } else {
+        drafts.push({
+          type: "dimension",
+          points: px,
+          color: "#3B82F6",
+          strokeWidth: 2,
+          text: undefined,
+        })
+      }
+    }
+
     return drafts
-  }, [currentMarkup, hasTiles, localMarkups, tiledImageSize])
+  }, [currentMarkup, hasTiles, localMarkups, tiledImageSize, calibrating, calibrationPoints])
 
   // Handle mouse down
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault()
       // In tiled mode, OpenSeadragon owns panning.
-      if (hasTiles && activeTool === "pan") return
+      if (hasTiles && activeTool === "pan" && !calibrating) return
       const coords = getNormalizedCoords(e.clientX, e.clientY)
       if (!coords) return
+
+      // Calibrate mode: collect the two reference points, then ask for the
+      // real-world distance.
+      if (calibrating) {
+        setCalibrationPoints((prev) => {
+          if (prev.length >= 2) return prev
+          const next = [...prev, coords]
+          if (next.length === 2) {
+            setCalibrationInput("")
+            setCalibrationDialogOpen(true)
+          }
+          return next
+        })
+        return
+      }
+
+      if (activeTool === "photo" && !readOnly) {
+        setPendingPhotoPosition(coords)
+        photoInputRef.current?.click()
+        return
+      }
 
       if (activeTool === "pan") {
         setIsPanning(true)
@@ -790,8 +955,8 @@ export function DrawingViewer({
         return
       }
 
-      // Handle markup tools (not pan or pin which are already handled above)
-      if (activeTool && activeTool !== "pin" && !readOnly) {
+      // Handle markup tools (not pan/pin/photo which are already handled above)
+      if (activeTool && activeTool !== "pin" && activeTool !== "photo" && !readOnly) {
         if (activeTool === "text" || activeTool === "callout") {
           setTextPosition(coords)
           setTextDialogOpen(true)
@@ -807,7 +972,7 @@ export function DrawingViewer({
         })
       }
     },
-    [activeTool, pan, getNormalizedCoords, selectedColor, strokeWidth, readOnly, onCreatePin, hasTiles]
+    [activeTool, pan, getNormalizedCoords, selectedColor, strokeWidth, readOnly, onCreatePin, hasTiles, calibrating]
   )
 
   // Handle mouse move
@@ -932,6 +1097,156 @@ export function DrawingViewer({
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Calibration (dimension tool scale)
+  // ---------------------------------------------------------------------------
+
+  const calibrationPixelDistance = useMemo(() => {
+    if (calibrationPoints.length < 2 || !rasterImageSize) return null
+    const dx = (calibrationPoints[1].x - calibrationPoints[0].x) * rasterImageSize.width
+    const dy = (calibrationPoints[1].y - calibrationPoints[0].y) * rasterImageSize.height
+    return Math.hypot(dx, dy)
+  }, [calibrationPoints, rasterImageSize])
+
+  const exitCalibrateMode = useCallback(() => {
+    setCalibrating(false)
+    setCalibrationPoints([])
+    setCalibrationDialogOpen(false)
+    setCalibrationInput("")
+  }, [])
+
+  const handleCalibrationSubmit = async () => {
+    const feet = parseFeetInches(calibrationInput)
+    if (!feet) {
+      toast.error('Enter a distance like 24\' 6" or 10.5')
+      return
+    }
+    if (!calibration?.versionId) {
+      toast.error("This sheet has no published version to calibrate")
+      return
+    }
+    if (!calibrationPixelDistance || calibrationPixelDistance < 1) {
+      toast.error("The two points are too close together — pick a longer known distance")
+      setCalibrationDialogOpen(false)
+      setCalibrationPoints([])
+      return
+    }
+
+    setSavingCalibration(true)
+    try {
+      const saved = unwrapAction(
+        await setSheetVersionCalibrationAction({
+          sheet_version_id: calibration.versionId,
+          feet_per_image_px: feet / calibrationPixelDistance,
+        })
+      )
+      setCalibration({ versionId: saved.sheet_version_id, feetPerImagePx: saved.feet_per_image_px })
+      toast.success("Sheet calibrated — dimensions now show real lengths")
+      exitCalibrateMode()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to save calibration")
+    } finally {
+      setSavingCalibration(false)
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Photo pins
+  // ---------------------------------------------------------------------------
+
+  const photoPreviewUrl = useMemo(
+    () => (photoFile ? URL.createObjectURL(photoFile) : null),
+    [photoFile]
+  )
+  useEffect(() => {
+    return () => {
+      if (photoPreviewUrl) URL.revokeObjectURL(photoPreviewUrl)
+    }
+  }, [photoPreviewUrl])
+
+  const resetPhotoComposer = useCallback(() => {
+    setPhotoDialogOpen(false)
+    setPhotoFile(null)
+    setPhotoCaption("")
+    setPendingPhotoPosition(null)
+    setPhotoUploadPercent(null)
+  }, [])
+
+  const handlePhotoSubmit = async () => {
+    if (!photoFile || !pendingPhotoPosition) return
+    setPhotoUploading(true)
+    setPhotoUploadPercent(0)
+    try {
+      const uploaded = await uploadDocumentFileDirect(photoFile, {
+        projectId: sheet.project_id,
+        category: "photos",
+        onProgress: (progress) => setPhotoUploadPercent(progress.percent),
+      })
+      const pin = unwrapAction(
+        await createPhotoFromDrawingAction({
+          project_id: sheet.project_id,
+          drawing_sheet_id: sheet.id,
+          x_position: pendingPhotoPosition.x,
+          y_position: pendingPhotoPosition.y,
+          file_id: uploaded.id,
+          caption: photoCaption.trim() || undefined,
+        })
+      )
+      setPhotoPins((prev) => [...prev, pin])
+      toast.success("Photo pinned to drawing")
+      resetPhotoComposer()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to attach photo")
+    } finally {
+      setPhotoUploading(false)
+      setPhotoUploadPercent(null)
+    }
+  }
+
+  const openPhotoPin = useCallback(async (pin: DrawingPin) => {
+    setPhotoView({ pin, loading: true })
+    try {
+      const photo = await getPhotoForPinAction(pin.entity_id)
+      if (!photo) {
+        setPhotoView({ pin, loading: false, error: "Photo not found" })
+        return
+      }
+      setPhotoView({
+        pin,
+        loading: false,
+        url: photo.url,
+        fileName: photo.file_name ?? undefined,
+        takenAt: photo.taken_at,
+      })
+    } catch (error) {
+      setPhotoView({
+        pin,
+        loading: false,
+        error: error instanceof Error ? error.message : "Failed to load photo",
+      })
+    }
+  }, [])
+
+  // Photo pins created in this session render immediately without waiting for
+  // the parent to refetch the sheet's pins.
+  const allPins = useMemo(() => {
+    if (photoPins.length === 0) return pins
+    const seen = new Set(pins.map((p) => p.id))
+    return [...pins, ...photoPins.filter((p) => !seen.has(p.id))]
+  }, [pins, photoPins])
+
+  // Photo pins open in-viewer; everything else defers to the parent handler.
+  const handlePinActivate = useCallback(
+    (pin: DrawingPin) => {
+      if (pin.entity_type === "photo") {
+        void openPhotoPin(pin)
+        return
+      }
+      onPinClick?.(pin)
+    },
+    [onPinClick, openPhotoPin]
+  )
+
   // Zoom controls
   const handleZoomIn = () => {
     if (hasTiles && osdViewer) {
@@ -989,7 +1304,8 @@ export function DrawingViewer({
       ctx: CanvasRenderingContext2D,
       markup: MarkupInProgress,
       canvasWidth: number,
-      canvasHeight: number
+      canvasHeight: number,
+      feetPerImagePx?: number | null
     ) => {
       ctx.strokeStyle = markup.color
       ctx.fillStyle = markup.color
@@ -1194,7 +1510,11 @@ export function DrawingViewer({
           const midX = (start.x + end.x) / 2
           const midY = (start.y + end.y) / 2
           ctx.font = "12px sans-serif"
-          ctx.fillText(`${Math.round(dist)}px`, midX, midY - 5)
+          const label =
+            feetPerImagePx && feetPerImagePx > 0
+              ? formatFeetInches(dist * feetPerImagePx)
+              : `${Math.round(dist)}px`
+          ctx.fillText(label, midX, midY - 5)
           break
         }
       }
@@ -1214,6 +1534,8 @@ export function DrawingViewer({
     // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height)
 
+    const feetPerImagePx = calibration?.feetPerImagePx ?? null
+
     // Draw saved markups
     if (showMarkups) {
       for (const markup of markups) {
@@ -1227,21 +1549,32 @@ export function DrawingViewer({
             text: markup.data.text,
           },
           canvas.width,
-          canvas.height
+          canvas.height,
+          feetPerImagePx
         )
       }
 
       // Draw local markups
       for (const markup of localMarkups) {
-        renderMarkup(ctx, markup, canvas.width, canvas.height)
+        renderMarkup(ctx, markup, canvas.width, canvas.height, feetPerImagePx)
       }
 
       // Draw current markup
       if (currentMarkup) {
-        renderMarkup(ctx, currentMarkup, canvas.width, canvas.height)
+        renderMarkup(ctx, currentMarkup, canvas.width, canvas.height, feetPerImagePx)
       }
     }
-  }, [markups, localMarkups, currentMarkup, showMarkups, renderMarkup, contentSize, hasTiles])
+
+    // Calibration reference line (drawn regardless of markup visibility)
+    if (calibrating && calibrationPoints.length === 2) {
+      renderMarkup(
+        ctx,
+        { type: "dimension", points: calibrationPoints, color: "#3B82F6", strokeWidth: 2 },
+        canvas.width,
+        canvas.height
+      )
+    }
+  }, [markups, localMarkups, currentMarkup, showMarkups, renderMarkup, contentSize, hasTiles, calibration, calibrating, calibrationPoints])
 
   useEffect(() => {
     if (!contentSize || !canvasRef.current) return
@@ -1331,7 +1664,8 @@ export function DrawingViewer({
 
   const activeToolDef = MARKUP_TOOLS.find((t) => t.type === activeTool)
   const MarkupActiveIcon = activeToolDef?.icon ?? Pencil
-  const markupToolActive = !!activeTool && activeTool !== "pan" && activeTool !== "pin"
+  const markupToolActive =
+    !!activeTool && activeTool !== "pan" && activeTool !== "pin" && activeTool !== "photo"
 
   return (
     <div className="fixed inset-0 z-50 bg-neutral-900 overflow-hidden">
@@ -1361,17 +1695,18 @@ export function DrawingViewer({
               onTransformChange={handleOsdTransformChange}
             />
             <SVGOverlay
+              ref={setOverlayHandle}
               container={osdContainer}
-              matrix={osdMatrix}
               imageSize={tiledImageSize}
               markups={markups}
               draftMarkups={tiledDraftMarkups}
-              pins={pins}
+              pins={allPins}
               showMarkups={showMarkups}
               showPins={showPins}
               highlightedPinId={highlightedPinId}
               interactive={!readOnly && activeTool !== "pan"}
-              onPinClick={(pin) => onPinClick?.(pin)}
+              onPinClick={handlePinActivate}
+              feetPerImagePx={calibration?.feetPerImagePx ?? null}
             />
           </div>
         ) : !hasOptimizedImages && !fileUrl ? (
@@ -1402,11 +1737,13 @@ export function DrawingViewer({
                   alt={`${sheet.sheet_number} - ${sheet.sheet_title || ""}`}
                   className="max-w-full max-h-full"
                   onLoadStage={(stage: ImageLoadStage) => {
+                    // Stages load in parallel and can complete out of order —
+                    // size the content on whichever stage lands first.
+                    if (imageWidth && imageHeight) {
+                      setContentSize((prev) => prev ?? { width: imageWidth, height: imageHeight })
+                    }
                     if (stage === "thumbnail") {
                       markTiming("thumbnailLoad")
-                      if (imageWidth && imageHeight) {
-                        setContentSize({ width: imageWidth, height: imageHeight })
-                      }
                     } else if (stage === "medium") {
                       markTiming("mediumLoad")
                     } else if (stage === "full") {
@@ -1462,11 +1799,11 @@ export function DrawingViewer({
 
               {showPins && contentSize && (
                 <DrawingPinLayer
-                  pins={pins}
+                  pins={allPins}
                   zoom={zoom}
                   containerWidth={contentSize.width}
                   containerHeight={contentSize.height}
-                  onPinClick={(pin) => onPinClick?.(pin)}
+                  onPinClick={handlePinActivate}
                   onClusterClick={handleClusterClick}
                   highlightedPinId={highlightedPinId}
                 />
@@ -1637,12 +1974,12 @@ export function DrawingViewer({
                 )}
                 {showMarkups ? "Hide markups" : "Show markups"}
               </DropdownMenuItem>
-              {pins.length > 0 && (
+              {allPins.length > 0 && (
                 <DropdownMenuItem onClick={() => setPinsDrawerOpen(true)}>
                   <Layers className="mr-2 h-4 w-4" />
                   Linked items
                   <Badge variant="secondary" className="ml-auto">
-                    {pins.length}
+                    {allPins.length}
                   </Badge>
                 </DropdownMenuItem>
               )}
@@ -1654,17 +1991,23 @@ export function DrawingViewer({
                 <Maximize2 className="mr-2 h-4 w-4" />
                 Fit to screen
               </DropdownMenuItem>
+              <DropdownMenuSeparator />
               {fileUrl && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem asChild>
-                    <a href={fileUrl} download target="_blank" rel="noreferrer">
-                      <Download className="mr-2 h-4 w-4" />
-                      Download
-                    </a>
-                  </DropdownMenuItem>
-                </>
+                <DropdownMenuItem asChild>
+                  <a href={fileUrl} download target="_blank" rel="noreferrer">
+                    <Download className="mr-2 h-4 w-4" />
+                    Download
+                  </a>
+                </DropdownMenuItem>
               )}
+              <DropdownMenuItem
+                onClick={() =>
+                  window.open(`/api/drawings/export?sheetId=${sheet.id}`, "_blank")
+                }
+              >
+                <FileDown className="mr-2 h-4 w-4" />
+                Download with markups
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           <Button
@@ -1732,7 +2075,7 @@ export function DrawingViewer({
               </TooltipContent>
             </Tooltip>
 
-            {pins.length > 0 && (
+            {allPins.length > 0 && (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -1748,13 +2091,13 @@ export function DrawingViewer({
                     )}
                     {!pinsDrawerOpen && (
                       <span className="absolute -top-1 -right-1 h-4 min-w-[16px] px-1 rounded-full bg-primary text-primary-foreground text-[10px] font-medium flex items-center justify-center">
-                        {pins.length}
+                        {allPins.length}
                       </span>
                     )}
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom">
-                  Linked items ({pins.length})
+                  Linked items ({allPins.length})
                 </TooltipContent>
               </Tooltip>
             )}
@@ -1793,6 +2136,22 @@ export function DrawingViewer({
                 )}
               </TooltipTrigger>
               <TooltipContent side="bottom">Download</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-9 w-9"
+                  onClick={() =>
+                    window.open(`/api/drawings/export?sheetId=${sheet.id}`, "_blank")
+                  }
+                >
+                  <FileDown className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Download with markups</TooltipContent>
             </Tooltip>
 
             <Tooltip>
@@ -2017,6 +2376,20 @@ export function DrawingViewer({
                 </Tooltip>
               )}
 
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant={activeTool === "photo" ? "secondary" : "ghost"}
+                    size="icon"
+                    className="h-10 w-10"
+                    onClick={() => setActiveTool("photo")}
+                  >
+                    <Camera className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">Photo pin — click the sheet to attach a photo</TooltipContent>
+              </Tooltip>
+
               <Separator orientation="vertical" className="h-6 mx-1" />
 
               <Popover open={markupMenuOpen} onOpenChange={setMarkupMenuOpen}>
@@ -2107,9 +2480,42 @@ export function DrawingViewer({
                         onValueChange={([v]) => setStrokeWidth(v)}
                       />
                     </div>
+                    {activeTool === "dimension" && !calibration?.feetPerImagePx && (
+                      <p className="text-xs text-muted-foreground border-t pt-2">
+                        Calibrate this sheet to get real dimensions.
+                      </p>
+                    )}
                   </div>
                 </PopoverContent>
               </Popover>
+
+              {activeTool === "dimension" && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant={calibrating ? "secondary" : "ghost"}
+                      size="sm"
+                      className="h-10 gap-1.5 px-2.5"
+                      onClick={() => {
+                        if (calibrating) {
+                          exitCalibrateMode()
+                        } else {
+                          setCalibrating(true)
+                          setCalibrationPoints([])
+                        }
+                      }}
+                    >
+                      <Crosshair className="h-4 w-4" />
+                      Calibrate
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">
+                    {calibration?.feetPerImagePx
+                      ? "Recalibrate the sheet scale"
+                      : "Calibrate this sheet to get real dimensions"}
+                  </TooltipContent>
+                </Tooltip>
+              )}
 
               <div
                 className={cn(
@@ -2167,7 +2573,7 @@ export function DrawingViewer({
       )}
 
       {/* Right pins drawer */}
-      {pinsDrawerOpen && pins.length > 0 && (
+      {pinsDrawerOpen && allPins.length > 0 && (
         <div
           className={cn(
             "absolute top-20 right-4 bottom-24 w-72 z-20 rounded-xl border bg-background/95 backdrop-blur-md shadow-xl flex flex-col",
@@ -2180,7 +2586,7 @@ export function DrawingViewer({
               <Layers className="h-4 w-4" />
               Linked items
               <Badge variant="secondary" className="ml-1">
-                {pins.length}
+                {allPins.length}
               </Badge>
             </div>
             <Button
@@ -2194,20 +2600,27 @@ export function DrawingViewer({
           </div>
           <ScrollArea className="flex-1">
             <div className="p-2 space-y-1.5">
-              {pins.map((pin) => (
+              {allPins.map((pin) => (
                 <button
                   key={pin.id}
-                  onClick={() => onPinClick?.(pin)}
+                  onClick={() => handlePinActivate(pin)}
                   className={cn(
                     "w-full p-2.5 rounded-lg border hover:bg-muted/50 text-left transition-colors",
                     highlightedPinId === pin.id && "border-primary bg-primary/5",
                   )}
                 >
                   <div className="flex items-start gap-2">
-                    <MapPin
-                      className="h-4 w-4 flex-shrink-0 mt-0.5"
-                      style={{ color: getStatusColor(pin.status) }}
-                    />
+                    {pin.entity_type === "photo" ? (
+                      <Camera
+                        className="h-4 w-4 flex-shrink-0 mt-0.5"
+                        style={{ color: getStatusColor(pin.status) }}
+                      />
+                    ) : (
+                      <MapPin
+                        className="h-4 w-4 flex-shrink-0 mt-0.5"
+                        style={{ color: getStatusColor(pin.status) }}
+                      />
+                    )}
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium truncate">
                         {pin.entity_title ?? pin.label ?? "Untitled"}
@@ -2283,6 +2696,183 @@ export function DrawingViewer({
             : { x: 0, y: 0 }
         }
       />
+
+      {/* Calibrate mode hint */}
+      {calibrating && (
+        <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-20 rounded-lg border bg-background/95 backdrop-blur-md shadow-lg px-3 py-1.5 text-xs text-muted-foreground pointer-events-none">
+          {calibrationPoints.length === 0
+            ? "Click the two ends of a known dimension — Esc to cancel"
+            : calibrationPoints.length === 1
+              ? "Click the second point — Esc to cancel"
+              : "Enter the real-world distance"}
+        </div>
+      )}
+
+      {/* Hidden photo input (camera-first on mobile) */}
+      <input
+        ref={photoInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0] ?? null
+          e.target.value = ""
+          if (!file) {
+            setPendingPhotoPosition(null)
+            return
+          }
+          setPhotoFile(file)
+          setPhotoCaption("")
+          setPhotoDialogOpen(true)
+        }}
+      />
+
+      {/* Calibration distance dialog */}
+      <Dialog
+        open={calibrationDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && !savingCalibration) {
+            setCalibrationDialogOpen(false)
+            setCalibrationPoints([])
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Set sheet scale</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="calibration-distance">Known distance between the two points</Label>
+            <Input
+              id="calibration-distance"
+              value={calibrationInput}
+              onChange={(e) => setCalibrationInput(e.target.value)}
+              placeholder={'e.g. 24\' 6" or 10.5'}
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !savingCalibration) {
+                  handleCalibrationSubmit()
+                }
+              }}
+            />
+            <p className="text-xs text-muted-foreground">
+              Accepts feet-and-inches (24&apos; 6&quot;) or decimal feet (10.5). Dimension
+              markups on this sheet will show real lengths.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={savingCalibration}
+              onClick={() => {
+                setCalibrationDialogOpen(false)
+                setCalibrationPoints([])
+              }}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleCalibrationSubmit} disabled={savingCalibration || !calibrationInput.trim()}>
+              {savingCalibration ? "Saving…" : "Save scale"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Photo pin composer */}
+      <Dialog
+        open={photoDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && !photoUploading) resetPhotoComposer()
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Camera className="h-5 w-5" />
+              Attach photo to drawing
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            {photoPreviewUrl && (
+              <div className="border bg-muted/30 flex items-center justify-center max-h-64 overflow-hidden">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={photoPreviewUrl}
+                  alt={photoFile?.name ?? "Photo preview"}
+                  className="max-h-64 w-auto object-contain"
+                />
+              </div>
+            )}
+            <div>
+              <Label htmlFor="photo-caption">Caption (optional)</Label>
+              <Input
+                id="photo-caption"
+                value={photoCaption}
+                onChange={(e) => setPhotoCaption(e.target.value)}
+                placeholder="What does this show?"
+                disabled={photoUploading}
+              />
+            </div>
+            {photoUploading && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <div className="h-4 w-4 rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground animate-spin" />
+                Uploading
+                {photoUploadPercent !== null ? ` ${photoUploadPercent}%` : "…"}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={resetPhotoComposer} disabled={photoUploading}>
+              Cancel
+            </Button>
+            <Button onClick={handlePhotoSubmit} disabled={photoUploading || !photoFile}>
+              {photoUploading ? "Uploading…" : "Pin photo"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Photo pin viewer */}
+      <Dialog open={!!photoView} onOpenChange={(open) => !open && setPhotoView(null)}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Camera className="h-5 w-5" />
+              {photoView?.pin.label ?? photoView?.fileName ?? "Photo"}
+            </DialogTitle>
+          </DialogHeader>
+          {photoView?.loading ? (
+            <div className="flex items-center justify-center py-16">
+              <div className="h-5 w-5 rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground animate-spin" />
+            </div>
+          ) : photoView?.error ? (
+            <div className="text-sm text-destructive py-8 text-center">{photoView.error}</div>
+          ) : photoView?.url ? (
+            <div className="space-y-3">
+              <div className="border bg-muted/30 flex items-center justify-center max-h-[60vh] overflow-hidden">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={photoView.url}
+                  alt={photoView.pin.label ?? photoView.fileName ?? "Photo"}
+                  className="max-h-[60vh] w-auto object-contain"
+                />
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {[
+                  photoView.pin.creator_name,
+                  new Date(photoView.takenAt ?? photoView.pin.created_at).toLocaleDateString(
+                    undefined,
+                    { month: "short", day: "numeric", year: "numeric" },
+                  ),
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </div>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
       {/* Text input dialog */}
       <Dialog open={textDialogOpen} onOpenChange={setTextDialogOpen}>

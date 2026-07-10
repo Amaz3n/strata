@@ -131,8 +131,8 @@ pattern (note the extra series dimension — extend the pattern, keep atomicity)
   closing the task suggests closing the item (badge, not automation).
 
 **UI:** project workbench route `app/(app)/projects/[id]/meetings/` (add to project
-sidebar nav with `tiers: ["commercial","production"]` per 01; residential orgs can
-enable via a project setting if they ask — nav-tier only hides, never blocks routes).
+sidebar nav with `postures: ["commercial"]` per 01; any project can enable it via the
+per-project Modules override — posture only hides, never blocks routes).
 Minutes editor = the day-document pattern from Daily Logs desktop redesign (one
 document per meeting, inline item rows, keyboard-friendly). List view = series-grouped
 log. Org desk: none (desk rule — nobody's whole job is minutes).
@@ -197,8 +197,8 @@ no cron).
 flags remain the access mechanism; the transmittal is the RECORD.
 
 **UI:** project route `app/(app)/projects/[id]/transmittals/` — log table (number,
-date, subject, purpose, recipients, viewed badges) + create sheet. Nav-tiered
-commercial like meetings.
+date, subject, purpose, recipients, viewed badges) + create sheet. Posture-gated in
+the project sidebar like meetings (`postures: ["commercial"]`, overridable).
 
 ## Part 4 — Formatted numbering
 

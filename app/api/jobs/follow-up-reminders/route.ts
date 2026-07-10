@@ -5,6 +5,7 @@ import { FollowUpReminderEmail } from "@/lib/emails/follow-up-reminder-email"
 import { escapeHtml, renderEmailTemplate, renderStandardEmailLayout, sendEmail, getOrgSenderEmail } from "@/lib/services/mailer"
 import { recordEvent } from "@/lib/services/events"
 import { ensurePortalLink } from "@/lib/services/portal-links"
+import { withCronRun } from "@/lib/services/job-runs"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 export const runtime = "nodejs"
@@ -516,10 +517,5 @@ async function sweepTrialEndingAlerts(
   return { candidates: data?.length ?? 0, sent, skipped }
 }
 
-export async function GET(request: NextRequest) {
-  return run(request)
-}
-
-export async function POST(request: NextRequest) {
-  return run(request)
-}
+export const GET = withCronRun("follow-up-reminders", run)
+export const POST = GET

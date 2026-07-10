@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
 
 type OpenSeadragonNS = any
@@ -43,6 +43,22 @@ export interface TiledDrawingViewerProps {
     zoom: number
   }) => void
   thumbnailUrl?: string // Fallback for when tiles don't exist
+  /**
+   * Optional second tiled image composited over the base image (used by the
+   * drawings comparison overlay). Opacity is 0..1 and updates live via
+   * setOpacity() without rebuilding the viewer or re-opening tile sources.
+   */
+  overlaySource?: {
+    tileBaseUrl: string
+    tileManifest: TileManifest
+    opacity: number
+  }
+  /**
+   * Route that mints the arc_tiles cookie for this viewer's audience.
+   * Defaults to the authed app endpoint; portals pass their token-scoped
+   * endpoint (/api/portal/drawings/[token]/tiles-cookie).
+   */
+  tilesCookieEndpoint?: string
 }
 
 function buildMatrix(args: {
@@ -105,6 +121,57 @@ export function toRenderableDrawingsUrl(
   return buildRenderableTileBaseUrl(url, secure)
 }
 
+// ---------------------------------------------------------------------------
+// Tiles cookie: POST once per session, shared across every mounted viewer.
+// The cookie has a 1h TTL, so mounted viewers also refresh it on an interval
+// (see the refresh effect below) and re-POST on suspected auth failures.
+// Memoized per endpoint: the authed app and token-authenticated portals mint
+// the same cookie from different routes.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_TILES_COOKIE_ENDPOINT = "/api/drawings/tiles-cookie"
+
+const TILES_COOKIE_REFRESH_MS = 45 * 60 * 1000
+// If tile loads fail while the cookie is younger than this, the failure is
+// almost certainly not auth expiry — skip the recovery round trip.
+const TILES_COOKIE_FRESH_MS = 60 * 1000
+
+type TilesCookieState = { promise: Promise<void> | null; setAt: number }
+const tilesCookieStates = new Map<string, TilesCookieState>()
+
+function getTilesCookieState(endpoint: string): TilesCookieState {
+  let state = tilesCookieStates.get(endpoint)
+  if (!state) {
+    state = { promise: null, setAt: 0 }
+    tilesCookieStates.set(endpoint, state)
+  }
+  return state
+}
+
+function ensureTilesCookie(endpoint: string, options?: { force?: boolean }): Promise<void> {
+  const state = getTilesCookieState(endpoint)
+  if (!options?.force && state.promise) return state.promise
+
+  const promise = fetch(endpoint, {
+    method: "POST",
+    credentials: "include",
+  })
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error(`Failed to set tiles cookie: HTTP ${response.status}`)
+      }
+      state.setAt = Date.now()
+    })
+    .catch((error) => {
+      // Allow the next caller to retry instead of caching the failure forever.
+      if (state.promise === promise) state.promise = null
+      throw error
+    })
+
+  state.promise = promise
+  return promise
+}
+
 export function TiledDrawingViewer({
   tileBaseUrl,
   tileManifest,
@@ -112,6 +179,8 @@ export function TiledDrawingViewer({
   onReady,
   onTransformChange,
   thumbnailUrl,
+  overlaySource,
+  tilesCookieEndpoint = DEFAULT_TILES_COOKIE_ENDPOINT,
 }: TiledDrawingViewerProps) {
   const secureTilesEnabled = process.env.NEXT_PUBLIC_DRAWINGS_TILES_SECURE === "true"
   const containerRef = useRef<HTMLDivElement>(null)
@@ -120,6 +189,15 @@ export function TiledDrawingViewer({
   const imageSizeRef = useRef<{ width: number; height: number } | null>(null)
   const onReadyRef = useRef<TiledDrawingViewerProps["onReady"]>(onReady)
   const onTransformChangeRef = useRef<TiledDrawingViewerProps["onTransformChange"]>(onTransformChange)
+  const lastAuthRecoveryAtRef = useRef(0)
+
+  // Thumbnail-first render: show the sheet thumbnail behind the OSD canvas so
+  // the user never stares at a blank surface while tiles stream in.
+  const [thumbnailHidden, setThumbnailHidden] = useState(false)
+  const renderableThumbnailUrl = useMemo(
+    () => (thumbnailUrl ? buildRenderableTileBaseUrl(thumbnailUrl, secureTilesEnabled) : undefined),
+    [secureTilesEnabled, thumbnailUrl]
+  )
 
   const imageSize = useMemo(() => {
     const w = tileManifest?.Image?.Size?.Width ?? 1
@@ -129,6 +207,16 @@ export function TiledDrawingViewer({
   const renderableTileBaseUrl = useMemo(
     () => buildRenderableTileBaseUrl(tileBaseUrl, secureTilesEnabled),
     [secureTilesEnabled, tileBaseUrl]
+  )
+  const overlayTileBaseUrl = overlaySource?.tileBaseUrl
+  const overlayManifest = overlaySource?.tileManifest
+  const overlayOpacity = overlaySource?.opacity
+  const renderableOverlayBaseUrl = useMemo(
+    () =>
+      overlayTileBaseUrl
+        ? buildRenderableTileBaseUrl(overlayTileBaseUrl, secureTilesEnabled)
+        : undefined,
+    [secureTilesEnabled, overlayTileBaseUrl]
   )
 
   useEffect(() => {
@@ -181,19 +269,40 @@ export function TiledDrawingViewer({
     []
   )
 
-  const ensureTilesCookie = useCallback(async () => {
-    if (!secureTilesEnabled) return
+  // Latest tile source inputs, readable from the mount-once boot effect.
+  const tileSourceRef = useRef<{ baseUrl: string; manifest: TileManifest }>({
+    baseUrl: renderableTileBaseUrl,
+    manifest: tileManifest,
+  })
+  useEffect(() => {
+    tileSourceRef.current = { baseUrl: renderableTileBaseUrl, manifest: tileManifest }
+  }, [renderableTileBaseUrl, tileManifest])
 
-    const response = await fetch("/api/drawings/tiles-cookie", {
-      method: "POST",
-      credentials: "include",
-    })
+  const overlaySourceRef = useRef<{ baseUrl: string; manifest: TileManifest } | null>(null)
+  const overlayOpacityRef = useRef(overlayOpacity ?? 1)
+  useEffect(() => {
+    overlaySourceRef.current =
+      renderableOverlayBaseUrl && overlayManifest
+        ? { baseUrl: renderableOverlayBaseUrl, manifest: overlayManifest }
+        : null
+  }, [renderableOverlayBaseUrl, overlayManifest])
 
-    if (!response.ok) {
-      throw new Error(`Failed to set tiles cookie: HTTP ${response.status}`)
+  // Compose the open() payload: base image plus (optionally) the overlay image.
+  const composeTileSources = useCallback(() => {
+    const { baseUrl, manifest } = tileSourceRef.current
+    const overlay = overlaySourceRef.current
+    const sources: any[] = [buildTileSource(baseUrl, manifest)]
+    if (overlay) {
+      sources.push({
+        tileSource: buildTileSource(overlay.baseUrl, overlay.manifest),
+        opacity: overlayOpacityRef.current,
+      })
     }
-  }, [secureTilesEnabled])
+    return sources
+  }, [buildTileSource])
 
+  // Create the OSD viewer ONCE per component mount. Sheet changes reuse the
+  // instance via viewer.open() (see the effect below) instead of destroy/recreate.
   useEffect(() => {
     if (!containerRef.current || viewerRef.current) return
 
@@ -203,16 +312,17 @@ export function TiledDrawingViewer({
     const boot = async () => {
       // Avoid importing openseadragon during SSR/module evaluation:
       // it touches `document` at import-time.
-        const mod = (await import("openseadragon")) as any
-        const OSD: OpenSeadragonNS = mod?.default ?? mod
-        if (disposed || !containerRef.current) return
-
-        await ensureTilesCookie()
+      // Start the cookie POST and the module import concurrently.
+      const [mod] = await Promise.all([
+        import("openseadragon") as Promise<any>,
+        secureTilesEnabled ? ensureTilesCookie(tilesCookieEndpoint) : Promise.resolve(),
+      ])
+      const OSD: OpenSeadragonNS = mod?.default ?? mod
       if (disposed || !containerRef.current) return
 
       viewer = OSD({
         element: containerRef.current,
-        tileSources: [buildTileSource(renderableTileBaseUrl, tileManifest)],
+        tileSources: composeTileSources(),
         // Secure tiles are cookie-protected on a sibling subdomain.
         // Avoid `anonymous` here because it strips credentials from image requests.
         crossOriginPolicy: secureTilesEnabled ? false : "Anonymous",
@@ -271,8 +381,48 @@ export function TiledDrawingViewer({
         onTransformChangeRef.current?.({ matrix, container, zoom })
       }
 
-      viewer.addHandler("open", emitTransform)
+      viewer.addHandler("open", () => {
+        emitTransform()
+
+        // The overlay opacity may have changed while open() was in flight.
+        viewer?.world?.getItemAt?.(1)?.setOpacity?.(overlayOpacityRef.current)
+
+        // Fade the static thumbnail out once OSD has a fully-loaded frame.
+        const item = viewer?.world?.getItemAt?.(0)
+        if (!item) return
+        if (item.getFullyLoaded?.()) {
+          setThumbnailHidden(true)
+          return
+        }
+        item.addHandler?.("fully-loaded-change", (event: any) => {
+          if (event?.fullyLoaded) setThumbnailHidden(true)
+        })
+      })
       viewer.addHandler("viewport-change", emitTransform)
+
+      // Tile failures that look like cookie expiry (e.g. after the machine
+      // slept past the TTL): re-POST the cookie once, then re-request tiles.
+      viewer.addHandler("tile-load-failed", () => {
+        if (!secureTilesEnabled) return
+        const now = Date.now()
+        if (now - getTilesCookieState(tilesCookieEndpoint).setAt < TILES_COOKIE_FRESH_MS) return
+        if (now - lastAuthRecoveryAtRef.current < TILES_COOKIE_FRESH_MS) return
+        lastAuthRecoveryAtRef.current = now
+
+        ensureTilesCookie(tilesCookieEndpoint, { force: true })
+          .then(() => {
+            const current = viewerRef.current
+            if (!current) return
+            const count = current.world?.getItemCount?.() ?? 0
+            for (let i = 0; i < count; i++) {
+              current.world.getItemAt(i)?.reset?.()
+            }
+            current.forceRedraw?.()
+          })
+          .catch((error) => {
+            console.error("[TiledDrawingViewer] Tiles cookie recovery failed:", error)
+          })
+      })
 
       resizeObserverRef.current = new ResizeObserver(() => {
         emitTransform()
@@ -290,22 +440,60 @@ export function TiledDrawingViewer({
       viewerRef.current = null
       onReadyRef.current?.(null)
     }
-  }, [
-    buildTileSource,
-    ensureTilesCookie,
-    renderableTileBaseUrl,
-    secureTilesEnabled,
-    tileManifest,
-  ])
+  }, [composeTileSources, secureTilesEnabled, tilesCookieEndpoint])
 
+  // Sheet/manifest/overlay-source changes: reuse the existing viewer via open()
+  // instead of a destroy/recreate cycle. (No-op on mount — the viewer doesn't
+  // exist yet and boot() constructs it with the latest sources from the refs.)
   useEffect(() => {
     if (!viewerRef.current) return
     try {
-      viewerRef.current.open(buildTileSource(renderableTileBaseUrl, tileManifest))
+      viewerRef.current.open(composeTileSources())
     } catch (e) {
       console.error('[TiledViewer] Failed to update tile source:', e)
     }
-  }, [buildTileSource, renderableTileBaseUrl, tileManifest])
+  }, [composeTileSources, renderableTileBaseUrl, tileManifest, renderableOverlayBaseUrl, overlayManifest])
 
-  return <div ref={containerRef} className={cn("h-full w-full", className)} />
+  // Overlay opacity changes: update the composited image in place — no
+  // re-open, no tile refetch.
+  useEffect(() => {
+    if (typeof overlayOpacity !== 'number') return
+    overlayOpacityRef.current = overlayOpacity
+    viewerRef.current?.world?.getItemAt?.(1)?.setOpacity?.(overlayOpacity)
+  }, [overlayOpacity])
+
+  // Re-show the thumbnail whenever the sheet (tile source) changes.
+  useEffect(() => {
+    setThumbnailHidden(false)
+  }, [renderableTileBaseUrl])
+
+  // The cookie TTL is 1h. Refresh it while any tiled viewer is mounted so new
+  // tile fetches never 401 mid-session.
+  useEffect(() => {
+    if (!secureTilesEnabled) return
+    const id = window.setInterval(() => {
+      ensureTilesCookie(tilesCookieEndpoint, { force: true }).catch((error) => {
+        console.error("[TiledDrawingViewer] Tiles cookie refresh failed:", error)
+      })
+    }, TILES_COOKIE_REFRESH_MS)
+    return () => window.clearInterval(id)
+  }, [secureTilesEnabled, tilesCookieEndpoint])
+
+  return (
+    <div className={cn("relative h-full w-full", className)}>
+      {renderableThumbnailUrl ? (
+        <img
+          src={renderableThumbnailUrl}
+          alt=""
+          aria-hidden
+          draggable={false}
+          className={cn(
+            "pointer-events-none absolute inset-0 h-full w-full select-none object-contain transition-opacity duration-300",
+            thumbnailHidden ? "opacity-0" : "opacity-100"
+          )}
+        />
+      ) : null}
+      <div ref={containerRef} className="absolute inset-0" />
+    </div>
+  )
 }

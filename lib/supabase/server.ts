@@ -62,14 +62,21 @@ export const createServerSupabaseClient = cache(async (): Promise<SupabaseClient
 })
 
 
-export function createServiceSupabaseClient(): SupabaseClient {
-  const url = requireEnv(SUPABASE_URL, "NEXT_PUBLIC_SUPABASE_URL")
-  const serviceRoleKey = requireEnv(SUPABASE_SERVICE_ROLE_KEY, "SUPABASE_SERVICE_ROLE_KEY")
+// Module singleton: the service client is stateless (no session, fixed key),
+// so one instance can serve every call instead of being rebuilt per invocation.
+let serviceClient: SupabaseClient | null = null
 
-  return createBrowserlessClient(url, serviceRoleKey, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false,
-    },
-  })
+export function createServiceSupabaseClient(): SupabaseClient {
+  if (!serviceClient) {
+    const url = requireEnv(SUPABASE_URL, "NEXT_PUBLIC_SUPABASE_URL")
+    const serviceRoleKey = requireEnv(SUPABASE_SERVICE_ROLE_KEY, "SUPABASE_SERVICE_ROLE_KEY")
+
+    serviceClient = createBrowserlessClient(url, serviceRoleKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+      },
+    })
+  }
+  return serviceClient
 }

@@ -2,67 +2,43 @@ import { Suspense } from "react"
 import { PageLayout } from "@/components/layout/page-layout"
 import { requireAnyPermissionGuard } from "@/lib/auth/guards"
 import { FeatureFlagsTable } from "@/components/admin/feature-flags-table"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { getFeatureFlags, getFeatureFlagOrganizations } from "@/lib/services/admin"
 
-import { unwrapAction } from "@/lib/action-result"
+export const dynamic = "force-dynamic"
 
-export const dynamic = 'force-dynamic'
-
-export default async function FeaturesPage() {
-  await requireAnyPermissionGuard(["features.manage", "platform.feature_flags.manage"])
+async function FeatureFlagsData() {
   const [featureFlags, organizations] = await Promise.all([
     getFeatureFlags(),
     getFeatureFlagOrganizations(),
   ])
+
+  return <FeatureFlagsTable initialFlags={featureFlags} organizations={organizations} />
+}
+
+export default async function FeaturesPage() {
+  await requireAnyPermissionGuard(["features.manage", "platform.feature_flags.manage"])
 
   return (
     <PageLayout
       title="Feature Flags"
       breadcrumbs={[
         { label: "Admin", href: "/admin" },
-        { label: "Feature Flags" }
+        { label: "Feature Flags" },
       ]}
     >
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-3xl font-bold">Feature Flags</h1>
-          <p className="text-muted-foreground mt-2">
-            Manage system features and enable/disable functionality per organization
-          </p>
-        </div>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Feature Management</CardTitle>
-            <CardDescription>
-              Control which features are enabled for organizations and set feature-specific configurations
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Suspense fallback={<FeatureFlagsTableSkeleton />}>
-              <FeatureFlagsTable initialFlags={featureFlags} organizations={organizations} />
-            </Suspense>
-          </CardContent>
-        </Card>
-      </div>
+      <Suspense fallback={<FeatureFlagsSkeleton />}>
+        <FeatureFlagsData />
+      </Suspense>
     </PageLayout>
   )
 }
 
-function FeatureFlagsTableSkeleton() {
+function FeatureFlagsSkeleton() {
   return (
-    <div className="space-y-4">
-      {Array.from({ length: 5 }).map((_, i) => (
-        <div key={i} className="flex items-center space-x-4 p-4 border rounded-lg">
-          <Skeleton className="h-6 w-6 rounded" />
-          <div className="space-y-2 flex-1">
-            <Skeleton className="h-4 w-48" />
-            <Skeleton className="h-3 w-64" />
-          </div>
-          <Skeleton className="h-8 w-20" />
-        </div>
+    <div className="space-y-2">
+      {Array.from({ length: 8 }).map((_, i) => (
+        <Skeleton key={i} className="h-12 w-full" />
       ))}
     </div>
   )

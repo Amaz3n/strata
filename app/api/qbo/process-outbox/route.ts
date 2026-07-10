@@ -10,6 +10,7 @@ import {
 } from "@/lib/services/qbo-sync"
 import { refreshQBOConnectionsDueForKeepalive } from "@/lib/services/qbo-connection"
 import { logQBO } from "@/lib/services/qbo-logger"
+import { withCronRun } from "@/lib/services/job-runs"
 
 const CRON_SECRET = process.env.CRON_SECRET
 const MAX_RETRIES = 3
@@ -200,10 +201,5 @@ async function processQBOOutbox(request: NextRequest) {
   return NextResponse.json({ processed, failed, keepalive, recoveredStale })
 }
 
-export async function GET(request: NextRequest) {
-  return processQBOOutbox(request)
-}
-
-export async function POST(request: NextRequest) {
-  return processQBOOutbox(request)
-}
+export const GET = withCronRun("qbo-process-outbox", processQBOOutbox)
+export const POST = GET

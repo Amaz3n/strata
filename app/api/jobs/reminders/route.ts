@@ -4,8 +4,9 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { sendReminderEmail, sendReminderSMS } from "@/lib/services/mailer"
 import { generateSignedPayLink } from "@/lib/services/payments"
 import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
+import { withCronRun } from "@/lib/services/job-runs"
 
-export async function POST(request: NextRequest) {
+async function handler(request: NextRequest) {
   if (!isAuthorizedCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
@@ -145,4 +146,5 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ processed: reminders.length, sent: sentCount })
 }
 
+export const POST = withCronRun("reminders", handler)
 export const GET = POST

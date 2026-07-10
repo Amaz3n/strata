@@ -15,6 +15,7 @@ import {
   ClipboardList,
   Eye,
   AlertTriangle,
+  Camera,
 } from 'lucide-react'
 import type { DrawingPin } from '@/lib/services/drawing-markups'
 import type { PinEntityType, PinStatus } from '@/lib/validation/drawings'
@@ -73,6 +74,7 @@ const ENTITY_ICONS: Record<PinEntityType, typeof Wrench> = {
   daily_log: ClipboardList,
   observation: Eye,
   issue: AlertTriangle,
+  photo: Camera,
 }
 
 const ENTITY_LABELS: Record<PinEntityType, string> = {
@@ -83,6 +85,7 @@ const ENTITY_LABELS: Record<PinEntityType, string> = {
   daily_log: 'Daily Log',
   observation: 'Observation',
   issue: 'Issue',
+  photo: 'Photo',
 }
 
 const STATUS_LABELS: Record<PinStatus, string> = {

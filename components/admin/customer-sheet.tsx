@@ -14,7 +14,18 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Building2, Users, Calendar, CreditCard, Eye, Edit } from "@/components/icons"
+import { Building2, Users, Calendar, Eye, Edit, Activity } from "@/components/icons"
+import { formatDistanceToNow } from "date-fns"
+
+interface CustomerHealth {
+  lastActivityAt: string | null
+  activeMemberCount: number
+  projectCount: number
+  eventsLast14d: number
+  storageBytes: number
+  qboStatus: string | null
+  atRisk: boolean
+}
 
 interface Customer {
   id: string
@@ -25,6 +36,7 @@ interface Customer {
   billingEmail: string | null
   memberCount: number
   createdAt: string
+  health: CustomerHealth
   subscription?: {
     status: string
     planName: string | null
@@ -33,6 +45,13 @@ interface Customer {
     interval: string | null
     currentPeriodEnd: string | null
   } | null
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return "0 MB"
+  const gb = bytes / (1024 * 1024 * 1024)
+  if (gb >= 1) return `${gb.toFixed(2)} GB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 interface CustomerSheetProps {
@@ -136,9 +155,9 @@ export function CustomerSheet({ customer, open, onOpenChange, onUpdateCustomer }
                 <Eye className="h-4 w-4" />
                 Details
               </TabsTrigger>
-              <TabsTrigger value="subscription" className="flex items-center gap-2">
-                <CreditCard className="h-4 w-4" />
-                Subscription
+              <TabsTrigger value="health" className="flex items-center gap-2">
+                <Activity className="h-4 w-4" />
+                Health
               </TabsTrigger>
             </TabsList>
 
@@ -363,23 +382,93 @@ export function CustomerSheet({ customer, open, onOpenChange, onUpdateCustomer }
               </TabsContent>
 
 
-              <TabsContent value="subscription" className="h-full m-0">
+              <TabsContent value="health" className="h-full m-0 overflow-y-auto">
                 <div className="px-6 py-4 space-y-6">
                   <Card>
                     <CardHeader className="pb-3">
-                      <CardTitle className="text-base flex items-center gap-2">
-                        <CreditCard className="h-4 w-4" />
-                        Subscription Management
+                      <CardTitle className="text-base flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Activity className="h-4 w-4" />
+                          Account Health
+                        </div>
+                        {customer.health.atRisk && (
+                          <Badge variant="destructive" className="rounded-none text-[11px]">
+                            At risk
+                          </Badge>
+                        )}
                       </CardTitle>
                       <CardDescription>
-                        Manage billing and subscription settings
+                        Usage signals for this organization. At risk = paying customer with no
+                        activity in 14 days.
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
-                      <div className="text-center py-8 text-muted-foreground">
-                        <CreditCard className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                        <p className="text-sm">Subscription management features</p>
-                        <p className="text-xs mt-1">Coming soon</p>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            Last Activity
+                          </Label>
+                          <p className="text-sm font-medium mt-1">
+                            {customer.health.lastActivityAt
+                              ? formatDistanceToNow(new Date(customer.health.lastActivityAt), { addSuffix: true })
+                              : "No activity recorded"}
+                          </p>
+                        </div>
+                        <div>
+                          <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            Events (14d)
+                          </Label>
+                          <p className="text-sm font-medium tabular-nums mt-1">{customer.health.eventsLast14d}</p>
+                        </div>
+                      </div>
+
+                      <Separator />
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            Active Members
+                          </Label>
+                          <p className="text-sm font-medium tabular-nums mt-1">
+                            {customer.health.activeMemberCount} of {customer.memberCount}
+                          </p>
+                        </div>
+                        <div>
+                          <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            Projects
+                          </Label>
+                          <p className="text-sm font-medium tabular-nums mt-1">{customer.health.projectCount}</p>
+                        </div>
+                      </div>
+
+                      <Separator />
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            File Storage
+                          </Label>
+                          <p className="text-sm font-medium tabular-nums mt-1">{formatBytes(customer.health.storageBytes)}</p>
+                        </div>
+                        <div>
+                          <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            QuickBooks
+                          </Label>
+                          <div className="mt-1">
+                            {customer.health.qboStatus ? (
+                              <Badge
+                                variant={customer.health.qboStatus === "connected" ? "secondary" : "destructive"}
+                                className="rounded-none text-[11px]"
+                              >
+                                {customer.health.qboStatus}
+                              </Badge>
+                            ) : (
+                              <Badge variant="outline" className="rounded-none text-[11px]">
+                                Not connected
+                              </Badge>
+                            )}
+                          </div>
+                        </div>
                       </div>
                     </CardContent>
                   </Card>

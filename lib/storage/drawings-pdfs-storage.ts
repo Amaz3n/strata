@@ -2,7 +2,15 @@ import "server-only"
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { Readable } from "node:stream"
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3"
+import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
+  CreateMultipartUploadCommand,
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+  UploadPartCommand,
+} from "@aws-sdk/client-s3"
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 
 import { ensureOrgScopedPath } from "@/lib/storage/files-storage"
@@ -101,6 +109,106 @@ export async function createDrawingPdfUploadUrl(params: {
   })
 
   return { storagePath, uploadUrl, provider }
+}
+
+export async function createDrawingPdfMultipartUpload(params: {
+  orgId: string
+  path: string
+  contentType: string
+  cacheControl?: string
+}): Promise<{ storagePath: string; uploadId: string; provider: PdfsStorageProvider }> {
+  const { orgId, contentType } = params
+  const provider = getProvider()
+  const storagePath = ensureOrgScopedPath(orgId, params.path)
+
+  const client = getR2Client()
+  const result = await client.send(
+    new CreateMultipartUploadCommand({
+      Bucket: R2_BUCKET,
+      Key: normalizeKey(storagePath),
+      ContentType: contentType,
+      CacheControl: params.cacheControl ?? "private, max-age=3600",
+    })
+  )
+
+  if (!result.UploadId) {
+    throw new Error("R2 did not return a multipart upload id")
+  }
+
+  return { storagePath, uploadId: result.UploadId, provider }
+}
+
+export async function createDrawingPdfMultipartPartUrl(params: {
+  orgId: string
+  path: string
+  uploadId: string
+  partNumber: number
+  expiresIn?: number
+}): Promise<{ uploadUrl: string }> {
+  const { orgId } = params
+  getProvider()
+  const storagePath = ensureOrgScopedPath(orgId, params.path)
+
+  const client = getR2Client()
+  const command = new UploadPartCommand({
+    Bucket: R2_BUCKET,
+    Key: normalizeKey(storagePath),
+    UploadId: params.uploadId,
+    PartNumber: params.partNumber,
+  })
+  const uploadUrl = await getSignedUrl(client, command, {
+    expiresIn: params.expiresIn ?? 900,
+  })
+  return { uploadUrl }
+}
+
+export async function completeDrawingPdfMultipartUpload(params: {
+  orgId: string
+  path: string
+  uploadId: string
+  parts: Array<{ partNumber: number; etag: string }>
+}): Promise<{ storagePath: string }> {
+  const { orgId } = params
+  getProvider()
+  const storagePath = ensureOrgScopedPath(orgId, params.path)
+
+  const client = getR2Client()
+  await client.send(
+    new CompleteMultipartUploadCommand({
+      Bucket: R2_BUCKET,
+      Key: normalizeKey(storagePath),
+      UploadId: params.uploadId,
+      MultipartUpload: {
+        Parts: params.parts
+          .slice()
+          .sort((a, b) => a.partNumber - b.partNumber)
+          .map((part) => ({
+            PartNumber: part.partNumber,
+            ETag: part.etag,
+          })),
+      },
+    })
+  )
+  return { storagePath }
+}
+
+export async function abortDrawingPdfMultipartUpload(params: {
+  orgId: string
+  path: string
+  uploadId: string
+}): Promise<void> {
+  const { orgId } = params
+  getProvider()
+  const storagePath = ensureOrgScopedPath(orgId, params.path)
+
+  const client = getR2Client()
+  await client.send(
+    new AbortMultipartUploadCommand({
+      Bucket: R2_BUCKET,
+      Key: normalizeKey(storagePath),
+      UploadId: params.uploadId,
+    })
+  )
 }
 
 export async function uploadDrawingPdfObject(params: {

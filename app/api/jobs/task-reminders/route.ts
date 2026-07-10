@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 
 import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
+import { withCronRun } from "@/lib/services/job-runs"
 import { getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
@@ -26,7 +27,7 @@ function one<T>(value: T | T[] | null | undefined): T | null {
 // Frequent sweep: email each task creator their due self-reminders, then stamp
 // reminder_sent_at so a reminder fires exactly once. Runs every 15 min so it can
 // land near the chosen time. Vercel Cron issues GET, so GET === POST below.
-export async function POST(request: NextRequest) {
+async function handler(request: NextRequest) {
   if (!isAuthorizedCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
@@ -118,4 +119,5 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ processed: tasks.length, sent })
 }
 
+export const POST = withCronRun("task-reminders", handler)
 export const GET = POST

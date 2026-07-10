@@ -128,7 +128,7 @@ export function PlatformAiSheet({ initialConfigs, aiSearchAccess, canManage }: P
         >
           <SheetHeader className="border-b bg-muted/30 px-6 pb-4 pt-6">
             <div className="flex items-center gap-2">
-              <Sparkles className="h-4 w-4 text-amber-500" />
+              <Sparkles className="h-4 w-4 text-warning" />
               <SheetTitle>AI configuration</SheetTitle>
             </div>
             <SheetDescription>Model routing and per-org access for AI-powered surfaces.</SheetDescription>

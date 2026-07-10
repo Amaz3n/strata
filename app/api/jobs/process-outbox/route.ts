@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createHash } from "node:crypto"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { withCronRun } from "@/lib/services/job-runs"
 import {
   sendEmail,
   getOrgSenderEmail,
@@ -278,7 +279,7 @@ async function createVisibleTestImage(orgId: string, supabase: any) {
 }
 
 // Temporary test endpoint to queue tile generation for all sheets that need it
-export async function GET(request: NextRequest) {
+async function handleGet(request: NextRequest) {
   // Vercel Cron invokes this route with GET in production — run the outbox
   // processor. (The block below is a local-dev-only debug surface.)
   if (process.env.NODE_ENV === "production") {
@@ -585,9 +586,8 @@ async function processOutboxQueue(request: NextRequest) {
   )
 }
 
-export async function POST(request: NextRequest) {
-  return processOutboxQueue(request)
-}
+export const GET = withCronRun("process-outbox", handleGet)
+export const POST = withCronRun("process-outbox", processOutboxQueue)
 
 async function deliverPushJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
   if (!isApnsConfigured()) return // env-gated: nothing to do until APNs is configured

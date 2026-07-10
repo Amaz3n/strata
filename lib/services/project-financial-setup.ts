@@ -1,3 +1,4 @@
+import { cache } from "react"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { z } from "zod"
 
@@ -895,7 +896,14 @@ export async function assertApprovedCostsMeetProjectFinancialRules(args: {
   return setup
 }
 
+// Request-cached: the financials pages and their tab loaders each check setup
+// status; memoizing on (projectId, resolvedOrgId) collapses them to one run.
+const getProjectFinancialSetupStatusCached = cache(async (projectId: string, orgId: string) => {
+  const { supabase } = await requireOrgContext(orgId)
+  return getProjectFinancialSetupStatus({ supabase, orgId, projectId })
+})
+
 export async function getProjectFinancialSetupStatusForProject(projectId: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
-  return getProjectFinancialSetupStatus({ supabase, orgId: resolvedOrgId, projectId })
+  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  return getProjectFinancialSetupStatusCached(projectId, resolvedOrgId)
 }

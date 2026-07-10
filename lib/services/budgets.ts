@@ -1,3 +1,4 @@
+import { cache } from "react"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { z } from "zod"
 
@@ -542,16 +543,25 @@ export async function listVarianceAlertsForProject(projectId: string, orgId?: st
   return data ?? []
 }
 
-export async function getBudgetWithActuals(projectId: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+// Request-cached: the financials tabs compute this bundle from several loaders
+// in one render; memoizing on (projectId, resolvedOrgId) makes it run once.
+const getBudgetWithActualsCached = cache(async (projectId: string, orgId: string) => {
+  const { supabase, userId } = await requireOrgContext(orgId)
   await requireBudgetAuth({
     permission: "budget.read",
     userId,
-    orgId: resolvedOrgId,
+    orgId,
     projectId,
     supabase,
   })
-  return getBudgetWithActualsInternal(supabase, projectId, resolvedOrgId)
+  return getBudgetWithActualsInternal(supabase, projectId, orgId)
+})
+
+export async function getBudgetWithActuals(projectId: string, orgId?: string) {
+  // Resolve the org before keying the cache so callers that omit orgId share
+  // the same entry as callers that pass it.
+  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  return getBudgetWithActualsCached(projectId, resolvedOrgId)
 }
 
 export type BudgetBucketChangeOrder = {
@@ -691,13 +701,121 @@ async function getBudgetWithActualsInternal(
 ) {
   // When a project disables cost codes, budget lines themselves are the cost
   // bucket: actuals/commitments group by budget_line_id instead of cost_code_id.
-  const { data: settingsRow } = await supabase
-    .from("project_financial_settings")
-    .select("cost_codes_enabled")
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .maybeSingle()
-  const costCodesEnabled = settingsRow?.cost_codes_enabled ?? true
+  // Two query phases: settings/budget/parent ids first, then the line tables
+  // filtered by those ids. Everything within a phase is independent.
+  const [
+    settingsResult,
+    budgetResult,
+    revisionLinesResult,
+    progressResult,
+    commitmentIds,
+    invoiceIds,
+    changeOrderIds,
+    pendingBillIds,
+    approvedCommitmentBillIds,
+    approvedCommitmentChangeOrderIds,
+    pendingCommitmentChangeOrderIds,
+  ] = await Promise.all([
+    supabase
+      .from("project_financial_settings")
+      .select("cost_codes_enabled")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .maybeSingle(),
+    supabase
+      .from("budgets")
+      .select(
+        `
+      *,
+      lines:budget_lines(
+        id, cost_code_id, description, amount_cents, sort_order, metadata,
+        cost_code:cost_codes(id, code, name, category)
+      )
+    `,
+      )
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .order("version", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from("budget_revision_lines")
+      .select("cost_code_id, budget_line_id, amount_cents, allowance_draw_cents, revision:budget_revisions!inner(project_id, status)")
+      .eq("org_id", orgId)
+      .eq("revision.project_id", projectId)
+      .eq("revision.status", "posted"),
+    supabase
+      .from("project_cost_code_progress")
+      .select("cost_code_id, percent_complete, estimate_remaining_cents")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId),
+    selectIds(
+      supabase
+        .from("commitments")
+        .select("id")
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .eq("status", "approved"),
+      "commitments",
+    ),
+    selectIds(
+      supabase
+        .from("invoices")
+        .select("id")
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .in("status", ["sent", "partial", "paid", "overdue"]),
+      "invoices",
+    ),
+    selectIds(
+      supabase
+        .from("change_orders")
+        .select("id")
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .eq("status", "approved"),
+      "change orders",
+    ),
+    selectIds(
+      supabase
+        .from("vendor_bills")
+        .select("id")
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .eq("status", "pending"),
+      "pending vendor bills",
+    ),
+    selectIds(
+      supabase
+        .from("vendor_bills")
+        .select("id")
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .in("status", ["approved", "partial", "paid"])
+        .not("commitment_id", "is", null),
+      "approved commitment bills",
+    ),
+    selectIds(
+      supabase
+        .from("commitment_change_orders")
+        .select("id")
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .eq("status", "approved"),
+      "approved commitment change orders",
+    ),
+    selectIds(
+      supabase
+        .from("commitment_change_orders")
+        .select("id")
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .eq("status", "sent"),
+      "pending commitment change orders",
+    ),
+  ])
+
+  const costCodesEnabled = settingsResult.data?.cost_codes_enabled ?? true
   const groupBy = costCodesEnabled ? "cost_code" : "budget_line"
 
   // Bucket key for a row: the cost code (codes on) or the budget line (codes off).
@@ -705,208 +823,117 @@ async function getBudgetWithActualsInternal(
   const bucketKey = (row: { cost_code_id?: string | null; budget_line_id?: string | null }) =>
     (costCodesEnabled ? row.cost_code_id : row.budget_line_id) ?? "uncoded"
 
-  const { data: budget, error: budgetError } = await supabase
-    .from("budgets")
-    .select(
-      `
-      *,
-      lines:budget_lines(
-        id, cost_code_id, description, amount_cents, sort_order, metadata,
-        cost_code:cost_codes(id, code, name, category)
-      )
-    `,
-    )
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .order("version", { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
+  const { data: budget, error: budgetError } = budgetResult
   if (budgetError) {
     throw new Error(`Failed to get budget: ${budgetError.message}`)
   }
   if (!budget) return null
 
-  const commitmentIds = await selectIds(
-    supabase
-      .from("commitments")
-      .select("id")
-      .eq("org_id", orgId)
-      .eq("project_id", projectId)
-      .eq("status", "approved"),
-    "commitments",
-  )
+  const { data: revisionLines, error: revisionLinesError } = revisionLinesResult
+  if (revisionLinesError) {
+    throw new Error(`Failed to load budget revisions: ${revisionLinesError.message}`)
+  }
+  const { data: progressList } = progressResult
 
-  const invoiceIds = await selectIds(
-    supabase
-      .from("invoices")
-      .select("id")
-      .eq("org_id", orgId)
-      .eq("project_id", projectId)
-      .in("status", ["sent", "partial", "paid", "overdue"]),
-    "invoices",
-  )
-
-  const changeOrderIds = await selectIds(
-    supabase
-      .from("change_orders")
-      .select("id")
-      .eq("org_id", orgId)
-      .eq("project_id", projectId)
-      .eq("status", "approved"),
-    "change orders",
-  )
-
-  const pendingBillIds = await selectIds(
-    supabase
-      .from("vendor_bills")
-      .select("id")
-      .eq("org_id", orgId)
-      .eq("project_id", projectId)
-      .eq("status", "pending"),
-    "pending vendor bills",
-  )
-
-  const approvedCommitmentBillIds = await selectIds(
-    supabase
-      .from("vendor_bills")
-      .select("id")
-      .eq("org_id", orgId)
-      .eq("project_id", projectId)
-      .in("status", ["approved", "partial", "paid"])
-      .not("commitment_id", "is", null),
-    "approved commitment bills",
-  )
-
-  const approvedCommitmentChangeOrderIds = await selectIds(
-    supabase
-      .from("commitment_change_orders")
-      .select("id")
-      .eq("org_id", orgId)
-      .eq("project_id", projectId)
-      .eq("status", "approved"),
-    "approved commitment change orders",
-  )
-
-  const pendingCommitmentChangeOrderIds = await selectIds(
-    supabase
-      .from("commitment_change_orders")
-      .select("id")
-      .eq("org_id", orgId)
-      .eq("project_id", projectId)
-      .eq("status", "sent"),
-    "pending commitment change orders",
-  )
-
-  const { data: commitments, error: commitmentsError } =
+  const [
+    commitmentsResult,
+    jobCostActuals,
+    invoiceLinesResult,
+    pendingBillLinesResult,
+    approvedCommitmentBillLinesResult,
+    approvedCommitmentCoLinesResult,
+    pendingCommitmentCoLinesResult,
+    coLinesResult,
+  ] = await Promise.all([
     commitmentIds.length === 0
       ? { data: [], error: null }
-      : await supabase
+      : supabase
           .from("commitment_lines")
           .select("cost_code_id, budget_line_id, unit_cost_cents, quantity")
           .eq("org_id", orgId)
-          .in("commitment_id", commitmentIds)
+          .in("commitment_id", commitmentIds),
+    getProjectJobCostActualsByCostCode({ projectId, orgId, supabase, groupBy }),
+    invoiceIds.length === 0
+      ? { data: [], error: null }
+      : supabase
+          .from("invoice_lines")
+          .select("cost_code_id, budget_line_id, unit_price_cents, quantity")
+          .eq("org_id", orgId)
+          .in("invoice_id", invoiceIds),
+    pendingBillIds.length === 0
+      ? { data: [], error: null }
+      : supabase
+          .from("bill_lines")
+          .select("cost_code_id, budget_line_id, unit_cost_cents, quantity")
+          .eq("org_id", orgId)
+          .in("bill_id", pendingBillIds),
+    approvedCommitmentBillIds.length === 0
+      ? { data: [], error: null }
+      : supabase
+          .from("bill_lines")
+          .select("cost_code_id, budget_line_id, unit_cost_cents, quantity")
+          .eq("org_id", orgId)
+          .in("bill_id", approvedCommitmentBillIds),
+    approvedCommitmentChangeOrderIds.length === 0
+      ? { data: [], error: null }
+      : supabase
+          .from("commitment_change_order_lines")
+          .select("cost_code_id, budget_line_id, amount_cents, unit_cost_cents, quantity")
+          .eq("org_id", orgId)
+          .in("commitment_change_order_id", approvedCommitmentChangeOrderIds),
+    pendingCommitmentChangeOrderIds.length === 0
+      ? { data: [], error: null }
+      : supabase
+          .from("commitment_change_order_lines")
+          .select("cost_code_id, budget_line_id, amount_cents, unit_cost_cents, quantity")
+          .eq("org_id", orgId)
+          .in("commitment_change_order_id", pendingCommitmentChangeOrderIds),
+    changeOrderIds.length === 0
+      ? { data: [], error: null }
+      : supabase
+          .from("change_order_lines")
+          .select("cost_code_id, budget_line_id, unit_cost_cents, quantity, metadata")
+          .eq("org_id", orgId)
+          .in("change_order_id", changeOrderIds),
+  ])
 
+  const { data: commitments, error: commitmentsError } = commitmentsResult
   if (commitmentsError) {
     throw new Error(`Failed to load commitments: ${commitmentsError.message}`)
   }
 
-  const jobCostActuals = await getProjectJobCostActualsByCostCode({ projectId, orgId, supabase, groupBy })
-
-  const { data: invoiceLines, error: invoiceLinesError } =
-    invoiceIds.length === 0
-      ? { data: [], error: null }
-      : await supabase
-          .from("invoice_lines")
-          .select("cost_code_id, budget_line_id, unit_price_cents, quantity")
-          .eq("org_id", orgId)
-          .in("invoice_id", invoiceIds)
-
+  const { data: invoiceLines, error: invoiceLinesError } = invoiceLinesResult
   if (invoiceLinesError) {
     throw new Error(`Failed to load invoice lines: ${invoiceLinesError.message}`)
   }
 
-  const { data: pendingBillLines, error: pendingBillLinesError } =
-    pendingBillIds.length === 0
-      ? { data: [], error: null }
-      : await supabase
-          .from("bill_lines")
-          .select("cost_code_id, budget_line_id, unit_cost_cents, quantity")
-          .eq("org_id", orgId)
-          .in("bill_id", pendingBillIds)
-
+  const { data: pendingBillLines, error: pendingBillLinesError } = pendingBillLinesResult
   if (pendingBillLinesError) {
     throw new Error(`Failed to load pending bill exposure: ${pendingBillLinesError.message}`)
   }
 
   const { data: approvedCommitmentBillLines, error: approvedCommitmentBillLinesError } =
-    approvedCommitmentBillIds.length === 0
-      ? { data: [], error: null }
-      : await supabase
-          .from("bill_lines")
-          .select("cost_code_id, budget_line_id, unit_cost_cents, quantity")
-          .eq("org_id", orgId)
-          .in("bill_id", approvedCommitmentBillIds)
-
+    approvedCommitmentBillLinesResult
   if (approvedCommitmentBillLinesError) {
     throw new Error(`Failed to load commitment bill burn-down: ${approvedCommitmentBillLinesError.message}`)
   }
 
   const { data: approvedCommitmentCoLines, error: approvedCommitmentCoLinesError } =
-    approvedCommitmentChangeOrderIds.length === 0
-      ? { data: [], error: null }
-      : await supabase
-          .from("commitment_change_order_lines")
-          .select("cost_code_id, budget_line_id, amount_cents, unit_cost_cents, quantity")
-          .eq("org_id", orgId)
-          .in("commitment_change_order_id", approvedCommitmentChangeOrderIds)
-
+    approvedCommitmentCoLinesResult
   if (approvedCommitmentCoLinesError) {
     throw new Error(`Failed to load commitment change orders: ${approvedCommitmentCoLinesError.message}`)
   }
 
   const { data: pendingCommitmentCoLines, error: pendingCommitmentCoLinesError } =
-    pendingCommitmentChangeOrderIds.length === 0
-      ? { data: [], error: null }
-      : await supabase
-          .from("commitment_change_order_lines")
-          .select("cost_code_id, budget_line_id, amount_cents, unit_cost_cents, quantity")
-          .eq("org_id", orgId)
-          .in("commitment_change_order_id", pendingCommitmentChangeOrderIds)
-
+    pendingCommitmentCoLinesResult
   if (pendingCommitmentCoLinesError) {
     throw new Error(`Failed to load pending commitment exposure: ${pendingCommitmentCoLinesError.message}`)
   }
 
-  const { data: coLines, error: coLinesError } =
-    changeOrderIds.length === 0
-      ? { data: [], error: null }
-      : await supabase
-          .from("change_order_lines")
-          .select("cost_code_id, budget_line_id, unit_cost_cents, quantity, metadata")
-          .eq("org_id", orgId)
-          .in("change_order_id", changeOrderIds)
-
+  const { data: coLines, error: coLinesError } = coLinesResult
   if (coLinesError) {
     throw new Error(`Failed to load change order lines: ${coLinesError.message}`)
   }
-
-  const { data: revisionLines, error: revisionLinesError } = await supabase
-    .from("budget_revision_lines")
-    .select("cost_code_id, budget_line_id, amount_cents, allowance_draw_cents, revision:budget_revisions!inner(project_id, status)")
-    .eq("org_id", orgId)
-    .eq("revision.project_id", projectId)
-    .eq("revision.status", "posted")
-
-  if (revisionLinesError) {
-    throw new Error(`Failed to load budget revisions: ${revisionLinesError.message}`)
-  }
-
-  const { data: progressList } = await supabase
-    .from("project_cost_code_progress")
-    .select("cost_code_id, percent_complete, estimate_remaining_cents")
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
 
   const byCostCode = new Map<
     string,

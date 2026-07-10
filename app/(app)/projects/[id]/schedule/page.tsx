@@ -7,8 +7,6 @@ import { ProjectScheduleClient } from "./project-schedule-client"
 
 import { unwrapAction } from "@/lib/action-result"
 
-export const revalidate = 30 // Revalidate every 30 seconds for schedule updates
-
 interface ProjectSchedulePageProps {
   params: Promise<{ id: string }>
 }

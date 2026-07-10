@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from "next/server"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
+import { withCronRun } from "@/lib/services/job-runs"
 
-export async function POST(request: NextRequest) {
+async function handler(request: NextRequest) {
   if (!isAuthorizedCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
@@ -91,4 +92,5 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ applied })
 }
 
+export const POST = withCronRun("late-fees", handler)
 export const GET = POST

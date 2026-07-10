@@ -37,6 +37,16 @@ import {
 
 import { unwrapAction } from "@/lib/action-result"
 
+interface CustomerHealth {
+  lastActivityAt: string | null
+  activeMemberCount: number
+  projectCount: number
+  eventsLast14d: number
+  storageBytes: number
+  qboStatus: string | null
+  atRisk: boolean
+}
+
 interface Customer {
   id: string
   name: string
@@ -46,6 +56,7 @@ interface Customer {
   billingEmail: string | null
   memberCount: number
   createdAt: string
+  health: CustomerHealth
   subscription?: {
     id: string
     planCode: string | null
@@ -221,6 +232,7 @@ export function CustomersClient({
               <TableHead className="px-4 py-4 text-center">Plan</TableHead>
               <TableHead className="px-4 py-4 text-center">Amount</TableHead>
               <TableHead className="px-4 py-4 text-center">Members</TableHead>
+              <TableHead className="px-4 py-4 text-center">Last Active</TableHead>
               <TableHead className="px-4 py-4 text-center">Created</TableHead>
               <TableHead className="px-4 py-4">Actions</TableHead>
             </TableRow>
@@ -228,7 +240,7 @@ export function CustomersClient({
           <TableBody>
             {customers.length === 0 ? (
               <TableRow className="divide-x">
-                <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
+                <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
                   <div className="flex flex-col items-center gap-4">
                     <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                       <Users className="h-6 w-6" />
@@ -259,7 +271,14 @@ export function CustomersClient({
                         </AvatarFallback>
                       </Avatar>
                       <div>
-                        <div className="font-medium">{customer.name}</div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">{customer.name}</span>
+                          {customer.health.atRisk && (
+                            <Badge variant="destructive" className="rounded-none text-[10px] px-1.5 py-0">
+                              At risk
+                            </Badge>
+                          )}
+                        </div>
                         <div className="text-sm text-muted-foreground">
                           {customer.slug}
                         </div>
@@ -305,6 +324,13 @@ export function CustomersClient({
                     <div className="flex items-center justify-center gap-1">
                       <Users className="h-3 w-3" />
                       <span>{customer.memberCount}</span>
+                    </div>
+                  </TableCell>
+                  <TableCell className="px-4 py-4 text-center">
+                    <div className={customer.health.lastActivityAt ? "text-sm" : "text-sm text-muted-foreground"}>
+                      {customer.health.lastActivityAt
+                        ? formatDistanceToNow(new Date(customer.health.lastActivityAt), { addSuffix: true })
+                        : "No activity"}
                     </div>
                   </TableCell>
                   <TableCell className="px-4 py-4 text-center">
@@ -545,7 +571,7 @@ export function CustomersClient({
                 </div>
               </div>
 
-              <div className="border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
+              <div className="border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-foreground">
                 Use this for manual reconciliation only. It updates Arc's local subscription row; it does not create, cancel, or edit a Stripe subscription.
               </div>
 

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 
 import { runDueInvoiceSchedules } from "@/lib/services/invoice-schedules"
 import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
+import { withCronRun } from "@/lib/services/job-runs"
 
 // Vercel Cron sends GET; POST kept for manual triggering.
 async function handle(request: NextRequest) {
@@ -23,10 +24,5 @@ async function handle(request: NextRequest) {
   }
 }
 
-export async function GET(request: NextRequest) {
-  return handle(request)
-}
-
-export async function POST(request: NextRequest) {
-  return handle(request)
-}
+export const GET = withCronRun("invoice-schedules", handle)
+export const POST = GET

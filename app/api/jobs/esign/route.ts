@@ -4,6 +4,7 @@ import { createHmac, randomBytes } from "crypto"
 import { SignatureEmail } from "@/lib/emails/signature-email"
 import { buildUnifiedSigningUrl } from "@/lib/esign/unified-contracts"
 import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
+import { withCronRun } from "@/lib/services/job-runs"
 import { recordESignEvent } from "@/lib/services/esign-events"
 import { getOrgSenderEmail, renderEmailTemplate, sendEmail } from "@/lib/services/mailer"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -148,7 +149,7 @@ async function sendAutomaticReminders(supabase: any) {
   return { attempted, sent, failed }
 }
 
-export async function POST(request: NextRequest) {
+async function handler(request: NextRequest) {
   if (!isAuthorizedCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
@@ -230,4 +231,5 @@ export async function POST(request: NextRequest) {
 
 }
 
+export const POST = withCronRun("esign", handler)
 export const GET = POST

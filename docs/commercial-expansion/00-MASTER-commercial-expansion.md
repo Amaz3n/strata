@@ -18,11 +18,26 @@ tier). Later (NOT in these workstreams) we will expand to **production builders*
 | `commercial` | Arc Commercial | Commercial GCs | THIS gameplan set |
 | `production` | Arc Production | Production/tract builders | Future — design for, don't build |
 
-The tier is an **org-level posture flag**, not a fork. One codebase, one schema. The flag
-changes: terminology, defaults, which modules are surfaced in nav, and which billing modes
-are offered first. It must NEVER gate data access (a commercial org that flips to
-residential must lose nothing). Workstream 01 builds this flag; every later workstream
-consumes it.
+**Two-level posture model — this is load-bearing, get it right.** Many GCs do BOTH
+residential and commercial work in one company; they buy Arc once. Therefore:
+
+- **The PROJECT is the unit of posture.** `projects.property_type` (existing enum,
+  residential/commercial) decides everything inside a project workbench: terminology
+  (Client vs Owner), which modules appear in the project sidebar (meetings,
+  transmittals, safety…), and billing-mode defaults at financial setup. A mixed org
+  simply has projects of both types side by side.
+- **The ORG tier (`orgs.product_tier`) is only (a) the default posture for new
+  projects/prospects, (b) the vocabulary used on org-level surfaces (desks, org nav),
+  and (c) the marketing/packaging segment.** Arc / Arc Commercial / Arc Production are
+  how we position and onboard — NOT separate SKUs, NOT separate sign-ups, and NOT a
+  capability gate.
+- Neither level ever gates data access or blocks a route. Posture changes defaults and
+  visibility, never semantics. Any module can be enabled on any project regardless of
+  its type (visibility default ≠ availability).
+
+One codebase, one schema. Workstream 01 builds the flag, the posture resolver
+(`getProjectPosture()`), and the terminology helpers; every later workstream consumes
+them.
 
 **North-star pitch:** "Everything Procore does for a mid-size GC, plus real financials
 and QBO sync, at a price that doesn't require a committee." We win on: unified job-cost +
@@ -138,11 +153,13 @@ must not violate, plus expansion-specific additions:
     `TEAM_PERMISSION_OPTIONS` in `lib/services/team.ts` and enforced via
     `requirePermission()`. Follow the `<domain>.<verb>` naming (`budget.write`,
     `invoice.approve`).
-17. **Tier awareness (new rule, from workstream 01):** feature visibility by tier is
-    controlled ONLY through the helpers built in workstream 01
-    (`getOrgProductTier()`, `terminology()`, nav config). Never write
-    `if (org.product_tier === 'commercial')` inline in a component — always go through
-    the helpers so Production tier can slot in later.
+17. **Posture awareness (new rule, from workstream 01):** posture-dependent behavior is
+    controlled ONLY through the helpers built in workstream 01 —
+    `getProjectPosture(project, org)` inside project scope, `getOrgProductTier()` on
+    org-level surfaces, `terminology(posture)`, and the nav config. Never write
+    `if (org.product_tier === 'commercial')` or `property_type === ...` inline in a
+    component — always go through the helpers so mixed orgs work and Production can
+    slot in later.
 
 ## 5. How to execute a workstream (process contract)
 
@@ -192,8 +209,10 @@ When making ANY schema or naming decision in these workstreams:
 
 - Never bake "commercial" into a table or column name. It's `prime_sov_lines`, not
   `commercial_sov_lines`; `change_events`, not `commercial_pcos`.
-- Tier changes defaults and visibility, never semantics. A residential org can turn on
-  progress billing; a commercial org can use draws.
+- Posture changes defaults and visibility, never semantics. A residential project can
+  turn on progress billing; a commercial project can use draws. A mixed org runs both
+  kinds of projects under one subscription — nothing in these workstreams may assume
+  an org is homogeneous.
 - Keep the terminology map (01) as the single choke point for user-facing nouns, so
   Production can add its own (e.g., "Buyer" instead of "Owner", "Lot" context) by adding
   one map entry, not by another find-replace sweep.

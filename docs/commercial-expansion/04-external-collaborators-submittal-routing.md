@@ -27,8 +27,8 @@
   track, workstream 09). Reviewer seats ride `portal_access_tokens` +
   `external_portal_accounts` exactly like clients/subs.
 - No cross-org federation.
-- Decisions module untouched (it stays residential; commercial nav de-emphasizes it
-  via workstream 01 nav tiers).
+- Decisions module untouched (it stays residential; commercial-posture project
+  sidebars de-emphasize it via workstream 01's `postures` nav field).
 
 ## Read these files first
 
@@ -134,8 +134,10 @@ alter table public.submittals
   - Each step decision records reviewer identity (user or contact+token), timestamps,
     recordEvent/recordAudit.
 - Backward compatibility: submittals with zero steps keep today's single
-  `decideSubmittal` path untouched (residential orgs unaffected). Commercial-tier orgs
-  get a default 2-step template seeded.
+  `decideSubmittal` path untouched (residential projects unaffected). The org's default
+  workflow template applies to commercial-POSTURE projects (workstream 01
+  `getProjectPosture`); a 2-step default is seeded for orgs on commercial tier or when
+  their first commercial project is created.
 - **Ball-in-court derivation** (shared helper, also used by RFIs):
   submittal BIC = "Subcontractor (CompanyName)" before items submitted; the current
   step's role_label while in review; "—" when closed. Persist the label to

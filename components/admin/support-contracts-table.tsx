@@ -66,11 +66,9 @@ export async function SupportContractsTable() {
                     {contract.endsAt ? (
                       <div className="text-sm">
                         {new Date(contract.endsAt) > new Date() ? (
-                          <span className="text-green-600">
-                            {format(new Date(contract.endsAt), 'MMM d, yyyy')}
-                          </span>
+                          <span>{format(new Date(contract.endsAt), 'MMM d, yyyy')}</span>
                         ) : (
-                          <span className="text-red-600">
+                          <span className="text-destructive">
                             Expired {format(new Date(contract.endsAt), 'MMM d, yyyy')}
                           </span>
                         )}

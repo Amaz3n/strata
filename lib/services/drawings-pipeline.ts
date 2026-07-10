@@ -3,22 +3,31 @@ import "server-only"
 /**
  * Vercel-native drawings processing pipeline.
  *
- * Replaces the Cloud Run drawings worker. Jobs flow through the existing
- * `outbox` table (claimed atomically via the `claim_jobs` RPC) and are
- * processed inside the Next.js app:
+ * Jobs flow through the existing `outbox` table (claimed atomically via the
+ * `claim_jobs` RPC) and are processed inside the Next.js app:
  *
- *   process_drawing_set   -> split: count pages, extract text, upload one
- *                            single-page PDF per page, fan out page jobs
- *   process_drawing_page  -> render page (MuPDF WASM), detect title-block
- *                            metadata (regex + AI vision), create the draft
- *                            sheet/version, generate the tile pyramid inline
- *   generate_drawing_tiles-> backfill tiles for an existing sheet version
+ *   process_drawing_set     -> coordinator: count pages, fan out chunk jobs
+ *                              (small sets split inline to skip a queue hop)
+ *   split_drawing_chunk     -> split ~24 pages: extract text, graft one
+ *                              single-page PDF per page, fan out page jobs
+ *   process_drawing_page    -> render the page (MuPDF WASM), create the draft
+ *                              sheet/version, build thumbnail + tile pyramid
+ *                              inline (native libvips dzsave), queue vision
+ *                              enrichment when detection was weak
+ *   enrich_drawing_metadata -> AI-vision title-block extraction off the
+ *                              critical path; upgrades sheet metadata after
+ *                              the sheet is already viewable
+ *   generate_drawing_tiles  -> backfill tiles for a legacy sheet version
  *
- * Pages process independently, so a 100-sheet set fans out across
- * invocations instead of running one long sequential loop.
+ * Splitting is chunked so page-count scales with parallel function instances
+ * instead of one long single-threaded WASM loop, and every claimed job
+ * heartbeats `updated_at` so a dead runner's work is reclaimed in minutes.
  */
 
 import { createHash } from "node:crypto"
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import sharp from "sharp"
 
@@ -38,22 +47,35 @@ import { triggerDrawingsPipeline } from "@/lib/services/drawings-pipeline-trigge
 
 export const DRAWING_PIPELINE_JOB_TYPES = [
   "process_drawing_set",
+  "split_drawing_chunk",
   "process_drawing_page",
+  "enrich_drawing_metadata",
   "generate_drawing_tiles",
+  "backfill_drawing_page_text",
 ] as const
 
 const SHEET_NUMBER_MAX_LENGTH = 50
 const SHEET_TITLE_MAX_LENGTH = 255
 const PAGE_TEXT_PAYLOAD_MAX_CHARS = 4000
-const RENDER_DPI = Number.parseInt(process.env.DRAWINGS_TILE_RENDER_DPI ?? "96", 10)
+const RENDER_DPI = Number.parseInt(process.env.DRAWINGS_TILE_RENDER_DPI ?? "150", 10)
 const TILE_SIZE = Number.parseInt(process.env.DRAWINGS_TILE_SIZE ?? "512", 10)
-const TILE_FORMAT = "png"
+// New pyramids are WebP (the viewer reads the format from the manifest, so
+// existing PNG pyramids keep working). Line art compresses far smaller.
+const TILE_FORMAT = "webp"
+const TILE_WEBP_QUALITY = 85
 const TILE_UPLOAD_CONCURRENCY = Number.parseInt(
-  process.env.DRAWINGS_TILE_UPLOAD_CONCURRENCY ?? "12",
+  process.env.DRAWINGS_TILE_UPLOAD_CONCURRENCY ?? "24",
   10,
 )
+// Pages per split_drawing_chunk job. Splitting is single-threaded WASM CPU,
+// so throughput comes from running many chunks on parallel instances.
+const SPLIT_CHUNK_SIZE = 24
 const MAX_JOB_RETRIES = 3
-const STALE_PROCESSING_MINUTES = 15
+// Claimed jobs heartbeat updated_at every HEARTBEAT_SECONDS, so anything
+// older than STALE_PROCESSING_MINUTES belongs to a dead runner.
+const HEARTBEAT_SECONDS = 45
+const STALE_PROCESSING_MINUTES = 3
+const RUNNER_KICK_CAP = 8
 
 const DISCIPLINE_CODES = new Set([
   "A", "S", "M", "E", "P", "C", "L", "I", "FP", "G", "T", "SP", "D", "X",
@@ -181,7 +203,7 @@ export async function runDrawingsPipeline(options: { deadlineMs?: number } = {})
   while (Date.now() < deadline) {
     const { data, error } = await supabase.rpc("claim_jobs", {
       job_types: [...DRAWING_PIPELINE_JOB_TYPES],
-      limit_value: 3,
+      limit_value: 4,
     })
 
     if (error) {
@@ -240,16 +262,37 @@ async function resetStaleProcessingJobs(supabase: SupabaseClient) {
 
 async function processJob(supabase: SupabaseClient, job: ClaimedJob): Promise<boolean> {
   const startedAt = Date.now()
+  // Heartbeat updated_at while working so the stale-job reclaim can use a
+  // short window without resurrecting jobs that are legitimately still running.
+  const heartbeat = setInterval(() => {
+    supabase
+      .from("outbox")
+      .update({ updated_at: new Date().toISOString() })
+      .eq("id", job.job_id)
+      .then(({ error }) => {
+        if (error) console.warn(`[drawings-pipeline] Heartbeat failed for #${job.job_id}:`, error.message)
+      })
+  }, HEARTBEAT_SECONDS * 1000)
+
   try {
     switch (job.job_type) {
       case "process_drawing_set":
         await handleProcessDrawingSet(supabase, job)
         break
+      case "split_drawing_chunk":
+        await handleSplitDrawingChunk(supabase, job)
+        break
       case "process_drawing_page":
         await handleProcessDrawingPage(supabase, job)
         break
+      case "enrich_drawing_metadata":
+        await handleEnrichDrawingMetadata(supabase, job)
+        break
       case "generate_drawing_tiles":
         await handleGenerateDrawingTiles(supabase, job)
+        break
+      case "backfill_drawing_page_text":
+        await handleBackfillDrawingPageText(supabase, job)
         break
       default:
         throw new Error(`Unknown drawings job type: ${job.job_type}`)
@@ -290,14 +333,22 @@ async function processJob(supabase: SupabaseClient, job: ClaimedJob): Promise<bo
       await markRevisionFailed(supabase, job, message)
     }
     return false
+  } finally {
+    clearInterval(heartbeat)
   }
 }
+
+const REVISION_CRITICAL_JOB_TYPES = new Set([
+  "process_drawing_set",
+  "split_drawing_chunk",
+  "process_drawing_page",
+])
 
 async function markRevisionFailed(supabase: SupabaseClient, job: ClaimedJob, message: string) {
   const revisionId =
     typeof job.payload?.draftRevisionId === "string" ? job.payload.draftRevisionId : null
   if (!revisionId) return
-  if (job.job_type !== "process_drawing_set" && job.job_type !== "process_drawing_page") return
+  if (!REVISION_CRITICAL_JOB_TYPES.has(job.job_type)) return
 
   try {
     await supabase
@@ -372,15 +423,15 @@ async function handleProcessDrawingSet(supabase: SupabaseClient, job: ClaimedJob
     draftRevisionId = created.id as string
   }
 
-  // If this revision already fanned out page jobs (retry of a partially
-  // completed split), don't fan out twice.
-  const { count: existingPageJobs } = await supabase
+  // If this revision already fanned out chunk/page jobs (retry of a partially
+  // completed coordinator), don't fan out twice.
+  const { count: existingFanout } = await supabase
     .from("outbox")
     .select("id", { count: "exact", head: true })
-    .eq("job_type", "process_drawing_page")
+    .in("job_type", ["split_drawing_chunk", "process_drawing_page"])
     .contains("payload", { draftRevisionId })
-  if ((existingPageJobs ?? 0) > 0) {
-    console.log(`[drawings-pipeline] Split already fanned out for revision ${draftRevisionId}, skipping`)
+  if ((existingFanout ?? 0) > 0) {
+    console.log(`[drawings-pipeline] Fan-out already exists for revision ${draftRevisionId}, skipping`)
     return
   }
 
@@ -426,50 +477,223 @@ async function handleProcessDrawingSet(supabase: SupabaseClient, job: ClaimedJob
   }
 
   const setTitle = (drawingSet.title as string) || "Drawings"
-  const usedSheetNumbers = new Set<string>()
-  const pageJobs: Array<Record<string, any>> = []
+  const splitBase = {
+    orgId,
+    projectId,
+    drawingSetId,
+    draftRevisionId,
+    sourceFileId,
+    sourceHash,
+    pageCount,
+    setTitle,
+    targetSheet,
+    aiVision: payload.aiVision ?? null,
+  }
 
-  // Split pages in chunks: grafting is synchronous CPU, but the per-page PDF
-  // uploads run in parallel within each chunk (bounded so a huge set doesn't
-  // hold every page buffer in memory at once).
+  if (pageCount <= SPLIT_CHUNK_SIZE) {
+    // Small sets split inline — one less queue hop between upload and pixels.
+    try {
+      await splitChunkPages(supabase, {
+        ...splitBase,
+        chunkIndex: 0,
+        chunkStart: 0,
+        chunkEnd: pageCount,
+        doc,
+        mupdf,
+      })
+    } finally {
+      doc.destroy?.()
+    }
+    return
+  }
+  doc.destroy?.()
+
+  // Chunked fan-out: splitting is single-threaded WASM CPU, so a 300-page set
+  // becomes ~13 chunk jobs on parallel instances instead of one long loop.
+  const chunkJobs: Array<Record<string, unknown>> = []
+  for (
+    let chunkStart = 0, chunkIndex = 0;
+    chunkStart < pageCount;
+    chunkStart += SPLIT_CHUNK_SIZE, chunkIndex++
+  ) {
+    chunkJobs.push({
+      org_id: orgId,
+      job_type: "split_drawing_chunk",
+      payload: {
+        ...splitBase,
+        chunkIndex,
+        chunkStart,
+        chunkEnd: Math.min(chunkStart + SPLIT_CHUNK_SIZE, pageCount),
+      },
+      run_at: new Date().toISOString(),
+    })
+  }
+
+  const { error: fanoutError } = await supabase.from("outbox").insert(chunkJobs)
+  if (fanoutError) {
+    throw new Error(`Failed to queue split chunks: ${fanoutError.message}`)
+  }
+
+  console.log(
+    `[drawings-pipeline] Revision ${draftRevisionId}: ${chunkJobs.length} split chunks queued for ${pageCount} pages (hash ${sourceHash})`,
+  )
+
+  await kickRunners(chunkJobs.length)
+}
+
+// ============================================================================
+// Job: split_drawing_chunk (extract text + graft page PDFs for a page range)
+// ============================================================================
+
+interface SplitChunkInput {
+  orgId: string
+  projectId: string
+  drawingSetId: string
+  draftRevisionId: string
+  sourceFileId: string
+  sourceHash: string
+  pageCount: number
+  setTitle: string
+  targetSheet: { id: string; sheet_number: string; sheet_title?: string | null; discipline?: string | null } | null
+  aiVision: unknown
+  chunkIndex: number
+  chunkStart: number
+  chunkEnd: number
+}
+
+async function handleSplitDrawingChunk(supabase: SupabaseClient, job: ClaimedJob) {
+  const payload = job.payload ?? {}
+  const orgId = requireString(payload.orgId ?? job.org_id, "orgId")
+  const draftRevisionId = requireString(payload.draftRevisionId, "draftRevisionId")
+  const sourceFileId = requireString(payload.sourceFileId, "sourceFileId")
+  const chunkIndex = requireNumber(payload.chunkIndex, "chunkIndex")
+
+  // If the draft was discarded while chunks were queued, exit quietly.
+  const { data: revision } = await supabase
+    .from("drawing_revisions")
+    .select("id")
+    .eq("id", draftRevisionId)
+    .eq("org_id", orgId)
+    .maybeSingle()
+  if (!revision) {
+    console.log(`[drawings-pipeline] Revision ${draftRevisionId} gone; skipping chunk ${chunkIndex}`)
+    return
+  }
+
+  // Idempotency: page jobs already fanned out for this chunk (retry after a
+  // late failure) — don't fan out twice.
+  const { count: existingPageJobs } = await supabase
+    .from("outbox")
+    .select("id", { count: "exact", head: true })
+    .eq("job_type", "process_drawing_page")
+    .contains("payload", { draftRevisionId, chunkIndex })
+  if ((existingPageJobs ?? 0) > 0) {
+    console.log(`[drawings-pipeline] Chunk ${chunkIndex} already fanned out for revision ${draftRevisionId}`)
+    return
+  }
+
+  const { data: fileRecord, error: fileError } = await supabase
+    .from("files")
+    .select("storage_path")
+    .eq("id", sourceFileId)
+    .single()
+  if (fileError || !fileRecord?.storage_path) {
+    throw new Error(`Source file not found: ${fileError?.message ?? sourceFileId}`)
+  }
+
+  const pdfBytes = await downloadDrawingPdfObject({
+    supabase,
+    orgId,
+    path: fileRecord.storage_path,
+  })
+  const mupdf = await loadMupdf()
+  const doc = mupdf.Document.openDocument(pdfBytes, "application/pdf")
+  try {
+    await splitChunkPages(supabase, {
+      orgId,
+      projectId: requireString(payload.projectId, "projectId"),
+      drawingSetId: requireString(payload.drawingSetId, "drawingSetId"),
+      draftRevisionId,
+      sourceFileId,
+      sourceHash: requireString(payload.sourceHash, "sourceHash"),
+      pageCount: requireNumber(payload.pageCount, "pageCount"),
+      setTitle: typeof payload.setTitle === "string" ? payload.setTitle : "Drawings",
+      targetSheet: payload.targetSheet && typeof payload.targetSheet === "object"
+        ? (payload.targetSheet as SplitChunkInput["targetSheet"])
+        : null,
+      aiVision: payload.aiVision ?? null,
+      chunkIndex,
+      chunkStart: requireNumber(payload.chunkStart, "chunkStart"),
+      chunkEnd: requireNumber(payload.chunkEnd, "chunkEnd"),
+      doc,
+      mupdf,
+    })
+  } finally {
+    doc.destroy?.()
+  }
+}
+
+/**
+ * Split one contiguous page range: extract text, detect title-block metadata,
+ * graft a single-page PDF per page (so page jobs never re-download the full
+ * set), and fan out the page jobs. Runs inline in the coordinator for small
+ * sets and as its own job for large ones.
+ */
+async function splitChunkPages(
+  supabase: SupabaseClient,
+  input: SplitChunkInput & { doc: any; mupdf: MupdfModule },
+) {
+  const {
+    orgId, projectId, drawingSetId, draftRevisionId, sourceFileId, sourceHash,
+    pageCount, setTitle, targetSheet, aiVision, chunkIndex, chunkStart, chunkEnd,
+    doc, mupdf,
+  } = input
+
   const SPLIT_UPLOAD_CONCURRENCY = 8
-  for (let chunkStart = 0; chunkStart < pageCount; chunkStart += SPLIT_UPLOAD_CONCURRENCY) {
-    const chunkEnd = Math.min(chunkStart + SPLIT_UPLOAD_CONCURRENCY, pageCount)
-    const uploads: Promise<void>[] = []
+  const pageJobs: Array<Record<string, unknown>> = []
+  let uploads: Promise<void>[] = []
 
-    for (let pageIndex = chunkStart; pageIndex < chunkEnd; pageIndex++) {
-      const page = doc.loadPage(pageIndex)
-      const textLines = extractPageTextLines(page)
-      const pageText = textLines.join("\n")
-      const pageNumber = pageIndex + 1
+  for (let pageIndex = chunkStart; pageIndex < chunkEnd; pageIndex++) {
+    const page = doc.loadPage(pageIndex)
+    const textLines = extractPageTextLines(page)
+    const pageText = textLines.join("\n")
+    const pageNumber = pageIndex + 1
 
-      const detected = detectSheetMetadata({ pageText, setTitle, pageNumber })
+    const detected = detectSheetMetadata({ pageText, setTitle, pageNumber })
 
-      // Assign a tentative sheet number that is unique within this upload. Page
-      // jobs run in parallel, so cross-page uniqueness has to be decided here.
-      const isTargetPage = Boolean(targetSheet && pageIndex === 0)
-      const tentativeSheetNumber = isTargetPage
-        ? truncateValue(targetSheet!.sheet_number || detected.sheetNumber, SHEET_NUMBER_MAX_LENGTH)
-        : ensureUniqueSheetNumber(detected.sheetNumber, pageNumber, usedSheetNumbers)
-      if (isTargetPage) usedSheetNumbers.add(tentativeSheetNumber.toUpperCase())
+    // Cross-page/cross-upload uniqueness is enforced by the DB unique index on
+    // (project_id, sheet_number); page jobs resolve collisions on insert.
+    const isTargetPage = Boolean(targetSheet && pageIndex === 0)
+    const tentativeSheetNumber = isTargetPage
+      ? truncateValue(targetSheet!.sheet_number || detected.sheetNumber, SHEET_NUMBER_MAX_LENGTH)
+      : truncateValue(detected.sheetNumber, SHEET_NUMBER_MAX_LENGTH)
 
-      // One single-page PDF per page so page jobs don't re-download the full set.
-      const pagePdfPath = `${orgId}/${sourceHash}/temp/page-${pageIndex}.pdf`
-      const single = new mupdf.PDFDocument()
-      single.graftPage(0, doc as any, pageIndex)
-      const singleBytes = single.saveToBuffer("compress").asUint8Array()
-      single.destroy?.()
-      uploads.push(
-        uploadTilesObject({
-          supabase,
-          path: pagePdfPath,
-          bytes: Buffer.from(singleBytes),
-          contentType: "application/pdf",
-          cacheControl: "private, max-age=3600",
-        }),
-      )
+    // One single-page PDF per page so page jobs don't re-download the full set.
+    const pagePdfPath = `${orgId}/${sourceHash}/temp/page-${pageIndex}.pdf`
+    const single = new mupdf.PDFDocument()
+    single.graftPage(0, doc as any, pageIndex)
+    const singleBytes = single.saveToBuffer("compress").asUint8Array()
+    single.destroy?.()
+    page.destroy?.()
 
-      pageJobs.push(buildPageJob({
+    uploads.push(
+      uploadTilesObject({
+        supabase,
+        path: pagePdfPath,
+        bytes: Buffer.from(singleBytes),
+        contentType: "application/pdf",
+        cacheControl: "private, max-age=3600",
+      }),
+    )
+    if (uploads.length >= SPLIT_UPLOAD_CONCURRENCY) {
+      await Promise.all(uploads)
+      uploads = []
+    }
+
+    pageJobs.push({
+      org_id: orgId,
+      job_type: "process_drawing_page",
+      payload: {
         orgId,
         projectId,
         drawingSetId,
@@ -478,19 +702,28 @@ async function handleProcessDrawingSet(supabase: SupabaseClient, job: ClaimedJob
         sourceHash,
         pageIndex,
         pageCount,
+        chunkIndex,
         setTitle,
         pagePdfPath,
-        pageText,
+        pageText: pageText.slice(0, PAGE_TEXT_PAYLOAD_MAX_CHARS),
         detected,
         tentativeSheetNumber,
         isTargetPage,
-        targetSheet,
-        aiVision: payload.aiVision ?? null,
-      }))
-    }
-
-    await Promise.all(uploads)
+        targetSheet: isTargetPage && targetSheet
+          ? {
+              id: targetSheet.id,
+              sheet_number: targetSheet.sheet_number,
+              sheet_title: targetSheet.sheet_title ?? null,
+              discipline: targetSheet.discipline ?? null,
+            }
+          : null,
+        aiVision: aiVision ?? null,
+      },
+      run_at: new Date().toISOString(),
+    })
   }
+
+  await Promise.all(uploads)
 
   const { error: fanoutError } = await supabase.from("outbox").insert(pageJobs)
   if (fanoutError) {
@@ -502,67 +735,16 @@ async function handleProcessDrawingSet(supabase: SupabaseClient, job: ClaimedJob
   })
 
   console.log(
-    `[drawings-pipeline] Split revision ${draftRevisionId}: ${pageCount} page jobs queued (hash ${sourceHash})`,
+    `[drawings-pipeline] Chunk ${chunkIndex} (revision ${draftRevisionId}): ${pageJobs.length} page jobs queued`,
   )
 
-  // Fan out extra pipeline invocations so page jobs render in parallel across
-  // function instances instead of one long sequential drain.
-  if (pageCount > 3) {
-    const extraRunners = Math.min(6, Math.ceil(pageCount / 4))
-    await Promise.allSettled(
-      Array.from({ length: extraRunners }, () => triggerDrawingsPipeline()),
-    )
-  }
+  await kickRunners(Math.ceil(pageJobs.length / 4))
 }
 
-function buildPageJob(input: {
-  orgId: string
-  projectId: string
-  drawingSetId: string
-  draftRevisionId: string
-  sourceFileId: string
-  sourceHash: string
-  pageIndex: number
-  pageCount: number
-  setTitle: string
-  pagePdfPath: string
-  pageText: string
-  detected: DetectedSheetMetadata
-  tentativeSheetNumber: string
-  isTargetPage: boolean
-  targetSheet: { id: string; sheet_number: string; sheet_title?: string | null; discipline?: string | null } | null
-  aiVision: unknown
-}) {
-  return {
-    org_id: input.orgId,
-    job_type: "process_drawing_page",
-    payload: {
-      orgId: input.orgId,
-      projectId: input.projectId,
-      drawingSetId: input.drawingSetId,
-      draftRevisionId: input.draftRevisionId,
-      sourceFileId: input.sourceFileId,
-      sourceHash: input.sourceHash,
-      pageIndex: input.pageIndex,
-      pageCount: input.pageCount,
-      setTitle: input.setTitle,
-      pagePdfPath: input.pagePdfPath,
-      pageText: input.pageText.slice(0, PAGE_TEXT_PAYLOAD_MAX_CHARS),
-      detected: input.detected,
-      tentativeSheetNumber: input.tentativeSheetNumber,
-      isTargetPage: input.isTargetPage,
-      targetSheet: input.isTargetPage && input.targetSheet
-        ? {
-            id: input.targetSheet.id,
-            sheet_number: input.targetSheet.sheet_number,
-            sheet_title: input.targetSheet.sheet_title ?? null,
-            discipline: input.targetSheet.discipline ?? null,
-          }
-        : null,
-      aiVision: input.aiVision ?? null,
-    },
-    run_at: new Date().toISOString(),
-  }
+/** Kick extra pipeline invocations so queued jobs drain on parallel instances. */
+async function kickRunners(count: number) {
+  const runners = Math.max(1, Math.min(RUNNER_KICK_CAP, count))
+  await Promise.allSettled(Array.from({ length: runners }, () => triggerDrawingsPipeline()))
 }
 
 // ============================================================================
@@ -638,25 +820,22 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
   const doc = mupdf.Document.openDocument(pdfBytes, "application/pdf")
   const page = doc.loadPage(pageDocIndex)
   const { png, width, height } = renderPagePng(mupdf, page)
+  // Full page text (the payload copy is truncated) — persisted on the version
+  // for content search. The page is already loaded, so this is nearly free.
+  const fullPageText = extractPageTextLines(page).join("\n") || pageText
+  page.destroy?.()
+  doc.destroy?.()
 
-  // ---- Detection (text guess from the split job + optional vision) ----
+  // ---- Detection (text guess from the split job) ----
+  // Vision runs as a separate enrichment job so a slow AI provider never
+  // delays the sheet becoming viewable.
   const detected: DetectedSheetMetadata =
     payload.detected && typeof payload.detected === "object"
       ? (payload.detected as DetectedSheetMetadata)
       : detectSheetMetadata({ pageText, setTitle, pageNumber })
+  const visionPending = shouldUseVisionFallback(detected, pageText, payload)
 
-  const visionSheet = shouldUseVisionFallback(detected, pageText, payload)
-    ? await detectSheetMetadataWithVision({
-        pngBuffer: png,
-        pageText,
-        setTitle,
-        pageNumber,
-        initial: detected,
-        payload,
-      })
-    : null
-
-  const resolvedSheet = mergeDetectedSheetMetadata(detected, visionSheet, setTitle, pageNumber)
+  const resolvedSheet = detected
   const tentativeSheetNumber =
     typeof payload.tentativeSheetNumber === "string" && payload.tentativeSheetNumber
       ? payload.tentativeSheetNumber
@@ -680,26 +859,15 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
     method: resolvedSheet.method,
     confidence: resolvedSheet.confidence,
     source_line: resolvedSheet.sourceLine,
-    vision_used: Boolean(visionSheet),
-    vision_notes: visionSheet?.notes ?? [],
+    vision_used: false,
+    vision_pending: visionPending,
+    vision_notes: [] as string[],
   }
-
-  // Persist the rendered PNG so tile generation can run as a background job.
-  // Review readiness only needs the thumbnail; the pyramid trails behind.
-  const tempPngPath = `${orgId}/${sourceHash}/temp/page-${pageIndex}.png`
-  await uploadTilesObject({
-    supabase,
-    path: tempPngPath,
-    bytes: png,
-    contentType: "image/png",
-    cacheControl: "private, max-age=3600",
-  })
 
   const versionMetadata = (isNewSheet: boolean) => ({
     source_hash: sourceHash,
     page_index: pageIndex,
     is_new_sheet: isNewSheet,
-    temp_png_path: tempPngPath,
     proposed: {
       sheet_number: proposedSheetNumber,
       sheet_title: proposedSheetTitle,
@@ -736,6 +904,12 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
       })
       .select("id, current_revision_id")
       .single()
+    if (error?.code === "23505") {
+      // Lost the race on the (project, sheet_number) unique index to a
+      // parallel page job — adopt the sheet that beat us.
+      const existing = await findSheetByNumber(sheetNumber)
+      if (existing) return existing
+    }
     if (error || !data) {
       throw new Error(`Failed to create sheet for page ${pageNumber}: ${error?.message}`)
     }
@@ -751,6 +925,7 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
         drawing_revision_id: draftRevisionId,
         file_id: sourceFileId,
         page_index: pageIndex,
+        page_text: fullPageText,
         extracted_metadata: versionMetadata(isNewSheet),
       })
       .select("id")
@@ -789,33 +964,47 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
     throw new Error(`Failed to create version for page ${pageNumber}: ${versionError?.message}`)
   }
 
-  // ---- Thumbnail now (review works off it), tile pyramid in the background ----
-  const basePath = `${orgId}/${sourceHash}/page-${pageIndex}`
-  const tileBaseUrl = buildDrawingsTilesBaseUrl(basePath)
-  const thumbBuffer = await sharp(png, { limitInputPixels: false })
-    .resize(256, 256, { fit: "inside" })
-    .png({ compressionLevel: 9 })
-    .toBuffer()
-  const thumbPath = `${basePath}/thumbnail.${TILE_FORMAT}`
-  await uploadTilesObject({ supabase, path: thumbPath, bytes: thumbBuffer, contentType: "image/png" })
-  // Note: thumbnail_url (not thumb_path) — thumb_path is resolved against the
-  // images base URL by the mappers, but this thumbnail lives in tiles storage.
-  await supabase
-    .from("drawing_sheet_versions")
-    .update({
-      thumbnail_url: tileBaseUrl ? `${tileBaseUrl}/thumbnail.${TILE_FORMAT}` : null,
-      image_width: width,
-      image_height: height,
-      tiles_base_path: basePath,
-    })
-    .eq("id", version.id)
-
-  await supabase.from("outbox").insert({
-    org_id: orgId,
-    job_type: "generate_drawing_tiles",
-    payload: { sheetVersionId: version.id },
-    run_at: new Date().toISOString(),
+  // ---- Thumbnail + tile pyramid inline (native libvips dzsave) ----
+  // Rendering the PNG and tiling it in the same job avoids a full PNG
+  // round-trip through storage and a third queue hop per page.
+  await generateTilesForVersion(supabase, {
+    versionId: version.id,
+    orgId,
+    sourceHash,
+    pageIndex,
+    pngBuffer: png,
+    width,
+    height,
   })
+
+  // Weak text detection → queue AI-vision enrichment off the critical path.
+  if (visionPending) {
+    const visionPaths = await uploadVisionInputs(supabase, {
+      orgId,
+      sourceHash,
+      pageIndex,
+      pngBuffer: png,
+    })
+    if (visionPaths.length > 0) {
+      await supabase.from("outbox").insert({
+        org_id: orgId,
+        job_type: "enrich_drawing_metadata",
+        payload: {
+          orgId,
+          sheetVersionId: version.id,
+          sheetId: sheet.id,
+          draftRevisionId,
+          setTitle,
+          pageNumber,
+          pageText: pageText.slice(0, PAGE_TEXT_PAYLOAD_MAX_CHARS),
+          detected: resolvedSheet,
+          visionPaths,
+          aiVision: payload.aiVision ?? null,
+        },
+        run_at: new Date().toISOString(),
+      })
+    }
+  }
 
   // ---- Cleanup + progress ----
   if (pagePdfPath) {
@@ -870,6 +1059,165 @@ async function incrementRevisionProgress(
     .update({ processed_pages: processed })
     .eq("id", revisionId)
   return { processed, total: revision.total_pages ?? null }
+}
+
+// ============================================================================
+// Job: enrich_drawing_metadata (AI vision off the critical path)
+// ============================================================================
+
+async function handleEnrichDrawingMetadata(supabase: SupabaseClient, job: ClaimedJob) {
+  const payload = job.payload ?? {}
+  const orgId = requireString(payload.orgId ?? job.org_id, "orgId")
+  const sheetVersionId = requireString(payload.sheetVersionId, "sheetVersionId")
+  const sheetId = requireString(payload.sheetId, "sheetId")
+  const setTitle = typeof payload.setTitle === "string" ? payload.setTitle : "Drawings"
+  const pageNumber = requireNumber(payload.pageNumber, "pageNumber")
+  const pageText = typeof payload.pageText === "string" ? payload.pageText : ""
+  const detected =
+    payload.detected && typeof payload.detected === "object"
+      ? (payload.detected as DetectedSheetMetadata)
+      : detectSheetMetadata({ pageText, setTitle, pageNumber })
+  const visionPaths = Array.isArray(payload.visionPaths)
+    ? payload.visionPaths.filter((p: unknown): p is string => typeof p === "string")
+    : []
+
+  const cleanupCrops = async () => {
+    if (visionPaths.length === 0) return
+    try {
+      await deleteTilesObjects({ supabase, paths: visionPaths })
+    } catch (error) {
+      console.warn("[drawings-pipeline] Failed to delete vision crops:", error)
+    }
+  }
+
+  const { data: version } = await supabase
+    .from("drawing_sheet_versions")
+    .select("id, extracted_metadata, drawing_revision_id")
+    .eq("id", sheetVersionId)
+    .eq("org_id", orgId)
+    .maybeSingle()
+  if (!version) {
+    await cleanupCrops()
+    return
+  }
+
+  // Only enrich while the upload is still processing/draft. After publish (or
+  // discard) the register is the user's source of truth.
+  const { data: revision } = await supabase
+    .from("drawing_revisions")
+    .select("status")
+    .eq("id", version.drawing_revision_id)
+    .maybeSingle()
+  if (!revision || (revision.status !== "processing" && revision.status !== "draft")) {
+    await cleanupCrops()
+    return
+  }
+
+  const images: Array<{ dataUrl: string }> = []
+  for (const cropPath of visionPaths) {
+    const bytes = await downloadTilesObject({ supabase, path: cropPath })
+    images.push({ dataUrl: `data:image/webp;base64,${bytes.toString("base64")}` })
+  }
+  if (images.length === 0) {
+    await cleanupCrops()
+    return
+  }
+
+  // Provider failures throw so the outbox retry/backoff owns recovery; after
+  // the final retry the version keeps its regex-detected metadata and the
+  // failure is recorded on the version, never on the revision.
+  let vision: VisionSheetMetadata | null = null
+  try {
+    vision = await detectSheetMetadataWithVision({
+      images,
+      pageText,
+      setTitle,
+      pageNumber,
+      initial: detected,
+      payload,
+    })
+  } catch (error) {
+    if (job.retry_count + 1 >= MAX_JOB_RETRIES) {
+      const message = error instanceof Error ? error.message : String(error)
+      const failedMeta = (version.extracted_metadata ?? {}) as Record<string, any>
+      await supabase
+        .from("drawing_sheet_versions")
+        .update({
+          extracted_metadata: {
+            ...failedMeta,
+            sheet_detection: {
+              ...(failedMeta.sheet_detection ?? {}),
+              vision_pending: false,
+              vision_error: truncateValue(message, 500),
+            },
+          },
+        })
+        .eq("id", sheetVersionId)
+      await cleanupCrops()
+    }
+    throw error
+  }
+
+  const merged = mergeDetectedSheetMetadata(detected, vision, setTitle, pageNumber)
+  const meta = (version.extracted_metadata ?? {}) as Record<string, any>
+  const originalProposed = (meta.proposed ?? {}) as Record<string, unknown>
+  const newProposed = {
+    sheet_number: truncateValue(merged.sheetNumber, SHEET_NUMBER_MAX_LENGTH),
+    sheet_title: truncateValue(merged.sheetTitle, SHEET_TITLE_MAX_LENGTH),
+    discipline: normalizeDiscipline(merged.discipline),
+  }
+
+  await supabase
+    .from("drawing_sheet_versions")
+    .update({
+      extracted_metadata: {
+        ...meta,
+        proposed: newProposed,
+        sheet_detection: {
+          ...(meta.sheet_detection ?? {}),
+          method: merged.method,
+          confidence: merged.confidence,
+          vision_used: Boolean(vision),
+          vision_pending: false,
+          vision_notes: vision?.notes ?? [],
+        },
+      },
+    })
+    .eq("id", sheetVersionId)
+
+  // Upgrade the sheet row only when this upload created it AND the user
+  // hasn't edited it since (values still match the original auto-detection).
+  if (meta.is_new_sheet === true) {
+    const { data: sheetRow } = await supabase
+      .from("drawing_sheets")
+      .select("id, sheet_number, sheet_title, discipline")
+      .eq("id", sheetId)
+      .eq("org_id", orgId)
+      .maybeSingle()
+    const untouched =
+      sheetRow &&
+      sheetRow.sheet_number === originalProposed.sheet_number &&
+      sheetRow.sheet_title === originalProposed.sheet_title &&
+      sheetRow.discipline === originalProposed.discipline
+    if (untouched) {
+      const { error: sheetError } = await supabase
+        .from("drawing_sheets")
+        .update(newProposed)
+        .eq("id", sheetId)
+        .eq("org_id", orgId)
+      if (sheetError?.code === "23505") {
+        // Vision proposed a number another sheet already owns — keep the
+        // number, still upgrade title/discipline.
+        await supabase
+          .from("drawing_sheets")
+          .update({ sheet_title: newProposed.sheet_title, discipline: newProposed.discipline })
+          .eq("id", sheetId)
+          .eq("org_id", orgId)
+      }
+    }
+  }
+
+  await cleanupCrops()
 }
 
 // ============================================================================
@@ -930,6 +1278,8 @@ async function handleGenerateDrawingTiles(supabase: SupabaseClient, job: Claimed
     const doc = mupdf.Document.openDocument(pdfBytes, "application/pdf")
     const page = doc.loadPage(Math.min(pageIndex, Math.max(0, doc.countPages() - 1)))
     pngBuffer = renderPagePng(mupdf, page).png
+    page.destroy?.()
+    doc.destroy?.()
   }
 
   if (!sourceHash) {
@@ -977,7 +1327,110 @@ async function handleGenerateDrawingTiles(supabase: SupabaseClient, job: Claimed
 }
 
 // ============================================================================
-// Tiling (DZI pyramid, ported from the Cloud Run worker)
+// Job: backfill_drawing_page_text (lazy, self-chaining)
+// ============================================================================
+
+/**
+ * Backfills page_text for versions created before content search existed.
+ * Enqueued lazily by the search service when it notices unindexed current
+ * versions; processes a small batch, then re-enqueues itself while any
+ * remain. Text-less pages get "" so they never re-qualify.
+ */
+async function handleBackfillDrawingPageText(supabase: SupabaseClient, job: ClaimedJob) {
+  const orgId = requireString(job.payload?.orgId ?? job.org_id, "orgId")
+  const BATCH = 5
+
+  const { data: candidates } = await supabase
+    .from("drawing_sheet_versions")
+    .select("id, file_id, page_index, drawing_revision_id, drawing_sheets!inner(current_revision_id)")
+    .eq("org_id", orgId)
+    .is("page_text", null)
+    .not("file_id", "is", null)
+    .limit(50)
+
+  const current = (candidates ?? []).filter((row) => {
+    const sheet = row.drawing_sheets as unknown as { current_revision_id: string | null }
+    return sheet?.current_revision_id === row.drawing_revision_id
+  })
+  const batch = current.slice(0, BATCH)
+  if (batch.length === 0) return
+
+  const mupdf = await loadMupdf()
+  const pdfCache = new Map<string, Buffer>()
+
+  for (const row of batch) {
+    const { data: file } = await supabase
+      .from("files")
+      .select("storage_path")
+      .eq("org_id", orgId)
+      .eq("id", row.file_id)
+      .maybeSingle()
+    if (!file?.storage_path) {
+      // Source gone — mark processed so the backfill can finish.
+      await supabase
+        .from("drawing_sheet_versions")
+        .update({ page_text: "" })
+        .eq("id", row.id)
+      continue
+    }
+
+    let pdfBytes = pdfCache.get(row.file_id as string)
+    if (!pdfBytes) {
+      pdfBytes = await downloadDrawingPdfObject({ supabase, orgId, path: file.storage_path })
+      pdfCache.set(row.file_id as string, pdfBytes)
+    }
+
+    const doc = mupdf.Document.openDocument(pdfBytes, "application/pdf")
+    try {
+      const pageIndex = Math.min(Math.max(0, row.page_index ?? 0), doc.countPages() - 1)
+      const page = doc.loadPage(pageIndex)
+      const text = extractPageTextLines(page).join("\n")
+      page.destroy?.()
+      await supabase
+        .from("drawing_sheet_versions")
+        .update({ page_text: text })
+        .eq("id", row.id)
+    } finally {
+      doc.destroy?.()
+    }
+  }
+
+  if (current.length > batch.length) {
+    await supabase.from("outbox").insert({
+      org_id: orgId,
+      job_type: "backfill_drawing_page_text",
+      payload: { orgId },
+      run_at: new Date().toISOString(),
+    })
+  }
+
+  console.log(
+    `[drawings-pipeline] Backfilled page text for ${batch.length} versions (org ${orgId})`,
+  )
+}
+
+/** Enqueue a page-text backfill for the org unless one is already queued. */
+export async function enqueuePageTextBackfill(orgId: string) {
+  const supabase = createServiceSupabaseClient()
+  const { count } = await supabase
+    .from("outbox")
+    .select("id", { count: "exact", head: true })
+    .eq("org_id", orgId)
+    .eq("job_type", "backfill_drawing_page_text")
+    .in("status", ["pending", "processing"])
+  if ((count ?? 0) > 0) return
+
+  await supabase.from("outbox").insert({
+    org_id: orgId,
+    job_type: "backfill_drawing_page_text",
+    payload: { orgId },
+    run_at: new Date().toISOString(),
+  })
+  await triggerDrawingsPipeline()
+}
+
+// ============================================================================
+// Tiling (DZI pyramid via native libvips dzsave)
 // ============================================================================
 
 async function generateTilesForVersion(
@@ -995,8 +1448,51 @@ async function generateTilesForVersion(
   const { versionId, orgId, sourceHash, pageIndex, pngBuffer, width, height } = input
   const basePath = `${orgId}/${sourceHash}/page-${pageIndex}`
 
-  const maxLevel = Math.ceil(Math.log2(Math.max(width, height)))
-  const levels = maxLevel + 1
+  const tileBaseUrl = buildDrawingsTilesBaseUrl(basePath)
+  if (!tileBaseUrl) {
+    throw new Error("Missing DRAWINGS_TILES_BASE_URL/NEXT_PUBLIC_DRAWINGS_TILES_BASE_URL")
+  }
+
+  // libvips writes the whole pyramid in one pass (single decode), which is an
+  // order of magnitude cheaper than re-encoding per level and per tile.
+  const scratchDir = await mkdtemp(path.join(tmpdir(), "arc-dz-"))
+  let levels: number
+  try {
+    const outBase = path.join(scratchDir, "pyramid")
+    await sharp(pngBuffer, { limitInputPixels: false })
+      .webp({ quality: TILE_WEBP_QUALITY })
+      .tile({ size: TILE_SIZE, overlap: 0, layout: "dz" })
+      .toFile(`${outBase}.dz`)
+
+    const filesDir = `${outBase}_files`
+    const levelDirs = (await readdir(filesDir)).filter((name) => /^\d+$/.test(name))
+    if (levelDirs.length === 0) {
+      throw new Error("dzsave produced no pyramid levels")
+    }
+    levels = Math.max(...levelDirs.map((name) => Number.parseInt(name, 10))) + 1
+
+    const tiles: Array<{ level: string; name: string }> = []
+    for (const level of levelDirs) {
+      const names = await readdir(path.join(filesDir, level))
+      for (const name of names) tiles.push({ level, name })
+    }
+
+    for (let i = 0; i < tiles.length; i += TILE_UPLOAD_CONCURRENCY) {
+      await Promise.all(
+        tiles.slice(i, i + TILE_UPLOAD_CONCURRENCY).map(async ({ level, name }) => {
+          const bytes = await readFile(path.join(filesDir, level, name))
+          await uploadTilesObject({
+            supabase,
+            path: `${basePath}/tiles/${level}/${name}`,
+            bytes,
+            contentType: `image/${TILE_FORMAT}`,
+          })
+        }),
+      )
+    }
+  } finally {
+    await rm(scratchDir, { recursive: true, force: true })
+  }
 
   const tileManifest = {
     Image: {
@@ -1009,61 +1505,12 @@ async function generateTilesForVersion(
     Levels: levels,
   }
 
-  const tileBaseUrl = buildDrawingsTilesBaseUrl(basePath)
-  if (!tileBaseUrl) {
-    throw new Error("Missing DRAWINGS_TILES_BASE_URL/NEXT_PUBLIC_DRAWINGS_TILES_BASE_URL")
-  }
-
-  for (let level = 0; level <= maxLevel; level++) {
-    const scaleDivisor = 2 ** (maxLevel - level)
-    const levelWidth = Math.max(1, Math.ceil(width / scaleDivisor))
-    const levelHeight = Math.max(1, Math.ceil(height / scaleDivisor))
-    const cols = Math.ceil(levelWidth / TILE_SIZE)
-    const rows = Math.ceil(levelHeight / TILE_SIZE)
-
-    const levelImageBuffer = await sharp(pngBuffer, { limitInputPixels: false })
-      .resize(levelWidth, levelHeight, { fit: "fill", kernel: sharp.kernel.lanczos3 })
-      .png({ compressionLevel: 9 })
-      .toBuffer()
-
-    const tiles: Array<{ col: number; row: number }> = []
-    for (let row = 0; row < rows; row++) {
-      for (let col = 0; col < cols; col++) {
-        tiles.push({ col, row })
-      }
-    }
-
-    for (let i = 0; i < tiles.length; i += TILE_UPLOAD_CONCURRENCY) {
-      const chunk = tiles.slice(i, i + TILE_UPLOAD_CONCURRENCY)
-      await Promise.all(
-        chunk.map(async ({ col, row }) => {
-          const left = col * TILE_SIZE
-          const top = row * TILE_SIZE
-          const tileWidth = Math.min(TILE_SIZE, levelWidth - left)
-          const tileHeight = Math.min(TILE_SIZE, levelHeight - top)
-
-          const tileBuffer = await sharp(levelImageBuffer, { limitInputPixels: false })
-            .extract({ left, top, width: tileWidth, height: tileHeight })
-            .png({ compressionLevel: 9 })
-            .toBuffer()
-
-          await uploadTilesObject({
-            supabase,
-            path: `${basePath}/tiles/${level}/${col}_${row}.${TILE_FORMAT}`,
-            bytes: tileBuffer,
-            contentType: "image/png",
-          })
-        }),
-      )
-    }
-  }
-
   const thumbBuffer = await sharp(pngBuffer, { limitInputPixels: false })
     .resize(256, 256, { fit: "inside" })
-    .png({ compressionLevel: 9 })
+    .webp({ quality: TILE_WEBP_QUALITY })
     .toBuffer()
   const thumbPath = `${basePath}/thumbnail.${TILE_FORMAT}`
-  await uploadTilesObject({ supabase, path: thumbPath, bytes: thumbBuffer, contentType: "image/png" })
+  await uploadTilesObject({ supabase, path: thumbPath, bytes: thumbBuffer, contentType: `image/${TILE_FORMAT}` })
 
   const manifestPath = `${basePath}/manifest.json`
   await uploadTilesObject({
@@ -1275,39 +1722,6 @@ function normalizeDiscipline(value: string | null | undefined): string {
   return DISCIPLINE_CODES.has(normalized) ? normalized : "X"
 }
 
-function ensureUniqueSheetNumber(baseSheetNumber: string, pageNumber: number, used: Set<string>): string {
-  const base = truncateValue(baseSheetNumber, SHEET_NUMBER_MAX_LENGTH)
-  const baseKey = base.toUpperCase()
-  if (!used.has(baseKey)) {
-    used.add(baseKey)
-    return base
-  }
-
-  const firstSuffix = `-P${pageNumber}`
-  const firstCandidate = truncateForSuffix(base, firstSuffix, SHEET_NUMBER_MAX_LENGTH)
-  const firstKey = firstCandidate.toUpperCase()
-  if (!used.has(firstKey)) {
-    used.add(firstKey)
-    return firstCandidate
-  }
-
-  let attempt = 2
-  while (attempt < 1000) {
-    const suffix = `-${attempt}`
-    const candidate = truncateForSuffix(base, suffix, SHEET_NUMBER_MAX_LENGTH)
-    const key = candidate.toUpperCase()
-    if (!used.has(key)) {
-      used.add(key)
-      return candidate
-    }
-    attempt += 1
-  }
-
-  const finalFallback = truncateValue(`PAGE-${pageNumber}`, SHEET_NUMBER_MAX_LENGTH)
-  used.add(finalFallback.toUpperCase())
-  return finalFallback
-}
-
 function truncateForSuffix(base: string, suffix: string, maxLength: number): string {
   const roomForBase = Math.max(1, maxLength - suffix.length)
   return `${base.slice(0, roomForBase)}${suffix}`
@@ -1338,24 +1752,20 @@ function shouldUseVisionFallback(
 }
 
 async function detectSheetMetadataWithVision(input: {
-  pngBuffer: Buffer
+  images: Array<{ dataUrl: string }>
   pageText: string
   setTitle: string
   pageNumber: number
   initial: DetectedSheetMetadata
   payload?: Record<string, any>
 }): Promise<VisionSheetMetadata | null> {
-  const { pngBuffer, pageText, setTitle, pageNumber, initial, payload } = input
+  const { images, pageText, setTitle, pageNumber, initial, payload } = input
   const provider = getVisionProvider(payload)
   const apiKey = getVisionApiKey(provider)
   if (!apiKey) return null
 
-  try {
-    const images = await buildVisionInputs(pngBuffer)
-    if (images.length === 0) return null
-
-    const model = getVisionModel(provider, payload)
-    const prompt = [
+  const model = getVisionModel(provider, payload)
+  const prompt = [
       "You are extracting metadata from one construction drawing page.",
       `Project set title: ${setTitle}`,
       `Page number in upload order: ${pageNumber}`,
@@ -1370,30 +1780,26 @@ async function detectSheetMetadataWithVision(input: {
       "Prefer title block values like E1.1, A-101, S2.0, etc.",
     ].join("\n")
 
-    const rawText = await generateVisionResponseText({ provider, apiKey, model, prompt, images, pageNumber })
-    if (!rawText) return null
+  const rawText = await generateVisionResponseText({ provider, apiKey, model, prompt, images, pageNumber })
+  if (!rawText) return null
 
-    const parsed = parseVisionJson(rawText)
-    if (!parsed) return null
+  const parsed = parseVisionJson(rawText)
+  if (!parsed) return null
 
-    const sheetNumber = normalizeSheetNumberCandidate(parsed.sheet_number ?? "")
-    const discipline =
-      typeof parsed.discipline === "string" && DISCIPLINE_CODES.has(parsed.discipline.toUpperCase())
-        ? parsed.discipline.toUpperCase()
-        : sheetNumber
-          ? detectDiscipline(sheetNumber)
-          : null
-    const sheetTitle = sanitizeTitle(parsed.sheet_title ?? "")
-    const confidence = normalizeConfidence(parsed.confidence)
-    const notes = Array.isArray(parsed.notes)
-      ? parsed.notes.filter((note: unknown): note is string => typeof note === "string").slice(0, 6)
-      : []
+  const sheetNumber = normalizeSheetNumberCandidate(parsed.sheet_number ?? "")
+  const discipline =
+    typeof parsed.discipline === "string" && DISCIPLINE_CODES.has(parsed.discipline.toUpperCase())
+      ? parsed.discipline.toUpperCase()
+      : sheetNumber
+        ? detectDiscipline(sheetNumber)
+        : null
+  const sheetTitle = sanitizeTitle(parsed.sheet_title ?? "")
+  const confidence = normalizeConfidence(parsed.confidence)
+  const notes = Array.isArray(parsed.notes)
+    ? parsed.notes.filter((note: unknown): note is string => typeof note === "string").slice(0, 6)
+    : []
 
-    return { sheetNumber, sheetTitle, discipline, confidence, notes }
-  } catch (error) {
-    console.warn(`[drawings-pipeline] Vision failed for page ${pageNumber}:`, error)
-    return null
-  }
+  return { sheetNumber, sheetTitle, discipline, confidence, notes }
 }
 
 function getPayloadVisionConfig(payload?: Record<string, any>): { provider?: VisionProvider; model?: string } {
@@ -1497,8 +1903,7 @@ async function generateVisionResponseText(input: {
 
     if (!response.ok) {
       const body = await response.text()
-      console.warn(`[drawings-pipeline] OpenAI vision failed for page ${pageNumber}: ${response.status} ${body}`)
-      return null
+      throw new Error(`OpenAI vision failed for page ${pageNumber}: ${response.status} ${body.slice(0, 300)}`)
     }
 
     const payload = (await response.json()) as any
@@ -1539,15 +1944,41 @@ async function generateVisionResponseText(input: {
 
   if (!response.ok) {
     const body = await response.text()
-    console.warn(`[drawings-pipeline] Gemini vision failed for page ${pageNumber}: ${response.status} ${body}`)
-    return null
+    throw new Error(`Gemini vision failed for page ${pageNumber}: ${response.status} ${body.slice(0, 300)}`)
   }
 
   const payload = (await response.json()) as any
   return extractGeminiResponseText(payload)
 }
 
-async function buildVisionInputs(pngBuffer: Buffer): Promise<Array<{ dataUrl: string }>> {
+/**
+ * Build the vision inputs (full-page webp + three title-block corner crops)
+ * and stash them in tiles storage so the enrichment job can run later without
+ * re-rendering the page. Returns the uploaded paths in prompt order.
+ */
+async function uploadVisionInputs(
+  supabase: SupabaseClient,
+  input: { orgId: string; sourceHash: string; pageIndex: number; pngBuffer: Buffer },
+): Promise<string[]> {
+  const buffers = await buildVisionCropBuffers(input.pngBuffer)
+  const paths = buffers.map(
+    (_, i) => `${input.orgId}/${input.sourceHash}/temp/vision-${input.pageIndex}-${i}.webp`,
+  )
+  await Promise.all(
+    buffers.map((bytes, i) =>
+      uploadTilesObject({
+        supabase,
+        path: paths[i],
+        bytes,
+        contentType: "image/webp",
+        cacheControl: "private, max-age=3600",
+      }),
+    ),
+  )
+  return paths
+}
+
+async function buildVisionCropBuffers(pngBuffer: Buffer): Promise<Buffer[]> {
   const metadata = await sharp(pngBuffer, { limitInputPixels: false }).metadata()
   const width = metadata.width ?? 0
   const height = metadata.height ?? 0
@@ -1579,9 +2010,7 @@ async function buildVisionInputs(pngBuffer: Buffer): Promise<Array<{ dataUrl: st
       .toBuffer(),
   ])
 
-  return [full, ...crops].map((buffer) => ({
-    dataUrl: `data:image/webp;base64,${buffer.toString("base64")}`,
-  }))
+  return [full, ...crops]
 }
 
 function extractOpenAiResponseText(payload: any): string {

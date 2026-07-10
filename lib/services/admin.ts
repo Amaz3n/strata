@@ -6,116 +6,27 @@ export interface AdminStats {
   newOrgsThisMonth: number
   activeSubscriptions: number
   trialingSubscriptions: number
-  monthlyRevenue: number
-  revenueGrowth: number
-  pendingIssues: number
-  criticalIssues: number
-}
-
-export interface AdminActivity {
-  id: string
-  type: string
-  description: string
-  userName: string
-  userInitials: string
-  details?: string
-  createdAt: string
 }
 
 export async function getAdminStats(): Promise<AdminStats> {
   const supabase = createServiceSupabaseClient()
 
-  // Get total organizations
-  const { count: totalOrgs } = await supabase
-    .from("orgs")
-    .select("*", { count: "exact", head: true })
-
-  // Get new orgs this month
   const startOfMonth = new Date()
   startOfMonth.setDate(1)
   startOfMonth.setHours(0, 0, 0, 0)
 
-  const { count: newOrgsThisMonth } = await supabase
-    .from("orgs")
-    .select("*", { count: "exact", head: true })
-    .gte("created_at", startOfMonth.toISOString())
-
-  // Get subscription stats
-  const { data: subscriptions } = await supabase
-    .from("subscriptions")
-    .select("status")
-
-  const activeSubscriptions = subscriptions?.filter(s => s.status === "active").length ?? 0
-  const trialingSubscriptions = subscriptions?.filter(s => s.status === "trialing").length ?? 0
-
-  // Get revenue (simplified - would need actual billing integration)
-  const monthlyRevenue = 0 // TODO: Calculate from actual subscription data
-  const revenueGrowth = 0 // TODO: Compare with previous month
-
-  // Get pending issues (simplified)
-  const pendingIssues = 0 // TODO: Count failed payments, expired trials, etc.
-  const criticalIssues = 0 // TODO: Count critical issues
+  const [{ count: totalOrgs }, { count: newOrgsThisMonth }, { data: subscriptions }] = await Promise.all([
+    supabase.from("orgs").select("*", { count: "exact", head: true }),
+    supabase.from("orgs").select("*", { count: "exact", head: true }).gte("created_at", startOfMonth.toISOString()),
+    supabase.from("subscriptions").select("status"),
+  ])
 
   return {
     totalOrgs: totalOrgs ?? 0,
     newOrgsThisMonth: newOrgsThisMonth ?? 0,
-    activeSubscriptions,
-    trialingSubscriptions,
-    monthlyRevenue,
-    revenueGrowth,
-    pendingIssues,
-    criticalIssues,
+    activeSubscriptions: subscriptions?.filter((s) => s.status === "active").length ?? 0,
+    trialingSubscriptions: subscriptions?.filter((s) => s.status === "trialing").length ?? 0,
   }
-}
-
-export async function getRecentAdminActivity(): Promise<AdminActivity[]> {
-  const supabase = createServiceSupabaseClient()
-
-  // Get recent audit log entries with user info
-  const { data: auditEntries } = await supabase
-    .from("audit_log")
-    .select(`
-      id,
-      action,
-      entity_type,
-      created_at,
-      actor_user:actor_user_id (
-        full_name,
-        email
-      )
-    `)
-    .order("created_at", { ascending: false })
-    .limit(10)
-
-  if (!auditEntries) return []
-
-  return auditEntries.map(entry => {
-    const actor = Array.isArray(entry.actor_user) ? entry.actor_user[0] : entry.actor_user
-    return {
-      id: entry.id,
-      type: getActivityType(entry.action, entry.entity_type),
-      description: formatActivityDescription(entry.action, entry.entity_type),
-      userName: actor?.full_name || actor?.email || "System",
-      userInitials: getInitials(actor?.full_name || actor?.email || "System"),
-      createdAt: entry.created_at,
-    }
-  })
-}
-
-function getActivityType(action: string, entityType: string): string {
-  if (entityType === "org" && action === "insert") return "provision"
-  if (entityType === "subscription") return "subscription"
-  if (entityType === "payment" || entityType === "invoice") return "billing"
-  if (entityType === "user" && action === "update") return "security"
-  return "system"
-}
-
-function formatActivityDescription(action: string, entityType: string): string {
-  const actionText = action === "insert" ? "created" :
-                    action === "update" ? "updated" :
-                    action === "delete" ? "deleted" : action
-
-  return `${actionText} ${entityType.replace("_", " ")}`
 }
 
 function getInitials(name: string): string {
@@ -127,6 +38,16 @@ function getInitials(name: string): string {
     .slice(0, 2)
 }
 
+export interface CustomerHealth {
+  lastActivityAt: string | null
+  activeMemberCount: number
+  projectCount: number
+  eventsLast14d: number
+  storageBytes: number
+  qboStatus: string | null
+  atRisk: boolean
+}
+
 export interface Customer {
   id: string
   name: string
@@ -136,6 +57,7 @@ export interface Customer {
   billingEmail: string | null
   memberCount: number
   createdAt: string
+  health: CustomerHealth
   subscription?: {
     id: string
     planCode: string | null
@@ -253,74 +175,156 @@ export async function getCustomers({
 
   if (error) throw error
 
-  // Get member counts and subscription data for each org
-  const customers: Customer[] = []
-  for (const org of orgs || []) {
-    // Get member count
-    const { count: memberCount } = await supabase
-      .from("memberships")
-      .select("*", { count: "exact", head: true })
-      .eq("org_id", org.id)
+  const orgIds = (orgs ?? []).map((org) => org.id)
 
-    // Get active subscription with plan details
-    const { data: subscriptionData } = await supabase
-      .from("subscriptions")
-      .select(`
-        id,
-        plan_code,
-        status,
-        current_period_end,
-        trial_ends_at,
-        external_customer_id,
-        external_subscription_id,
-        checkout_url,
-        collection_method,
-        net_days,
-        plans (
-          name,
-          amount_cents,
-          currency,
-          interval
-        )
-      `)
-      .eq("org_id", org.id)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-
-    let subscription = null
-    if (subscriptionData) {
-      const plan = Array.isArray(subscriptionData.plans) ? subscriptionData.plans[0] : subscriptionData.plans
-      subscription = {
-        id: subscriptionData.id,
-        planCode: subscriptionData.plan_code ?? null,
-        status: subscriptionData.status,
-        planName: plan?.name ?? subscriptionData.plan_code ?? null,
-        amountCents: plan?.amount_cents ?? null,
-        currency: plan?.currency ?? null,
-        interval: plan?.interval ?? null,
-        currentPeriodEnd: subscriptionData.current_period_end ?? null,
-        trialEndsAt: subscriptionData.trial_ends_at ?? null,
-        externalCustomerId: subscriptionData.external_customer_id ?? null,
-        externalSubscriptionId: subscriptionData.external_subscription_id ?? null,
-        checkoutUrl: subscriptionData.checkout_url ?? null,
-        collectionMethod: subscriptionData.collection_method ?? null,
-        netDays: subscriptionData.net_days ?? null,
-      }
+  if (orgIds.length === 0) {
+    return {
+      customers: [],
+      totalCount: count || 0,
+      hasNextPage: false,
+      hasPrevPage: page > 1,
     }
+  }
 
-    customers.push({
+  const fourteenDaysAgoIso = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString()
+
+  // Batched per-page lookups: memberships/subscriptions/QBO by org id, and
+  // Postgres-side aggregates for events and storage (client selects cap at
+  // 1000 rows, so summing/grouping in JS under-reports).
+  const [membershipsRes, subscriptionsRes, qboRes, eventsRes, storageRes, projectCounts] =
+    await Promise.all([
+      supabase
+        .from("memberships")
+        .select("org_id, status, last_active_at")
+        .in("org_id", orgIds),
+      supabase
+        .from("subscriptions")
+        .select(`
+          id,
+          org_id,
+          plan_code,
+          status,
+          created_at,
+          current_period_end,
+          trial_ends_at,
+          external_customer_id,
+          external_subscription_id,
+          checkout_url,
+          collection_method,
+          net_days,
+          plans (
+            name,
+            amount_cents,
+            currency,
+            interval
+          )
+        `)
+        .in("org_id", orgIds)
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("qbo_connections")
+        .select("org_id, status")
+        .in("org_id", orgIds)
+        .is("disconnected_at", null),
+      supabase.rpc("platform_events_by_org", { p_org_ids: orgIds, p_since: fourteenDaysAgoIso }),
+      supabase.rpc("platform_storage_by_org", { p_org_ids: orgIds }),
+      Promise.all(
+        orgIds.map((id) =>
+          supabase.from("projects").select("*", { count: "exact", head: true }).eq("org_id", id),
+        ),
+      ),
+    ])
+
+  const membershipsByOrg = new Map<string, { status: string; last_active_at: string | null }[]>()
+  for (const row of membershipsRes.data ?? []) {
+    const list = membershipsByOrg.get(row.org_id) ?? []
+    list.push({ status: row.status, last_active_at: row.last_active_at ?? null })
+    membershipsByOrg.set(row.org_id, list)
+  }
+
+  const subscriptionByOrg = new Map<string, NonNullable<Customer["subscription"]>>()
+  for (const sub of subscriptionsRes.data ?? []) {
+    if (subscriptionByOrg.has(sub.org_id)) continue // rows ordered newest-first
+    const plan = Array.isArray(sub.plans) ? sub.plans[0] : sub.plans
+    subscriptionByOrg.set(sub.org_id, {
+      id: sub.id,
+      planCode: sub.plan_code ?? null,
+      status: sub.status,
+      planName: plan?.name ?? sub.plan_code ?? null,
+      amountCents: plan?.amount_cents ?? null,
+      currency: plan?.currency ?? null,
+      interval: plan?.interval ?? null,
+      currentPeriodEnd: sub.current_period_end ?? null,
+      trialEndsAt: sub.trial_ends_at ?? null,
+      externalCustomerId: sub.external_customer_id ?? null,
+      externalSubscriptionId: sub.external_subscription_id ?? null,
+      checkoutUrl: sub.checkout_url ?? null,
+      collectionMethod: sub.collection_method ?? null,
+      netDays: sub.net_days ?? null,
+    })
+  }
+
+  const qboStatusByOrg = new Map<string, string>(
+    (qboRes.data ?? []).map((row: { org_id: string; status: string }) => [row.org_id, row.status]),
+  )
+  const eventsByOrg = new Map<string, { event_count: number; last_event_at: string | null }>(
+    ((eventsRes.data ?? []) as { org_id: string; event_count: number; last_event_at: string | null }[]).map(
+      (row) => [row.org_id, { event_count: Number(row.event_count), last_event_at: row.last_event_at }],
+    ),
+  )
+  const storageByOrg = new Map<string, number>(
+    ((storageRes.data ?? []) as { org_id: string; total_bytes: number }[]).map((row) => [
+      row.org_id,
+      Number(row.total_bytes),
+    ]),
+  )
+  const projectCountByOrg = new Map<string, number>(
+    orgIds.map((id, index) => [id, projectCounts[index]?.count ?? 0]),
+  )
+
+  const customers: Customer[] = (orgs ?? []).map((org) => {
+    const memberships = membershipsByOrg.get(org.id) ?? []
+    const subscription = subscriptionByOrg.get(org.id) ?? null
+    const events = eventsByOrg.get(org.id)
+
+    const lastMemberActiveAt = memberships.reduce<string | null>(
+      (latest, membership) =>
+        membership.last_active_at && (!latest || membership.last_active_at > latest)
+          ? membership.last_active_at
+          : latest,
+      null,
+    )
+    const lastActivityAt =
+      [lastMemberActiveAt, events?.last_event_at ?? null]
+        .filter((value): value is string => Boolean(value))
+        .sort()
+        .pop() ?? null
+
+    const paying = subscription?.status === "active" || subscription?.status === "past_due"
+    const inactive14d =
+      !lastActivityAt || Date.now() - new Date(lastActivityAt).getTime() > 14 * 24 * 60 * 60 * 1000
+
+    return {
       id: org.id,
       name: org.name,
-      slug: org.slug || '',
+      slug: org.slug || "",
       status: org.status,
       billingModel: org.billing_model,
       billingEmail: org.billing_email ?? null,
-      memberCount: memberCount || 0,
+      memberCount: memberships.length,
       createdAt: org.created_at,
       subscription,
-    })
-  }
+      health: {
+        lastActivityAt,
+        activeMemberCount: memberships.filter((membership) => membership.status === "active").length,
+        projectCount: projectCountByOrg.get(org.id) ?? 0,
+        eventsLast14d: events?.event_count ?? 0,
+        storageBytes: storageByOrg.get(org.id) ?? 0,
+        qboStatus: qboStatusByOrg.get(org.id) ?? null,
+        atRisk: paying && org.status === "active" && inactive14d,
+      },
+    }
+  })
 
   const totalCount = count || 0
   const hasNextPage = offset + limit < totalCount
@@ -811,20 +815,20 @@ export async function deleteFeatureFlag(input: {
 
 export interface SystemMetrics {
   dailyActiveUsers: number
-  userGrowth: number
+  weeklyActiveUsers: number
   totalOrganizations: number
   newOrgsThisMonth: number
   activeSubscriptions: number
   trialingSubscriptions: number
   pastDueSubscriptions: number
+  mrrCents: number
+  pastDueMrrCents: number
   eventsLast24h: number
   outboxFailuresLast24h: number
   paidPaymentsLast30d: number
   overdueInvoices: number
-  fileStorageUsed: number
-  fileStorageLimit: number
-  bandwidthUsed: number
-  bandwidthLimit: number
+  fileStorageBytes: number
+  uploadBytes30d: number
 }
 
 export interface UsageTrend {
@@ -871,42 +875,39 @@ export interface Plan {
   createdAt: string
 }
 
+// A subscription contributes its plan price normalized to a monthly amount.
+function monthlyAmountCents(plan: { amount_cents: number | null; interval: string | null } | null): number {
+  if (!plan?.amount_cents) return 0
+  return plan.interval === "year" ? Math.round(plan.amount_cents / 12) : plan.amount_cents
+}
+
 export async function getSystemMetrics(): Promise<SystemMetrics> {
   const supabase = createServiceSupabaseClient()
   const now = new Date()
   const dayAgoIso = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()
+  const weekAgoIso = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString()
   const thirtyDaysAgoIso = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString()
 
   const startOfMonth = new Date()
   startOfMonth.setDate(1)
   startOfMonth.setHours(0, 0, 0, 0)
-  const startOfPrevMonth = new Date(startOfMonth)
-  startOfPrevMonth.setMonth(startOfPrevMonth.getMonth() - 1)
 
   const [
     { count: totalOrgs },
     { count: newOrgsThisMonth },
-    { count: usersThisMonth },
-    { count: usersPrevMonth },
-    { data: dauData },
+    { data: activeMembershipsData },
     { data: subscriptionsData },
     { count: eventsLast24h },
     { count: outboxFailuresLast24h },
     { count: paidPaymentsLast30d },
     { count: overdueInvoices },
-    { data: filesData },
-    { data: uploadedFiles30dData },
+    storageRes,
+    uploadsRes,
   ] = await Promise.all([
     supabase.from("orgs").select("*", { count: "exact", head: true }),
     supabase.from("orgs").select("*", { count: "exact", head: true }).gte("created_at", startOfMonth.toISOString()),
-    supabase.from("app_users").select("*", { count: "exact", head: true }).gte("created_at", startOfMonth.toISOString()),
-    supabase
-      .from("app_users")
-      .select("*", { count: "exact", head: true })
-      .gte("created_at", startOfPrevMonth.toISOString())
-      .lt("created_at", startOfMonth.toISOString()),
-    supabase.from("memberships").select("user_id").eq("status", "active").gte("last_active_at", dayAgoIso),
-    supabase.from("subscriptions").select("status"),
+    supabase.from("memberships").select("user_id, last_active_at").eq("status", "active").gte("last_active_at", weekAgoIso),
+    supabase.from("subscriptions").select("status, plans (amount_cents, interval)"),
     supabase.from("events").select("*", { count: "exact", head: true }).gte("created_at", dayAgoIso),
     supabase
       .from("outbox")
@@ -923,83 +924,82 @@ export async function getSystemMetrics(): Promise<SystemMetrics> {
       .select("*", { count: "exact", head: true })
       .neq("status", "paid")
       .lt("due_date", now.toISOString().slice(0, 10)),
-    supabase.from("files").select("size_bytes").is("archived_at", null),
-    supabase.from("files").select("size_bytes").gte("created_at", thirtyDaysAgoIso),
+    supabase.rpc("platform_storage_by_org", { p_org_ids: null }),
+    supabase.rpc("platform_upload_bytes_since", { p_since: thirtyDaysAgoIso }),
   ])
 
-  const activeUsers = new Set((dauData ?? []).map((row: any) => row.user_id).filter(Boolean))
-  const activeSubscriptions = (subscriptionsData ?? []).filter((s: any) => s.status === "active").length
-  const trialingSubscriptions = (subscriptionsData ?? []).filter((s: any) => s.status === "trialing").length
-  const pastDueSubscriptions = (subscriptionsData ?? []).filter((s: any) => s.status === "past_due").length
+  const dailyActive = new Set<string>()
+  const weeklyActive = new Set<string>()
+  for (const row of activeMembershipsData ?? []) {
+    if (!row.user_id || !row.last_active_at) continue
+    weeklyActive.add(row.user_id)
+    if (row.last_active_at >= dayAgoIso) dailyActive.add(row.user_id)
+  }
 
-  const fileStorageBytes = (filesData ?? []).reduce((sum: number, row: any) => sum + Number(row.size_bytes ?? 0), 0)
-  const uploadBytes30d = (uploadedFiles30dData ?? []).reduce((sum: number, row: any) => sum + Number(row.size_bytes ?? 0), 0)
-  const userGrowth =
-    !usersPrevMonth || usersPrevMonth === 0
-      ? (usersThisMonth ?? 0) > 0
-        ? 100
-        : 0
-      : Math.round((((usersThisMonth ?? 0) - usersPrevMonth) / usersPrevMonth) * 100)
+  const subscriptions = (subscriptionsData ?? []).map((sub) => ({
+    status: sub.status as string,
+    plan: (Array.isArray(sub.plans) ? sub.plans[0] : sub.plans) as {
+      amount_cents: number | null
+      interval: string | null
+    } | null,
+  }))
+  const activeSubs = subscriptions.filter((sub) => sub.status === "active")
+  const pastDueSubs = subscriptions.filter((sub) => sub.status === "past_due")
 
-  const bytesPerGb = 1024 * 1024 * 1024
-  const storageLimitGb = 200
-  const bandwidthLimitGb = 500
+  const fileStorageBytes = ((storageRes.data ?? []) as { total_bytes: number }[]).reduce(
+    (sum, row) => sum + Number(row.total_bytes),
+    0,
+  )
 
   return {
-    dailyActiveUsers: activeUsers.size,
-    userGrowth,
+    dailyActiveUsers: dailyActive.size,
+    weeklyActiveUsers: weeklyActive.size,
     totalOrganizations: totalOrgs || 0,
     newOrgsThisMonth: newOrgsThisMonth || 0,
-    activeSubscriptions,
-    trialingSubscriptions,
-    pastDueSubscriptions,
+    activeSubscriptions: activeSubs.length,
+    trialingSubscriptions: subscriptions.filter((sub) => sub.status === "trialing").length,
+    pastDueSubscriptions: pastDueSubs.length,
+    mrrCents: activeSubs.reduce((sum, sub) => sum + monthlyAmountCents(sub.plan), 0),
+    pastDueMrrCents: pastDueSubs.reduce((sum, sub) => sum + monthlyAmountCents(sub.plan), 0),
     eventsLast24h: eventsLast24h || 0,
     outboxFailuresLast24h: outboxFailuresLast24h || 0,
     paidPaymentsLast30d: paidPaymentsLast30d || 0,
     overdueInvoices: overdueInvoices || 0,
-    fileStorageUsed: Number((fileStorageBytes / bytesPerGb).toFixed(2)),
-    fileStorageLimit: storageLimitGb,
-    bandwidthUsed: Number((uploadBytes30d / bytesPerGb).toFixed(2)),
-    bandwidthLimit: bandwidthLimitGb,
+    fileStorageBytes,
+    uploadBytes30d: Number(uploadsRes.data ?? 0),
   }
 }
 
 export async function getUsageTrends(): Promise<UsageTrends> {
   const supabase = createServiceSupabaseClient()
   const now = new Date()
-  const monthStarts = Array.from({ length: 6 }).map((_, idx) => {
-    const d = new Date(now.getFullYear(), now.getMonth() - (5 - idx), 1)
-    return d
-  })
-
-  const userGrowth = await Promise.all(
-    monthStarts.map(async (monthStart) => {
-      const nextMonthStart = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 1)
-      const prevMonthStart = new Date(monthStart.getFullYear(), monthStart.getMonth() - 1, 1)
-
-      const [{ count: currentCount }, { count: prevCount }] = await Promise.all([
-        supabase
-          .from("app_users")
-          .select("*", { count: "exact", head: true })
-          .gte("created_at", monthStart.toISOString())
-          .lt("created_at", nextMonthStart.toISOString()),
-        supabase
-          .from("app_users")
-          .select("*", { count: "exact", head: true })
-          .gte("created_at", prevMonthStart.toISOString())
-          .lt("created_at", monthStart.toISOString()),
-      ])
-
-      const base = prevCount ?? 0
-      const change = base === 0 ? ((currentCount ?? 0) > 0 ? 100 : 0) : Math.round((((currentCount ?? 0) - base) / base) * 100)
-
-      return {
-        month: monthStart.toLocaleDateString("en-US", { month: "short", year: "numeric" }),
-        count: currentCount ?? 0,
-        change,
-      }
-    }),
+  const monthStarts = Array.from({ length: 6 }).map(
+    (_, idx) => new Date(now.getFullYear(), now.getMonth() - (5 - idx), 1),
   )
+
+  const signupsRes = await supabase.rpc("platform_monthly_signups", { p_months: 7 })
+  const signupsByMonth = new Map<string, number>(
+    ((signupsRes.data ?? []) as { month_start: string; signup_count: number }[]).map((row) => [
+      row.month_start.slice(0, 7),
+      Number(row.signup_count),
+    ]),
+  )
+
+  const monthKey = (date: Date) =>
+    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`
+
+  const userGrowth = monthStarts.map((monthStart) => {
+    const prevMonthStart = new Date(monthStart.getFullYear(), monthStart.getMonth() - 1, 1)
+    const current = signupsByMonth.get(monthKey(monthStart)) ?? 0
+    const previous = signupsByMonth.get(monthKey(prevMonthStart)) ?? 0
+    const change = previous === 0 ? (current > 0 ? 100 : 0) : Math.round(((current - previous) / previous) * 100)
+
+    return {
+      month: monthStart.toLocaleDateString("en-US", { month: "short", year: "numeric" }),
+      count: current,
+      change,
+    }
+  })
 
   const currentWindowStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString()
   const previousWindowStart = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000).toISOString()
@@ -1124,7 +1124,117 @@ export async function getSupportContracts(): Promise<SupportContract[]> {
 }
 
 
-// Additional admin functions will be added here as we implement more features
+export interface PlatformUserMembership {
+  orgId: string
+  orgName: string
+  roleKey: string | null
+  status: string
+  lastActiveAt: string | null
+}
+
+export interface PlatformUserActivity {
+  id: string
+  fullName: string | null
+  email: string | null
+  createdAt: string
+  lastActiveAt: string | null
+  memberships: PlatformUserMembership[]
+}
+
+export interface PlatformUsersResult {
+  users: PlatformUserActivity[]
+  totalCount: number
+  activeToday: number
+  active7d: number
+  active30d: number
+}
+
+const PLATFORM_USERS_CAP = 500
+
+// Who's actually using Arc: every user with their org memberships and the
+// freshest membership.last_active_at (touched on activity with a 15-min
+// throttle by requireOrgContext). Sorted most-recently-active first.
+export async function getPlatformUsers(): Promise<PlatformUsersResult> {
+  const supabase = createServiceSupabaseClient()
+
+  const { data, error, count } = await supabase
+    .from("app_users")
+    .select(
+      `
+      id,
+      full_name,
+      email,
+      created_at,
+      memberships (
+        org_id,
+        status,
+        last_active_at,
+        org:orgs (name),
+        role:roles (key)
+      )
+    `,
+      { count: "exact" },
+    )
+    .limit(PLATFORM_USERS_CAP)
+
+  if (error) throw error
+
+  const users: PlatformUserActivity[] = (data ?? []).map((user) => {
+    const memberships: PlatformUserMembership[] = (user.memberships ?? []).map((membership: {
+      org_id: string
+      status: string
+      last_active_at: string | null
+      org: { name: string } | { name: string }[] | null
+      role: { key: string } | { key: string }[] | null
+    }) => {
+      const org = Array.isArray(membership.org) ? membership.org[0] : membership.org
+      const role = Array.isArray(membership.role) ? membership.role[0] : membership.role
+      return {
+        orgId: membership.org_id,
+        orgName: org?.name ?? "Unknown",
+        roleKey: role?.key ?? null,
+        status: membership.status,
+        lastActiveAt: membership.last_active_at ?? null,
+      }
+    })
+
+    const lastActiveAt = memberships.reduce<string | null>(
+      (latest, membership) =>
+        membership.lastActiveAt && (!latest || membership.lastActiveAt > latest)
+          ? membership.lastActiveAt
+          : latest,
+      null,
+    )
+
+    return {
+      id: user.id,
+      fullName: user.full_name ?? null,
+      email: user.email ?? null,
+      createdAt: user.created_at,
+      lastActiveAt,
+      memberships,
+    }
+  })
+
+  users.sort((a, b) => {
+    if (a.lastActiveAt && b.lastActiveAt) return b.lastActiveAt.localeCompare(a.lastActiveAt)
+    if (a.lastActiveAt) return -1
+    if (b.lastActiveAt) return 1
+    return b.createdAt.localeCompare(a.createdAt)
+  })
+
+  const now = Date.now()
+  const withinDays = (value: string | null, days: number) =>
+    Boolean(value && now - new Date(value).getTime() <= days * 24 * 60 * 60 * 1000)
+
+  return {
+    users,
+    totalCount: count ?? users.length,
+    activeToday: users.filter((user) => withinDays(user.lastActiveAt, 1)).length,
+    active7d: users.filter((user) => withinDays(user.lastActiveAt, 7)).length,
+    active30d: users.filter((user) => withinDays(user.lastActiveAt, 30)).length,
+  }
+}
 
 export async function getAuditUsers() {
   const supabase = createServiceSupabaseClient()

@@ -758,7 +758,6 @@ export async function loadClientPortalData({
   orgId,
   projectId,
   permissions,
-  portalType = "client",
   companyId,
   contactId,
   scopedRfiId,
@@ -767,7 +766,6 @@ export async function loadClientPortalData({
   orgId: string
   projectId: string
   permissions: PortalPermissions
-  portalType?: "client" | "sub"
   companyId?: string | null
   contactId?: string | null
   scopedRfiId?: string | null
@@ -864,18 +862,11 @@ export async function loadClientPortalData({
     rfis,
     submittals,
     recentLogs: (dailyLogs ?? []).filter((log) => log.project_id === projectId).slice(0, 5),
-    sharedFiles: [
-      ...(permissions.can_view_documents
-        ? await loadSharedDrawingSheetEntries({
-            supabase,
-            orgId,
-            projectId,
-            portalType,
-            portalToken,
-          })
-        : []),
-      ...(filesResult.data ?? []).map((file: any) => mapFileMetadata(file, portalToken)),
-    ].slice(0, 50),
+    // Shared drawing sheets are NOT injected here — the portal documents tab
+    // renders them via /api/portal/drawings/[token] in the tiled viewer.
+    sharedFiles: (filesResult.data ?? [])
+      .map((file: any) => mapFileMetadata(file, portalToken))
+      .slice(0, 50),
     punchItems,
     financialSummary,
   }
@@ -1180,81 +1171,12 @@ export async function loadSubPortalData({
     schedule,
     rfis: (rfisResult.data ?? []).map(mapRfi),
     submittals: (submittalsResult.data ?? []).map(mapSubmittal),
-    sharedFiles: [
-      ...(permissions.can_view_documents
-        ? await loadSharedDrawingSheetEntries({
-            supabase,
-            orgId,
-            projectId,
-            portalType: "sub",
-            portalToken,
-          })
-        : []),
-      ...(filesResult.data ?? []).map((file: any) => mapFileMetadata(file, portalToken)),
-    ],
+    // Shared drawing sheets are NOT injected here — the portal documents tab
+    // renders them via /api/portal/drawings/[token] in the tiled viewer.
+    sharedFiles: (filesResult.data ?? []).map((file: any) => mapFileMetadata(file, portalToken)),
     pendingRfiCount,
     pendingSubmittalCount,
   }
-}
-
-/**
- * Drawing sheets shared to a portal (drawing_sheets.share_with_subs /
- * share_with_clients). Rendered alongside sharedFiles as PDF entries; the
- * URL points at the portal sheet-PDF route, which extracts just the shared
- * page from the source set.
- */
-async function loadSharedDrawingSheetEntries({
-  supabase,
-  orgId,
-  projectId,
-  portalType,
-  portalToken,
-}: {
-  supabase: ReturnType<typeof createServiceSupabaseClient>
-  orgId: string
-  projectId: string
-  portalType: "client" | "sub"
-  portalToken?: string
-}) {
-  const shareColumn = portalType === "sub" ? "share_with_subs" : "share_with_clients"
-
-  const { data, error } = await supabase
-    .from("drawing_sheets")
-    .select(`
-      id, org_id, project_id, sheet_number, sheet_title, discipline, created_at,
-      current_revision_id,
-      drawing_revisions!drawing_sheets_current_revision_id_fkey(revision_label)
-    `)
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .eq(shareColumn, true)
-    .not("current_revision_id", "is", null)
-    .order("sheet_number", { ascending: true })
-
-  if (error) {
-    console.error("Failed to load shared drawing sheets for portal:", error)
-    return []
-  }
-
-  return (data ?? []).map((row: any) => {
-    const revisionLabel = row.drawing_revisions?.revision_label as string | undefined
-    const titlePart = row.sheet_title ? ` — ${row.sheet_title}` : ""
-    const revPart = revisionLabel ? ` (${revisionLabel})` : ""
-    return {
-      id: `sheet:${row.id}`,
-      org_id: row.org_id,
-      project_id: row.project_id,
-      file_name: `${row.sheet_number}${titlePart}${revPart}.pdf`,
-      storage_path: "",
-      mime_type: "application/pdf",
-      visibility: "shared",
-      category: "plans" as const,
-      created_at: row.created_at,
-      url: portalToken
-        ? `/api/portal/drawings/${portalToken}/${row.id}`
-        : undefined,
-    }
-  })
 }
 
 function permissionsToColumns(overrides?: Partial<PortalPermissions>) {

@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { requireOrgContext } from "@/lib/services/context";
-import { getReportingExcludedProjectIds } from "@/lib/services/reporting-scope";
+import { applyReportingExclusion, getReportingExcludedProjectIds } from "@/lib/services/reporting-scope";
 import { listProjectsWithClient } from "@/lib/services/projects";
 import { listTasksWithClient } from "@/lib/services/tasks";
 import type { DashboardStats, Project, Task } from "@/lib/types";
@@ -262,10 +262,6 @@ export interface ControlTowerData {
   }>;
 }
 
-function monthKey(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-}
-
 function monthLabel(key: string): string {
   const [year, month] = key.split("-").map(Number);
   return new Date(year, month - 1, 1).toLocaleDateString("en-US", {
@@ -314,96 +310,28 @@ function humanizeToken(value: string | null | undefined): string {
   return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
-function buildRevenueSeries(
-  invoices: Array<{
-    total_cents?: number | null;
-    issue_date?: string | null;
-    created_at?: string | null;
-  }>,
-  now: Date,
-) {
-  const monthStarts: Date[] = [];
-  for (let i = 11; i >= 0; i--) {
-    monthStarts.push(new Date(now.getFullYear(), now.getMonth() - i, 1));
-  }
-
-  const revenueByMonth = new Map(
-    monthStarts.map((date) => [monthKey(date), 0]),
-  );
-  const firstMonth = monthStarts[0];
-
-  for (const invoice of invoices) {
-    const invoiceDateValue = invoice.issue_date ?? invoice.created_at;
-    if (!invoiceDateValue) continue;
-
-    const invoiceDate = new Date(invoiceDateValue);
-    if (Number.isNaN(invoiceDate.getTime()) || invoiceDate < firstMonth) {
-      continue;
-    }
-
-    const key = monthKey(invoiceDate);
-    if (!revenueByMonth.has(key)) continue;
-
-    revenueByMonth.set(
-      key,
-      (revenueByMonth.get(key) ?? 0) + (invoice.total_cents ?? 0),
-    );
-  }
-
-  return monthStarts.map((date) => {
-    const key = monthKey(date);
-    return {
-      key,
-      month: monthLabel(key),
-      revenueCents: revenueByMonth.get(key) ?? 0,
-    };
-  });
-}
-
-function buildArAging(
-  invoices: Array<{
-    balance_due_cents?: number | null;
-    due_date?: string | null;
-  }>,
-  now: Date,
-) {
-  const aging = {
-    current: 0,
-    oneToThirty: 0,
-    thirtyOneToSixty: 0,
-    sixtyOneToNinety: 0,
-    overNinety: 0,
-    noDueDate: 0,
+// Shape returned by the dashboard_invoice_rollup DB function; keys mirror the
+// jsonb the SQL builds.
+type InvoiceRollupPayload = {
+  total_invoiced: number;
+  total_collected: number;
+  total_overdue: number;
+  revenue_series: Array<{ key: string; revenue_cents: number }> | null;
+  ar_aging: {
+    current: number;
+    no_due_date: number;
+    one_to_thirty: number;
+    thirty_one_to_sixty: number;
+    sixty_one_to_ninety: number;
+    over_ninety: number;
   };
+};
 
-  for (const invoice of invoices) {
-    const balance = invoice.balance_due_cents ?? 0;
-    if (balance <= 0) continue;
-
-    if (!invoice.due_date) {
-      aging.noDueDate += balance;
-      continue;
-    }
-
-    const dueDate = new Date(invoice.due_date);
-    if (Number.isNaN(dueDate.getTime())) {
-      aging.noDueDate += balance;
-      continue;
-    }
-
-    const daysOverdue = Math.floor(
-      (now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24),
-    );
-
-    if (daysOverdue <= 0) aging.current += balance;
-    else if (daysOverdue <= 30) aging.oneToThirty += balance;
-    else if (daysOverdue <= 60) aging.thirtyOneToSixty += balance;
-    else if (daysOverdue <= 90) aging.sixtyOneToNinety += balance;
-    else aging.overNinety += balance;
-  }
-
-  return aging;
-}
+type BudgetRollupRow = {
+  project_id: string;
+  budget_cents: number;
+  actual_cents: number;
+};
 
 export async function getControlTowerData(
   orgId?: string,
@@ -415,15 +343,27 @@ export async function getControlTowerData(
   // dropped from every financial rollup below so they don't skew the numbers.
   const excludedProjectIds = await getReportingExcludedProjectIds(supabase, resolvedOrgId);
 
+  // Invoice totals/series/aging and per-project budget actuals are aggregated
+  // in SQL (dashboard_invoice_rollup / dashboard_budget_rollup) — invoice and
+  // job-cost history grow without bound, so only aggregates cross the wire.
+  // Tasks and schedule items are fetched without their closed rows (done /
+  // completed), which are the unbounded part; closed counts come from head
+  // counts so the by-status totals stay exact.
+  const todayKeyUtc = new Date().toISOString().slice(0, 10);
+
   const [
     projectsResult,
     tasksResult,
-    invoicesResult,
+    tasksDoneResult,
+    invoiceRollupResult,
+    overdueInvoiceCandidatesResult,
     rfisResult,
     submittalsResult,
     changeOrdersResult,
     punchResult,
     scheduleResult,
+    scheduleCompletedResult,
+    scheduleCriticalResult,
     opportunitiesResult,
     vendorBillsResult,
     billableCostsResult,
@@ -436,14 +376,31 @@ export async function getControlTowerData(
     supabase
       .from("tasks")
       .select("id, status, due_date, title, project_id, project:projects(name)")
-      .eq("org_id", resolvedOrgId),
+      .eq("org_id", resolvedOrgId)
+      .neq("status", "done"),
+    applyReportingExclusion(
+      supabase
+        .from("tasks")
+        .select("id", { count: "exact", head: true })
+        .eq("org_id", resolvedOrgId)
+        .eq("status", "done"),
+      excludedProjectIds,
+    ),
+    supabase.rpc("dashboard_invoice_rollup", {
+      p_org_id: resolvedOrgId,
+      p_excluded_project_ids: excludedProjectIds,
+    }),
     supabase
       .from("invoices")
       .select(
-        "id, status, total_cents, balance_due_cents, due_date, issue_date, created_at, invoice_number, project_id, project:projects(name)",
+        "id, status, total_cents, balance_due_cents, due_date, invoice_number, project_id, project:projects(name)",
       )
       .eq("org_id", resolvedOrgId)
-      .neq("status", "void"),
+      .neq("status", "void")
+      .gt("balance_due_cents", 0)
+      .or(`status.eq.overdue,due_date.lte.${todayKeyUtc}`)
+      .order("due_date", { ascending: true, nullsFirst: false })
+      .limit(24),
     supabase
       .from("rfis")
       .select("id", { count: "exact", head: true })
@@ -468,7 +425,24 @@ export async function getControlTowerData(
       .from("schedule_items")
       .select("id, project_id, status, is_critical_path, progress, start_date, end_date, name, item_type, trade, assigned_to, phase, project:projects(name)")
       .eq("org_id", resolvedOrgId)
-      .neq("status", "cancelled"),
+      .not("status", "in", "(cancelled,completed)"),
+    applyReportingExclusion(
+      supabase
+        .from("schedule_items")
+        .select("id", { count: "exact", head: true })
+        .eq("org_id", resolvedOrgId)
+        .eq("status", "completed"),
+      excludedProjectIds,
+    ),
+    applyReportingExclusion(
+      supabase
+        .from("schedule_items")
+        .select("id", { count: "exact", head: true })
+        .eq("org_id", resolvedOrgId)
+        .neq("status", "cancelled")
+        .eq("is_critical_path", true),
+      excludedProjectIds,
+    ),
     supabase
       .from("opportunities")
       .select("id, status, budget_range")
@@ -498,7 +472,24 @@ export async function getControlTowerData(
   const keep = (projectId: string | null | undefined) => !projectId || !excludedSet.has(projectId);
   const projects = (projectsResult.data ?? []).filter((p) => !excludedSet.has(p.id));
   const tasks = (tasksResult.data ?? []).filter((t) => keep((t as { project_id?: string | null }).project_id));
-  const invoices = (invoicesResult.data ?? []).filter((i) => keep((i as { project_id?: string | null }).project_id));
+  const overdueInvoiceCandidates = (overdueInvoiceCandidatesResult.data ?? []).filter((i) =>
+    keep((i as { project_id?: string | null }).project_id),
+  );
+  const emptyInvoiceRollup: InvoiceRollupPayload = {
+    total_invoiced: 0,
+    total_collected: 0,
+    total_overdue: 0,
+    revenue_series: [],
+    ar_aging: {
+      current: 0,
+      no_due_date: 0,
+      one_to_thirty: 0,
+      thirty_one_to_sixty: 0,
+      sixty_one_to_ninety: 0,
+      over_ninety: 0,
+    },
+  };
+  const invoiceRollup: InvoiceRollupPayload = invoiceRollupResult.data ?? emptyInvoiceRollup;
   const scheduleItems = (scheduleResult.data ?? []).filter((s) => keep((s as { project_id?: string | null }).project_id));
   const opportunities = opportunitiesResult.data ?? [];
   const vendorBills = (vendorBillsResult.data ?? []).filter((b) => keep((b as { project_id?: string | null }).project_id));
@@ -517,50 +508,25 @@ export async function getControlTowerData(
     ["active", "on_hold"].includes(p.status),
   );
 
-  // Budget health — latest budget vs posted job-cost actuals, for active jobs only.
+  // Budget health — latest budget vs posted job-cost actuals, for active jobs
+  // only. Aggregated in SQL: job-cost history is the largest table this
+  // dashboard touches.
   const activeProjectIds = activeProjects.map((p) => p.id);
-  const [budgetsResult, jobCostResult] =
+  const budgetRollupRows: BudgetRollupRow[] =
     activeProjectIds.length === 0
-      ? [
-          { data: [] as Array<{ project_id: string; total_cents: number | null; version: number | null }>, error: null },
-          { data: [] as Array<{ project_id: string; cost_cents: number | null }>, error: null },
-        ]
-      : await Promise.all([
-          supabase
-            .from("budgets")
-            .select("project_id, total_cents, version")
-            .eq("org_id", resolvedOrgId)
-            .in("project_id", activeProjectIds),
-          supabase
-            .from("job_cost_entries")
-            .select("project_id, cost_cents")
-            .eq("org_id", resolvedOrgId)
-            .eq("status", "posted")
-            .in("project_id", activeProjectIds),
-        ]);
+      ? []
+      : (
+          await supabase.rpc("dashboard_budget_rollup", {
+            p_org_id: resolvedOrgId,
+            p_project_ids: activeProjectIds,
+          })
+        ).data ?? [];
 
   const budgetByProject = new Map<string, number>();
-  const budgetVersionByProject = new Map<string, number>();
-  for (const row of (budgetsResult.data ?? []) as Array<{
-    project_id: string;
-    total_cents: number | null;
-    version: number | null;
-  }>) {
-    const version = row.version ?? 0;
-    if (version >= (budgetVersionByProject.get(row.project_id) ?? -1)) {
-      budgetVersionByProject.set(row.project_id, version);
-      budgetByProject.set(row.project_id, row.total_cents ?? 0);
-    }
-  }
   const actualByProject = new Map<string, number>();
-  for (const row of (jobCostResult.data ?? []) as Array<{
-    project_id: string;
-    cost_cents: number | null;
-  }>) {
-    actualByProject.set(
-      row.project_id,
-      (actualByProject.get(row.project_id) ?? 0) + (row.cost_cents ?? 0),
-    );
+  for (const row of budgetRollupRows) {
+    budgetByProject.set(row.project_id, row.budget_cents);
+    actualByProject.set(row.project_id, row.actual_cents);
   }
 
   const budgetHealthItems: BudgetHealthItem[] = [];
@@ -617,7 +583,9 @@ export async function getControlTowerData(
     items: budgetHealthItems.slice(0, 10),
   };
 
-  // Tasks
+  // Tasks — fetched rows exclude 'done'; the done count comes from the head
+  // count so byStatus/total stay exact.
+  const doneTasksCount = tasksDoneResult.count ?? 0;
   const tasksByStatus: Record<string, number> = {};
   let tasksDueThisWeek = 0;
   let tasksOverdue = 0;
@@ -625,39 +593,40 @@ export async function getControlTowerData(
     tasksByStatus[t.status] = (tasksByStatus[t.status] ?? 0) + 1;
     if (t.due_date) {
       const due = new Date(t.due_date);
-      if (due < now && t.status !== "done") tasksOverdue++;
+      if (due < now) tasksOverdue++;
       if (due >= now && due <= weekFromNow) tasksDueThisWeek++;
     }
   }
-
-  // Financials
-  let totalInvoiced = 0;
-  let totalCollected = 0;
-  let totalOverdue = 0;
-  for (const inv of invoices) {
-    const total = inv.total_cents ?? 0;
-    const balance = inv.balance_due_cents ?? 0;
-    totalInvoiced += total;
-    totalCollected += total - balance;
-    if (
-      inv.status === "overdue" ||
-      (inv.due_date && new Date(inv.due_date) < now && balance > 0)
-    ) {
-      totalOverdue += balance;
-    }
+  if (doneTasksCount > 0) {
+    tasksByStatus["done"] = doneTasksCount;
   }
-  const outstandingAR = totalInvoiced - totalCollected;
-  const revenueSeries = buildRevenueSeries(invoices, now);
-  const arAging = buildArAging(invoices, now);
 
-  // Schedule
-  let completedItems = 0;
-  let criticalPathItems = 0;
+  // Financials — aggregated by dashboard_invoice_rollup.
+  const totalInvoiced = invoiceRollup.total_invoiced;
+  const totalCollected = invoiceRollup.total_collected;
+  const totalOverdue = invoiceRollup.total_overdue;
+  const outstandingAR = totalInvoiced - totalCollected;
+  const revenueSeries = (invoiceRollup.revenue_series ?? []).map((point) => ({
+    key: point.key,
+    month: monthLabel(point.key),
+    revenueCents: point.revenue_cents,
+  }));
+  const arAging = {
+    current: invoiceRollup.ar_aging.current,
+    oneToThirty: invoiceRollup.ar_aging.one_to_thirty,
+    thirtyOneToSixty: invoiceRollup.ar_aging.thirty_one_to_sixty,
+    sixtyOneToNinety: invoiceRollup.ar_aging.sixty_one_to_ninety,
+    overNinety: invoiceRollup.ar_aging.over_ninety,
+    noDueDate: invoiceRollup.ar_aging.no_due_date,
+  };
+
+  // Schedule — fetched rows exclude completed/cancelled; completed and
+  // critical-path counts come from the head counts.
+  const completedItems = scheduleCompletedResult.count ?? 0;
+  const criticalPathItems = scheduleCriticalResult.count ?? 0;
   let atRiskItems = 0;
   let behindItems = 0;
   for (const s of scheduleItems) {
-    if (s.status === "completed") completedItems++;
-    if (s.is_critical_path) criticalPathItems++;
     if (s.status === "at_risk") atRiskItems++;
     if (s.status === "blocked") behindItems++;
   }
@@ -679,15 +648,10 @@ export async function getControlTowerData(
   const daysBetween = (from: Date, to: Date) =>
     Math.max(0, Math.floor((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24)));
 
-  const overdueInvoices: OverdueInvoiceItem[] = invoices
-    .filter((inv) => {
-      const balance = inv.balance_due_cents ?? 0;
-      if (balance <= 0) return false;
-      return (
-        inv.status === "overdue" ||
-        (!!inv.due_date && new Date(inv.due_date) < now)
-      );
-    })
+  // Candidates arrive pre-filtered (positive balance, overdue status or past
+  // due) and pre-sorted oldest-due first, capped at 24 before the excluded-
+  // project filter trims them to the final 8.
+  const overdueInvoices: OverdueInvoiceItem[] = overdueInvoiceCandidates
     .map((inv) => {
       const i = inv as typeof inv & {
         invoice_number?: string | null;
@@ -712,7 +676,7 @@ export async function getControlTowerData(
 
   const dueTasks: DueWorkItem[] = tasks
     .filter((t) => {
-      if (!t.due_date || t.status === "done") return false;
+      if (!t.due_date) return false;
       return new Date(t.due_date) <= weekFromNow;
     })
     .map((t) => {
@@ -736,7 +700,6 @@ export async function getControlTowerData(
 
   const dueScheduleItems: DueWorkItem[] = scheduleItems
     .filter((s) => {
-      if (s.status === "completed") return false;
       const end = (s as { end_date?: string | null }).end_date;
       return !!end && new Date(end) <= weekFromNow;
     })
@@ -789,14 +752,12 @@ export async function getControlTowerData(
     !!date && date >= today && date <= lookaheadEnd;
 
   const overdueScheduleItems = scheduleItems.filter((s) => {
-    if (s.status === "completed") return false;
     const end = parseLocalDate((s as { end_date?: string | null }).end_date);
     return !!end && end < today;
   }).length;
 
   for (const s of scheduleItems) {
     if (!activeProjectSet.has((s as { project_id?: string | null }).project_id ?? "")) continue;
-    if (s.status === "completed" || s.status === "cancelled") continue;
 
     const row = s as typeof s & {
       project_id?: string | null;
@@ -848,13 +809,13 @@ export async function getControlTowerData(
   }
 
   const overdueTasksForLookahead = tasks.filter((t) => {
-    if (!t.due_date || t.status === "done") return false;
+    if (!t.due_date) return false;
     const due = parseLocalDate(t.due_date);
     return !!due && due < today;
   }).length;
 
   for (const t of tasks) {
-    if (!t.due_date || t.status === "done") continue;
+    if (!t.due_date) continue;
     const due = parseLocalDate(t.due_date);
     if (!isInLookahead(due)) continue;
     const row = t as typeof t & {
@@ -894,7 +855,6 @@ export async function getControlTowerData(
       project?: { name?: string | null } | null;
     };
     if (!row.project_id || !activeProjectSet.has(row.project_id)) continue;
-    if (s.status === "completed" || s.status === "cancelled") continue;
     const start = parseLocalDate(row.start_date);
     const end = parseLocalDate(row.end_date) ?? start;
     if (!start || !end || end < today || start > lookaheadEnd) continue;
@@ -1007,8 +967,7 @@ export async function getControlTowerData(
   const itemsDueNext7Days =
     tasksDueThisWeek +
     scheduleItems.filter((s) => {
-      if (s.status === "completed") return false;
-      const end = (s as any).end_date;
+      const end = (s as { end_date?: string | null }).end_date;
       if (!end) return false;
       const endDate = new Date(end);
       return endDate >= now && endDate <= weekFromNow;
@@ -1047,7 +1006,7 @@ export async function getControlTowerData(
       active: activeProjects,
     },
     tasks: {
-      total: tasks.length,
+      total: tasks.length + doneTasksCount,
       dueThisWeek: tasksDueThisWeek,
       overdue: tasksOverdue,
       byStatus: tasksByStatus,
@@ -1075,7 +1034,7 @@ export async function getControlTowerData(
     operationsLookahead,
     budgetHealth,
     schedule: {
-      totalItems: scheduleItems.length,
+      totalItems: scheduleItems.length + completedItems,
       completedItems,
       criticalPathItems,
       atRiskItems,

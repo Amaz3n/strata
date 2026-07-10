@@ -85,9 +85,9 @@ alter table public.commitment_change_orders
 --    (read-compat) but stop writing them in code.
 ```
 
-Naming note: keep the noun "Change Order" in UI for both tiers; commercial tier shows
-lifecycle chips ("PCO" chip when lifecycle in draft/pricing/proposed, "CO #" once
-approved). Terminology map (01) can add `pcoLabel` if the UI needs the word.
+Naming note: keep the noun "Change Order" in UI for both postures; commercial-posture
+projects show lifecycle chips ("PCO" chip when lifecycle in draft/pricing/proposed,
+"CO #" once approved). Terminology map (01) can add `pcoLabel` if the UI needs the word.
 
 ## Service layer changes (`change-orders.ts`)
 

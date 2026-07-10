@@ -186,9 +186,11 @@ full number; file access is already audited via `file_access_events`). Skip
 completion report.
 
 - Compliance requirement: add "W-9" to the default requirement seeds
-  (`getDefaultComplianceRequirements`) for commercial-tier orgs; sub portal compliance
-  upload already handles doc collection — map the W-9 doc type to `w9_file_id` +
-  `w9_received_at` on receipt.
+  (`getDefaultComplianceRequirements`) for commercial-tier orgs (requirements are
+  org-level; mixed residential-default orgs enable it from compliance settings —
+  make sure the settings UI lists it as an available requirement type for everyone);
+  sub portal compliance upload already handles doc collection — map the W-9 doc type
+  to `w9_file_id` + `w9_received_at` on receipt.
 - `is_1099_eligible` derivation suggestion in UI (eligible when entity type not in
   c_corp/s_corp/exempt) — suggestion only, bookkeeper confirms.
 - **1099 summary report:** `lib/services/reports/vendor-1099.ts` — calendar-year cash

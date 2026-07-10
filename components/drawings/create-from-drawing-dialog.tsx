@@ -11,6 +11,7 @@ import {
   BookOpen,
   AlertTriangle,
   AlertCircle,
+  Camera,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -44,6 +45,7 @@ const ENTITY_ICONS: Record<PinEntityType, React.ElementType> = {
   daily_log: BookOpen,
   observation: AlertTriangle,
   issue: AlertCircle,
+  photo: Camera,
 }
 
 // Entity type colors
@@ -55,6 +57,7 @@ const ENTITY_COLORS: Record<PinEntityType, string> = {
   daily_log: "bg-cyan-500",
   observation: "bg-yellow-500",
   issue: "bg-red-500",
+  photo: "bg-teal-500",
 }
 
 interface CreateFromDrawingDialogProps {

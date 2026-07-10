@@ -47,84 +47,91 @@ export function ImageViewer({
   onError,
   priority = true,
 }: ImageViewerProps) {
-  const [currentStage, setCurrentStage] = useState<ImageLoadStage>("loading")
   const [thumbnailLoaded, setThumbnailLoaded] = useState(false)
   const [mediumLoaded, setMediumLoaded] = useState(false)
   const [fullLoaded, setFullLoaded] = useState(false)
-  const [hasError, setHasError] = useState(false)
+  const [thumbnailError, setThumbnailError] = useState(false)
+  const [mediumError, setMediumError] = useState(false)
+  const [fullError, setFullError] = useState(false)
 
-  // Track if component is mounted to avoid state updates after unmount
-  const isMountedRef = useRef(true)
+  // Derived: the best resolution loaded so far. Never downgrades — a lower-res
+  // layer finishing late can't replace a higher one already shown.
+  const currentStage: ImageLoadStage = fullLoaded
+    ? "full"
+    : mediumLoaded
+      ? "medium"
+      : thumbnailLoaded
+        ? "thumbnail"
+        : "loading"
 
+  // Keep callbacks out of the load effect's deps so URL changes are the only
+  // thing that restarts loading.
+  const onLoadStageRef = useRef(onLoadStage)
   useEffect(() => {
-    isMountedRef.current = true
-    return () => {
-      isMountedRef.current = false
-    }
-  }, [])
+    onLoadStageRef.current = onLoadStage
+  }, [onLoadStage])
 
-  // Reset state when URLs change (e.g., navigating to different sheet)
+  // Kick off medium and full concurrently with the thumbnail (which loads via
+  // the <Image> below). Each layer swaps in as soon as it decodes.
   useEffect(() => {
-    setCurrentStage("loading")
     setThumbnailLoaded(false)
     setMediumLoaded(false)
     setFullLoaded(false)
-    setHasError(false)
-  }, [thumbnailUrl, mediumUrl, fullUrl])
+    setThumbnailError(false)
+    setMediumError(false)
+    setFullError(false)
 
-  // Preload medium and full resolution images after thumbnail loads
-  useEffect(() => {
-    if (!thumbnailLoaded || !isMountedRef.current) return
+    let cancelled = false
 
-    // Start loading medium resolution
     const mediumImg = new window.Image()
+    mediumImg.decoding = "async"
     mediumImg.onload = () => {
-      if (!isMountedRef.current) return
+      if (cancelled) return
       setMediumLoaded(true)
-      setCurrentStage("medium")
-      onLoadStage?.("medium")
-
-      // Then load full resolution
-      const fullImg = new window.Image()
-      fullImg.onload = () => {
-        if (!isMountedRef.current) return
-        setFullLoaded(true)
-        setCurrentStage("full")
-        onLoadStage?.("full")
-      }
-      fullImg.onerror = () => {
-        console.warn("[ImageViewer] Failed to load full resolution image")
-        // Keep using medium as fallback
-      }
-      fullImg.src = fullUrl
+      onLoadStageRef.current?.("medium")
     }
     mediumImg.onerror = () => {
+      if (cancelled) return
       console.warn("[ImageViewer] Failed to load medium resolution image")
-      // Keep using thumbnail and try full directly
-      const fullImg = new window.Image()
-      fullImg.onload = () => {
-        if (!isMountedRef.current) return
-        setFullLoaded(true)
-        setCurrentStage("full")
-        onLoadStage?.("full")
-      }
-      fullImg.src = fullUrl
+      setMediumError(true)
     }
     mediumImg.src = mediumUrl
-  }, [thumbnailLoaded, mediumUrl, fullUrl, onLoadStage])
+
+    const fullImg = new window.Image()
+    fullImg.decoding = "async"
+    fullImg.onload = () => {
+      if (cancelled) return
+      setFullLoaded(true)
+      onLoadStageRef.current?.("full")
+    }
+    fullImg.onerror = () => {
+      if (cancelled) return
+      console.warn("[ImageViewer] Failed to load full resolution image")
+      setFullError(true)
+    }
+    fullImg.src = fullUrl
+
+    return () => {
+      cancelled = true
+      mediumImg.onload = null
+      mediumImg.onerror = null
+      fullImg.onload = null
+      fullImg.onerror = null
+    }
+  }, [thumbnailUrl, mediumUrl, fullUrl])
 
   const handleThumbnailLoad = useCallback(() => {
-    if (!isMountedRef.current) return
     setThumbnailLoaded(true)
-    setCurrentStage("thumbnail")
     onLoadStage?.("thumbnail")
   }, [onLoadStage])
 
   const handleThumbnailError = useCallback(() => {
-    if (!isMountedRef.current) return
-    setHasError(true)
+    setThumbnailError(true)
     onError?.(new Error("Failed to load thumbnail image"))
   }, [onError])
+
+  // Only a total failure is an error — if any layer made it, keep going.
+  const hasError = thumbnailError && mediumError && fullError
 
   // Calculate aspect ratio for proper sizing
   const aspectRatio = width && height ? width / height : 4 / 3
