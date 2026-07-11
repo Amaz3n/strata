@@ -65,7 +65,7 @@ as $$
 begin
   if new.status = 'paid' or coalesce(new.balance_due_cents, 1) = 0 then
     update public.pay_applications
-    set status = 'paid', paid_at = coalesce(new.paid_at, now()), updated_at = now()
+    set status = 'paid', paid_at = coalesce(paid_at, now()), updated_at = now()
     where org_id = new.org_id and invoice_id = new.id and status <> 'void';
   elsif old.status = 'paid' and new.status <> 'paid' then
     update public.pay_applications
@@ -80,15 +80,14 @@ $$;
 
 drop trigger if exists trg_reconcile_pay_application_invoice_status on public.invoices;
 create trigger trg_reconcile_pay_application_invoice_status
-  after update of status, balance_due_cents, paid_at on public.invoices
+  after update of status, balance_due_cents on public.invoices
   for each row
   when (old.status is distinct from new.status
-    or old.balance_due_cents is distinct from new.balance_due_cents
-    or old.paid_at is distinct from new.paid_at)
+    or old.balance_due_cents is distinct from new.balance_due_cents)
   execute function public.reconcile_pay_application_invoice_status();
 
 update public.pay_applications pa
-set status = 'paid', paid_at = coalesce(i.paid_at, now()), updated_at = now()
+set status = 'paid', paid_at = coalesce(pa.paid_at, now()), updated_at = now()
 from public.invoices i
 where pa.invoice_id = i.id
   and pa.org_id = i.org_id
