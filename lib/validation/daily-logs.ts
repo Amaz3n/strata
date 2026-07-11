@@ -77,6 +77,8 @@ export type ManpowerInput = z.infer<typeof manpowerInputSchema>
 export const dailyReportSectionKindSchema = z.enum(["delay", "equipment", "visitor", "delivery"])
 export type DailyReportSectionKind = z.infer<typeof dailyReportSectionKindSchema>
 
+const optionalTime = z.string().regex(/^\d{2}:\d{2}$/, "Use a valid time").optional()
+
 export const delayInputSchema = z.object({
   delay_type: z.enum(["weather", "owner", "design", "material", "labor", "equipment", "utility", "other"]),
   description: z.string().trim().min(1, "Description is required").max(2000),
@@ -84,6 +86,18 @@ export const delayInputSchema = z.object({
   affected_trades: z.string().trim().max(500).optional(),
   schedule_item_id: z.string().uuid().optional().nullable(),
   potential_claim: z.boolean().default(false),
+  delay_start_time: optionalTime,
+  delay_end_time: optionalTime,
+  owner_notice_sent: z.boolean().default(false),
+  owner_notice_date: z.string().date().optional(),
+  owner_notice_reference: z.string().trim().max(500).optional(),
+}).superRefine((value, ctx) => {
+  if (value.delay_start_time && value.delay_end_time && value.delay_end_time < value.delay_start_time) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["delay_end_time"], message: "End time must be after start time" })
+  }
+  if (value.owner_notice_sent && !value.owner_notice_date) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["owner_notice_date"], message: "Enter the owner notice date" })
+  }
 })
 
 export const equipmentInputSchema = z.object({

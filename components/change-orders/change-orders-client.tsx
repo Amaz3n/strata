@@ -64,7 +64,7 @@ type SortColumn = "co_number" | "created" | "schedule" | "total"
 type SortDirection = "asc" | "desc"
 
 function coNumberSortValue(changeOrder: ChangeOrder) {
-  const raw = changeOrder.co_number
+  const raw = changeOrder.executed_change_order_number ?? changeOrder.co_number
   if (raw == null) return 0
   if (typeof raw === "number") return raw
   const match = String(raw).match(/\d+/)
@@ -147,9 +147,10 @@ function baseContractCentsForProject(project: Project | null | undefined, approv
 
 function formatCoNumber(changeOrder: ChangeOrder): string | null {
   if (changeOrder.display_number) return changeOrder.display_number
-  const raw = changeOrder.co_number
+  const executed = changeOrder.executed_change_order_number
+  const raw = executed ?? changeOrder.co_number
   if (raw == null || raw === "") return null
-  const prefix = changeOrder.lifecycle === "approved" || changeOrder.status === "approved" ? "CO" : "PCO"
+  const prefix = executed != null ? "CO" : "PCO"
   if (typeof raw === "number") return `${prefix}-${String(raw).padStart(3, "0")}`
   const value = raw.trim()
   if (value === "") return null

@@ -3574,6 +3574,11 @@ function mapDelay(row: any): DailyReportDelay {
     affected_trades: row.affected_trades ?? undefined,
     schedule_item_id: row.schedule_item_id ?? undefined,
     potential_claim: row.potential_claim ?? false,
+    delay_start_time: row.delay_start_time ?? undefined,
+    delay_end_time: row.delay_end_time ?? undefined,
+    owner_notice_sent: row.owner_notice_sent ?? false,
+    owner_notice_date: row.owner_notice_date ?? undefined,
+    owner_notice_reference: row.owner_notice_reference ?? undefined,
     created_at: row.created_at, updated_at: row.updated_at,
   }
 }
@@ -3637,7 +3642,7 @@ const DAILY_REPORT_SELECT =
   "id, org_id, project_id, report_date, status, weather, weather_auto, day_type, share_with_client, created_via_portal, portal_company_id, submitted_at, submitted_by, created_at, updated_at, " +
   "submitted_by_user:app_users!daily_reports_submitted_by_fkey(id, full_name, email, avatar_url), " +
   "manpower:daily_report_manpower(id, org_id, project_id, daily_report_id, company, trade, workers, hours, notes, portal_company_id, created_by, created_at, updated_at), " +
-  "delays:daily_report_delays(id, org_id, project_id, daily_report_id, delay_type, description, hours_lost, affected_trades, schedule_item_id, potential_claim, created_at, updated_at), " +
+  "delays:daily_report_delays(id, org_id, project_id, daily_report_id, delay_type, description, hours_lost, affected_trades, schedule_item_id, potential_claim, delay_start_time, delay_end_time, owner_notice_sent, owner_notice_date, owner_notice_reference, created_at, updated_at), " +
   "equipment:daily_report_equipment(id, org_id, project_id, daily_report_id, description, company, count, hours_used, idle, notes, created_at, updated_at), " +
   "visitors:daily_report_visitors(id, org_id, project_id, daily_report_id, name, company, purpose, time_in, time_out, created_at, updated_at), " +
   "deliveries:daily_report_deliveries(id, org_id, project_id, daily_report_id, description, supplier, quantity, ticket_number, received_by, notes, created_at, updated_at)"
@@ -3929,6 +3934,16 @@ export async function addDailyReportSectionAction(
         payload: { project_id: projectId, daily_report_id: report.id, hours_lost: parsed.hours_lost },
       })
     }
+    if (kind === "delay" && "owner_notice_sent" in parsed && parsed.owner_notice_sent) {
+      await recordEvent({
+        orgId,
+        actorId: userId,
+        eventType: "daily_report.delay_owner_notice_recorded",
+        entityType: "daily_report_delay",
+        entityId: data.id,
+        payload: { project_id: projectId, daily_report_id: report.id, notice_date: parsed.owner_notice_date, reference: parsed.owner_notice_reference },
+      })
+    }
     await recordAudit({ orgId, actorId: userId, action: "insert", entityType: `daily_report_${kind}`, entityId: data.id, after: parsed })
     revalidatePath(`/projects/${projectId}/daily-logs`)
     return fetchDailyReport(supabase, { orgId, projectId, reportId: report.id })
@@ -3947,17 +3962,29 @@ export async function updateDailyReportSectionAction(
     const { supabase, orgId, userId } = await requireOrgContext()
     await requireProjectPermission(userId, projectId, "daily_log.write")
     const table = DAILY_REPORT_SECTION_TABLES[kind]
-    const { data: existing } = await supabase
+    const existingSelect = kind === "delay" ? "id, daily_report_id, owner_notice_sent" : "id, daily_report_id"
+    const { data: existingData } = await supabase
       .from(table)
-      .select("id, daily_report_id")
+      .select(existingSelect)
       .eq("org_id", orgId)
       .eq("project_id", projectId)
       .eq("id", sectionId)
       .maybeSingle()
+    const existing = existingData as { id: string; daily_report_id: string; owner_notice_sent?: boolean } | null
     if (!existing) throw new Error(`${kind} entry not found`)
     await assertDailyReportDraft(supabase, { orgId, projectId, reportId: existing.daily_report_id })
     const { error } = await supabase.from(table).update(parsed).eq("org_id", orgId).eq("project_id", projectId).eq("id", sectionId)
     if (error) throw new Error(`Failed to update ${kind}: ${error.message}`)
+    if (kind === "delay" && "owner_notice_sent" in parsed && parsed.owner_notice_sent && !existing.owner_notice_sent) {
+      await recordEvent({
+        orgId,
+        actorId: userId,
+        eventType: "daily_report.delay_owner_notice_recorded",
+        entityType: "daily_report_delay",
+        entityId: sectionId,
+        payload: { project_id: projectId, daily_report_id: existing.daily_report_id, notice_date: parsed.owner_notice_date, reference: parsed.owner_notice_reference },
+      })
+    }
     await recordAudit({ orgId, actorId: userId, action: "update", entityType: `daily_report_${kind}`, entityId: sectionId, after: parsed })
     revalidatePath(`/projects/${projectId}/daily-logs`)
     return fetchDailyReport(supabase, { orgId, projectId, reportId: existing.daily_report_id })
@@ -4006,7 +4033,7 @@ export async function listProjectDelayLogAction(projectId: string): Promise<Dail
   await requireProjectPermission(userId, projectId, "daily_log.read")
   const { data, error } = await supabase
     .from("daily_report_delays")
-    .select("id, org_id, project_id, daily_report_id, delay_type, description, hours_lost, affected_trades, schedule_item_id, potential_claim, created_at, updated_at, report:daily_reports(report_date)")
+    .select("id, org_id, project_id, daily_report_id, delay_type, description, hours_lost, affected_trades, schedule_item_id, potential_claim, delay_start_time, delay_end_time, owner_notice_sent, owner_notice_date, owner_notice_reference, created_at, updated_at, report:daily_reports(report_date)")
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .order("created_at", { ascending: false })

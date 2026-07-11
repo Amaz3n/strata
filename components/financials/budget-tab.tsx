@@ -1694,6 +1694,12 @@ export function BudgetTab({
           amount_cents: line.amount_cents,
           metadata: line.metadata ?? {},
           cost_code: Array.isArray(line.cost_code) ? line.cost_code[0] : line.cost_code,
+          actual_cents: (() => {
+            const costCode = Array.isArray(line.cost_code) ? line.cost_code[0] : line.cost_code
+            return (budgetData?.breakdown ?? [])
+              .filter((row: any) => row.budget_line_id === line.id || (line.cost_code_id && row.cost_code_id === line.cost_code_id) || (costCode?.id && row.cost_code_id === costCode.id))
+              .reduce((sum: number, row: any) => sum + Number(row.actual_cents ?? 0), 0)
+          })(),
         }))}
       />
 

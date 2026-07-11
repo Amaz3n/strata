@@ -19,6 +19,9 @@ const columns: Record<string, CsvColumn<Row>[]> = {
     { key: "total_completed_stored_cents", header: "total_completed_stored_cents" },
     { key: "retainage_cents", header: "retainage_cents" }, { key: "current_payment_due_cents", header: "current_payment_due_cents" },
     { key: "balance_to_finish_cents", header: "balance_to_finish_cents" }, { key: "submitted_at", header: "submitted_at" },
+    { key: "approved_at", header: "approved_at" }, { key: "paid_at", header: "paid_at" },
+    { key: "invoice_due_date", header: "invoice_due_date" }, { key: "invoice_balance_due_cents", header: "invoice_balance_due_cents" },
+    { key: "days_past_due", header: "days_past_due" },
   ],
   meetings: [
     { key: "display_number", header: "meeting_number" }, { key: "series", header: "series" }, { key: "title", header: "title" },
@@ -46,6 +49,9 @@ const columns: Record<string, CsvColumn<Row>[]> = {
     { key: "report_date", header: "report_date" }, { key: "delay_type", header: "delay_type" }, { key: "description", header: "description" },
     { key: "hours_lost", header: "hours_lost" }, { key: "affected_trades", header: "affected_trades" },
     { key: "potential_claim", header: "potential_claim" }, { key: "schedule_item_id", header: "schedule_item_id" },
+    { key: "delay_start_time", header: "delay_start_time" }, { key: "delay_end_time", header: "delay_end_time" },
+    { key: "owner_notice_sent", header: "owner_notice_sent" }, { key: "owner_notice_date", header: "owner_notice_date" },
+    { key: "owner_notice_reference", header: "owner_notice_reference" },
   ],
 }
 
@@ -64,7 +70,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     else {
       const { data, error } = await supabase
         .from("daily_report_delays")
-        .select("id, delay_type, description, hours_lost, affected_trades, schedule_item_id, potential_claim, report:daily_reports!inner(report_date)")
+        .select("id, delay_type, description, hours_lost, affected_trades, schedule_item_id, potential_claim, delay_start_time, delay_end_time, owner_notice_sent, owner_notice_date, owner_notice_reference, report:daily_reports!inner(report_date)")
         .eq("org_id", orgId).eq("project_id", projectId).order("created_at", { ascending: false })
       if (error) throw new Error(`Failed to export delay register: ${error.message}`)
       rows = (data ?? []).map((row: Row) => ({ ...row, report_date: (Array.isArray(row.report) ? row.report[0] : row.report)?.report_date ?? null }))

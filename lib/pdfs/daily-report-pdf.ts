@@ -7,7 +7,7 @@ export async function renderDailyReportPdf(data: {
   summary?: string | null
   manpower: Array<{ company: string; trade?: string | null; workers: number; hours?: number | null }>
   entries: Array<{ type: string; description: string; quantity?: number | null; hours?: number | null; location?: string | null }>
-  delays?: Array<{ type: string; description: string; hoursLost?: number | null; affectedTrades?: string | null; potentialClaim?: boolean }>
+  delays?: Array<{ type: string; description: string; hoursLost?: number | null; affectedTrades?: string | null; potentialClaim?: boolean; startTime?: string | null; endTime?: string | null; ownerNoticeSent?: boolean; ownerNoticeDate?: string | null; ownerNoticeReference?: string | null }>
   equipment?: Array<{ description: string; company?: string | null; count: number; hoursUsed?: number | null; idle?: boolean }>
   deliveries?: Array<{ description: string; supplier?: string | null; quantity?: string | null; ticketNumber?: string | null }>
   visitors?: Array<{ name: string; company?: string | null; purpose?: string | null; timeIn?: string | null; timeOut?: string | null }>
@@ -44,10 +44,12 @@ export async function renderDailyReportPdf(data: {
     drawSectionTitle(kit, "Delays")
     drawTable(kit, [
       { label: "Type", width: 70, value: (row) => row.type },
-      { label: "Description", width: 255, value: (row) => row.description },
-      { label: "Trades", width: 100, value: (row) => row.affectedTrades },
-      { label: "Hours", width: 48, value: (row) => row.hoursLost, align: "right" },
-      { label: "Claim", width: 55, value: (row) => row.potentialClaim ? "Yes" : "" },
+      { label: "Description", width: 190, value: (row) => row.description },
+      { label: "Window", width: 75, value: (row) => row.startTime ? `${row.startTime}${row.endTime ? `–${row.endTime}` : ""}` : "" },
+      { label: "Trades", width: 80, value: (row) => row.affectedTrades },
+      { label: "Hours", width: 38, value: (row) => row.hoursLost, align: "right" },
+      { label: "Notice", width: 75, value: (row) => row.ownerNoticeSent ? [row.ownerNoticeDate, row.ownerNoticeReference].filter(Boolean).join(" · ") || "Sent" : "" },
+      { label: "Claim", width: 45, value: (row) => row.potentialClaim ? "Yes" : "" },
     ], data.delays)
   }
   if (data.equipment?.length) {

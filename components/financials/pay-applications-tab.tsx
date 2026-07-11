@@ -176,7 +176,7 @@ export function PayApplicationsTab({ projectId, payApplications, onInvoiceGenera
         </div>
       ) : (
         <div className="overflow-x-auto border">
-          <Table className="min-w-[760px]">
+          <Table className="min-w-[980px]">
             <TableHeader>
               <TableRow>
                 <TableHead className="w-16">App #</TableHead>
@@ -185,6 +185,8 @@ export function PayApplicationsTab({ projectId, payApplications, onInvoiceGenera
                 <TableHead className="w-36 text-right">Completed + stored</TableHead>
                 <TableHead className="w-28 text-right">Retainage</TableHead>
                 <TableHead className="w-32 text-right">Payment due</TableHead>
+                <TableHead className="w-28">Invoice due</TableHead>
+                <TableHead className="w-28 text-right">Open balance</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -212,6 +214,13 @@ export function PayApplicationsTab({ projectId, payApplications, onInvoiceGenera
                     </TableCell>
                     <TableCell className="text-right font-mono text-sm tabular-nums">
                       {app.status === "draft" ? "—" : formatMoneyExact(app.current_payment_due_cents)}
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {app.invoice_due_date ?? "—"}
+                      {(app.days_past_due ?? 0) > 0 ? <div className="text-xs text-destructive">{app.days_past_due}d overdue</div> : null}
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-sm tabular-nums">
+                      {app.invoice_balance_due_cents == null ? "—" : formatMoneyExact(app.invoice_balance_due_cents)}
                     </TableCell>
                   </TableRow>
                 )
@@ -684,7 +693,7 @@ function PayApplicationSheet({
                 Download PDF
               </Button>
             ) : null}
-            {app.status === "invoiced" && !app.approved_at ? (
+            {(app.status === "invoiced" || app.status === "submitted") && !app.approved_at ? (
               <Button type="button" variant="outline" size="sm" onClick={markApproved} disabled={isPending}>
                 Mark owner-approved
               </Button>

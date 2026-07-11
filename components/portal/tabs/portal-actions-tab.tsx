@@ -43,7 +43,14 @@ export function PortalActionsTab({ data, token, portalType }: PortalActionsTabPr
                 className="block py-3 border-b last:border-0 hover:bg-muted/50 -mx-2 px-2 rounded"
               >
                 <div className="flex items-center justify-between mb-1">
-                  <p className="text-sm font-medium">{co.title}</p>
+                  <p className="text-sm font-medium">
+                    {co.executed_change_order_number != null
+                      ? `CO-${String(co.executed_change_order_number).padStart(3, "0")} · `
+                      : co.co_number != null
+                        ? `PCO-${String(co.co_number).padStart(3, "0")} · `
+                        : ""}
+                    {co.title}
+                  </p>
                   <Badge variant="outline" className="capitalize text-xs">
                     {co.status}
                   </Badge>

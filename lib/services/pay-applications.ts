@@ -27,7 +27,7 @@ import {
 } from "@/lib/validation/pay-applications"
 
 const PAY_APP_SELECT =
-  "id, org_id, project_id, contract_id, application_number, period_start, period_end, billing_period_id, status, invoice_id, original_contract_sum_cents, change_order_sum_cents, contract_sum_to_date_cents, total_completed_stored_cents, retainage_cents, total_earned_less_retainage_cents, previous_certificates_cents, current_payment_due_cents, balance_to_finish_cents, submitted_at, approved_at, pdf_file_id, metadata, created_at, updated_at"
+  "id, org_id, project_id, contract_id, application_number, period_start, period_end, billing_period_id, status, invoice_id, original_contract_sum_cents, change_order_sum_cents, contract_sum_to_date_cents, total_completed_stored_cents, retainage_cents, total_earned_less_retainage_cents, previous_certificates_cents, current_payment_due_cents, balance_to_finish_cents, submitted_at, approved_at, paid_at, pdf_file_id, metadata, created_at, updated_at"
 
 const APP_LINE_SELECT =
   "id, pay_application_id, prime_sov_line_id, scheduled_value_cents, previous_billed_cents, this_period_cents, stored_materials_cents, percent_complete, balance_to_finish_cents, retainage_cents, metadata"
@@ -57,6 +57,10 @@ export interface PayApplication {
   balance_to_finish_cents: number
   submitted_at: string | null
   approved_at: string | null
+  paid_at: string | null
+  invoice_due_date?: string | null
+  invoice_balance_due_cents?: number | null
+  days_past_due?: number
   pdf_file_id: string | null
   is_retainage_release: boolean
   created_at?: string
@@ -119,6 +123,7 @@ function mapApplication(row: PayAppRow): PayApplication {
     balance_to_finish_cents: Number(row.balance_to_finish_cents ?? 0),
     submitted_at: row.submitted_at ?? null,
     approved_at: row.approved_at ?? null,
+    paid_at: row.paid_at ?? null,
     pdf_file_id: row.pdf_file_id ?? null,
     is_retainage_release: metadata.type === "retainage_release",
     created_at: row.created_at,
@@ -177,7 +182,7 @@ async function requirePayAppPermission(params: {
   orgId: string
   userId: string
   projectId: string
-  permission?: "payapp.write" | "invoice.read"
+  permission?: "payapp.write" | "invoice.read" | "invoice.approve"
   resourceId?: string
 }) {
   await requireAuthorization({
@@ -330,7 +335,30 @@ export async function listPayApplications(projectId: string, orgId?: string): Pr
   if (error) {
     throw new Error(`Failed to load pay applications: ${error.message}`)
   }
-  return (data ?? []).map(mapApplication)
+  const applications = (data ?? []).map(mapApplication)
+  const invoiceIds = applications.map((application) => application.invoice_id).filter((id): id is string => Boolean(id))
+  if (invoiceIds.length === 0) return applications
+
+  const { data: invoices, error: invoiceError } = await supabase
+    .from("invoices")
+    .select("id, due_date, balance_due_cents")
+    .eq("org_id", resolvedOrgId)
+    .in("id", invoiceIds)
+  if (invoiceError) throw new Error(`Failed to load pay application receivables: ${invoiceError.message}`)
+  const invoiceById = new Map((invoices ?? []).map((invoice) => [invoice.id as string, invoice]))
+  const today = new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`).getTime()
+  return applications.map((application) => {
+    const invoice = application.invoice_id ? invoiceById.get(application.invoice_id) : null
+    const dueAt = invoice?.due_date ? new Date(`${invoice.due_date}T00:00:00Z`).getTime() : null
+    return {
+      ...application,
+      invoice_due_date: invoice?.due_date ?? null,
+      invoice_balance_due_cents: invoice?.balance_due_cents == null ? null : Number(invoice.balance_due_cents),
+      days_past_due: dueAt != null && Number(invoice?.balance_due_cents ?? 0) > 0
+        ? Math.max(0, Math.floor((today - dueAt) / 86_400_000))
+        : 0,
+    }
+  })
 }
 
 export async function getPayApplication(payApplicationId: string, orgId?: string): Promise<PayApplicationDetail> {
@@ -851,20 +879,31 @@ export async function markPayApplicationApproved(payApplicationId: string, orgId
     orgId: resolvedOrgId,
     userId,
     projectId: appRow.project_id as string,
+    permission: "invoice.approve",
     resourceId: payApplicationId,
   })
   if (appRow.status !== "invoiced" && appRow.status !== "submitted") {
     throw new Error("Only submitted pay applications can be marked approved.")
   }
 
+  const approvedAt = new Date().toISOString()
   const { error } = await supabase
     .from("pay_applications")
-    .update({ approved_at: new Date().toISOString() })
+    .update({ status: "approved", approved_at: approvedAt })
     .eq("org_id", resolvedOrgId)
     .eq("id", payApplicationId)
   if (error) {
     throw new Error(`Failed to record owner approval: ${error.message}`)
   }
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    eventType: "pay_application.approved",
+    entityType: "pay_application",
+    entityId: payApplicationId,
+    payload: { project_id: appRow.project_id, invoice_id: appRow.invoice_id, approved_at: approvedAt },
+  })
 
   await recordAudit({
     orgId: resolvedOrgId,
@@ -872,7 +911,8 @@ export async function markPayApplicationApproved(payApplicationId: string, orgId
     action: "update",
     entityType: "pay_application",
     entityId: payApplicationId,
-    after: { approved_at: new Date().toISOString() },
+    before: { status: appRow.status, approved_at: appRow.approved_at },
+    after: { status: "approved", approved_at: approvedAt },
   })
 
   const freshRow = await loadApplication(supabase, resolvedOrgId, payApplicationId)

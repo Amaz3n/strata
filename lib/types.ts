@@ -477,6 +477,11 @@ export interface DailyReportDelay {
   affected_trades?: string
   schedule_item_id?: string
   potential_claim: boolean
+  delay_start_time?: string
+  delay_end_time?: string
+  owner_notice_sent: boolean
+  owner_notice_date?: string
+  owner_notice_reference?: string
   created_at: string
   updated_at: string
   report_date?: string
@@ -948,6 +953,8 @@ export interface ChangeOrder {
   org_id: string
   project_id: string
   co_number?: number | string | null
+  /** Owner-facing OCO number, assigned only when approval is executed. */
+  executed_change_order_number?: number | null
   display_number?: string
   title: string
   description?: string

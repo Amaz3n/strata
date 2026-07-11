@@ -5,6 +5,7 @@ import { renderDailyReportPdf } from "@/lib/pdfs/daily-report-pdf"
 import { renderIncidentPdf } from "@/lib/pdfs/incident-pdf"
 import { renderInspectionPdf } from "@/lib/pdfs/inspection-pdf"
 import { renderPunchListPdf } from "@/lib/pdfs/punch-list-pdf"
+import { renderContingencyUsagePdf } from "@/lib/pdfs/contingency-usage-pdf"
 import { renderRfiPdf } from "@/lib/pdfs/rfi-pdf"
 import { renderSubmittalPdf } from "@/lib/pdfs/submittal-pdf"
 import { renderSubmittalRegisterPdf } from "@/lib/pdfs/submittal-register-pdf"
@@ -15,6 +16,8 @@ import { getInspection } from "@/lib/services/inspections"
 import { listSafetyIncidents } from "@/lib/services/safety"
 import { listRfiResponses, listRfis } from "@/lib/services/rfis"
 import { listSubmittalItems, listSubmittalReviewSteps, listSubmittals } from "@/lib/services/submittals"
+import { getContingencyUsageReport } from "@/lib/services/reports/contingency-usage"
+import { toCsv } from "@/lib/services/reports/csv"
 import { downloadFilesObject } from "@/lib/storage/files-storage"
 
 function pdfResponse(pdf: Buffer, fileName: string) {
@@ -41,6 +44,64 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!project) return NextResponse.json({ error: "Project not found" }, { status: 404 })
     const numbering = (org?.document_numbering ?? {}) as DocumentNumberingSettings
     const baseHeader = { orgName: org?.name ?? "Arc", orgAddress: typeof org?.address === "string" ? org.address : null, projectName: project.name }
+
+    if (kind === "contingency") {
+      const report = await getContingencyUsageReport(projectId, orgId)
+      const format = request.nextUrl.searchParams.get("format") ?? "pdf"
+      if (format === "csv") {
+        const rows = report.entries.map((entry) => ({
+          date: new Date(entry.date).toISOString().slice(0, 10),
+          transfer_number: entry.transfer_number,
+          contingency_line: entry.contingency_line,
+          reason: entry.reason,
+          direction: entry.direction === "draw" ? "Draw" : "Transfer in",
+          counterparty_lines: entry.counterparty_lines,
+          amount_dollars: (entry.amount_cents / 100).toFixed(2),
+          remaining_dollars: (entry.remaining_after_cents / 100).toFixed(2),
+        }))
+        const csv = toCsv(rows, [
+          { key: "date", header: "Date" },
+          { key: "transfer_number", header: "Transfer #" },
+          { key: "contingency_line", header: "Contingency line" },
+          { key: "reason", header: "Reason" },
+          { key: "direction", header: "Type" },
+          { key: "counterparty_lines", header: "Other budget line(s)" },
+          { key: "amount_dollars", header: "Movement ($)" },
+          { key: "remaining_dollars", header: "Remaining ($)" },
+        ])
+        const summaryCsv = toCsv(report.summaries.map((summary) => ({
+          line_name: summary.line_name,
+          starting: (summary.starting_amount_cents / 100).toFixed(2),
+          transfers_in: (summary.transfers_in_cents / 100).toFixed(2),
+          draws: (summary.draws_cents / 100).toFixed(2),
+          remaining: (summary.remaining_cents / 100).toFixed(2),
+          drawn_percent: summary.drawn_percent?.toFixed(2) ?? "",
+          actuals: (summary.actual_cents / 100).toFixed(2),
+          variance: (summary.draw_vs_actual_cents / 100).toFixed(2),
+        })), [
+          { key: "line_name", header: "Contingency line" },
+          { key: "starting", header: "Starting amount ($)" },
+          { key: "transfers_in", header: "Transfers in ($)" },
+          { key: "draws", header: "Draws ($)" },
+          { key: "remaining", header: "Remaining ($)" },
+          { key: "drawn_percent", header: "Drawn (%)" },
+          { key: "actuals", header: "Actual costs ($)" },
+          { key: "variance", header: "Draws less actuals ($)" },
+        ])
+        const body = [
+          summaryCsv,
+          "",
+          csv,
+        ].join("\n")
+        return new NextResponse(body, { headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="contingency-usage-${new Date().toISOString().slice(0, 10)}.csv"`, "Cache-Control": "private, no-store" } })
+      }
+      if (format !== "pdf") return NextResponse.json({ error: "Format must be pdf or csv" }, { status: 400 })
+      const pdf = await renderContingencyUsagePdf({
+        header: { ...baseHeader, title: "Contingency Usage Log", date: new Date(report.generated_at).toLocaleDateString() },
+        report,
+      })
+      return pdfResponse(pdf, `contingency-usage-${new Date().toISOString().slice(0, 10)}.pdf`)
+    }
 
     if (kind === "rfi") {
       if (!entityId) return NextResponse.json({ error: "RFI id is required" }, { status: 400 })
@@ -89,7 +150,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         supabase.from("daily_reports").select("id, report_date, status, weather, weather_auto, day_type, submitted_at, submitted_by_user:app_users!daily_reports_submitted_by_fkey(full_name, email)").eq("org_id", orgId).eq("project_id", projectId).eq("id", entityId).single(),
         supabase.from("daily_report_manpower").select("company, trade, workers, hours").eq("org_id", orgId).eq("project_id", projectId).eq("daily_report_id", entityId),
         supabase.from("daily_logs").select("id, summary, daily_log_entries(entry_type, description, quantity, hours, location)").eq("org_id", orgId).eq("project_id", projectId).eq("daily_report_id", entityId),
-        supabase.from("daily_report_delays").select("delay_type, description, hours_lost, affected_trades, potential_claim").eq("org_id", orgId).eq("project_id", projectId).eq("daily_report_id", entityId),
+        supabase.from("daily_report_delays").select("delay_type, description, hours_lost, affected_trades, potential_claim, delay_start_time, delay_end_time, owner_notice_sent, owner_notice_date, owner_notice_reference").eq("org_id", orgId).eq("project_id", projectId).eq("daily_report_id", entityId),
         supabase.from("daily_report_equipment").select("description, company, count, hours_used, idle").eq("org_id", orgId).eq("project_id", projectId).eq("daily_report_id", entityId),
         supabase.from("daily_report_deliveries").select("description, supplier, quantity, ticket_number").eq("org_id", orgId).eq("project_id", projectId).eq("daily_report_id", entityId),
         supabase.from("daily_report_visitors").select("name, company, purpose, time_in, time_out").eq("org_id", orgId).eq("project_id", projectId).eq("daily_report_id", entityId),
@@ -112,7 +173,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         weather: weatherText(report.weather) ?? weatherText(report.weather_auto), dayType: report.day_type, summary: (logs ?? []).map((log) => log.summary).filter(Boolean).join("\n"),
         manpower: (manpower ?? []).map((row) => ({ company: row.company ?? "Unspecified", trade: row.trade, workers: row.workers ?? 0, hours: row.hours == null ? null : Number(row.hours) })),
         entries: (logs ?? []).flatMap((log) => (log.daily_log_entries ?? []).map((entry) => ({ type: entry.entry_type, description: entry.description ?? "—", quantity: entry.quantity == null ? null : Number(entry.quantity), hours: entry.hours == null ? null : Number(entry.hours), location: entry.location }))),
-        delays: (delays ?? []).map((row) => ({ type: row.delay_type, description: row.description, hoursLost: row.hours_lost == null ? null : Number(row.hours_lost), affectedTrades: row.affected_trades, potentialClaim: row.potential_claim })),
+        delays: (delays ?? []).map((row) => ({ type: row.delay_type, description: row.description, hoursLost: row.hours_lost == null ? null : Number(row.hours_lost), affectedTrades: row.affected_trades, potentialClaim: row.potential_claim, startTime: row.delay_start_time, endTime: row.delay_end_time, ownerNoticeSent: row.owner_notice_sent, ownerNoticeDate: row.owner_notice_date, ownerNoticeReference: row.owner_notice_reference })),
         equipment: (equipment ?? []).map((row) => ({ description: row.description, company: row.company, count: row.count, hoursUsed: row.hours_used == null ? null : Number(row.hours_used), idle: row.idle })),
         deliveries: (deliveries ?? []).map((row) => ({ description: row.description, supplier: row.supplier, quantity: row.quantity, ticketNumber: row.ticket_number })),
         visitors: (visitors ?? []).map((row) => ({ name: row.name, company: row.company, purpose: row.purpose, timeIn: row.time_in, timeOut: row.time_out })),

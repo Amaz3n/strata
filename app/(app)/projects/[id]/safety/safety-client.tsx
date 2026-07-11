@@ -16,6 +16,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { Checkbox } from "@/components/ui/checkbox"
 import { cn } from "@/lib/utils"
+import { useOfflineSafetyDrafts, type OfflineSafetyDraft } from "@/lib/hooks/use-offline-safety-drafts"
 import { uploadFileAction } from "@/app/(app)/documents/actions"
 import {
   createObservationAction,
@@ -60,24 +61,46 @@ export function SafetyClient({
   initialTab?: string
 }) {
   const defaultTab = initialTab === "talks" || initialTab === "observations" ? initialTab : "incidents"
+  const offline = useOfflineSafetyDrafts(projectId)
 
   return (
     <Tabs defaultValue={defaultTab} className="space-y-4">
+      {offline.drafts.length > 0 ? <OfflineDraftQueue drafts={offline.drafts} isOnline={offline.isOnline} onDiscard={offline.discardDraft} /> : null}
       <TabsList>
         <TabsTrigger value="incidents">Incidents ({incidents.length})</TabsTrigger>
         <TabsTrigger value="talks">Toolbox Talks ({talks.length})</TabsTrigger>
         <TabsTrigger value="observations">Observations ({observations.filter((o) => o.status === "open").length} open)</TabsTrigger>
       </TabsList>
       <TabsContent value="incidents" className="m-0">
-        <IncidentsTab projectId={projectId} incidents={incidents} companies={companies} />
+        <IncidentsTab projectId={projectId} incidents={incidents} companies={companies} saveOfflineDraft={offline.saveDraft} />
       </TabsContent>
       <TabsContent value="talks" className="m-0">
-        <TalksTab projectId={projectId} talks={talks} />
+        <TalksTab projectId={projectId} talks={talks} saveOfflineDraft={offline.saveDraft} />
       </TabsContent>
       <TabsContent value="observations" className="m-0">
-        <ObservationsTab projectId={projectId} observations={observations} companies={companies} />
+        <ObservationsTab projectId={projectId} observations={observations} companies={companies} saveOfflineDraft={offline.saveDraft} />
       </TabsContent>
     </Tabs>
+  )
+}
+
+function OfflineDraftQueue({ drafts, isOnline, onDiscard }: { drafts: OfflineSafetyDraft[]; isOnline: boolean; onDiscard: (id: string) => Promise<void> }) {
+  return (
+    <div className="space-y-2 border border-warning/40 bg-warning/10 p-3 text-sm">
+      <div className="font-medium">{drafts.length} safety draft{drafts.length === 1 ? "" : "s"} not synced</div>
+      <p className="text-xs text-muted-foreground">
+        {isOnline ? "Connection restored. Re-enter each draft below and submit it when ready." : "Draft text is saved on this device until the connection returns."}
+        {" "}Photos and sign-in sheets are not stored offline and must be reattached before submission.
+      </p>
+      {drafts.map((draft) => (
+        <details key={draft.id} className="border bg-background px-3 py-2">
+          <summary className="cursor-pointer capitalize">{draft.kind.replaceAll("_", " ")} · {new Date(draft.createdAt).toLocaleString()}</summary>
+          <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(draft.values, null, 2)}</pre>
+          {draft.evidence.length > 0 ? <p className="mt-2 text-xs font-medium text-warning">Reattach: {draft.evidence.map((file) => file.name).join(", ")}</p> : null}
+          <Button className="mt-2" size="sm" variant="outline" onClick={() => void onDiscard(draft.id)}>Discard draft</Button>
+        </details>
+      ))}
+    </div>
   )
 }
 
@@ -90,7 +113,7 @@ function useSubmit() {
   return { pending, submit }
 }
 
-function IncidentsTab({ projectId, incidents, companies }: { projectId: string; incidents: SafetyIncident[]; companies: CompanyOption[] }) {
+function IncidentsTab({ projectId, incidents, companies, saveOfflineDraft }: { projectId: string; incidents: SafetyIncident[]; companies: CompanyOption[]; saveOfflineDraft: ReturnType<typeof useOfflineSafetyDrafts>["saveDraft"] }) {
   const router = useRouter()
   const { pending, submit } = useSubmit()
   const [sheetOpen, setSheetOpen] = useState(false)
@@ -171,6 +194,12 @@ function IncidentsTab({ projectId, incidents, companies }: { projectId: string; 
               }
               submit(async () => {
                 const photo = form.get("photo")
+                if (!navigator.onLine && !selected) {
+                  await saveOfflineDraft("incident", { ...shared, project_id: projectId }, photo instanceof File ? [photo] : [])
+                  toast.success("Incident draft saved offline. Evidence must be reattached before submission.")
+                  setSheetOpen(false)
+                  return
+                }
                 let photoFileId = selected?.photo_file_id ?? null
                 if (photo instanceof File && photo.size > 0) {
                   const upload = new FormData()
@@ -315,7 +344,7 @@ function IncidentsTab({ projectId, incidents, companies }: { projectId: string; 
   )
 }
 
-function TalksTab({ projectId, talks }: { projectId: string; talks: ToolboxTalk[] }) {
+function TalksTab({ projectId, talks, saveOfflineDraft }: { projectId: string; talks: ToolboxTalk[]; saveOfflineDraft: ReturnType<typeof useOfflineSafetyDrafts>["saveDraft"] }) {
   const router = useRouter()
   const { pending, submit } = useSubmit()
 
@@ -337,6 +366,20 @@ function TalksTab({ projectId, talks }: { projectId: string; talks: ToolboxTalk[
                 return { name, company: companyParts.join(" | ") || null }
               })
             const signInSheet = form.get("sign_in_sheet")
+            const payload = {
+              project_id: projectId,
+              held_at: form.get("held_at"),
+              topic: form.get("topic"),
+              presenter_name: form.get("presenter_name") || null,
+              attendee_count: attendees.length || (form.get("attendee_count") ? Number(form.get("attendee_count")) : null),
+              attendees,
+            }
+            if (!navigator.onLine) {
+              await saveOfflineDraft("toolbox_talk", payload, signInSheet instanceof File ? [signInSheet] : [])
+              toast.success("Toolbox talk draft saved offline. Sign-in evidence must be reattached.")
+              target.reset()
+              return
+            }
             let fileId: string | null = null
             if (signInSheet instanceof File && signInSheet.size > 0) {
               const upload = new FormData()
@@ -347,15 +390,7 @@ function TalksTab({ projectId, talks }: { projectId: string; talks: ToolboxTalk[
               upload.append("folderPath", "/safety/toolbox-talks")
               fileId = unwrapAction(await uploadFileAction(upload)).id
             }
-            unwrapAction(await createToolboxTalkAction({
-              project_id: projectId,
-              held_at: form.get("held_at"),
-              topic: form.get("topic"),
-              presenter_name: form.get("presenter_name") || null,
-              attendee_count: attendees.length || (form.get("attendee_count") ? Number(form.get("attendee_count")) : null),
-              attendees,
-              file_id: fileId,
-            }))
+            unwrapAction(await createToolboxTalkAction({ ...payload, file_id: fileId }))
             toast.success("Toolbox talk recorded")
             target.reset()
             router.refresh()
@@ -425,7 +460,7 @@ function TalksTab({ projectId, talks }: { projectId: string; talks: ToolboxTalk[
   )
 }
 
-function ObservationsTab({ projectId, observations, companies }: { projectId: string; observations: Observation[]; companies: CompanyOption[] }) {
+function ObservationsTab({ projectId, observations, companies, saveOfflineDraft }: { projectId: string; observations: Observation[]; companies: CompanyOption[]; saveOfflineDraft: ReturnType<typeof useOfflineSafetyDrafts>["saveDraft"] }) {
   const router = useRouter()
   const { pending, submit } = useSubmit()
 
@@ -440,6 +475,19 @@ function ObservationsTab({ projectId, observations, companies }: { projectId: st
           const companyValue = String(form.get("company_id") || "__none__")
           submit(async () => {
             const photo = form.get("photo")
+            const payload = {
+              project_id: projectId,
+              kind: form.get("kind"),
+              category: form.get("category") || null,
+              description: form.get("description"),
+              company_id: companyValue === "__none__" ? null : companyValue,
+            }
+            if (!navigator.onLine) {
+              await saveOfflineDraft("observation", payload, photo instanceof File ? [photo] : [])
+              toast.success("Observation draft saved offline. Photo must be reattached before submission.")
+              target.reset()
+              return
+            }
             let photoFileId: string | null = null
             if (photo instanceof File && photo.size > 0) {
               const upload = new FormData()
@@ -450,14 +498,7 @@ function ObservationsTab({ projectId, observations, companies }: { projectId: st
               upload.append("folderPath", "/safety/observations")
               photoFileId = unwrapAction(await uploadFileAction(upload)).id
             }
-            unwrapAction(await createObservationAction({
-              project_id: projectId,
-              kind: form.get("kind"),
-              category: form.get("category") || null,
-              description: form.get("description"),
-              company_id: companyValue === "__none__" ? null : companyValue,
-              photo_file_id: photoFileId,
-            }))
+            unwrapAction(await createObservationAction({ ...payload, photo_file_id: photoFileId }))
             toast.success("Observation recorded")
             target.reset()
             router.refresh()

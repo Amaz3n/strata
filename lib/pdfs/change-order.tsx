@@ -56,7 +56,11 @@ export async function renderChangeOrderPdf(data: ChangeOrderPdfData): Promise<Bu
     orgAddress: null,
     documentLabel: signers?.length ? "Executed Change Order" : "Change Order",
     title: changeOrder.title,
-    number: changeOrder.co_number != null ? String(changeOrder.co_number) : null,
+    number: changeOrder.executed_change_order_number != null
+      ? String(changeOrder.executed_change_order_number)
+      : changeOrder.co_number != null
+        ? `PCO-${String(changeOrder.co_number).padStart(3, "0")}`
+        : null,
     recipientName: data.recipientName ?? null,
     recipientEmail: data.recipientEmail ?? null,
     projectName: data.projectName ?? null,

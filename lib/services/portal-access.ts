@@ -1348,7 +1348,7 @@ async function fetchChangeOrders(supabase: any, orgId: string, projectId: string
   const { data, error } = await supabase
     .from("change_orders")
     .select(
-      "id, org_id, project_id, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact",
+      "id, org_id, project_id, co_number, executed_change_order_number, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact",
     )
     .eq("org_id", orgId)
     .eq("project_id", projectId)

@@ -40,13 +40,15 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
+import { Download, Printer } from "lucide-react";
 
 type Line = {
   id: string;
   description: string;
   amount_cents: number | null;
   metadata?: Record<string, unknown>;
-  cost_code?: { code?: string | null; name?: string | null } | null;
+  cost_code?: { id?: string | null; code?: string | null; name?: string | null } | null;
+  actual_cents?: number;
 };
 const toCents = (value: string) =>
   Math.round(Number(value.replaceAll(",", "")) * 100);
@@ -93,6 +95,16 @@ export function BudgetTransfersPanel({
             ...line,
             movement,
             remaining: Number(line.amount_cents ?? 0) + movement,
+            transfersIn: transfers
+              .filter((transfer) => transfer.status === "approved")
+              .flatMap((transfer) => transfer.lines)
+              .filter((item) => item.budget_line_id === line.id && item.amount_cents > 0)
+              .reduce((sum, item) => sum + item.amount_cents, 0),
+            draws: transfers
+              .filter((transfer) => transfer.status === "approved")
+              .flatMap((transfer) => transfer.lines)
+              .filter((item) => item.budget_line_id === line.id && item.amount_cents < 0)
+              .reduce((sum, item) => sum + Math.abs(item.amount_cents), 0),
           };
         }),
     [lines, transfers],
@@ -186,7 +198,16 @@ export function BudgetTransfersPanel({
         </Button>
       </div>
       {contingency.length > 0 ? (
-        <div className="grid gap-px border bg-border sm:grid-cols-4">
+        <div className="space-y-2">
+          <div className="flex justify-end gap-2">
+            <Button size="sm" variant="outline" asChild>
+              <a href={`/projects/${projectId}/exports/contingency?format=csv`}><Download className="mr-1 h-3.5 w-3.5" />Export CSV</a>
+            </Button>
+            <Button size="sm" variant="outline" asChild>
+              <a href={`/projects/${projectId}/exports/contingency?format=pdf`} target="_blank" rel="noreferrer"><Printer className="mr-1 h-3.5 w-3.5" />Print PDF</a>
+            </Button>
+          </div>
+          <div className="grid gap-px border bg-border sm:grid-cols-2 lg:grid-cols-4">
           {contingency.map((line) => (
             <div key={line.id} className="bg-background p-3">
               <div className="text-[11px] uppercase text-muted-foreground">
@@ -196,11 +217,17 @@ export function BudgetTransfersPanel({
                 {money(line.remaining)}
               </div>
               <div className="text-xs text-muted-foreground">
-                Original {money(Number(line.amount_cents ?? 0))} · Net transfers{" "}
-                {money(line.movement)}
+                Starting {money(Number(line.amount_cents ?? 0))} · In {money(line.transfersIn)} · Draws {money(line.draws)}
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                {Number(line.amount_cents ?? 0) + line.transfersIn > 0
+                  ? `${((line.draws / (Number(line.amount_cents ?? 0) + line.transfersIn)) * 100).toFixed(1)}% drawn`
+                  : "Drawn % unavailable"}
+                {typeof line.actual_cents === "number" ? ` · Actuals ${money(line.actual_cents)}` : ""}
               </div>
             </div>
           ))}
+          </div>
         </div>
       ) : null}
       <div className="flex items-end justify-between">

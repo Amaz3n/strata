@@ -372,6 +372,25 @@ test("commercial pay applications preserve base contract sums and reject unsafe 
   assert.match(correction, /revoke all on function public\.void_pay_application\(uuid, uuid\) from public, anon, authenticated/)
 })
 
+test("commercial claims use executed OCO numbering and reconcile pay-app receivables", () => {
+  const migration = fs.readFileSync(
+    path.join(__dirname, "../supabase/migrations/20260711194000_commercial_claims_completion.sql"),
+    "utf8",
+  )
+  const changeOrders = fs.readFileSync(path.join(__dirname, "../lib/services/change-orders.ts"), "utf8")
+  const payApps = fs.readFileSync(path.join(__dirname, "../lib/services/pay-applications.ts"), "utf8")
+
+  assert.match(migration, /pg_advisory_xact_lock\(hashtextextended\('oco:'/)
+  assert.match(migration, /create unique index if not exists change_orders_project_executed_number_key/)
+  assert.match(migration, /where executed_change_order_number is not null/)
+  assert.match(migration, /trg_reconcile_pay_application_invoice_status/)
+  assert.match(migration, /set status = 'paid', paid_at = coalesce\(new\.paid_at, now\(\)\)/)
+  assert.match(changeOrders, /executed_change_order_number/)
+  assert.match(changeOrders, /`PCO-\$\{String\(changeOrder\.co_number\)/)
+  assert.match(payApps, /permission: "invoice\.approve"/)
+  assert.match(payApps, /update\(\{ status: "approved", approved_at: approvedAt \}\)/)
+})
+
 test("change-order content edits cannot perform lifecycle transitions", () => {
   const service = fs.readFileSync(path.join(__dirname, "../lib/services/change-orders.ts"), "utf8")
   const correction = fs.readFileSync(

@@ -20,13 +20,14 @@ import { formatDocNumber, type DocumentNumberingSettings } from "@/lib/document-
 export type ChangeOrderLifecycle = "draft" | "pricing" | "proposed" | "approved" | "rejected" | "void"
 
 const CHANGE_ORDER_SELECT =
-  "id, org_id, project_id, co_number, title, description, status, lifecycle, source_rfi_id, proposed_at, owner_response_due, cost_total_cents, markup_mode, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at"
+  "id, org_id, project_id, co_number, executed_change_order_number, title, description, status, lifecycle, source_rfi_id, proposed_at, owner_response_due, cost_total_cents, markup_mode, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at"
 
 type ChangeOrderRow = {
   id: string
   org_id: string
   project_id: string
   co_number?: number | null
+  executed_change_order_number?: number | null
   title: string
   description?: string | null
   status: string
@@ -376,6 +377,7 @@ function mapChangeOrderRow(row: ChangeOrderRow): ChangeOrder {
     org_id: row.org_id,
     project_id: row.project_id,
     co_number: row.co_number ?? undefined,
+    executed_change_order_number: row.executed_change_order_number ?? null,
     title: row.title,
     description: row.description ?? undefined,
     status: row.status,
@@ -477,7 +479,11 @@ export async function listChangeOrders({
     const tableLines = lineMap.get(changeOrder.id)
     const withNumber = {
       ...changeOrder,
-      display_number: changeOrder.co_number == null ? undefined : formatDocNumber("change_order", changeOrder.co_number, numbering),
+      display_number: changeOrder.executed_change_order_number != null
+        ? formatDocNumber("change_order", changeOrder.executed_change_order_number, numbering)
+        : changeOrder.co_number == null
+          ? undefined
+          : `PCO-${String(changeOrder.co_number).padStart(3, "0")}`,
     }
     return tableLines && tableLines.length > 0 ? { ...withNumber, lines: tableLines } : withNumber
   })
