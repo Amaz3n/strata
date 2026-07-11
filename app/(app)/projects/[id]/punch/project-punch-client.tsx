@@ -7,14 +7,16 @@ interface ProjectPunchClientProps {
   projectId: string
   initialItems: ProjectPunchItem[]
   team: ProjectTeamMember[]
+  companies: Array<{ id: string; name: string }>
 }
 
-export function ProjectPunchClient({ projectId, initialItems, team }: ProjectPunchClientProps) {
+export function ProjectPunchClient({ projectId, initialItems, team, companies }: ProjectPunchClientProps) {
   return (
     <PunchTab
       projectId={projectId}
       initialItems={initialItems}
       team={team}
+      companies={companies}
     />
   )
 }

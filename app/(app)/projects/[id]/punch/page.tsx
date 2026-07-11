@@ -2,8 +2,9 @@ import { Suspense } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
 import { notFound } from "next/navigation"
 import { PageLayout } from "@/components/layout/page-layout"
-import { getProjectAction, getProjectTeamAction, listProjectPunchItemsAction } from "../actions"
+import { getOrgCompaniesAction, getProjectAction, getProjectTeamAction, getProjectVendorsAction, listProjectPunchItemsAction } from "../actions"
 import { ProjectPunchClient } from "./project-punch-client"
+import { Button } from "@/components/ui/button"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -50,14 +51,27 @@ async function ProjectPunchData({ id }: { id: string }) {
     notFound()
   }
 
-  const [team, punchItems] = await Promise.all([
+  const [team, punchItems, vendors, orgCompanies] = await Promise.all([
     getProjectTeamAction(id),
     listProjectPunchItemsAction(id),
+    getProjectVendorsAction(id),
+    getOrgCompaniesAction(),
   ])
+
+  // Companies on the project first; fall back to the whole org list when the
+  // project has no vendors yet.
+  const vendorCompanies = vendors
+    .map((vendor) => vendor.company)
+    .filter((company): company is NonNullable<typeof company> => Boolean(company))
+    .map((company) => ({ id: company.id, name: company.name }))
+  const companies = (vendorCompanies.length > 0 ? vendorCompanies : orgCompanies.map((company) => ({ id: company.id, name: company.name })))
+    .filter((company, index, all) => all.findIndex((c) => c.id === company.id) === index)
+    .sort((a, b) => a.name.localeCompare(b.name))
 
   return (
     <div className="space-y-6">
-      <ProjectPunchClient projectId={project.id} initialItems={punchItems} team={team} />
+      <div className="flex justify-end px-6"><Button variant="outline" asChild><a href={`/projects/${project.id}/exports/punch-list`} target="_blank" rel="noreferrer">Export punch list PDF</a></Button></div>
+      <ProjectPunchClient projectId={project.id} initialItems={punchItems} team={team} companies={companies} />
     </div>
   )
 }

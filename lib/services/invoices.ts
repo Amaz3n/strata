@@ -51,6 +51,8 @@ type SourceBillingContext = {
   retainagePercent: number
   retainageAppliesToFee: boolean
   retainageAmountCents: number
+  /** Overrides the default "Retainage held (N%)" line description. */
+  retainageLabel?: string
   metadata: Record<string, any>
 }
 
@@ -220,9 +222,56 @@ async function resolveInvoiceSourceBillingContext(params: {
   sourceType?: string
   sourceDrawId?: string | null
   sourceChangeOrderId?: string | null
+  sourcePayApplicationId?: string | null
   baseLines: InvoiceLine[]
 }) {
-  const { supabase, orgId, projectId, sourceType, sourceDrawId, sourceChangeOrderId, baseLines } = params
+  const { supabase, orgId, projectId, sourceType, sourceDrawId, sourceChangeOrderId, sourcePayApplicationId, baseLines } = params
+
+  if (sourceType === "pay_application" && sourcePayApplicationId) {
+    // Pay applications compute retainage per SOV line (stepped schedules,
+    // line overrides) before invoicing; use their amount verbatim instead of
+    // re-deriving from the flat contract percent.
+    const { data: payApp, error: payAppError } = await supabase
+      .from("pay_applications")
+      .select("id, project_id, contract_id, application_number, status, metadata")
+      .eq("org_id", orgId)
+      .eq("id", sourcePayApplicationId)
+      .maybeSingle()
+
+    if (payAppError) {
+      throw new Error(`Failed to load pay application context: ${payAppError.message}`)
+    }
+    if (!payApp) {
+      throw new Error("Selected pay application no longer exists.")
+    }
+    if (payApp.status !== "draft" && payApp.status !== "submitted") {
+      throw new Error("This pay application has already been invoiced or voided.")
+    }
+
+    const payAppMetadata = (payApp.metadata ?? {}) as Record<string, any>
+    const retainageAmountCents = Math.max(0, Math.round(Number(payAppMetadata.current_retainage_cents ?? 0)))
+    const grossAmountCents = stripSystemGeneratedBillingLines(baseLines).reduce(
+      (sum, line) => sum + Math.round(line.quantity * line.unit_cost_cents),
+      0,
+    )
+    const effectivePercent =
+      grossAmountCents > 0 ? Math.round((retainageAmountCents / grossAmountCents) * 10000) / 100 : 0
+
+    return {
+      contractId: payApp.contract_id as string,
+      retainagePercent: effectivePercent,
+      retainageAppliesToFee: false,
+      retainageAmountCents,
+      retainageLabel: "Retainage held (this application)",
+      metadata: {
+        pay_application_id: payApp.id,
+        pay_application_number: payApp.application_number,
+        contract_id: payApp.contract_id,
+        retainage_amount_cents: retainageAmountCents > 0 ? retainageAmountCents : null,
+        gross_amount_cents: grossAmountCents,
+      },
+    } satisfies SourceBillingContext
+  }
 
   if (sourceType !== "manual" && sourceType !== "draw" && sourceType !== "change_order") {
     return null
@@ -385,7 +434,7 @@ function applySourceDerivedBillingLines(lines: InvoiceLine[], sourceContext: Sou
   return [
     ...nextLines,
     {
-      description: `Retainage held (${sourceContext.retainagePercent}%)`,
+      description: sourceContext.retainageLabel ?? `Retainage held (${sourceContext.retainagePercent}%)`,
       quantity: 1,
       unit: "retainage",
       unit_cost_cents: -Math.abs(sourceContext.retainageAmountCents),
@@ -467,9 +516,10 @@ async function assertSourceNotAlreadyBilled(params: {
   sourceType?: string
   sourceDrawId?: string | null
   sourceChangeOrderId?: string | null
+  sourcePayApplicationId?: string | null
   excludeInvoiceId?: string
 }) {
-  const { supabase, orgId, sourceType, sourceDrawId, sourceChangeOrderId, excludeInvoiceId } = params
+  const { supabase, orgId, sourceType, sourceDrawId, sourceChangeOrderId, sourcePayApplicationId, excludeInvoiceId } = params
   const { data: rows, error } = await supabase
     .from("invoices")
     .select("id, status, metadata")
@@ -489,6 +539,9 @@ async function assertSourceNotAlreadyBilled(params: {
     if (sourceType === "change_order" && sourceChangeOrderId) {
       return metadata.source_type === "change_order" && metadata.source_change_order_id === sourceChangeOrderId
     }
+    if (sourceType === "pay_application" && sourcePayApplicationId) {
+      return metadata.source_type === "pay_application" && metadata.source_pay_application_id === sourcePayApplicationId
+    }
     return false
   })
 
@@ -498,6 +551,10 @@ async function assertSourceNotAlreadyBilled(params: {
 
   if (conflicting && sourceType === "change_order" && sourceChangeOrderId) {
     throw new Error("This change order is already linked to another invoice.")
+  }
+
+  if (conflicting && sourceType === "pay_application" && sourcePayApplicationId) {
+    throw new Error("This pay application is already linked to another invoice.")
   }
 }
 
@@ -992,6 +1049,7 @@ export async function createInvoice({
   const sourceType = input.source_type ?? "manual"
   const sourceDrawId = input.source_draw_id ?? null
   const sourceChangeOrderId = input.source_change_order_id ?? null
+  const sourcePayApplicationId = input.source_pay_application_id ?? null
   await assertDirectChangeOrderInvoiceAllowed({
     supabase,
     orgId: resolvedOrgId,
@@ -1006,6 +1064,7 @@ export async function createInvoice({
     sourceType,
     sourceDrawId,
     sourceChangeOrderId,
+    sourcePayApplicationId,
     baseLines: normalizeLines(input.lines),
   })
   const lines = applySourceDerivedBillingLines(normalizeLines(input.lines), sourceContext)
@@ -1108,6 +1167,7 @@ export async function createInvoice({
     sourceType,
     sourceDrawId,
     sourceChangeOrderId,
+    sourcePayApplicationId,
   })
 
   if (fromCostIds.length > 0) {
@@ -1159,6 +1219,7 @@ export async function createInvoice({
       source_type: sourceType,
       source_draw_id: sourceDrawId,
       source_change_order_id: sourceChangeOrderId,
+      source_pay_application_id: sourcePayApplicationId,
       source_contract_id: sourceContext?.contractId ?? null,
       billing_context: sourceContext?.metadata ?? null,
       retainage_percent: sourceContext?.retainagePercent ?? null,
@@ -1363,6 +1424,9 @@ export async function updateInvoice({
   const sourceChangeOrderId = input.source_change_order_id ?? (existing.metadata as any)?.source_change_order_id ?? null
   if (sourceType === "from_costs" || (existing.metadata as any)?.source_type === "from_costs") {
     throw new Error("Approved-cost invoices are controlled by the cost ledger. Revise and reissue instead of editing.")
+  }
+  if (sourceType === "pay_application" || (existing.metadata as any)?.source_type === "pay_application") {
+    throw new Error("Pay application invoices are generated from the pay app. Void the pay application and resubmit instead.")
   }
   await assertDirectChangeOrderInvoiceAllowed({
     supabase,
@@ -1617,6 +1681,21 @@ export async function voidInvoice({ invoiceId, orgId }: { invoiceId: string; org
   }
   if (existing.status === "paid" || existing.status === "partial") {
     throw new Error("Paid or partially paid invoices cannot be voided.")
+  }
+
+  const sourcePayApplicationId = (existing.metadata as Record<string, any> | null)?.source_pay_application_id
+  if (typeof sourcePayApplicationId === "string" && sourcePayApplicationId.length > 0) {
+    const { data: payApp } = await supabase
+      .from("pay_applications")
+      .select("id, status")
+      .eq("org_id", resolvedOrgId)
+      .eq("id", sourcePayApplicationId)
+      .maybeSingle()
+    // Draft pay apps have not posted SOV rollups yet, so their invoice can be
+    // voided directly (this is the submit-failure compensation path).
+    if (payApp && payApp.status !== "void" && payApp.status !== "draft") {
+      throw new Error("Void the pay application instead, so its schedule-of-values rollups reverse with the invoice.")
+    }
   }
 
   await assertInvoiceHasNoPayments({ supabase, orgId: resolvedOrgId, invoiceId })

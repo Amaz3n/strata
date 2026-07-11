@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
+import type { PortalType, ReviewerRole } from "@/lib/types"
+
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"
 
 /**
@@ -28,28 +30,38 @@ const PORTAL_CAPABILITY_KEYS = [
   "can_submit_invoices",
   "can_submit_time",
   "can_submit_expenses",
+  "can_submit_daily_logs",
   "can_upload_compliance_docs",
   "can_view_warranty",
+  "can_review_submittals",
+  "can_view_punch_items",
 ] as const
 
 export type PortalCapabilityKey = (typeof PORTAL_CAPABILITY_KEYS)[number]
+
+const PORTAL_PATH_PREFIX: Record<PortalType, string> = {
+  client: "p",
+  sub: "s",
+  reviewer: "r",
+}
 
 export interface EnsurePortalLinkArgs {
   supabase: SupabaseClient
   orgId: string
   projectId: string
-  portalType: "client" | "sub"
+  portalType: PortalType
   contactId?: string | null
   companyId?: string | null
   createdBy?: string | null
   capabilities: Partial<Record<PortalCapabilityKey, boolean>>
   scopedRfiId?: string | null
+  reviewerRole?: ReviewerRole | null
   /** Where to send the recipient if token creation fails (internal fallback). */
   fallbackPath: string
 }
 
-function portalUrl(portalType: "client" | "sub", token: string) {
-  return `${APP_URL}/${portalType === "client" ? "p" : "s"}/${token}`
+function portalUrl(portalType: PortalType, token: string) {
+  return `${APP_URL}/${PORTAL_PATH_PREFIX[portalType]}/${token}`
 }
 
 /**
@@ -66,6 +78,7 @@ export async function ensurePortalLink({
   createdBy,
   capabilities,
   scopedRfiId,
+  reviewerRole,
   fallbackPath,
 }: EnsurePortalLinkArgs): Promise<string> {
   const wanted: Record<string, boolean> = {}
@@ -75,7 +88,7 @@ export async function ensurePortalLink({
 
   let query = supabase
     .from("portal_access_tokens")
-    .select(`token, expires_at, scoped_rfi_id, ${PORTAL_CAPABILITY_KEYS.join(", ")}`)
+    .select(`token, expires_at, scoped_rfi_id, reviewer_role, ${PORTAL_CAPABILITY_KEYS.join(", ")}`)
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .eq("portal_type", portalType)
@@ -97,6 +110,7 @@ export async function ensurePortalLink({
     const notExpired = !candidate.expires_at || Number.isNaN(expiresAt) || expiresAt > now
     if (!notExpired) return false
     if ((candidate.scoped_rfi_id ?? null) !== (scopedRfiId ?? null)) return false
+    if ((candidate.reviewer_role ?? null) !== (reviewerRole ?? null)) return false
     return PORTAL_CAPABILITY_KEYS.every((key) => candidate[key] === wanted[key])
   })
   if (existing && typeof existing.token === "string") {
@@ -113,6 +127,7 @@ export async function ensurePortalLink({
       company_id: companyId ?? null,
       created_by: createdBy ?? null,
       scoped_rfi_id: scopedRfiId ?? null,
+      reviewer_role: reviewerRole ?? null,
       ...wanted,
     })
     .select("token")
@@ -124,6 +139,49 @@ export async function ensurePortalLink({
   }
 
   return portalUrl(portalType, created.token)
+}
+
+/**
+ * Default capability set for reviewer seats (architect/engineer/owner's rep):
+ * view drawings + documents, view/respond RFIs, view + review submittals.
+ * Reviewers never see financials, schedule, or sub-side workflows.
+ */
+export async function ensureReviewerLink({
+  supabase,
+  orgId,
+  projectId,
+  contactId,
+  companyId,
+  reviewerRole,
+  createdBy,
+}: {
+  supabase: SupabaseClient
+  orgId: string
+  projectId: string
+  contactId: string
+  companyId?: string | null
+  reviewerRole?: ReviewerRole | null
+  createdBy?: string | null
+}): Promise<string> {
+  return ensurePortalLink({
+    supabase,
+    orgId,
+    projectId,
+    portalType: "reviewer",
+    contactId,
+    companyId: companyId ?? null,
+    createdBy: createdBy ?? null,
+    reviewerRole: reviewerRole ?? null,
+    capabilities: {
+      can_view_documents: true,
+      can_download_files: true,
+      can_view_rfis: true,
+      can_respond_rfis: true,
+      can_view_submittals: true,
+      can_review_submittals: true,
+    },
+    fallbackPath: `/projects/${projectId}`,
+  })
 }
 
 export interface EmailPerson {

@@ -66,6 +66,7 @@ import type { FileWithUrls } from "@/app/(app)/documents/types"
 import type { DrawingSheet } from "@/app/(app)/drawings/types"
 import { useDocuments } from "./documents-context"
 import { QUICK_FILTER_CONFIG, type QuickFilter } from "./types"
+import { useProductTerminology } from "@/components/layout/use-product-terminology"
 
 // ---------------------------------------------------------------------------
 // Utility functions
@@ -522,6 +523,7 @@ const FolderRow = memo(function FolderRow({
   onDeleteFolder?: (path: string) => void
 }) {
   const { folderPermissions } = useDocuments()
+  const terms = useProductTerminology()
   const folderSharing = getFolderSharingState(folderPermissions, item.path)
   const isShared = folderSharing.share_with_clients || folderSharing.share_with_subs
 
@@ -592,12 +594,14 @@ const FolderRow = memo(function FolderRow({
                   <TooltipTrigger asChild>
                     <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:text-blue-400 dark:border-blue-900 text-[10px] px-1 py-0 h-4 font-normal">
                       <Users className="h-2.5 w-2.5 mr-1" />
-                      Clients
+                      {terms.owners}
                     </Badge>
                   </TooltipTrigger>
                   <TooltipContent>
                     <p className="text-xs">
-                      {folderSharing.inherited ? "Inherited client sharing default" : "New files default to Client Portal visibility"}
+                      {folderSharing.inherited
+                        ? `Inherited ${terms.owner.toLowerCase()} sharing default`
+                        : `New files default to ${terms.ownerPortal} visibility`}
                     </p>
                   </TooltipContent>
                 </Tooltip>
@@ -709,6 +713,7 @@ const FileRow = memo(function FileRow({
   onFileDragStart: (fileId: string, event: React.DragEvent<HTMLDivElement>) => void
   onFileDragEnd: (fileId: string) => void
 }) {
+  const terms = useProductTerminology()
   const router = useRouter()
   const Icon = getFileIcon(file.mime_type ?? undefined)
   const isImage = file.mime_type?.startsWith("image/")
@@ -902,11 +907,11 @@ const FileRow = memo(function FileRow({
                     <TooltipTrigger asChild>
                       <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:text-blue-400 dark:border-blue-900 text-[10px] px-1 py-0 h-4 font-normal">
                         <Users className="h-2.5 w-2.5 mr-1" />
-                        Clients
+                        {terms.owners}
                       </Badge>
                     </TooltipTrigger>
                     <TooltipContent>
-                      <p className="text-xs">Visible in Client Portal</p>
+                      <p className="text-xs">Visible in {terms.ownerPortal}</p>
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>

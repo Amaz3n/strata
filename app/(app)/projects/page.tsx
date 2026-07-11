@@ -11,7 +11,7 @@ import { unwrapAction } from "@/lib/action-result"
 export const dynamic = 'force-dynamic'
 
 async function ProjectsData() {
-  const { orgId } = await requireOrgContext()
+  const { orgId, productTier } = await requireOrgContext()
   const [projects, clientContacts, scheduleSummaries] = await Promise.all([
     listProjectsAction(),
     listProjectClientContactsAction(),
@@ -24,6 +24,7 @@ async function ProjectsData() {
       projects={projects}
       clientContacts={clientContacts}
       scheduleSummaries={scheduleSummaries}
+      productTier={productTier}
     />
   )
 }

@@ -18,6 +18,7 @@ import { PortalPinGate } from "@/components/portal/portal-pin-gate"
 import { SubPortalClient } from "./sub-portal-client"
 import { SubPortalSetupRequired } from "./sub-portal-setup-required"
 import type { ComplianceDocumentType } from "@/lib/types"
+import { getLatestPrequalificationWithClient } from "@/lib/services/prequalification"
 
 interface SubPortalPageProps {
   params: Promise<{ token: string }>
@@ -91,7 +92,7 @@ export default async function SubPortalPage({ params }: SubPortalPageProps) {
   const supabase = createServiceSupabaseClient()
 
   // Load portal data and compliance data in parallel
-  const [data, complianceStatus, documentTypesResult] = await Promise.all([
+  const [data, complianceStatus, documentTypesResult, prequalification] = await Promise.all([
     loadSubPortalData({
       orgId: access.org_id,
       projectId: access.project_id,
@@ -108,6 +109,7 @@ export default async function SubPortalPage({ params }: SubPortalPageProps) {
       .eq("is_active", true)
       .order("is_system", { ascending: false })
       .order("name", { ascending: true }),
+    getLatestPrequalificationWithClient(supabase, access.org_id, access.company_id),
   ])
 
   // Add compliance status to data
@@ -137,13 +139,16 @@ export default async function SubPortalPage({ params }: SubPortalPageProps) {
       canSubmitInvoices={access.permissions.can_submit_invoices ?? true}
       canSubmitTime={access.permissions.can_submit_time ?? true}
       canSubmitExpenses={access.permissions.can_submit_expenses ?? true}
+      canSubmitDailyLogs={access.permissions.can_submit_daily_logs ?? false}
       canDownloadFiles={access.permissions.can_download_files}
       canUploadComplianceDocs={access.permissions.can_upload_compliance_docs ?? true}
+      canWorkPunchItems={access.permissions.can_view_punch_items ?? false}
       pinRequired={access.pin_required}
       complianceDocumentTypes={complianceDocumentTypes}
       workspace={workspace}
       inviteEmail={gateContext?.expectedEmail ?? ""}
       suggestedFullName={gateContext?.suggestedFullName ?? ""}
+      prequalification={prequalification}
     />
   )
 }

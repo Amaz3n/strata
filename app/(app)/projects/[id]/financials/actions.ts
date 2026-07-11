@@ -50,7 +50,30 @@ import {
   type FinancialSetupInput,
 } from "@/lib/services/project-financial-setup"
 import { prepareBillingAutopilotRun } from "@/lib/services/billing-autopilot"
+import {
+  importSovFromBudget,
+  importSovFromEstimate,
+  upsertPrimeSovLines,
+} from "@/lib/services/prime-sov"
+import {
+  createPayApplication,
+  deletePayApplication,
+  getPayApplication,
+  listPayApplications,
+  markPayApplicationApproved,
+  releasePrimeRetainage,
+  submitPayApplication,
+  updatePayApplicationLines,
+  voidPayApplication,
+} from "@/lib/services/pay-applications"
+import { generateSovPayApplicationPdf } from "@/lib/services/reports/pay-application-g702"
+import type {
+  PayApplicationLineEntry,
+  PrimeSovLineInput,
+  RetainageReleaseInput,
+} from "@/lib/validation/pay-applications"
 import { requireOrgContext } from "@/lib/services/context"
+import { listBudgetTransfers } from "@/lib/services/budget-transfers"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -91,6 +114,7 @@ export async function fetchBudgetTabDataAction(projectId: string) {
         buyoutStatusResult,
         feeSummaryResult,
         gmpSummaryResult,
+        transfersResult,
       ] = await Promise.allSettled([
         getBudgetWithActuals(projectId),
         listCostCodes(),
@@ -100,6 +124,7 @@ export async function fetchBudgetTabDataAction(projectId: string) {
         getProjectBuyoutStatus(projectId),
         isFixedPrice ? Promise.resolve(null) : getProjectFeeBillingSummary(projectId),
         isFixedPrice ? Promise.resolve(null) : getProjectGmpControlSummary(projectId),
+        listBudgetTransfers(projectId),
       ])
 
       const budgetData = budgetDataResult.status === "fulfilled" ? budgetDataResult.value : null
@@ -116,6 +141,7 @@ export async function fetchBudgetTabDataAction(projectId: string) {
         resultError("Buyout status", buyoutStatusResult),
         isFixedPrice ? null : resultError("Fee billing", feeSummaryResult),
         isFixedPrice ? null : resultError("GMP control", gmpSummaryResult),
+        resultError("Budget transfers", transfersResult),
       ].filter(Boolean) as string[]
       const budgetBucketCompanies = await buildBudgetBucketCompanies(commitments)
 
@@ -129,6 +155,7 @@ export async function fetchBudgetTabDataAction(projectId: string) {
         budgetBucketCompanies,
         feeSummary: feeSummaryResult.status === "fulfilled" ? feeSummaryResult.value : null,
         gmpSummary: gmpSummaryResult.status === "fulfilled" ? gmpSummaryResult.value : null,
+        budgetTransfers: transfersResult.status === "fulfilled" ? transfersResult.value : [],
         errors,
       }
 }
@@ -412,6 +439,109 @@ export async function createProjectFeeInvoiceAction(input: CreateFeeInvoiceInput
       revalidatePath(`/projects/${input.projectId}/financials/budget`)
       revalidatePath(`/projects/${input.projectId}/financials/receivables`)
       return { invoice, feeSummary }
+  })
+}
+
+export async function savePrimeSovLinesAction(projectId: string, input: { lines: PrimeSovLineInput[] }) {
+  return run(async () => {
+      const state = await upsertPrimeSovLines(projectId, input)
+      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      return state
+  })
+}
+
+export async function importPrimeSovFromBudgetAction(projectId: string) {
+  return run(async () => {
+      const state = await importSovFromBudget(projectId)
+      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      return state
+  })
+}
+
+export async function importPrimeSovFromEstimateAction(projectId: string) {
+  return run(async () => {
+      const state = await importSovFromEstimate(projectId)
+      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      return state
+  })
+}
+
+export async function createPayApplicationAction(
+  projectId: string,
+  input: { period_start?: string | null; period_end: string },
+) {
+  return run(async () => {
+      const detail = await createPayApplication(projectId, input)
+      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      return detail
+  })
+}
+
+export async function fetchPayApplicationAction(payApplicationId: string) {
+  return run(() => getPayApplication(payApplicationId))
+}
+
+export async function updatePayApplicationLinesAction(
+  projectId: string,
+  payApplicationId: string,
+  input: { entries: PayApplicationLineEntry[]; allow_overbilling?: boolean },
+) {
+  return run(async () => {
+      const detail = await updatePayApplicationLines(payApplicationId, input)
+      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      return detail
+  })
+}
+
+export async function submitPayApplicationAction(projectId: string, payApplicationId: string) {
+  return run(async () => {
+      const detail = await submitPayApplication(payApplicationId)
+      const payApplications = await listPayApplications(projectId)
+      revalidatePath(`/projects/${projectId}/financials`)
+      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      return { detail, payApplications }
+  })
+}
+
+export async function voidPayApplicationAction(projectId: string, payApplicationId: string) {
+  return run(async () => {
+      const detail = await voidPayApplication(payApplicationId)
+      revalidatePath(`/projects/${projectId}/financials`)
+      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      return detail
+  })
+}
+
+export async function deletePayApplicationAction(projectId: string, payApplicationId: string) {
+  return run(async () => {
+      const result = await deletePayApplication(payApplicationId)
+      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      return result
+  })
+}
+
+export async function markPayApplicationApprovedAction(projectId: string, payApplicationId: string) {
+  return run(async () => {
+      const detail = await markPayApplicationApproved(payApplicationId)
+      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      return detail
+  })
+}
+
+export async function generatePayApplicationPdfAction(projectId: string, payApplicationId: string) {
+  return run(async () => {
+      const { fileName, pdf } = await generateSovPayApplicationPdf({ projectId, payApplicationId })
+      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      return { fileName, pdfBase64: pdf.toString("base64") }
+  })
+}
+
+export async function releasePrimeRetainageAction(projectId: string, input: RetainageReleaseInput) {
+  return run(async () => {
+      const detail = await releasePrimeRetainage(projectId, input)
+      revalidatePath(`/projects/${projectId}/financials`)
+      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      return detail
   })
 }
 

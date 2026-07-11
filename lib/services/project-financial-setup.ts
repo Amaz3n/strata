@@ -24,6 +24,7 @@ export interface ProjectFinancialSettings {
   org_id: string
   project_id: string
   billing_model: ProjectBillingModel
+  fixed_price_billing_basis?: "draws" | "progress" | null
   paid_costs_required: boolean
   proof_required: boolean
   client_cost_approval_required: boolean
@@ -100,6 +101,18 @@ const financialSetupInputSchema = z.object({
   totalContractValueCents: z.number().int().nonnegative().optional().nullable(),
   retainagePercent: z.number().min(0).max(100).optional().nullable(),
   retainageAppliesToFee: z.boolean().default(false),
+  fixedPriceBillingBasis: z.enum(["draws", "progress"]).optional().nullable(),
+  retainageSchedule: z
+    .array(
+      z.object({
+        until_percent_complete: z.number().gt(0).max(100),
+        retainage_percent: z.number().min(0).max(100),
+      }),
+    )
+    .max(10)
+    .optional()
+    .nullable(),
+  storedMaterialsRetainagePercent: z.number().min(0).max(100).optional().nullable(),
   markupPercent: z.number().min(0).max(200).optional().nullable(),
   gmpCents: z.number().int().nonnegative().optional().nullable(),
   contingencyCents: z.number().int().nonnegative().optional().nullable(),
@@ -412,6 +425,7 @@ function mapSettings(row: any): ProjectFinancialSettings {
     org_id: row.org_id,
     project_id: row.project_id,
     billing_model: row.billing_model,
+    fixed_price_billing_basis: row.fixed_price_billing_basis ?? "draws",
     paid_costs_required: row.paid_costs_required ?? false,
     proof_required: row.proof_required ?? false,
     client_cost_approval_required: row.client_cost_approval_required ?? false,
@@ -449,7 +463,7 @@ export async function getProjectFinancialSettings({
 async function getActiveContract(params: { supabase: SupabaseClient; orgId: string; projectId: string }): Promise<ContractLike | null> {
   const { data, error } = await params.supabase
     .from("contracts")
-    .select("id, title, contract_type, total_cents, currency, markup_percent, gmp_cents, contingency_cents, fixed_fee_cents, fee_presentation, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, rate_schedule_id, retainage_percent, retainage_applies_to_fee, open_book, requires_client_cost_approval, parent_contract_id, snapshot")
+    .select("id, title, contract_type, total_cents, currency, markup_percent, gmp_cents, contingency_cents, fixed_fee_cents, fee_presentation, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, rate_schedule_id, retainage_percent, retainage_applies_to_fee, retainage_schedule, stored_materials_retainage_percent, open_book, requires_client_cost_approval, parent_contract_id, snapshot")
     .eq("org_id", params.orgId)
     .eq("project_id", params.projectId)
     .eq("status", "active")
@@ -594,6 +608,10 @@ export async function upsertProjectFinancialSettingsFromProjectInput(args: {
     org_id: args.orgId,
     project_id: args.projectId,
     billing_model: billingModel,
+    fixed_price_billing_basis:
+      billingModel === "fixed_price"
+        ? args.input.fixed_price_billing_basis ?? existingSettings?.fixed_price_billing_basis ?? "draws"
+        : "draws",
     paid_costs_required:
       args.input.paid_costs_required ?? Boolean((args.existingContract?.snapshot as any)?.paid_costs_required ?? false),
     proof_required:
@@ -693,6 +711,9 @@ export async function saveProjectFinancialSetup(input: FinancialSetupInput, orgI
     open_book: parsed.openBookRequired,
     retainage_percent: parsed.retainagePercent ?? 0,
     retainage_applies_to_fee: parsed.retainageAppliesToFee,
+    retainage_schedule: parsed.billingModel === "fixed_price" ? parsed.retainageSchedule ?? null : null,
+    stored_materials_retainage_percent:
+      parsed.billingModel === "fixed_price" ? parsed.storedMaterialsRetainagePercent ?? null : null,
     snapshot: {
       ...existingContractSnapshot,
       billing_setup_source: "financial_setup_wizard",
@@ -721,6 +742,8 @@ export async function saveProjectFinancialSetup(input: FinancialSetupInput, orgI
     org_id: resolvedOrgId,
     project_id: parsed.projectId,
     billing_model: parsed.billingModel,
+    fixed_price_billing_basis:
+      parsed.billingModel === "fixed_price" ? parsed.fixedPriceBillingBasis ?? "draws" : "draws",
     paid_costs_required: parsed.paidCostsRequired,
     proof_required: parsed.proofRequired,
     client_cost_approval_required: parsed.clientCostApprovalRequired,

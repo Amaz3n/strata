@@ -12,7 +12,10 @@ import type {
   PortalAccessToken,
   PortalFinancialSummary,
   PortalPermissions,
+  PortalType,
   PunchItem,
+  ReviewerPortalData,
+  ReviewerRole,
   Rfi,
   Selection,
   Submittal,
@@ -80,7 +83,11 @@ function mapPermissions(row: any): PortalPermissions {
     can_submit_invoices: row.can_submit_invoices ?? true,
     can_submit_time: row.can_submit_time ?? true,
     can_submit_expenses: row.can_submit_expenses ?? true,
+    can_submit_daily_logs: row.can_submit_daily_logs ?? false,
     can_upload_compliance_docs: row.can_upload_compliance_docs ?? true,
+    can_view_punch_items: row.can_view_punch_items ?? false,
+    // Reviewer-specific permissions
+    can_review_submittals: row.can_review_submittals ?? false,
   }
 }
 
@@ -95,6 +102,7 @@ function mapAccessToken(row: any): PortalAccessToken {
     token: row.token,
     name: row.name,
     portal_type: row.portal_type,
+    reviewer_role: row.reviewer_role ?? null,
     permissions: mapPermissions(row),
     pin_required: !!row.pin_required,
     pin_locked_until: row.pin_locked_until ?? null,
@@ -115,16 +123,18 @@ export async function createPortalAccessToken({
   contactId,
   companyId,
   scopedRfiId,
+  reviewerRole,
   permissions,
   expiresAt,
   requireAccount,
   orgId,
 }: {
   projectId: string
-  portalType: "client" | "sub"
+  portalType: PortalType
   contactId?: string
   companyId?: string
   scopedRfiId?: string | null
+  reviewerRole?: ReviewerRole | null
   permissions?: Partial<PortalPermissions>
   expiresAt?: string | null
   requireAccount?: boolean
@@ -140,6 +150,7 @@ export async function createPortalAccessToken({
     portal_type: portalType,
     contact_id: contactId ?? null,
     company_id: companyId ?? null,
+    reviewer_role: reviewerRole ?? null,
     expires_at: expiresAt ?? null,
     require_account: requireAccount ?? false,
     created_by: userId,
@@ -171,7 +182,7 @@ export async function findReusablePortalAccessToken({
   orgId,
 }: {
   projectId: string
-  portalType: "client" | "sub"
+  portalType: PortalType
   contactId?: string
   companyId?: string
   orgId?: string
@@ -486,7 +497,7 @@ export async function isPortalPinVerified(token: string): Promise<boolean> {
 export async function assertPortalActionAccess(
   token: string,
   options: {
-    portalType?: "client" | "sub"
+    portalType?: PortalType | PortalType[]
     requireCompany?: boolean
     permission?: keyof PortalPermissions
   } = {},
@@ -496,8 +507,11 @@ export async function assertPortalActionAccess(
     throw new Error("Invalid or expired portal access")
   }
 
-  if (options.portalType && access.portal_type !== options.portalType) {
-    throw new Error("This portal link cannot access that resource")
+  if (options.portalType) {
+    const allowed = Array.isArray(options.portalType) ? options.portalType : [options.portalType]
+    if (!allowed.includes(access.portal_type)) {
+      throw new Error("This portal link cannot access that resource")
+    }
   }
 
   if (options.requireCompany && !access.company_id) {
@@ -900,6 +914,7 @@ export async function loadSubPortalData({
     scheduleResult,
     rfisResult,
     submittalsResult,
+    punchResult,
     filesResult,
   ] = await Promise.all([
     // Org info
@@ -1010,6 +1025,19 @@ export async function loadSubPortalData({
           .eq("org_id", orgId)
           .eq("project_id", projectId)
           .eq("assigned_company_id", companyId)
+          .order("created_at", { ascending: false })
+      : Promise.resolve({ data: [] }),
+
+    // Punch items dispatched to this company
+    permissions.can_view_punch_items
+      ? supabase
+          .from("punch_items")
+          .select("id, org_id, project_id, title, description, status, due_date, severity, location, resolved_at, assigned_company_id, dispatched_at, sub_completed_at, verification_notes")
+          .eq("org_id", orgId)
+          .eq("project_id", projectId)
+          .eq("assigned_company_id", companyId)
+          .neq("status", "closed")
+          .order("due_date", { ascending: true, nullsFirst: false })
           .order("created_at", { ascending: false })
       : Promise.resolve({ data: [] }),
 
@@ -1139,6 +1167,8 @@ export async function loadSubPortalData({
   const pendingSubmittalCount = (submittalsResult.data ?? [])
     .filter(s => s.status === "pending" || s.status === "in_review")
     .length
+  const punchItems = (punchResult.data ?? []) as PunchItem[]
+  const pendingPunchCount = punchItems.filter(item => item.status !== "ready_for_review").length
 
   return {
     org: {
@@ -1171,13 +1201,116 @@ export async function loadSubPortalData({
     schedule,
     rfis: (rfisResult.data ?? []).map(mapRfi),
     submittals: (submittalsResult.data ?? []).map(mapSubmittal),
+    punchItems,
     // Shared drawing sheets are NOT injected here — the portal documents tab
     // renders them via /api/portal/drawings/[token] in the tiled viewer.
     sharedFiles: (filesResult.data ?? []).map((file: any) => mapFileMetadata(file, portalToken)),
     pendingRfiCount,
     pendingSubmittalCount,
+    pendingPunchCount,
   }
 }
+
+/**
+ * Reviewer seats (architects/engineers/owner's reps) get the project header,
+ * their RFI queue, and drawings via /api/portal/drawings/[token] like other
+ * portals. Submittal review steps load through the reviewer portal actions
+ * once routing exists (workstream 04 phase 2+).
+ */
+export async function loadReviewerPortalData({
+  orgId,
+  projectId,
+  contactId,
+  companyId,
+  reviewerRole,
+  scopedRfiId,
+}: {
+  orgId: string
+  projectId: string
+  contactId?: string | null
+  companyId?: string | null
+  reviewerRole?: ReviewerRole | null
+  scopedRfiId?: string | null
+}): Promise<ReviewerPortalData> {
+  const supabase = createServiceSupabaseClient()
+
+  const [orgResult, projectResult, contactResult, companyResult, pmResult, rfisResult] = await Promise.all([
+    supabase.from("orgs").select("id, name, logo_url").eq("id", orgId).single(),
+    supabase.from("projects").select("*").eq("id", projectId).single(),
+    contactId
+      ? supabase.from("contacts").select("id, full_name").eq("id", contactId).maybeSingle()
+      : Promise.resolve({ data: null }),
+    companyId
+      ? supabase.from("companies").select("id, name").eq("id", companyId).maybeSingle()
+      : Promise.resolve({ data: null }),
+    supabase
+      .from("project_members")
+      .select("user_id, role_id, roles!inner(key), app_users(id, full_name, email, phone, avatar_url)")
+      .eq("project_id", projectId)
+      .in("roles.key", ["pm", "project_manager"])
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    (() => {
+      let query = supabase
+        .from("rfis")
+        .select(RFI_PORTAL_SELECT)
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .neq("status", "draft")
+        .order("rfi_number", { ascending: true })
+      if (scopedRfiId) {
+        query = query.eq("id", scopedRfiId)
+      } else if (companyId && contactId) {
+        query = query.or(`assigned_company_id.eq.${companyId},notify_contact_id.eq.${contactId}`)
+      } else if (companyId) {
+        query = query.eq("assigned_company_id", companyId)
+      } else if (contactId) {
+        query = query.eq("notify_contact_id", contactId)
+      }
+      return query
+    })(),
+  ])
+
+  if (orgResult.error || !orgResult.data) throw new Error("Org not found for portal")
+  if (projectResult.error || !projectResult.data) throw new Error("Project not found for portal")
+  if (rfisResult.error) throw new Error(`Failed to load RFIs for reviewer portal: ${rfisResult.error.message}`)
+
+  const pmUser = (pmResult.data as any)?.app_users
+  const pm = Array.isArray(pmUser) ? pmUser[0] : pmUser
+  const rfis = (rfisResult.data ?? []).map(mapRfi)
+
+  return {
+    org: {
+      id: orgResult.data.id,
+      name: orgResult.data.name,
+      logo_url: orgResult.data.logo_url ?? undefined,
+    },
+    project: mapProject(projectResult.data),
+    reviewer: {
+      contact_id: contactId ?? null,
+      contact_name: (contactResult.data as any)?.full_name ?? null,
+      company_id: companyId ?? null,
+      company_name: (companyResult.data as any)?.name ?? null,
+      role: reviewerRole ?? null,
+    },
+    projectManager: pm
+      ? {
+          id: pm.id,
+          full_name: pm.full_name ?? "",
+          email: pm.email ?? undefined,
+          phone: pm.phone ?? undefined,
+          avatar_url: pm.avatar_url ?? undefined,
+          role_label: "Project Manager",
+        }
+      : undefined,
+    rfis,
+    pendingRfiCount: rfis.filter((rfi) => rfi.status === "open" || rfi.status === "pending").length,
+  }
+}
+
+const RFI_PORTAL_SELECT =
+  "id, org_id, project_id, rfi_number, subject, question, status, priority, due_date, answered_at, attachment_file_id, last_response_at, decision_status, decision_note, decided_by_user_id, decided_by_contact_id, decided_at, decided_via_portal, decision_portal_token_id, created_at, updated_at"
 
 function permissionsToColumns(overrides?: Partial<PortalPermissions>) {
   return {
@@ -1203,7 +1336,11 @@ function permissionsToColumns(overrides?: Partial<PortalPermissions>) {
     can_submit_invoices: overrides?.can_submit_invoices ?? true,
     can_submit_time: overrides?.can_submit_time ?? true,
     can_submit_expenses: overrides?.can_submit_expenses ?? true,
+    can_submit_daily_logs: overrides?.can_submit_daily_logs ?? false,
     can_upload_compliance_docs: overrides?.can_upload_compliance_docs ?? true,
+    can_view_punch_items: overrides?.can_view_punch_items ?? false,
+    // Reviewer-specific permissions (least-privilege: opt-in only)
+    can_review_submittals: overrides?.can_review_submittals ?? false,
   }
 }
 
@@ -1453,6 +1590,8 @@ function mapSubmittal(data: any): Submittal {
     decision_at: data.decision_at ?? undefined,
     decision_via_portal: data.decision_via_portal ?? undefined,
     decision_portal_token_id: data.decision_portal_token_id ?? undefined,
+    ball_in_court: data.ball_in_court ?? undefined,
+    stamped_file_id: data.stamped_file_id ?? undefined,
     created_at: data.created_at ?? "",
     updated_at: data.updated_at ?? undefined,
   }

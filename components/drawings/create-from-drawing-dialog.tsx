@@ -177,8 +177,8 @@ export function CreateFromDrawingDialog({
           {/* Entity type selection */}
           <div>
             <Label className="mb-2 block">Type</Label>
-            <div className="grid grid-cols-4 gap-2">
-              {(["task", "rfi", "punch_list", "issue"] as PinEntityType[]).map(
+            <div className="grid grid-cols-5 gap-2">
+              {(["task", "rfi", "punch_list", "observation", "issue"] as PinEntityType[]).map(
                 (type) => {
                   const TypeIcon = ENTITY_ICONS[type]
                   return (

@@ -25,6 +25,7 @@ import {
   removePortalTokenPinSchema,
 } from "@/lib/validation/portal-access"
 import { setExternalPortalAccountStatusSchema } from "@/lib/validation/external-portal-auth"
+import { REVIEWER_DEFAULT_PERMISSIONS } from "@/lib/types"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -51,12 +52,19 @@ export async function loadProjectVendorsAction(projectId: string) {
 export async function createPortalTokenAction(input: unknown) {
   return run(async () => {
       const parsed = createPortalTokenInputSchema.parse(input)
+      // Reviewer seats never inherit the client/sub permission defaults —
+      // start from the least-privilege reviewer set, then apply overrides.
+      const permissions =
+        parsed.portal_type === "reviewer"
+          ? { ...REVIEWER_DEFAULT_PERMISSIONS, ...(parsed.permissions ?? {}) }
+          : parsed.permissions
       const token = await createPortalAccessToken({
         projectId: parsed.project_id,
         portalType: parsed.portal_type,
         contactId: parsed.contact_id,
         companyId: parsed.company_id,
-        permissions: parsed.permissions,
+        reviewerRole: parsed.portal_type === "reviewer" ? (parsed.reviewer_role ?? "other") : null,
+        permissions,
         expiresAt: parsed.expires_at,
       })
 

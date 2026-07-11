@@ -12,7 +12,7 @@ import { useSearchParams } from "next/navigation"
 
 import type { DailyLog, DailyReport, ScheduleItem, Task } from "@/lib/types"
 import type { EnhancedFileMetadata, FileCategory, ProjectPunchItem } from "@/app/(app)/projects/[id]/actions"
-import type { DailyLogInput, DailyReportUpdateInput, ManpowerInput } from "@/lib/validation/daily-logs"
+import type { DailyLogInput, DailyReportSectionInput, DailyReportSectionKind, DailyReportUpdateInput, ManpowerInput } from "@/lib/validation/daily-logs"
 import { cn } from "@/lib/utils"
 
 import { FileViewer } from "@/components/files/file-viewer"
@@ -676,6 +676,10 @@ interface DailyLogsTabProps {
   onAddManpower: (date: string, values: ManpowerInput) => Promise<DailyReport>
   onUpdateManpower: (manpowerId: string, values: ManpowerInput) => Promise<DailyReport>
   onDeleteManpower: (manpowerId: string) => Promise<DailyReport>
+  onAddSection: (date: string, kind: DailyReportSectionKind, input: DailyReportSectionInput) => Promise<DailyReport>
+  onUpdateSection: (kind: DailyReportSectionKind, id: string, input: DailyReportSectionInput) => Promise<DailyReport>
+  onDeleteSection: (kind: DailyReportSectionKind, id: string) => Promise<DailyReport>
+  onRefreshWeather: (reportId: string) => Promise<DailyReport>
   onUploadFiles: (
     files: File[],
     context?: {
@@ -709,6 +713,10 @@ export function DailyLogsTab({
   onAddManpower,
   onUpdateManpower,
   onDeleteManpower,
+  onAddSection,
+  onUpdateSection,
+  onDeleteSection,
+  onRefreshWeather,
   onUploadFiles,
   onDownloadFile,
   onDeleteLog,
@@ -867,6 +875,10 @@ export function DailyLogsTab({
         onAddManpower={onAddManpower}
         onUpdateManpower={onUpdateManpower}
         onDeleteManpower={onDeleteManpower}
+        onAddSection={onAddSection}
+        onUpdateSection={onUpdateSection}
+        onDeleteSection={onDeleteSection}
+        onRefreshWeather={onRefreshWeather}
         onUploadFiles={onUploadFiles}
         onDownloadFile={onDownloadFile}
         onDeleteLog={onDeleteLog}

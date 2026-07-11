@@ -1,5 +1,14 @@
 import { z } from "zod"
 
+export const projectRetainageScheduleSchema = z
+  .array(
+    z.object({
+      until_percent_complete: z.number().gt(0).max(100),
+      retainage_percent: z.number().min(0).max(100),
+    }),
+  )
+  .max(10)
+
 export const projectInputSchema = z.object({
   name: z.string().min(1, "Project name is required"),
   status: z.enum(["planning", "bidding", "active", "on_hold", "completed", "cancelled"]).optional(),
@@ -28,6 +37,9 @@ export const projectInputSchema = z.object({
   labor_burden_multiplier: z.number().min(1).optional().nullable(),
   rate_schedule_id: z.string().uuid().optional().nullable(),
   retainage_applies_to_fee: z.boolean().optional().nullable(),
+  fixed_price_billing_basis: z.enum(["draws", "progress"]).optional().nullable(),
+  retainage_schedule: projectRetainageScheduleSchema.optional().nullable(),
+  stored_materials_retainage_percent: z.number().min(0).max(100).optional().nullable(),
   requires_client_cost_approval: z.boolean().optional(),
   open_book: z.boolean().optional(),
   paid_costs_required: z.boolean().optional(),

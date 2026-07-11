@@ -4,6 +4,7 @@ import { createClient, type SupabaseClient, type User } from "@supabase/supabase
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { getOrgAccessStateForOrg } from "@/lib/services/access"
+import { normalizeProductTier } from "@/lib/product-tier"
 import { hasPlatformAccessByUserId } from "@/lib/services/platform-access"
 import type { OrgServiceContext } from "@/lib/services/context"
 import { MobileAPIError } from "@/lib/mobile/api"
@@ -120,7 +121,10 @@ export async function requireMobileOrg(request: Request): Promise<MobileOrgConte
     }
   }
 
-  const access = await getOrgAccessStateForOrg(orgId, context.isPlatformAdmin)
+  const [access, orgResult] = await Promise.all([
+    getOrgAccessStateForOrg(orgId, context.isPlatformAdmin),
+    context.serviceSupabase.from("orgs").select("product_tier").eq("id", orgId).maybeSingle(),
+  ])
   if (access.locked) {
     throw new MobileAPIError(423, "organization_locked", access.reason ?? "This organization is locked.")
   }
@@ -128,6 +132,11 @@ export async function requireMobileOrg(request: Request): Promise<MobileOrgConte
   return {
     ...context,
     orgId,
-    serviceContext: { supabase: context.serviceSupabase, orgId, userId: context.user.id },
+    serviceContext: {
+      supabase: context.serviceSupabase,
+      orgId,
+      userId: context.user.id,
+      productTier: normalizeProductTier(orgResult.data?.product_tier),
+    },
   }
 }

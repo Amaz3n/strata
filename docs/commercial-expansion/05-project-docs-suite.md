@@ -1,5 +1,15 @@
 # Workstream 05 — Project Document Suite: Meeting Minutes, Transmittals, Numbering, PDF Exports
 
+> **STATUS (2026-07-10): CODE + MIGRATION COMPLETE; MANUAL QA PENDING.** Shared
+> document PDF kit and RFI/submittal/register/daily-report/punch exporters, formatted
+> numbering settings, meeting minutes with carry-forward/task/finalize/distribution,
+> and tracked transmittals are implemented. Migration
+> `20260711010000_project_document_suite.sql` was applied through Supabase MCP to
+> the Arc project (`gzlfiskfkvqgpzqldnwk`). Services can now select
+> `orgs.document_numbering` and query the new meeting/transmittal tables. Static
+> verification passes (`pnpm exec tsc --noEmit`, `pnpm lint`, `pnpm test:auth`);
+> run the acceptance checklist in the internal QA org after migration approval.
+
 > Prereq: 00 master, 01. Independent of 02–04 except where noted. In commercial work,
 > documents ARE the project record — they get printed, attached to pay apps, and cited
 > in disputes. Arc currently has no meeting minutes, no transmittals, integer-only

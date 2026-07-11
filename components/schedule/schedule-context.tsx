@@ -69,7 +69,8 @@ interface ScheduleProviderProps {
   onItemsBulkUpdate?: (updates: ScheduleBulkItemUpdate[]) => Promise<ScheduleItem[]>
   onItemCreate?: (item: Partial<ScheduleItem>) => Promise<ScheduleItem>
   onItemDelete?: (id: string) => Promise<void>
-  onDependencyCreate?: (from: string, to: string, type?: string) => Promise<ScheduleDependency>
+  onDependencyCreate?: (from: string, to: string, type?: ScheduleDependency["dependency_type"], lagDays?: number) => Promise<ScheduleDependency>
+  onDependencyUpdate?: (id: string, type: ScheduleDependency["dependency_type"], lagDays: number) => Promise<ScheduleDependency>
   onDependencyDelete?: (id: string) => Promise<void>
 }
 
@@ -84,6 +85,7 @@ export function ScheduleProvider({
   onItemCreate,
   onItemDelete,
   onDependencyCreate,
+  onDependencyUpdate,
   onDependencyDelete,
 }: ScheduleProviderProps) {
   const isMobile = useIsMobile()
@@ -289,12 +291,12 @@ export function ScheduleProvider({
   }, [onItemDelete])
 
   // Handle dependency create
-  const handleDependencyCreate = useCallback(async (from: string, to: string, type: string = "FS") => {
+  const handleDependencyCreate = useCallback(async (from: string, to: string, type: ScheduleDependency["dependency_type"] = "FS", lagDays = 0) => {
     setIsLoading(true)
     setError(null)
     try {
       if (onDependencyCreate) {
-        const created = await onDependencyCreate(from, to, type)
+        const created = await onDependencyCreate(from, to, type, lagDays)
         setDependencies((prev) => [...prev, created])
       }
     } catch (err) {
@@ -304,6 +306,20 @@ export function ScheduleProvider({
       setIsLoading(false)
     }
   }, [onDependencyCreate])
+
+  const handleDependencyUpdate = useCallback(async (id: string, type: ScheduleDependency["dependency_type"], lagDays: number) => {
+    setIsLoading(true)
+    setError(null)
+    try {
+      if (!onDependencyUpdate) throw new Error("Dependency editing is not configured")
+      const updated = await onDependencyUpdate(id, type, lagDays)
+      setDependencies((current) => current.map((dependency) => dependency.id === id ? updated : dependency))
+      return updated
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update dependency")
+      throw err
+    } finally { setIsLoading(false) }
+  }, [onDependencyUpdate])
 
   // Handle dependency delete
   const handleDependencyDelete = useCallback(async (id: string) => {
@@ -337,6 +353,7 @@ export function ScheduleProvider({
     onItemCreate: handleItemCreate,
     onItemDelete: handleItemDelete,
     onDependencyCreate: handleDependencyCreate,
+    onDependencyUpdate: handleDependencyUpdate,
     onDependencyDelete: handleDependencyDelete,
     scrollToToday,
     scrollToTodayTrigger,
@@ -359,6 +376,7 @@ export function ScheduleProvider({
     handleItemCreate,
     handleItemDelete,
     handleDependencyCreate,
+    handleDependencyUpdate,
     handleDependencyDelete,
     scrollToToday,
     scrollToTodayTrigger,

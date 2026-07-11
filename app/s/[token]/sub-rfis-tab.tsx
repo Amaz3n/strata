@@ -133,7 +133,7 @@ export function SubRfisTab({ rfis, token }: SubRfisTabProps) {
         {items.map((rfi) => (
           <Card key={rfi.id}>
             <CardHeader className="pb-2 flex flex-row items-center justify-between">
-              <CardTitle className="text-base">RFI #{rfi.rfi_number}</CardTitle>
+              <CardTitle className="text-base">RFI #{rfi.display_number ?? rfi.rfi_number}</CardTitle>
               <Badge
                 variant="outline"
                 className={`capitalize text-xs ${statusColors[rfi.status] ?? ""}`}

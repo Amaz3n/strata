@@ -17,6 +17,50 @@ function contentDisposition(fileName: string, disposition: "inline" | "attachmen
   return `${disposition}; filename="${fallback}"; filename*=UTF-8''${encoded}`
 }
 
+async function fileBelongsToReviewedDocument(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  orgId: string,
+  fileId: string,
+): Promise<boolean> {
+  const [{ data: item }, { data: link }] = await Promise.all([
+    supabase
+      .from("submittal_items")
+      .select("id")
+      .eq("org_id", orgId)
+      .eq("file_id", fileId)
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from("file_links")
+      .select("id")
+      .eq("org_id", orgId)
+      .eq("file_id", fileId)
+      .in("entity_type", ["submittal", "rfi"])
+      .limit(1)
+      .maybeSingle(),
+  ])
+  return !!item || !!link
+}
+
+/** Sub tokens reach the item files of submittals assigned to their company
+ * (their own uploads plus the returned stamped copy). */
+async function fileBelongsToCompanySubmittal(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  orgId: string,
+  fileId: string,
+  companyId: string,
+): Promise<boolean> {
+  const { data } = await supabase
+    .from("submittal_items")
+    .select("id, submittal:submittals!inner(id, assigned_company_id)")
+    .eq("org_id", orgId)
+    .eq("file_id", fileId)
+    .eq("submittal.assigned_company_id", companyId)
+    .limit(1)
+    .maybeSingle()
+  return !!data
+}
+
 export async function GET(
   request: NextRequest,
   context: { params: Promise<{ token: string; fileId: string }> },
@@ -42,8 +86,23 @@ export async function GET(
     .eq("project_id", access.project_id)
     .maybeSingle()
 
-  if (!file || !file[shareColumn]) {
+  if (!file) {
     return NextResponse.json({ error: "File not available" }, { status: 404 })
+  }
+
+  if (!file[shareColumn]) {
+    // Reviewer seats additionally reach files that ride the documents they
+    // review: submittal item uploads and submittal/RFI attachments. Sub seats
+    // reach their own submittal item files (including the stamped copy).
+    const isReachable =
+      access.portal_type === "reviewer"
+        ? await fileBelongsToReviewedDocument(supabase, access.org_id, file.id)
+        : access.portal_type === "sub" && access.company_id
+          ? await fileBelongsToCompanySubmittal(supabase, access.org_id, file.id, access.company_id)
+          : false
+    if (!isReachable) {
+      return NextResponse.json({ error: "File not available" }, { status: 404 })
+    }
   }
 
   const wantsDownload = request.nextUrl.searchParams.get("download") === "1"

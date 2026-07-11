@@ -94,6 +94,9 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
     qbo_vendor_name: company?.qbo_vendor_name ?? "",
     qbo_vendor_synced_at: company?.qbo_vendor_synced_at ?? "",
     qbo_vendor_sync_status: company?.qbo_vendor_sync_status ?? "",
+    tax_id_last4: company?.tax_id_last4 ?? "",
+    tax_entity_type: company?.tax_entity_type ?? "none",
+    is_1099_eligible: company?.is_1099_eligible ?? false,
     address: {
       street1: company?.address?.street1 ?? "",
       street2: company?.address?.street2 ?? "",
@@ -148,6 +151,9 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
       qbo_vendor_sync_status: formState.qbo_vendor_id
         ? (formState.qbo_vendor_sync_status as "linked" | "created" | "needs_review" | "error") || "linked"
         : undefined,
+      tax_id_last4: formState.tax_id_last4 || undefined,
+      tax_entity_type: formState.tax_entity_type === "none" ? undefined : formState.tax_entity_type,
+      is_1099_eligible: formState.is_1099_eligible,
       address: {
         street1: formState.address.street1 || undefined,
         street2: formState.address.street2 || undefined,
@@ -423,12 +429,38 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="flex items-center gap-3 rounded-lg border p-3">
-          <Switch checked={formState.prequalified} onCheckedChange={(checked) => setBooleanField("prequalified", checked)} />
-          <div>
-            <div className="text-sm font-medium">Prequalified</div>
-            <div className="text-xs text-muted-foreground">Approved to bid/work</div>
+      <div className="space-y-3 border p-4">
+        <div>
+          <div className="text-sm font-medium">Vendor tax profile</div>
+          <div className="text-xs text-muted-foreground">Store only the TIN last four; the full number remains in the audited W-9 file.</div>
+        </div>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <div className="space-y-2">
+            <Label>Entity type</Label>
+            <Select value={formState.tax_entity_type} onValueChange={(value) => setField("tax_entity_type", value)}>
+              <SelectTrigger><SelectValue placeholder="Select entity type" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Not set</SelectItem>
+                <SelectItem value="individual">Individual</SelectItem>
+                <SelectItem value="sole_prop">Sole proprietor</SelectItem>
+                <SelectItem value="partnership">Partnership</SelectItem>
+                <SelectItem value="llc">LLC</SelectItem>
+                <SelectItem value="c_corp">C corporation</SelectItem>
+                <SelectItem value="s_corp">S corporation</SelectItem>
+                <SelectItem value="exempt">Exempt</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="tax-id-last4">TIN last four</Label>
+            <Input id="tax-id-last4" inputMode="numeric" maxLength={4} pattern="[0-9]{4}" value={formState.tax_id_last4} onChange={(event) => setField("tax_id_last4", event.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="1234" />
+          </div>
+          <div className="flex items-center gap-3 border p-3">
+            <Switch checked={formState.is_1099_eligible} onCheckedChange={(checked) => setBooleanField("is_1099_eligible", checked)} />
+            <div>
+              <div className="text-sm font-medium">1099 eligible</div>
+              <div className="text-xs text-muted-foreground">Bookkeeper-confirmed reporting status</div>
+            </div>
           </div>
         </div>
       </div>

@@ -1,6 +1,7 @@
 import { recordEvent } from "@/lib/services/events"
 import { sendComplianceAutopilotEmail } from "@/lib/services/mailer"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { expirePrequalificationsWithClient } from "@/lib/services/prequalification"
 
 const EXPIRY_REMINDER_DAYS = new Set([30, 14, 3])
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -64,6 +65,7 @@ export interface ComplianceAutopilotMetrics {
   skipped: number
   failed: number
   digests: number
+  prequalificationsExpired: number
 }
 
 function utcDateOnly(value: Date | string) {
@@ -243,6 +245,7 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
     skipped: 0,
     failed: 0,
     digests: 0,
+    prequalificationsExpired: 0,
   }
 
   const { data: orgs, error: orgError } = await supabase
@@ -268,6 +271,11 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
     }
 
     try {
+      metrics.prequalificationsExpired += await expirePrequalificationsWithClient(
+        supabase,
+        org.id,
+        today.toISOString().slice(0, 10),
+      )
       const { data: requirements, error: requirementsError } = await supabase
         .from("company_compliance_requirements")
         .select(

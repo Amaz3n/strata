@@ -65,7 +65,14 @@ import {
   type FinancialSetupValue,
 } from "@/components/projects/project-financial-setup-fields"
 import { ArrowLeft, ArrowRight } from "@/components/icons"
+import { usePageTitle } from "@/components/layout/page-title-context"
 import { cn } from "@/lib/utils"
+import {
+  getDefaultProjectPropertyType,
+  getProjectPosture,
+  type ProductTier,
+} from "@/lib/product-tier"
+import { terminology } from "@/lib/terminology"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -106,6 +113,7 @@ interface ProjectsClientProps {
   projects: Project[]
   clientContacts: Contact[]
   scheduleSummaries: Record<string, ProjectScheduleSummary>
+  productTier: ProductTier
 }
 
 type SortKey = "name" | "client" | "status" | "progress" | "value"
@@ -153,7 +161,10 @@ function normalizeProjectInput(values: ProjectInput): ProjectInput {
   }
 }
 
-export function ProjectsClient({ projects, clientContacts, scheduleSummaries }: ProjectsClientProps) {
+export function ProjectsClient({ projects, clientContacts, scheduleSummaries, productTier }: ProjectsClientProps) {
+  const { progressBillingEnabled } = usePageTitle()
+  const defaultPropertyType = getDefaultProjectPropertyType(productTier)
+  const orgTerms = terminology(productTier)
   const [projectsState, setProjectsState] = useState<Project[]>(projects)
 
   // Sorting (client-side; all projects are already loaded)
@@ -176,7 +187,9 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries }: 
   const [createSheetOpen, setCreateSheetOpen] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
   const [createDateRange, setCreateDateRange] = useState<DateRange | undefined>()
-  const [createFinancialSetup, setCreateFinancialSetup] = useState<FinancialSetupValue>(() => emptyFinancialSetup())
+  const [createFinancialSetup, setCreateFinancialSetup] = useState<FinancialSetupValue>(() =>
+    emptyFinancialSetup("fixed_price", defaultPropertyType, progressBillingEnabled),
+  )
 
   // Edit sheet
   const [editSheetOpen, setEditSheetOpen] = useState(false)
@@ -205,7 +218,7 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries }: 
       address: "",
       client_id: null,
       total_value: undefined,
-      property_type: undefined,
+      property_type: defaultPropertyType,
       project_type: undefined,
       description: "",
       contract_type: "fixed",
@@ -316,7 +329,7 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries }: 
         address: "",
         client_id: null,
         total_value: undefined,
-        property_type: undefined,
+        property_type: defaultPropertyType,
         project_type: undefined,
         description: "",
         qbo_class_id: null,
@@ -324,7 +337,7 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries }: 
         qbo_customer_id: null,
         qbo_customer_name: null,
       })
-      setCreateFinancialSetup(emptyFinancialSetup())
+      setCreateFinancialSetup(emptyFinancialSetup("fixed_price", defaultPropertyType, progressBillingEnabled))
       setCreateDateRange(undefined)
       toast.success("Project created", { description: created.name })
       setCreateSheetOpen(false)
@@ -523,7 +536,7 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries }: 
                 <TableHeader>
                   <TableRow>
                     <SortHeader label="Project" column="name" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="pl-6 w-[22%]" />
-                    <SortHeader label="Client" column="client" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="w-[16%]" />
+                    <SortHeader label={orgTerms.owner} column="client" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="w-[16%]" />
                     <TableHead>Address</TableHead>
                     <SortHeader label="Status" column="status" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="w-[11%]" />
                     <SortHeader label="Progress" column="progress" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="w-[15%]" />
@@ -606,9 +619,11 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries }: 
         qboClasses={qboClasses}
         financialSetup={createFinancialSetup}
         onFinancialSetupChange={setCreateFinancialSetup}
+        productTier={productTier}
+        progressBillingEnabled={progressBillingEnabled}
         onClose={() => {
           createForm.reset()
-          setCreateFinancialSetup(emptyFinancialSetup())
+          setCreateFinancialSetup(emptyFinancialSetup("fixed_price", defaultPropertyType, progressBillingEnabled))
           setCreateDateRange(undefined)
           setCreateSheetOpen(false)
         }}
@@ -628,6 +643,8 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries }: 
         qboClasses={qboClasses}
         financialSetup={editFinancialSetup}
         onFinancialSetupChange={setEditFinancialSetup}
+        productTier={productTier}
+        progressBillingEnabled={progressBillingEnabled}
         onClose={() => {
           setEditSheetOpen(false)
           setEditingProject(null)
@@ -760,6 +777,8 @@ interface ProjectFormSheetProps {
   qboClasses: QBOClassOption[]
   financialSetup: FinancialSetupValue
   onFinancialSetupChange: (value: FinancialSetupValue) => void
+  productTier: ProductTier
+  progressBillingEnabled: boolean
   onClose: () => void
 }
 
@@ -776,12 +795,17 @@ function ProjectFormSheet({
   qboClasses,
   financialSetup,
   onFinancialSetupChange,
+  productTier,
+  progressBillingEnabled,
   onClose,
 }: ProjectFormSheetProps) {
   const isEdit = mode === "edit"
   const [step, setStep] = useState<"details" | "financials">("details")
   const financialMessages = validateFinancialSetup(financialSetup)
   const canSubmit = financialMessages.blocking.length === 0 && !isSubmitting
+  const propertyType = form.watch("property_type")
+  const posture = getProjectPosture(propertyType, productTier)
+  const terms = terminology(posture)
 
   // Default QBO customer — drives cost attribution and pre-fills new invoices. Stored on the form (qbo_customer_id/name).
   const qboCustomerId = form.watch("qbo_customer_id")
@@ -994,7 +1018,7 @@ function ProjectFormSheet({
                 name="client_id"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Client</FormLabel>
+                    <FormLabel>{terms.owner}</FormLabel>
                     <Select
                       value={field.value ?? "none"}
                       onValueChange={(value) => field.onChange(value === "none" ? null : value)}
@@ -1198,7 +1222,7 @@ function ProjectFormSheet({
                     ) : null}
 
                     <p className="text-sm text-muted-foreground">
-                      Used as the default client for portal invites and signatures{qboConnected ? ", and as the QuickBooks customer for invoices, payables, and expenses" : ""}. This does not grant portal access.
+                      Used as the default {terms.owner.toLowerCase()} for portal invites and signatures{qboConnected ? ", and as the QuickBooks customer for invoices, payables, and expenses" : ""}. This does not grant portal access.
                     </p>
                     <FormMessage />
                   </FormItem>
@@ -1250,7 +1274,15 @@ function ProjectFormSheet({
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Property Type</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value ?? ""}>
+                      <Select
+                        onValueChange={(value) => {
+                          field.onChange(value)
+                          if (value === "commercial" && (!financialSetup.retainagePercent || financialSetup.retainagePercent === "0")) {
+                            onFinancialSetupChange({ ...financialSetup, retainagePercent: "10" })
+                          }
+                        }}
+                        value={field.value ?? ""}
+                      >
                         <FormControl>
                           <SelectTrigger className="w-full">
                             <SelectValue placeholder="Select type" />
@@ -1306,7 +1338,12 @@ function ProjectFormSheet({
               </div>
 
               <div className={cn(step === "financials" ? "block" : "hidden")}>
-                <ProjectFinancialSetupFields value={financialSetup} onChange={onFinancialSetupChange} />
+                <ProjectFinancialSetupFields
+                  value={financialSetup}
+                  onChange={onFinancialSetupChange}
+                  posture={posture}
+                  progressBillingEnabled={progressBillingEnabled}
+                />
                 {financialMessages.blocking[0] || financialMessages.warnings[0] ? (
                   <p
                     className={cn(

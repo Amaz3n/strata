@@ -9,6 +9,12 @@ import {
   listBudgetEstimateSources,
 } from "@/lib/services/budget-from-estimate"
 import { requireOrgContext } from "@/lib/services/context"
+import { COST_TYPES } from "@/lib/cost-types"
+import {
+  approveBudgetTransfer,
+  createBudgetTransfer,
+  setBudgetLineContingency,
+} from "@/lib/services/budget-transfers"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -33,6 +39,7 @@ const budgetLineInputSchema = z.object({
   description: z.string().min(1),
   amount_cents: z.number().int().min(0),
   metadata: z.record(z.any()).optional(),
+  cost_type: z.enum(COST_TYPES).nullable().optional(),
 })
 
 const upsertBudgetSchema = z.object({
@@ -181,5 +188,28 @@ export async function updateCostCodeProgressAction(projectId: string, costCodeId
       })
       
       revalidateBudgetPages(projectId)
+  })
+}
+
+export async function createBudgetTransferAction(projectId: string, input: unknown) {
+  return run(async () => {
+    const transfer = await createBudgetTransfer(input)
+    revalidateBudgetPages(projectId)
+    return transfer
+  })
+}
+
+export async function approveBudgetTransferAction(projectId: string, transferId: string) {
+  return run(async () => {
+    const transfer = await approveBudgetTransfer(transferId)
+    revalidateBudgetPages(projectId)
+    return transfer
+  })
+}
+
+export async function setBudgetLineContingencyAction(projectId: string, budgetLineId: string, enabled: boolean) {
+  return run(async () => {
+    await setBudgetLineContingency(budgetLineId, z.boolean().parse(enabled))
+    revalidateBudgetPages(projectId)
   })
 }

@@ -538,6 +538,20 @@ export async function uploadComplianceDocument({
     throw new Error(`Failed to upload compliance document: ${error?.message}`)
   }
 
+  const uploadedType = Array.isArray(data.compliance_document_types)
+    ? data.compliance_document_types[0]
+    : data.compliance_document_types
+  if (uploadedType?.code === "w9") {
+    const receivedAt = new Date().toISOString()
+    const { error: companyError } = await supabase
+      .from("companies")
+      .update({ w9_file_id: fileId, w9_received_at: receivedAt })
+      .eq("org_id", resolvedOrgId)
+      .eq("id", companyId)
+    if (companyError) throw new Error(`Failed to attach W-9 to company: ${companyError.message}`)
+    await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "company.w9_received", entityType: "company", entityId: companyId, payload: { file_id: fileId } })
+  }
+
   await recordEvent({
     orgId: resolvedOrgId,
     eventType: "compliance_document_uploaded",
@@ -606,6 +620,20 @@ export async function uploadComplianceDocumentFromPortal({
 
   if (error || !data) {
     throw new Error(`Failed to upload compliance document: ${error?.message}`)
+  }
+
+  const uploadedType = Array.isArray(data.compliance_document_types)
+    ? data.compliance_document_types[0]
+    : data.compliance_document_types
+  if (uploadedType?.code === "w9") {
+    const receivedAt = new Date().toISOString()
+    const { error: companyError } = await supabase
+      .from("companies")
+      .update({ w9_file_id: fileId, w9_received_at: receivedAt })
+      .eq("org_id", orgId)
+      .eq("id", companyId)
+    if (companyError) throw new Error(`Failed to attach W-9 to company: ${companyError.message}`)
+    await recordEvent({ orgId, eventType: "company.w9_received", entityType: "company", entityId: companyId, payload: { file_id: fileId, submitted_via_portal: true } })
   }
 
   await recordEvent({

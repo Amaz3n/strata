@@ -67,6 +67,12 @@ export type NotificationType =
   | "commitment_updated"
   | "recipient_signed"
   | "payable_email_ingest"
+  | "meeting_finalized"
+  | "transmittal_sent"
+  | "safety_incident_reported"
+  | "safety_incident_alert"
+  | "observation_created"
+  | "inspection_completed"
 
 export const EMAIL_NOTIFICATION_TYPES = [
   {
@@ -108,6 +114,21 @@ export const EMAIL_NOTIFICATION_TYPES = [
     key: "schedule_risk",
     label: "Schedule risk issue",
     description: "Email me when Arc flags a schedule risk.",
+  },
+  {
+    key: "meeting_finalized",
+    label: "Meeting minutes finalized",
+    description: "Email me when project meeting minutes are finalized.",
+  },
+  {
+    key: "transmittal_sent",
+    label: "Transmittal sent",
+    description: "Email me when a project transmittal is sent.",
+  },
+  {
+    key: "safety_incident_alert",
+    label: "Serious safety incident",
+    description: "Email me when a lost-time or fatality incident is reported.",
   },
 ] as const satisfies ReadonlyArray<{
   key: NotificationType

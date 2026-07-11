@@ -106,6 +106,7 @@ export function SubmittalsClient({ submittals, projects, companies }: Submittals
   const [search, setSearch] = useState("")
   const [filterProjectId, setFilterProjectId] = useState<string>("all")
   const [statusFilter, setStatusFilter] = useState<"all" | StatusKey>("all")
+  const [waitingOnUsOnly, setWaitingOnUsOnly] = useState(false)
   const [sheetOpen, setSheetOpen] = useState(false)
   const [detailSheetOpen, setDetailSheetOpen] = useState(false)
   const [selectedSubmittal, setSelectedSubmittal] = useState<Submittal | null>(null)
@@ -124,19 +125,27 @@ export function SubmittalsClient({ submittals, projects, companies }: Submittals
       if (item.superseded_by_id) return false
       const matchesProject = filterProjectId === "all" || item.project_id === filterProjectId
       const matchesStatus = statusFilter === "all" || item.status === statusFilter
+      // "Waiting on us": undecided and the ball is not in the sub's court.
+      const matchesCourt =
+        !waitingOnUsOnly ||
+        (!item.decision_status &&
+          (item.status === "submitted" || item.status === "in_review") &&
+          !(item.ball_in_court ?? "").startsWith("Subcontractor"))
       const matchesSearch =
         term.length === 0 ||
         [String(item.submittal_number ?? ""), item.title ?? "", item.description ?? "", item.spec_section ?? ""].some(
           (value) => value.toLowerCase().includes(term),
         )
-      return matchesProject && matchesStatus && matchesSearch
+      return matchesProject && matchesStatus && matchesCourt && matchesSearch
     })
-  }, [items, search, statusFilter, filterProjectId])
+  }, [items, search, statusFilter, filterProjectId, waitingOnUsOnly])
 
   const companyName = (companyId?: string | null) =>
     companyId ? companies.find((c) => c.id === companyId)?.name ?? null : null
 
   function ballInCourt(submittal: Submittal): string {
+    // Routed submittals persist their court label on every workflow transition.
+    if (submittal.ball_in_court) return submittal.ball_in_court
     if (submittal.status === "approved" || submittal.status === "approved_as_noted" || submittal.status === "rejected") {
       return "—"
     }
@@ -176,7 +185,7 @@ export function SubmittalsClient({ submittals, projects, companies }: Submittals
 
   function handleExportCsv() {
     const rows = filtered.map((submittal) => ({
-      number: submittal.revision > 0 ? `${submittal.submittal_number} Rev ${submittal.revision}` : submittal.submittal_number,
+      number: submittal.revision > 0 ? `${submittal.display_number ?? submittal.submittal_number} Rev ${submittal.revision}` : (submittal.display_number ?? submittal.submittal_number),
       title: submittal.title,
       type: submittal.submittal_type?.replace(/_/g, " ") ?? "",
       spec_section: submittal.spec_section ?? "",
@@ -278,6 +287,18 @@ export function SubmittalsClient({ submittals, projects, companies }: Submittals
               onChange={(e) => setSearch(e.target.value)}
             />
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setWaitingOnUsOnly((v) => !v)}
+                className={cn(
+                  "shrink-0 border px-3 py-1.5 text-xs font-medium transition-colors",
+                  waitingOnUsOnly
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-border bg-background text-muted-foreground hover:bg-muted",
+                )}
+              >
+                Waiting on us
+              </button>
               <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as StatusKey)}>
                 <SelectTrigger className="w-full sm:w-36">
                   <SelectValue placeholder="Status" />
@@ -345,7 +366,7 @@ export function SubmittalsClient({ submittals, projects, companies }: Submittals
                       isDateExpired(submittal.due_date),
                   )
                   const subtitleParts = [
-                    `#${submittal.submittal_number}`,
+                    `#${submittal.display_number ?? submittal.submittal_number}`,
                     statusLabels[submittal.status] ?? submittal.status,
                     submittal.spec_section || null,
                   ].filter(Boolean) as string[]
@@ -417,7 +438,7 @@ export function SubmittalsClient({ submittals, projects, companies }: Submittals
               >
                 <TableCell className="text-center px-2">
                   <span className="text-sm font-semibold">
-                    {submittal.submittal_number}
+                    {submittal.display_number ?? submittal.submittal_number}
                     {submittal.revision > 0 ? <span className="text-xs font-normal text-muted-foreground"> R{submittal.revision}</span> : null}
                   </span>
                 </TableCell>
@@ -511,7 +532,6 @@ export function SubmittalsClient({ submittals, projects, companies }: Submittals
     </>
   )
 }
-
 
 
 

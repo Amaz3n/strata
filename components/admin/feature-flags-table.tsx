@@ -54,6 +54,12 @@ const FLAG_PRESETS = [
     config: {},
   },
   {
+    key: "progress_billing_enabled",
+    label: "SOV Progress Billing",
+    description: "Show the progress-billing option for fixed-price financial setup (rollout gate, default off).",
+    config: {},
+  },
+  {
     key: "ai_search_planner_v2",
     label: "AI Search Planner v2",
     description: "Enable the second-generation AI search planner.",

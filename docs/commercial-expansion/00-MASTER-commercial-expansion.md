@@ -92,13 +92,13 @@ Execute in this order. Within a workstream, follow that doc's own phase order.
 | # | Doc | Contents | Depends on |
 |---|---|---|---|
 | 01 | `01-product-tiers-terminology-csi.md` | `product_tier` flag, terminology layer (client→owner), commercial defaults, CSI MasterFormat cost-code seed, cost-type dimension | — |
-| 02 | `02-owner-sov-progress-billing.md` | Prime-contract Schedule of Values, monthly pay applications, G702/G703 PDFs, stored materials, stepped retainage | 01 |
-| 03 | `03-change-management-lifecycle.md` | PCO→OCO state machine, cost-vs-price, sub-CO rollup into prime CO, RFI/source linkage | 01, 02 (contract sum feeds G702) |
-| 04 | `04-external-collaborators-submittal-routing.md` | External collaborator seats (architect/engineer/owner-rep), submittal review routing GC→architect, ball-in-court | 01 |
-| 05 | `05-project-docs-suite.md` | Meeting minutes, transmittals, formatted document numbering, PDF exports for RFIs/submittals/daily reports/punch | 01 (04 helps but not required) |
-| 06 | `06-field-safety-quality-punch.md` | Safety module (inspections, incidents, toolbox talks, observations), quality checklists, punch ball-in-court to subs | 01 |
-| 07 | `07-financial-controls.md` | Budget transfers + contingency management, sub prequalification workflow, W-9/tax-ID/1099 | 01 |
-| 08 | `08-daily-reports-schedule-commercial.md` | Daily report delay/equipment/visitor/delivery sections, sub-authored logs, PDF, schedule dependency types + lag writable | 01, 05 (PDF helper) |
+| 02 | `02-owner-sov-progress-billing.md` | ✅ SHIPPED 2026-07-10 (code + migrations applied; manual QA acceptance + draw regression pending — see doc STATUS) — Prime-contract Schedule of Values, monthly pay applications, G702/G703 PDFs, stored materials, stepped retainage | 01 |
+| 03 | `03-change-management-lifecycle.md` | ✅ CODE COMPLETE 2026-07-10 (migration + manual QA pending — see doc STATUS) — PCO→OCO state machine, cost-vs-price, sub-CO rollup into prime CO, RFI/source linkage | 01, 02 (contract sum feeds G702) |
+| 04 | `04-external-collaborators-submittal-routing.md` | ✅ CODE COMPLETE 2026-07-10 (migrations applied to prod; manual QA pending — see doc STATUS) — External collaborator seats (architect/engineer/owner-rep), submittal review routing GC→architect, ball-in-court | 01 |
+| 05 | `05-project-docs-suite.md` | ✅ CODE + MIGRATION COMPLETE 2026-07-10 (manual QA pending — see doc STATUS) — Meeting minutes, transmittals, formatted document numbering, PDF exports for RFIs/submittals/daily reports/punch | 01 (04 helps but not required) |
+| 06 | `06-field-safety-quality-punch.md` | ✅ CODE COMPLETE, MIGRATIONS APPLIED 2026-07-10 (manual QA pending — see doc STATUS) — Safety module (inspections, incidents, toolbox talks, observations), quality checklists, punch ball-in-court to subs | 01 |
+| 07 | `07-financial-controls.md` | ✅ CODE + MIGRATIONS COMPLETE 2026-07-11 (manual QA pending — see doc STATUS) — Budget transfers + contingency management, sub prequalification workflow, W-9/tax-ID/1099 | 01 |
+| 08 | `08-daily-reports-schedule-commercial.md` | ✅ CODE COMPLETE 2026-07-11 (migration + manual QA pending — see doc STATUS) — Daily report delay/equipment/visitor/delivery sections, sub-authored logs, PDF, schedule dependency types + lag writable | 01, 05 (PDF helper) |
 | 09 | `09-platform-deferred-and-production.md` | DEFERRED items (ERP abstraction, SSO, customer API, P6/MSP interchange) + Arc Production design constraints. Mostly documentation; small prep tasks only | — |
 
 Tiering from the strategy review maps as: Tier 1 (dealbreakers) = 01–04.
@@ -160,6 +160,40 @@ must not violate, plus expansion-specific additions:
     `if (org.product_tier === 'commercial')` or `property_type === ...` inline in a
     component — always go through the helpers so mixed orgs work and Production can
     slot in later.
+18. **Every new table ships complete, in the same migration:** org-scoped RLS
+    policies (copy the policy block from a recent neighboring migration; all
+    `auth.uid()` references MUST be written `(select auth.uid())` — bare `auth.uid()`
+    re-introduces the RLS initplan performance problem fixed in July 2026), indexes
+    on `(org_id, project_id)` for anything list-queried (plus FK-hot columns), and
+    the repo's standard `updated_at` trigger where the table has `updated_at`.
+    This applies to EVERY table in workstreams 02–08, not just the ones whose doc
+    mentions RLS explicitly.
+19. **Search index registration:** `lib/services/search-index.ts` maps the
+    `entity_type` values passed to `recordAudit()` onto search entity types. Any new
+    entity with a register/log view (pay applications, meetings, transmittals,
+    inspections, incidents, observations, prequalifications, budget transfers) must
+    be registered in that map in the same workstream, or it is invisible to global
+    search. Follow the existing entries' shape.
+20. **Email allowlist:** only notification types listed in `EMAIL_NOTIFICATION_TYPES`
+    (`lib/types/notifications.ts`) ever send email — everything else is in-app only.
+    Any new notification that must email (reviewer-step assignments, meeting
+    distribution, incident alerts, punch dispatch) needs its type added to that
+    allowlist deliberately, in the same change that introduces it. Do not assume
+    wiring through the notification service is enough; that exact silent-no-send bug
+    has happened before.
+21. **Permission keys land in the RBAC catalog seed, not just the UI.** The
+    catalog-as-code seed is the source of truth for roles/permissions (RBAC overhaul,
+    2026). Every new key (`sov.write`, `payapp.write`, `submittal.route`,
+    `meeting.write`, `transmittal.write`, `inspection.write`, `safety.write`,
+    `budget.approve`, `prequal.review`) is added to the catalog seed AND to
+    `TEAM_PERMISSION_OPTIONS`, with a deliberate decision about which existing roles
+    receive it (e.g. `bookkeeper` gets `payapp.write`; field roles get
+    `inspection.write`/`safety.write`). State the role mapping in the workstream's
+    completion note.
+22. **Cron registry mirror:** if a workstream adds or renames a cron route, update
+    `CRON_JOBS` (ops heartbeat registry) to mirror `vercel.json`, or platform ops
+    will flag the job as dead. (Currently only 07's compliance-autopilot extension
+    touches an existing cron — verify its job name is already registered.)
 
 ## 5. How to execute a workstream (process contract)
 
@@ -181,10 +215,18 @@ For EACH workstream doc:
    wins; follow the *intent* of the doc and note the deviation.
 8. When a doc says "copy the X pattern," open X and actually mirror its structure —
    file layout, naming, error handling — not just its idea.
+9. **All acceptance testing runs against the dedicated internal QA org** (created as a
+   workstream 01 deliverable — see 01 Phase A). There is no staging environment; local
+   dev points at production Supabase. Never run acceptance scenarios in a real
+   customer's org.
+10. **Workstream 02 has an extra merge gate:** because it refactors the retainage
+    negative-line block inside the live invoice path, it does not merge without a
+    manual regression on an existing draw-billing project (create draw → invoice →
+    retainage line → QBO fields intact) in addition to `pnpm test:financials`.
 
 ## 6. Terminology glossary (used across all docs)
 
-- **Owner** — the party the GC bills. Residential tier calls this "Client."
+- **Owner** — the party the GC bills. Residential posture calls this "Client."
 - **Prime contract** — GC↔Owner contract (`contracts` table).
 - **SOV** — Schedule of Values: the line-item breakdown of the contract sum that
   progress billing bills against.
@@ -222,9 +264,15 @@ When making ANY schema or naming decision in these workstreams:
 
 ## 8. Master acceptance (the whole program is done when)
 
-- An org flipped to `commercial` tier sees Owner language, CSI codes, progress billing
-  as the default fixed-price mode, and the new modules (meetings, transmittals, safety,
-  prequal) in nav — with zero regressions for `residential` orgs (default tier).
+- **Posture works at both levels.** A commercial-POSTURE project (in any org) shows
+  Owner language, progress billing as the default fixed-price mode, and the new
+  modules (meetings, transmittals, safety) in its project sidebar. An org flipped to
+  `commercial` TIER additionally gets: Owner vocabulary on org-level surfaces, new
+  projects defaulting to commercial posture, and the CSI/template/W-9 seeds.
+- **The mixed-org scenario passes:** one org holds a residential custom home and a
+  commercial build side by side — each project workbench speaks its own language and
+  shows its own modules, org desks aggregate both, one subscription, zero
+  double-signup. Zero regressions for existing all-residential orgs (default tier).
 - A commercial demo project can run the full monthly cycle end-to-end: budget with CSI
   codes → buyout via bid packages → subcontract with SOV → PCO priced from a CCO →
   owner approves OCO → monthly pay app with G703 lines, stored materials, retainage →

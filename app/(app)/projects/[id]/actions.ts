@@ -15,6 +15,11 @@ import type {
   DailyLog,
   DailyReport,
   DailyReportManpower,
+  DailyReportDelay,
+  DailyReportEquipment,
+  DailyReportVisitor,
+  DailyReportDelivery,
+  DailyReportWeatherSnapshot,
   FileMetadata,
   ProjectVendor,
   DrawSchedule,
@@ -28,6 +33,8 @@ import {
   dailyLogInputSchema,
   dailyReportUpdateSchema,
   manpowerInputSchema,
+  dailyReportSectionKindSchema,
+  dailyReportSectionInputSchemas,
 } from "@/lib/validation/daily-logs"
 import { getBudgetWithActuals } from "@/lib/services/budgets"
 import type { ProjectInput } from "@/lib/validation/projects"
@@ -35,6 +42,7 @@ import { getProjectWithFinancials, updateProject } from "@/lib/services/projects
 import { deleteSampleProject } from "@/lib/services/demo-seed"
 import type { ProjectVendorInput } from "@/lib/validation/project-vendors"
 import { addProjectVendor, listProjectVendors, removeProjectVendor, updateProjectVendor } from "@/lib/services/project-vendors"
+import { sendPunchDispatchEmail } from "@/lib/services/punch-lists"
 import { createContact } from "@/lib/services/contacts"
 import { createCompany, listCompanies } from "@/lib/services/companies"
 import { getProjectContract } from "@/lib/services/contracts"
@@ -52,7 +60,11 @@ import {
   listTemplates as listScheduleTemplates,
   applyTemplate as applyScheduleTemplate,
   bulkUpdateScheduleItems,
+  createDependency,
+  updateDependency,
+  deleteDependency,
 } from "@/lib/services/schedule"
+import { scheduleDependencyInputSchema } from "@/lib/validation/schedule"
 import { createDrawScheduleFromContract } from "@/lib/services/proposals"
 import { invoiceDrawSchedule, linkInvoiceToDraw, unlinkInvoiceFromDraw } from "@/lib/services/draws"
 import { listInvoices } from "@/lib/services/invoices"
@@ -63,8 +75,16 @@ import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { isEmailNotificationTypeEnabled } from "@/lib/services/notifications"
 import { getOrgSenderEmail, renderStandardEmailLayout, sendEmail, sendProjectPortalInviteEmail } from "@/lib/services/mailer"
 import { z } from "zod"
+import { setProjectModuleOverride } from "@/lib/services/project-modules"
+import type { ProjectModuleKey } from "@/lib/project-modules"
 
 import { unwrapAction, actionError, type ActionResult  } from "@/lib/action-result"
+import {
+  addDistributionMember,
+  listDistributionMembers,
+  removeDistributionMember,
+} from "@/lib/services/distribution-lists"
+import { addDistributionMemberSchema } from "@/lib/validation/distribution-lists"
 
 async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   try {
@@ -220,6 +240,18 @@ export async function updateProjectSettingsAction(projectId: string, input: Part
       const project = await updateProject({ projectId, input, orgId })
       revalidatePath(`/projects/${projectId}`)
       return project
+  })
+}
+
+export async function setProjectModuleOverrideAction(
+  projectId: string,
+  moduleKey: ProjectModuleKey,
+  enabled: boolean,
+) {
+  return run(async () => {
+    const updated = await setProjectModuleOverride({ projectId, moduleKey, enabled })
+    revalidatePath(`/projects/${projectId}`)
+    return updated
   })
 }
 
@@ -1243,6 +1275,11 @@ export interface ProjectPunchItem {
   severity?: string | null
   location?: string | null
   assigned_to?: string | null
+  assigned_company_id?: string | null
+  assigned_company_name?: string | null
+  dispatched_at?: string | null
+  sub_completed_at?: string | null
+  back_charge_flag?: boolean | null
   resolved_at?: string | null
   schedule_item_id?: string | null
   created_from_inspection?: boolean | null
@@ -1254,12 +1291,21 @@ export interface ProjectPunchItem {
   updated_at: string
 }
 
+const PUNCH_ITEM_SELECT =
+  "id, org_id, project_id, title, description, status, due_date, severity, location, assigned_to, assigned_company_id, dispatched_at, sub_completed_at, back_charge_flag, resolved_at, schedule_item_id, created_from_inspection, verification_required, verified_at, verified_by, verification_notes, created_at, updated_at, assigned_company:companies(id, name)"
+
+function mapPunchItem(row: Record<string, any>): ProjectPunchItem {
+  const { assigned_company, ...rest } = row
+  const company = Array.isArray(assigned_company) ? assigned_company[0] : assigned_company
+  return { ...rest, assigned_company_name: company?.name ?? null } as ProjectPunchItem
+}
+
 export async function listProjectPunchItemsAction(projectId: string): Promise<ProjectPunchItem[]> {
       const { supabase, orgId } = await requireOrgContext()
 
       const { data, error } = await supabase
         .from("punch_items")
-        .select("id, org_id, project_id, title, description, status, due_date, severity, location, assigned_to, resolved_at, schedule_item_id, created_from_inspection, verification_required, verified_at, verified_by, verification_notes, created_at, updated_at")
+        .select(PUNCH_ITEM_SELECT)
         .eq("org_id", orgId)
         .eq("project_id", projectId)
         .order("created_at", { ascending: false })
@@ -1269,7 +1315,7 @@ export async function listProjectPunchItemsAction(projectId: string): Promise<Pr
         return []
       }
 
-      return (data ?? []) as ProjectPunchItem[]
+      return (data ?? []).map(mapPunchItem)
 }
 
 export async function createProjectPunchItemAction(
@@ -1281,6 +1327,7 @@ export async function createProjectPunchItemAction(
     severity?: string | null
     due_date?: string | null
     assigned_to?: string | null
+    assigned_company_id?: string | null
     verification_required?: boolean | null
   },
 ): Promise<ActionResult<ProjectPunchItem>> {
@@ -1299,10 +1346,12 @@ export async function createProjectPunchItemAction(
           severity: input.severity ?? null,
           location: input.location ?? null,
           assigned_to: input.assigned_to ?? null,
+          assigned_company_id: input.assigned_company_id ?? null,
+          dispatched_at: input.assigned_company_id ? new Date().toISOString() : null,
           verification_required: input.verification_required ?? false,
           created_by: userId,
         })
-        .select("id, org_id, project_id, title, description, status, due_date, severity, location, assigned_to, resolved_at, schedule_item_id, created_from_inspection, verification_required, verified_at, verified_by, verification_notes, created_at, updated_at")
+        .select(PUNCH_ITEM_SELECT)
         .single()
 
       if (error || !data) {
@@ -1326,15 +1375,27 @@ export async function createProjectPunchItemAction(
         after: data,
       })
 
+      const item = mapPunchItem(data)
+      if (item.assigned_company_id) {
+        await sendPunchDispatchEmail({
+          supabase,
+          orgId,
+          projectId,
+          companyId: item.assigned_company_id,
+          items: [item],
+          createdBy: userId,
+        })
+      }
+
       revalidatePath(`/projects/${projectId}`)
-      return data as ProjectPunchItem
+      return item
   })
 }
 
 export async function updateProjectPunchItemAction(
   projectId: string,
   punchItemId: string,
-  input: Partial<Pick<ProjectPunchItem, "title" | "description" | "status" | "due_date" | "severity" | "location" | "assigned_to" | "verification_required" | "verification_notes">>,
+  input: Partial<Pick<ProjectPunchItem, "title" | "description" | "status" | "due_date" | "severity" | "location" | "assigned_to" | "assigned_company_id" | "back_charge_flag" | "verification_required" | "verification_notes">>,
 ): Promise<ActionResult<ProjectPunchItem>> {
   return run(async () => {
       const { supabase, orgId, userId } = await requireOrgContext()
@@ -1351,6 +1412,7 @@ export async function updateProjectPunchItemAction(
         throw new Error("Punch item not found")
       }
 
+      const now = new Date().toISOString()
       const updateData: Record<string, any> = {}
       if (input.title !== undefined) updateData.title = input.title
       if (input.description !== undefined) updateData.description = input.description
@@ -1358,17 +1420,46 @@ export async function updateProjectPunchItemAction(
       if (input.severity !== undefined) updateData.severity = input.severity
       if (input.location !== undefined) updateData.location = input.location
       if (input.assigned_to !== undefined) updateData.assigned_to = input.assigned_to
+      if (input.back_charge_flag !== undefined) updateData.back_charge_flag = input.back_charge_flag
       if (input.verification_required !== undefined) updateData.verification_required = input.verification_required
       if (input.verification_notes !== undefined) updateData.verification_notes = input.verification_notes
 
+      const newlyAssignedCompany =
+        input.assigned_company_id !== undefined &&
+        input.assigned_company_id !== null &&
+        input.assigned_company_id !== existing.assigned_company_id
+      if (input.assigned_company_id !== undefined) {
+        updateData.assigned_company_id = input.assigned_company_id
+        if (newlyAssignedCompany) {
+          updateData.dispatched_at = now
+          updateData.sub_completed_at = null
+        } else if (input.assigned_company_id === null) {
+          updateData.dispatched_at = null
+          updateData.sub_completed_at = null
+        }
+      }
+
+      // GC bounced a sub-completed item back to open/in_progress: the ball
+      // returns to the sub, so clear their completion stamp and re-notify.
+      const rejectedSubWork =
+        input.status !== undefined &&
+        (input.status === "open" || input.status === "in_progress") &&
+        existing.status === "ready_for_review" &&
+        Boolean(existing.sub_completed_at) &&
+        Boolean(existing.assigned_company_id) &&
+        !newlyAssignedCompany
+
       if (input.status !== undefined) {
         updateData.status = input.status
+        if (rejectedSubWork) {
+          updateData.sub_completed_at = null
+        }
         if (input.status === "closed") {
-          updateData.resolved_at = new Date().toISOString()
+          updateData.resolved_at = now
           updateData.resolved_by = userId
           const requireVerification = input.verification_required ?? existing.verification_required
           if (requireVerification && !existing.verified_at) {
-            updateData.verified_at = new Date().toISOString()
+            updateData.verified_at = now
             updateData.verified_by = userId
           }
         } else if (existing.status === "closed") {
@@ -1385,7 +1476,7 @@ export async function updateProjectPunchItemAction(
         .eq("org_id", orgId)
         .eq("project_id", projectId)
         .eq("id", punchItemId)
-        .select("id, org_id, project_id, title, description, status, due_date, severity, location, assigned_to, resolved_at, schedule_item_id, created_from_inspection, verification_required, verified_at, verified_by, verification_notes, created_at, updated_at")
+        .select(PUNCH_ITEM_SELECT)
         .single()
 
       if (error || !data) {
@@ -1410,8 +1501,77 @@ export async function updateProjectPunchItemAction(
         after: data,
       })
 
+      const item = mapPunchItem(data)
+      if (newlyAssignedCompany && item.assigned_company_id) {
+        await sendPunchDispatchEmail({
+          supabase,
+          orgId,
+          projectId,
+          companyId: item.assigned_company_id,
+          items: [item],
+          createdBy: userId,
+        })
+      } else if (rejectedSubWork && item.assigned_company_id) {
+        await sendPunchDispatchEmail({
+          supabase,
+          orgId,
+          projectId,
+          companyId: item.assigned_company_id,
+          items: [item],
+          rejectionNote: input.verification_notes ?? item.verification_notes ?? "",
+          createdBy: userId,
+        })
+      }
+
       revalidatePath(`/projects/${projectId}`)
-      return data as ProjectPunchItem
+      return item
+  })
+}
+
+export async function bulkAssignPunchCompanyAction(
+  projectId: string,
+  punchItemIds: string[],
+  companyId: string,
+): Promise<ActionResult<ProjectPunchItem[]>> {
+  return run(async () => {
+      const { supabase, orgId, userId } = await requireOrgContext()
+      if (punchItemIds.length === 0) return []
+
+      const { data, error } = await supabase
+        .from("punch_items")
+        .update({ assigned_company_id: companyId, dispatched_at: new Date().toISOString(), sub_completed_at: null })
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .in("id", punchItemIds)
+        .neq("status", "closed")
+        .select(PUNCH_ITEM_SELECT)
+
+      if (error) {
+        throw new Error(`Failed to assign punch items: ${error.message}`)
+      }
+
+      const items = (data ?? []).map(mapPunchItem)
+      if (items.length > 0) {
+        await recordAudit({
+          orgId,
+          actorId: userId,
+          action: "update",
+          entityType: "punch_item",
+          entityId: items[0].id,
+          after: { bulk_assigned_company_id: companyId, item_ids: items.map((item) => item.id) },
+        })
+        await sendPunchDispatchEmail({
+          supabase,
+          orgId,
+          projectId,
+          companyId,
+          items,
+          createdBy: userId,
+        })
+      }
+
+      revalidatePath(`/projects/${projectId}`)
+      return items
   })
 }
 
@@ -1698,6 +1858,26 @@ export async function getProjectDependenciesAction(projectId: string) {
       }))
 }
 
+export async function createProjectDependencyAction(projectId: string, input: unknown) {
+  return run(async () => createDependency(scheduleDependencyInputSchema.parse(input), projectId))
+}
+
+export async function updateProjectDependencyAction(projectId: string, dependencyId: string, input: unknown) {
+  return run(async () => {
+    const parsed = scheduleDependencyInputSchema.pick({ dependency_type: true, lag_days: true }).parse(input)
+    return updateDependency(dependencyId, parsed, projectId)
+  })
+}
+
+export async function deleteProjectDependencyAction(projectId: string, dependencyId: string) {
+  return run(async () => {
+    const { orgId } = await requireOrgContext()
+    const dependencies = await getProjectDependenciesAction(projectId)
+    if (!dependencies.some((dependency) => dependency.id === dependencyId)) throw new Error("Dependency not found")
+    await deleteDependency(dependencyId, orgId)
+  })
+}
+
 export async function getProjectDailyLogsAction(projectId: string): Promise<DailyLog[]> {
       const { supabase, orgId } = await requireOrgContext()
 
@@ -1705,7 +1885,7 @@ export async function getProjectDailyLogsAction(projectId: string): Promise<Dail
       // navigates any date, and the old .limit(50) made older days unreachable.
       const { data, error } = await supabase
         .from("daily_logs")
-        .select("id, org_id, project_id, log_date, summary, weather, daily_report_id, created_by, created_at, updated_at, author:app_users!daily_logs_created_by_fkey(id, full_name, email, avatar_url)")
+        .select("id, org_id, project_id, log_date, summary, weather, daily_report_id, created_via_portal, portal_company_id, portal_company:companies(name), created_by, created_at, updated_at, author:app_users!daily_logs_created_by_fkey(id, full_name, email, avatar_url)")
         .eq("org_id", orgId)
         .eq("project_id", projectId)
         .order("log_date", { ascending: false })
@@ -1854,6 +2034,9 @@ export async function getProjectDailyLogsAction(projectId: string): Promise<Dail
           weather: weatherText || undefined,
           notes: row.summary ?? undefined,
           daily_report_id: row.daily_report_id ?? undefined,
+          created_via_portal: row.created_via_portal ?? false,
+          portal_company_id: row.portal_company_id ?? undefined,
+          portal_company_name: (row.portal_company as { name?: string } | null)?.name,
           created_by: row.created_by ?? undefined,
           created_at: row.created_at,
           updated_at: row.updated_at,
@@ -2482,15 +2665,7 @@ export async function createProjectScheduleItemAction(projectId: string, input: 
 
       // Create dependencies if provided
       if (parsed.dependencies?.length) {
-        const dependencyRows = parsed.dependencies.map((depId) => ({
-          org_id: orgId,
-          project_id: projectId,
-          item_id: data.id,
-          depends_on_item_id: depId,
-          dependency_type: "FS",
-          lag_days: 0,
-        }))
-        await supabase.from("schedule_dependencies").insert(dependencyRows)
+        await Promise.all(parsed.dependencies.map((dependsOnItemId) => createDependency({ item_id: data.id, depends_on_item_id: dependsOnItemId, dependency_type: "FS", lag_days: 0 }, projectId, orgId)))
       }
 
       await recordEvent({
@@ -2619,15 +2794,9 @@ export async function updateProjectScheduleItemAction(
         await supabase.from("schedule_dependencies").delete().eq("org_id", orgId).eq("item_id", itemId)
 
         if (input.dependencies.length) {
-          const dependencyRows = input.dependencies.map((depId) => ({
-            org_id: orgId,
-            project_id: projectId,
-            item_id: itemId,
-            depends_on_item_id: depId,
-            dependency_type: "FS",
-            lag_days: 0,
-          }))
-          await supabase.from("schedule_dependencies").insert(dependencyRows)
+          for (const dependsOnItemId of input.dependencies) {
+            await createDependency({ item_id: itemId, depends_on_item_id: dependsOnItemId, dependency_type: "FS", lag_days: 0 }, projectId, orgId)
+          }
         }
         dependencies = input.dependencies
       } else {
@@ -2929,7 +3098,85 @@ async function getOrCreateDailyReportId(
     throw new Error(`Failed to open daily report: ${error?.message}`)
   }
 
+  const weatherAuto = await fetchProjectDailyWeatherSnapshot(supabase, { orgId, projectId, date })
+  if (weatherAuto) {
+    await supabase
+      .from("daily_reports")
+      .update({ weather_auto: weatherAuto })
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .eq("id", created.id)
+  }
+
   return { id: created.id as string, status: created.status as string }
+}
+
+function locationCoordinates(value: unknown): { latitude: number; longitude: number } | null {
+  if (!value || typeof value !== "object") return null
+  const location = value as Record<string, unknown>
+  const latitude = Number(location.latitude ?? location.lat)
+  const longitude = Number(location.longitude ?? location.lng ?? location.lon)
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null
+  if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return null
+  return { latitude, longitude }
+}
+
+async function fetchProjectDailyWeatherSnapshot(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  { orgId, projectId, date }: { orgId: string; projectId: string; date: string },
+): Promise<DailyReportWeatherSnapshot | null> {
+  const { data: project } = await supabase
+    .from("projects")
+    .select("location")
+    .eq("org_id", orgId)
+    .eq("id", projectId)
+    .maybeSingle()
+  const coordinates = locationCoordinates(project?.location)
+  if (!coordinates) return null
+
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 3500)
+  try {
+    const query = new URLSearchParams({
+      latitude: String(coordinates.latitude),
+      longitude: String(coordinates.longitude),
+      daily: "temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max",
+      temperature_unit: "fahrenheit",
+      wind_speed_unit: "mph",
+      precipitation_unit: "inch",
+      start_date: date,
+      end_date: date,
+      timezone: "auto",
+    })
+    const response = await fetch(`https://api.open-meteo.com/v1/forecast?${query}`, {
+      signal: controller.signal,
+      cache: "no-store",
+    })
+    if (!response.ok) return null
+    const payload = await response.json() as {
+      daily?: Record<string, unknown[]>
+      daily_units?: Record<string, string>
+    }
+    const daily = payload.daily
+    if (!daily) return null
+    return {
+      date,
+      temperature_max: Number(daily.temperature_2m_max?.[0]),
+      temperature_min: Number(daily.temperature_2m_min?.[0]),
+      precipitation: Number(daily.precipitation_sum?.[0]),
+      wind_speed_max: Number(daily.wind_speed_10m_max?.[0]),
+      units: {
+        temperature: payload.daily_units?.temperature_2m_max,
+        precipitation: payload.daily_units?.precipitation_sum,
+        wind_speed: payload.daily_units?.wind_speed_10m_max,
+      },
+      fetched_at: new Date().toISOString(),
+    }
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 export async function createProjectDailyLogAction(projectId: string, input: unknown): Promise<ActionResult<DailyLog>> {
@@ -3312,9 +3559,49 @@ function mapManpower(row: any): DailyReportManpower {
     workers: row.workers ?? undefined,
     hours: row.hours != null ? Number(row.hours) : undefined,
     notes: row.notes ?? undefined,
+    portal_company_id: row.portal_company_id ?? undefined,
     created_by: row.created_by ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at,
+  }
+}
+
+function mapDelay(row: any): DailyReportDelay {
+  return {
+    id: row.id, org_id: row.org_id, project_id: row.project_id, daily_report_id: row.daily_report_id,
+    delay_type: row.delay_type, description: row.description,
+    hours_lost: row.hours_lost == null ? undefined : Number(row.hours_lost),
+    affected_trades: row.affected_trades ?? undefined,
+    schedule_item_id: row.schedule_item_id ?? undefined,
+    potential_claim: row.potential_claim ?? false,
+    created_at: row.created_at, updated_at: row.updated_at,
+  }
+}
+
+function mapEquipment(row: any): DailyReportEquipment {
+  return {
+    id: row.id, org_id: row.org_id, project_id: row.project_id, daily_report_id: row.daily_report_id,
+    description: row.description, company: row.company ?? undefined, count: row.count ?? 1,
+    hours_used: row.hours_used == null ? undefined : Number(row.hours_used), idle: row.idle ?? false,
+    notes: row.notes ?? undefined, created_at: row.created_at, updated_at: row.updated_at,
+  }
+}
+
+function mapVisitor(row: any): DailyReportVisitor {
+  return {
+    id: row.id, org_id: row.org_id, project_id: row.project_id, daily_report_id: row.daily_report_id,
+    name: row.name, company: row.company ?? undefined, purpose: row.purpose ?? undefined,
+    time_in: row.time_in ?? undefined, time_out: row.time_out ?? undefined,
+    created_at: row.created_at, updated_at: row.updated_at,
+  }
+}
+
+function mapDelivery(row: any): DailyReportDelivery {
+  return {
+    id: row.id, org_id: row.org_id, project_id: row.project_id, daily_report_id: row.daily_report_id,
+    description: row.description, supplier: row.supplier ?? undefined, quantity: row.quantity ?? undefined,
+    ticket_number: row.ticket_number ?? undefined, received_by: row.received_by ?? undefined,
+    notes: row.notes ?? undefined, created_at: row.created_at, updated_at: row.updated_at,
   }
 }
 
@@ -3326,7 +3613,10 @@ function mapDailyReport(row: any): DailyReport {
     date: row.report_date,
     status: row.status,
     weather: reportWeatherText(row.weather),
+    weather_auto: row.weather_auto ?? undefined,
     day_type: row.day_type ?? undefined,
+    created_via_portal: row.created_via_portal ?? false,
+    portal_company_id: row.portal_company_id ?? undefined,
     share_with_client: row.share_with_client ?? false,
     submitted_at: row.submitted_at ?? undefined,
     submitted_by: row.submitted_by ?? undefined,
@@ -3336,13 +3626,21 @@ function mapDailyReport(row: any): DailyReport {
     manpower: (row.manpower ?? []).map(mapManpower).sort((a: DailyReportManpower, b: DailyReportManpower) =>
       a.created_at.localeCompare(b.created_at),
     ),
+    delays: (row.delays ?? []).map(mapDelay),
+    equipment: (row.equipment ?? []).map(mapEquipment),
+    visitors: (row.visitors ?? []).map(mapVisitor),
+    deliveries: (row.deliveries ?? []).map(mapDelivery),
   }
 }
 
 const DAILY_REPORT_SELECT =
-  "id, org_id, project_id, report_date, status, weather, day_type, share_with_client, submitted_at, submitted_by, created_at, updated_at, " +
+  "id, org_id, project_id, report_date, status, weather, weather_auto, day_type, share_with_client, created_via_portal, portal_company_id, submitted_at, submitted_by, created_at, updated_at, " +
   "submitted_by_user:app_users!daily_reports_submitted_by_fkey(id, full_name, email, avatar_url), " +
-  "manpower:daily_report_manpower(id, org_id, project_id, daily_report_id, company, trade, workers, hours, notes, created_by, created_at, updated_at)"
+  "manpower:daily_report_manpower(id, org_id, project_id, daily_report_id, company, trade, workers, hours, notes, portal_company_id, created_by, created_at, updated_at), " +
+  "delays:daily_report_delays(id, org_id, project_id, daily_report_id, delay_type, description, hours_lost, affected_trades, schedule_item_id, potential_claim, created_at, updated_at), " +
+  "equipment:daily_report_equipment(id, org_id, project_id, daily_report_id, description, company, count, hours_used, idle, notes, created_at, updated_at), " +
+  "visitors:daily_report_visitors(id, org_id, project_id, daily_report_id, name, company, purpose, time_in, time_out, created_at, updated_at), " +
+  "deliveries:daily_report_deliveries(id, org_id, project_id, daily_report_id, description, supplier, quantity, ticket_number, received_by, notes, created_at, updated_at)"
 
 async function fetchDailyReport(
   supabase: ReturnType<typeof createServiceSupabaseClient>,
@@ -3464,16 +3762,7 @@ async function assertReportDraftForManpower(
   supabase: ReturnType<typeof createServiceSupabaseClient>,
   { orgId, projectId, reportId }: { orgId: string; projectId: string; reportId: string },
 ) {
-  const { data } = await supabase
-    .from("daily_reports")
-    .select("status")
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .eq("id", reportId)
-    .maybeSingle()
-  if (data?.status === "submitted") {
-    throw new Error("This day's report is submitted. Reopen it before editing manpower.")
-  }
+  await assertDailyReportDraft(supabase, { orgId, projectId, reportId })
 }
 
 export async function addManpowerAction(
@@ -3576,6 +3865,153 @@ export async function deleteManpowerAction(projectId: string, manpowerId: string
       revalidatePath(`/projects/${projectId}/daily-logs`)
       return fetchDailyReport(supabase, { orgId, projectId, reportId: existing.daily_report_id as string })
   })
+}
+
+const DAILY_REPORT_SECTION_TABLES = {
+  delay: "daily_report_delays",
+  equipment: "daily_report_equipment",
+  visitor: "daily_report_visitors",
+  delivery: "daily_report_deliveries",
+} as const
+
+function parseDailyReportSectionInput(kind: keyof typeof DAILY_REPORT_SECTION_TABLES, input: unknown) {
+  if (kind === "delay") return dailyReportSectionInputSchemas.delay.parse(input)
+  if (kind === "equipment") return dailyReportSectionInputSchemas.equipment.parse(input)
+  if (kind === "visitor") return dailyReportSectionInputSchemas.visitor.parse(input)
+  return dailyReportSectionInputSchemas.delivery.parse(input)
+}
+
+/** Guard shared by every child section: a submitted day is immutable. */
+async function assertDailyReportDraft(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  { orgId, projectId, reportId }: { orgId: string; projectId: string; reportId: string },
+) {
+  const { data } = await supabase
+    .from("daily_reports")
+    .select("status")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("id", reportId)
+    .maybeSingle()
+  if (!data) throw new Error("Daily report not found")
+  if (data.status === "submitted") {
+    throw new Error("This day's report is submitted. Reopen it before editing sections.")
+  }
+}
+
+export async function addDailyReportSectionAction(
+  projectId: string,
+  date: string,
+  kindInput: unknown,
+  input: unknown,
+): Promise<ActionResult<DailyReport>> {
+  return run(async () => {
+    const kind = dailyReportSectionKindSchema.parse(kindInput)
+    const parsed = parseDailyReportSectionInput(kind, input)
+    const { supabase, orgId, userId } = await requireOrgContext()
+    await requireProjectPermission(userId, projectId, "daily_log.write")
+    const report = await getOrCreateDailyReportId(supabase, { orgId, projectId, date, userId })
+    if (report.status === "submitted") throw new Error("This day's report is submitted. Reopen it before adding sections.")
+
+    const { data, error } = await supabase
+      .from(DAILY_REPORT_SECTION_TABLES[kind])
+      .insert({ org_id: orgId, project_id: projectId, daily_report_id: report.id, ...parsed, created_by: userId })
+      .select("id")
+      .single()
+    if (error || !data) throw new Error(`Failed to add ${kind}: ${error?.message}`)
+
+    if (kind === "delay" && "potential_claim" in parsed && parsed.potential_claim) {
+      await recordEvent({
+        orgId,
+        eventType: "daily_report.delay_logged",
+        entityType: "daily_report_delay",
+        entityId: data.id,
+        payload: { project_id: projectId, daily_report_id: report.id, hours_lost: parsed.hours_lost },
+      })
+    }
+    await recordAudit({ orgId, actorId: userId, action: "insert", entityType: `daily_report_${kind}`, entityId: data.id, after: parsed })
+    revalidatePath(`/projects/${projectId}/daily-logs`)
+    return fetchDailyReport(supabase, { orgId, projectId, reportId: report.id })
+  })
+}
+
+export async function updateDailyReportSectionAction(
+  projectId: string,
+  kindInput: unknown,
+  sectionId: string,
+  input: unknown,
+): Promise<ActionResult<DailyReport>> {
+  return run(async () => {
+    const kind = dailyReportSectionKindSchema.parse(kindInput)
+    const parsed = parseDailyReportSectionInput(kind, input)
+    const { supabase, orgId, userId } = await requireOrgContext()
+    await requireProjectPermission(userId, projectId, "daily_log.write")
+    const table = DAILY_REPORT_SECTION_TABLES[kind]
+    const { data: existing } = await supabase
+      .from(table)
+      .select("id, daily_report_id")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .eq("id", sectionId)
+      .maybeSingle()
+    if (!existing) throw new Error(`${kind} entry not found`)
+    await assertDailyReportDraft(supabase, { orgId, projectId, reportId: existing.daily_report_id })
+    const { error } = await supabase.from(table).update(parsed).eq("org_id", orgId).eq("project_id", projectId).eq("id", sectionId)
+    if (error) throw new Error(`Failed to update ${kind}: ${error.message}`)
+    await recordAudit({ orgId, actorId: userId, action: "update", entityType: `daily_report_${kind}`, entityId: sectionId, after: parsed })
+    revalidatePath(`/projects/${projectId}/daily-logs`)
+    return fetchDailyReport(supabase, { orgId, projectId, reportId: existing.daily_report_id })
+  })
+}
+
+export async function deleteDailyReportSectionAction(
+  projectId: string,
+  kindInput: unknown,
+  sectionId: string,
+): Promise<ActionResult<DailyReport>> {
+  return run(async () => {
+    const kind = dailyReportSectionKindSchema.parse(kindInput)
+    const { supabase, orgId, userId } = await requireOrgContext()
+    await requireProjectPermission(userId, projectId, "daily_log.write")
+    const table = DAILY_REPORT_SECTION_TABLES[kind]
+    const { data: existing } = await supabase.from(table).select("id, daily_report_id").eq("org_id", orgId).eq("project_id", projectId).eq("id", sectionId).maybeSingle()
+    if (!existing) throw new Error(`${kind} entry not found`)
+    await assertDailyReportDraft(supabase, { orgId, projectId, reportId: existing.daily_report_id })
+    const { error } = await supabase.from(table).delete().eq("org_id", orgId).eq("project_id", projectId).eq("id", sectionId)
+    if (error) throw new Error(`Failed to delete ${kind}: ${error.message}`)
+    await recordAudit({ orgId, actorId: userId, action: "delete", entityType: `daily_report_${kind}`, entityId: sectionId })
+    revalidatePath(`/projects/${projectId}/daily-logs`)
+    return fetchDailyReport(supabase, { orgId, projectId, reportId: existing.daily_report_id })
+  })
+}
+
+export async function refreshDailyReportWeatherAction(projectId: string, reportId: string): Promise<ActionResult<DailyReport>> {
+  return run(async () => {
+    const { supabase, orgId, userId } = await requireOrgContext()
+    await requireProjectPermission(userId, projectId, "daily_log.write")
+    const { data: report } = await supabase.from("daily_reports").select("id, report_date, status").eq("org_id", orgId).eq("project_id", projectId).eq("id", reportId).maybeSingle()
+    if (!report) throw new Error("Daily report not found")
+    if (report.status === "submitted") throw new Error("Reopen this report before refreshing weather.")
+    const snapshot = await fetchProjectDailyWeatherSnapshot(supabase, { orgId, projectId, date: report.report_date })
+    if (!snapshot) throw new Error("Automatic weather is unavailable. Confirm the project has latitude and longitude coordinates.")
+    const { error } = await supabase.from("daily_reports").update({ weather_auto: snapshot }).eq("org_id", orgId).eq("project_id", projectId).eq("id", reportId)
+    if (error) throw new Error(`Failed to refresh weather: ${error.message}`)
+    revalidatePath(`/projects/${projectId}/daily-logs`)
+    return fetchDailyReport(supabase, { orgId, projectId, reportId })
+  })
+}
+
+export async function listProjectDelayLogAction(projectId: string): Promise<DailyReportDelay[]> {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireProjectPermission(userId, projectId, "daily_log.read")
+  const { data, error } = await supabase
+    .from("daily_report_delays")
+    .select("id, org_id, project_id, daily_report_id, delay_type, description, hours_lost, affected_trades, schedule_item_id, potential_claim, created_at, updated_at, report:daily_reports(report_date)")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .order("created_at", { ascending: false })
+  if (error) throw new Error(`Failed to list delay log: ${error.message}`)
+  return (data ?? []).map((row: any) => ({ ...mapDelay(row), report_date: row.report?.report_date }))
 }
 
 export async function createDailyLogCommentAction(
@@ -4445,4 +4881,26 @@ export async function generateDrawPayApplicationAction(projectId: string, drawId
         pdfBase64: pdf.toString("base64"),
       }
   })
+}
+
+// ---- Distribution lists (workstream 04) ----
+
+export async function listDistributionMembersAction(projectId: string) {
+  return listDistributionMembers(projectId)
+}
+
+export async function addDistributionMemberAction(input: unknown) {
+  return run(async () => {
+    const parsed = addDistributionMemberSchema.parse(input)
+    return addDistributionMember({
+      projectId: parsed.project_id,
+      scope: parsed.scope,
+      contactId: parsed.contact_id ?? null,
+      userId: parsed.user_id ?? null,
+    })
+  })
+}
+
+export async function removeDistributionMemberAction(memberId: string) {
+  return run(async () => removeDistributionMember({ memberId }))
 }

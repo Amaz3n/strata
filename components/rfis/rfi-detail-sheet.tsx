@@ -367,8 +367,9 @@ export function RfiDetailSheet({
           <div className="flex items-center gap-2">
             <FileText className="h-5 w-5 text-primary" />
             <SheetTitle>
-              RFI #{rfi.rfi_number}
+              RFI #{rfi.display_number ?? rfi.rfi_number}
             </SheetTitle>
+            <Button variant="ghost" size="sm" asChild><a href={`/projects/${rfi.project_id}/exports/rfi?id=${rfi.id}`} target="_blank" rel="noreferrer">PDF</a></Button>
             <Badge
               variant="secondary"
               className={`capitalize border ${statusStyles[rfi.status] ?? ""}`}
@@ -390,6 +391,9 @@ export function RfiDetailSheet({
                 <Building2 className="h-4 w-4" />
                 {project.name}
               </div>
+            )}
+            {rfi.ball_in_court && rfi.status !== "closed" && (
+              <Badge variant="outline" className="text-xs">Ball in court: {rfi.ball_in_court}</Badge>
             )}
             {rfi.due_date && (
               <div className="flex items-center gap-1">

@@ -123,7 +123,7 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
 
   function handleExportCsv() {
     const rows = filtered.map((rfi) => ({
-      number: rfi.rfi_number,
+      number: rfi.display_number ?? rfi.rfi_number,
       subject: rfi.subject,
       status: statusLabels[rfi.status] ?? rfi.status,
       priority: rfi.priority ?? "normal",
@@ -307,7 +307,7 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
                       ? companies.find((c) => c.id === rfi.assigned_company_id)?.name
                       : null
                   const subtitleParts = [
-                    `#${rfi.rfi_number}`,
+                    `#${rfi.display_number ?? rfi.rfi_number}`,
                     statusLabels[rfi.status] ?? rfi.status,
                     assignee || "Unassigned",
                   ].filter(Boolean) as string[]
@@ -362,7 +362,7 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
                 <TableRow className="bg-muted/40 hover:bg-muted/40">
                   <TableHead className="w-[96px] text-center pl-2">RFI Number</TableHead>
                   <TableHead className="w-[40%] min-w-[320px]">Subject</TableHead>
-                  <TableHead className="hidden md:table-cell w-[184px] text-center">Assignee</TableHead>
+                  <TableHead className="hidden md:table-cell w-[184px] text-center">Ball in Court</TableHead>
                   <TableHead className="hidden sm:table-cell w-[128px] text-center">Status</TableHead>
                   <TableHead className="hidden lg:table-cell w-[112px] text-center">Due Date</TableHead>
                   <TableHead className="hidden xl:table-cell w-[100px] text-center">Priority</TableHead>
@@ -377,18 +377,21 @@ export function RfisClient({ rfis, projects, companies, contacts }: RfisClientPr
                     onClick={() => handleRfiClick(rfi)}
                   >
                     <TableCell className="text-center px-2">
-                      <span className="text-sm font-semibold">{rfi.rfi_number}</span>
+                      <span className="text-sm font-semibold">{rfi.display_number ?? rfi.rfi_number}</span>
                     </TableCell>
                     <TableCell className="min-w-0">
                       <span className="text-sm font-medium truncate block">{rfi.subject}</span>
                     </TableCell>
                     <TableCell className="hidden md:table-cell text-center">
                       <span className="text-xs text-muted-foreground truncate block">
-                        {rfi.assigned_to 
-                          ? contacts.find((c) => c.id === rfi.assigned_to)?.full_name 
-                          : rfi.assigned_company_id 
-                            ? companies.find((c) => c.id === rfi.assigned_company_id)?.name 
-                            : "Unassigned"}
+                        {rfi.status === "closed"
+                          ? "—"
+                          : rfi.ball_in_court ??
+                            (rfi.assigned_to
+                              ? contacts.find((c) => c.id === rfi.assigned_to)?.full_name
+                              : rfi.assigned_company_id
+                                ? companies.find((c) => c.id === rfi.assigned_company_id)?.name
+                                : "Unassigned")}
                       </span>
                     </TableCell>
                     <TableCell className="hidden sm:table-cell text-center">

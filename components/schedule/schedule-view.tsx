@@ -108,7 +108,8 @@ interface ScheduleViewProps {
   onItemsBulkUpdate?: (updates: ScheduleBulkItemUpdate[]) => Promise<ScheduleItem[]>
   onItemCreate?: (item: Partial<ScheduleItem>) => Promise<ScheduleItem>
   onItemDelete?: (id: string) => Promise<void>
-  onDependencyCreate?: (from: string, to: string, type?: string) => Promise<ScheduleDependency>
+  onDependencyCreate?: (from: string, to: string, type?: ScheduleDependency["dependency_type"], lagDays?: number) => Promise<ScheduleDependency>
+  onDependencyUpdate?: (id: string, type: ScheduleDependency["dependency_type"], lagDays: number) => Promise<ScheduleDependency>
   onDependencyDelete?: (id: string) => Promise<void>
 }
 
@@ -125,6 +126,7 @@ export function ScheduleView({
   onItemCreate,
   onItemDelete,
   onDependencyCreate,
+  onDependencyUpdate,
   onDependencyDelete,
 }: ScheduleViewProps) {
   return (
@@ -138,6 +140,7 @@ export function ScheduleView({
       onItemCreate={onItemCreate}
       onItemDelete={onItemDelete}
       onDependencyCreate={onDependencyCreate}
+      onDependencyUpdate={onDependencyUpdate}
       onDependencyDelete={onDependencyDelete}
     >
       <ScheduleViewInner projectId={projectId} className={className} focusItemId={focusItemId} />

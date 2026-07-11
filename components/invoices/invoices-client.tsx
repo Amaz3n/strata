@@ -31,6 +31,7 @@ import {
 import { InvoiceComposerSheet } from "@/components/invoices/invoice-composer-sheet"
 import { InvoiceSchedulesDialog, MakeRecurringDialog } from "@/components/invoices/invoice-schedules"
 import { unwrapAction } from "@/lib/action-result"
+import { useProductTerminology } from "@/components/layout/use-product-terminology"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -283,6 +284,7 @@ export function InvoicesClient({
   toolbarLeading,
   arSummary: serverArSummary = null,
 }: InvoicesClientProps) {
+  const terms = useProductTerminology()
   const router = useRouter()
   const searchParams = useSearchParams()
   const urlInvoiceId = searchParams.get("invoice") || searchParams.get("invoiceId")
@@ -642,7 +644,7 @@ export function InvoicesClient({
       router.refresh()
       if (!options?.silent) {
         toast.success(sendToClient ? "Invoice sent" : "Invoice saved", {
-          description: sendToClient ? "Client can now view this invoice." : "Invoice saved to receivables.",
+          description: sendToClient ? `${terms.owner} can now view this invoice.` : "Invoice saved to receivables.",
         })
       }
       return created
@@ -844,7 +846,7 @@ export function InvoicesClient({
       setPackageSummaries((prev) => [shared, ...prev.filter((item) => item.invoice_id !== invoice.id)])
       setItems((prev) => prev.map((item) => (item.id === invoice.id ? { ...item, client_visible: true } : item)))
       toast.success("Backup package shared", {
-        description: "The client portal invoice now includes the owner backup manifest.",
+        description: `The ${terms.ownerPortal.toLowerCase()} invoice now includes the owner backup manifest.`,
       })
     } catch (error: any) {
       console.error(error)

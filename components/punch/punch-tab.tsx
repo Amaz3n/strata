@@ -1,12 +1,13 @@
 "use client"
 
-import { useEffect, useMemo, useState, useTransition } from "react"
+import { Fragment, useEffect, useMemo, useState, useTransition } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
 import { useIsMobile } from "@/hooks/use-mobile"
 import type { ProjectTeamMember } from "@/app/(app)/projects/[id]/actions"
-import { createProjectPunchItemAction, type ProjectPunchItem, updateProjectPunchItemAction } from "@/app/(app)/projects/[id]/actions"
+import { bulkAssignPunchCompanyAction, createProjectPunchItemAction, type ProjectPunchItem, updateProjectPunchItemAction } from "@/app/(app)/projects/[id]/actions"
+import { derivePunchBallInCourt } from "@/lib/punch"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
 import { attachFileAction, detachFileLinkAction, listAttachmentsAction, uploadFileAction } from "@/app/(app)/documents/actions"
 
@@ -71,15 +72,19 @@ export function PunchTab({
   projectId,
   initialItems,
   team,
+  companies,
 }: {
   projectId: string
   initialItems: ProjectPunchItem[]
   team: ProjectTeamMember[]
+  companies: Array<{ id: string; name: string }>
 }) {
   const isMobile = useIsMobile()
   const [items, setItems] = useState<ProjectPunchItem[]>(initialItems)
   const [search, setSearch] = useState("")
   const [statusFilter, setStatusFilter] = useState<"all" | PunchStatus>("all")
+  const [groupByCompany, setGroupByCompany] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [sheetOpen, setSheetOpen] = useState(false)
   const [selected, setSelected] = useState<ProjectPunchItem | null>(null)
   const [isPending, startTransition] = useTransition()
@@ -114,6 +119,11 @@ export function PunchTab({
     return found?.full_name ?? "Assigned"
   }
 
+  const assignedLabel = (item: ProjectPunchItem) => {
+    if (item.assigned_company_name) return item.assigned_company_name
+    return assigneeName(item.assigned_to)
+  }
+
   const handleQuickStatus = (item: ProjectPunchItem, status: PunchStatus) => {
     startTransition(async () => {
       try {
@@ -122,6 +132,33 @@ export function PunchTab({
       } catch (error: any) {
         console.error(error)
         toast.error(error?.message ?? "Could not update punch item")
+      }
+    })
+  }
+
+  const toggleSelected = (itemId: string, checked: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (checked) next.add(itemId)
+      else next.delete(itemId)
+      return next
+    })
+  }
+
+  const handleBulkAssign = (companyId: string) => {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0) return
+    startTransition(async () => {
+      try {
+        const updated = unwrapAction(await bulkAssignPunchCompanyAction(projectId, ids, companyId))
+        const byId = new Map(updated.map((item) => [item.id, item]))
+        setItems((prev) => prev.map((p) => byId.get(p.id) ?? p))
+        setSelectedIds(new Set())
+        const companyName = companies.find((c) => c.id === companyId)?.name ?? "company"
+        toast.success(`${updated.length} item${updated.length === 1 ? "" : "s"} dispatched to ${companyName}`)
+      } catch (error: any) {
+        console.error(error)
+        toast.error(error?.message ?? "Could not assign punch items")
       }
     })
   }
@@ -192,9 +229,30 @@ export function PunchTab({
                   ))}
                 </SelectContent>
               </Select>
+              <Button
+                variant={groupByCompany ? "secondary" : "outline"}
+                size="sm"
+                onClick={() => setGroupByCompany((prev) => !prev)}
+              >
+                By company
+              </Button>
             </div>
           </div>
-          <div className="flex w-full gap-2 sm:w-auto">
+          <div className="flex w-full items-center gap-2 sm:w-auto">
+            {selectedIds.size > 0 ? (
+              <Select value="" onValueChange={handleBulkAssign} disabled={isPending}>
+                <SelectTrigger className="w-full sm:w-56">
+                  <SelectValue placeholder={`Assign ${selectedIds.size} to company...`} />
+                </SelectTrigger>
+                <SelectContent>
+                  {companies.map((company) => (
+                    <SelectItem key={company.id} value={company.id}>
+                      {company.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
             <Button onClick={openNew} className="w-full sm:w-auto">
               <Plus className="h-4 w-4 mr-2" />
               New punch item
@@ -234,7 +292,8 @@ export function PunchTab({
                   const subtitleParts = [
                     statusLabels[status],
                     item.location || null,
-                    assigneeName(item.assigned_to),
+                    assignedLabel(item),
+                    derivePunchBallInCourt(item, item.assigned_company_name),
                   ].filter(Boolean) as string[]
 
                   return (
@@ -289,10 +348,11 @@ export function PunchTab({
             <Table>
               <TableHeader>
                 <TableRow className="bg-muted/40 hover:bg-muted/40">
-                  <TableHead className="w-[40%] min-w-[320px] pl-4">Title</TableHead>
-                  <TableHead className="hidden md:table-cell w-[140px]">Location</TableHead>
-                  <TableHead className="hidden xl:table-cell w-[100px]">Priority</TableHead>
-                  <TableHead className="hidden md:table-cell w-[160px]">Assigned to</TableHead>
+                  <TableHead className="w-[36px] pl-4" />
+                  <TableHead className="w-[36%] min-w-[280px]">Title</TableHead>
+                  <TableHead className="hidden md:table-cell w-[130px]">Location</TableHead>
+                  <TableHead className="hidden md:table-cell w-[170px]">Assigned to</TableHead>
+                  <TableHead className="hidden lg:table-cell w-[140px]">Ball in court</TableHead>
                   <TableHead className="hidden lg:table-cell w-[112px] text-center">Due date</TableHead>
                   <TableHead className="hidden sm:table-cell w-[128px] text-center">Status</TableHead>
                   <TableHead className="hidden xl:table-cell w-[128px] text-center">Verification</TableHead>
@@ -300,15 +360,65 @@ export function PunchTab({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map((item) => {
+                {(groupByCompany
+                  ? Array.from(
+                      filtered.reduce((groups, item) => {
+                        const key = item.assigned_company_name ?? "Internal / unassigned"
+                        const list = groups.get(key) ?? []
+                        list.push(item)
+                        groups.set(key, list)
+                        return groups
+                      }, new Map<string, ProjectPunchItem[]>()),
+                    ).sort(([a], [b]) => a.localeCompare(b))
+                  : [[null, filtered] as const]
+                ).map(([groupName, groupItems]) => (
+                  <Fragment key={groupName ?? "__all__"}>
+                    {groupName !== null ? (
+                      <TableRow className="bg-muted/20 hover:bg-muted/20">
+                        <TableCell colSpan={9} className="py-1.5 pl-4">
+                          <div className="flex items-center justify-between pr-2">
+                            <span className="text-xs font-medium">
+                              {groupName}
+                              <span className="ml-2 font-normal text-muted-foreground">
+                                {groupItems.filter((item) => item.status !== "closed").length} open
+                              </span>
+                            </span>
+                            {(() => {
+                              const companyId = groupItems[0]?.assigned_company_id
+                              return companyId ? (
+                                <a
+                                  className="text-xs text-muted-foreground underline-offset-2 hover:underline"
+                                  href={`/projects/${projectId}/exports/punch-list?company=${companyId}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  Company PDF
+                                </a>
+                              ) : null
+                            })()}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
+                    {groupItems.map((item) => {
                   const status = (item.status as PunchStatus) || "open"
+                  const bic = derivePunchBallInCourt(item, item.assigned_company_name)
                   return (
                     <TableRow
                       key={item.id}
                       className="group cursor-pointer hover:bg-muted/30 h-[64px]"
                       onClick={() => openEdit(item)}
                     >
-                      <TableCell className="min-w-0 pl-4">
+                      <TableCell className="pl-4" onClick={(e) => e.stopPropagation()}>
+                        <Checkbox
+                          checked={selectedIds.has(item.id)}
+                          onCheckedChange={(v) => toggleSelected(item.id, Boolean(v))}
+                          disabled={status === "closed"}
+                          aria-label={`Select ${item.title}`}
+                        />
+                      </TableCell>
+
+                      <TableCell className="min-w-0">
                         <span className="text-sm font-medium truncate block">{item.title}</span>
                         {item.description ? (
                           <span className="text-xs text-muted-foreground truncate block mt-0.5">{item.description}</span>
@@ -319,16 +429,28 @@ export function PunchTab({
                         <span className="text-xs text-muted-foreground truncate block">{item.location || "—"}</span>
                       </TableCell>
 
-                      <TableCell className="hidden xl:table-cell">
-                        {item.severity ? (
-                          <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 font-normal capitalize">
-                            {item.severity}
-                          </Badge>
-                        ) : "—"}
+                      <TableCell className="hidden md:table-cell">
+                        <span className="text-xs text-muted-foreground truncate block">
+                          {assignedLabel(item)}
+                          {item.back_charge_flag ? (
+                            <span className="ml-1 text-[10px] text-warning">· Back charge</span>
+                          ) : null}
+                        </span>
+                        {item.dispatched_at ? (
+                          <span className="text-[10px] text-muted-foreground truncate block">
+                            Dispatched {format(new Date(item.dispatched_at), "MMM d")}
+                          </span>
+                        ) : null}
                       </TableCell>
 
-                      <TableCell className="hidden md:table-cell">
-                        <span className="text-xs text-muted-foreground truncate block">{assigneeName(item.assigned_to)}</span>
+                      <TableCell className="hidden lg:table-cell">
+                        {bic ? (
+                          <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 font-normal">
+                            {bic}
+                          </Badge>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
                       </TableCell>
 
                       <TableCell className="hidden lg:table-cell text-center">
@@ -377,11 +499,13 @@ export function PunchTab({
                       </TableCell>
                     </TableRow>
                   )
-                })}
+                    })}
+                  </Fragment>
+                ))}
 
                 {filtered.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={8} className="h-48 text-center text-muted-foreground hover:bg-transparent">
+                    <TableCell colSpan={9} className="h-48 text-center text-muted-foreground hover:bg-transparent">
                       <div className="flex flex-col items-center gap-3">
                         <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                           <CheckSquare className="h-6 w-6" />
@@ -414,6 +538,7 @@ export function PunchTab({
         }}
         projectId={projectId}
         team={team}
+        companies={companies}
         item={selected}
         onCreated={(created) => setItems((prev) => [created, ...prev])}
         onUpdated={(updated) => setItems((prev) => prev.map((p) => (p.id === updated.id ? updated : p)))}
@@ -427,6 +552,7 @@ function PunchItemSheet({
   onOpenChange,
   projectId,
   team,
+  companies,
   item,
   onCreated,
   onUpdated,
@@ -435,6 +561,7 @@ function PunchItemSheet({
   onOpenChange: (open: boolean) => void
   projectId: string
   team: ProjectTeamMember[]
+  companies: Array<{ id: string; name: string }>
   item: ProjectPunchItem | null
   onCreated: (item: ProjectPunchItem) => void
   onUpdated: (item: ProjectPunchItem) => void
@@ -446,6 +573,8 @@ function PunchItemSheet({
   const [severity, setSeverity] = useState("")
   const [dueDate, setDueDate] = useState<Date | undefined>(undefined)
   const [assignedTo, setAssignedTo] = useState<string>("__none__")
+  const [assignedCompany, setAssignedCompany] = useState<string>("__none__")
+  const [backCharge, setBackCharge] = useState(false)
   const [status, setStatus] = useState<PunchStatus>("open")
   const [verificationRequired, setVerificationRequired] = useState(false)
   const [verificationNotes, setVerificationNotes] = useState("")
@@ -463,6 +592,8 @@ function PunchItemSheet({
     setSeverity(item?.severity ?? "")
     setDueDate(item?.due_date ? new Date(item.due_date) : undefined)
     setAssignedTo(item?.assigned_to ?? "__none__")
+    setAssignedCompany(item?.assigned_company_id ?? "__none__")
+    setBackCharge(Boolean(item?.back_charge_flag))
     setStatus(((item?.status as PunchStatus) ?? "open") as PunchStatus)
     setVerificationRequired(Boolean(item?.verification_required))
     setVerificationNotes(item?.verification_notes ?? "")
@@ -561,6 +692,8 @@ function PunchItemSheet({
             severity: severity.trim() || null,
             due_date: dueDate ? format(dueDate, "yyyy-MM-dd") : null,
             assigned_to: assignedTo === "__none__" ? null : assignedTo,
+            assigned_company_id: assignedCompany === "__none__" ? null : assignedCompany,
+            back_charge_flag: backCharge,
             status,
             verification_required: verificationRequired,
             verification_notes: verificationNotes.trim() || null,
@@ -578,6 +711,7 @@ function PunchItemSheet({
           severity: severity.trim() || null,
           due_date: dueDate ? format(dueDate, "yyyy-MM-dd") : null,
           assigned_to: assignedTo === "__none__" ? null : assignedTo,
+          assigned_company_id: assignedCompany === "__none__" ? null : assignedCompany,
           verification_required: verificationRequired,
         }))
         toast.success("Punch item created")
@@ -683,6 +817,38 @@ function PunchItemSheet({
                     </SelectContent>
                   </Select>
                 </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Responsible company</Label>
+                <Select value={assignedCompany} onValueChange={setAssignedCompany}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Select company" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">Internal (no company)</SelectItem>
+                    {companies.map((company) => (
+                      <SelectItem key={company.id} value={company.id}>
+                        {company.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Assigning a company dispatches the item to their portal by email.
+                </p>
+                {isEditing ? (
+                  <div className="flex items-center gap-2 pt-1">
+                    <Checkbox
+                      checked={backCharge}
+                      onCheckedChange={(v) => setBackCharge(Boolean(v))}
+                      id="punch-back-charge"
+                    />
+                    <Label htmlFor="punch-back-charge" className="font-normal">
+                      Tracked for back-charge
+                    </Label>
+                  </div>
+                ) : null}
               </div>
 
               {isEditing ? (

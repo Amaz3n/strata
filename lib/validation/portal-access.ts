@@ -19,6 +19,9 @@ export const portalPermissionsSchema = z.object({
   can_submit_submittals: z.boolean().default(true),
   can_submit_time: z.boolean().default(true),
   can_submit_expenses: z.boolean().default(true),
+  can_submit_daily_logs: z.boolean().default(false),
+  can_review_submittals: z.boolean().default(false),
+  can_view_punch_items: z.boolean().default(false),
 })
 
 export const portalPinSchema = z
@@ -28,9 +31,10 @@ export const portalPinSchema = z
 
 export const createPortalTokenInputSchema = z.object({
   project_id: z.string().uuid(),
-  portal_type: z.enum(["client", "sub"]),
+  portal_type: z.enum(["client", "sub", "reviewer"]),
   contact_id: z.string().uuid().optional(),
   company_id: z.string().uuid().optional(),
+  reviewer_role: z.enum(["architect", "engineer", "owner_rep", "consultant", "other"]).optional(),
   expires_at: z.string().optional().nullable(),
   permissions: portalPermissionsSchema.partial().optional(),
   pin: z

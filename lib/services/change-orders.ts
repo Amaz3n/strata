@@ -10,6 +10,17 @@ import { attachFileWithServiceRole } from "@/lib/services/file-links"
 import { calculateGmpDeltaCents, normalizeGmpImpact } from "@/lib/services/gmp-control"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
+import {
+  changeOrderCostTotal,
+  deriveOwnerUnitPriceCents,
+} from "@/lib/financials/change-order-math"
+import { applyApprovedChangeOrderToSov } from "@/lib/services/prime-sov"
+import { formatDocNumber, type DocumentNumberingSettings } from "@/lib/document-number"
+
+export type ChangeOrderLifecycle = "draft" | "pricing" | "proposed" | "approved" | "rejected" | "void"
+
+const CHANGE_ORDER_SELECT =
+  "id, org_id, project_id, co_number, title, description, status, lifecycle, source_rfi_id, proposed_at, owner_response_due, cost_total_cents, markup_mode, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at"
 
 type ChangeOrderRow = {
   id: string
@@ -19,6 +30,12 @@ type ChangeOrderRow = {
   title: string
   description?: string | null
   status: string
+  lifecycle?: ChangeOrderLifecycle | null
+  source_rfi_id?: string | null
+  proposed_at?: string | null
+  owner_response_due?: string | null
+  cost_total_cents?: number | null
+  markup_mode?: "percent" | "manual" | null
   reason?: string | null
   total_cents?: number | null
   approved_by?: string | null
@@ -41,6 +58,8 @@ type ChangeOrderLineRow = {
   quantity?: number | string | null
   unit?: string | null
   unit_cost_cents?: number | null
+  internal_cost_cents?: number | null
+  commitment_change_order_id?: string | null
   gmp_classification?: "inside_gmp" | "outside_gmp" | null
   gmp_impact?: "none" | "increase_gmp" | "decrease_gmp" | "outside_gmp" | null
   gmp_delta_cents?: number | null
@@ -63,6 +82,8 @@ function normalizeLines(lines: ChangeOrderLineInput[]): ChangeOrderLine[] {
     quantity: line.quantity,
     unit: line.unit ?? "unit",
     unit_cost_cents: Math.round(line.unit_cost * 100),
+    internal_cost_cents: line.internal_cost_cents ?? null,
+    commitment_change_order_id: line.commitment_change_order_id ?? null,
     allowance_cents: Math.round((line.allowance ?? 0) * 100),
     taxable: line.taxable ?? true,
     gmp_classification: line.gmp_classification ?? "inside_gmp",
@@ -283,6 +304,8 @@ function mapChangeOrderLineRow(row: ChangeOrderLineRow): ChangeOrderLine {
     quantity: Number(row.quantity ?? 1),
     unit: row.unit ?? "unit",
     unit_cost_cents: row.unit_cost_cents ?? 0,
+    internal_cost_cents: row.internal_cost_cents ?? null,
+    commitment_change_order_id: row.commitment_change_order_id ?? null,
     allowance_cents: typeof metadata.allowance_cents === "number" ? metadata.allowance_cents : 0,
     taxable: metadata.taxable !== false,
     gmp_classification: row.gmp_classification ?? metadata.gmp_classification ?? "inside_gmp",
@@ -308,7 +331,7 @@ async function loadChangeOrderLines(
   const { data, error } = await supabase
     .from("change_order_lines")
     .select(
-      "id, change_order_id, cost_code_id, budget_line_id, description, quantity, unit, unit_cost_cents, gmp_classification, gmp_impact, gmp_delta_cents, metadata, sort_order",
+      "id, change_order_id, cost_code_id, budget_line_id, description, quantity, unit, unit_cost_cents, internal_cost_cents, commitment_change_order_id, gmp_classification, gmp_impact, gmp_delta_cents, metadata, sort_order",
     )
     .eq("org_id", orgId)
     .in("change_order_id", ids)
@@ -356,6 +379,12 @@ function mapChangeOrderRow(row: ChangeOrderRow): ChangeOrder {
     title: row.title,
     description: row.description ?? undefined,
     status: row.status,
+    lifecycle: row.lifecycle ?? "draft",
+    source_rfi_id: row.source_rfi_id ?? null,
+    proposed_at: row.proposed_at ?? null,
+    owner_response_due: row.owner_response_due ?? null,
+    cost_total_cents: row.cost_total_cents ?? null,
+    markup_mode: row.markup_mode ?? "percent",
     reason: row.reason ?? undefined,
     total_cents: row.total_cents ?? totals?.total_cents,
     approved_by: row.approved_by ?? undefined,
@@ -380,9 +409,7 @@ export async function fetchChangeOrder(
 ) {
   let query = supabase
     .from("change_orders")
-    .select(
-      "id, org_id, project_id, co_number, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
-    )
+    .select(CHANGE_ORDER_SELECT)
     .eq("id", id)
 
   if (orgId) {
@@ -421,12 +448,12 @@ export async function listChangeOrders({
     resourceType: projectId ? "project" : "org",
     resourceId: projectId ?? resolvedOrgId,
   })
+  const { data: orgNumbering } = await supabase.from("orgs").select("document_numbering").eq("id", resolvedOrgId).single()
+  const numbering = (orgNumbering?.document_numbering ?? {}) as DocumentNumberingSettings
 
   let query = supabase
     .from("change_orders")
-    .select(
-      "id, org_id, project_id, co_number, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
-    )
+    .select(CHANGE_ORDER_SELECT)
     .eq("org_id", resolvedOrgId)
     .order("created_at", { ascending: false })
 
@@ -448,7 +475,11 @@ export async function listChangeOrders({
   )
   const changeOrders = metadataBackedChangeOrders.map((changeOrder) => {
     const tableLines = lineMap.get(changeOrder.id)
-    return tableLines && tableLines.length > 0 ? { ...changeOrder, lines: tableLines } : changeOrder
+    const withNumber = {
+      ...changeOrder,
+      display_number: changeOrder.co_number == null ? undefined : formatDocNumber("change_order", changeOrder.co_number, numbering),
+    }
+    return tableLines && tableLines.length > 0 ? { ...withNumber, lines: tableLines } : withNumber
   })
   const projectIds = Array.from(new Set(changeOrders.map((row) => row.project_id).filter(Boolean)))
 
@@ -545,7 +576,18 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
   })
 
   const normalizedLines = normalizeLines(input.lines)
-  const totals = calculateTotals(input.lines, input.tax_rate, input.markup_percent)
+  const hasInternalCosts = input.lines.some((line) => line.internal_cost_cents != null)
+  const totals = calculateTotals(
+    input.lines,
+    input.tax_rate,
+    input.markup_mode === "percent" && hasInternalCosts ? 0 : input.markup_percent,
+  )
+  const costTotalCents = changeOrderCostTotal(
+    normalizedLines.map((line) => ({
+      quantity: line.quantity,
+      internalCostCents: line.internal_cost_cents ?? null,
+    })),
+  )
   const status = input.client_visible ? "pending" : input.status ?? "draft"
 
   const payload = {
@@ -554,6 +596,10 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
     title: input.title,
     description: input.description ?? null,
     status,
+    lifecycle: input.lifecycle === "approved" || input.lifecycle === "void" ? "draft" : input.lifecycle,
+    owner_response_due: input.owner_response_due ?? null,
+    cost_total_cents: costTotalCents,
+    markup_mode: input.markup_mode,
     total_cents: totals.total_cents,
     summary: input.summary,
     days_impact: input.days_impact ?? null,
@@ -568,6 +614,7 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
       markup_percent: input.markup_percent,
       intro: input.intro ?? null,
       terms: input.terms ?? null,
+      zero_dollar: input.zero_dollar,
       display: {
         pricing: input.pricing_display ?? "itemized",
       },
@@ -578,9 +625,7 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
   const { data, error } = await supabase
     .from("change_orders")
     .insert(payload)
-    .select(
-      "id, org_id, project_id, co_number, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
-    )
+    .select(CHANGE_ORDER_SELECT)
     .single()
 
   if (error || !data) {
@@ -596,6 +641,8 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
     quantity: line.quantity,
     unit: line.unit ?? "unit",
     unit_cost_cents: line.unit_cost_cents,
+    internal_cost_cents: line.internal_cost_cents ?? null,
+    commitment_change_order_id: line.commitment_change_order_id ?? null,
     gmp_classification: line.gmp_classification ?? "inside_gmp",
     gmp_impact: line.gmp_impact ?? "none",
     gmp_delta_cents: calculateGmpDeltaCents(calculateLineBudgetRevisionCents(line), normalizeGmpImpact(line.gmp_impact)),
@@ -655,6 +702,12 @@ export async function publishChangeOrder(changeOrderId: string, orgId?: string) 
   if (!existing) {
     throw new Error("Change order not found")
   }
+  if (!["draft", "pricing", "proposed"].includes(existing.lifecycle ?? "draft")) {
+    throw new Error("Only a draft or pricing change can be proposed to the owner.")
+  }
+  if ((existing.total_cents ?? 0) === 0 && existing.metadata?.zero_dollar !== true) {
+    throw new Error("Add an owner price or mark this as a zero-dollar change before proposing it.")
+  }
 
   const nowIso = new Date().toISOString()
   const resolvingChangeRequest =
@@ -666,6 +719,8 @@ export async function publishChangeOrder(changeOrderId: string, orgId?: string) 
     .update({
       client_visible: true,
       status: existing.status === "approved" ? existing.status : "pending",
+      lifecycle: "proposed",
+      proposed_at: existing.proposed_at ?? nowIso,
       metadata: {
         ...(existing.metadata ?? {}),
         published_by: userId,
@@ -684,9 +739,7 @@ export async function publishChangeOrder(changeOrderId: string, orgId?: string) 
     })
     .eq("org_id", resolvedOrgId)
     .eq("id", changeOrderId)
-    .select(
-      "id, org_id, project_id, co_number, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
-    )
+    .select(CHANGE_ORDER_SELECT)
     .single()
 
   if (error || !data) {
@@ -699,6 +752,13 @@ export async function publishChangeOrder(changeOrderId: string, orgId?: string) 
     entityType: "change_order",
     entityId: data.id,
     payload: { project_id: data.project_id, status: data.status },
+  })
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "change_order_proposed",
+    entityType: "change_order",
+    entityId: data.id,
+    payload: { project_id: data.project_id, total_cents: data.total_cents ?? 0 },
   })
 
   await recordAudit({
@@ -714,9 +774,401 @@ export async function publishChangeOrder(changeOrderId: string, orgId?: string) 
   return mapChangeOrderRow(data as ChangeOrderRow)
 }
 
+async function transitionChangeOrderLifecycle({
+  changeOrderId,
+  from,
+  to,
+  legacyStatus,
+  orgId,
+  extra = {},
+}: {
+  changeOrderId: string
+  from: ChangeOrderLifecycle[]
+  to: ChangeOrderLifecycle
+  legacyStatus: string
+  orgId?: string
+  extra?: Record<string, unknown>
+}) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const existing = await fetchChangeOrder(supabase, { id: changeOrderId, orgId: resolvedOrgId })
+  if (!existing) throw new Error("Change order not found")
+  await requireAuthorization({
+    permission: "change_order.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: existing.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "change_order",
+    resourceId: changeOrderId,
+  })
+  if (!from.includes(existing.lifecycle ?? "draft")) {
+    throw new Error(`Change order cannot move from ${existing.lifecycle ?? "draft"} to ${to}.`)
+  }
+  const { data, error } = await supabase
+    .from("change_orders")
+    .update({ lifecycle: to, status: legacyStatus, ...extra })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", changeOrderId)
+    .select(CHANGE_ORDER_SELECT)
+    .single()
+  if (error || !data) throw new Error(`Failed to update change order lifecycle: ${error?.message}`)
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "change_order",
+    entityId: changeOrderId,
+    before: { lifecycle: existing.lifecycle, status: existing.status },
+    after: { lifecycle: to, status: legacyStatus },
+    source: `change_order.${to}`,
+  })
+  return mapChangeOrderRow(data as ChangeOrderRow)
+}
+
+export async function startPricing(changeOrderId: string, orgId?: string) {
+  return transitionChangeOrderLifecycle({
+    changeOrderId,
+    from: ["draft"],
+    to: "pricing",
+    legacyStatus: "draft",
+    orgId,
+  })
+}
+
+export async function proposeChangeOrder(changeOrderId: string, orgId?: string) {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const existing = await fetchChangeOrder(supabase, { id: changeOrderId, orgId: resolvedOrgId })
+  if (!existing) throw new Error("Change order not found")
+  if ((existing.total_cents ?? 0) === 0 && existing.metadata?.zero_dollar !== true) {
+    throw new Error("Add an owner price or mark this as a zero-dollar change before proposing it.")
+  }
+  const nowIso = new Date().toISOString()
+  const proposed = await transitionChangeOrderLifecycle({
+    changeOrderId,
+    from: ["draft", "pricing"],
+    to: "proposed",
+    legacyStatus: "pending",
+    orgId: resolvedOrgId,
+    extra: { proposed_at: nowIso },
+  })
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "change_order_proposed",
+    entityType: "change_order",
+    entityId: changeOrderId,
+    payload: { project_id: proposed.project_id, total_cents: proposed.total_cents ?? 0 },
+  })
+  return proposed
+}
+
+export async function rejectChangeOrder(changeOrderId: string, orgId?: string) {
+  return transitionChangeOrderLifecycle({
+    changeOrderId,
+    from: ["proposed"],
+    to: "rejected",
+    legacyStatus: "rejected",
+    orgId,
+    extra: { rejected_at: new Date().toISOString() },
+  })
+}
+
+export async function recomputeChangeOrderCost(changeOrderId: string, orgId?: string) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const existing = await fetchChangeOrder(supabase, { id: changeOrderId, orgId: resolvedOrgId })
+  if (!existing) throw new Error("Change order not found")
+  await requireAuthorization({
+    permission: "change_order.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: existing.project_id,
+    supabase,
+    resourceType: "change_order",
+    resourceId: changeOrderId,
+  })
+  const lines = existing.lines ?? []
+  const linkedIds = Array.from(new Set(lines.map((line) => line.commitment_change_order_id).filter((id): id is string => Boolean(id))))
+  const totalsByCco = new Map<string, number>()
+  if (linkedIds.length > 0) {
+    const { data, error } = await supabase
+      .from("commitment_change_orders")
+      .select("id, total_cents")
+      .eq("org_id", resolvedOrgId)
+      .eq("project_id", existing.project_id)
+      .in("id", linkedIds)
+    if (error) throw new Error(`Failed to load linked commitment change orders: ${error.message}`)
+    for (const row of data ?? []) totalsByCco.set(row.id as string, Number(row.total_cents ?? 0))
+  }
+  const costs = lines.map((line) => ({
+    quantity: line.quantity,
+    internalCostCents:
+      line.internal_cost_cents ??
+      (line.commitment_change_order_id ? totalsByCco.get(line.commitment_change_order_id) ?? null : null),
+  }))
+  const costTotalCents = changeOrderCostTotal(costs)
+  const { error } = await supabase
+    .from("change_orders")
+    .update({ cost_total_cents: costTotalCents })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", changeOrderId)
+  if (error) throw new Error(`Failed to update change-order cost: ${error.message}`)
+  return costTotalCents
+}
+
+export async function deriveOwnerPriceFromCost(
+  changeOrderId: string,
+  markupPercent: number,
+  orgId?: string,
+) {
+  if (!Number.isFinite(markupPercent) || markupPercent < 0 || markupPercent > 100) {
+    throw new Error("Markup must be between 0 and 100 percent.")
+  }
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const existing = await fetchChangeOrder(supabase, { id: changeOrderId, orgId: resolvedOrgId })
+  if (!existing) throw new Error("Change order not found")
+  await requireAuthorization({
+    permission: "change_order.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: existing.project_id,
+    supabase,
+    resourceType: "change_order",
+    resourceId: changeOrderId,
+  })
+  if (["approved", "void"].includes(existing.lifecycle ?? "draft")) {
+    throw new Error("Approved or voided change orders cannot be repriced.")
+  }
+  const pricedLines = (existing.lines ?? []).map((line) => {
+    if (line.internal_cost_cents == null) return line
+    return {
+      ...line,
+      unit_cost_cents: deriveOwnerUnitPriceCents({
+        internalCostCents: line.internal_cost_cents,
+        quantity: line.quantity,
+        markupPercent,
+      }),
+    }
+  })
+  const subtotalCents = pricedLines.reduce(
+    (sum, line) => sum + Math.round(line.quantity * line.unit_cost_cents + (line.allowance_cents ?? 0)),
+    0,
+  )
+  const taxableBaseCents = pricedLines.reduce(
+    (sum, line) => line.taxable === false ? sum : sum + Math.round(line.quantity * line.unit_cost_cents + (line.allowance_cents ?? 0)),
+    0,
+  )
+  const taxRate = Number(existing.totals?.tax_rate ?? 0)
+  const taxCents = Math.round(taxableBaseCents * taxRate / 100)
+  for (const line of pricedLines) {
+    if (!line.id) continue
+    const { error } = await supabase
+      .from("change_order_lines")
+      .update({ unit_cost_cents: line.unit_cost_cents })
+      .eq("org_id", resolvedOrgId)
+      .eq("change_order_id", changeOrderId)
+      .eq("id", line.id)
+    if (error) throw new Error(`Failed to derive owner price: ${error.message}`)
+  }
+  const totals = {
+    subtotal_cents: subtotalCents,
+    tax_cents: taxCents,
+    markup_cents: 0,
+    allowance_cents: pricedLines.reduce((sum, line) => sum + (line.allowance_cents ?? 0), 0),
+    total_cents: subtotalCents + taxCents,
+    tax_rate: taxRate,
+    markup_percent: markupPercent,
+  }
+  const { data, error } = await supabase
+    .from("change_orders")
+    .update({
+      total_cents: totals.total_cents,
+      cost_total_cents: changeOrderCostTotal(pricedLines.map((line) => ({ quantity: line.quantity, internalCostCents: line.internal_cost_cents ?? null }))),
+      markup_mode: "percent",
+      metadata: { ...(existing.metadata ?? {}), totals, markup_percent: markupPercent, derived_price_from_cost: true },
+    })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", changeOrderId)
+    .select(CHANGE_ORDER_SELECT)
+    .single()
+  if (error || !data) throw new Error(`Failed to update owner price: ${error?.message}`)
+  return { ...mapChangeOrderRow(data as ChangeOrderRow), lines: pricedLines, totals }
+}
+
+export async function createPrimeCoFromCommitmentCos({
+  projectId,
+  commitmentChangeOrderIds,
+  title,
+  description,
+  markupPercent,
+  orgId,
+}: {
+  projectId: string
+  commitmentChangeOrderIds: string[]
+  title?: string
+  description?: string | null
+  markupPercent?: number
+  orgId?: string
+}) {
+  const ids = Array.from(new Set(commitmentChangeOrderIds))
+  if (ids.length === 0) throw new Error("Select at least one commitment change order.")
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "change_order.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId,
+    supabase,
+    resourceType: "project",
+    resourceId: projectId,
+  })
+  const [{ data: ccos, error }, { data: contract }] = await Promise.all([
+    supabase
+      .from("commitment_change_orders")
+      .select("id, title, description, total_cents, prime_change_order_id")
+      .eq("org_id", resolvedOrgId)
+      .eq("project_id", projectId)
+      .in("id", ids),
+    supabase
+      .from("contracts")
+      .select("markup_percent")
+      .eq("org_id", resolvedOrgId)
+      .eq("project_id", projectId)
+      .eq("status", "active")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ])
+  if (error) throw new Error(`Failed to load commitment change orders: ${error.message}`)
+  if ((ccos ?? []).length !== ids.length) throw new Error("One or more commitment change orders were not found.")
+  if ((ccos ?? []).some((cco) => cco.prime_change_order_id)) {
+    throw new Error("One or more commitment change orders are already linked to a prime change order.")
+  }
+  const resolvedMarkup = markupPercent ?? Number(contract?.markup_percent ?? 0)
+  const created = await createChangeOrder({
+    orgId: resolvedOrgId,
+    input: {
+      project_id: projectId,
+      title: title?.trim() || `Prime change from ${ids.length} commitment ${ids.length === 1 ? "change" : "changes"}`,
+      summary: description?.trim() || "Commitment change-order cost rollup",
+      description: description?.trim() || undefined,
+      pricing_display: "itemized",
+      days_impact: null,
+      requires_signature: true,
+      tax_rate: 0,
+      markup_percent: 0,
+      markup_mode: "percent",
+      lifecycle: "pricing",
+      zero_dollar: false,
+      status: "draft",
+      client_visible: false,
+      lines: (ccos ?? []).map((cco) => ({
+        description: cco.title as string,
+        quantity: 1,
+        unit: "ls",
+        unit_cost: 0,
+        internal_cost_cents: Number(cco.total_cents ?? 0),
+        commitment_change_order_id: cco.id as string,
+        allowance: 0,
+        taxable: true,
+        gmp_classification: "inside_gmp",
+        gmp_impact: "none",
+      })),
+    },
+  })
+  const { error: linkError } = await supabase
+    .from("commitment_change_orders")
+    .update({ prime_change_order_id: created.id })
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+    .in("id", ids)
+  if (linkError) throw new Error(`Failed to link commitment change orders: ${linkError.message}`)
+  const priced = await deriveOwnerPriceFromCost(created.id, resolvedMarkup, resolvedOrgId)
+  await recordEvent({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    eventType: "change_order_cost_linked",
+    entityType: "change_order",
+    entityId: created.id,
+    payload: { project_id: projectId, commitment_change_order_ids: ids },
+  })
+  return priced
+}
+
+export type ChangeExposure = {
+  pending_cost_cents: number
+  proposed_price_cents: number
+  approved_contract_delta_cents: number
+  by_lifecycle: Record<ChangeOrderLifecycle, { count: number; cost_cents: number; price_cents: number }>
+}
+
+export async function getChangeExposure(projectId: string, orgId?: string): Promise<ChangeExposure> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "change_order.read",
+    userId,
+    orgId: resolvedOrgId,
+    projectId,
+    supabase,
+    resourceType: "project",
+    resourceId: projectId,
+  })
+  const { data, error } = await supabase
+    .from("change_orders")
+    .select("lifecycle, cost_total_cents, total_cents")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+  if (error) throw new Error(`Failed to load change exposure: ${error.message}`)
+  const stages: ChangeOrderLifecycle[] = ["draft", "pricing", "proposed", "approved", "rejected", "void"]
+  const byLifecycle = Object.fromEntries(stages.map((stage) => [stage, { count: 0, cost_cents: 0, price_cents: 0 }])) as ChangeExposure["by_lifecycle"]
+  for (const row of data ?? []) {
+    const lifecycle = (row.lifecycle ?? "draft") as ChangeOrderLifecycle
+    byLifecycle[lifecycle].count += 1
+    byLifecycle[lifecycle].cost_cents += Number(row.cost_total_cents ?? 0)
+    byLifecycle[lifecycle].price_cents += Number(row.total_cents ?? 0)
+  }
+  return {
+    pending_cost_cents: ["draft", "pricing", "proposed"].reduce((sum, stage) => sum + byLifecycle[stage as ChangeOrderLifecycle].cost_cents, 0),
+    proposed_price_cents: byLifecycle.proposed.price_cents,
+    approved_contract_delta_cents: byLifecycle.approved.price_cents,
+    by_lifecycle: byLifecycle,
+  }
+}
+
 export async function getChangeOrderForPortal(changeOrderId: string, orgId: string, projectId: string) {
   const supabase = createServiceSupabaseClient()
-  return fetchChangeOrder(supabase, { id: changeOrderId, orgId, projectId })
+  const changeOrder = await fetchChangeOrder(supabase, { id: changeOrderId, orgId, projectId })
+  if (!changeOrder) return null
+  const {
+    cost_total_cents: _costTotalCents,
+    markup_mode: _markupMode,
+    ...ownerChangeOrder
+  } = changeOrder
+  const metadata = { ...(ownerChangeOrder.metadata ?? {}) }
+  delete metadata.financial_impact
+  delete metadata.vendor_impact_status
+  if (Array.isArray(metadata.lines)) {
+    metadata.lines = metadata.lines.map((value: unknown) => {
+      if (!value || typeof value !== "object") return value
+      const {
+        internal_cost_cents: _internalCostCents,
+        commitment_change_order_id: _commitmentChangeOrderId,
+        ...line
+      } = value as Record<string, unknown>
+      return line
+    })
+  }
+  return {
+    ...ownerChangeOrder,
+    metadata,
+    lines: ownerChangeOrder.lines?.map((line) => {
+      const {
+        internal_cost_cents: _internalCostCents,
+        commitment_change_order_id: _commitmentChangeOrderId,
+        ...ownerLine
+      } = line
+      return ownerLine
+    }),
+  }
 }
 
 export async function approveChangeOrderFromEnvelopeExecution(input: {
@@ -799,6 +1251,7 @@ export async function approveChangeOrderFromEnvelopeExecution(input: {
 
   if (needsApprovalTransition) {
     updatePayload.status = "approved"
+    updatePayload.lifecycle = "approved"
     updatePayload.approved_at = nowIso
     updatePayload.approved_by = null
   }
@@ -844,6 +1297,15 @@ export async function approveChangeOrderFromEnvelopeExecution(input: {
       supabase,
       orgId: existing.org_id,
       projectId: existing.project_id,
+    })
+  }
+  if (needsApprovalTransition) {
+    await postApprovedChangeOrderToSovIfNeeded({
+      supabase,
+      orgId: existing.org_id,
+      projectId: existing.project_id,
+      changeOrderId: existing.id,
+      actorId: null,
     })
   }
 
@@ -957,6 +1419,7 @@ export async function approveChangeOrderFromPortalSignature(input: {
 
   if (needsApprovalTransition) {
     updatePayload.status = "approved"
+    updatePayload.lifecycle = "approved"
     updatePayload.approved_at = nowIso
     updatePayload.approved_by = null
   }
@@ -990,6 +1453,13 @@ export async function approveChangeOrderFromPortalSignature(input: {
       supabase,
       orgId: existing.org_id,
       projectId: existing.project_id,
+    })
+    await postApprovedChangeOrderToSovIfNeeded({
+      supabase,
+      orgId: existing.org_id,
+      projectId: existing.project_id,
+      changeOrderId: existing.id,
+      actorId: null,
     })
   }
 
@@ -1187,6 +1657,7 @@ export async function approveChangeOrder({
     .from("change_orders")
     .update({
       status: "approved",
+      lifecycle: "approved",
       approved_at: approvedAt,
       approved_by: userId,
       metadata: {
@@ -1207,9 +1678,7 @@ export async function approveChangeOrder({
     })
     .eq("org_id", resolvedOrgId)
     .eq("id", changeOrderId)
-    .select(
-      "id, org_id, project_id, co_number, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
-    )
+    .select(CHANGE_ORDER_SELECT)
     .single()
 
   if (error || !data) {
@@ -1233,6 +1702,13 @@ export async function approveChangeOrder({
     supabase,
     orgId: resolvedOrgId,
     projectId: data.project_id,
+  })
+  await postApprovedChangeOrderToSovIfNeeded({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: data.project_id,
+    changeOrderId: data.id,
+    actorId: userId,
   })
 
   await recordEvent({
@@ -1300,12 +1776,45 @@ export async function voidChangeOrder({
     resourceId: changeOrderId,
   })
 
-  if (existing.status === "cancelled") {
+  if (existing.lifecycle === "void" || existing.status === "cancelled") {
     throw new Error("This change order is already voided.")
   }
 
-  if (existing.status !== "approved") {
-    throw new Error("Only approved change orders can be voided. Edit or delete unapproved change orders instead.")
+  if (existing.lifecycle !== "approved") {
+    if (!["draft", "pricing", "proposed"].includes(existing.lifecycle ?? "draft")) {
+      throw new Error("Only an active potential change can be voided.")
+    }
+    const nowIso = new Date().toISOString()
+    const { data, error } = await supabase
+      .from("change_orders")
+      .update({
+        lifecycle: "void",
+        status: "cancelled",
+        metadata: { ...(existing.metadata ?? {}), voided_at: nowIso, voided_by: userId, void_reason: reason ?? null },
+      })
+      .eq("org_id", resolvedOrgId)
+      .eq("id", changeOrderId)
+      .select(CHANGE_ORDER_SELECT)
+      .single()
+    if (error || !data) throw new Error(`Failed to void change order: ${error?.message}`)
+    await recordEvent({
+      orgId: resolvedOrgId,
+      eventType: "change_order_voided",
+      entityType: "change_order",
+      entityId: changeOrderId,
+      payload: { project_id: existing.project_id, reason: reason ?? null },
+    })
+    await recordAudit({
+      orgId: resolvedOrgId,
+      actorId: userId,
+      action: "update",
+      entityType: "change_order",
+      entityId: changeOrderId,
+      before: { lifecycle: existing.lifecycle, status: existing.status },
+      after: { lifecycle: "void", status: "cancelled" },
+      source: "change_order.void",
+    })
+    return mapChangeOrderRow(data as ChangeOrderRow)
   }
 
   const { data: linkedInvoices, error: linkedInvoicesError } = await supabase
@@ -1332,6 +1841,7 @@ export async function voidChangeOrder({
     .from("change_orders")
     .update({
       status: "cancelled",
+      lifecycle: "void",
       metadata: {
         ...(existing.metadata ?? {}),
         voided_at: nowIso,
@@ -1345,9 +1855,7 @@ export async function voidChangeOrder({
     })
     .eq("org_id", resolvedOrgId)
     .eq("id", changeOrderId)
-    .select(
-      "id, org_id, project_id, co_number, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
-    )
+    .select(CHANGE_ORDER_SELECT)
     .single()
 
   if (error || !data) {
@@ -1446,7 +1954,7 @@ async function applyChangeOrderFinancialImpact({
     .select("total_cents, metadata")
     .eq("org_id", orgId)
     .eq("project_id", projectId)
-    .eq("status", "approved")
+    .eq("lifecycle", "approved")
 
   if (approvedError) {
     throw new Error(`Failed to load approved change orders: ${approvedError.message}`)
@@ -1513,6 +2021,30 @@ async function applyChangeOrderFinancialImpact({
       throw new Error(`Failed to update draw schedule amounts: ${drawUpdateError.message}`)
     }
   }
+}
+
+async function postApprovedChangeOrderToSovIfNeeded({
+  supabase,
+  orgId,
+  projectId,
+  changeOrderId,
+  actorId,
+}: {
+  supabase: SupabaseClient
+  orgId: string
+  projectId: string
+  changeOrderId: string
+  actorId?: string | null
+}) {
+  const { data: settings, error } = await supabase
+    .from("project_financial_settings")
+    .select("fixed_price_billing_basis")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .maybeSingle()
+  if (error) throw new Error(`Failed to load project billing basis: ${error.message}`)
+  if (settings?.fixed_price_billing_basis !== "progress") return
+  await applyApprovedChangeOrderToSov({ supabase, orgId, changeOrderId, actorId })
 }
 
 /**
@@ -1810,7 +2342,18 @@ export async function updateChangeOrder({
   }
 
   const normalizedLines = normalizeLines(input.lines)
-  const totals = calculateTotals(input.lines, input.tax_rate, input.markup_percent)
+  const hasInternalCosts = input.lines.some((line) => line.internal_cost_cents != null)
+  const totals = calculateTotals(
+    input.lines,
+    input.tax_rate,
+    input.markup_mode === "percent" && hasInternalCosts ? 0 : input.markup_percent,
+  )
+  const costTotalCents = changeOrderCostTotal(
+    normalizedLines.map((line) => ({
+      quantity: line.quantity,
+      internalCostCents: line.internal_cost_cents ?? null,
+    })),
+  )
   const nowIso = new Date().toISOString()
   const activeChangeRequest =
     existing.status === "requested_changes" ||
@@ -1821,6 +2364,10 @@ export async function updateChangeOrder({
     title: input.title,
     description: input.description ?? null,
     status,
+    lifecycle: existing.lifecycle === "proposed" ? "proposed" : input.lifecycle,
+    owner_response_due: input.owner_response_due ?? null,
+    cost_total_cents: costTotalCents,
+    markup_mode: input.markup_mode,
     total_cents: totals.total_cents,
     summary: input.summary,
     days_impact: input.days_impact ?? null,
@@ -1849,9 +2396,7 @@ export async function updateChangeOrder({
     .update(payload)
     .eq("org_id", resolvedOrgId)
     .eq("id", changeOrderId)
-    .select(
-      "id, org_id, project_id, co_number, title, description, status, reason, total_cents, approved_by, approved_at, summary, days_impact, requires_signature, client_visible, metadata, created_at, updated_at",
-    )
+    .select(CHANGE_ORDER_SELECT)
     .single()
 
   if (error || !data) {
@@ -1878,6 +2423,8 @@ export async function updateChangeOrder({
     quantity: line.quantity,
     unit: line.unit ?? "unit",
     unit_cost_cents: line.unit_cost_cents,
+    internal_cost_cents: line.internal_cost_cents ?? null,
+    commitment_change_order_id: line.commitment_change_order_id ?? null,
     gmp_classification: line.gmp_classification ?? "inside_gmp",
     gmp_impact: line.gmp_impact ?? "none",
     gmp_delta_cents: calculateGmpDeltaCents(calculateLineBudgetRevisionCents(line), normalizeGmpImpact(line.gmp_impact)),

@@ -7,6 +7,8 @@ import { requireAuth } from "@/lib/auth/context"
 import { requireAnyPermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
+import { recordEvent } from "@/lib/services/events"
+import { PRODUCT_TIERS } from "@/lib/product-tier"
 import { activateOrgBilling, syncOrgEntitlementsFromPlan } from "@/lib/services/billing"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
@@ -35,6 +37,7 @@ const updateCustomerDetailsSchema = z.object({
   status: z.enum(["active", "inactive", "suspended", "archived"]),
   billingModel: z.enum(["subscription", "license"]),
   billingEmail: z.string().trim().email("Valid billing email is required").or(z.literal("")),
+  productTier: z.enum(PRODUCT_TIERS),
 })
 
 const updateCustomerSubscriptionSchema = z.object({
@@ -202,6 +205,7 @@ export async function updateCustomerDetailsAction(formData: FormData) {
         status: formData.get("status"),
         billingModel: formData.get("billingModel"),
         billingEmail: formData.get("billingEmail") ?? "",
+        productTier: formData.get("productTier"),
       })
 
       if (!parsed.success) {
@@ -218,7 +222,7 @@ export async function updateCustomerDetailsAction(formData: FormData) {
 
       const { data: existing, error: existingError } = await supabase
         .from("orgs")
-        .select("id, name, slug, status, billing_model, billing_email")
+        .select("id, name, slug, status, billing_model, billing_email, product_tier")
         .eq("id", parsed.data.orgId)
         .maybeSingle()
 
@@ -247,6 +251,7 @@ export async function updateCustomerDetailsAction(formData: FormData) {
         status: parsed.data.status,
         billing_model: parsed.data.billingModel,
         billing_email: parsed.data.billingEmail || null,
+        product_tier: parsed.data.productTier,
         updated_at: new Date().toISOString(),
       }
 
@@ -265,6 +270,20 @@ export async function updateCustomerDetailsAction(formData: FormData) {
         after: payload,
         source: "platform_customers_org_edit",
       })
+
+      if (existing.product_tier !== parsed.data.productTier) {
+        await recordEvent({
+          orgId: parsed.data.orgId,
+          actorId: user.id,
+          eventType: "org.product_tier_changed",
+          entityType: "org",
+          entityId: parsed.data.orgId,
+          payload: {
+            from: existing.product_tier,
+            to: parsed.data.productTier,
+          },
+        })
+      }
 
       revalidatePath("/admin/customers")
       revalidatePath("/platform")

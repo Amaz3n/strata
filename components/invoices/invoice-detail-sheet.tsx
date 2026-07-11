@@ -34,6 +34,7 @@ import {
 import { recordPaymentAction } from "@/app/(app)/payments/actions"
 import { unwrapAction } from "@/lib/action-result"
 import { toast } from "sonner"
+import { useProductTerminology } from "@/components/layout/use-product-terminology"
 
 type AttachmentLink = Awaited<ReturnType<typeof listAttachmentsAction>>[number]
 
@@ -104,12 +105,12 @@ function formatMoneyFromCents(cents?: number | null) {
   return dollars.toLocaleString("en-US", { style: "currency", currency: "USD" })
 }
 
-function paymentSourceLabel(payment: Payment): string {
+function paymentSourceLabel(payment: Payment, ownerLabel = "Client"): string {
   const metaSource = (payment.metadata as Record<string, any> | undefined)?.source
   const hasAllocation = Boolean((payment.metadata as Record<string, any> | undefined)?.payment_allocation_id)
   if (payment.provider === "qbo") {
     if (hasAllocation || metaSource === "payment_allocation") return "QuickBooks allocation"
-    return metaSource === "client_deposit" ? "Client deposit · QuickBooks" : "QuickBooks"
+    return metaSource === "client_deposit" ? `${ownerLabel} deposit · QuickBooks` : "QuickBooks"
   }
   if (payment.provider === "stripe") return "Online payment"
   if (payment.provider === "manual") return "Manual"
@@ -211,6 +212,7 @@ export function InvoiceDetailSheet({
   onPaymentRecorded,
   onWaiversChanged,
 }: Props) {
+  const terms = useProductTerminology()
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [attachmentsLoading, setAttachmentsLoading] = useState(false)
   const [pdfLoading, setPdfLoading] = useState(false)
@@ -393,17 +395,17 @@ export function InvoiceDetailSheet({
       entries.push({ id: "created", at: invoice.created_at, label: "Invoice created" })
     }
     if (sentAtValue) {
-      entries.push({ id: "sent", at: String(sentAtValue), label: "Sent to client", detail: sentToValue ?? null })
+      entries.push({ id: "sent", at: String(sentAtValue), label: `Sent to ${terms.owner.toLowerCase()}`, detail: sentToValue ?? null })
     }
     for (const view of views ?? []) {
-      entries.push({ id: `view-${view.id}`, at: view.viewed_at, label: "Viewed by client", detail: describeUserAgent(view.user_agent) })
+      entries.push({ id: `view-${view.id}`, at: view.viewed_at, label: `Viewed by ${terms.owner.toLowerCase()}`, detail: describeUserAgent(view.user_agent) })
     }
     for (const payment of appliedPayments) {
       entries.push({
         id: `payment-${payment.id}`,
         at: payment.received_at,
         label: `Payment · ${formatMoneyFromCents(payment.amount_cents)}`,
-        detail: paymentSourceLabel(payment),
+        detail: paymentSourceLabel(payment, terms.owner),
         tone: "positive",
       })
     }
@@ -420,7 +422,7 @@ export function InvoiceDetailSheet({
     return entries
       .filter((entry) => entry.at)
       .sort((a, b) => String(b.at).localeCompare(String(a.at)))
-  }, [invoice?.created_at, sentAtValue, sentToValue, views, appliedPayments, reversals])
+  }, [invoice?.created_at, sentAtValue, sentToValue, views, appliedPayments, reversals, terms.owner])
 
   const syncLogs = useMemo(() => {
     return (syncHistory ?? []).map((item) => ({
@@ -665,7 +667,7 @@ export function InvoiceDetailSheet({
                           <div className="flex min-w-0 items-center gap-2">
                             <span className="font-medium">{formatMoneyFromCents(payment.amount_cents)}</span>
                             <Badge variant="secondary" className="shrink-0 text-[10px] font-normal">
-                              {paymentSourceLabel(payment)}
+                              {paymentSourceLabel(payment, terms.owner)}
                             </Badge>
                           </div>
                           <span className="shrink-0 text-xs text-muted-foreground">
@@ -970,7 +972,7 @@ export function InvoiceDetailSheet({
                       className="min-h-[120px]"
                     />
                     <div className="flex items-center justify-between gap-2">
-                      <p className="text-xs text-muted-foreground">Clients will not see these notes.</p>
+                      <p className="text-xs text-muted-foreground">{terms.owners} will not see these notes.</p>
                       <Button
                         type="button"
                         size="sm"

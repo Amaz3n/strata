@@ -17,6 +17,7 @@ import {
   saveBillingContractWithAmendment,
   upsertProjectFinancialSettingsFromProjectInput,
 } from "@/lib/services/project-financial-setup"
+import { getDefaultProjectPropertyType, getProjectPosture } from "@/lib/product-tier"
 
 function contractTypeForBillingModel(model?: ProjectBillingModel | null): "fixed" | "cost_plus" | "time_materials" {
   if (model === "time_and_materials") return "time_materials"
@@ -62,6 +63,18 @@ function projectNullableValue<T>(input: Partial<ProjectInput>, key: keyof Projec
   return (input[key] ?? null) as T | null
 }
 
+function mapProjectModuleOverrides(row: { project_module_overrides?: unknown }) {
+  const overrideRows = Array.isArray(row.project_module_overrides)
+    ? row.project_module_overrides
+    : []
+  return Object.fromEntries(
+    overrideRows.map((override: { module_key: string; enabled: boolean }) => [
+      override.module_key,
+      override.enabled,
+    ]),
+  )
+}
+
 function mapProject(row: any): Project {
   const location = (row.location ?? {}) as Record<string, unknown>
   const address = typeof location.address === "string" ? location.address : (location.formatted as string | undefined)
@@ -80,8 +93,10 @@ function mapProject(row: any): Project {
     client_id: row.client_id ?? undefined,
     prospect_id: row.prospect_id ?? null,
     property_type: row.property_type ?? undefined,
+    module_overrides: mapProjectModuleOverrides(row),
     project_type: row.project_type ?? undefined,
     description: row.description ?? undefined,
+    retainage_percent: row.retainage_percent != null ? Number(row.retainage_percent) : undefined,
     total_value: row.total_value ?? undefined,
     total_contract_value_cents: row.total_contract_value_cents ?? undefined,
     qbo_class_id: row.qbo_class_id ?? null,
@@ -106,6 +121,8 @@ function mapProjectNavigationItem(row: any): ProjectNavigationItem {
     org_id: row.org_id,
     name: row.name,
     status: row.status,
+    property_type: row.property_type ?? undefined,
+    module_overrides: mapProjectModuleOverrides(row),
     financial_settings: financialSettings?.billing_model
       ? { billing_model: financialSettings.billing_model }
       : null,
@@ -140,6 +157,9 @@ function mapProjectBillingContract(row: any): Contract {
     retainage_percent: row.retainage_percent != null ? Number(row.retainage_percent) : undefined,
     retainage_applies_to_fee: row.retainage_applies_to_fee ?? row.snapshot?.retainage_applies_to_fee ?? false,
     retainage_release_trigger: row.retainage_release_trigger ?? undefined,
+    retainage_schedule: row.retainage_schedule ?? null,
+    stored_materials_retainage_percent:
+      row.stored_materials_retainage_percent != null ? Number(row.stored_materials_retainage_percent) : null,
     terms: row.terms ?? undefined,
     effective_date: row.effective_date ?? undefined,
     signed_at: row.signed_at ?? undefined,
@@ -152,9 +172,10 @@ function mapProjectBillingContract(row: any): Contract {
 }
 
 const PROJECT_SELECT = `
-  id, org_id, name, status, start_date, end_date, location, client_id, prospect_id, property_type, project_type, description, total_value, total_contract_value_cents, qbo_class_id, qbo_class_name, qbo_customer_id, qbo_customer_name, excluded_from_reporting, created_at, updated_at,
-  project_financial_settings(id, org_id, project_id, billing_model, paid_costs_required, proof_required, client_cost_approval_required, open_book_required, cost_codes_enabled, setup_completed_at, metadata),
-  contracts(id, org_id, project_id, proposal_id, number, title, status, contract_type, total_cents, currency, markup_percent, gmp_cents, contingency_cents, fixed_fee_cents, fee_presentation, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, rate_schedule_id, requires_client_cost_approval, open_book, retainage_percent, retainage_applies_to_fee, retainage_release_trigger, terms, effective_date, signed_at, signature_data, parent_contract_id, snapshot, created_at, updated_at)
+  id, org_id, name, status, start_date, end_date, location, client_id, prospect_id, property_type, project_type, description, total_value, retainage_percent, total_contract_value_cents, qbo_class_id, qbo_class_name, qbo_customer_id, qbo_customer_name, excluded_from_reporting, created_at, updated_at,
+  project_financial_settings(id, org_id, project_id, billing_model, fixed_price_billing_basis, paid_costs_required, proof_required, client_cost_approval_required, open_book_required, cost_codes_enabled, setup_completed_at, metadata),
+  project_module_overrides(module_key, enabled),
+  contracts(id, org_id, project_id, proposal_id, number, title, status, contract_type, total_cents, currency, markup_percent, gmp_cents, contingency_cents, fixed_fee_cents, fee_presentation, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, rate_schedule_id, requires_client_cost_approval, open_book, retainage_percent, retainage_applies_to_fee, retainage_release_trigger, retainage_schedule, stored_materials_retainage_percent, terms, effective_date, signed_at, signature_data, parent_contract_id, snapshot, created_at, updated_at)
 `
 
 export async function listProjects(orgId?: string, context?: OrgServiceContext): Promise<Project[]> {
@@ -219,8 +240,9 @@ export async function listProjectNavigationItemsWithClient(
   const { data, error } = await supabase
     .from("projects")
     .select(`
-      id, org_id, name, status, created_at, updated_at,
-      project_financial_settings(project_id, billing_model)
+      id, org_id, name, status, property_type, created_at, updated_at,
+      project_financial_settings(project_id, billing_model),
+      project_module_overrides(module_key, enabled)
     `)
     .eq("org_id", orgId)
     .order("created_at", { ascending: false })
@@ -261,27 +283,37 @@ export async function getProjectWithFinancials({
 }
 
 export async function createProject({ input, orgId, context }: { input: ProjectInput; orgId?: string; context?: OrgServiceContext }) {
-  const { supabase, orgId: resolvedOrgId, userId } = context || await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId, productTier } = context || await requireOrgContext(orgId)
   await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+
+  const propertyType = input.property_type ?? getDefaultProjectPropertyType(productTier)
+  const retainagePercent =
+    input.retainage_percent ?? (getProjectPosture(propertyType, productTier) === "commercial" ? 10 : 0)
+  const normalizedInput: ProjectInput = {
+    ...input,
+    property_type: propertyType,
+    retainage_percent: retainagePercent,
+  }
 
   const payload = {
     org_id: resolvedOrgId,
-    name: input.name,
-    status: input.status ?? "active",
-    start_date: input.start_date || null,
-    end_date: input.end_date || null,
-    location: input.location ?? (input.address ? { address: input.address } : null),
-    client_id: input.client_id ?? null,
-    property_type: input.property_type,
-    project_type: input.project_type,
-    description: input.description,
-    total_value: typeof input.total_value === "number" ? Math.round(input.total_value) : input.total_value,
-    qbo_class_id: input.qbo_class_id?.trim() || null,
-    qbo_class_name: input.qbo_class_name?.trim() || null,
-    qbo_customer_id: input.qbo_customer_id?.trim() || null,
-    qbo_customer_name: input.qbo_customer_name?.trim() || null,
+    name: normalizedInput.name,
+    status: normalizedInput.status ?? "active",
+    start_date: normalizedInput.start_date || null,
+    end_date: normalizedInput.end_date || null,
+    location: normalizedInput.location ?? (normalizedInput.address ? { address: normalizedInput.address } : null),
+    client_id: normalizedInput.client_id ?? null,
+    property_type: normalizedInput.property_type,
+    project_type: normalizedInput.project_type,
+    description: normalizedInput.description,
+    retainage_percent: normalizedInput.retainage_percent,
+    total_value: typeof normalizedInput.total_value === "number" ? Math.round(normalizedInput.total_value) : normalizedInput.total_value,
+    qbo_class_id: normalizedInput.qbo_class_id?.trim() || null,
+    qbo_class_name: normalizedInput.qbo_class_name?.trim() || null,
+    qbo_customer_id: normalizedInput.qbo_customer_id?.trim() || null,
+    qbo_customer_name: normalizedInput.qbo_customer_name?.trim() || null,
     created_by: userId,
-    prospect_id: input.prospect_id || null,
+    prospect_id: normalizedInput.prospect_id || null,
   }
 
   const { data, error } = await supabase
@@ -299,7 +331,7 @@ export async function createProject({ input, orgId, context }: { input: ProjectI
     eventType: "project_created",
     entityType: "project",
     entityId: data.id as string,
-    payload: { name: input.name },
+    payload: { name: normalizedInput.name },
   })
 
   await recordAudit({
@@ -317,7 +349,7 @@ export async function createProject({ input, orgId, context }: { input: ProjectI
     userId,
     projectId: data.id as string,
     projectName: data.name,
-    input,
+    input: normalizedInput,
   })
 
   return mapProject(data)
@@ -444,6 +476,9 @@ async function upsertProjectBillingContract({
     "cost_codes_enabled",
     "retainage_percent",
     "retainage_applies_to_fee",
+    "fixed_price_billing_basis",
+    "retainage_schedule",
+    "stored_materials_retainage_percent",
     "total_contract_value_cents",
   ]
   const hasBillingInput = billingKeys.some((key) => Object.prototype.hasOwnProperty.call(input, key))
@@ -525,6 +560,10 @@ async function upsertProjectBillingContract({
     retainage_percent: input.retainage_percent ?? existing?.retainage_percent ?? 0,
     retainage_applies_to_fee:
       input.retainage_applies_to_fee ?? existing?.retainage_applies_to_fee ?? existing?.snapshot?.retainage_applies_to_fee ?? false,
+    retainage_schedule: isFixedPrice ? input.retainage_schedule ?? existing?.retainage_schedule ?? null : null,
+    stored_materials_retainage_percent: isFixedPrice
+      ? input.stored_materials_retainage_percent ?? existing?.stored_materials_retainage_percent ?? null
+      : null,
     snapshot: {
       ...nextSnapshotBase,
       billing_setup_source: "project_settings",

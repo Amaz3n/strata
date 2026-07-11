@@ -6,7 +6,7 @@ import { useRef, useState, useCallback, useMemo, useEffect } from "react"
 import { format, differenceInDays, startOfDay, isSameDay, isWeekend as checkIsWeekend, addDays as dateAddDays } from "date-fns"
 import { calculateScheduleImpacts, calculateCriticalPath } from "@/lib/utils/schedule-calc"
 import { cn } from "@/lib/utils"
-import type { ScheduleItem } from "@/lib/types"
+import type { ScheduleDependency, ScheduleItem } from "@/lib/types"
 import {
   GANTT_ROW_HEIGHT,
   GANTT_HEADER_HEIGHT,
@@ -45,6 +45,10 @@ import { Button } from "@/components/ui/button"
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
 import { Progress } from "@/components/ui/progress"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
   ChevronDown,
   ChevronRight,
@@ -82,6 +86,16 @@ interface GanttChartProps {
   onQuickAdd?: (startDate: Date, endDate: Date) => void
   onEditItem?: (item: ScheduleItem) => void
   onAddItem?: () => void
+}
+
+function DependencyEditor({ dependency, onUpdate, onDelete }: { dependency: ScheduleDependency; onUpdate: (id: string, type: ScheduleDependency["dependency_type"], lag: number) => Promise<ScheduleDependency>; onDelete: (id: string) => Promise<void> }) {
+  const [type, setType] = useState<ScheduleDependency["dependency_type"]>(dependency.dependency_type)
+  const [lag, setLag] = useState(String(dependency.lag_days ?? 0))
+  const [busy, setBusy] = useState(false)
+  const [open, setOpen] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  async function run(work: () => Promise<unknown>) { setBusy(true); setError(null); try { await work(); setOpen(false) } catch (caught) { setError(caught instanceof Error ? caught.message : "Unable to update dependency") } finally { setBusy(false) } }
+  return <Popover open={open} onOpenChange={setOpen}><PopoverTrigger asChild><button type="button" aria-label={`Edit ${dependency.dependency_type} dependency with ${dependency.lag_days ?? 0} day lag`} className="grid h-5 min-w-5 place-items-center border bg-background px-1 font-mono text-[9px] font-semibold text-muted-foreground hover:border-primary hover:text-foreground">{dependency.dependency_type}{dependency.lag_days ? `${dependency.lag_days > 0 ? "+" : ""}${dependency.lag_days}` : ""}</button></PopoverTrigger><PopoverContent className="w-64 space-y-3" align="center"><div><p className="text-sm font-semibold">Dependency</p><p className="text-xs text-muted-foreground">Set relationship type and signed lag.</p></div><div className="grid grid-cols-2 gap-3"><div className="space-y-1"><Label>Type</Label><Select value={type} onValueChange={(value) => setType(value as ScheduleDependency["dependency_type"])}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{["FS","SS","FF","SF"].map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select></div><div className="space-y-1"><Label>Lag days</Label><Input type="number" min="-365" max="365" value={lag} onChange={(event) => setLag(event.target.value)} /></div></div>{error && <p className="text-xs text-destructive">{error}</p>}<div className="flex justify-between"><Button variant="ghost" size="sm" className="text-destructive" disabled={busy} onClick={() => void run(() => onDelete(dependency.id))}>Delete</Button><Button size="sm" disabled={busy || !Number.isInteger(Number(lag)) || Number(lag) < -365 || Number(lag) > 365} onClick={() => void run(() => onUpdate(dependency.id, type, Number(lag)))}>Save</Button></div></PopoverContent></Popover>
 }
 
 // Get icon for item type
@@ -340,6 +354,8 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
     setSelectedItem,
     onItemUpdate,
     onItemsBulkUpdate,
+    onDependencyUpdate,
+    onDependencyDelete,
     scrollToTodayTrigger,
   } = useSchedule()
 
@@ -958,6 +974,7 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
         from: { x: fromX, y: fromY },
         to: { x: toX, y: toY },
         type: dep.dependency_type,
+        dependency: dep,
         isCritical: viewState.showCriticalPath && fromItem.is_critical_path && toItem.is_critical_path,
       }
     }).filter(Boolean)
@@ -1418,6 +1435,11 @@ export function GanttChart({ className, onQuickAdd, onEditItem, onAddItem }: Gan
                   })}
                 </svg>
               )}
+              {viewState.showDependencies && dependencyLines.map((line) => line && (
+                <div key={`editor-${line.id}`} className="absolute z-20 -translate-x-1/2 -translate-y-1/2" style={{ left: (line.from.x + line.to.x) / 2, top: (line.from.y + line.to.y) / 2 }} onMouseDown={(event) => event.stopPropagation()}>
+                  <DependencyEditor dependency={line.dependency} onUpdate={onDependencyUpdate} onDelete={onDependencyDelete} />
+                </div>
+              ))}
 
               {/* Row backgrounds — swim-lane tinted by phase color */}
               {sortedGroups.map((groupKey) => {

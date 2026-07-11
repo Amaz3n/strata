@@ -23,6 +23,7 @@ import { listAttachmentsAction, detachFileLinkAction, uploadFileAction, attachFi
 import type { CostCode } from "@/lib/types"
 
 import { unwrapAction } from "@/lib/action-result"
+import { CostCodeSelectItems } from "@/components/cost-codes/cost-code-select-items"
 
 function formatMoneyFromCents(cents?: number | null) {
   const dollars = (cents ?? 0) / 100
@@ -129,11 +130,7 @@ function CommitmentLineForm({
               <SelectValue placeholder="Select cost code" />
             </SelectTrigger>
             <SelectContent>
-              {costCodes.map((code) => (
-                <SelectItem key={code.id} value={code.id}>
-                  {code.code} - {code.name}
-                </SelectItem>
-              ))}
+              <CostCodeSelectItems costCodes={costCodes} />
             </SelectContent>
           </Select>
         </div>
@@ -598,6 +595,9 @@ export function ProjectCommitmentsClient({
                       {c.contract_number ? <span>{c.contract_number}</span> : null}
                       {c.executed_at ? <span>Executed</span> : null}
                     </div>
+                    {c.prequalification_warning ? (
+                      <div className="mt-1 text-xs text-warning">{c.prequalification_warning}</div>
+                    ) : null}
                   </TableCell>
                   <TableCell className="px-4 py-3">{statusBadge(c.status)}</TableCell>
                   <TableCell className="text-right px-4 py-3">{formatMoneyFromCents(total)}</TableCell>

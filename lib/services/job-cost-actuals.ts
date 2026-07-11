@@ -430,7 +430,7 @@ export async function getProjectJobCostActualsByCostCode({
   const { supabase, orgId: resolvedOrgId } = context
   const { data, error } = await supabase
     .from("job_cost_entries")
-    .select("org_id, cost_code_id, budget_line_id, source_type, source_id, cost_cents, status, is_billable")
+    .select("org_id, cost_code_id, budget_line_id, source_type, source_id, cost_cents, status, is_billable, cost_code:cost_codes(cost_type), budget_line:budget_lines(cost_type, cost_code:cost_codes(cost_type))")
     .eq("org_id", resolvedOrgId)
     .eq("project_id", projectId)
     .eq("status", "posted")
@@ -439,5 +439,17 @@ export async function getProjectJobCostActualsByCostCode({
     throw new Error(`Failed to load job-cost actuals: ${error.message}`)
   }
 
-  return summarizeJobCostEntriesByCostCode(data ?? [], groupBy)
+  const enriched = (data ?? []).map((row) => {
+    const costCode = Array.isArray(row.cost_code) ? row.cost_code[0] : row.cost_code
+    const budgetLine = Array.isArray(row.budget_line) ? row.budget_line[0] : row.budget_line
+    const budgetLineCostCode = Array.isArray(budgetLine?.cost_code)
+      ? budgetLine.cost_code[0]
+      : budgetLine?.cost_code
+    return {
+      ...row,
+      cost_type: budgetLine?.cost_type ?? costCode?.cost_type ?? budgetLineCostCode?.cost_type ?? null,
+    }
+  })
+
+  return summarizeJobCostEntriesByCostCode(enriched, groupBy)
 }

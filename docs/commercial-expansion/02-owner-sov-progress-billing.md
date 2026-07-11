@@ -4,6 +4,42 @@
 > workstream: commercial GCs bill owners monthly against a Schedule of Values. Arc
 > currently only offers milestone/bank-draw billing (residential) or cost-plus.
 
+## STATUS — implemented 2026-07-10 (phases 1–5 + wire-up; phase 6 e-sign stretch NOT built)
+
+**Code-complete and migrations applied to prod** (`prime_sov`, `stepped_retainage`,
+`progress_billing_permissions`, `pay_application_rpcs`). `pnpm lint` clean;
+`pnpm test:financials` 45/45 incl. new `tests/pay-app-math.test.js`.
+
+Key landing points:
+- Data: `prime_sov_lines` / `pay_applications` / `pay_application_lines`;
+  `project_financial_settings.fixed_price_billing_basis` ('draws'|'progress');
+  `contracts.retainage_schedule` + `stored_materials_retainage_percent`.
+- Services: `lib/services/prime-sov.ts` (incl. `applyChangeOrderToSov` ready for WS03),
+  `lib/services/pay-applications.ts`, pure math in `lib/financials/pay-app-math.ts`.
+- Atomicity via RPCs `post_pay_application` / `void_pay_application` /
+  `release_prime_sov_retainage` (run_bid_award_conversion pattern).
+- Invoicing: new `source_type: "pay_application"`; the retainage negative-line block
+  now accepts a precomputed amount + label — draw output is byte-identical.
+- UI: Receivables sub-tabs "Schedule of Values" + "Pay Applications";
+  `PrimeRetainagePanel` on the Retainage tab; stepped-retainage + draws-vs-progress
+  choice in financial setup (both project sheets).
+- PDF: ONE combined Application for Payment + Continuation Sheet document.
+- Permissions: `sov.write`/`payapp.write` → org_owner, org_admin, org_office_admin,
+  org_bookkeeper, pm (verified in prod). Search index registered (`pay_application`).
+
+Deviations from this doc (repo reality won):
+1. PDFs use `@react-pdf/renderer` (not pdf-lib) following `lib/pdfs/pay-application.tsx`,
+   and render one combined document since `pdf_file_id` is a single pointer.
+2. The rollout flag lives at `/admin/features` (`feature_flags` table, key
+   `progress_billing_enabled`, default OFF), not `/platform`.
+3. The billing-periods table is `project_billing_periods`, not `billing_periods`
+   as written in the Migration 1 DDL below.
+4. Pay-app math tests are node-test style in `tests/` (wired into `test:financials`),
+   not bun-style, so the acceptance command actually runs them.
+
+Follow-ups: delete `progress_billing_enabled` flag after prod validation
+(leave-no-trash); phase 6 e-sign stretch unbuilt.
+
 ## Goal
 
 A fourth owner-billing basis, **`progress`** (SOV progress billing), for fixed-price
@@ -159,7 +195,11 @@ New file `lib/services/prime-sov.ts` (SOV CRUD) and new file
   a CO posting (flag via internal option, see workstream 03).
 - `importSovFromBudget(projectId)` / `importSovFromEstimate(projectId)` — generate lines
   from budget_lines (grouped by cost code) or the executed estimate. Copy the mechanics
-  of `budget-from-estimate.ts`.
+  of `budget-from-estimate.ts`. **Cost-codes-off orgs:** budgets can run in
+  lines-as-buckets mode with no cost codes (see memory/budget-cost-codes-off-mode) —
+  when budget lines have no cost_code_id, fall back to one SOV line per budget line
+  (description = budget line name, cost_code_id null). Do not assume every budget
+  groups by cost code.
 - On prime CO approval (workstream 03 will call this): `applyChangeOrderToSov(coId)` —
   appends new SOV line(s) from the CO lines (one line per CO or per CO line — per CO
   line when lines have distinct cost codes; else single line titled "CO #N — <title>").
@@ -210,6 +250,14 @@ choose draws vs progress at financial setup (`project-financial-setup.ts` — ad
 choice; commercial-POSTURE projects default to progress per workstream 01's
 `getProjectPosture` — key off the project, not the org, so mixed orgs get the right
 default per job).
+
+**Rollout kill-switch:** gate the `progress` option's *visibility* in financial setup
+behind a platform-level flag (copy the `ai_search_enabled` per-org flag pattern —
+platform admin toggles it at `/platform`), default ON only for the QA org until a
+full monthly cycle has been run end-to-end there. This is a visibility gate for
+rollout safety, not a capability gate — the service layer works regardless, and the
+flag is deleted (per repo leave-no-trash rules) once progress billing is validated
+in production. Note the deletion as follow-up in the completion note.
 
 ## PDFs
 
@@ -269,6 +317,10 @@ billing mode — see memory/receivables-billing-workbench):
 
 ## Acceptance checklist
 
+> Status 2026-07-10: code paths for every item below are implemented; the unchecked
+> items are the MANUAL QA runs in the QA org (enable the `progress_billing_enabled`
+> flag for it first). The draw regression is the hard merge gate.
+
 - [ ] Fixed-price commercial project set to progress billing: build a 10-line SOV from
       budget, reconcile to contract sum.
 - [ ] App #1: bill 3 lines partially + stored materials on 1 line → invoice created
@@ -283,5 +335,9 @@ billing mode — see memory/receivables-billing-workbench):
       (`wip-over-under.ts`) shows billed-to-date including pay apps (verify it reads
       from invoices — it should pick this up automatically; if it special-cases draws,
       extend it).
-- [ ] Draws projects: completely unchanged.
-- [ ] `pnpm lint` + `pnpm test:financials` (including new pay-app-math tests) pass.
+- [ ] Draws projects: completely unchanged. **Manual regression required before
+      merge** (master rule — this workstream touches the live invoice retainage
+      path): on an existing draw-billing project in the QA org, create a draw →
+      generate its invoice → verify the retainage negative line, totals, and QBO
+      sync fields are byte-identical to pre-change behavior.
+- [x] `pnpm lint` + `pnpm test:financials` (including new pay-app-math tests) pass.

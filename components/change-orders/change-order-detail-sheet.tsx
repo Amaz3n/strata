@@ -39,6 +39,11 @@ import {
   linkInvoiceToChangeOrderAction,
   listLinkableInvoicesForChangeOrderAction,
   updateChangeOrderFollowupAction,
+  startChangeOrderPricingAction,
+  rejectChangeOrderAction,
+  deriveChangeOrderPriceAction,
+  listLinkableCommitmentChangeOrdersAction,
+  linkCommitmentChangeOrderToChangeOrderAction,
   type LinkableChangeOrderInvoice,
 } from "@/app/(app)/change-orders/actions"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
@@ -149,6 +154,8 @@ export function ChangeOrderDetailSheet({
   const [voidReason, setVoidReason] = useState("")
   const [voiding, setVoiding] = useState(false)
   const [savingFollowup, setSavingFollowup] = useState(false)
+  const [transitioningLifecycle, setTransitioningLifecycle] = useState(false)
+  const [deriveMarkupPercent, setDeriveMarkupPercent] = useState("15")
 
   const [linkedInvoices, setLinkedInvoices] = useState<LinkedInvoice[]>([])
   const [linkedInvoicesLoading, setLinkedInvoicesLoading] = useState(false)
@@ -165,6 +172,10 @@ export function ChangeOrderDetailSheet({
   const [commitmentOptions, setCommitmentOptions] = useState<CommitmentSummary[]>([])
   const [selectedCommitmentId, setSelectedCommitmentId] = useState("")
   const [creatingCommitmentChangeOrder, setCreatingCommitmentChangeOrder] = useState(false)
+  const [ccoLinkPickerOpen, setCcoLinkPickerOpen] = useState(false)
+  const [linkableCcos, setLinkableCcos] = useState<CommitmentChangeOrderSummary[]>([])
+  const [selectedCcoId, setSelectedCcoId] = useState("")
+  const [linkingCco, setLinkingCco] = useState(false)
 
   const loadLinkedInvoices = useCallback(async () => {
     if (!changeOrder) return
@@ -334,6 +345,12 @@ export function ChangeOrderDetailSheet({
   }
 
   const totalCents = changeOrder.total_cents ?? changeOrder.totals?.total_cents ?? 0
+  const internalCostCents = changeOrder.cost_total_cents ?? (changeOrder.lines ?? []).reduce(
+    (sum, line) => sum + (line.internal_cost_cents ?? 0),
+    0,
+  )
+  const marginCents = totalCents - internalCostCents
+  const lifecycle = changeOrder.lifecycle ?? (changeOrder.status === "approved" ? "approved" : "draft")
   const isVoided = changeOrder.status === "cancelled"
   const isGmpProject = project ? resolveProjectBillingModel(project) === "cost_plus_gmp" : false
   const canApprove = changeOrder.status !== "approved" && !isVoided
@@ -516,6 +533,40 @@ export function ChangeOrderDetailSheet({
     }
   }
 
+  const handleLifecycleTransition = async (target: "pricing" | "rejected") => {
+    setTransitioningLifecycle(true)
+    try {
+      const result = target === "pricing"
+        ? await startChangeOrderPricingAction(changeOrder.id)
+        : await rejectChangeOrderAction(changeOrder.id)
+      const updated = unwrapAction(result)
+      onUpdate?.(updated)
+      toast.success(target === "pricing" ? "Pricing started" : "Change order rejected")
+    } catch (error: any) {
+      toast.error("Could not update lifecycle", { description: error?.message ?? "Please try again." })
+    } finally {
+      setTransitioningLifecycle(false)
+    }
+  }
+
+  const handleDerivePrice = async () => {
+    const percent = Number(deriveMarkupPercent)
+    if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
+      toast.error("Markup must be between 0 and 100 percent")
+      return
+    }
+    setTransitioningLifecycle(true)
+    try {
+      const updated = unwrapAction(await deriveChangeOrderPriceAction(changeOrder.id, percent))
+      onUpdate?.(updated)
+      toast.success(`Owner price derived at ${percent}% markup`)
+    } catch (error: any) {
+      toast.error("Could not derive owner price", { description: error?.message ?? "Please try again." })
+    } finally {
+      setTransitioningLifecycle(false)
+    }
+  }
+
   const handleVendorImpactChange = async (value: string) => {
     if (!changeOrder) return
     setSavingFollowup(true)
@@ -560,6 +611,38 @@ export function ChangeOrderDetailSheet({
       toast.error("Could not create commitment change order", { description: error?.message ?? "Please try again." })
     } finally {
       setCreatingCommitmentChangeOrder(false)
+    }
+  }
+
+  const openCcoLinkPicker = async () => {
+    setCcoLinkPickerOpen(true)
+    try {
+      const rows = await listLinkableCommitmentChangeOrdersAction(changeOrder.project_id)
+      setLinkableCcos(rows)
+      setSelectedCcoId(rows[0]?.id ?? "")
+    } catch (error: any) {
+      toast.error("Could not load commitment changes", { description: error?.message ?? "Please try again." })
+      setLinkableCcos([])
+    }
+  }
+
+  const handleLinkCco = async () => {
+    if (!selectedCcoId) return
+    setLinkingCco(true)
+    try {
+      const result = unwrapAction(await linkCommitmentChangeOrderToChangeOrderAction(
+        changeOrder.project_id,
+        changeOrder.id,
+        selectedCcoId,
+      ))
+      onUpdate?.(result.changeOrder)
+      await loadSubCostLinks()
+      setCcoLinkPickerOpen(false)
+      toast.success("Commitment cost linked")
+    } catch (error: any) {
+      toast.error("Could not link commitment cost", { description: error?.message ?? "Please try again." })
+    } finally {
+      setLinkingCco(false)
     }
   }
 
@@ -614,6 +697,35 @@ export function ChangeOrderDetailSheet({
         <ScrollArea className="flex-1 min-h-0">
           <div className="px-6 py-4 space-y-6">
 
+          <div className="border bg-muted/20 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-medium uppercase text-muted-foreground">Lifecycle</p>
+                <p className="mt-1 text-sm font-semibold capitalize">{lifecycle.replace("_", " ")}</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {lifecycle === "draft" ? (
+                  <Button type="button" size="sm" variant="outline" disabled={transitioningLifecycle} onClick={() => handleLifecycleTransition("pricing")}>Start pricing</Button>
+                ) : null}
+                {(lifecycle === "draft" || lifecycle === "pricing") && internalCostCents !== 0 ? (
+                  <div className="flex items-center gap-1">
+                    <Input
+                      value={deriveMarkupPercent}
+                      onChange={(event) => setDeriveMarkupPercent(event.target.value)}
+                      className="h-8 w-16 text-right tabular-nums"
+                      inputMode="decimal"
+                      aria-label="Markup percent"
+                    />
+                    <Button type="button" size="sm" variant="outline" disabled={transitioningLifecycle} onClick={handleDerivePrice}>Derive price</Button>
+                  </div>
+                ) : null}
+                {lifecycle === "proposed" ? (
+                  <Button type="button" size="sm" variant="outline" disabled={transitioningLifecycle} onClick={() => handleLifecycleTransition("rejected")}>Reject</Button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+
           {summaryText && (
             <div className="space-y-2">
               <h4 className="text-sm font-medium">Scope & Notes</h4>
@@ -654,6 +766,20 @@ export function ChangeOrderDetailSheet({
           {((changeOrder.lines?.length ?? 0) > 0 || changeOrder.totals) && (
             <div className="space-y-3">
               <h4 className="text-sm font-semibold">Pricing</h4>
+              <div className="grid grid-cols-3 border bg-muted/20 px-4 py-3">
+                <div>
+                  <p className="text-[11px] font-medium uppercase text-muted-foreground">Cost</p>
+                  <p className="mt-1 text-sm font-semibold tabular-nums">{formatMoney(internalCostCents)}</p>
+                </div>
+                <div>
+                  <p className="text-[11px] font-medium uppercase text-muted-foreground">Price</p>
+                  <p className="mt-1 text-sm font-semibold tabular-nums">{formatMoney(totalCents)}</p>
+                </div>
+                <div>
+                  <p className="text-[11px] font-medium uppercase text-muted-foreground">Margin</p>
+                  <p className="mt-1 text-sm font-semibold tabular-nums">{formatMoney(marginCents)}</p>
+                </div>
+              </div>
               <div className="overflow-hidden rounded-xl border bg-background">
                 {changeOrder.lines?.map((line, idx) => {
                   const lineTotal = (line.quantity ?? 1) * (line.unit_cost_cents ?? 0) + (line.allowance_cents ?? 0)
@@ -809,10 +935,15 @@ export function ChangeOrderDetailSheet({
                   <h4 className="text-sm font-semibold">Sub cost</h4>
                   <p className="text-xs text-muted-foreground">Create or review subcontract change orders tied to this client CO.</p>
                 </div>
-                <Button type="button" size="sm" variant="outline" onClick={openCommitmentPicker} disabled={subCostLoading}>
-                  <Link2 className="mr-2 h-4 w-4" />
-                  Create CCO
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button type="button" size="sm" variant="outline" onClick={openCcoLinkPicker} disabled={subCostLoading}>
+                    <Link2 className="mr-2 h-4 w-4" />
+                    Link CCO
+                  </Button>
+                  <Button type="button" size="sm" variant="outline" onClick={openCommitmentPicker} disabled={subCostLoading}>
+                    Create CCO
+                  </Button>
+                </div>
               </div>
               {subCostSignal && !subCostSignal.has_linked_commitment_change_orders && subCostSignal.matching_commitments.length > 0 ? (
                 <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
@@ -1176,6 +1307,41 @@ export function ChangeOrderDetailSheet({
             <Button variant="destructive" onClick={handleVoid} disabled={voiding}>
               {voiding && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Void change order
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={ccoLinkPickerOpen} onOpenChange={setCcoLinkPickerOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Link commitment change order</DialogTitle>
+            <DialogDescription>
+              Add an unlinked subcontract change as internal cost. Owner-facing documents continue to show price only.
+            </DialogDescription>
+          </DialogHeader>
+          {linkableCcos.length === 0 ? (
+            <p className="border border-dashed p-4 text-sm text-muted-foreground">No unlinked commitment change orders found.</p>
+          ) : (
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Commitment change order</label>
+              <Select value={selectedCcoId} onValueChange={setSelectedCcoId}>
+                <SelectTrigger><SelectValue placeholder="Select CCO" /></SelectTrigger>
+                <SelectContent>
+                  {linkableCcos.map((cco) => (
+                    <SelectItem key={cco.id} value={cco.id}>
+                      {cco.title} · {formatMoney(cco.total_cents)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+          <div className="mt-4 flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setCcoLinkPickerOpen(false)} disabled={linkingCco}>Cancel</Button>
+            <Button onClick={handleLinkCco} disabled={linkingCco || !selectedCcoId}>
+              {linkingCco && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Link cost
             </Button>
           </div>
         </DialogContent>

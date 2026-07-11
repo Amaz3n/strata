@@ -1,11 +1,13 @@
 import { PageLayout } from "@/components/layout/page-layout"
 import { WipOverUnderReportView } from "@/components/reports/wip-over-under-report"
 import { getOrgWipOverUnderReport } from "@/lib/services/reports/wip-over-under"
+import { Vendor1099ReportView } from "@/components/reports/vendor-1099-report"
+import { getVendor1099Report } from "@/lib/services/reports/vendor-1099"
 
 export const dynamic = "force-dynamic"
 
 export default async function ReportsPage() {
-  const report = await getOrgWipOverUnderReport()
+  const [report, vendor1099] = await Promise.all([getOrgWipOverUnderReport(), getVendor1099Report()])
 
   return (
     <PageLayout title="Reports" fullBleed>
@@ -17,6 +19,7 @@ export default async function ReportsPage() {
           </p>
         </div>
         <WipOverUnderReportView report={report} csvHref="/api/reports/wip?format=csv" />
+        <Vendor1099ReportView report={vendor1099} />
       </div>
     </PageLayout>
   )

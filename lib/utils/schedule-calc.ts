@@ -7,6 +7,30 @@ export interface ScheduleImpact {
   end_date?: string
 }
 
+export function wouldCreateDependencyCycle(
+  dependencies: Array<{ item_id: string; depends_on_item_id: string }>,
+  predecessorId: string,
+  successorId: string,
+) {
+  const outgoing = new Map<string, string[]>()
+  for (const dependency of dependencies) {
+    const list = outgoing.get(dependency.depends_on_item_id) ?? []
+    list.push(dependency.item_id)
+    outgoing.set(dependency.depends_on_item_id, list)
+  }
+  const queue = [successorId]
+  const visited = new Set<string>()
+  while (queue.length > 0) {
+    const current = queue.shift()
+    if (!current) break
+    if (current === predecessorId) return true
+    if (visited.has(current)) continue
+    visited.add(current)
+    queue.push(...(outgoing.get(current) ?? []))
+  }
+  return false
+}
+
 function skipWeekends(date: Date, days: number): Date {
   const result = new Date(date)
   let remaining = days
@@ -103,98 +127,52 @@ export function calculateCriticalPath(items: ScheduleItem[], dependencies: Sched
   const criticalItems = new Set<string>()
   if (items.length === 0) return criticalItems
 
-  // Build graph
-  const adj = new Map<string, string[]>()
+  const itemById = new Map(items.map((item) => [item.id, item]))
+  const duration = new Map(items.map((item) => [item.id, getDuration(item)]))
+  const outgoing = new Map<string, Array<{ target: string; weight: number }>>()
   const inDegree = new Map<string, number>()
-  
-  items.forEach(i => {
-    adj.set(i.id, [])
-    inDegree.set(i.id, 0)
-  })
+  for (const item of items) { outgoing.set(item.id, []); inDegree.set(item.id, 0) }
 
-  dependencies.forEach(dep => {
-    // FS: depends_on finishes -> item starts
-    if (adj.has(dep.depends_on_item_id) && inDegree.has(dep.item_id)) {
-      adj.get(dep.depends_on_item_id)!.push(dep.item_id)
-      inDegree.set(dep.item_id, inDegree.get(dep.item_id)! + 1)
-    }
-  })
+  for (const dep of dependencies) {
+    const predecessor = dep.depends_on_item_id
+    const successor = dep.item_id
+    if (!itemById.has(predecessor) || !itemById.has(successor)) continue
+    const predecessorDuration = duration.get(predecessor) ?? 1
+    const successorDuration = duration.get(successor) ?? 1
+    const lag = dep.lag_days ?? 0
+    const weight = dep.dependency_type === "SS" ? lag
+      : dep.dependency_type === "FF" ? predecessorDuration + lag - successorDuration
+        : dep.dependency_type === "SF" ? lag - successorDuration
+          : predecessorDuration + lag
+    outgoing.get(predecessor)?.push({ target: successor, weight })
+    inDegree.set(successor, (inDegree.get(successor) ?? 0) + 1)
+  }
 
-  // Find longest path (critical path)
-  // Simplified CPM:
-  // 1. Calculate Early Start/Finish (Forward Pass)
-  const es = new Map<string, number>()
-  const ef = new Map<string, number>()
-  
-  // Initialize nodes with 0 in-degree
-  const q: string[] = []
-  inDegree.forEach((deg, id) => {
-    if (deg === 0) {
-      q.push(id)
-      es.set(id, 0)
-      const duration = getDuration(items.find(i => i.id === id))
-      ef.set(id, duration)
-    }
-  })
-
+  const earlyStart = new Map(items.map((item) => [item.id, 0]))
+  const queue = items.filter((item) => inDegree.get(item.id) === 0).map((item) => item.id)
   const topoOrder: string[] = []
-  
-  while (q.length > 0) {
-    const u = q.shift()!
-    topoOrder.push(u)
-    
-    const uEf = ef.get(u) || 0
-    
-    adj.get(u)?.forEach(v => {
-      const vEs = es.get(v) || 0
-      if (uEf > vEs) {
-        es.set(v, uEf)
-      }
-      
-      inDegree.set(v, inDegree.get(v)! - 1)
-      if (inDegree.get(v) === 0) {
-        const duration = getDuration(items.find(i => i.id === v))
-        ef.set(v, (es.get(v) || 0) + duration)
-        q.push(v)
-      }
-    })
-  }
-
-  // Get max project duration
-  let maxEf = 0
-  ef.forEach(val => {
-    if (val > maxEf) maxEf = val
-  })
-
-  // 2. Calculate Late Start/Finish (Backward Pass)
-  const ls = new Map<string, number>()
-  const lf = new Map<string, number>()
-
-  for (let i = topoOrder.length - 1; i >= 0; i--) {
-    const u = topoOrder[i]
-    if (!adj.get(u) || adj.get(u)!.length === 0) {
-      lf.set(u, maxEf)
-    } else {
-      let minLs = Number.MAX_SAFE_INTEGER
-      adj.get(u)!.forEach(v => {
-        const vLs = ls.get(v) ?? maxEf
-        if (vLs < minLs) minLs = vLs
-      })
-      lf.set(u, minLs)
+  while (queue.length > 0) {
+    const predecessor = queue.shift()
+    if (!predecessor) break
+    topoOrder.push(predecessor)
+    for (const edge of outgoing.get(predecessor) ?? []) {
+      earlyStart.set(edge.target, Math.max(earlyStart.get(edge.target) ?? 0, (earlyStart.get(predecessor) ?? 0) + edge.weight))
+      const nextDegree = (inDegree.get(edge.target) ?? 1) - 1
+      inDegree.set(edge.target, nextDegree)
+      if (nextDegree === 0) queue.push(edge.target)
     }
-    const duration = getDuration(items.find(item => item.id === u))
-    ls.set(u, (lf.get(u) || 0) - duration)
   }
+  if (topoOrder.length !== items.length) return criticalItems
 
-  // 3. Float = LS - ES. If Float == 0, it's critical.
-  items.forEach(item => {
-    const earlyS = es.get(item.id) || 0
-    const lateS = ls.get(item.id) || 0
-    const float = lateS - earlyS
-    if (float <= 0) {
-      criticalItems.add(item.id)
+  const projectFinish = Math.max(...items.map((item) => (earlyStart.get(item.id) ?? 0) + (duration.get(item.id) ?? 1)))
+  const lateStart = new Map(items.map((item) => [item.id, projectFinish - (duration.get(item.id) ?? 1)]))
+  for (let index = topoOrder.length - 1; index >= 0; index -= 1) {
+    const predecessor = topoOrder[index]
+    for (const edge of outgoing.get(predecessor) ?? []) {
+      lateStart.set(predecessor, Math.min(lateStart.get(predecessor) ?? projectFinish, (lateStart.get(edge.target) ?? projectFinish) - edge.weight))
     }
-  })
+  }
+  for (const item of items) if ((lateStart.get(item.id) ?? 0) - (earlyStart.get(item.id) ?? 0) <= 0) criticalItems.add(item.id)
 
   return criticalItems
 }

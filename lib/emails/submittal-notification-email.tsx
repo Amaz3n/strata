@@ -17,13 +17,13 @@ export interface SubmittalNotificationEmailProps {
   orgName?: string | null
   orgLogoUrl?: string | null
   recipientName?: string | null
-  audience: "internal" | "client" | "sub"
+  audience: "internal" | "client" | "sub" | "reviewer"
   projectName?: string | null
   submittalNumber: number | string
   revision: number
   title: string
   description?: string | null
-  kind: "created" | "item_submitted" | "decision" | "resubmit_requested"
+  kind: "created" | "item_submitted" | "decision" | "resubmit_requested" | "review_requested"
   decisionStatus?: string | null
   decisionNote?: string | null
   specSection?: string | null
@@ -68,7 +68,9 @@ export function SubmittalNotificationEmail({
         ? `New documents on submittal ${numberLabel}`
         : kind === "resubmit_requested"
           ? `Submittal ${numberLabel} needs resubmission`
-          : `Decision posted on submittal ${numberLabel}`
+          : kind === "review_requested"
+            ? `Submittal ${numberLabel} is waiting on your review`
+            : `Decision posted on submittal ${numberLabel}`
   const greeting = recipientName ? `Hi ${recipientName},` : "Hi,"
 
   const eventLabel =
@@ -78,7 +80,9 @@ export function SubmittalNotificationEmail({
         ? "Documents Submitted"
         : kind === "resubmit_requested"
           ? "Resubmission Requested"
-          : "Decision Posted"
+          : kind === "review_requested"
+            ? "Review Requested"
+            : "Decision Posted"
 
   const summaryText =
     kind === "created"
@@ -89,7 +93,9 @@ export function SubmittalNotificationEmail({
         ? "New submittal documents were received and are awaiting review."
         : kind === "resubmit_requested"
           ? "The reviewer has requested a revised submission."
-          : "The review decision has been recorded for this submittal."
+          : kind === "review_requested"
+            ? "This submittal has been routed to you for design review. Please review the documents and return your decision."
+            : "The review decision has been recorded for this submittal."
 
   return (
     <Html>

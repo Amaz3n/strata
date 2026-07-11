@@ -5,6 +5,8 @@ import { ProjectContextSetter } from "@/components/layout/project-context-setter
 import { getProjectAction } from "./actions"
 
 import { unwrapAction } from "@/lib/action-result"
+import { requireOrgContext } from "@/lib/services/context"
+import { getProjectPosture } from "@/lib/product-tier"
 
 interface ProjectLayoutProps {
   children: React.ReactNode
@@ -13,12 +15,16 @@ interface ProjectLayoutProps {
 
 export default async function ProjectLayout({ children, params }: ProjectLayoutProps) {
   const { id } = await params
-  const project = await getProjectAction(id)
+  const [project, { productTier }] = await Promise.all([
+    getProjectAction(id),
+    requireOrgContext(),
+  ])
   if (!project) notFound()
+  const posture = getProjectPosture(project.property_type, productTier)
 
   return (
     <>
-      <ProjectContextSetter id={project.id} name={project.name} />
+      <ProjectContextSetter id={project.id} name={project.name} posture={posture} />
       {children}
     </>
   )

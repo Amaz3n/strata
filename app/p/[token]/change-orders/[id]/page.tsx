@@ -30,8 +30,15 @@ export default async function ChangeOrderApprovalPage({ params }: Params) {
 
   const supabase = createServiceSupabaseClient()
   const viewedAt = new Date().toISOString()
+  const { data: metadataRow } = await supabase
+    .from("change_orders")
+    .select("metadata")
+    .eq("org_id", access.org_id)
+    .eq("project_id", access.project_id)
+    .eq("id", changeOrder.id)
+    .maybeSingle()
   const viewedMetadata = {
-    ...(changeOrder.metadata ?? {}),
+    ...(metadataRow?.metadata ?? {}),
     portal_last_viewed_at: viewedAt,
     portal_last_viewed_by_contact_id: access.contact_id ?? null,
   }
@@ -50,7 +57,7 @@ export default async function ChangeOrderApprovalPage({ params }: Params) {
   return (
     <ChangeOrderApprovalClient
       token={token}
-      changeOrder={{ ...changeOrder, metadata: viewedMetadata }}
+      changeOrder={{ ...changeOrder, metadata: changeOrder.metadata }}
       org={{
         name: orgResult.data?.name ?? null,
         logoUrl: orgResult.data?.logo_url ?? null,

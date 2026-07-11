@@ -109,12 +109,17 @@ import {
 } from "@/components/ui/tooltip"
 
 import { unwrapAction } from "@/lib/action-result"
+import { COST_TYPE_LABELS, type CostType } from "@/lib/cost-types"
+import { CostCodeSelectItems } from "@/components/cost-codes/cost-code-select-items"
+import { BudgetTransfersPanel } from "@/components/financials/budget-transfers-panel"
+import type { BudgetTransfer } from "@/lib/services/budget-transfers"
 
 type EditableBudgetLine = {
   id: string
   cost_code_id: string | null
   description: string
   amount_dollars: string
+  cost_type: CostType | null
 }
 
 type CostBucketDraft = {
@@ -147,6 +152,7 @@ interface BudgetTabProps {
   feeSummary?: ProjectFeeBillingSummary | null
   gmpSummary?: ProjectGmpControlSummary | null
   loadErrors?: string[]
+  budgetTransfers?: BudgetTransfer[]
 }
 
 function dollarsToCents(input: string) {
@@ -312,6 +318,7 @@ function toLineState(lines: any[] | undefined): EditableBudgetLine[] {
       typeof line.amount_cents === "number"
         ? String((line.amount_cents / 100).toFixed(2))
         : "0",
+    cost_type: line.cost_type ?? line.cost_code?.cost_type ?? null,
   }))
 }
 
@@ -397,6 +404,7 @@ export function BudgetTab({
   feeSummary = null,
   gmpSummary = null,
   loadErrors = [],
+  budgetTransfers = [],
 }: BudgetTabProps) {
   const router = useRouter()
   const { toast } = useToast()
@@ -512,6 +520,7 @@ export function BudgetTab({
       cost_code_id: costCodesEnabled ? line.cost_code_id : null,
       description: line.description.trim(),
       amount_cents: dollarsToCents(line.amount_dollars) ?? 0,
+      cost_type: line.cost_type,
     }))
 
     startTransition(async () => {
@@ -540,6 +549,7 @@ export function BudgetTab({
       cost_code_id: costCodesEnabled ? draft.costCodeId : null,
       description: draft.description.trim(),
       amount_dollars: draft.amountDollars.trim() || "0",
+      cost_type: draft.costCodeId ? costCodeById.get(draft.costCodeId)?.cost_type ?? null : null,
     }
 
     const removeIds = new Set(draft.lineIds ?? [])
@@ -683,6 +693,7 @@ export function BudgetTab({
         code?: string
         name: string
         category?: string | null
+        costType: CostType | null
         lines: EditableBudgetLine[]
         budgetCents: number
         baselineCents: number | null
@@ -728,6 +739,7 @@ export function BudgetTab({
         code: code?.code,
         name: code?.name ?? fallbackName,
         category: code?.category ?? null,
+        costType: line.cost_type ?? code?.cost_type ?? breakdown?.cost_type ?? null,
         lines: [] as EditableBudgetLine[],
         budgetCents: 0,
         baselineCents: breakdown?.baseline_cents ?? null,
@@ -773,6 +785,7 @@ export function BudgetTab({
         code: code?.code,
         name: code?.name ?? (costCodesEnabled ? "Uncoded" : "Unassigned"),
         category: code?.category ?? null,
+        costType: code?.cost_type ?? breakdown.cost_type ?? null,
         lines: [] as EditableBudgetLine[],
         budgetCents: breakdown.budget_cents ?? 0,
         baselineCents: breakdown.baseline_cents ?? null,
@@ -808,6 +821,10 @@ export function BudgetTab({
 
   const attentionCount = useMemo(
     () => unifiedRows.filter((row) => row.status === "over" || row.status === "warning").length,
+    [unifiedRows],
+  )
+  const hasCostTypes = useMemo(
+    () => unifiedRows.some((row) => row.costType !== null),
     [unifiedRows],
   )
 
@@ -1021,7 +1038,7 @@ export function BudgetTab({
   // Column count for the empty-state colSpan: code? + name + budget + committed + exposure +
   // spent + (simple: left,%spent | detailed: original,co,ctc,eac,vac,%comp) + actions.
   const tableColCount =
-    (costCodesEnabled ? 1 : 0) + 5 + (isDetailed ? 6 : 2) + 1
+    (costCodesEnabled ? 1 : 0) + 5 + (isDetailed ? 6 : 2) + 1 + (isDetailed && hasCostTypes ? 1 : 0)
 
   const baselineLockedAt: string | null = summary?.baseline_locked_at ?? null
 
@@ -1372,6 +1389,9 @@ export function BudgetTab({
               <TableHead className="min-w-[200px] px-4 text-xs uppercase tracking-wide">
                 {costCodesEnabled ? "Scope" : "Budget line"}
               </TableHead>
+              {isDetailed && hasCostTypes && (
+                <TableHead className="w-[120px] px-4 text-xs uppercase tracking-wide">Cost type</TableHead>
+              )}
               {isDetailed && (
                 <>
                   <TableHead className="w-[110px] px-4 text-right text-xs uppercase tracking-wide">Original</TableHead>
@@ -1483,6 +1503,11 @@ export function BudgetTab({
                           : ""}
                       </span>
                     </TableCell>
+                    {isDetailed && hasCostTypes && (
+                      <TableCell className="px-4 text-xs text-muted-foreground">
+                        {row.costType ? COST_TYPE_LABELS[row.costType] : "—"}
+                      </TableCell>
+                    )}
                     {isDetailed && (
                       <>
                         <TableCell className="px-4 text-right tabular-nums text-muted-foreground">
@@ -1595,7 +1620,7 @@ export function BudgetTab({
             {filteredUnifiedRows.length > 0 && (
               <TableRow className="border-t-2 bg-muted/20 font-medium hover:bg-muted/20">
                 <TableCell
-                  colSpan={(costCodesEnabled ? 1 : 0) + 1}
+                  colSpan={(costCodesEnabled ? 1 : 0) + 1 + (isDetailed && hasCostTypes ? 1 : 0)}
                   className="px-4 text-xs uppercase tracking-wide text-muted-foreground"
                 >
                   Total · {filteredUnifiedRows.length} {filteredUnifiedRows.length === 1 ? "line" : "lines"}
@@ -1659,6 +1684,18 @@ export function BudgetTab({
           </TableBody>
         </Table>
       </div>
+
+      <BudgetTransfersPanel
+        projectId={projectId}
+        transfers={budgetTransfers}
+        lines={(currentBudget?.lines ?? []).map((line: any) => ({
+          id: line.id,
+          description: line.description,
+          amount_cents: line.amount_cents,
+          metadata: line.metadata ?? {},
+          cost_code: Array.isArray(line.cost_code) ? line.cost_code[0] : line.cost_code,
+        }))}
+      />
 
       <CostBucketEditorSheet
         open={bucketEditorOpen}
@@ -3062,11 +3099,7 @@ function CostBucketEditorSheet({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="__uncoded__">Uncoded</SelectItem>
-                    {costCodes.map((code) => (
-                      <SelectItem key={code.id} value={code.id}>
-                        {code.code ? `${code.code} — ${code.name}` : code.name}
-                      </SelectItem>
-                    ))}
+                    <CostCodeSelectItems costCodes={costCodes} />
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
@@ -3277,11 +3310,7 @@ function CommitmentCreateDialog({
                     <SelectValue placeholder="Select cost code" />
                   </SelectTrigger>
                   <SelectContent>
-                    {costCodes.map((code) => (
-                      <SelectItem key={code.id} value={code.id}>
-                        {code.code ? `${code.code} — ${code.name}` : code.name}
-                      </SelectItem>
-                    ))}
+                    <CostCodeSelectItems costCodes={costCodes} />
                   </SelectContent>
                 </Select>
               </div>
@@ -3993,11 +4022,7 @@ function CommitmentLineDialog({
                   <SelectValue placeholder="Select cost code" />
                 </SelectTrigger>
                 <SelectContent>
-                  {costCodes.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.code} — {c.name}
-                    </SelectItem>
-                  ))}
+                  <CostCodeSelectItems costCodes={costCodes} />
                 </SelectContent>
               </Select>
             </div>

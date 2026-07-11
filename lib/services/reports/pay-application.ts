@@ -115,7 +115,7 @@ export async function getDrawPayApplicationReport({
       .maybeSingle(),
     supabase
       .from("change_orders")
-      .select("total_cents, status")
+      .select("total_cents, lifecycle")
       .eq("org_id", resolvedOrgId)
       .eq("project_id", projectId),
     project.client_id
@@ -137,7 +137,7 @@ export async function getDrawPayApplicationReport({
   ])
 
   const approvedChangeOrdersCents = (changeOrders ?? [])
-    .filter((co) => String(co.status ?? "").toLowerCase() === "approved")
+    .filter((co) => String(co.lifecycle ?? "").toLowerCase() === "approved")
     .reduce((sum, co) => sum + Number(co.total_cents ?? 0), 0)
 
   const targetNumber = Number(target.draw_number ?? 0)

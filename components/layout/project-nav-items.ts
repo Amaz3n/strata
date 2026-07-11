@@ -2,6 +2,11 @@ import { Briefcase, Flag, Hammer, LayoutDashboard, Wallet } from "@/components/i
 import type { LucideIcon } from "@/components/icons"
 import { getProjectFinancialFeatureConfig } from "@/lib/financials/billing-model"
 import type { Project, ProjectNavigationItem } from "@/lib/types"
+import {
+  getProjectPosture,
+  type ProductTier,
+  type ProjectPosture,
+} from "@/lib/product-tier"
 
 export type ProjectSection =
   | "overview"
@@ -16,6 +21,10 @@ export type ProjectSection =
   | "punch"
   | "rfis"
   | "submittals"
+  | "meetings"
+  | "transmittals"
+  | "inspections"
+  | "safety"
   | "decisions"
   | "financials"
   | "financials-review"
@@ -39,6 +48,8 @@ export type ProjectNavSubItem = {
   isActive?: boolean
   badge?: number
   requiredAny?: string[]
+  postures?: ProjectPosture[]
+  moduleKey?: string
 }
 
 export type ProjectNavItem = {
@@ -49,6 +60,8 @@ export type ProjectNavItem = {
   badge?: number
   disabled?: boolean
   requiredAny?: string[]
+  postures?: ProjectPosture[]
+  moduleKey?: string
   items?: ProjectNavSubItem[]
 }
 
@@ -81,6 +94,10 @@ export const BUILD_SECTIONS = new Set<ProjectSection>([
   "punch",
   "rfis",
   "submittals",
+  "meetings",
+  "transmittals",
+  "inspections",
+  "safety",
   "decisions",
 ])
 
@@ -133,6 +150,10 @@ export function getProjectSection(pathname: string): ProjectSection {
     case "punch":
     case "rfis":
     case "submittals":
+    case "meetings":
+    case "transmittals":
+    case "inspections":
+    case "safety":
     case "decisions":
     case "budget":
     case "commitments":
@@ -242,11 +263,13 @@ export function buildProjectNavGroups({
   section,
   project,
   reviewBadgeCount,
+  orgTier = "residential",
 }: {
   projectId: string
   section: ProjectSection
   project?: Project | ProjectNavigationItem
   reviewBadgeCount?: number
+  orgTier?: ProductTier
 }): ProjectNavGroup[] {
   const base = `/projects/${projectId}`
   const url = (suffix = "") => `${base}${suffix}`
@@ -256,28 +279,34 @@ export function buildProjectNavGroups({
         "billing_contract" in project ? project.billing_contract : null,
       )
     : null
+  const posture = getProjectPosture(project?.property_type, orgTier)
+  const moduleOverrides = project?.module_overrides ?? {}
 
   const planSubs: ProjectNavSubItem[] = [
     {
       title: "Documents",
+      moduleKey: "documents",
       url: url("/documents"),
       isActive: section === "documents",
       requiredAny: ["docs.read"],
     },
     {
       title: "Drawings",
+      moduleKey: "drawings",
       url: url("/drawings"),
       isActive: section === "drawings",
       requiredAny: ["drawing.read", "docs.read"],
     },
     {
       title: "Bids",
+      moduleKey: "bids",
       url: url("/bids"),
       isActive: section === "bids",
       requiredAny: ["bid.read", "bid.write"],
     },
     {
       title: "Signatures",
+      moduleKey: "signatures",
       url: url("/signatures"),
       isActive: section === "signatures",
       requiredAny: ["signature.read", "signature.send"],
@@ -286,12 +315,14 @@ export function buildProjectNavGroups({
   const buildSubs: ProjectNavSubItem[] = [
     {
       title: "Schedule",
+      moduleKey: "schedule",
       url: url("/schedule"),
       isActive: section === "schedule",
       requiredAny: ["schedule.read"],
     },
     {
       title: "Daily Logs",
+      moduleKey: "daily_logs",
       url: url("/daily-logs"),
       isActive: section === "daily-logs",
       requiredAny: ["daily_log.read"],
@@ -300,30 +331,67 @@ export function buildProjectNavGroups({
       ? null
       : {
           title: "Time",
+          moduleKey: "time",
           url: url("/time"),
           isActive: section === "time",
           requiredAny: ["time.read", "time.write"],
         },
     {
       title: "Punch",
+      moduleKey: "punch",
       url: url("/punch"),
       isActive: section === "punch",
       requiredAny: ["punch.read", "punch.write"],
     },
     {
       title: "RFIs",
+      moduleKey: "rfis",
       url: url("/rfis"),
       isActive: section === "rfis",
       requiredAny: ["rfi.read"],
     },
     {
       title: "Submittals",
+      moduleKey: "submittals",
       url: url("/submittals"),
       isActive: section === "submittals",
       requiredAny: ["submittal.read"],
     },
     {
+      title: "Meeting Minutes",
+      moduleKey: "meetings",
+      postures: ["commercial"],
+      url: url("/meetings"),
+      isActive: section === "meetings",
+      requiredAny: ["project.read", "meeting.write"],
+    },
+    {
+      title: "Transmittals",
+      moduleKey: "transmittals",
+      postures: ["commercial"],
+      url: url("/transmittals"),
+      isActive: section === "transmittals",
+      requiredAny: ["project.read", "transmittal.write"],
+    },
+    {
+      title: "Inspections",
+      moduleKey: "inspections",
+      postures: ["commercial"],
+      url: url("/inspections"),
+      isActive: section === "inspections",
+      requiredAny: ["project.read", "inspection.write"],
+    },
+    {
+      title: "Safety",
+      moduleKey: "safety",
+      postures: ["commercial"],
+      url: url("/safety"),
+      isActive: section === "safety",
+      requiredAny: ["project.read", "safety.write"],
+    },
+    {
       title: "Decisions",
+      moduleKey: "decisions",
       url: url("/decisions"),
       isActive: section === "decisions",
       requiredAny: ["decision.read", "decision.write"],
@@ -333,19 +401,21 @@ export function buildProjectNavGroups({
   const closeSubs: ProjectNavSubItem[] = [
     {
       title: "Closeout",
+      moduleKey: "closeout",
       url: url("/closeout"),
       isActive: section === "closeout",
       requiredAny: ["closeout.read", "closeout.write"],
     },
     {
       title: "Warranty",
+      moduleKey: "warranty",
       url: url("/warranty"),
       isActive: section === "warranty",
       requiredAny: ["warranty.read", "warranty.write"],
     },
   ]
 
-  return [
+  const groups: ProjectNavGroup[] = [
     {
       items: [
         {
@@ -386,4 +456,22 @@ export function buildProjectNavGroups({
       ],
     },
   ]
+
+  const visibleForPosture = <T extends ProjectNavItem | ProjectNavSubItem>(item: T) => {
+    const override = item.moduleKey ? moduleOverrides[item.moduleKey] : undefined
+    return override ?? (!item.postures || item.postures.includes(posture))
+  }
+
+  return groups
+    .map((group) => ({
+      ...group,
+      items: group.items
+        .filter(visibleForPosture)
+        .map((item) => ({
+          ...item,
+          items: item.items?.filter(visibleForPosture),
+        }))
+        .filter((item) => !item.items || item.items.length > 0),
+    }))
+    .filter((group) => group.items.length > 0)
 }

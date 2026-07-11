@@ -297,3 +297,25 @@ export async function recordShareLinkView(params: {
     console.error("Failed to record share link view", err)
   }
 }
+
+export async function recordShareLinkDownload(params: {
+  linkId: string
+  fileId: string
+  orgId: string
+  ipAddress?: string | null
+  userAgent?: string | null
+}): Promise<void> {
+  const supabase = createServiceSupabaseClient()
+  try {
+    await supabase.from("file_access_events").insert({
+      org_id: params.orgId,
+      file_id: params.fileId,
+      action: "download",
+      ip_address: params.ipAddress ?? null,
+      user_agent: params.userAgent ?? null,
+      metadata: { source: "share_link", share_link_id: params.linkId },
+    })
+  } catch (err) {
+    console.error("Failed to record share link download", err)
+  }
+}

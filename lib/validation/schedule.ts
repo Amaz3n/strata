@@ -118,7 +118,7 @@ export const scheduleDependencyInputSchema = z.object({
   item_id: z.string().uuid(),
   depends_on_item_id: z.string().uuid(),
   dependency_type: z.enum(dependencyTypes).default("FS"),
-  lag_days: z.number().int().default(0),
+  lag_days: z.number().int().min(-365).max(365).default(0),
 })
 
 export type ScheduleDependencyInput = z.infer<typeof scheduleDependencyInputSchema>

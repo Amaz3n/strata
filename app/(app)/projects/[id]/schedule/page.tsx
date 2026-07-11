@@ -2,7 +2,7 @@ import { Suspense } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
 import { notFound } from "next/navigation"
 import { PageLayout } from "@/components/layout/page-layout"
-import { getProjectAction, getProjectScheduleAction } from "../actions"
+import { getProjectAction, getProjectDependenciesAction, getProjectScheduleAction } from "../actions"
 import { ProjectScheduleClient } from "./project-schedule-client"
 
 import { unwrapAction } from "@/lib/action-result"
@@ -50,7 +50,7 @@ async function ProjectScheduleData({ id }: { id: string }) {
     notFound()
   }
 
-  const scheduleItems = await getProjectScheduleAction(id)
+  const [scheduleItems, dependencies] = await Promise.all([getProjectScheduleAction(id), getProjectDependenciesAction(id)])
 
   return (
     <PageLayout
@@ -60,7 +60,7 @@ async function ProjectScheduleData({ id }: { id: string }) {
         { label: "Schedule" },
       ]}
     >
-      <ProjectScheduleClient projectId={project.id} initialItems={scheduleItems} />
+      <ProjectScheduleClient projectId={project.id} initialItems={scheduleItems} initialDependencies={dependencies} />
     </PageLayout>
   )
 }

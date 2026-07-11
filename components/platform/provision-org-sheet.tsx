@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Switch } from "@/components/ui/switch"
+import type { ProductTier } from "@/lib/product-tier"
 
 interface PlanOption {
   code: string
@@ -67,6 +68,7 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
   const [orgName, setOrgName] = useState("")
   const [slug, setSlug] = useState("")
   const [billingModel, setBillingModel] = useState<"subscription" | "license">("subscription")
+  const [productTier, setProductTier] = useState<ProductTier>("residential")
   const [priceOpen, setPriceOpen] = useState(false)
   const [collectionMethod, setCollectionMethod] = useState<"checkout" | "invoice">("checkout")
   const [sendInvites, setSendInvites] = useState(false)
@@ -130,7 +132,7 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
                     <h3 className="text-sm font-medium">Access</h3>
                     <p className="mt-1 text-sm text-muted-foreground">This creates the customer workspace before billing starts.</p>
                   </div>
-                  <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-4 md:grid-cols-3">
                     <div className="flex flex-col gap-2">
                       <Label htmlFor="platform-billing-model">Billing model</Label>
                       <select
@@ -142,6 +144,25 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
                       >
                         <option value="subscription">Subscription</option>
                         <option value="license">License</option>
+                      </select>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <Label htmlFor="platform-product-tier">Product posture</Label>
+                      <select
+                        id="platform-product-tier"
+                        name="productTier"
+                        value={productTier}
+                        onChange={(event) => {
+                          const value = event.target.value
+                          if (value === "residential" || value === "commercial" || value === "production") {
+                            setProductTier(value)
+                          }
+                        }}
+                        className={selectClassName}
+                      >
+                        <option value="residential">Arc</option>
+                        <option value="commercial">Arc Commercial</option>
+                        <option value="production">Arc Production</option>
                       </select>
                     </div>
                     <div className="flex flex-col gap-2">

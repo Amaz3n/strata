@@ -3,7 +3,7 @@
 import { useState, useCallback, useTransition, type ReactNode } from "react"
 import { useIsMobile } from "@/components/ui/use-mobile"
 import { PortalPinGate } from "@/components/portal/portal-pin-gate"
-import { LayoutDashboard, FileText, HelpCircle, ShieldCheck } from "lucide-react"
+import { LayoutDashboard, FileText, HelpCircle, ShieldCheck, CheckSquare, ClipboardCheck, ClipboardList } from "lucide-react"
 import { ExternalPortalShell } from "@/components/portal/external-portal-shell"
 import {
   SubBottomNav,
@@ -12,8 +12,12 @@ import {
   SubDocumentsTab,
   type SubPortalTab,
 } from "@/components/portal/sub"
+import { SubPunchTab } from "./sub-punch-tab"
 import { SubRfisTab } from "./sub-rfis-tab"
 import { SubSubmittalsTab } from "./sub-submittals-tab"
+import { SubPrequalificationTab } from "./sub-prequalification-tab"
+import { SubDailyLogsTab } from "./sub-daily-logs-tab"
+import type { Prequalification } from "@/lib/services/prequalification"
 import type {
   ComplianceDocumentType,
   ComplianceStatusSummary,
@@ -27,13 +31,16 @@ interface SubPortalClientProps {
   canSubmitInvoices?: boolean
   canSubmitTime?: boolean
   canSubmitExpenses?: boolean
+  canSubmitDailyLogs?: boolean
   canDownloadFiles?: boolean
   canUploadComplianceDocs?: boolean
+  canWorkPunchItems?: boolean
   pinRequired?: boolean
   complianceDocumentTypes?: ComplianceDocumentType[]
   workspace?: ExternalPortalWorkspaceContext | null
   inviteEmail?: string
   suggestedFullName?: string
+  prequalification?: Prequalification | null
 }
 
 export function SubPortalClient({
@@ -42,13 +49,16 @@ export function SubPortalClient({
   canSubmitInvoices = true,
   canSubmitTime = true,
   canSubmitExpenses = true,
+  canSubmitDailyLogs = false,
   canDownloadFiles = true,
   canUploadComplianceDocs = true,
+  canWorkPunchItems = false,
   pinRequired = false,
   complianceDocumentTypes = [],
   workspace = null,
   inviteEmail = "",
   suggestedFullName = "",
+  prequalification = null,
 }: SubPortalClientProps) {
   const [activeTab, setActiveTab] = useState<SubPortalTab>("dashboard")
   const [pinVerified, setPinVerified] = useState(!pinRequired)
@@ -82,6 +92,13 @@ export function SubPortalClient({
   const tabs: Array<{ id: SubPortalTab; label: string; icon: typeof LayoutDashboard; indicator?: ReactNode }> = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "documents", label: "Documents", icon: FileText },
+    ...(canSubmitDailyLogs ? [{ id: "daily-logs" as const, label: "Daily logs", icon: ClipboardList }] : []),
+    {
+      id: "prequalification",
+      label: "Prequalification",
+      icon: ClipboardCheck,
+      indicator: prequalification?.status === "requested" ? <span className="ml-1.5 h-2 w-2 rounded-full bg-warning" /> : null,
+    },
     {
       id: "rfis",
       label: "RFIs",
@@ -94,6 +111,19 @@ export function SubPortalClient({
       icon: FileText,
       indicator: data.pendingSubmittalCount > 0 ? <span className="ml-1.5 h-2 w-2 rounded-full bg-destructive" /> : null,
     },
+    ...(canWorkPunchItems
+      ? [
+          {
+            id: "punch" as const,
+            label: "Punch",
+            icon: CheckSquare,
+            indicator:
+              data.pendingPunchCount > 0 ? (
+                <span className="ml-1.5 h-2 w-2 rounded-full bg-destructive" />
+              ) : null,
+          },
+        ]
+      : []),
     {
       id: "compliance",
       label: "Compliance",
@@ -120,8 +150,11 @@ export function SubPortalClient({
     if (tab === "documents") {
       return <SubDocumentsTab files={data.sharedFiles} canDownload={canDownloadFiles} portalToken={token} />
     }
+    if (tab === "daily-logs") return <SubDailyLogsTab token={token} />
     if (tab === "rfis") return <SubRfisTab rfis={data.rfis} token={token} />
     if (tab === "submittals") return <SubSubmittalsTab submittals={data.submittals} token={token} />
+    if (tab === "punch") return <SubPunchTab punchItems={data.punchItems} token={token} />
+    if (tab === "prequalification") return <SubPrequalificationTab token={token} initial={prequalification} />
     return (
       <SubComplianceTab
         complianceStatus={complianceStatus}
@@ -165,6 +198,9 @@ export function SubPortalClient({
           hasAttentionItems={hasAttentionItems}
           pendingRfis={data.pendingRfiCount}
           pendingSubmittals={data.pendingSubmittalCount}
+          pendingPunch={data.pendingPunchCount}
+          showPunch={canWorkPunchItems}
+          showDailyLogs={canSubmitDailyLogs}
           complianceIssues={complianceIssues}
         />
       }

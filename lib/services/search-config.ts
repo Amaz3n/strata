@@ -30,7 +30,15 @@ export type SearchEntityType =
   | 'portal_access'
   | 'payable'
   | 'expense'
+  | 'pay_application'
   | 'prospect'
+  | 'meeting'
+  | 'transmittal'
+  | 'inspection'
+  | 'safety_incident'
+  | 'observation'
+  | 'budget_transfer'
+  | 'prequalification'
 
 export type SearchEntityConfig = {
   table: string
@@ -45,6 +53,58 @@ export type SearchEntityConfig = {
 
 // Entity search configurations
 export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
+  budget_transfer: {
+    table: 'budget_transfers',
+    titleField: 'reason',
+    subtitleFields: ['transfer_number', 'status'],
+    searchableFields: ['reason'],
+    hrefTemplate: '/projects/{project_id}/financials/budget',
+  },
+  prequalification: {
+    table: 'prequalifications',
+    titleField: 'status',
+    subtitleFields: ['expires_at'],
+    descriptionFields: ['review_notes'],
+    searchableFields: ['status', 'review_notes', 'trades'],
+    hrefTemplate: '/companies/{company_id}',
+  },
+  meeting: {
+    table: 'meetings',
+    titleField: 'title',
+    subtitleFields: ['series', 'meeting_number', 'status'],
+    searchableFields: ['title', 'location'],
+    hrefTemplate: '/projects/{project_id}/meetings?meeting={id}',
+  },
+  transmittal: {
+    table: 'transmittals',
+    titleField: 'subject',
+    subtitleFields: ['transmittal_number', 'purpose'],
+    descriptionFields: ['notes'],
+    searchableFields: ['subject', 'notes', 'purpose'],
+    hrefTemplate: '/projects/{project_id}/transmittals',
+  },
+  inspection: {
+    table: 'inspections',
+    titleField: 'title',
+    subtitleFields: ['inspection_number', 'kind', 'status', 'result'],
+    descriptionFields: ['notes'],
+    searchableFields: ['title', 'location', 'notes'],
+    hrefTemplate: '/projects/{project_id}/inspections?inspection={id}',
+  },
+  safety_incident: {
+    table: 'safety_incidents',
+    titleField: 'description',
+    subtitleFields: ['incident_number', 'severity', 'status'],
+    searchableFields: ['description', 'location', 'involved_person_name'],
+    hrefTemplate: '/projects/{project_id}/safety',
+  },
+  observation: {
+    table: 'observations',
+    titleField: 'description',
+    subtitleFields: ['observation_number', 'kind', 'category', 'status'],
+    searchableFields: ['description', 'location'],
+    hrefTemplate: '/projects/{project_id}/safety?tab=observations',
+  },
   project: {
     table: 'projects',
     titleField: 'name',
@@ -85,6 +145,14 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     subtitleFields: ['company_type', 'email'],
     searchableFields: ['name', 'email', 'phone', 'website'],
     hrefTemplate: '/companies/{id}',
+  },
+  pay_application: {
+    table: 'pay_applications',
+    titleField: 'application_number',
+    subtitleFields: ['status', 'period_end', 'current_payment_due_cents'],
+    searchableFields: ['status'],
+    hrefTemplate: '/projects/{project_id}/financials/receivables?tab=payapps',
+    joins: ['LEFT JOIN projects p ON pa.project_id = p.id'],
   },
   invoice: {
     table: 'invoices',
@@ -277,6 +345,7 @@ export const PROJECT_SCOPED_ENTITY_TYPES = new Set<SearchEntityType>([
   "portal_access",
   "payable",
   "expense",
+  "pay_application",
 ])
 
 // Builds a PostgREST select clause limited to the fields needed to render and

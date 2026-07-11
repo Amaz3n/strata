@@ -47,6 +47,7 @@ import {
   SidebarSeparator,
 } from "@/components/ui/sidebar"
 import type { User } from "@/lib/types"
+import type { ProductTier } from "@/lib/product-tier"
 import { useSidebarProjects } from "./use-sidebar-projects"
 import {
   buildProjectNavGroups,
@@ -66,6 +67,7 @@ interface AppSidebarProps {
   canAccessPlatform?: boolean
   permissions?: string[]
   whatsNewUnreadCount?: number
+  productTier?: ProductTier
 }
 
 type SidebarNavSubItem = ProjectNavSubItem
@@ -219,6 +221,7 @@ export function AppSidebar({
   canAccessPlatform,
   permissions = [],
   whatsNewUnreadCount = 0,
+  productTier = "residential",
 }: AppSidebarProps) {
   const pathname = useOptimisticPathname()
   const router = useRouter()
@@ -268,6 +271,7 @@ export function AppSidebar({
           section,
           project: currentProject,
           reviewBadgeCount: projectReviewBadgeCounts[projectId],
+          orgTier: productTier,
         }),
         permissionSet,
       )
@@ -276,7 +280,7 @@ export function AppSidebar({
       buildWorkspaceGroups(pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform),
       permissionSet,
     )
-  }, [isSettings, isProject, projectId, section, currentProject, pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, permissionSet, projectReviewBadgeCounts])
+  }, [isSettings, isProject, projectId, section, currentProject, pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, permissionSet, projectReviewBadgeCounts, productTier])
 
   const navMain = navGroups.map((group) => ({
     ...group,

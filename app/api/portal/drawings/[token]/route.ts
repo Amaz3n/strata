@@ -89,17 +89,23 @@ export async function GET(
 
   const shareColumn =
     access.portal_type === "sub" ? "share_with_subs" : "share_with_clients"
+  // Reviewer seats are the design team: they see every published sheet, not
+  // just the ones explicitly shared to clients or subs.
+  const isReviewer = access.portal_type === "reviewer"
 
   const supabase = createServiceSupabaseClient()
-  const { data: sheetRows, error: sheetsError } = await supabase
+  let sheetsQuery = supabase
     .from("drawing_sheets")
     .select("id, sheet_number, sheet_title, discipline, sort_order, current_revision_id")
     .eq("org_id", access.org_id)
     .eq("project_id", access.project_id)
-    .eq(shareColumn, true)
     .not("current_revision_id", "is", null)
     .order("sheet_number", { ascending: true })
     .limit(500)
+  if (!isReviewer) {
+    sheetsQuery = sheetsQuery.eq(shareColumn, true)
+  }
+  const { data: sheetRows, error: sheetsError } = await sheetsQuery
 
   if (sheetsError) {
     console.error("[portal drawings] Failed to load shared sheets:", sheetsError)

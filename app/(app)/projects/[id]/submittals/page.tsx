@@ -7,6 +7,7 @@ import { listSubmittalsAction } from "@/app/(app)/submittals/actions"
 import { listCompaniesAction } from "@/app/(app)/companies/actions"
 import { SubmittalsClient } from "@/components/submittals/submittals-client"
 import type { Project } from "@/lib/types"
+import { Button } from "@/components/ui/button"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -57,6 +58,7 @@ async function ProjectSubmittalsData({ project }: { project: Project }) {
 
   return (
     <div className="space-y-6">
+      <div className="flex justify-end"><Button variant="outline" asChild><a href={`/projects/${project.id}/exports/submittal-register`} target="_blank" rel="noreferrer">Export register PDF</a></Button></div>
       <SubmittalsClient submittals={submittals} projects={[project]} companies={companies} />
     </div>
   )

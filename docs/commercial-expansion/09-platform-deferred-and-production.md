@@ -53,6 +53,43 @@
 - `change_orders.status` free-text column after lifecycle (03) fully lands.
 Each is a candidate `/simplify`-style follow-up; none blocks commercial launch.
 
+### A7. Certified payroll / prevailing wage (Davis-Bacon)
+
+- Not built anywhere in this suite. Any commercial GC touching public work (schools,
+  municipal, federally funded) will ask in the first demo — sales needs a scripted
+  answer: "time tracking captures the hours; certified payroll reports (WH-347) are
+  on the roadmap." `time_entries` + billing-rate schedules are the substrate; the
+  gap is worker classifications, wage determinations, and the WH-347 report format.
+- Trigger: first prospect whose pipeline is majority public work, or 2+ lost deals
+  naming certified payroll.
+
+### A8. GC-side insurance & bonding
+
+- Arc tracks SUB compliance thoroughly; owners impose the same on the GC (the GC's
+  own COIs per project, payment/performance bonds, owner-required coverage limits).
+  Today this lives in the files area untyped.
+- Likely small: a per-project "our compliance" record reusing the
+  compliance-documents engine with the org itself as the subject.
+- Trigger: repeated requests, or when a pay-app package needs the bond rider attached.
+
+### A9. Sub-tier lien waivers
+
+- Standard commercial practice: collecting waivers from your subs' suppliers and
+  sub-subcontractors, not just first-tier subs. Current `lien_waivers` is
+  first-tier only.
+- Trigger: first customer on a project whose owner/lender demands full-tier waiver
+  packages with each pay app.
+
+### A10. iOS parity for field modules (deferred with a DATE, not a shrug)
+
+- Workstreams 06 and 08 each note "iOS out of scope" — but inspections, punch
+  dispatch, and daily-report sections are the most field-centric features in the
+  program, and the commercial pitch includes field crews. Deferring is fine;
+  letting it drift is not.
+- Commitment: when 06 and 08 both land, file `docs/` gameplan for `/api/mobile/v1`
+  + ios/Arc parity (inspections run screen, punch queue, daily-report sections) as
+  the NEXT mobile workstream, before other iOS work.
+
 ## B. Arc Production (Lennar-style) — design constraints to honor NOW
 
 Production building is a different operating model: the unit of work is the **lot**

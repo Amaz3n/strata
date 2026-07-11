@@ -47,11 +47,12 @@ import {
 } from "@/components/icons"
 import type { DailyLog, DailyReport, DailyReportDayType, ScheduleItem, Task } from "@/lib/types"
 import type { EnhancedFileMetadata, ProjectPunchItem } from "@/app/(app)/projects/[id]/actions"
-import type { DailyReportUpdateInput, ManpowerInput } from "@/lib/validation/daily-logs"
+import type { DailyReportSectionInput, DailyReportSectionKind, DailyReportUpdateInput, ManpowerInput } from "@/lib/validation/daily-logs"
 import { HighlightedMentionsText, MentionTextarea, type MentionableUser } from "./mention-textarea"
 import { WEATHER_OPTIONS, dayCompleteness, weatherEmoji, type DayBucket } from "./day-aggregate"
 import { CompletenessRing } from "./completeness-ring"
 import { DAILY_LOGS_PANE_HEADER_CLASS, DAILY_LOGS_PANE_SUBHEADER_CLASS } from "./layout"
+import { CommercialSections } from "./commercial-sections"
 
 const DAY_TYPES: { value: DailyReportDayType; label: string }[] = [
   { value: "work_day", label: "Work day" },
@@ -65,6 +66,16 @@ function dayTypeLabel(dayType: DailyReportDayType | undefined): string | undefin
   return DAY_TYPES.find((d) => d.value === dayType)?.label
 }
 
+function automaticWeatherText(report: DailyReport | undefined) {
+  const weather = report?.weather_auto
+  if (!weather) return undefined
+  const unit = weather.units?.temperature ?? "°F"
+  const temperature = weather.temperature_max != null ? `${Math.round(weather.temperature_max)}${unit}` : undefined
+  const rain = weather.precipitation != null && weather.precipitation > 0 ? `${weather.precipitation}${weather.units?.precipitation ?? " in"} rain` : undefined
+  const wind = weather.wind_speed_max != null ? `${Math.round(weather.wind_speed_max)} ${weather.units?.wind_speed ?? "mph"} wind` : undefined
+  return [temperature, rain, wind].filter(Boolean).join(" · ")
+}
+
 interface DayRecordProps {
   date: Date
   bucket: DayBucket | undefined
@@ -73,6 +84,7 @@ interface DayRecordProps {
   punchById: Record<string, ProjectPunchItem>
   mentionableUsers: MentionableUser[]
   projectAddress?: string
+  projectId: string
   /** Chronological index of this day among logged days — "Report No. 042". */
   reportNumber?: number
   /** Nearest earlier day with crews, offered as a one-click starting point. */
@@ -95,6 +107,10 @@ interface DayRecordProps {
   onAddManpower: (date: string, values: ManpowerInput) => Promise<DailyReport>
   onUpdateManpower: (manpowerId: string, values: ManpowerInput) => Promise<DailyReport>
   onDeleteManpower: (manpowerId: string) => Promise<DailyReport>
+  onAddSection: (date: string, kind: DailyReportSectionKind, input: DailyReportSectionInput) => Promise<DailyReport>
+  onUpdateSection: (kind: DailyReportSectionKind, id: string, input: DailyReportSectionInput) => Promise<DailyReport>
+  onDeleteSection: (kind: DailyReportSectionKind, id: string) => Promise<DailyReport>
+  onRefreshWeather: (reportId: string) => Promise<DailyReport>
   onImageClick: (file: EnhancedFileMetadata) => void
 }
 
@@ -583,7 +599,8 @@ function NoteCard({
 
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="text-[13px] font-semibold leading-none">{authorName(log.author)}</span>
+          <span className="text-[13px] font-semibold leading-none">{log.created_via_portal ? log.portal_company_name ?? "Subcontractor" : authorName(log.author)}</span>
+          {log.created_via_portal && <span className="border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">From sub</span>}
           {log.created_at && (
             <span className="font-mono text-[10px] leading-none text-muted-foreground">
               {format(new Date(log.created_at), "h:mm a")}
@@ -872,6 +889,7 @@ export function DayRecord({
   punchById,
   mentionableUsers,
   projectAddress,
+  projectId,
   reportNumber,
   carryForward,
   onNavigateDay,
@@ -886,13 +904,18 @@ export function DayRecord({
   onAddManpower,
   onUpdateManpower,
   onDeleteManpower,
+  onAddSection,
+  onUpdateSection,
+  onDeleteSection,
+  onRefreshWeather,
   onImageClick,
 }: DayRecordProps) {
   const report = bucket?.report
   const locked = report?.status === "submitted"
   const hasManpower = (report?.manpower?.length ?? 0) > 0
+  const hasCommercialSections = (report?.delays?.length ?? 0) + (report?.equipment?.length ?? 0) + (report?.deliveries?.length ?? 0) + (report?.visitors?.length ?? 0) > 0
 
-  const isEmpty = !bucket || (bucket.logs.length === 0 && bucket.photos.length === 0 && !hasManpower)
+  const isEmpty = !bucket || (bucket.logs.length === 0 && bucket.photos.length === 0 && !hasManpower && !hasCommercialSections)
   const maxTradeHours = bucket ? Math.max(1, ...bucket.hoursByTrade.map((t) => t.hours)) : 1
 
   const dateKey = format(date, "yyyy-MM-dd")
@@ -942,6 +965,16 @@ export function DayRecord({
     } catch (error) {
       console.error(error)
       toast.error(error instanceof Error ? error.message : "Failed to update sharing")
+    }
+  }
+
+  async function refreshWeather() {
+    if (!report) return
+    try {
+      await onRefreshWeather(report.id)
+      toast.success("Weather refreshed")
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to refresh weather")
     }
   }
 
@@ -1101,6 +1134,7 @@ export function DayRecord({
             </Popover>
           )}
           <StatusControl report={report} missing={completeness.missing} onSubmit={onSubmitReport} onReopen={onReopenReport} />
+          {report ? <Button variant="ghost" size="sm" asChild><a href={`/projects/${projectId}/exports/daily-report?id=${report.id}`} target="_blank" rel="noreferrer">PDF</a></Button> : null}
           <Button
             variant={report?.share_with_client ? "secondary" : "ghost"}
             size="sm"
@@ -1177,6 +1211,17 @@ export function DayRecord({
                 <span className="tabular-nums">{suggestedWeather.tempMax}°</span>
               )}
               <span className="font-medium text-primary">Apply</span>
+            </button>
+          )}
+
+          {!bucket?.weather && automaticWeatherText(report) && (
+            <span className="font-mono text-[10px] tabular-nums text-muted-foreground" title="Automatic Open-Meteo observation">
+              {automaticWeatherText(report)}
+            </span>
+          )}
+          {!locked && report && (
+            <button type="button" className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground" onClick={() => void refreshWeather()}>
+              Refresh weather
             </button>
           )}
 
@@ -1285,6 +1330,15 @@ export function DayRecord({
                 onUpdate={onUpdateManpower}
                 onDelete={onDeleteManpower}
               />
+              <CommercialSections
+                report={report}
+                dateKey={dateKey}
+                locked={locked}
+                scheduleItems={Object.values(scheduleById)}
+                onAdd={onAddSection}
+                onUpdate={onUpdateSection}
+                onDelete={onDeleteSection}
+              />
             </div>
           </div>
         ) : (
@@ -1315,6 +1369,16 @@ export function DayRecord({
               onAdd={onAddManpower}
               onUpdate={onUpdateManpower}
               onDelete={onDeleteManpower}
+            />
+
+            <CommercialSections
+              report={report}
+              dateKey={dateKey}
+              locked={locked}
+              scheduleItems={Object.values(scheduleById)}
+              onAdd={onAddSection}
+              onUpdate={onUpdateSection}
+              onDelete={onDeleteSection}
             />
 
             {bucket!.totalHours > 0 && (

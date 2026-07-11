@@ -124,7 +124,7 @@ export default async function PublicFileSharePage({ params }: Params) {
           <div className="flex justify-end">
             <Button asChild>
               <a
-                href={link.download_url}
+                href={`/f/${token}/download`}
                 download={link.file.file_name}
                 target="_blank"
                 rel="noopener noreferrer"

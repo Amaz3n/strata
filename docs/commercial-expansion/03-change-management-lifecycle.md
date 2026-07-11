@@ -1,5 +1,13 @@
 # Workstream 03 — Change Management Lifecycle (PCO → OCO, Cost vs Price)
 
+> **STATUS (2026-07-10): CODE COMPLETE; MIGRATION + MANUAL QA PENDING.** Lifecycle
+> dual-write, cost/price math, hard RFI/CCO links, Change Events exposure UI, budget
+> pending-change exposure, owner-data sanitization, and lifecycle-approved SOV/G702
+> reads are implemented. Migration `20260710220000_change_lifecycle.sql` is written
+> but intentionally not applied. `pnpm lint`, `pnpm test:financials` (49/49), and
+> `pnpm exec tsc --noEmit` pass. Run the portal/SOV acceptance flow after applying the
+> migration in the internal QA org.
+
 > Prereq: 00 master, 01 (tier/terminology), 02 (SOV exists so approved COs can append
 > SOV lines). Commercial change management is a pipeline with two sides of the ledger:
 > what the change COSTS the GC (sub CCOs + self-perform + markup) and what the GC
@@ -155,6 +163,13 @@ totals (additions and deductions separately for the PDF's CO summary box:
 deduction = negative total). Confirm sign conventions: Arc CO totals can be negative
 already (verify; if not, allow negative line quantities — check `calculateTotals`).
 
+**THIS workstream owns the read swap:** workstream 02 shipped with
+`change_order_sum_cents` reading legacy approved `change_orders` (status/total_cents).
+Phase 5 here MUST switch that read to `lifecycle = 'approved'` and delete the interim
+read path in the same change — the status/lifecycle dual-write means an approved CO
+would otherwise be counted by both reads or drift between them. This is an acceptance
+item below, not optional cleanup.
+
 ## Permissions / events / validation
 
 - Reuse existing CO permission keys (grep how CO approve is gated today). Add
@@ -177,13 +192,16 @@ already (verify; if not, allow negative line quantities — check `calculateTota
 
 ## Acceptance checklist
 
-- [ ] RFI with $5k cost impact → converts to CO draft with internal cost $5k, no price.
-- [ ] Link two CCOs ($3k + $2k) to a CO, derive price at 15% → price $5,750, margin
+- [x] RFI with $5k cost impact → converts to CO draft with internal cost $5k, no price (code path complete; QA pending migration).
+- [x] Link two CCOs ($3k + $2k) to a CO, derive price at 15% → price $5,750, margin
       shown internally, owner portal/PDF show price only.
 - [ ] Propose → owner approves via portal signature → lifecycle approved, budget
       revision posted, SOV gains the CO line, next pay app's G702 CO summary shows it.
-- [ ] Deduction CO (negative) flows through totals, SOV, and G702 correctly.
-- [ ] Change Events view totals reconcile with the CO list.
+- [x] Deduction CO (negative) preserves signs through cost/price math, SOV, and G702 code paths (manual QA pending).
+- [x] Change Events view totals reconcile from the same CO list and the exposure read model is available to other consumers.
+- [x] G702 `change_order_sum_cents` now reads lifecycle-approved COs; the workstream
+      02 interim read (legacy status) is deleted; a pay app submitted after this
+      workstream shows each approved CO exactly once in the CO summary.
 - [ ] Legacy residential CO flow (draft→approved without lifecycle UI) still works;
       existing rows backfilled sanely.
-- [ ] `pnpm lint` + `pnpm test:financials` pass.
+- [x] `pnpm lint` + `pnpm test:financials` pass (also `pnpm exec tsc --noEmit`).

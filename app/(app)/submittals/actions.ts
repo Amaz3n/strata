@@ -6,22 +6,29 @@ import {
   addSubmittalItem,
   createSubmittal,
   decideSubmittal,
+  decideSubmittalReviewStep,
   listSubmittalItems,
+  listSubmittalReviewSteps,
   listSubmittalRevisions,
   listSubmittals,
   resubmitSubmittal,
+  setSubmittalReviewSteps,
   updateSubmittal,
+  updateSubmittalReviewStep,
 } from "@/lib/services/submittals"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
 import { actionError, type ActionResult } from "@/lib/action-result"
 import {
+  decideSubmittalReviewStepSchema,
+  setSubmittalReviewStepsSchema,
   submittalDecisionSchema,
   submittalInputSchema,
   submittalItemInputSchema,
   submittalUpdateSchema,
+  updateSubmittalReviewStepSchema,
 } from "@/lib/validation/submittals"
-import type { Submittal, SubmittalItem } from "@/lib/types"
+import type { Submittal, SubmittalItem, SubmittalReviewStep } from "@/lib/types"
 
 function revalidateSubmittalPaths(projectId: string) {
   revalidatePath("/submittals")
@@ -83,6 +90,43 @@ export async function decideSubmittalAction(input: unknown): Promise<ActionResul
 export async function resubmitSubmittalAction(submittalId: string): Promise<ActionResult<Submittal>> {
   try {
     const submittal = await resubmitSubmittal({ submittalId })
+    revalidateSubmittalPaths(submittal.project_id)
+    return { success: true, data: submittal }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
+export async function listSubmittalReviewStepsAction(submittalId: string): Promise<SubmittalReviewStep[]> {
+  const { orgId, userId, supabase } = await requireOrgContext()
+  await requirePermission("submittal.read", { supabase, orgId, userId })
+  return listSubmittalReviewSteps({ orgId, submittalId })
+}
+
+export async function setSubmittalReviewStepsAction(input: unknown): Promise<ActionResult<SubmittalReviewStep[]>> {
+  try {
+    const parsed = setSubmittalReviewStepsSchema.parse(input)
+    const steps = await setSubmittalReviewSteps({ input: parsed })
+    return { success: true, data: steps }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
+export async function updateSubmittalReviewStepAction(input: unknown): Promise<ActionResult<SubmittalReviewStep[]>> {
+  try {
+    const parsed = updateSubmittalReviewStepSchema.parse(input)
+    const steps = await updateSubmittalReviewStep({ input: parsed })
+    return { success: true, data: steps }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
+export async function decideSubmittalReviewStepAction(input: unknown): Promise<ActionResult<Submittal>> {
+  try {
+    const parsed = decideSubmittalReviewStepSchema.parse(input)
+    const submittal = await decideSubmittalReviewStep({ input: parsed })
     revalidateSubmittalPaths(submittal.project_id)
     return { success: true, data: submittal }
   } catch (error) {

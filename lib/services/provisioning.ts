@@ -3,6 +3,9 @@ import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { syncOrgEntitlementsFromPlan } from "@/lib/services/billing"
 import { createOrgMemberInvite } from "@/lib/services/team"
+import type { ProductTier } from "@/lib/product-tier"
+import { seedCSICostCodes, seedNAHBCostCodes } from "@/lib/services/cost-codes"
+import { seedChecklistTemplates } from "@/lib/services/inspections"
 
 export interface ProvisionOrgInput {
   name: string
@@ -14,6 +17,7 @@ export interface ProvisionOrgInput {
   trialDays?: number | null
   createdBy: string
   sendInviteEmail?: boolean
+  productTier?: ProductTier
 }
 
 function normalizeSlug(slug: string) {
@@ -34,6 +38,7 @@ function getTrialEnd(trialDays: number) {
 export async function provisionOrganization(input: ProvisionOrgInput) {
   const supabase = createServiceSupabaseClient()
   const slug = normalizeSlug(input.slug)
+  const productTier = input.productTier ?? "residential"
 
   const { data: existingOrg } = await supabase.from("orgs").select("id").eq("slug", slug).maybeSingle()
   if (existingOrg?.id) {
@@ -49,8 +54,9 @@ export async function provisionOrganization(input: ProvisionOrgInput) {
       status: "active",
       billing_email: input.primaryEmail,
       created_by: input.createdBy,
+      product_tier: productTier,
     })
-    .select("id, name, slug")
+    .select("id, name, slug, product_tier")
     .maybeSingle()
 
   if (orgError || !org) {
@@ -66,6 +72,13 @@ export async function provisionOrganization(input: ProvisionOrgInput) {
     role: "org_owner",
     sendEmail: input.sendInviteEmail,
   })
+
+  if (productTier === "commercial") {
+    await seedCSICostCodes(org.id)
+    await seedChecklistTemplates(org.id)
+  } else {
+    await seedNAHBCostCodes(org.id)
+  }
 
   if (input.billingModel === "subscription") {
     const trialDays = resolveTrialDays(input.trialDays)
@@ -97,6 +110,7 @@ export async function provisionOrganization(input: ProvisionOrgInput) {
       org_name: org.name,
       billing_model: input.billingModel,
       plan_code: input.planCode ?? null,
+      product_tier: productTier,
     },
   })
 

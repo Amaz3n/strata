@@ -1,5 +1,6 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
+import { normalizeProductTier, type ProductTier } from "@/lib/product-tier"
 
 export interface AdminStats {
   totalOrgs: number
@@ -55,6 +56,7 @@ export interface Customer {
   status: string
   billingModel: string
   billingEmail: string | null
+  productTier: ProductTier
   memberCount: number
   createdAt: string
   health: CustomerHealth
@@ -152,6 +154,7 @@ export async function getCustomers({
       status,
       billing_model,
       billing_email,
+      product_tier,
       created_at
     `, { count: "exact" })
 
@@ -311,6 +314,7 @@ export async function getCustomers({
       status: org.status,
       billingModel: org.billing_model,
       billingEmail: org.billing_email ?? null,
+      productTier: normalizeProductTier(org.product_tier),
       memberCount: memberships.length,
       createdAt: org.created_at,
       subscription,

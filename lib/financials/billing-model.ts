@@ -8,7 +8,7 @@ export type ProjectBillingModel =
   | "time_and_materials"
 
 export type FinancialLandingPage = "summary" | "review" | "receivables" | "budget" | "forecast"
-export type OwnerBillingBasis = "draws" | "costs" | "costs_plus_fee" | "time_materials"
+export type OwnerBillingBasis = "draws" | "progress" | "costs" | "costs_plus_fee" | "time_materials"
 export type FeePresentation = "embedded" | "separate_total" | "separate_by_code"
 
 export interface ProjectFinancialFeatureConfig {
@@ -109,6 +109,10 @@ export function getProjectFinancialFeatureConfig(
   const isCostDriven = isCostDrivenBillingModel(billingModel)
 
   if (billingModel === "fixed_price") {
+    const progressBilling =
+      source != null &&
+      "financial_settings" in source &&
+      source.financial_settings?.fixed_price_billing_basis === "progress"
     return {
       billingModel,
       landingPage: "summary",
@@ -117,10 +121,10 @@ export function getProjectFinancialFeatureConfig(
       showExpenses: false,
       showGenerateFromCosts: false,
       showOpenBook: false,
-      showDraws: true,
+      showDraws: !progressBilling,
       showGmpForecast: false,
       requireCostApproval: false,
-      ownerBillingBasis: "draws",
+      ownerBillingBasis: progressBilling ? "progress" : "draws",
     }
   }
 

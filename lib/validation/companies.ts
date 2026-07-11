@@ -45,6 +45,9 @@ export const companyInputSchema = z.object({
   qbo_vendor_name: z.string().optional(),
   qbo_vendor_synced_at: z.string().optional(),
   qbo_vendor_sync_status: z.enum(["linked", "created", "needs_review", "error"]).optional(),
+  tax_id_last4: z.string().regex(/^\d{4}$/, "Enter the last four digits").optional(),
+  tax_entity_type: z.enum(["individual", "sole_prop", "partnership", "c_corp", "s_corp", "llc", "exempt"]).optional(),
+  is_1099_eligible: z.boolean().optional(),
 })
 
 export const companyUpdateSchema = companyInputSchema.partial()
@@ -60,6 +63,5 @@ export const companyFiltersSchema = z
 export type CompanyInput = z.infer<typeof companyInputSchema>
 export type CompanyUpdateInput = z.infer<typeof companyUpdateSchema>
 export type CompanyFilters = z.infer<typeof companyFiltersSchema>
-
 
 

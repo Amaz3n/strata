@@ -6,13 +6,16 @@ import { useSearchParams } from "next/navigation"
 
 import type { DailyLog, DailyReport, ScheduleItem, Task } from "@/lib/types"
 import type { EnhancedFileMetadata, FileCategory, ProjectPunchItem } from "@/app/(app)/projects/[id]/actions"
-import type { DailyLogInput, DailyReportUpdateInput, ManpowerInput } from "@/lib/validation/daily-logs"
+import type { DailyLogInput, DailyReportSectionInput, DailyReportSectionKind, DailyReportUpdateInput, ManpowerInput } from "@/lib/validation/daily-logs"
 import { useUser } from "@/lib/auth/client"
 import { FileViewer } from "@/components/files/file-viewer"
 
 import { QuickLogEntry } from "./quick-log-entry"
 import { DateNavigator } from "./date-navigator"
 import { DayRecord } from "./day-record"
+import { DelayLogView } from "./delay-log-view"
+import { Button } from "@/components/ui/button"
+import { BulkDailyReportExportButton } from "./bulk-export-button"
 import { buildDayBuckets, imageFilesOf } from "./day-aggregate"
 import type { MentionableUser } from "./mention-textarea"
 
@@ -33,6 +36,10 @@ interface DailyLogsWorkspaceProps {
   onAddManpower: (date: string, values: ManpowerInput) => Promise<DailyReport>
   onUpdateManpower: (manpowerId: string, values: ManpowerInput) => Promise<DailyReport>
   onDeleteManpower: (manpowerId: string) => Promise<DailyReport>
+  onAddSection: (date: string, kind: DailyReportSectionKind, input: DailyReportSectionInput) => Promise<DailyReport>
+  onUpdateSection: (kind: DailyReportSectionKind, id: string, input: DailyReportSectionInput) => Promise<DailyReport>
+  onDeleteSection: (kind: DailyReportSectionKind, id: string) => Promise<DailyReport>
+  onRefreshWeather: (reportId: string) => Promise<DailyReport>
   onCreateLog: (values: DailyLogInput) => Promise<DailyLog>
   onCreateComment: (
     dailyLogId: string,
@@ -67,6 +74,10 @@ export function DailyLogsWorkspace({
   onAddManpower,
   onUpdateManpower,
   onDeleteManpower,
+  onAddSection,
+  onUpdateSection,
+  onDeleteSection,
+  onRefreshWeather,
   onCreateLog,
   onCreateComment,
   onUpdateLog,
@@ -105,6 +116,7 @@ export function DailyLogsWorkspace({
   const [selectedKey, setSelectedKey] = useState(initialKey)
   const [month, setMonth] = useState(() => parseISO(initialKey))
   const [search, setSearch] = useState("")
+  const [mode, setMode] = useState<"day" | "delays">("day")
 
   // Deep link: ?logId= selects that log's day.
   const highlightedLogId = searchParams.get("logId")
@@ -194,8 +206,14 @@ export function DailyLogsWorkspace({
         today={today}
         projectStartDate={projectStartDate}
       />
-
-      <DayRecord
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex h-10 flex-shrink-0 items-center gap-1 border-b px-4">
+          <Button variant={mode === "day" ? "secondary" : "ghost"} size="sm" className="h-7 text-xs" onClick={() => setMode("day")}>Day report</Button>
+          <Button variant={mode === "delays" ? "secondary" : "ghost"} size="sm" className="h-7 text-xs" onClick={() => setMode("delays")}>Delay log</Button>
+          <span className="ml-auto"><BulkDailyReportExportButton projectId={projectId} /></span>
+        </div>
+      {mode === "delays" ? <DelayLogView reports={dailyReports} scheduleItems={scheduleItems} /> : <DayRecord
+        projectId={projectId}
         date={selectedDate}
         bucket={selectedBucket}
         scheduleById={scheduleById}
@@ -221,11 +239,16 @@ export function DailyLogsWorkspace({
         onAddManpower={onAddManpower}
         onUpdateManpower={onUpdateManpower}
         onDeleteManpower={onDeleteManpower}
+        onAddSection={onAddSection}
+        onUpdateSection={onUpdateSection}
+        onDeleteSection={onDeleteSection}
+        onRefreshWeather={onRefreshWeather}
         onImageClick={(file) => {
           setViewerFile(file)
           setViewerOpen(true)
         }}
-      />
+      />}
+      </div>
 
       {/* Pre-dated log composer — a centered dialog on the desktop workspace. */}
       <QuickLogEntry

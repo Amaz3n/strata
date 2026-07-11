@@ -1,5 +1,16 @@
 # Workstream 04 — External Collaborator Seats + Submittal Review Routing + Ball-in-Court
 
+> **STATUS (2026-07-10): CODE COMPLETE + MIGRATIONS APPLIED; MANUAL QA PENDING.**
+> All five phases implemented (`pnpm lint` clean). All three migrations applied to
+> production 2026-07-10 via Supabase MCP and verified (schema, RLS policies,
+> `submittal.route` role grants): `20260710233000_reviewer_portal.sql`,
+> `20260710234500_submittal_workflow.sql`, `20260710235500_distribution_lists.sql`.
+> Deviations from this doc: stamped-copy pointer lives on
+> `submittals.stamped_file_id` (not the final step) so every surface can link it;
+> the reviewer's markup upload stays on `submittal_review_steps.markup_file_id`.
+> Remaining gate: run the acceptance checklist below manually in the internal QA
+> org before merge.
+
 > Prereq: 00 master, 01. Commercial jobs are multi-party: architect, engineers,
 > owner's rep. Arc's only external personas today are "client" and "sub" tokens with a
 > single-contact assumption. This workstream adds a third persona — the **reviewer
@@ -205,6 +216,9 @@ gives workstream 05's transmittals a recipient source.
 
 ## Acceptance checklist
 
+> Run in the internal QA org (`Arc QA — Commercial`, slug `arc-qa-commercial`).
+> Code + migrations are live; boxes 1–6 are the manual QA gate before merge.
+
 - [ ] Mint an architect reviewer link from project team UI; architect opens `/r/…`,
       sees drawings + RFIs, responds to an RFI (existing portal response path).
 - [ ] Commercial submittal: sub uploads → GC internal step approves → architect step
@@ -217,4 +231,4 @@ gives workstream 05's transmittals a recipient source.
       "waiting on us" filter works.
 - [ ] Residential org: no workflow steps, single-decision path identical to before.
 - [ ] Distribution-list member receives RFI + submittal emails; no duplicate sends.
-- [ ] `pnpm lint` clean.
+- [x] `pnpm lint` clean. (2026-07-10, after every phase)

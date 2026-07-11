@@ -16,6 +16,8 @@ import { loadFinancialsReviewQueueData } from "@/lib/services/financials-review-
 import { getProjectGmpControlSummary } from "@/lib/services/gmp-control"
 import { getOrgBilling } from "@/lib/services/orgs"
 import { getProjectFinancialSetupStatusForProject } from "@/lib/services/project-financial-setup"
+import { listPrimeSovLines, type PrimeSovState } from "@/lib/services/prime-sov"
+import { listPayApplications, type PayApplication } from "@/lib/services/pay-applications"
 import type { Address } from "@/lib/types"
 
 import { unwrapAction } from "@/lib/action-result"
@@ -62,9 +64,36 @@ export async function loadFinancialsReceivablesData(projectId: string, selectedB
     getOrgBilling().catch(() => null),
   ])
 
+  const progressBilling = closeData.featureConfig.ownerBillingBasis === "progress"
+  let sovState: PrimeSovState | null = null
+  let payApplications: PayApplication[] | null = null
+  const progressErrors: string[] = []
+  if (progressBilling) {
+    const [sovResult, payAppsResult] = await Promise.allSettled([
+      listPrimeSovLines(projectId),
+      listPayApplications(projectId),
+    ])
+    if (sovResult.status === "fulfilled") {
+      sovState = sovResult.value
+    } else {
+      progressErrors.push(`Schedule of values: ${messageForError(sovResult.reason)}`)
+    }
+    if (payAppsResult.status === "fulfilled") {
+      payApplications = payAppsResult.value
+    } else {
+      progressErrors.push(`Pay applications: ${messageForError(payAppsResult.reason)}`)
+    }
+  }
+
   return {
     ...closeData,
-    showRetainage: Number(closeData.contract?.retainage_percent ?? 0) > 0 || closeData.retainage.length > 0,
+    sovState,
+    payApplications,
+    loadErrors: [...closeData.loadErrors, ...progressErrors],
+    showRetainage:
+      Number(closeData.contract?.retainage_percent ?? 0) > 0 ||
+      closeData.retainage.length > 0 ||
+      progressBilling,
     builderInfo: {
       name: orgBilling?.org?.name,
       email: orgBilling?.org?.billing_email,

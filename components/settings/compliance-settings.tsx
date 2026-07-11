@@ -10,6 +10,7 @@ import {
 import { listComplianceDocumentTypesAction } from "@/app/(app)/companies/actions"
 import { Switch } from "@/components/ui/switch"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -254,7 +255,9 @@ export function ComplianceSettings({
     Boolean(savedRules.warn_subcontract_execution_on_missing_docs) !==
       Boolean(rules.warn_subcontract_execution_on_missing_docs) ||
     Boolean(savedRules.block_subcontract_execution_on_missing_docs) !==
-      Boolean(rules.block_subcontract_execution_on_missing_docs)
+      Boolean(rules.block_subcontract_execution_on_missing_docs) ||
+    Boolean(savedRules.block_commitment_on_prequal) !== Boolean(rules.block_commitment_on_prequal)
+    || Number(savedRules.prequalification_validity_days ?? 365) !== Number(rules.prequalification_validity_days ?? 365)
   const reqsDirty = reqsKey(buildRequirements(), knownIds) !== reqsKey(defaults, knownIds)
   const dirty = !isLoading && (rulesDirty || reqsDirty)
 
@@ -288,6 +291,14 @@ export function ComplianceSettings({
     checked: boolean
     onCheckedChange: (checked: boolean) => void
   }[] = [
+    {
+      id: "block-commitment-prequal",
+      icon: Ban,
+      label: "Block commitment approval when prequalification is missing or over limit",
+      description: "When off, Arc shows a warning and allows an override note.",
+      checked: rules.block_commitment_on_prequal ?? false,
+      onCheckedChange: (checked) => setRule("block_commitment_on_prequal", checked),
+    },
     {
       id: "require-lien-waiver",
       icon: Lock,
@@ -414,6 +425,18 @@ export function ComplianceSettings({
                   </div>
                 )
               })}
+            </div>
+            <div className="mt-3 max-w-xs space-y-2 border p-4">
+              <Label htmlFor="prequal-validity-days">Prequalification validity (days)</Label>
+              <Input
+                id="prequal-validity-days"
+                type="number"
+                min={30}
+                max={1825}
+                value={rules.prequalification_validity_days ?? 365}
+                disabled={!canManage || isSaving}
+                onChange={(event) => setRules((previous) => ({ ...previous, prequalification_validity_days: Number(event.target.value) }))}
+              />
             </div>
           </section>
 

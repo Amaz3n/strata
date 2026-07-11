@@ -76,6 +76,11 @@ export interface Company {
   qbo_vendor_name?: string | null
   qbo_vendor_synced_at?: string | null
   qbo_vendor_sync_status?: string | null
+  tax_id_last4?: string | null
+  tax_entity_type?: "individual" | "sole_prop" | "partnership" | "c_corp" | "s_corp" | "llc" | "exempt" | null
+  is_1099_eligible?: boolean | null
+  w9_file_id?: string | null
+  w9_received_at?: string | null
   created_at: string
   updated_at?: string
   contact_count?: number
@@ -88,6 +93,8 @@ export type ComplianceRules = {
   block_payment_on_missing_docs?: boolean
   warn_subcontract_execution_on_missing_docs?: boolean
   block_subcontract_execution_on_missing_docs?: boolean
+  block_commitment_on_prequal?: boolean
+  prequalification_validity_days?: number
 }
 
 export type ComplianceRequirementTemplateItem = {
@@ -185,6 +192,7 @@ export interface Project {
   prospect_id?: string | null
   total_value?: number
   property_type?: ProjectPropertyType
+  module_overrides?: Record<string, boolean>
   project_type?: ProjectWorkType
   description?: string
   retainage_percent?: number
@@ -205,6 +213,8 @@ export interface ProjectNavigationItem {
   org_id: string
   name: string
   status: ProjectStatus
+  property_type?: ProjectPropertyType
+  module_overrides?: Record<string, boolean>
   financial_settings?: Pick<ProjectFinancialSettings, "billing_model"> | null
   created_at: string
   updated_at: string
@@ -225,6 +235,7 @@ export interface ProjectFinancialSettings {
   org_id: string
   project_id: string
   billing_model: "fixed_price" | "cost_plus_percent" | "cost_plus_fixed_fee" | "cost_plus_gmp" | "time_and_materials"
+  fixed_price_billing_basis?: "draws" | "progress" | null
   paid_costs_required: boolean
   proof_required: boolean
   client_cost_approval_required: boolean
@@ -280,6 +291,8 @@ export interface Contract {
   retainage_percent?: number
   retainage_applies_to_fee?: boolean | null
   retainage_release_trigger?: string
+  retainage_schedule?: Array<{ until_percent_complete: number; retainage_percent: number }> | null
+  stored_materials_retainage_percent?: number | null
   terms?: string
   effective_date?: string
   signed_at?: string
@@ -374,6 +387,9 @@ export interface DailyLog {
   weather?: string
   notes?: string
   daily_report_id?: string
+  created_via_portal?: boolean
+  portal_company_id?: string
+  portal_company_name?: string
   created_by?: string
   created_at: string
   updated_at: string
@@ -399,7 +415,10 @@ export interface DailyReport {
   date: string
   status: DailyReportStatus
   weather?: string
+  weather_auto?: DailyReportWeatherSnapshot
   day_type?: DailyReportDayType
+  created_via_portal?: boolean
+  portal_company_id?: string
   share_with_client?: boolean
   submitted_at?: string
   submitted_by?: string
@@ -412,6 +431,20 @@ export interface DailyReport {
   created_at: string
   updated_at: string
   manpower?: DailyReportManpower[]
+  delays?: DailyReportDelay[]
+  equipment?: DailyReportEquipment[]
+  visitors?: DailyReportVisitor[]
+  deliveries?: DailyReportDelivery[]
+}
+
+export interface DailyReportWeatherSnapshot {
+  date: string
+  temperature_max?: number
+  temperature_min?: number
+  precipitation?: number
+  wind_speed_max?: number
+  units?: { temperature?: string; precipitation?: string; wind_speed?: string }
+  fetched_at: string
 }
 
 /** One crew/company present on a day: headcount + hours. */
@@ -425,7 +458,70 @@ export interface DailyReportManpower {
   workers?: number
   hours?: number
   notes?: string
+  portal_company_id?: string
   created_by?: string
+  created_at: string
+  updated_at: string
+}
+
+export type DailyReportDelayType = "weather" | "owner" | "design" | "material" | "labor" | "equipment" | "utility" | "other"
+
+export interface DailyReportDelay {
+  id: string
+  org_id: string
+  project_id: string
+  daily_report_id: string
+  delay_type: DailyReportDelayType
+  description: string
+  hours_lost?: number
+  affected_trades?: string
+  schedule_item_id?: string
+  potential_claim: boolean
+  created_at: string
+  updated_at: string
+  report_date?: string
+}
+
+export interface DailyReportEquipment {
+  id: string
+  org_id: string
+  project_id: string
+  daily_report_id: string
+  description: string
+  company?: string
+  count: number
+  hours_used?: number
+  idle: boolean
+  notes?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface DailyReportVisitor {
+  id: string
+  org_id: string
+  project_id: string
+  daily_report_id: string
+  name: string
+  company?: string
+  purpose?: string
+  time_in?: string
+  time_out?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface DailyReportDelivery {
+  id: string
+  org_id: string
+  project_id: string
+  daily_report_id: string
+  description: string
+  supplier?: string
+  quantity?: string
+  ticket_number?: string
+  received_by?: string
+  notes?: string
   created_at: string
   updated_at: string
 }
@@ -647,7 +743,57 @@ export interface PortalPermissions {
   can_submit_invoices?: boolean      // Can submit new invoices
   can_submit_time?: boolean
   can_submit_expenses?: boolean
+  can_submit_daily_logs?: boolean
   can_upload_compliance_docs?: boolean  // Can upload compliance documents
+  can_view_punch_items?: boolean     // Can see + work punch items assigned to their company
+  // Reviewer-specific permissions
+  can_review_submittals?: boolean    // Can decide submittal review steps routed to them
+}
+
+export type PortalType = "client" | "sub" | "reviewer"
+
+export type ReviewerRole = "architect" | "engineer" | "owner_rep" | "consultant" | "other"
+
+export const REVIEWER_ROLE_LABELS: Record<ReviewerRole, string> = {
+  architect: "Architect",
+  engineer: "Engineer",
+  owner_rep: "Owner's Rep",
+  consultant: "Consultant",
+  other: "Reviewer",
+}
+
+/**
+ * Least-privilege capability set for reviewer seats: design-review surfaces
+ * only (drawings, RFIs, submittal review) — never financials, schedule, or
+ * client/sub workflows. Both minting paths (email invite + direct link) use
+ * this so a reviewer token never inherits the client/sub permission defaults.
+ */
+export const REVIEWER_DEFAULT_PERMISSIONS: Partial<PortalPermissions> = {
+  can_view_schedule: false,
+  can_view_photos: false,
+  can_view_documents: true,
+  can_download_files: true,
+  can_view_daily_logs: false,
+  can_view_budget: false,
+  can_approve_change_orders: false,
+  can_submit_selections: false,
+  can_create_punch_items: false,
+  can_view_warranty: false,
+  can_view_invoices: false,
+  can_pay_invoices: false,
+  can_view_rfis: true,
+  can_respond_rfis: true,
+  can_view_submittals: true,
+  can_submit_submittals: false,
+  can_review_submittals: true,
+  can_view_commitments: false,
+  can_view_bills: false,
+  can_submit_invoices: false,
+  can_submit_time: false,
+  can_submit_expenses: false,
+  can_submit_daily_logs: false,
+  can_upload_compliance_docs: false,
+  can_view_punch_items: false,
 }
 
 export interface PortalAccessToken {
@@ -659,7 +805,8 @@ export interface PortalAccessToken {
   scoped_rfi_id?: string | null
   token: string
   name: string
-  portal_type: "client" | "sub"   // Explicit portal type
+  portal_type: PortalType         // Explicit portal type
+  reviewer_role?: ReviewerRole | null
   permissions: PortalPermissions
   pin_required: boolean
   pin_locked_until?: string | null
@@ -686,7 +833,7 @@ export interface ExternalPortalAccount {
   grant_count?: number
 }
 
-export type ExternalPortalWorkspaceKind = "client" | "sub" | "bid"
+export type ExternalPortalWorkspaceKind = "client" | "sub" | "reviewer" | "bid"
 
 export interface ExternalPortalWorkspaceItem {
   id: string
@@ -735,6 +882,8 @@ export interface ChangeOrderLine {
   quantity: number
   unit?: string | null
   unit_cost_cents: number
+  internal_cost_cents?: number | null
+  commitment_change_order_id?: string | null
   allowance_cents?: number | null
   taxable?: boolean | null
   gmp_classification?: "inside_gmp" | "outside_gmp" | null
@@ -766,6 +915,7 @@ export interface CostCode {
   default_markup_percent?: number | null
   is_reimbursable_default?: boolean | null
   is_active?: boolean | null
+  cost_type?: import("@/lib/cost-types").CostType | null
   metadata?: Record<string, any>
 }
 
@@ -798,9 +948,16 @@ export interface ChangeOrder {
   org_id: string
   project_id: string
   co_number?: number | string | null
+  display_number?: string
   title: string
   description?: string
   status: string
+  lifecycle?: "draft" | "pricing" | "proposed" | "approved" | "rejected" | "void"
+  source_rfi_id?: string | null
+  proposed_at?: string | null
+  owner_response_due?: string | null
+  cost_total_cents?: number | null
+  markup_mode?: "percent" | "manual"
   reason?: string
   total_cents?: number
   amount_cents?: number // Alias for total_cents used in some components
@@ -1253,6 +1410,11 @@ export interface PunchItem {
   severity?: string | null
   location?: string | null
   resolved_at?: string | null
+  assigned_company_id?: string | null
+  assigned_company_name?: string | null
+  dispatched_at?: string | null
+  sub_completed_at?: string | null
+  verification_notes?: string | null
 }
 
 export interface DecisionOption {
@@ -1299,6 +1461,7 @@ export interface Rfi {
   project_id: string
   bid_package_id?: string | null
   rfi_number: number
+  display_number?: string
   subject: string
   question: string
   status: string
@@ -1327,6 +1490,7 @@ export interface Rfi {
   decided_at?: string | null
   decided_via_portal?: boolean | null
   decision_portal_token_id?: string | null
+  ball_in_court?: string | null
   created_at: string
   updated_at: string
 }
@@ -1358,11 +1522,36 @@ export interface SubmittalDecision {
   decision_portal_token_id?: string | null
 }
 
+export type SubmittalReviewStepStatus = "pending" | "in_review" | "returned" | "skipped"
+export type SubmittalReviewDecision = "approved" | "approved_as_noted" | "revise_resubmit" | "rejected"
+
+export interface SubmittalReviewStep {
+  id: string
+  org_id: string
+  submittal_id: string
+  step_order: number
+  reviewer_kind: "internal" | "external"
+  reviewer_user_id?: string | null
+  reviewer_contact_id?: string | null
+  reviewer_company_id?: string | null
+  reviewer_name?: string | null
+  reviewer_company_name?: string | null
+  role_label?: string | null
+  status: SubmittalReviewStepStatus
+  decision?: SubmittalReviewDecision | null
+  notes?: string | null
+  decided_at?: string | null
+  due_date?: string | null
+  markup_file_id?: string | null
+  created_at: string
+}
+
 export interface Submittal {
   id: string
   org_id: string
   project_id: string
   submittal_number: number
+  display_number?: string
   revision: number
   supersedes_submittal_id?: string | null
   superseded_by_id?: string | null
@@ -1390,6 +1579,9 @@ export interface Submittal {
   decision_at?: string | null
   decision_via_portal?: boolean | null
   decision_portal_token_id?: string | null
+  current_review_step_id?: string | null
+  ball_in_court?: string | null
+  stamped_file_id?: string | null
   created_at: string
   updated_at: string
 }
@@ -1519,10 +1711,31 @@ export interface SubPortalData {
   schedule: ScheduleItem[]           // Filtered to this company's tasks
   rfis: Rfi[]                        // Assigned to this company
   submittals: Submittal[]            // Assigned to this company
+  punchItems: PunchItem[]            // Dispatched to this company, not yet closed
   sharedFiles: FileMetadata[]        // Shared with sub portal
   pendingRfiCount: number
   pendingSubmittalCount: number
+  pendingPunchCount: number
   complianceStatus?: ComplianceStatusSummary  // Compliance document status
+}
+
+export interface ReviewerPortalData {
+  org: {
+    id: string
+    name: string
+    logo_url?: string | null
+  }
+  project: Project
+  reviewer: {
+    contact_id?: string | null
+    contact_name?: string | null
+    company_id?: string | null
+    company_name?: string | null
+    role: ReviewerRole | null
+  }
+  projectManager?: PortalProjectManager
+  rfis: Rfi[]                        // Assigned to this reviewer or unassigned
+  pendingRfiCount: number
 }
 
 // Compliance Document Types

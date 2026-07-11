@@ -5,7 +5,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
-import { createChangeOrder, fetchChangeOrder } from "@/lib/services/change-orders"
+import { createPrimeCoFromCommitmentCos, fetchChangeOrder, recomputeChangeOrderCost } from "@/lib/services/change-orders"
 import {
   commitmentChangeOrderFromClientChangeOrderSchema,
   commitmentChangeOrderInputSchema,
@@ -56,6 +56,7 @@ export interface CommitmentChangeOrderSummary {
   source_document_id?: string | null
   executed_file_id?: string | null
   signature_envelope_id?: string | null
+  prime_change_order_id?: string | null
   metadata?: Record<string, any>
   created_at: string
   updated_at?: string | null
@@ -135,7 +136,8 @@ function mapSummary(row: any, lines: CommitmentChangeOrderLine[] = []): Commitme
     created_at: row.created_at,
     updated_at: row.updated_at ?? null,
     lines,
-    source_change_order_id: (metadata.source_change_order_id as string | undefined) ?? null,
+    prime_change_order_id: row.prime_change_order_id ?? null,
+    source_change_order_id: row.prime_change_order_id ?? null,
   }
 }
 
@@ -171,7 +173,7 @@ async function loadRowsByIds(
     .select(
       `
       id, org_id, project_id, commitment_id, company_id, title, description, status, total_cents, currency,
-      approved_at, approved_by, source_document_id, executed_file_id, signature_envelope_id, metadata, created_at, updated_at,
+      approved_at, approved_by, source_document_id, executed_file_id, signature_envelope_id, prime_change_order_id, metadata, created_at, updated_at,
       commitment:commitments(id, title),
       company:companies(id, name)
     `,
@@ -354,7 +356,7 @@ export async function listCommitmentChangeOrders({
     .select(
       `
       id, org_id, project_id, commitment_id, company_id, title, description, status, total_cents, currency,
-      approved_at, approved_by, source_document_id, executed_file_id, signature_envelope_id, metadata, created_at, updated_at,
+      approved_at, approved_by, source_document_id, executed_file_id, signature_envelope_id, prime_change_order_id, metadata, created_at, updated_at,
       commitment:commitments(id, title),
       company:companies(id, name)
     `,
@@ -814,14 +816,14 @@ export async function listCommitmentChangeOrdersForClientChangeOrder({
     .select(
       `
       id, org_id, project_id, commitment_id, company_id, title, description, status, total_cents, currency,
-      approved_at, approved_by, source_document_id, executed_file_id, signature_envelope_id, metadata, created_at, updated_at,
+      approved_at, approved_by, source_document_id, executed_file_id, signature_envelope_id, prime_change_order_id, metadata, created_at, updated_at,
       commitment:commitments(id, title),
       company:companies(id, name)
     `,
     )
     .eq("org_id", resolvedOrgId)
     .eq("project_id", changeOrder.project_id)
-    .eq("metadata->>source_change_order_id", changeOrderId)
+    .eq("prime_change_order_id", changeOrderId)
     .order("created_at", { ascending: false })
 
   if (error) {
@@ -830,6 +832,8 @@ export async function listCommitmentChangeOrdersForClientChangeOrder({
 
   return hydrate(data ?? [], supabase, resolvedOrgId)
 }
+
+export const listCommitmentCosForPrimeCo = listCommitmentChangeOrdersForClientChangeOrder
 
 export async function createCommitmentChangeOrderFromClientChangeOrder({
   input,
@@ -889,20 +893,26 @@ export async function createCommitmentChangeOrderFromClientChangeOrder({
           },
         ]
 
-  return createCommitmentChangeOrder({
+  const created = await createCommitmentChangeOrder({
     orgId: resolvedOrgId,
     input: {
       commitment_id: parsed.commitment_id,
       title,
       description: parsed.description ?? changeOrder.summary ?? changeOrder.description ?? null,
       metadata: {
-        source_change_order_id: changeOrder.id,
         source_change_order_title: changeOrder.title,
         bridge_direction: "client_to_commitment",
       },
       lines,
     },
   })
+  const { error: linkError } = await supabase
+    .from("commitment_change_orders")
+    .update({ prime_change_order_id: changeOrder.id })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", created.id)
+  if (linkError) throw new Error(`Failed to link commitment change order: ${linkError.message}`)
+  return { ...created, prime_change_order_id: changeOrder.id, source_change_order_id: changeOrder.id }
 }
 
 export async function linkCommitmentChangeOrderToClientChangeOrder({
@@ -950,7 +960,6 @@ export async function linkCommitmentChangeOrderToClientChangeOrder({
 
   const metadata = {
     ...(commitmentChangeOrder.metadata ?? {}),
-    source_change_order_id: changeOrder.id,
     source_change_order_title: changeOrder.title,
     linked_to_client_change_order_at: new Date().toISOString(),
     linked_to_client_change_order_by: userId,
@@ -958,13 +967,47 @@ export async function linkCommitmentChangeOrderToClientChangeOrder({
 
   const { error } = await supabase
     .from("commitment_change_orders")
-    .update({ metadata, updated_at: new Date().toISOString() })
+    .update({ prime_change_order_id: changeOrder.id, metadata, updated_at: new Date().toISOString() })
     .eq("org_id", resolvedOrgId)
     .eq("id", parsed.commitment_change_order_id)
 
   if (error) {
     throw new Error(`Failed to link commitment change order: ${error.message}`)
   }
+
+  const { data: existingLine, error: existingLineError } = await supabase
+    .from("change_order_lines")
+    .select("id")
+    .eq("org_id", resolvedOrgId)
+    .eq("change_order_id", changeOrder.id)
+    .eq("commitment_change_order_id", commitmentChangeOrder.id)
+    .maybeSingle()
+  if (existingLineError) throw new Error(`Failed to check linked cost line: ${existingLineError.message}`)
+  if (!existingLine) {
+    const { error: lineError } = await supabase.from("change_order_lines").insert({
+      org_id: resolvedOrgId,
+      change_order_id: changeOrder.id,
+      description: commitmentChangeOrder.title,
+      quantity: 1,
+      unit: "ls",
+      unit_cost_cents: 0,
+      internal_cost_cents: commitmentChangeOrder.total_cents,
+      commitment_change_order_id: commitmentChangeOrder.id,
+      sort_order: (changeOrder.lines?.length ?? 0),
+      metadata: { taxable: true, linked_from_commitment_change_order: true },
+    })
+    if (lineError) throw new Error(`Failed to add commitment cost line: ${lineError.message}`)
+  }
+  await recomputeChangeOrderCost(changeOrder.id, resolvedOrgId)
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    eventType: "change_order_cost_linked",
+    entityType: "change_order",
+    entityId: changeOrder.id,
+    payload: { project_id: changeOrder.project_id, commitment_change_order_id: commitmentChangeOrder.id },
+  })
 
   const updated = await loadSingle(supabase, resolvedOrgId, parsed.commitment_change_order_id)
   if (!updated) throw new Error("Failed to reload linked commitment change order")
@@ -993,47 +1036,13 @@ export async function createClientChangeOrderFromCommitmentChangeOrder({
     resourceId: commitmentChangeOrderId,
   })
 
-  const changeOrder = await createChangeOrder({
+  return createPrimeCoFromCommitmentCos({
+    projectId: commitmentChangeOrder.project_id,
+    commitmentChangeOrderIds: [commitmentChangeOrder.id],
+    title: `Client CO for ${commitmentChangeOrder.title}`,
+    description: commitmentChangeOrder.description,
     orgId: resolvedOrgId,
-    input: {
-      project_id: commitmentChangeOrder.project_id,
-      title: `Client CO for ${commitmentChangeOrder.title}`,
-      summary: commitmentChangeOrder.description ?? commitmentChangeOrder.title,
-      description: commitmentChangeOrder.description ?? undefined,
-      requires_signature: true,
-      client_visible: false,
-      status: "draft",
-      tax_rate: 0,
-      markup_percent: 0,
-      pricing_display: "itemized",
-      lines: commitmentChangeOrder.lines.map((line) => ({
-        cost_code_id: line.cost_code_id ?? undefined,
-        budget_line_id: line.budget_line_id ?? undefined,
-        description: line.description,
-        quantity: line.quantity,
-        unit: line.unit ?? "unit",
-        unit_cost: line.unit_cost_cents / 100,
-        allowance: 0,
-        taxable: true,
-        gmp_classification: "inside_gmp",
-        gmp_impact: "none",
-      })),
-    },
   })
-
-  const metadata = {
-    ...(changeOrder.metadata ?? {}),
-    source_commitment_change_order_id: commitmentChangeOrder.id,
-    source_commitment_id: commitmentChangeOrder.commitment_id,
-    bridge_direction: "commitment_to_client",
-  }
-  await supabase
-    .from("change_orders")
-    .update({ metadata })
-    .eq("org_id", resolvedOrgId)
-    .eq("id", changeOrder.id)
-
-  return fetchChangeOrder(supabase, { id: changeOrder.id, orgId: resolvedOrgId })
 }
 
 export async function getChangeOrderSubCostSignal({

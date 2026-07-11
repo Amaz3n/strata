@@ -3,6 +3,7 @@
 import { type ReactNode } from "react"
 import { CheckCircle2, ClipboardCheck, FileCheck2, FileText, ListTree, ReceiptText } from "lucide-react"
 
+import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
@@ -15,15 +16,25 @@ import {
 import type { Contract, Project } from "@/lib/types"
 import type { ProjectInput } from "@/lib/validation/projects"
 import { cn } from "@/lib/utils"
+import type { ProjectPosture } from "@/lib/product-tier"
+import { terminology } from "@/lib/terminology"
 
 // Shared financial-setup form used as step 2 of the project create/edit sheets.
 // Captures full parity with the legacy financial setup wizard: billing model,
 // contract terms, and the four billing rules.
+export type RetainageScheduleStepValue = {
+  untilPercentComplete: string
+  retainagePercent: string
+}
+
 export type FinancialSetupValue = {
   billingModel: ProjectBillingModel
+  fixedPriceBillingBasis: "draws" | "progress"
   totalContractValue: string
   retainagePercent: string
   retainageAppliesToFee: boolean
+  retainageSchedule: RetainageScheduleStepValue[]
+  storedMaterialsRetainagePercent: string
   markupPercent: string
   fixedFee: string
   feePresentation: FeePresentation
@@ -47,6 +58,21 @@ export const billingModelOptions: Array<{ id: ProjectBillingModel; title: string
   { id: "cost_plus_gmp", title: "Cost plus GMP", note: "Approved costs under a guaranteed maximum." },
   { id: "time_and_materials", title: "Time & materials", note: "Labor, materials, and markup controls." },
 ]
+
+export function billingModelOptionsForPosture(posture: ProjectPosture) {
+  if (posture === "residential") return billingModelOptions
+  const priority: ProjectBillingModel[] = [
+    "fixed_price",
+    "cost_plus_gmp",
+    "cost_plus_percent",
+    "cost_plus_fixed_fee",
+    "time_and_materials",
+  ]
+  return priority.flatMap((model) => {
+    const option = billingModelOptions.find((candidate) => candidate.id === model)
+    return option ? [option] : []
+  })
+}
 
 const feePresentationOptions: Array<{ id: FeePresentation; title: string; note: string }> = [
   { id: "embedded", title: "Embedded", note: "Markup stays inside each cost line." },
@@ -103,12 +129,19 @@ function displayMoneyInput(raw: string) {
   return rest.length > 0 ? `${groupedInt}.${rest.join("")}` : groupedInt
 }
 
-export function emptyFinancialSetup(model: ProjectBillingModel = "fixed_price"): FinancialSetupValue {
+export function emptyFinancialSetup(
+  model: ProjectBillingModel = "fixed_price",
+  posture: ProjectPosture = "residential",
+  progressBillingEnabled = false,
+): FinancialSetupValue {
   const costDriven = isCostDrivenModel(model)
   return {
     billingModel: model,
+    fixedPriceBillingBasis: progressBillingEnabled && posture === "commercial" ? "progress" : "draws",
+    retainageSchedule: [],
+    storedMaterialsRetainagePercent: "",
     totalContractValue: "",
-    retainagePercent: "0",
+    retainagePercent: posture === "commercial" ? "10" : "0",
     retainageAppliesToFee: false,
     markupPercent: costDriven ? "0" : "",
     fixedFee: "",
@@ -144,6 +177,15 @@ export function financialSetupFromProject(project: Project, contract?: Contract 
 
   return {
     billingModel,
+    fixedPriceBillingBasis:
+      project.financial_settings?.fixed_price_billing_basis === "progress" ? "progress" : "draws",
+    retainageSchedule: Array.isArray(billingContract?.retainage_schedule)
+      ? billingContract.retainage_schedule.map((step) => ({
+          untilPercentComplete: numberToField(step.until_percent_complete),
+          retainagePercent: numberToField(step.retainage_percent),
+        }))
+      : [],
+    storedMaterialsRetainagePercent: numberToField(billingContract?.stored_materials_retainage_percent),
     totalContractValue: centsToMoney(totalCents),
     retainagePercent: numberToField(billingContract?.retainage_percent ?? project.retainage_percent, "0"),
     retainageAppliesToFee: Boolean(billingContract?.retainage_applies_to_fee ?? contractSnapshot.retainage_applies_to_fee ?? false),
@@ -218,6 +260,28 @@ export function validateFinancialSetup(value: FinancialSetupValue): { blocking: 
   if (isCostDrivenModel(value.billingModel) && !value.openBookRequired) {
     warnings.push("Cost-driven billing is most trustworthy when open-book billing is enabled.")
   }
+  if (value.billingModel === "fixed_price" && value.fixedPriceBillingBasis === "progress") {
+    let lastUntil = 0
+    for (const step of value.retainageSchedule) {
+      const until = fieldToNumber(step.untilPercentComplete)
+      const percent = fieldToNumber(step.retainagePercent)
+      if (until == null || until <= lastUntil || until > 100) {
+        blocking.push("Retainage steps must have increasing thresholds between 1% and 100%.")
+        break
+      }
+      if (percent == null || percent < 0 || percent > 100) {
+        blocking.push("Retainage step rates must be between 0% and 100%.")
+        break
+      }
+      lastUntil = until
+    }
+    const storedPct = value.storedMaterialsRetainagePercent.trim()
+      ? fieldToNumber(value.storedMaterialsRetainagePercent)
+      : 0
+    if (storedPct == null || storedPct < 0 || storedPct > 100) {
+      blocking.push("Stored-materials retainage must be between 0% and 100%.")
+    }
+  }
 
   return { blocking, warnings }
 }
@@ -231,8 +295,25 @@ export function financialSetupToProjectInput(value: FinancialSetupValue): Partia
     value.billingModel === "cost_plus_percent" || isGmp || value.billingModel === "time_and_materials"
   const showFeePresentation = costDriven && value.billingModel !== "time_and_materials"
 
+  const isFixedPrice = value.billingModel === "fixed_price"
+  const progressBilling = isFixedPrice && value.fixedPriceBillingBasis === "progress"
+  const retainageSchedule = progressBilling
+    ? value.retainageSchedule
+        .map((step) => ({
+          until_percent_complete: fieldToNumber(step.untilPercentComplete) ?? 0,
+          retainage_percent: fieldToNumber(step.retainagePercent) ?? 0,
+        }))
+        .filter((step) => step.until_percent_complete > 0)
+    : []
+
   return {
     billing_model: value.billingModel,
+    fixed_price_billing_basis: isFixedPrice ? value.fixedPriceBillingBasis : null,
+    retainage_schedule: retainageSchedule.length > 0 ? retainageSchedule : null,
+    stored_materials_retainage_percent:
+      progressBilling && value.storedMaterialsRetainagePercent.trim()
+        ? fieldToNumber(value.storedMaterialsRetainagePercent)
+        : null,
     contract_type:
       value.billingModel === "time_and_materials" ? "time_materials" : costDriven ? "cost_plus" : "fixed",
     total_contract_value_cents: moneyToCents(value.totalContractValue),
@@ -258,9 +339,13 @@ export function financialSetupToProjectInput(value: FinancialSetupValue): Partia
 export function ProjectFinancialSetupFields({
   value,
   onChange,
+  posture = "residential",
+  progressBillingEnabled = false,
 }: {
   value: FinancialSetupValue
   onChange: (value: FinancialSetupValue) => void
+  posture?: ProjectPosture
+  progressBillingEnabled?: boolean
 }) {
   const costDriven = isCostDrivenModel(value.billingModel)
   const isGmp = value.billingModel === "cost_plus_gmp"
@@ -273,9 +358,11 @@ export function ProjectFinancialSetupFields({
     onChange({ ...value, [key]: next })
   }
 
+  const terms = terminology(posture)
+  const options = billingModelOptionsForPosture(posture)
   const rules = [
     { id: "openBookRequired" as const, title: "Open book", detail: "Expose approved cost detail for cost-driven billing.", icon: FileText },
-    { id: "clientCostApprovalRequired" as const, title: "Client time approval", detail: "Require owner approval before approved labor time can be billed.", icon: ClipboardCheck },
+    { id: "clientCostApprovalRequired" as const, title: `${terms.owner} time approval`, detail: `Require ${terms.owner.toLowerCase()} approval before approved labor time can be billed.`, icon: ClipboardCheck },
     { id: "paidCostsRequired" as const, title: "Paid costs only", detail: "Block billing unpaid vendor bill costs.", icon: ReceiptText },
     { id: "proofRequired" as const, title: "Proof required", detail: "Require receipts, bills, or time attachments before billing.", icon: FileCheck2 },
   ]
@@ -288,7 +375,7 @@ export function ProjectFinancialSetupFields({
           <p className="text-xs text-muted-foreground">Drives invoicing, WIP, contract terms, and guardrails.</p>
         </div>
         <div className="grid gap-2">
-          {billingModelOptions.map((option) => {
+          {options.map((option) => {
             const active = option.id === value.billingModel
             return (
               <button
@@ -317,6 +404,40 @@ export function ProjectFinancialSetupFields({
           <h3 className="text-sm font-semibold">Contract terms</h3>
           <p className="text-xs text-muted-foreground">Stored on the active contract used by financial pages.</p>
         </div>
+        {value.billingModel === "fixed_price" && (progressBillingEnabled || value.fixedPriceBillingBasis === "progress") ? (
+          <div className="space-y-2">
+            <Label>Owner billing</Label>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {(
+                [
+                  { id: "draws" as const, title: "Draw schedule", note: "Milestone draws billed as they come due." },
+                  {
+                    id: "progress" as const,
+                    title: "Progress billing (SOV)",
+                    note: "Monthly pay applications against a schedule of values.",
+                  },
+                ]
+              ).map((option) => {
+                const active = value.fixedPriceBillingBasis === option.id
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => update("fixedPriceBillingBasis", option.id)}
+                    className={cn(
+                      "rounded-md border p-3 text-left transition-colors",
+                      active ? "border-primary bg-primary/5" : "border-border/70 hover:bg-muted/40",
+                    )}
+                  >
+                    <span className="block text-sm font-medium">{option.title}</span>
+                    <span className="mt-0.5 block text-xs text-muted-foreground">{option.note}</span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        ) : null}
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label={costDriven ? "Contract value or cap" : "Contract value"} htmlFor="fin-contract-value">
             <MoneyInput id="fin-contract-value" value={value.totalContractValue} onChange={(next) => update("totalContractValue", next)} />
@@ -324,13 +445,90 @@ export function ProjectFinancialSetupFields({
           <Field label="Retainage %" htmlFor="fin-retainage">
             <PercentInput id="fin-retainage" value={value.retainagePercent} onChange={(next) => update("retainagePercent", next)} />
           </Field>
+          {value.billingModel === "fixed_price" && value.fixedPriceBillingBasis === "progress" ? (
+            <div className="space-y-3 rounded-md border p-3 sm:col-span-2">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <Label className="text-sm font-medium">Stepped retainage</Label>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    Optional: reduce the rate as lines reach completion thresholds (e.g. 10% until 50%, then 5%).
+                    Leave empty to hold the flat retainage rate.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    update("retainageSchedule", [
+                      ...value.retainageSchedule,
+                      { untilPercentComplete: "", retainagePercent: "" },
+                    ])
+                  }
+                >
+                  Add step
+                </Button>
+              </div>
+              {value.retainageSchedule.map((step, index) => (
+                <div key={index} className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">Until</span>
+                  <PercentInput
+                    id={`fin-ret-step-until-${index}`}
+                    value={step.untilPercentComplete}
+                    onChange={(next) =>
+                      update(
+                        "retainageSchedule",
+                        value.retainageSchedule.map((current, i) =>
+                          i === index ? { ...current, untilPercentComplete: next } : current,
+                        ),
+                      )
+                    }
+                  />
+                  <span className="text-xs text-muted-foreground">complete, hold</span>
+                  <PercentInput
+                    id={`fin-ret-step-rate-${index}`}
+                    value={step.retainagePercent}
+                    onChange={(next) =>
+                      update(
+                        "retainageSchedule",
+                        value.retainageSchedule.map((current, i) =>
+                          i === index ? { ...current, retainagePercent: next } : current,
+                        ),
+                      )
+                    }
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0 text-muted-foreground"
+                    onClick={() =>
+                      update(
+                        "retainageSchedule",
+                        value.retainageSchedule.filter((_, i) => i !== index),
+                      )
+                    }
+                  >
+                    Remove
+                  </Button>
+                </div>
+              ))}
+              <Field label="Stored-materials retainage % (blank = same rate as work)" htmlFor="fin-stored-retainage">
+                <PercentInput
+                  id="fin-stored-retainage"
+                  value={value.storedMaterialsRetainagePercent}
+                  onChange={(next) => update("storedMaterialsRetainagePercent", next)}
+                />
+              </Field>
+            </div>
+          ) : null}
           {costDriven ? (
             <div className="flex items-center justify-between gap-4 rounded-md border p-3 sm:col-span-2">
               <div className="min-w-0">
                 <Label htmlFor="retainageAppliesToFee" className="text-sm font-medium">
                   Apply retainage to fee
                 </Label>
-                <p className="mt-0.5 text-xs text-muted-foreground">Hold retainage on builder fee and markup lines.</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">Hold retainage on {terms.fee.toLowerCase()} and markup lines.</p>
               </div>
               <Switch
                 id="retainageAppliesToFee"

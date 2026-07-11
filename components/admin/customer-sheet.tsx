@@ -16,6 +16,11 @@ import { Separator } from "@/components/ui/separator"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Building2, Users, Calendar, Eye, Edit, Activity } from "@/components/icons"
 import { formatDistanceToNow } from "date-fns"
+import {
+  PRODUCT_TIER_LABELS,
+  isProductTier,
+  type ProductTier,
+} from "@/lib/product-tier"
 
 interface CustomerHealth {
   lastActivityAt: string | null
@@ -34,6 +39,7 @@ interface Customer {
   status: string
   billingModel: string
   billingEmail: string | null
+  productTier: ProductTier
   memberCount: number
   createdAt: string
   health: CustomerHealth
@@ -69,6 +75,7 @@ export function CustomerSheet({ customer, open, onOpenChange, onUpdateCustomer }
   const [editedStatus, setEditedStatus] = useState("")
   const [editedBillingModel, setEditedBillingModel] = useState("")
   const [editedBillingEmail, setEditedBillingEmail] = useState("")
+  const [editedProductTier, setEditedProductTier] = useState<ProductTier>("residential")
   const [saving, startSaving] = useTransition()
 
   const handleEdit = () => {
@@ -78,6 +85,7 @@ export function CustomerSheet({ customer, open, onOpenChange, onUpdateCustomer }
       setEditedStatus(customer.status)
       setEditedBillingModel(customer.billingModel)
       setEditedBillingEmail(customer.billingEmail ?? "")
+      setEditedProductTier(customer.productTier)
       setEditMode(true)
     }
   }
@@ -92,6 +100,7 @@ export function CustomerSheet({ customer, open, onOpenChange, onUpdateCustomer }
     formData.set("status", editedStatus)
     formData.set("billingModel", editedBillingModel)
     formData.set("billingEmail", editedBillingEmail)
+    formData.set("productTier", editedProductTier)
 
     startSaving(async () => {
       try {
@@ -276,6 +285,36 @@ export function CustomerSheet({ customer, open, onOpenChange, onUpdateCustomer }
                         ) : (
                           <p className="text-sm">{customer.billingEmail || "-"}</p>
                         )}
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                          Product posture
+                        </Label>
+                        {editMode ? (
+                          <Select
+                            value={editedProductTier}
+                            onValueChange={(value) => {
+                              if (isProductTier(value)) setEditedProductTier(value)
+                            }}
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="residential">Arc</SelectItem>
+                              <SelectItem value="commercial">Arc Commercial</SelectItem>
+                              <SelectItem value="production">Arc Production</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <Badge variant="outline">
+                            {PRODUCT_TIER_LABELS[customer.productTier]}
+                          </Badge>
+                        )}
+                        <p className="text-xs text-muted-foreground">
+                          Sets org vocabulary and the default for new projects. It never gates features.
+                        </p>
                       </div>
 
                       <Separator />

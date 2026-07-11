@@ -1,0 +1,62 @@
+"use server"
+
+import { revalidatePath } from "next/cache"
+import { actionError, type ActionResult } from "@/lib/action-result"
+import { addMeetingAttendee, addMeetingItem, createNextMeeting, createTaskFromMeetingItem, finalizeMeeting, updateMeetingItem } from "@/lib/services/meetings"
+import { createMeetingItemTaskSchema, createMeetingSchema, meetingAttendeeSchema, meetingItemSchema, updateMeetingItemSchema } from "@/lib/validation/meetings"
+
+async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
+  try { return { success: true, data: await fn() } } catch (error) { return actionError(error) }
+}
+
+export async function createMeetingAction(input: unknown) {
+  return run(async () => {
+    const parsed = createMeetingSchema.parse(input)
+    const meeting = await createNextMeeting(parsed)
+    revalidatePath(`/projects/${parsed.project_id}/meetings`)
+    return meeting
+  })
+}
+
+export async function addMeetingItemAction(projectId: string, input: unknown) {
+  return run(async () => {
+    const item = await addMeetingItem(meetingItemSchema.parse(input))
+    revalidatePath(`/projects/${projectId}/meetings`)
+    return item
+  })
+}
+
+export async function updateMeetingItemAction(projectId: string, itemId: string, input: unknown) {
+  return run(async () => {
+    const item = await updateMeetingItem(itemId, updateMeetingItemSchema.parse(input))
+    revalidatePath(`/projects/${projectId}/meetings`)
+    return item
+  })
+}
+
+export async function addMeetingAttendeeAction(projectId: string, input: unknown) {
+  return run(async () => {
+    const attendee = await addMeetingAttendee(meetingAttendeeSchema.parse(input))
+    revalidatePath(`/projects/${projectId}/meetings`)
+    return attendee
+  })
+}
+
+export async function createMeetingItemTaskAction(projectId: string, input: unknown) {
+  return run(async () => {
+    const parsed = createMeetingItemTaskSchema.parse(input)
+    const task = await createTaskFromMeetingItem({ itemId: parsed.meeting_item_id, assigneeId: parsed.assignee_id, assigneeKind: parsed.assignee_kind })
+    revalidatePath(`/projects/${projectId}/meetings`)
+    revalidatePath(`/projects/${projectId}/tasks`)
+    return task
+  })
+}
+
+export async function finalizeMeetingAction(projectId: string, meetingId: string) {
+  return run(async () => {
+    const meeting = await finalizeMeeting(meetingId)
+    revalidatePath(`/projects/${projectId}/meetings`)
+    return meeting
+  })
+}
+

@@ -3,7 +3,8 @@
 import { revalidatePath } from "next/cache"
 
 import { requirePermissionGuard } from "@/lib/auth/guards"
-import { createCostCode, importCostCodes, listCostCodes, seedNAHBCostCodes, setCostCodeActive, updateCostCode } from "@/lib/services/cost-codes"
+import { createCostCode, importCostCodes, listCostCodes, seedCSICostCodes, seedNAHBCostCodes, setCostCodeActive, updateCostCode } from "@/lib/services/cost-codes"
+import type { CostType } from "@/lib/cost-types"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -29,6 +30,7 @@ export async function createCostCodeAction(input: {
   unit?: string | null
   is_reimbursable_default?: boolean
   default_markup_percent?: number | null
+  cost_type?: CostType | null
 }) {
   return run(async () => {
       await requirePermissionGuard("org.admin")
@@ -42,6 +44,7 @@ export async function createCostCodeAction(input: {
         is_reimbursable_default: input.is_reimbursable_default,
         default_markup_percent: input.default_markup_percent,
         standard: "custom",
+        cost_type: input.cost_type,
       })
       revalidatePath("/settings")
       revalidatePath("/settings/cost-codes")
@@ -60,6 +63,7 @@ export async function updateCostCodeAction(input: {
   is_reimbursable_default?: boolean
   default_markup_percent?: number | null
   is_active?: boolean
+  cost_type?: CostType | null
 }) {
   return run(async () => {
       await requirePermissionGuard("org.admin")
@@ -74,6 +78,7 @@ export async function updateCostCodeAction(input: {
         is_reimbursable_default: input.is_reimbursable_default,
         default_markup_percent: input.default_markup_percent,
         is_active: input.is_active,
+        cost_type: input.cost_type,
       })
       revalidatePath("/settings")
       revalidatePath("/settings/cost-codes")
@@ -91,10 +96,14 @@ export async function setCostCodeActiveAction(id: string, isActive: boolean) {
   })
 }
 
-export async function seedCostCodesAction() {
+export async function seedCostCodesAction(standard: "nahb" | "csi" = "nahb") {
   return run(async () => {
       await requirePermissionGuard("org.admin")
-      await seedNAHBCostCodes()
+      if (standard === "csi") {
+        await seedCSICostCodes()
+      } else {
+        await seedNAHBCostCodes()
+      }
       revalidatePath("/settings")
       revalidatePath("/settings/cost-codes")
   })
@@ -131,5 +140,4 @@ export async function importCostCodesAction(csv: string) {
       return result
   })
 }
-
 

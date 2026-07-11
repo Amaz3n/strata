@@ -9,6 +9,7 @@ import { recordEvent } from "@/lib/services/events"
 import { getProjectJobCostActualsByCostCode } from "@/lib/services/job-cost-actuals"
 import { requirePermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { COST_TYPES, type CostType } from "@/lib/cost-types"
 
 const budgetLineSchema = z.object({
   id: z.string().uuid().nullable().optional(),
@@ -16,6 +17,7 @@ const budgetLineSchema = z.object({
   description: z.string().min(1),
   amount_cents: z.number().int().min(0),
   metadata: z.record(z.any()).optional(),
+  cost_type: z.enum(COST_TYPES).nullable().optional(),
 })
 
 const createBudgetSchema = z.object({
@@ -106,6 +108,7 @@ export async function createBudget(input: z.infer<typeof createBudgetSchema>, or
       amount_cents: line.amount_cents,
       sort_order: idx,
       metadata: line.metadata ?? {},
+      cost_type: line.cost_type ?? null,
     }))
 
     const { error: linesError } = await supabase.from("budget_lines").insert(linesToInsert)
@@ -179,7 +182,7 @@ export async function duplicateBudgetVersion({
 
   const { data: fromLines, error: linesError } = await supabase
     .from("budget_lines")
-    .select("cost_code_id, description, amount_cents, sort_order, metadata")
+    .select("cost_code_id, description, amount_cents, sort_order, metadata, cost_type")
     .eq("org_id", resolvedOrgId)
     .eq("budget_id", fromBudgetId)
     .order("sort_order", { ascending: true })
@@ -215,6 +218,7 @@ export async function duplicateBudgetVersion({
       amount_cents: line.amount_cents ?? 0,
       sort_order: idx,
       metadata: line.metadata ?? {},
+      cost_type: line.cost_type ?? null,
     }))
 
     const { error: insertLinesError } = await supabase.from("budget_lines").insert(insertLines)
@@ -322,7 +326,7 @@ export async function replaceBudgetLines({
   orgId,
 }: {
   budgetId: string
-  lines: Array<{ id?: string | null; cost_code_id?: string | null; description: string; amount_cents: number; metadata?: Record<string, any> }>
+  lines: Array<{ id?: string | null; cost_code_id?: string | null; description: string; amount_cents: number; metadata?: Record<string, any>; cost_type?: CostType | null }>
   orgId?: string
 }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
@@ -408,6 +412,7 @@ export async function replaceBudgetLines({
       amount_cents: line.amount_cents,
       sort_order: idx,
       metadata: line.metadata ?? {},
+      cost_type: line.cost_type ?? null,
     }))
 
     const rowsWithIds = rows.filter((row) => row.id)
@@ -686,6 +691,7 @@ function emptyBudgetBucket() {
     committed_cents: 0,
     committed_billed_cents: 0,
     pending_cost_cents: 0,
+    pending_change_cost_cents: 0,
     actual_cents: 0,
     invoiced_cents: 0,
     co_adjustment_cents: 0,
@@ -715,6 +721,7 @@ async function getBudgetWithActualsInternal(
     approvedCommitmentBillIds,
     approvedCommitmentChangeOrderIds,
     pendingCommitmentChangeOrderIds,
+    pendingPrimeChangeOrderIds,
   ] = await Promise.all([
     supabase
       .from("project_financial_settings")
@@ -728,8 +735,8 @@ async function getBudgetWithActualsInternal(
         `
       *,
       lines:budget_lines(
-        id, cost_code_id, description, amount_cents, sort_order, metadata,
-        cost_code:cost_codes(id, code, name, category)
+        id, cost_code_id, description, amount_cents, sort_order, metadata, cost_type,
+        cost_code:cost_codes(id, code, name, category, cost_type)
       )
     `,
       )
@@ -813,6 +820,15 @@ async function getBudgetWithActualsInternal(
         .eq("status", "sent"),
       "pending commitment change orders",
     ),
+    selectIds(
+      supabase
+        .from("change_orders")
+        .select("id")
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .in("lifecycle", ["draft", "pricing", "proposed"]),
+      "pending prime change orders",
+    ),
   ])
 
   const costCodesEnabled = settingsResult.data?.cost_codes_enabled ?? true
@@ -843,6 +859,7 @@ async function getBudgetWithActualsInternal(
     approvedCommitmentBillLinesResult,
     approvedCommitmentCoLinesResult,
     pendingCommitmentCoLinesResult,
+    pendingPrimeChangeOrderLinesResult,
     coLinesResult,
   ] = await Promise.all([
     commitmentIds.length === 0
@@ -888,6 +905,13 @@ async function getBudgetWithActualsInternal(
           .select("cost_code_id, budget_line_id, amount_cents, unit_cost_cents, quantity")
           .eq("org_id", orgId)
           .in("commitment_change_order_id", pendingCommitmentChangeOrderIds),
+    pendingPrimeChangeOrderIds.length === 0
+      ? { data: [], error: null }
+      : supabase
+          .from("change_order_lines")
+          .select("cost_code_id, budget_line_id, internal_cost_cents")
+          .eq("org_id", orgId)
+          .in("change_order_id", pendingPrimeChangeOrderIds),
     changeOrderIds.length === 0
       ? { data: [], error: null }
       : supabase
@@ -930,6 +954,12 @@ async function getBudgetWithActualsInternal(
     throw new Error(`Failed to load pending commitment exposure: ${pendingCommitmentCoLinesError.message}`)
   }
 
+  const { data: pendingPrimeChangeOrderLines, error: pendingPrimeChangeOrderLinesError } =
+    pendingPrimeChangeOrderLinesResult
+  if (pendingPrimeChangeOrderLinesError) {
+    throw new Error(`Failed to load pending prime change exposure: ${pendingPrimeChangeOrderLinesError.message}`)
+  }
+
   const { data: coLines, error: coLinesError } = coLinesResult
   if (coLinesError) {
     throw new Error(`Failed to load change order lines: ${coLinesError.message}`)
@@ -939,6 +969,7 @@ async function getBudgetWithActualsInternal(
     string,
     ReturnType<typeof emptyBudgetBucket>
   >()
+  const costTypeByBucket = new Map<string, CostType | null>()
 
   for (const line of budget.lines ?? []) {
     // In code-off mode each budget line is its own bucket (keyed by its row id).
@@ -946,6 +977,8 @@ async function getBudgetWithActualsInternal(
     const existing = byCostCode.get(key) ?? emptyBudgetBucket()
     existing.budget_cents += line.amount_cents ?? 0
     byCostCode.set(key, existing)
+    const linkedCostCode = Array.isArray(line.cost_code) ? line.cost_code[0] : line.cost_code
+    costTypeByBucket.set(key, line.cost_type ?? linkedCostCode?.cost_type ?? null)
   }
 
   for (const line of commitments ?? []) {
@@ -967,6 +1000,7 @@ async function getBudgetWithActualsInternal(
     const existing = byCostCode.get(key) ?? emptyBudgetBucket()
     existing.actual_cents += actual.actual_cents
     byCostCode.set(key, existing)
+    if (!costTypeByBucket.has(key)) costTypeByBucket.set(key, actual.cost_type ?? null)
   }
 
   for (const line of invoiceLines ?? []) {
@@ -994,6 +1028,15 @@ async function getBudgetWithActualsInternal(
     const key = bucketKey(line)
     const existing = byCostCode.get(key) ?? emptyBudgetBucket()
     existing.pending_cost_cents += line.amount_cents ?? (line.unit_cost_cents ?? 0) * (line.quantity ?? 1)
+    byCostCode.set(key, existing)
+  }
+
+  for (const line of pendingPrimeChangeOrderLines ?? []) {
+    if (line.internal_cost_cents == null) continue
+    const key = bucketKey(line)
+    const existing = byCostCode.get(key) ?? emptyBudgetBucket()
+    existing.pending_change_cost_cents += Number(line.internal_cost_cents)
+    existing.pending_cost_cents += Number(line.internal_cost_cents)
     byCostCode.set(key, existing)
   }
 
@@ -1107,6 +1150,7 @@ async function getBudgetWithActualsInternal(
 
     return {
       cost_code_id: costCodeId,
+      cost_type: costTypeByBucket.get(bucketId) ?? null,
       budget_line_id: budgetLineId,
       budget_cents: values.budget_cents,
       baseline_cents,
@@ -1116,6 +1160,7 @@ async function getBudgetWithActualsInternal(
       committed_billed_cents: values.committed_billed_cents,
       remaining_commitment_cents,
       pending_cost_cents: values.pending_cost_cents,
+      pending_change_cost_cents: values.pending_change_cost_cents,
       exposure_cents,
       actual_cents: values.actual_cents,
       invoiced_cents: values.invoiced_cents,
@@ -1133,6 +1178,37 @@ async function getBudgetWithActualsInternal(
             : "ok",
     }
   })
+
+  const costTypeBreakdown = Array.from(
+    breakdown.reduce((groups, row) => {
+      const key = row.cost_type ?? "unclassified"
+      const current = groups.get(key) ?? {
+        cost_type: row.cost_type,
+        budget_cents: 0,
+        committed_cents: 0,
+        pending_cost_cents: 0,
+        actual_cents: 0,
+        eac_cents: 0,
+        variance_at_completion_cents: 0,
+      }
+      current.budget_cents += row.budget_cents
+      current.committed_cents += row.committed_cents
+      current.pending_cost_cents += row.pending_cost_cents
+      current.actual_cents += row.actual_cents
+      current.eac_cents += row.eac_cents
+      current.variance_at_completion_cents += row.variance_at_completion_cents
+      groups.set(key, current)
+      return groups
+    }, new Map<string, {
+      cost_type: CostType | null
+      budget_cents: number
+      committed_cents: number
+      pending_cost_cents: number
+      actual_cents: number
+      eac_cents: number
+      variance_at_completion_cents: number
+    }>()).values(),
+  )
 
   const adjustedTotalBudget = totalBudget + totalCOAdjustment
   const grossMarginCents = totalInvoiced - totalActual
@@ -1163,6 +1239,7 @@ async function getBudgetWithActualsInternal(
       status: grossMarginPercent < 10 ? "critical" : grossMarginPercent < 20 ? "warning" : "healthy",
     },
     breakdown,
+    cost_type_breakdown: costTypeBreakdown,
   }
 }
 

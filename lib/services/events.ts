@@ -268,6 +268,8 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     "lien_waiver_created",
     "lien_waiver_signed",
     "warranty_request_created",
+    "safety_incident_reported",
+    "observation_created",
   ])
 
   const orgScopedEvents = new Set<string>([
@@ -285,6 +287,28 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     "qbo_connected",
     "qbo_disconnected",
   ])
+
+  // Serious incidents (lost-time+) alert everyone who can administer the org,
+  // regardless of project membership — this is the email-eligible alert type.
+  if (event.event_type === "safety_incident_alert") {
+    const { data: adminRoles } = await supabase
+      .from("role_permissions")
+      .select("role_id")
+      .eq("permission_key", "org.admin")
+    const adminRoleIds = (adminRoles ?? []).map((row: any) => row.role_id).filter(Boolean)
+    if (adminRoleIds.length === 0) return []
+    const { data: admins, error: adminsError } = await supabase
+      .from("memberships")
+      .select("user_id")
+      .eq("org_id", orgId)
+      .eq("status", "active")
+      .in("role_id", adminRoleIds)
+    if (adminsError) {
+      console.error("Failed to get org admins for incident alert:", adminsError)
+      return []
+    }
+    return uniqUserIds((admins ?? []).map((m: any) => m.user_id))
+  }
 
   if (projectId && projectScopedEvents.has(event.event_type)) {
     if (event.event_type === "payment_recorded") {
@@ -726,6 +750,14 @@ function titleForEventType(eventType: string): string {
       return "Signature completed"
     case "warranty_request_created":
       return "Warranty request created"
+    case "safety_incident_reported":
+      return "Safety incident reported"
+    case "safety_incident_alert":
+      return "Serious safety incident"
+    case "observation_created":
+      return "New observation"
+    case "inspection_completed":
+      return "Inspection completed"
     default:
       return eventType.replace(/_/g, " ")
   }

@@ -14,6 +14,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { DollarSign, Plus, Sparkles, Trash2 } from "@/components/icons"
+import { CostCodeSelectItems } from "@/components/cost-codes/cost-code-select-items"
 
 interface ChangeOrderFormProps {
   open: boolean
@@ -36,6 +37,7 @@ type LineDraft = {
   quantity: string
   unit: string
   unitCost: string
+  internalCost: string
   allowance: string
   taxable: boolean
   gmpClassification: "inside_gmp" | "outside_gmp"
@@ -51,6 +53,7 @@ function newLineDraft(partial: Partial<LineDraft> = {}): LineDraft {
     quantity: "1",
     unit: "ea",
     unitCost: "",
+    internalCost: "",
     allowance: "",
     taxable: true,
     gmpClassification: "inside_gmp",
@@ -79,10 +82,6 @@ function parsePercent(value: string, max = 100) {
   const parsed = Number(value.replace(/,/g, "").trim())
   if (!Number.isFinite(parsed)) return 0
   return Math.min(max, Math.max(0, parsed))
-}
-
-function costCodeLabel(code: CostCode) {
-  return [code.code, code.name].filter(Boolean).join(" - ") || "Cost code"
 }
 
 function budgetLineLabel(line: BudgetLineOption) {
@@ -131,13 +130,17 @@ export function ChangeOrderForm({
       const allowance = parseMoney(line.allowance)
       return sum + Math.round((quantity * unitCost + allowance) * 100)
     }, 0)
-    const markupCents = Math.round(subtotalCents * (parsePercent(markupPercent) / 100))
+    const hasInternalCosts = lines.some((line) => line.internalCost.trim() !== "")
+    const markupCents = hasInternalCosts ? 0 : Math.round(subtotalCents * (parsePercent(markupPercent) / 100))
     const taxCents = Math.round(taxableBaseCents * (parsePercent(taxRate, 20) / 100))
+    const costCents = lines.reduce((sum, line) => sum + Math.round(parseMoney(line.internalCost) * 100), 0)
     return {
       subtotalCents,
       markupCents,
       taxCents,
       totalCents: subtotalCents + markupCents + taxCents,
+      costCents,
+      marginCents: subtotalCents + markupCents + taxCents - costCents,
     }
   }, [lines, markupPercent, taxRate])
   const canSubmit = Boolean(projectId && title.trim() && lines.length > 0)
@@ -183,6 +186,7 @@ export function ChangeOrderForm({
                 quantity: String(line.quantity ?? 1),
                 unit: line.unit ?? "ea",
                 unitCost: ((line.unit_cost_cents ?? 0) / 100).toFixed(2),
+                internalCost: line.internal_cost_cents != null ? (line.internal_cost_cents / 100).toFixed(2) : "",
                 allowance: line.allowance_cents ? (line.allowance_cents / 100).toFixed(2) : "",
                 taxable: line.taxable !== false,
                 gmpClassification: line.gmp_classification ?? "inside_gmp",
@@ -231,6 +235,8 @@ export function ChangeOrderForm({
         description: line.description.trim(),
         quantity: parseQuantity(line.quantity),
         unitCost: parseMoney(line.unitCost),
+        internalCost: parseMoney(line.internalCost),
+        hasInternalCost: line.internalCost.trim() !== "",
         allowance: parseMoney(line.allowance),
       }))
       .filter((line) => line.description.length > 0 || line.unitCost !== 0 || line.allowance !== 0)
@@ -256,6 +262,10 @@ export function ChangeOrderForm({
       requires_signature: changeOrder ? changeOrder.requires_signature ?? true : true,
       tax_rate: parsePercent(taxRate, 20),
       markup_percent: parsePercent(markupPercent),
+      markup_mode: "percent",
+      lifecycle: changeOrder?.lifecycle ?? "draft",
+      owner_response_due: changeOrder?.owner_response_due ?? null,
+      zero_dollar: changeOrder?.metadata?.zero_dollar === true,
       status,
       client_visible: changeOrder ? changeOrder.client_visible ?? false : false,
       lines: normalizedLines.map((line) => ({
@@ -265,6 +275,7 @@ export function ChangeOrderForm({
         quantity: line.quantity,
         unit: line.unit.trim() || "ea",
         unit_cost: line.unitCost,
+        internal_cost_cents: line.hasInternalCost ? Math.round(line.internalCost * 100) : undefined,
         allowance: line.allowance,
         taxable: line.taxable,
         gmp_classification: line.gmpClassification,
@@ -388,11 +399,7 @@ export function ChangeOrderForm({
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="__none__">Tracking only</SelectItem>
-                              {costCodes.map((code) => (
-                                <SelectItem key={code.id} value={code.id}>
-                                  {costCodeLabel(code)}
-                                </SelectItem>
-                              ))}
+                              <CostCodeSelectItems costCodes={costCodes} />
                             </SelectContent>
                           </Select>
                         ) : (
@@ -419,6 +426,23 @@ export function ChangeOrderForm({
                             </SelectContent>
                           </Select>
                         )}
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-muted-foreground">Internal cost</Label>
+                        <div className="relative">
+                          <DollarSign className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                          <Input
+                            value={line.internalCost}
+                            onChange={(event) => {
+                              const nextValue = event.target.value.replace(",", ".")
+                              if (!/^-?\d*\.?\d{0,2}$/.test(nextValue)) return
+                              setLines((current) => current.map((item) => (item.id === line.id ? { ...item, internalCost: nextValue } : item)))
+                            }}
+                            inputMode="decimal"
+                            className="pl-9"
+                            placeholder="Internal cost total"
+                          />
+                        </div>
                       </div>
                       <div className="grid grid-cols-2 gap-2 sm:grid-cols-[80px_80px_1fr_1fr]">
                         <Input
@@ -449,7 +473,7 @@ export function ChangeOrderForm({
                             }}
                             inputMode="decimal"
                             className="pl-9"
-                            placeholder="Unit cost"
+                            placeholder="Owner unit price"
                           />
                         </div>
                         <div className="relative">
@@ -546,7 +570,26 @@ export function ChangeOrderForm({
                   </Select>
                 </div>
                 <div className="space-y-2">
-                  <Label>Markup %</Label>
+                  <div className="flex items-center justify-between gap-2">
+                    <Label>Markup %</Label>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={() => {
+                        const percent = parsePercent(markupPercent)
+                        setLines((current) => current.map((line) => {
+                          const internalCost = parseMoney(line.internalCost)
+                          const quantity = parseQuantity(line.quantity)
+                          if (line.internalCost.trim() === "" || quantity <= 0) return line
+                          return { ...line, unitCost: (internalCost * (1 + percent / 100) / quantity).toFixed(2) }
+                        }))
+                      }}
+                    >
+                      Derive price
+                    </Button>
+                  </div>
                   <Input
                     value={markupPercent}
                     onChange={(event) => {
@@ -595,8 +638,22 @@ export function ChangeOrderForm({
                 </div>
               </div>
 
-              <div className="rounded-lg border bg-muted/30 p-4">
-                <div className="space-y-2 text-sm">
+              <div className="border bg-muted/30 p-4">
+                <div className="grid grid-cols-3 gap-4 border-b pb-3 text-sm">
+                  <div>
+                    <p className="text-xs text-muted-foreground">Cost</p>
+                    <p className="font-semibold tabular-nums">{formatMoneyFromCents(totals.costCents)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Price</p>
+                    <p className="font-semibold tabular-nums">{formatMoneyFromCents(totals.totalCents)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Margin</p>
+                    <p className="font-semibold tabular-nums">{formatMoneyFromCents(totals.marginCents)}</p>
+                  </div>
+                </div>
+                <div className="mt-3 space-y-2 text-sm">
                   <div className="flex items-center justify-between">
                     <span className="text-muted-foreground">Subtotal</span>
                     <span className="tabular-nums">{formatMoneyFromCents(totals.subtotalCents)}</span>

@@ -28,6 +28,7 @@ import { useMobileAction } from "@/components/layout/mobile-action-context"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import type { User } from "@/lib/types"
+import type { ProductTier } from "@/lib/product-tier"
 import { cn } from "@/lib/utils"
 import { useSidebarProjects } from "./use-sidebar-projects"
 import {
@@ -47,6 +48,7 @@ interface MobileBottomNavProps {
   canAccessPlatform?: boolean
   permissions?: string[]
   whatsNewUnreadCount?: number
+  productTier?: ProductTier
 }
 
 type NavSubItem = ProjectNavSubItem
@@ -99,6 +101,7 @@ export function MobileBottomNav({
   canAccessPlatform,
   permissions = [],
   whatsNewUnreadCount = 0,
+  productTier = "residential",
 }: MobileBottomNavProps) {
   const pathname = useOptimisticPathname()
   const searchParams = useSearchParams()
@@ -171,6 +174,7 @@ export function MobileBottomNav({
           section,
           project: currentProject,
           reviewBadgeCount: projectReviewBadgeCounts[projectId],
+          orgTier: productTier,
         })[0]?.items ?? []
       const closeItem = projectItems.find((item) => item.title === "Close")
       const projectPrimary = projectItems
@@ -287,7 +291,7 @@ export function MobileBottomNav({
       },
     ]
     return { primary: workspacePrimary, menuSections: workspaceMenu }
-  }, [pathname, projectId, isProject, section, currentProject, projectReviewBadgeCounts, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount])
+  }, [pathname, projectId, isProject, section, currentProject, projectReviewBadgeCounts, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, productTier])
 
   const visiblePrimary = useMemo(
     () =>

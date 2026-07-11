@@ -16,7 +16,7 @@ import {
 export interface ProjectPortalInviteEmailProps {
   recipientName?: string | null
   projectName: string
-  portalType: "client" | "sub"
+  portalType: "client" | "sub" | "reviewer"
   orgName?: string | null
   orgLogoUrl?: string | null
   portalLink: string
@@ -33,7 +33,8 @@ export function ProjectPortalInviteEmail({
   const previewText = `Open ${projectName} in Arc`
   const displayOrgName = orgName ?? "Arc"
   const greeting = recipientName ? `Hi ${recipientName},` : "Hi,"
-  const portalLabel = portalType === "sub" ? "Subcontractor Portal" : "Project Portal"
+  const portalLabel =
+    portalType === "sub" ? "Subcontractor Portal" : portalType === "reviewer" ? "Design Review Portal" : "Project Portal"
 
   return (
     <Html>

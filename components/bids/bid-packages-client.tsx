@@ -31,6 +31,7 @@ import { CalendarDays, Plus } from "@/components/icons"
 import { createBidPackageAction } from "@/app/(app)/projects/[id]/bids/actions"
 import { createProspectBidPackageAction } from "@/app/(app)/pipeline/prospects/[prospectId]/bids/actions"
 import { BidStatusBadge } from "@/components/bids/bid-status-badge"
+import { CostCodeSelectItems } from "@/components/cost-codes/cost-code-select-items"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -247,11 +248,7 @@ export function BidPackagesClient({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="__none__">No cost code yet</SelectItem>
-                  {costCodes.map((code) => (
-                    <SelectItem key={code.id} value={code.id}>
-                      {code.code ? `${code.code} — ${code.name}` : code.name}
-                    </SelectItem>
-                  ))}
+                  <CostCodeSelectItems costCodes={costCodes} />
                 </SelectContent>
               </Select>
             </div>

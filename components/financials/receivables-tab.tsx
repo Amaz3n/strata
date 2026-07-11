@@ -5,12 +5,15 @@ import type { InvoiceArSummary } from "@/lib/services/invoices"
 import { InvoicesClient } from "@/components/invoices/invoices-client"
 import { PeriodCloseWorkflow } from "@/components/financials/period-close-workflow"
 import { DrawScheduleManager } from "@/components/projects/draw-schedule-manager"
+import { PayApplicationsTab } from "@/components/financials/pay-applications-tab"
+import { PrimeRetainagePanel } from "@/components/financials/prime-retainage-panel"
+import { PrimeSovTab } from "@/components/financials/prime-sov-tab"
 import { RetainageTracker } from "@/components/projects/retainage-tracker"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { AlertTriangle, Receipt, Calendar, DollarSign, PackageCheck, Percent } from "lucide-react"
+import { AlertTriangle, Receipt, Calendar, DollarSign, FileText, ListOrdered, PackageCheck, Percent } from "lucide-react"
 import { useEffect, useMemo, useState, useTransition } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { toast } from "sonner"
@@ -20,6 +23,8 @@ import type { ProjectBillingPeriod } from "@/lib/services/billing-periods"
 import type { ProjectGmpControlSummary } from "@/lib/services/gmp-control"
 import type { OwnerBillingPackageSummary } from "@/lib/services/owner-billing-packages"
 import type { ProjectFeeBillingSummary } from "@/lib/services/fee-billing"
+import type { PrimeSovState } from "@/lib/services/prime-sov"
+import type { PayApplication } from "@/lib/services/pay-applications"
 import {
   createProjectFeeInvoiceAction,
   updateProjectFeeProgressAction,
@@ -52,6 +57,8 @@ interface ReceivablesTabProps {
   billingModel: ProjectBillingModel
   showDraws?: boolean
   showRetainage?: boolean
+  sovState?: PrimeSovState | null
+  payApplications?: PayApplication[] | null
   closeWorkflow?: CloseWorkflowData | null
   invoices: Invoice[]
   draws: DrawSchedule[]
@@ -72,7 +79,7 @@ interface ReceivablesTabProps {
   loadErrors?: string[]
 }
 
-type ReceivablesSubTab = "invoices" | "close" | "fee" | "draws" | "retainage"
+type ReceivablesSubTab = "invoices" | "close" | "fee" | "draws" | "sov" | "payapps" | "retainage"
 
 export function ReceivablesTab({
   projectId,
@@ -80,6 +87,8 @@ export function ReceivablesTab({
   billingModel,
   showDraws = false,
   showRetainage = true,
+  sovState = null,
+  payApplications = null,
   closeWorkflow = null,
   invoices,
   draws,
@@ -101,14 +110,18 @@ export function ReceivablesTab({
   const tabParam = searchParams.get("tab")
   const showCloseTab = Boolean(closeWorkflow)
   const showFeeTab = billingModel === "cost_plus_fixed_fee" || Boolean(initialFeeSummary?.enabled)
+  const showSovTab = Boolean(sovState)
+  const showPayAppsTab = payApplications != null
   const visibleTabs = useMemo(() => {
     const tabs: ReceivablesSubTab[] = ["invoices"]
     if (showCloseTab) tabs.push("close")
     if (showFeeTab) tabs.push("fee")
     if (showDraws) tabs.push("draws")
+    if (showSovTab) tabs.push("sov")
+    if (showPayAppsTab) tabs.push("payapps")
     if (showRetainage) tabs.push("retainage")
     return tabs
-  }, [showCloseTab, showFeeTab, showDraws, showRetainage])
+  }, [showCloseTab, showFeeTab, showDraws, showSovTab, showPayAppsTab, showRetainage])
   const [subTab, setSubTab] = useState<ReceivablesSubTab>(() =>
     tabParam && visibleTabs.includes(tabParam as ReceivablesSubTab) ? (tabParam as ReceivablesSubTab) : "invoices",
   )
@@ -161,6 +174,8 @@ export function ReceivablesTab({
     invoices: safeInvoices.length,
     close: closeWorkflow?.summary.readyCostCount ?? 0,
     draws: draws.length,
+    sov: sovState?.lines.length ?? 0,
+    payapps: payApplications?.length ?? 0,
     retainage: safeRetainage.length,
   }
 
@@ -254,6 +269,30 @@ export function ReceivablesTab({
             Draw Schedule
             <Badge variant="secondary" className="h-5 rounded-sm px-1.5 text-[10px]">
               {tabCounts.draws}
+            </Badge>
+          </TabsTrigger>
+        ) : null}
+        {showSovTab ? (
+          <TabsTrigger
+            value="sov"
+            className="h-14 gap-2 rounded-none border-0 px-3.5 text-muted-foreground shadow-none transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-0 data-[state=active]:bg-transparent data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:shadow-none"
+          >
+            <ListOrdered className="h-4 w-4" />
+            Schedule of Values
+            <Badge variant="secondary" className="h-5 rounded-sm px-1.5 text-[10px]">
+              {tabCounts.sov}
+            </Badge>
+          </TabsTrigger>
+        ) : null}
+        {showPayAppsTab ? (
+          <TabsTrigger
+            value="payapps"
+            className="h-14 gap-2 rounded-none border-0 px-3.5 text-muted-foreground shadow-none transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-0 data-[state=active]:bg-transparent data-[state=active]:font-semibold data-[state=active]:text-foreground data-[state=active]:shadow-none"
+          >
+            <FileText className="h-4 w-4" />
+            Pay Applications
+            <Badge variant="secondary" className="h-5 rounded-sm px-1.5 text-[10px]">
+              {tabCounts.payapps}
             </Badge>
           </TabsTrigger>
         ) : null}
@@ -367,10 +406,40 @@ export function ReceivablesTab({
           </TabsContent>
         ) : null}
 
+        {showSovTab && sovState ? (
+          <TabsContent value="sov" className="m-0">
+            <div className="border-b bg-background/95 px-4 sm:px-6 lg:px-8">{renderTabList()}</div>
+            <PrimeSovTab
+              projectId={projectId}
+              sov={sovState}
+              costCodes={visibleCostCodes}
+              costCodesEnabled={costCodesEnabled}
+            />
+          </TabsContent>
+        ) : null}
+
+        {showPayAppsTab && payApplications ? (
+          <TabsContent value="payapps" className="m-0">
+            <div className="border-b bg-background/95 px-4 sm:px-6 lg:px-8">{renderTabList()}</div>
+            <PayApplicationsTab
+              projectId={projectId}
+              payApplications={payApplications}
+              onInvoiceGenerated={(invoiceId) => {
+                if (invoiceId) {
+                  setOpenInvoiceId(invoiceId)
+                  changeSubTab("invoices")
+                }
+                router.refresh()
+              }}
+            />
+          </TabsContent>
+        ) : null}
+
         {showRetainage ? (
           <TabsContent value="retainage" className="m-0">
             <div className="border-b bg-background/95 px-4 sm:px-6 lg:px-8">{renderTabList()}</div>
             <div className="p-4 sm:p-6 lg:p-8">
+              {sovState ? <PrimeRetainagePanel projectId={projectId} sov={sovState} /> : null}
               <RetainageTracker projectId={projectId} retainage={safeRetainage} />
             </div>
           </TabsContent>

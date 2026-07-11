@@ -98,7 +98,8 @@ export interface ScheduleContextValue {
   onItemsBulkUpdate: (updates: ScheduleBulkItemUpdate[]) => Promise<ScheduleItem[]>
   onItemCreate: (item: Partial<ScheduleItem>) => Promise<ScheduleItem>
   onItemDelete: (id: string) => Promise<void>
-  onDependencyCreate: (from: string, to: string, type?: string) => Promise<void>
+  onDependencyCreate: (from: string, to: string, type?: ScheduleDependency["dependency_type"], lagDays?: number) => Promise<void>
+  onDependencyUpdate: (id: string, type: ScheduleDependency["dependency_type"], lagDays: number) => Promise<ScheduleDependency>
   onDependencyDelete: (id: string) => Promise<void>
   
   // Navigation

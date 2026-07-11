@@ -113,7 +113,7 @@ export function RfisPortalClient({ rfis, token }: RfisPortalClientProps) {
           {items.map((rfi) => (
             <Card key={rfi.id}>
               <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle className="text-base">RFI #{rfi.rfi_number}</CardTitle>
+                <CardTitle className="text-base">RFI #{rfi.display_number ?? rfi.rfi_number}</CardTitle>
                 <Badge variant="secondary" className="capitalize text-[11px]">
                   {rfi.status}
                 </Badge>

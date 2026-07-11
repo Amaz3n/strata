@@ -9,6 +9,9 @@ import {
   linkInvoiceToChangeOrder,
   listChangeOrders,
   publishChangeOrder,
+  startPricing,
+  rejectChangeOrder,
+  deriveOwnerPriceFromCost,
   unlinkInvoiceFromChangeOrder,
   updateChangeOrder,
   deleteChangeOrder,
@@ -18,6 +21,8 @@ import {
 import {
   createCommitmentChangeOrderFromClientChangeOrder,
   getChangeOrderSubCostSignal,
+  linkCommitmentChangeOrderToClientChangeOrder,
+  listCommitmentChangeOrders,
   listCommitmentChangeOrdersForClientChangeOrder,
 } from "@/lib/services/commitment-change-orders"
 import { listProjectCommitments } from "@/lib/services/commitments"
@@ -225,6 +230,33 @@ export async function publishChangeOrderAction(changeOrderId: string) {
   })
 }
 
+export async function startChangeOrderPricingAction(changeOrderId: string) {
+  return run(async () => {
+    const changeOrder = await startPricing(changeOrderId)
+    revalidatePath("/change-orders")
+    revalidatePath(`/projects/${changeOrder.project_id}/change-orders`)
+    return changeOrder
+  })
+}
+
+export async function rejectChangeOrderAction(changeOrderId: string) {
+  return run(async () => {
+    const changeOrder = await rejectChangeOrder(changeOrderId)
+    revalidatePath("/change-orders")
+    revalidatePath(`/projects/${changeOrder.project_id}/change-orders`)
+    return changeOrder
+  })
+}
+
+export async function deriveChangeOrderPriceAction(changeOrderId: string, markupPercent: number) {
+  return run(async () => {
+    const changeOrder = await deriveOwnerPriceFromCost(changeOrderId, markupPercent)
+    revalidatePath("/change-orders")
+    revalidatePath(`/projects/${changeOrder.project_id}/change-orders`)
+    return changeOrder
+  })
+}
+
 export async function approveChangeOrderAction(changeOrderId: string, input?: unknown) {
   return run(async () => {
     const changeOrder = await approveChangeOrder({
@@ -298,6 +330,28 @@ export async function getChangeOrderSubCostSignalAction(changeOrderId: string) {
 
 export async function listCommitmentsForChangeOrderAction(projectId: string) {
   return await listProjectCommitments(projectId)
+}
+
+export async function listLinkableCommitmentChangeOrdersAction(projectId: string) {
+  const rows = await listCommitmentChangeOrders({ projectId })
+  return rows.filter((row) => !row.prime_change_order_id && row.status !== "voided")
+}
+
+export async function linkCommitmentChangeOrderToChangeOrderAction(
+  projectId: string,
+  changeOrderId: string,
+  commitmentChangeOrderId: string,
+) {
+  return run(async () => {
+    const link = await linkCommitmentChangeOrderToClientChangeOrder({
+      input: { change_order_id: changeOrderId, commitment_change_order_id: commitmentChangeOrderId },
+    })
+    const changeOrder = (await listChangeOrders({ projectId })).find((row) => row.id === changeOrderId)
+    if (!changeOrder) throw new Error("Failed to reload change order after linking cost.")
+    revalidatePath(`/projects/${projectId}/change-orders`)
+    revalidatePath(`/projects/${projectId}/financials/budget`)
+    return { link, changeOrder }
+  })
 }
 
 export async function createCommitmentChangeOrderFromChangeOrderAction(

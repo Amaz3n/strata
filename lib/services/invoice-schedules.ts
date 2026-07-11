@@ -9,6 +9,7 @@ import { compareInvoiceNumbers, incrementInvoiceNumber } from "@/lib/services/in
 import { requireAuthorization } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
+import { normalizeProductTier } from "@/lib/product-tier"
 
 export type InvoiceScheduleFrequency = "weekly" | "monthly" | "quarterly"
 
@@ -33,7 +34,7 @@ export interface InvoiceSchedule {
 }
 
 const SCHEDULE_COLUMNS =
-  "id, org_id, project_id, source_invoice_id, template, frequency, next_run_on, day_of_month, auto_send, recipient_email, active, last_run_at, last_invoice_id, created_by, created_at"
+  "id, org_id, project_id, source_invoice_id, template, frequency, next_run_on, day_of_month, auto_send, recipient_email, active, last_run_at, last_invoice_id, created_by, created_at, org:orgs(product_tier)"
 
 function templateTotalCents(template: Record<string, any>): number {
   const lines = Array.isArray(template.lines) ? template.lines : []
@@ -309,9 +310,15 @@ export async function runDueInvoiceSchedules(today = new Date()): Promise<Schedu
         reservation_id: undefined,
       })
 
+      const scheduleOrg = Array.isArray(row.org) ? row.org[0] : row.org
       const invoice = await createInvoice({
         input,
-        context: { supabase: serviceClient, orgId: row.org_id, userId: row.created_by },
+        context: {
+          supabase: serviceClient,
+          orgId: row.org_id,
+          userId: row.created_by,
+          productTier: normalizeProductTier(scheduleOrg?.product_tier),
+        },
       })
 
       await serviceClient

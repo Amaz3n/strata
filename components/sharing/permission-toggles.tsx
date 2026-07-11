@@ -43,10 +43,12 @@ const DEFAULTS: PortalPermissions = {
   can_view_warranty: true,
   can_submit_time: true,
   can_submit_expenses: true,
+  can_submit_daily_logs: false,
   can_view_commitments: true,
   can_view_bills: true,
   can_submit_invoices: true,
   can_upload_compliance_docs: true,
+  can_view_punch_items: false,
 }
 
 const PERMISSION_GROUPS = [
@@ -76,9 +78,11 @@ const PERMISSION_GROUPS = [
       { key: "can_approve_change_orders", label: "Approve COs", icon: CheckSquare },
       { key: "can_submit_selections", label: "Submit selections", icon: CheckSquare },
       { key: "can_create_punch_items", label: "Create punch items", icon: Flag },
+      { key: "can_view_punch_items", label: "Work punch items", icon: CheckSquare },
       { key: "can_submit_invoices", label: "Submit invoices", icon: Receipt },
       { key: "can_submit_time", label: "Submit time", icon: ClipboardList },
       { key: "can_submit_expenses", label: "Submit expenses", icon: DollarSign },
+      { key: "can_submit_daily_logs", label: "Submit daily logs", icon: ClipboardList },
       { key: "can_upload_compliance_docs", label: "Upload compliance", icon: Layers },
     ],
   },

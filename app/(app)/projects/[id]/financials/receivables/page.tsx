@@ -51,6 +51,8 @@ async function FinancialsReceivablesData({ id, periodId }: { id: string; periodI
         billingModel={featureConfig.billingModel}
         showDraws={featureConfig.showDraws}
         showRetainage={financialsData.showRetainage}
+        sovState={financialsData.sovState}
+        payApplications={financialsData.payApplications}
         closeWorkflow={
           financialsData.costDriven
             ? {

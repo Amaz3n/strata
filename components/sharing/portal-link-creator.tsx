@@ -9,6 +9,7 @@ import {
   ShieldCheck,
   User,
   Users,
+  PencilRuler,
   Building2,
   Link2,
   CheckCircle2,
@@ -25,7 +26,15 @@ import {
   Info
 } from "lucide-react"
 
-import type { PortalAccessToken, PortalPermissions, ProjectVendor, Contact, Project } from "@/lib/types"
+import {
+  REVIEWER_ROLE_LABELS,
+  type Contact,
+  type PortalAccessToken,
+  type PortalPermissions,
+  type Project,
+  type ProjectVendor,
+  type ReviewerRole,
+} from "@/lib/types"
 import { createPortalTokenAction, loadProjectVendorsAction } from "@/app/(app)/sharing/actions"
 import { sendPortalInviteAction } from "@/app/(app)/contacts/actions"
 import { cn } from "@/lib/utils"
@@ -62,6 +71,14 @@ interface InviteCandidate {
 
 const defaultExpires = format(addDays(new Date(), 90), "yyyy-MM-dd")
 
+const REVIEWER_COMPANY_TYPES = new Set(["architect", "engineer", "consultant"])
+
+const PORTAL_PATH: Record<"client" | "sub" | "reviewer", string> = {
+  client: "p",
+  sub: "s",
+  reviewer: "r",
+}
+
 export function PortalLinkCreator({
   projectId,
   project,
@@ -70,7 +87,8 @@ export function PortalLinkCreator({
   onCreated,
   enabled = true
 }: PortalLinkCreatorProps) {
-  const [portalType, setPortalType] = useState<"client" | "sub">("client")
+  const [portalType, setPortalType] = useState<"client" | "sub" | "reviewer">("client")
+  const [reviewerRole, setReviewerRole] = useState<ReviewerRole>("architect")
   const [shareMethod, setShareMethod] = useState<ShareMethod>("email")
   const [companyId, setCompanyId] = useState("")
   const [selectedContactId, setSelectedContactId] = useState("")
@@ -197,7 +215,32 @@ export function PortalLinkCreator({
     return Array.from(unique.values()).sort((a, b) => a.title.localeCompare(b.title))
   }, [contacts, projectVendors])
 
-  const candidates = portalType === "client" ? clientCandidates : subCandidates
+  const reviewerCandidates = useMemo(() => {
+    const withEmail = contacts.filter((contact) => !!contact.email)
+    const designTeam = withEmail.filter((contact) => {
+      const companies = [contact.primary_company, ...(contact.company_details ?? [])].filter(Boolean)
+      return companies.some((company) => REVIEWER_COMPANY_TYPES.has((company?.company_type ?? "").toLowerCase()))
+    })
+
+    const source = designTeam.length > 0 ? designTeam : withEmail
+    const unique = new Map<string, InviteCandidate>()
+    for (const contact of source) {
+      if (!contact.email || unique.has(contact.id)) continue
+      const company = contact.primary_company ?? contact.company_details?.[0]
+      unique.set(contact.id, {
+        contactId: contact.id,
+        title: contact.full_name,
+        subtitle: company?.name || contact.role || "External reviewer",
+        email: contact.email,
+        companyId: company?.id,
+      })
+    }
+
+    return Array.from(unique.values()).sort((a, b) => a.title.localeCompare(b.title))
+  }, [contacts])
+
+  const candidates =
+    portalType === "client" ? clientCandidates : portalType === "sub" ? subCandidates : reviewerCandidates
 
   // Filter subcontractor contacts dynamically by the selected company
   const subCandidatesForCompany = useMemo(() => {
@@ -236,6 +279,13 @@ export function PortalLinkCreator({
       setSelectedContactId(clientCandidates[0].contactId)
     }
   }, [portalType, clientCandidates, selectedContactId])
+
+  // Pre-select first reviewer candidate
+  useEffect(() => {
+    if (portalType === "reviewer" && reviewerCandidates.length > 0 && !selectedContactId) {
+      setSelectedContactId(reviewerCandidates[0].contactId)
+    }
+  }, [portalType, reviewerCandidates, selectedContactId])
 
   // Apply permission preset
   useEffect(() => {
@@ -299,6 +349,11 @@ export function PortalLinkCreator({
       return
     }
 
+    if (portalType === "reviewer" && (!selectedContactId || selectedContactId === "generic")) {
+      toast.error("Select a reviewer contact")
+      return
+    }
+
     if (requirePin && !/^[0-9]{4,6}$/.test(pin)) {
       toast.error("Enter a 4-6 digit PIN")
       return
@@ -312,11 +367,12 @@ export function PortalLinkCreator({
             contactId: selectedContactId,
             projectId: projectId,
             portalType,
+            reviewerRole: portalType === "reviewer" ? reviewerRole : undefined,
           }))
-          
+
           setLastCreated(result.token)
           onCreated(result.token)
-          setCreatedUrl(`${origin}/${portalType === "client" ? "p" : "s"}/${result.token.token}`)
+          setCreatedUrl(`${origin}/${PORTAL_PATH[portalType]}/${result.token.token}`)
           
           if (result.email_sent) {
             toast.success("Secure email invite sent", {
@@ -332,8 +388,14 @@ export function PortalLinkCreator({
           const token = unwrapAction(await createPortalTokenAction({
             project_id: projectId,
             portal_type: portalType,
-            company_id: portalType === "sub" ? companyId : undefined,
+            company_id:
+              portalType === "sub"
+                ? companyId
+                : portalType === "reviewer"
+                  ? selectedCandidate?.companyId
+                  : undefined,
             contact_id: (selectedContactId && selectedContactId !== "generic") ? selectedContactId : undefined,
+            reviewer_role: portalType === "reviewer" ? reviewerRole : undefined,
             expires_at: expiresAt || null,
             permissions,
             pin: requirePin ? pin : undefined,
@@ -341,7 +403,7 @@ export function PortalLinkCreator({
 
           setLastCreated(token)
           onCreated(token)
-          setCreatedUrl(`${origin}/${portalType === "client" ? "p" : "s"}/${token.token}`)
+          setCreatedUrl(`${origin}/${PORTAL_PATH[portalType]}/${token.token}`)
           setPin("")
           toast.success("Access link created successfully")
         }
@@ -374,7 +436,7 @@ export function PortalLinkCreator({
         <Label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
           Audience
         </Label>
-        <div className="grid grid-cols-2 gap-1.5 bg-muted/40 p-1 rounded-none border border-border/80">
+        <div className="grid grid-cols-3 gap-1.5 bg-muted/40 p-1 rounded-none border border-border/80">
           <button
             type="button"
             onClick={() => setPortalType("client")}
@@ -400,6 +462,19 @@ export function PortalLinkCreator({
           >
             <Users className="h-3.5 w-3.5" />
             <span>Subcontractor</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setPortalType("reviewer")}
+            className={cn(
+              "flex items-center justify-center gap-2 py-2 text-xs font-semibold rounded-none transition-all",
+              portalType === "reviewer"
+                ? "bg-background text-foreground shadow-sm border border-border/20"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
+            )}
+          >
+            <PencilRuler className="h-3.5 w-3.5" />
+            <span>Reviewer</span>
           </button>
         </div>
       </div>
@@ -431,6 +506,53 @@ export function PortalLinkCreator({
                 ))}
               </SelectContent>
             </Select>
+          </div>
+        ) : portalType === "reviewer" ? (
+          /* External Reviewer Selection */
+          <div className="space-y-3.5">
+            <div className="space-y-1.5">
+              <Label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                Reviewer
+              </Label>
+              <Select value={selectedContactId} onValueChange={setSelectedContactId}>
+                <SelectTrigger className="h-10 w-full bg-background/50 border border-border rounded-none shadow-sm focus:ring-2 focus:ring-primary/20">
+                  <SelectValue placeholder="Choose architect, engineer, or owner's rep" />
+                </SelectTrigger>
+                <SelectContent className="rounded-none">
+                  {reviewerCandidates.map((candidate) => (
+                    <SelectItem key={candidate.contactId} value={candidate.contactId} className="focus:bg-primary/5">
+                      <span className="font-semibold block">{candidate.title}</span>
+                      <span className="text-[10px] text-muted-foreground block">
+                        {candidate.email} • {candidate.subtitle}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {reviewerCandidates.length === 0 && (
+                <p className="text-[11px] text-muted-foreground pl-1">
+                  Add an architect, engineer, or owner&apos;s rep contact with an email to mint a reviewer link.
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                Reviewer Role
+              </Label>
+              <Select value={reviewerRole} onValueChange={(value) => setReviewerRole(value as ReviewerRole)}>
+                <SelectTrigger className="h-10 w-full bg-background/50 border border-border rounded-none shadow-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="rounded-none">
+                  {(Object.entries(REVIEWER_ROLE_LABELS) as Array<[ReviewerRole, string]>).map(([value, label]) => (
+                    <SelectItem key={value} value={value}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         ) : (
           /* Subcontractor Recipient Selection */
@@ -677,7 +799,12 @@ export function PortalLinkCreator({
       <Button
         className="h-11 w-full gap-2 text-sm font-semibold rounded-none shadow-md transition-all hover:translate-y-[-1px] active:translate-y-[0]"
         onClick={handleAction}
-        disabled={isSubmitting || !projectId || (portalType === "sub" && !companyId)}
+        disabled={
+          isSubmitting ||
+          !projectId ||
+          (portalType === "sub" && !companyId) ||
+          (portalType === "reviewer" && (!selectedContactId || selectedContactId === "generic"))
+        }
       >
         {isSubmitting ? (
           <Loader2 className="h-4 w-4 animate-spin" />

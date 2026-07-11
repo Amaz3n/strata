@@ -1,5 +1,18 @@
 # Workstream 06 — Safety Module, Quality Inspections, Punch Ball-in-Court
 
+> **STATUS (2026-07-10): CODE COMPLETE; MIGRATIONS APPLIED TO PROD; MANUAL QA
+> PENDING.** All four phases implemented (`pnpm lint` + `tsc` clean). Migrations
+> `20260711020000_punch_company_assignment.sql`, `20260711021000_inspections.sql`,
+> and `20260711022000_safety_records.sql` applied via Supabase MCP 2026-07-10 and
+> verified (tables, RLS, RPCs, permission grants). Deviations:
+> template library lives at standalone `/settings/checklists` (not a SettingsWindow
+> tab); inspection/incident PDFs render on demand via the project exports route
+> (pdf_file_id columns unused for now); serious-incident email uses a dedicated
+> `safety_incident_alert` event type so only lost-time+ emails org admins. Recorded
+> debt: consolidate legacy schedule-item inspections onto the engine (pointer
+> comments in `lib/services/schedule.ts` + `lib/validation/inspections.ts`); iOS
+> API parity for inspections/safety/punch-BIC.
+
 > Prereq: 00 master, 01. Benefits from 05 (PDF kit) — build after it if possible.
 > Safety is essentially absent in Arc today (only a file category); quality exists only
 > as a schedule-item subtype; punch is internal-user-assigned with no sub loop. All

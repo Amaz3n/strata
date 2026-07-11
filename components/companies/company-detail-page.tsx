@@ -71,6 +71,8 @@ import { PortalInviteDialog } from "@/components/contacts/portal-invite-dialog";
 import { CompanyCommitments } from "@/components/companies/company-commitments";
 import { CompanyPayables } from "@/components/companies/company-payables";
 import { CompanyComplianceTab } from "@/components/companies/company-compliance-tab";
+import { PrequalificationCard } from "@/components/companies/prequalification-card";
+import type { Prequalification } from "@/lib/services/prequalification";
 import {
   EmptyState,
   Section,
@@ -318,6 +320,7 @@ export function CompanyDetailPage({
   projects,
   canEdit,
   canArchive,
+  prequalification = null,
 }: {
   company: Company & { contacts: Contact[] };
   projectHistory: { id: string; name: string }[];
@@ -329,6 +332,7 @@ export function CompanyDetailPage({
   projects: Project[];
   canEdit: boolean;
   canArchive: boolean;
+  prequalification?: Prequalification | null;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -595,6 +599,11 @@ export function CompanyDetailPage({
               </p>
             </div>
           ) : null}
+        </div>
+      ) : null}
+      {isVendorCompany ? (
+        <div className="border-t p-4">
+          <PrequalificationCard companyId={company.id} prequalification={prequalification} canEdit={canEdit} />
         </div>
       ) : null}
     </Section>

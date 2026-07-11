@@ -5,7 +5,7 @@ export async function getOrgBilling(orgId?: string) {
 
   const { data: org, error: orgError } = await supabase
     .from("orgs")
-    .select("id, name, slug, logo_url, billing_model, billing_email, address")
+    .select("id, name, slug, logo_url, billing_model, billing_email, address, product_tier")
     .eq("id", resolvedOrgId)
     .maybeSingle()
 

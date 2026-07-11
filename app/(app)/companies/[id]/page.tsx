@@ -16,6 +16,7 @@ import { listVendorBillsForCompany } from "@/lib/services/vendor-bills";
 import { getDirectoryIntelligenceForCompanies } from "@/lib/services/directory-intelligence";
 import { listProjectsAction } from "@/app/(app)/projects/actions";
 import { CompanyDetailPage } from "@/components/companies/company-detail-page";
+import { getLatestPrequalification } from "@/lib/services/prequalification";
 
 interface CompanyDetailPageProps {
   params: Promise<{ id: string }>;
@@ -29,11 +30,12 @@ export default async function CompanyDetailPageRoute({
     notFound();
   }
 
-  const [company, projectHistory, projects, permissionResult] = await Promise.all([
+  const [company, projectHistory, projects, permissionResult, prequalification] = await Promise.all([
     getCompany(companyId),
     getCompanyProjects(companyId),
     listProjectsAction(),
     getCurrentUserPermissions(),
+    getLatestPrequalification(companyId),
   ]);
 
   const isClientCompany = company.company_type === "client";
@@ -84,6 +86,7 @@ export default async function CompanyDetailPageRoute({
         projects={projects}
         canEdit={canEdit}
         canArchive={canArchive}
+        prequalification={prequalification}
       />
     </PageLayout>
   );

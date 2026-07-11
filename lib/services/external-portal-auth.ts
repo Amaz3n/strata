@@ -739,23 +739,29 @@ export async function getExternalPortalWorkspaceContext({
     if (resolvedToken.expires_at && new Date(resolvedToken.expires_at) <= now) continue
     if (resolvedToken.max_access_count && resolvedToken.access_count >= resolvedToken.max_access_count) continue
 
-    const kind = resolvedToken.portal_type === "sub" ? "sub" : "client"
+    const kind =
+      resolvedToken.portal_type === "sub" ? "sub" : resolvedToken.portal_type === "reviewer" ? "reviewer" : "client"
     const contactName = contact?.full_name ?? contact?.email ?? null
+    const label = kind === "sub" ? "Sub portal" : kind === "reviewer" ? "Reviewer portal" : "Client portal"
     const subtitle =
       kind === "sub"
         ? company?.name
           ? `Sub portal for ${company.name}`
           : "Sub portal"
-        : contactName
-          ? `Client portal for ${contactName}`
-          : "Client portal"
+        : kind === "reviewer"
+          ? contactName
+            ? `Reviewer portal for ${contactName}`
+            : "Reviewer portal"
+          : contactName
+            ? `Client portal for ${contactName}`
+            : "Client portal"
 
     items.push({
       id: row.id,
       token_id: resolvedToken.id,
-      href: kind === "sub" ? `/s/${resolvedToken.token}` : `/p/${resolvedToken.token}`,
+      href: kind === "sub" ? `/s/${resolvedToken.token}` : kind === "reviewer" ? `/r/${resolvedToken.token}` : `/p/${resolvedToken.token}`,
       kind,
-      label: kind === "sub" ? "Sub portal" : "Client portal",
+      label,
       subtitle,
       org_id: session.org_id,
       org_name: orgRow?.name ?? "Arc",

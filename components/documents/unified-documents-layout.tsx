@@ -7,6 +7,7 @@ import { Check, Copy, FileCheck2, FolderClosed, History, Link2, Loader2, Search,
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { usePageTitle } from "@/components/layout/page-title-context";
+import { useProductTerminology } from "@/components/layout/use-product-terminology";
 import { FileDropOverlay } from "@/components/files/file-drop-overlay";
 import { FileViewer } from "@/components/files/file-viewer";
 import { DrawingViewer } from "@/components/drawings/drawing-viewer";
@@ -198,9 +199,10 @@ function formatVersionDate(value?: string | null) {
 }
 
 const EXPLORER_OPEN_STORAGE_KEY = "documents-explorer-open";
-function shareSummary(withClients: boolean, withSubs: boolean): string {
-  if (withClients && withSubs) return "Visible to your team, clients, and subcontractors.";
-  if (withClients) return "Visible to your team and clients.";
+function shareSummary(withClients: boolean, withSubs: boolean, owners: string): string {
+  const ownerLabel = owners.toLowerCase();
+  if (withClients && withSubs) return `Visible to your team, ${ownerLabel}, and subcontractors.`;
+  if (withClients) return `Visible to your team and ${ownerLabel}.`;
   if (withSubs) return "Visible to your team and subcontractors.";
   return "Visible to your internal team only.";
 }
@@ -242,6 +244,7 @@ function UnifiedDocumentsLayoutInner() {
     refreshFolderPermissions,
   } = useDocuments();
   const { setBreadcrumbs } = usePageTitle();
+  const terms = useProductTerminology();
   const requestedFileId = searchParams.get("fileId");
   const highlightedFileId = searchParams.get("highlight");
 
@@ -2326,9 +2329,9 @@ function UnifiedDocumentsLayoutInner() {
               <div className="divide-y rounded-lg border">
                 <label className="flex cursor-pointer items-center justify-between gap-4 px-4 py-3">
                   <div className="min-w-0">
-                    <p className="text-sm font-medium">Client portal</p>
+                    <p className="text-sm font-medium">{terms.ownerPortal}</p>
                     <p className="text-xs text-muted-foreground">
-                      Accessible to clients on the client portal.
+                      Accessible to {terms.owners.toLowerCase()} on the {terms.ownerPortal.toLowerCase()}.
                     </p>
                   </div>
                   <Switch
@@ -2352,7 +2355,7 @@ function UnifiedDocumentsLayoutInner() {
                 </label>
               </div>
               <p className="text-xs text-muted-foreground">
-                {shareSummary(shareWithClients, shareWithSubs)}
+                {shareSummary(shareWithClients, shareWithSubs, terms.owners)}
               </p>
             </section>
 
@@ -2824,9 +2827,9 @@ function UnifiedDocumentsLayoutInner() {
             <div className="divide-y rounded-lg border">
               <label className="flex cursor-pointer items-center justify-between gap-4 px-4 py-3">
                 <div className="min-w-0">
-                  <p className="text-sm font-medium">Client portal</p>
+                  <p className="text-sm font-medium">{terms.ownerPortal}</p>
                   <p className="text-xs text-muted-foreground">
-                    New uploads default to the client portal.
+                    New uploads default to the {terms.ownerPortal.toLowerCase()}.
                   </p>
                 </div>
                 <Switch
@@ -2850,7 +2853,7 @@ function UnifiedDocumentsLayoutInner() {
               </label>
             </div>
             <p className="mt-3 text-xs text-muted-foreground">
-              {shareSummary(folderShareWithClients, folderShareWithSubs)}
+              {shareSummary(folderShareWithClients, folderShareWithSubs, terms.owners)}
             </p>
             <label className="mt-4 flex cursor-pointer items-start gap-2">
               <Checkbox

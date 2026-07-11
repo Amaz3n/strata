@@ -1753,7 +1753,7 @@ export async function askAiSearch(query: string, options: AskAiSearchOptions = {
   const entityTypes = pickEntityTypesForQuery(normalizedQuery)
   const retrievalQuery = extractRetrievalQuery(normalizedQuery)
   const rawResults = await retrieveHybridResults({
-    context: { orgId, supabase, userId },
+    context,
     query: retrievalQuery,
     entityTypes,
     filters: {},

@@ -316,7 +316,7 @@ export async function getOrgWipOverUnderReport({
   includeInactive?: boolean
   orgId?: string
 } = {}): Promise<WipOverUnderReport> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId, productTier } = await requireOrgContext(orgId)
 
   await Promise.all([
     requireAuthorization({
@@ -337,7 +337,7 @@ export async function getOrgWipOverUnderReport({
     }),
   ])
 
-  const allProjects = await listProjects(undefined, { supabase, orgId: resolvedOrgId, userId })
+  const allProjects = await listProjects(undefined, { supabase, orgId: resolvedOrgId, userId, productTier })
   const projects = allProjects
     .filter((project) => includeInactive || INCLUDED_PROJECT_STATUSES.has(project.status))
     .filter((project) => !project.excluded_from_reporting)
@@ -371,7 +371,7 @@ export async function getProjectWipOverUnderReport({
   asOf?: string
   orgId?: string
 }): Promise<WipOverUnderReport> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId, productTier } = await requireOrgContext(orgId)
 
   await requireAuthorization({
     permission: "invoice.read",
@@ -383,7 +383,7 @@ export async function getProjectWipOverUnderReport({
     resourceId: projectId,
   })
 
-  const projects = await listProjects(undefined, { supabase, orgId: resolvedOrgId, userId })
+  const projects = await listProjects(undefined, { supabase, orgId: resolvedOrgId, userId, productTier })
   const project = projects.find((row) => row.id === projectId)
   if (!project) throw new Error("Project not found")
 

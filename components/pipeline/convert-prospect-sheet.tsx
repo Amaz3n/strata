@@ -32,6 +32,9 @@ import { Loader2, Hammer, ShieldCheck, CheckCircle2, Briefcase, MapPin, FileText
 import { useToast } from "@/hooks/use-toast"
 
 import { unwrapAction } from "@/lib/action-result"
+import { usePageTitle } from "@/components/layout/page-title-context"
+import { getDefaultProjectPropertyType } from "@/lib/product-tier"
+import { terminology } from "@/lib/terminology"
 
 interface ConvertProspectSheetProps {
   prospect: Prospect
@@ -39,15 +42,6 @@ interface ConvertProspectSheetProps {
   onOpenChange: (open: boolean) => void
   onSuccess?: () => void
 }
-
-const CONVERSION_STEPS = [
-  "Creates the project and marks the prospect Won",
-  "Promotes prospect contacts into the Directory and sets the client",
-  "Links precon estimates, bids, e-signs, and documents",
-  "Generates the billing contract from the executed estimate",
-  "Initializes and approves the budget, mapped to cost codes",
-  "Moves precon files into the project document structure",
-]
 
 export function ConvertProspectSheet({
   prospect,
@@ -57,6 +51,17 @@ export function ConvertProspectSheet({
 }: ConvertProspectSheetProps) {
   const router = useRouter()
   const { toast } = useToast()
+  const { productTier } = usePageTitle()
+  const terms = terminology(productTier)
+  const defaultPropertyType = getDefaultProjectPropertyType(productTier)
+  const conversionSteps = [
+    "Creates the project and marks the prospect Won",
+    `Promotes prospect contacts into the Directory and sets the ${terms.owner.toLowerCase()}`,
+    "Links precon estimates, bids, e-signs, and documents",
+    "Generates the billing contract from the executed estimate",
+    "Initializes and approves the budget, mapped to cost codes",
+    "Moves precon files into the project document structure",
+  ]
   const [isPending, startTransition] = useTransition()
   const [estimate, setEstimate] = useState<any>(null)
   const [loadingEstimate, setLoadingEstimate] = useState(false)
@@ -65,7 +70,7 @@ export function ConvertProspectSheet({
   const [name, setName] = useState("")
   const [startDate, setStartDate] = useState("")
   const [endDate, setEndDate] = useState("")
-  const [propertyType, setPropertyType] = useState<"residential" | "commercial">("residential")
+  const [propertyType, setPropertyType] = useState<"residential" | "commercial">(defaultPropertyType)
   const [projectType, setProjectType] = useState<"new_construction" | "remodel" | "addition" | "renovation" | "repair">("remodel")
   const [description, setDescription] = useState("")
 
@@ -100,7 +105,7 @@ export function ConvertProspectSheet({
     if (prospect.project_type === "commercial" || prospect.project_type === "residential") {
       setPropertyType(prospect.project_type)
     } else {
-      setPropertyType("residential")
+      setPropertyType(defaultPropertyType)
     }
 
     const validProjectTypes = ["new_construction", "remodel", "addition", "renovation", "repair"]
@@ -109,7 +114,7 @@ export function ConvertProspectSheet({
     } else {
       setProjectType("remodel")
     }
-  }, [open, prospect, toast])
+  }, [defaultPropertyType, open, prospect, toast])
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -188,7 +193,7 @@ export function ConvertProspectSheet({
               <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-5 text-center text-sm">
                 <p className="font-semibold text-destructive">No executed estimate</p>
                 <p className="mt-1 text-muted-foreground">
-                  Client-approve and countersign an estimate for this prospect before converting it into a project.
+                  Record {terms.owner.toLowerCase()} approval and countersignature on an estimate before converting this prospect into a project.
                 </p>
               </div>
             </div>
@@ -298,14 +303,14 @@ export function ConvertProspectSheet({
                     rows={4}
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
-                    placeholder="Project summary, client expectations, or handoff notes from precon…"
+                    placeholder={`Project summary, ${terms.owner.toLowerCase()} expectations, or handoff notes from precon…`}
                     className="resize-none"
                   />
                 </Section>
 
                 <Section icon={MapPin} title="On conversion">
                   <ul className="space-y-2">
-                    {CONVERSION_STEPS.map((step) => (
+                    {conversionSteps.map((step) => (
                       <li key={step} className="flex items-start gap-2 text-sm text-muted-foreground">
                         <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" />
                         <span>{step}</span>

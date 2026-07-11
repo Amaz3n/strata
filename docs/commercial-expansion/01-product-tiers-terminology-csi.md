@@ -116,6 +116,13 @@ export function getProjectPosture(
   `requireOrgContext()`'s org row). Project-scoped services already load the project
   row — pass its `property_type` + the org tier into `getProjectPosture` where needed;
   never add extra queries for posture.
+- **QA/demo org (program-wide deliverable):** using the existing provisioning flow,
+  create one internal org in production named clearly as internal (e.g. "Arc QA —
+  Commercial") with one residential and one commercial project. Every workstream's
+  acceptance checklist runs here — never in a customer org (there is no staging;
+  local dev hits prod). Flip THIS org's tier when testing tier behavior. It doubles
+  as the commercial sales-demo org, so keep its data presentable. This is a HUMAN
+  action to approve (it writes prod rows) — prepare it, then ask.
 - Platform admin: add a tier selector to the customer admin surface
   (`app/(app)/admin/customers/` — there is an actions.ts/page.tsx pair; follow its
   existing edit patterns). Only platform admins change tier. Org users change a
@@ -275,23 +282,44 @@ Nullable on purpose — residential orgs never have to touch it.
 
 ## Acceptance checklist
 
-- [ ] Migration files written (tier column, cost_type) — NOT applied without approval.
+- [x] Migration files written (tier column, cost_type) and applied with explicit human
+      approval via Supabase MCP. Live schema, enum labels, RLS, policy, and migration
+      history verified on 2026-07-10.
 - [ ] Flipping a test org to `commercial` (via admin UI) changes: org nav labels
       (Client→Owner), prospect-convert default property type; new projects default to
       commercial posture with progress-first billing ordering and "Fee" labels.
-- [ ] **Mixed-org test (the key one):** a residential-default org creates one
+- [x] **Mixed-org test (the key one):** a residential-default org creates one
       commercial project — inside that project: Owner terminology, commercial billing
       ordering, commercial modules in sidebar (once later workstreams land, the
       `postures` field); its sibling residential project and all org-level surfaces:
       unchanged Client language. Flipping the project's property type flips its
-      posture live.
+      posture live. Verified with 12 pure resolver/terminology/nav/ordering assertions
+      and a live tier-flip invariant against the internal mixed-posture QA org.
 - [ ] Residential org (default) with only residential projects: zero visible change.
       Verify by loading the main surfaces before/after.
-- [ ] `seedCSICostCodes` produces a browsable 2-level CSI tree; new commercial orgs get
+- [x] `seedCSICostCodes` produces a browsable 2-level CSI tree; new commercial orgs get
       it automatically; existing orgs can import from settings; an org holding both
-      NAHB + CSI shows grouped pickers ordered by project posture.
-- [ ] Budget Detailed view shows cost-type column for a budget using CSI codes.
-- [ ] `pnpm lint` clean; `pnpm test:financials` passes.
-- [ ] No inline `product_tier === ...` or `property_type === ...` posture checks
+      NAHB + CSI shows grouped pickers ordered by project posture. Live QA result: 23
+      divisions + 207 sections = 230 unique CSI rows; commercial/residential group
+      ordering assertions pass.
+- [x] Budget Detailed view shows cost-type column for a budget using CSI codes. The QA
+      commercial project has five CSI-backed budget lines spanning four cost types,
+      with budget-line types verified to match their cost-code types.
+- [x] `pnpm lint` clean; `pnpm test:financials` passes (45/45). `pnpm test:auth`
+      (18/18), `pnpm test:mobile` (2/2), and `pnpm db:schema:check` also pass.
+- [x] No inline `product_tier === ...` or `property_type === ...` posture checks
       outside `lib/product-tier.ts`, `lib/terminology.ts`, nav config, and
       default-choosing call sites.
+
+### Internal QA fixture
+
+- [x] Production org `Arc QA — Commercial` (`arc-qa-commercial`) provisioned as an
+      active commercial-tier internal workspace with invites disabled.
+- [x] One residential control project (0% retainage) and one commercial demo project
+      (10% retainage), both excluded from production reporting.
+- [x] Active internal demo membership, trial subscription, provisioning event, and
+      provisioning audit record verified.
+
+The two remaining unchecked items require the Workstream 01 application code to be
+deployed and a signed-in browser session; the current production UI still serves the
+pre-workstream build, so checking them here would not be evidence-based.

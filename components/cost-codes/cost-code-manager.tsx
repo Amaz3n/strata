@@ -40,6 +40,7 @@ import {
 } from "@/components/icons"
 
 import { unwrapAction } from "@/lib/action-result"
+import { COST_TYPE_LABELS, COST_TYPES, isCostType, type CostType } from "@/lib/cost-types"
 
 interface CostCodeManagerProps {
   costCodes: CostCode[]
@@ -60,6 +61,7 @@ type CostCodeFormState = {
   unit: string
   is_reimbursable_default: boolean
   default_markup_percent: string
+  cost_type: CostType | ""
 }
 
 type SheetState =
@@ -80,6 +82,7 @@ const EMPTY_FORM: CostCodeFormState = {
   unit: "",
   is_reimbursable_default: true,
   default_markup_percent: "",
+  cost_type: "",
 }
 
 function buildTree(codes: CostCode[]): TreeNode[] {
@@ -136,6 +139,7 @@ function formFromCode(code: CostCode): CostCodeFormState {
     unit: code.unit ?? "",
     is_reimbursable_default: code.is_reimbursable_default !== false,
     default_markup_percent: code.default_markup_percent == null ? "" : String(code.default_markup_percent),
+    cost_type: code.cost_type ?? "",
   }
 }
 
@@ -177,6 +181,7 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
         code.category,
         code.unit,
         code.standard,
+        code.cost_type,
         code.is_reimbursable_default === false ? "non reimbursable non-billable" : "reimbursable billable",
       ]
         .filter(Boolean)
@@ -215,14 +220,14 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
     setForm(EMPTY_FORM)
   }
 
-  const handleSeed = () => {
+  const handleSeed = (standard: "nahb" | "csi") => {
     if (!canManage) return
     startTransition(async () => {
       try {
-        unwrapAction(await seedCostCodesAction())
+        unwrapAction(await seedCostCodesAction(standard))
         const refreshed = await listCostCodesAction(true)
         applyCodes(refreshed)
-        toast.success("Default cost codes added")
+        toast.success(standard === "csi" ? "CSI cost codes added" : "NAHB cost codes added")
       } catch (error: any) {
         toast.error("Failed to seed default codes", { description: error?.message ?? "Please try again." })
       }
@@ -249,6 +254,7 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
             unit: normalizeOptional(form.unit),
             is_reimbursable_default: form.is_reimbursable_default,
             default_markup_percent: defaultMarkupPercent,
+            cost_type: form.cost_type || null,
           }))
           toast.success("Cost code created")
         } else {
@@ -263,6 +269,7 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
             is_reimbursable_default: form.is_reimbursable_default,
             default_markup_percent: defaultMarkupPercent,
             is_active: sheet.code.is_active !== false,
+            cost_type: form.cost_type || null,
           }))
           toast.success("Cost code updated")
         }
@@ -357,7 +364,7 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
                   </Select>
                 </div>
 
-                <div className="grid gap-4 md:grid-cols-3">
+                <div className="grid gap-4 md:grid-cols-4">
                   <div className="flex flex-col gap-2">
                     <Label htmlFor="cost-code-division">Division</Label>
                     <Input
@@ -367,6 +374,33 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
                       onChange={(event) => setForm((prev) => ({ ...prev, division: event.target.value }))}
                       disabled={!canManage}
                     />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label>Cost type</Label>
+                    <Select
+                      value={form.cost_type || "__none__"}
+                      onValueChange={(value) => {
+                        if (value === "__none__" || isCostType(value)) {
+                          setForm((prev) => ({
+                            ...prev,
+                            cost_type: value === "__none__" ? "" : value,
+                          }))
+                        }
+                      }}
+                      disabled={!canManage}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Not set" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">Not set</SelectItem>
+                        {COST_TYPES.map((costType) => (
+                          <SelectItem key={costType} value={costType}>
+                            {COST_TYPE_LABELS[costType]}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                   <div className="flex flex-col gap-2">
                     <Label htmlFor="cost-code-category">Category</Label>
@@ -485,9 +519,13 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={handleSeed}>
+                  <DropdownMenuItem onClick={() => handleSeed("nahb")}>
                     <HardHat className="mr-2 h-4 w-4" />
-                    Seed default codes
+                    Import NAHB cost codes
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleSeed("csi")}>
+                    <HardHat className="mr-2 h-4 w-4" />
+                    Import CSI cost codes
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -508,6 +546,7 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
                 <TableHead className="w-[136px] pl-4">Code</TableHead>
                 <TableHead className="min-w-[280px]">Name</TableHead>
                 <TableHead className="hidden md:table-cell w-[150px] text-center">Category</TableHead>
+                <TableHead className="hidden lg:table-cell w-[132px] text-center">Cost type</TableHead>
                 <TableHead className="hidden lg:table-cell w-[132px] text-center">Billing</TableHead>
                 <TableHead className="hidden lg:table-cell w-[112px] text-center">Markup</TableHead>
                 <TableHead className="hidden xl:table-cell w-[108px] text-center">Source</TableHead>
@@ -536,6 +575,11 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
                   </TableCell>
                   <TableCell className="hidden md:table-cell text-center">
                     <span className="text-xs text-muted-foreground">{code.category || "—"}</span>
+                  </TableCell>
+                  <TableCell className="hidden lg:table-cell text-center">
+                    <span className="text-xs text-muted-foreground">
+                      {code.cost_type ? COST_TYPE_LABELS[code.cost_type] : "—"}
+                    </span>
                   </TableCell>
                   <TableCell className="hidden lg:table-cell text-center">
                     <Badge variant={code.is_reimbursable_default === false ? "secondary" : "outline"} className="text-[10px] px-1 py-0 h-5 font-normal">
@@ -578,7 +622,7 @@ export function CostCodeManager({ costCodes, canManage = true, onCostCodesChange
               ))}
               {rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="h-48 text-center text-muted-foreground hover:bg-transparent">
+                  <TableCell colSpan={8} className="h-48 text-center text-muted-foreground hover:bg-transparent">
                     <div className="flex flex-col items-center gap-3">
                       <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                         <FileText className="h-6 w-6" />

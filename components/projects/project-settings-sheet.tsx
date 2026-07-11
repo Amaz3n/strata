@@ -29,11 +29,23 @@ import {
   validateFinancialSetup,
   type FinancialSetupValue,
 } from "@/components/projects/project-financial-setup-fields"
+import { DistributionListManager } from "@/components/projects/distribution-list-manager"
 import { listProjectQboClassesAction, searchProjectQboCustomersAction, createProjectQboCustomerAction } from "@/app/(app)/projects/actions"
-import { removeSampleProjectAction } from "@/app/(app)/projects/[id]/actions"
+import {
+  removeSampleProjectAction,
+  setProjectModuleOverrideAction,
+} from "@/app/(app)/projects/[id]/actions"
 import type { QBOClassOption, QBOCustomerOption } from "@/lib/integrations/accounting/qbo-api"
+import {
+  PROJECT_MODULES,
+  isProjectModuleEnabled,
+  type ProjectModuleKey,
+} from "@/lib/project-modules"
 
 import { unwrapAction } from "@/lib/action-result"
+import { usePageTitle } from "@/components/layout/page-title-context"
+import { getProjectPosture } from "@/lib/product-tier"
+import { terminology } from "@/lib/terminology"
 
 const STATUS_OPTIONS: { label: string; value: Project["status"] }[] = [
   { label: "Active", value: "active" },
@@ -70,6 +82,7 @@ interface ProjectSettingsSheetProps {
 }
 
 export function ProjectSettingsSheet({ project, contract, contacts = [], open, onOpenChange, onSave, initialStep = "details" }: ProjectSettingsSheetProps) {
+  const { productTier, progressBillingEnabled } = usePageTitle()
   const initialLocation = useMemo(() => {
     const location = (project as any).location as Record<string, any> | undefined
     if (location) {
@@ -91,6 +104,8 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
     project.end_date ? new Date(project.end_date) : undefined
   )
   const [propertyType, setPropertyType] = useState<Project["property_type"] | undefined>(project.property_type)
+  const posture = getProjectPosture(propertyType, productTier)
+  const terms = terminology(posture)
   const [projectType, setProjectType] = useState<Project["project_type"] | undefined>(project.project_type)
   const [clientId, setClientId] = useState<string | null | undefined>(project.client_id)
   const [qboClassId, setQboClassId] = useState<string | null>(project.qbo_class_id ?? null)
@@ -111,6 +126,8 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
   const [newCustomer, setNewCustomer] = useState({ name: "", email: "", line1: "", city: "", state: "", postalCode: "" })
   const [creatingCustomer, setCreatingCustomer] = useState(false)
   const [excludedFromReporting, setExcludedFromReporting] = useState<boolean>(project.excluded_from_reporting ?? false)
+  const [moduleOverrides, setModuleOverrides] = useState<Record<string, boolean>>(project.module_overrides ?? {})
+  const [pendingModuleKey, setPendingModuleKey] = useState<ProjectModuleKey | null>(null)
   const [financialSetup, setFinancialSetup] = useState<FinancialSetupValue>(() => financialSetupFromProject(project, contract))
   const [step, setStep] = useState<"details" | "financials">(initialStep)
   const [saving, setSaving] = useState(false)
@@ -134,6 +151,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
   useEffect(() => {
     if (!open) return
     setFinancialSetup(financialSetupFromProject(project, contract))
+    setModuleOverrides(project.module_overrides ?? {})
     setStep(initialStep)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, project.id, contract?.id, initialStep])
@@ -290,6 +308,20 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
     }
   }
 
+  const handleModuleToggle = async (moduleKey: ProjectModuleKey, enabled: boolean) => {
+    setPendingModuleKey(moduleKey)
+    try {
+      unwrapAction(await setProjectModuleOverrideAction(project.id, moduleKey, enabled))
+      setModuleOverrides((current) => ({ ...current, [moduleKey]: enabled }))
+      window.dispatchEvent(new Event("arc-org-change"))
+    } catch (error) {
+      console.error("Failed to update project module", error)
+      toast.error("Could not update module visibility")
+    } finally {
+      setPendingModuleKey(null)
+    }
+  }
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
@@ -307,7 +339,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
             Project settings
           </SheetTitle>
           <SheetDescription>
-            Update client, location, and timeline details.
+            Update {terms.owner.toLowerCase()}, location, and timeline details.
           </SheetDescription>
         </SheetHeader>
 
@@ -363,9 +395,13 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                   <Label>Property type</Label>
                   <Select
                     value={propertyType ?? "none"}
-                    onValueChange={(value) =>
-                      setPropertyType(value === "none" ? undefined : (value as Project["property_type"]))
-                    }
+                    onValueChange={(value) => {
+                      const next = value === "none" ? undefined : (value as Project["property_type"])
+                      setPropertyType(next)
+                      if (next === "commercial" && (!financialSetup.retainagePercent || financialSetup.retainagePercent === "0")) {
+                        setFinancialSetup({ ...financialSetup, retainagePercent: "10" })
+                      }
+                    }}
                   >
                     <SelectTrigger className="w-full">
                       <SelectValue placeholder="Select type" />
@@ -460,7 +496,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
               {/* Client — a single field. The contact drives portal invites & signatures; */}
               {/* the QuickBooks customer (the sync target) is shown beneath as an overridable detail. */}
               <div className="space-y-2">
-                <Label>Client</Label>
+                <Label>{terms.owner}</Label>
                 <Select
                   value={clientId ?? "none"}
                   onValueChange={(value) => setClientId(value === "none" ? null : value)}
@@ -674,7 +710,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                 ) : null}
 
                 <p className="text-sm text-muted-foreground">
-                  Used as the default client for portal invites and signatures{qboConnected ? ", and as the QuickBooks customer for invoices, payables, and expenses" : ""}. This does not grant portal access.
+                  Used as the default {terms.owner.toLowerCase()} for portal invites and signatures{qboConnected ? ", and as the QuickBooks customer for invoices, payables, and expenses" : ""}. This does not grant portal access.
                 </p>
               </div>
               {/* Show the class field whenever QBO is connected (or while still probing if a class is
@@ -719,6 +755,38 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                 </div>
               ) : null}
 
+              <div className="space-y-3 border-t pt-5">
+                <div>
+                  <Label className="text-sm">Modules</Label>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Choose which tools appear in this project&apos;s navigation. Routes and data remain available.
+                  </p>
+                </div>
+                <div className="divide-y border">
+                  {PROJECT_MODULES.map((module) => {
+                    const enabled = isProjectModuleEnabled({
+                      moduleKey: module.key,
+                      posture,
+                      overrides: moduleOverrides,
+                    })
+                    return (
+                      <div key={module.key} className="flex items-center justify-between gap-4 px-3 py-2.5">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium">{module.label}</p>
+                          <p className="text-xs text-muted-foreground">{module.description}</p>
+                        </div>
+                        <Switch
+                          checked={enabled}
+                          disabled={pendingModuleKey === module.key}
+                          onCheckedChange={(checked) => void handleModuleToggle(module.key, checked)}
+                          aria-label={`${enabled ? "Hide" : "Show"} ${module.label}`}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+
               <div className="flex items-start justify-between gap-4 rounded-md border bg-muted/30 px-3 py-3">
                 <div className="space-y-1">
                   <Label htmlFor="exclude-from-reporting" className="text-sm">
@@ -738,10 +806,19 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                 />
               </div>
 
+              <div className="border-t pt-5">
+                <DistributionListManager projectId={project.id} contacts={contacts} />
+              </div>
+
               </div>
 
               <div className={cn(step === "financials" ? "block" : "hidden")}>
-                <ProjectFinancialSetupFields value={financialSetup} onChange={setFinancialSetup} />
+                <ProjectFinancialSetupFields
+                  value={financialSetup}
+                  onChange={setFinancialSetup}
+                  posture={posture}
+                  progressBillingEnabled={progressBillingEnabled}
+                />
                 <p className="mt-4 text-xs text-muted-foreground">
                   These terms update the active project contract Arc uses for financial workflows.
                 </p>

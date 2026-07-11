@@ -5,7 +5,8 @@ import { format } from "date-fns"
 import { toast } from "sonner"
 import { formatLocalDate } from "@/lib/utils"
 
-import type { Company, Submittal, SubmittalItem, Project } from "@/lib/types"
+import type { Company, Submittal, SubmittalItem, SubmittalReviewStep, Project } from "@/lib/types"
+import { SubmittalReviewRail } from "@/components/submittals/submittal-review-rail"
 import { unwrapAction } from "@/lib/action-result"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -39,6 +40,7 @@ import {
   addSubmittalItemAction,
   decideSubmittalAction,
   listSubmittalItemsAction,
+  listSubmittalReviewStepsAction,
   listSubmittalRevisionsAction,
   resubmitSubmittalAction,
 } from "@/app/(app)/submittals/actions"
@@ -84,6 +86,7 @@ export function SubmittalDetailSheet({
 }: SubmittalDetailSheetProps) {
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [items, setItems] = useState<SubmittalItem[]>([])
+  const [reviewSteps, setReviewSteps] = useState<SubmittalReviewStep[]>([])
   const [revisions, setRevisions] = useState<Submittal[]>([])
   const [decisionStatus, setDecisionStatus] = useState("approved")
   const [decisionNote, setDecisionNote] = useState("")
@@ -123,6 +126,16 @@ export function SubmittalDetailSheet({
     }
   }, [submittal])
 
+  const loadReviewSteps = useCallback(async () => {
+    if (!submittal) return
+    try {
+      setReviewSteps(await listSubmittalReviewStepsAction(submittal.id))
+    } catch (error) {
+      console.error("Failed to load review steps:", error)
+      setReviewSteps([])
+    }
+  }, [submittal])
+
   const loadRevisions = useCallback(async () => {
     if (!submittal) return
     try {
@@ -150,10 +163,10 @@ export function SubmittalDetailSheet({
             console.warn("Failed to backfill legacy submittal attachment link", error)
           }
         }
-        await Promise.all([loadAttachments(), loadItems(), loadRevisions()])
+        await Promise.all([loadAttachments(), loadItems(), loadRevisions(), loadReviewSteps()])
       })()
     }
-  }, [open, submittal, loadAttachments, loadItems, loadRevisions])
+  }, [open, submittal, loadAttachments, loadItems, loadRevisions, loadReviewSteps])
 
   const handleAttach = useCallback(
     async (files: File[], linkRole?: string) => {
@@ -262,8 +275,29 @@ export function SubmittalDetailSheet({
   const assignedCompanyName = companies.find((c) => c.id === submittal.assigned_company_id)?.name
   const isSuperseded = Boolean(submittal.superseded_by_id)
   const isDecided = Boolean(submittal.decision_status)
+  const hasWorkflow = reviewSteps.length > 0
+  // Days-in-court: since the current step took the ball (previous step's
+  // return), or since the sub last submitted documents.
+  const currentStep = reviewSteps.find((step) => step.status === "in_review")
+  const courtSince = (() => {
+    if (!currentStep) return submittal.last_item_submitted_at ?? submittal.submitted_at ?? null
+    const prior = reviewSteps
+      .filter((step) => step.status === "returned" && step.step_order < currentStep.step_order)
+      .map((step) => step.decided_at)
+      .filter(Boolean)
+      .sort()
+      .pop()
+    return prior ?? submittal.last_item_submitted_at ?? submittal.submitted_at ?? null
+  })()
+  const daysInCourt =
+    !isDecided && courtSince
+      ? Math.max(0, Math.floor((Date.now() - new Date(courtSince).getTime()) / 86_400_000))
+      : null
   const canResubmit =
     !isSuperseded && (submittal.decision_status === "revise_resubmit" || submittal.decision_status === "rejected")
+  const stampedCopy = submittal.stamped_file_id
+    ? attachments.find((attachment) => attachment.id === submittal.stamped_file_id)
+    : undefined
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -272,9 +306,10 @@ export function SubmittalDetailSheet({
           <div className="flex flex-wrap items-center gap-2">
             <FileText className="h-5 w-5 text-primary" />
             <SheetTitle>
-              Submittal #{submittal.submittal_number}
+              Submittal #{submittal.display_number ?? submittal.submittal_number}
               {submittal.revision > 0 ? ` · Rev ${submittal.revision}` : ""}
             </SheetTitle>
+            <Button variant="ghost" size="sm" asChild><a href={`/projects/${submittal.project_id}/exports/submittal?id=${submittal.id}`} target="_blank" rel="noreferrer">PDF</a></Button>
             <Badge
               variant="secondary"
               className={`capitalize border ${statusStyles[submittal.status] ?? ""}`}
@@ -299,8 +334,11 @@ export function SubmittalDetailSheet({
                 {project.name}
               </div>
             )}
-            {assignedCompanyName && (
-              <Badge variant="outline" className="text-xs">Ball in court: {assignedCompanyName}</Badge>
+            {(submittal.ball_in_court || assignedCompanyName) && !isDecided && (
+              <Badge variant="outline" className="text-xs">
+                Ball in court: {submittal.ball_in_court ?? assignedCompanyName}
+                {daysInCourt != null ? ` · ${daysInCourt}d` : ""}
+              </Badge>
             )}
             {submittal.due_date && (
               <div className="flex items-center gap-1">
@@ -404,6 +442,16 @@ export function SubmittalDetailSheet({
             )}
           </div>
 
+          {/* Multi-step review workflow (commercial routing) */}
+          {hasWorkflow && !isSuperseded && (
+            <SubmittalReviewRail
+              submittal={submittal}
+              steps={reviewSteps}
+              onStepsChange={setReviewSteps}
+              onSubmittalUpdate={onUpdate}
+            />
+          )}
+
           {/* Decision info */}
           {submittal.decision_status && (
             <div className="space-y-2">
@@ -428,6 +476,16 @@ export function SubmittalDetailSheet({
                     Reviewed {formatDate(submittal.decision_at)}
                   </p>
                 )}
+                {stampedCopy?.download_url && (
+                  <a
+                    className="block text-xs font-medium text-primary underline underline-offset-2"
+                    href={stampedCopy.download_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Download stamped copy
+                  </a>
+                )}
                 {canResubmit && (
                   <Button variant="outline" size="sm" onClick={handleResubmit} disabled={isPending}>
                     {isPending ? "Creating..." : `Resubmit as Rev ${submittal.revision + 1}`}
@@ -437,8 +495,9 @@ export function SubmittalDetailSheet({
             </div>
           )}
 
-          {/* Record decision — only for undecided, current revisions */}
-          {!isDecided && !isSuperseded && (
+          {/* Record decision — only for undecided, current revisions without a
+              routed workflow (routed submittals decide step by step above) */}
+          {!isDecided && !isSuperseded && !hasWorkflow && (
             <div className="space-y-3">
               <h4 className="text-sm font-medium">Record Decision</h4>
               <div className="rounded-lg border p-4 space-y-3">

@@ -37,22 +37,26 @@ const InvoiceComposerSheet = dynamic(() =>
   import("@/components/invoices/invoice-composer-sheet").then((module) => module.InvoiceComposerSheet),
 )
 
-type StatusKey = "draft" | "awaiting_approval" | "approved" | "requested_changes" | "voided"
+type StatusKey = "draft" | "pricing" | "proposed" | "approved" | "requested_changes" | "rejected" | "voided"
 type StatusFilter = StatusKey | "all"
 
 const statusLabels: Record<StatusKey, string> = {
   draft: "Draft",
-  awaiting_approval: "Awaiting approval",
+  pricing: "Pricing",
+  proposed: "Proposed",
   approved: "Approved",
   requested_changes: "Needs changes",
+  rejected: "Rejected",
   voided: "Voided",
 }
 
 const statusStyles: Record<StatusKey, string> = {
   draft: "bg-muted text-muted-foreground border-muted",
-  awaiting_approval: "bg-amber-500/15 text-amber-700 border-amber-500/30",
+  pricing: "bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/30",
+  proposed: "bg-amber-500/15 text-amber-700 border-amber-500/30",
   approved: "bg-success/20 text-success border-success/30",
   requested_changes: "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30",
+  rejected: "bg-destructive/10 text-destructive border-destructive/30",
   voided: "bg-destructive/20 text-destructive border-destructive/30",
 }
 
@@ -142,13 +146,15 @@ function baseContractCentsForProject(project: Project | null | undefined, approv
 }
 
 function formatCoNumber(changeOrder: ChangeOrder): string | null {
+  if (changeOrder.display_number) return changeOrder.display_number
   const raw = changeOrder.co_number
   if (raw == null || raw === "") return null
-  if (typeof raw === "number") return `CO-${String(raw).padStart(3, "0")}`
+  const prefix = changeOrder.lifecycle === "approved" || changeOrder.status === "approved" ? "CO" : "PCO"
+  if (typeof raw === "number") return `${prefix}-${String(raw).padStart(3, "0")}`
   const value = raw.trim()
   if (value === "") return null
-  if (/^\d+$/.test(value)) return `CO-${value.padStart(3, "0")}`
-  return /^co/i.test(value) ? value.toUpperCase() : `CO-${value}`
+  if (/^\d+$/.test(value)) return `${prefix}-${value.padStart(3, "0")}`
+  return /^(p?co)/i.test(value) ? value.toUpperCase() : `${prefix}-${value}`
 }
 
 function formatScheduleImpact(daysImpact?: number | null) {
@@ -170,12 +176,15 @@ function hasActiveClientChangeRequest(changeOrder: ChangeOrder) {
 }
 
 function resolveStatusKey(changeOrder: ChangeOrder): StatusKey {
+  const lifecycle = changeOrder.lifecycle
+  if (lifecycle === "pricing" || lifecycle === "proposed" || lifecycle === "approved" || lifecycle === "rejected") return lifecycle
+  if (lifecycle === "void") return "voided"
   const status = changeOrder.status
   if (status !== "approved" && hasActiveClientChangeRequest(changeOrder)) return "requested_changes"
   if (!status) return "draft"
-  if (status === "pending" || status === "sent") return "awaiting_approval"
+  if (status === "pending" || status === "sent") return "proposed"
   if (status === "cancelled" || status === "void") return "voided"
-  const allowed: StatusKey[] = ["draft", "approved", "requested_changes"]
+  const allowed: StatusKey[] = ["draft", "approved", "requested_changes", "rejected"]
   return allowed.includes(status as StatusKey) ? (status as StatusKey) : "draft"
 }
 
@@ -442,12 +451,11 @@ const [sheetOpen, setSheetOpen] = useState(false)
   const summaryStats = useMemo(() => {
     const scopedItems = summaryProject ? items.filter((item) => item.project_id === summaryProject.id) : items
     const approvedItems = scopedItems.filter((item) => resolveStatusKey(item) === "approved")
-    const pendingItems = scopedItems.filter((item) => {
-      const status = resolveStatusKey(item)
-      return status === "awaiting_approval" || status === "requested_changes"
-    })
+    const pendingItems = scopedItems.filter((item) => ["draft", "pricing", "proposed", "requested_changes"].includes(resolveStatusKey(item)))
+    const proposedItems = scopedItems.filter((item) => resolveStatusKey(item) === "proposed")
     const approvedCents = approvedItems.reduce((sum, item) => sum + changeOrderTotalCents(item), 0)
-    const pendingCents = pendingItems.reduce((sum, item) => sum + changeOrderTotalCents(item), 0)
+    const pendingCostCents = pendingItems.reduce((sum, item) => sum + (item.cost_total_cents ?? 0), 0)
+    const proposedCents = proposedItems.reduce((sum, item) => sum + changeOrderTotalCents(item), 0)
     const approvedDays = approvedItems.reduce((sum, item) => sum + (item.days_impact ?? 0), 0)
     const pendingDays = pendingItems.reduce((sum, item) => sum + (item.days_impact ?? 0), 0)
     const baseContractCents = summaryProject ? baseContractCentsForProject(summaryProject, approvedCents) : null
@@ -458,7 +466,8 @@ const [sheetOpen, setSheetOpen] = useState(false)
 
     return {
       approvedCents,
-      pendingCents,
+      pendingCostCents,
+      proposedCents,
       approvedDays,
       pendingDays,
       baseContractCents,
@@ -625,22 +634,22 @@ const [sheetOpen, setSheetOpen] = useState(false)
         {summaryProject ? (
           <div className="grid shrink-0 gap-x-4 gap-y-3 border-b bg-muted/20 px-4 py-3 sm:grid-cols-5">
             <SummaryMetric
-              label="Original contract"
-              value={summaryStats.baseContractCents == null ? "Not set" : formatMoneyFromCents(summaryStats.baseContractCents)}
+              label="Pending cost"
+              value={formatSignedMoneyFromCents(summaryStats.pendingCostCents)}
+              tone={summaryStats.pendingCostCents !== 0 ? "warning" : "default"}
             />
             <SummaryMetric
-              label="Approved COs"
+              label="Proposed to owner"
+              value={formatSignedMoneyFromCents(summaryStats.proposedCents)}
+            />
+            <SummaryMetric
+              label="Approved Δ contract"
               value={formatSignedMoneyFromCents(summaryStats.approvedCents)}
               tone={summaryStats.approvedCents < 0 ? "positive" : "default"}
             />
             <SummaryMetric
               label="Revised contract"
               value={summaryStats.revisedContractCents == null ? "Not set" : formatMoneyFromCents(summaryStats.revisedContractCents)}
-            />
-            <SummaryMetric
-              label="Pending exposure"
-              value={formatSignedMoneyFromCents(summaryStats.pendingCents)}
-              tone={summaryStats.pendingCents !== 0 ? "warning" : "default"}
             />
             <SummaryMetric
               label="Schedule"
@@ -759,7 +768,7 @@ const [sheetOpen, setSheetOpen] = useState(false)
                     className="hidden w-[130px] lg:table-cell"
                   />
                   <SortHeader
-                    label="Total"
+                    label="Price"
                     column="total"
                     activeColumn={sortColumn}
                     direction={sortDir}
@@ -767,6 +776,8 @@ const [sheetOpen, setSheetOpen] = useState(false)
                     align="right"
                     className="w-[150px] text-right"
                   />
+                  <TableHead className="hidden w-[130px] text-right xl:table-cell">Cost</TableHead>
+                  <TableHead className="hidden w-[130px] text-right xl:table-cell">Margin</TableHead>
                   <TableHead className="w-[140px] pr-3" />
                 </TableRow>
               </TableHeader>
@@ -780,6 +791,8 @@ const [sheetOpen, setSheetOpen] = useState(false)
                   const isGmp = resolveProjectBillingModel(projectLookup[changeOrder.project_id]) === "cost_plus_gmp"
                   const gmp = resolveGmpBadge(changeOrder)
                   const approvedNotBilled = changeOrder.status === "approved" && !changeOrder.linked_invoice
+                  const costCents = changeOrder.cost_total_cents ?? 0
+                  const marginCents = changeOrderTotalCents(changeOrder) - costCents
 
                   return (
                     <TableRow
@@ -839,6 +852,14 @@ const [sheetOpen, setSheetOpen] = useState(false)
 
                       <TableCell className="align-middle text-right font-semibold tabular-nums">
                         {total}
+                      </TableCell>
+
+                      <TableCell className="hidden align-middle text-right tabular-nums text-muted-foreground xl:table-cell">
+                        {formatMoneyFromCents(costCents)}
+                      </TableCell>
+
+                      <TableCell className="hidden align-middle text-right font-medium tabular-nums xl:table-cell">
+                        {formatSignedMoneyFromCents(marginCents)}
                       </TableCell>
 
                       <TableCell className="pr-3 align-middle" onClick={(event) => event.stopPropagation()}>
@@ -921,7 +942,7 @@ const [sheetOpen, setSheetOpen] = useState(false)
 
                 {filtered.length === 0 && !isPending && (
                   <TableRow className="hover:bg-transparent">
-                    <TableCell colSpan={hideProjectFilter ? 7 : 8} className="h-48 text-center">
+                    <TableCell colSpan={hideProjectFilter ? 9 : 10} className="h-48 text-center">
                       <div className="flex flex-col items-center gap-3 text-muted-foreground">
                         <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                           <FolderOpen className="h-6 w-6" />
@@ -957,7 +978,7 @@ const [sheetOpen, setSheetOpen] = useState(false)
                   <>
                     {[...Array(5)].map((_, idx) => (
                       <TableRow key={idx} className="hover:bg-transparent">
-                        <TableCell colSpan={hideProjectFilter ? 7 : 8} className="py-3">
+                        <TableCell colSpan={hideProjectFilter ? 9 : 10} className="py-3">
                           <Skeleton className="h-6 w-full rounded-md" />
                         </TableCell>
                       </TableRow>

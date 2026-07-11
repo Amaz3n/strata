@@ -27,6 +27,7 @@ import {
 } from "@/lib/validation/compliance-documents"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
+import { requestPrequalification, reviewPrequalification } from "@/lib/services/prequalification"
 
 async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   try {
@@ -79,6 +80,23 @@ export async function restoreCompanyAction(companyId: string) {
       revalidatePath(`/companies/${companyId}`)
       revalidatePath("/directory")
       return true
+  })
+}
+
+export async function requestPrequalificationAction(companyId: string) {
+  return run(async () => {
+    const result = await requestPrequalification(companyId)
+    revalidatePath(`/companies/${companyId}`)
+    return result
+  })
+}
+
+export async function reviewPrequalificationAction(companyId: string, prequalificationId: string, input: unknown) {
+  return run(async () => {
+    const result = await reviewPrequalification(prequalificationId, input)
+    revalidatePath(`/companies/${companyId}`)
+    revalidatePath("/directory")
+    return result
   })
 }
 
@@ -232,4 +250,3 @@ export async function reviewComplianceDocumentAction(
       return result
   })
 }
-

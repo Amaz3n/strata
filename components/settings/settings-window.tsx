@@ -1184,6 +1184,11 @@ export function SettingsWindow({
 
                       <ContractTemplateSettings canManage={Boolean(organizationSettings?.canManageOrganization)} />
 
+                      <div className="flex items-center justify-between gap-4 border-t border-border/70 pt-6">
+                        <div><p className="text-sm font-semibold">Document numbering</p><p className="text-xs text-muted-foreground">Prefixes and zero-padding for RFIs, submittals, change orders, meetings, and transmittals.</p></div>
+                        <Button variant="outline" asChild><a href="/settings/document-numbering">Configure</a></Button>
+                      </div>
+
                       <div className="space-y-5 border-t border-border/70 pt-6">
                         <div>
                           <p className="text-sm font-semibold">Estimate branding</p>

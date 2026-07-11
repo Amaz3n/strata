@@ -18,6 +18,10 @@ import {
   addManpowerAction,
   updateManpowerAction,
   deleteManpowerAction,
+  addDailyReportSectionAction,
+  updateDailyReportSectionAction,
+  deleteDailyReportSectionAction,
+  refreshDailyReportWeatherAction,
   uploadProjectFileAction,
   getFileDownloadUrlAction,
 } from "../actions"
@@ -143,6 +147,26 @@ export function ProjectDailyLogsClient({
       }}
       onDeleteManpower={async (manpowerId) => {
         const report = unwrapAction(await deleteManpowerAction(projectId, manpowerId))
+        upsertReport(report)
+        return report
+      }}
+      onAddSection={async (date, kind, input) => {
+        const report = unwrapAction(await addDailyReportSectionAction(projectId, date, kind, input))
+        upsertReport(report)
+        return report
+      }}
+      onUpdateSection={async (kind, id, input) => {
+        const report = unwrapAction(await updateDailyReportSectionAction(projectId, kind, id, input))
+        upsertReport(report)
+        return report
+      }}
+      onDeleteSection={async (kind, id) => {
+        const report = unwrapAction(await deleteDailyReportSectionAction(projectId, kind, id))
+        upsertReport(report)
+        return report
+      }}
+      onRefreshWeather={async (reportId) => {
+        const report = unwrapAction(await refreshDailyReportWeatherAction(projectId, reportId))
         upsertReport(report)
         return report
       }}

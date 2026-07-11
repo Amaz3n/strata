@@ -1,5 +1,6 @@
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import {
   buildFilesPublicUrl,
   deleteFilesObjects,
@@ -326,6 +327,143 @@ export async function createVersion(
       version_number: nextVersionNumber,
       file_name: file.name,
       label: options.label,
+    },
+  })
+
+  return mapVersion(version, version.id)
+}
+
+/**
+ * System-generated new version of a file (e.g. the review-stamped copy of a
+ * submittal document). Service-role: runs from portal/workflow flows with no
+ * user session; callers own authorization. The prior blob survives as an
+ * earlier version — nothing is overwritten.
+ */
+export async function createVersionFromBytes({
+  orgId,
+  fileId,
+  bytes,
+  fileName,
+  mimeType,
+  label,
+  notes,
+  createdBy,
+}: {
+  orgId: string
+  fileId: string
+  bytes: Buffer
+  fileName: string
+  mimeType: string
+  label?: string
+  notes?: string
+  createdBy?: string | null
+}): Promise<FileVersion> {
+  const supabase = createServiceSupabaseClient()
+
+  const { data: existingFile, error: fileError } = await supabase
+    .from("files")
+    .select("id, org_id, project_id, file_name, storage_path")
+    .eq("org_id", orgId)
+    .eq("id", fileId)
+    .single()
+
+  if (fileError || !existingFile) {
+    throw new Error("File not found")
+  }
+
+  // Version 1 preserves the original blob if the file has no versions yet.
+  const { data: versions } = await supabase
+    .from("doc_versions")
+    .select("id, version_number")
+    .eq("org_id", orgId)
+    .eq("file_id", fileId)
+    .order("version_number", { ascending: false })
+    .limit(1)
+
+  if (!versions || versions.length === 0) {
+    await supabase.from("doc_versions").insert({
+      org_id: orgId,
+      file_id: fileId,
+      version_number: 1,
+      storage_path: existingFile.storage_path,
+      file_name: existingFile.file_name,
+      created_by: createdBy ?? null,
+    })
+  }
+
+  const nextVersionNumber = (versions?.[0]?.version_number ?? 1) + 1
+  const timestamp = Date.now()
+  const safeName = fileName.replace(/[^a-zA-Z0-9.-]/g, "_")
+  const basePath = existingFile.storage_path.substring(0, existingFile.storage_path.lastIndexOf("/"))
+  const newStoragePath = `${basePath}/versions/${nextVersionNumber}/${timestamp}_${safeName}`
+
+  await uploadFilesObject({
+    supabase,
+    orgId,
+    path: newStoragePath,
+    bytes,
+    contentType: mimeType,
+    upsert: false,
+  })
+
+  const { data: version, error: versionError } = await supabase
+    .from("doc_versions")
+    .insert({
+      org_id: orgId,
+      file_id: fileId,
+      version_number: nextVersionNumber,
+      label,
+      notes,
+      storage_path: newStoragePath,
+      file_name: fileName,
+      mime_type: mimeType,
+      size_bytes: bytes.length,
+      created_by: createdBy ?? null,
+    })
+    .select(
+      "id, org_id, file_id, version_number, label, notes, storage_path, file_name, mime_type, size_bytes, checksum, created_by, created_at",
+    )
+    .single()
+
+  if (versionError || !version) {
+    await deleteFilesObjects({ supabase, orgId, paths: [newStoragePath] })
+    throw new Error(`Failed to create version record: ${versionError?.message}`)
+  }
+
+  const { error: updateError } = await supabase
+    .from("files")
+    .update({
+      storage_path: newStoragePath,
+      file_name: fileName,
+      mime_type: mimeType,
+      size_bytes: bytes.length,
+      current_version_id: version.id,
+    })
+    .eq("id", fileId)
+    .eq("org_id", orgId)
+
+  if (updateError) {
+    console.error("Failed to update file record:", updateError.message)
+  }
+
+  await recordAudit({
+    orgId,
+    actorId: createdBy ?? undefined,
+    action: "insert",
+    entityType: "doc_version",
+    entityId: version.id as string,
+    after: version,
+  })
+
+  await recordEvent({
+    orgId,
+    eventType: "file_version_created",
+    entityType: "file",
+    entityId: fileId,
+    payload: {
+      version_number: nextVersionNumber,
+      file_name: fileName,
+      label,
     },
   })
 

@@ -30,6 +30,7 @@ import {
   validateAiProviderModelPair,
 } from "@/lib/services/ai-config"
 import { listOrgAiSearchAccess, setOrgAiSearchAccess } from "@/lib/services/ai-search-access"
+import { PRODUCT_TIERS } from "@/lib/product-tier"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -57,6 +58,7 @@ const provisionPlatformOrgSchema = z.object({
   orgName: z.string().min(2, "Organization name is required"),
   slug: z.string().min(2, "Slug is required"),
   billingModel: z.enum(["subscription", "license"]).default("subscription"),
+  productTier: z.enum(PRODUCT_TIERS).default("residential"),
   fullName: z.string().min(2, "Primary contact name is required"),
   primaryEmail: z.string().email("Valid email is required"),
   trialDays: z.coerce.number().int().min(1).max(60).optional(),
@@ -228,6 +230,7 @@ export async function provisionPlatformOrgAction(
     orgName: formData.get("orgName"),
     slug: formData.get("slug") ?? formData.get("orgSlug"),
     billingModel: formData.get("billingModel") ?? "subscription",
+    productTier: formData.get("productTier") ?? "residential",
     fullName: formData.get("fullName"),
     primaryEmail: formData.get("primaryEmail"),
     trialDays: formData.get("trialDays"),
@@ -258,6 +261,7 @@ export async function provisionPlatformOrgAction(
       trialDays: parsed.data.trialDays,
       createdBy: user.id,
       sendInviteEmail: parsed.data.sendInvites,
+      productTier: parsed.data.productTier,
     })
 
     const serviceSupabase = createServiceSupabaseClient()

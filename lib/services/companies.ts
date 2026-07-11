@@ -90,6 +90,11 @@ function mapCompany(row: any): Company {
     qbo_vendor_name: row.qbo_vendor_name ?? metadata.qbo_vendor_name ?? undefined,
     qbo_vendor_synced_at: row.qbo_vendor_synced_at ?? metadata.qbo_vendor_synced_at ?? undefined,
     qbo_vendor_sync_status: row.qbo_vendor_sync_status ?? metadata.qbo_vendor_sync_status ?? undefined,
+    tax_id_last4: row.tax_id_last4 ?? undefined,
+    tax_entity_type: row.tax_entity_type ?? undefined,
+    is_1099_eligible: row.is_1099_eligible ?? undefined,
+    w9_file_id: row.w9_file_id ?? undefined,
+    w9_received_at: row.w9_received_at ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at ?? undefined,
     contact_count: contactCount,
@@ -217,6 +222,7 @@ export async function listCompaniesWithClient(
       id, org_id, name, company_type, phone, email, website, address,
       license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes,
       qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status,
+      tax_id_last4, tax_entity_type, is_1099_eligible, w9_file_id, w9_received_at,
       metadata, created_at, updated_at,
       contact_company_links(count)
     `,
@@ -244,7 +250,7 @@ export async function listCompaniesWithClient(
 }
 
 export async function getCompany(companyId: string, orgId?: string): Promise<Company & { contacts: Contact[] }> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId, productTier } = await requireOrgContext(orgId)
   await requireAnyPermission(["org.member", "org.read", "directory.read", "directory.write"], {
     supabase,
     orgId: resolvedOrgId,
@@ -258,6 +264,7 @@ export async function getCompany(companyId: string, orgId?: string): Promise<Com
       id, org_id, name, company_type, phone, email, website, address,
       license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes,
       qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status,
+      tax_id_last4, tax_entity_type, is_1099_eligible, w9_file_id, w9_received_at,
       metadata, created_at, updated_at,
       contact_company_links (
         id, relationship, created_at,
@@ -315,7 +322,7 @@ export async function getClientCompanyReceivables(
   companyId: string,
   orgId?: string,
 ): Promise<ClientCompanyReceivablesSummary> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId, productTier } = await requireOrgContext(orgId)
   await requireAnyPermission(["org.member", "org.read", "directory.read", "directory.write"], {
     supabase,
     orgId: resolvedOrgId,
@@ -328,7 +335,7 @@ export async function getClientCompanyReceivables(
     return { ...emptyClientCompanyReceivablesSummary }
   }
 
-  const visibleProjects = (await listProjects(resolvedOrgId, { supabase, orgId: resolvedOrgId, userId })).filter(
+  const visibleProjects = (await listProjects(resolvedOrgId, { supabase, orgId: resolvedOrgId, userId, productTier })).filter(
     (project) => project.client_id && contactIds.has(project.client_id),
   )
 
@@ -515,6 +522,9 @@ function buildCompanyInsert(input: CompanyInput, orgId: string) {
     qbo_vendor_name: input.qbo_vendor_name ?? null,
     qbo_vendor_synced_at: input.qbo_vendor_synced_at ?? null,
     qbo_vendor_sync_status: input.qbo_vendor_sync_status ?? (input.qbo_vendor_id ? "linked" : null),
+    tax_id_last4: input.tax_id_last4 ?? null,
+    tax_entity_type: input.tax_entity_type ?? null,
+    is_1099_eligible: input.is_1099_eligible ?? null,
     metadata: {
       trade: input.trade,
       license_number: input.license_number,
@@ -547,7 +557,7 @@ export async function createCompany({ input, orgId }: { input: CompanyInput; org
     .from("companies")
     .insert({ ...buildCompanyInsert(parsed, resolvedOrgId), ...classification })
     .select(
-      "id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status, metadata, created_at, updated_at, contact_company_links(count)",
+      "id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status, tax_id_last4, tax_entity_type, is_1099_eligible, w9_file_id, w9_received_at, metadata, created_at, updated_at, contact_company_links(count)",
     )
     .single()
 
@@ -612,7 +622,7 @@ export async function updateCompany({
 
   const { data: existing, error: existingError } = await supabase
     .from("companies")
-    .select("id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status, metadata, created_at, updated_at")
+    .select("id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status, tax_id_last4, tax_entity_type, is_1099_eligible, w9_file_id, w9_received_at, metadata, created_at, updated_at")
     .eq("org_id", resolvedOrgId)
     .eq("id", companyId)
     .maybeSingle()
@@ -672,12 +682,15 @@ export async function updateCompany({
       qbo_vendor_name: parsed.qbo_vendor_name ?? existing.qbo_vendor_name,
       qbo_vendor_synced_at: parsed.qbo_vendor_synced_at ?? existing.qbo_vendor_synced_at,
       qbo_vendor_sync_status: parsed.qbo_vendor_sync_status ?? existing.qbo_vendor_sync_status,
+      tax_id_last4: parsed.tax_id_last4 ?? existing.tax_id_last4,
+      tax_entity_type: parsed.tax_entity_type ?? existing.tax_entity_type,
+      is_1099_eligible: typeof parsed.is_1099_eligible === "boolean" ? parsed.is_1099_eligible : existing.is_1099_eligible,
       metadata,
     })
     .eq("org_id", resolvedOrgId)
     .eq("id", companyId)
     .select(
-      "id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status, metadata, created_at, updated_at, contact_company_links(count)",
+      "id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status, tax_id_last4, tax_entity_type, is_1099_eligible, w9_file_id, w9_received_at, metadata, created_at, updated_at, contact_company_links(count)",
     )
     .maybeSingle()
 

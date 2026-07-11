@@ -39,7 +39,10 @@ export async function GET(
     .eq("project_id", access.project_id)
     .maybeSingle()
 
-  if (!sheet || !sheet[shareColumn] || !sheet.current_revision_id) {
+  // Reviewer seats (design team) see every published sheet regardless of the
+  // client/sub share flags.
+  const isShared = access.portal_type === "reviewer" || !!sheet?.[shareColumn]
+  if (!sheet || !isShared || !sheet.current_revision_id) {
     return NextResponse.json({ error: "Sheet not available" }, { status: 404 })
   }
 

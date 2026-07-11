@@ -74,6 +74,57 @@ export const manpowerInputSchema = z
 
 export type ManpowerInput = z.infer<typeof manpowerInputSchema>
 
+export const dailyReportSectionKindSchema = z.enum(["delay", "equipment", "visitor", "delivery"])
+export type DailyReportSectionKind = z.infer<typeof dailyReportSectionKindSchema>
+
+export const delayInputSchema = z.object({
+  delay_type: z.enum(["weather", "owner", "design", "material", "labor", "equipment", "utility", "other"]),
+  description: z.string().trim().min(1, "Description is required").max(2000),
+  hours_lost: z.number().min(0).max(24).optional(),
+  affected_trades: z.string().trim().max(500).optional(),
+  schedule_item_id: z.string().uuid().optional().nullable(),
+  potential_claim: z.boolean().default(false),
+})
+
+export const equipmentInputSchema = z.object({
+  description: z.string().trim().min(1, "Description is required").max(500),
+  company: z.string().trim().max(300).optional(),
+  count: z.number().int().min(1).max(999).default(1),
+  hours_used: z.number().min(0).max(24).optional(),
+  idle: z.boolean().default(false),
+  notes: z.string().trim().max(2000).optional(),
+})
+
+export const visitorInputSchema = z.object({
+  name: z.string().trim().min(1, "Name is required").max(300),
+  company: z.string().trim().max(300).optional(),
+  purpose: z.string().trim().max(500).optional(),
+  time_in: z.string().trim().max(20).optional(),
+  time_out: z.string().trim().max(20).optional(),
+})
+
+export const deliveryInputSchema = z.object({
+  description: z.string().trim().min(1, "Description is required").max(500),
+  supplier: z.string().trim().max(300).optional(),
+  quantity: z.string().trim().max(100).optional(),
+  ticket_number: z.string().trim().max(100).optional(),
+  received_by: z.string().trim().max(300).optional(),
+  notes: z.string().trim().max(2000).optional(),
+})
+
+export const dailyReportSectionInputSchemas = {
+  delay: delayInputSchema,
+  equipment: equipmentInputSchema,
+  visitor: visitorInputSchema,
+  delivery: deliveryInputSchema,
+}
+
+export type DelayInput = z.infer<typeof delayInputSchema>
+export type EquipmentInput = z.infer<typeof equipmentInputSchema>
+export type VisitorInput = z.infer<typeof visitorInputSchema>
+export type DeliveryInput = z.infer<typeof deliveryInputSchema>
+export type DailyReportSectionInput = DelayInput | EquipmentInput | VisitorInput | DeliveryInput
+
 /** Editable day-level fields on the report itself (not a contribution). */
 export const dailyReportUpdateSchema = z.object({
   weather: weatherSchema.optional(),

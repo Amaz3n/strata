@@ -10,6 +10,8 @@ const defaultRules: ComplianceRules = {
   block_payment_on_missing_docs: true,
   warn_subcontract_execution_on_missing_docs: true,
   block_subcontract_execution_on_missing_docs: false,
+  block_commitment_on_prequal: false,
+  prequalification_validity_days: 365,
 }
 
 function normalizeBoolean(raw: unknown, fallback: boolean): boolean {
@@ -34,6 +36,14 @@ function mergeRules(raw?: Partial<ComplianceRules> | null): ComplianceRules {
       source.block_subcontract_execution_on_missing_docs,
       defaultRules.block_subcontract_execution_on_missing_docs ?? false,
     ),
+    block_commitment_on_prequal: normalizeBoolean(
+      source.block_commitment_on_prequal,
+      defaultRules.block_commitment_on_prequal ?? false,
+    ),
+    prequalification_validity_days:
+      typeof source.prequalification_validity_days === "number" && source.prequalification_validity_days >= 30 && source.prequalification_validity_days <= 1825
+        ? Math.round(source.prequalification_validity_days)
+        : defaultRules.prequalification_validity_days,
   }
 }
 

@@ -78,6 +78,25 @@ export function SubSubmittalsTab({ submittals, token }: SubSubmittalsTabProps) {
                   </p>
                 )}
               </div>
+              {sub.decision_status && (
+                <div className="space-y-1 border bg-muted/30 p-2">
+                  <p className="text-xs">
+                    Returned:{" "}
+                    <span className="font-medium capitalize">{sub.decision_status.replaceAll("_", " ")}</span>
+                  </p>
+                  {sub.decision_note && (
+                    <p className="text-xs text-muted-foreground whitespace-pre-wrap">{sub.decision_note}</p>
+                  )}
+                  {sub.stamped_file_id && (
+                    <a
+                      className="text-xs font-medium text-primary underline underline-offset-2"
+                      href={`/api/portal/files/${token}/${sub.stamped_file_id}?download=1`}
+                    >
+                      Download stamped copy
+                    </a>
+                  )}
+                </div>
+              )}
               <div className="flex items-center justify-between">
                 {sub.due_date && (
                   <p className="text-xs text-muted-foreground">

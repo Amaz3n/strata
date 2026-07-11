@@ -162,9 +162,10 @@ export const FINANCIAL_ENTITY_TYPES: SearchEntityType[] = [
   "change_order",
   "contract",
   "proposal",
+  "pay_application",
 ]
-export const DOCUMENT_ENTITY_TYPES: SearchEntityType[] = ["rfi", "submittal", "drawing_set", "drawing_sheet", "file"]
-export const FIELD_ENTITY_TYPES: SearchEntityType[] = ["task", "schedule_item", "daily_log", "punch_item", "photo"]
+export const DOCUMENT_ENTITY_TYPES: SearchEntityType[] = ["rfi", "submittal", "meeting", "transmittal", "drawing_set", "drawing_sheet", "file"]
+export const FIELD_ENTITY_TYPES: SearchEntityType[] = ["task", "schedule_item", "daily_log", "punch_item", "photo", "inspection", "safety_incident", "observation"]
 export const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
   project: "/projects/{id}",
   task: "/tasks/{id}",
@@ -179,8 +180,11 @@ export const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
   change_order: "/change-orders/{id}",
   contract: "/contracts/{id}",
   proposal: "/signatures",
+  pay_application: "/projects/{project_id}/financials/receivables?payApp={id}",
   rfi: "/rfis/{id}",
   submittal: "/submittals/{id}",
+  meeting: "/projects/{project_id}/meetings?meeting={id}",
+  transmittal: "/projects/{project_id}/transmittals",
   drawing_set: "/drawings/sets/{id}",
   drawing_sheet: "/drawings/sheets/{id}",
   daily_log: "/daily-logs/{id}",
@@ -191,6 +195,11 @@ export const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
   payable: "/projects/{project_id}/financials/payables?bill={id}",
   expense: "/projects/{project_id}/expenses?expense={id}",
   prospect: "/pipeline?prospectId={id}",
+  inspection: "/projects/{project_id}/inspections?inspection={id}",
+  safety_incident: "/projects/{project_id}/safety",
+  observation: "/projects/{project_id}/safety?tab=observations",
+  budget_transfer: "/projects/{project_id}/financials/budget",
+  prequalification: "/companies/{company_id}",
 }
 export const ENTITY_SEMANTIC_FALLBACKS: Partial<Record<SearchEntityType, SearchEntityType[]>> = {
   contract: ["commitment", "proposal", "change_order"],

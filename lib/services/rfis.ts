@@ -17,12 +17,14 @@ import {
   fetchContactEmail,
   fetchUserEmail,
 } from "@/lib/services/portal-links"
+import { fetchDistributionRecipients } from "@/lib/services/distribution-lists"
 import type { ChangeOrder, Rfi, RfiResponse } from "@/lib/types"
 import type { RfiDecisionInput, RfiInput, RfiResponseInput } from "@/lib/validation/rfis"
 import { RfiNotificationEmail } from "@/lib/emails/rfi-notification-email"
+import { formatDocNumber, type DocumentNumberingSettings } from "@/lib/document-number"
 
 const RFI_SELECT =
-  "id, org_id, project_id, rfi_number, subject, question, status, priority, submitted_by, submitted_by_company_id, assigned_to, assigned_company_id, notify_contact_id, submitted_at, sent_to_emails, due_date, answered_at, closed_at, cost_impact_cents, schedule_impact_days, drawing_reference, spec_reference, location, attachment_file_id, last_response_at, decision_status, decision_note, decided_by_user_id, decided_by_contact_id, decided_at, decided_via_portal, decision_portal_token_id, created_at, updated_at"
+  "id, org_id, project_id, rfi_number, subject, question, status, priority, submitted_by, submitted_by_company_id, assigned_to, assigned_company_id, notify_contact_id, submitted_at, sent_to_emails, due_date, answered_at, closed_at, cost_impact_cents, schedule_impact_days, drawing_reference, spec_reference, location, attachment_file_id, last_response_at, decision_status, decision_note, decided_by_user_id, decided_by_contact_id, decided_at, decided_via_portal, decision_portal_token_id, ball_in_court, created_at, updated_at"
 
 const RFI_NUMBER_CONFLICT_CONSTRAINT = "rfis_project_id_rfi_number_key"
 
@@ -41,9 +43,13 @@ export async function listRfis(orgId?: string, projectId?: string): Promise<Rfi[
     query = query.order("created_at", { ascending: false }).limit(ORG_LIST_CAP)
   }
 
-  const { data, error } = await query
+  const [{ data, error }, { data: org }] = await Promise.all([
+    query,
+    supabase.from("orgs").select("document_numbering").eq("id", resolvedOrgId).single(),
+  ])
   if (error) throw new Error(`Failed to load RFIs: ${error.message}`)
-  return data ?? []
+  const numbering = (org?.document_numbering ?? {}) as DocumentNumberingSettings
+  return (data ?? []).map((rfi) => ({ ...rfi, display_number: formatDocNumber("rfi", rfi.rfi_number, numbering) }))
 }
 
 export async function listRfisForPortal({
@@ -74,9 +80,13 @@ export async function listRfisForPortal({
     query = query.eq("id", scopedRfiId)
   }
 
-  const { data, error } = await query
+  const [{ data, error }, { data: org }] = await Promise.all([
+    query,
+    supabase.from("orgs").select("document_numbering").eq("id", orgId).single(),
+  ])
   if (error) throw new Error(`Failed to load RFIs: ${error.message}`)
-  return data ?? []
+  const numbering = (org?.document_numbering ?? {}) as DocumentNumberingSettings
+  return (data ?? []).map((rfi) => ({ ...rfi, display_number: formatDocNumber("rfi", rfi.rfi_number, numbering) }))
 }
 
 export async function listRfiResponses({
@@ -121,6 +131,31 @@ export async function listRfiResponses({
       actor_ip: row.actor_ip ?? null,
     } satisfies RfiResponse
   })
+}
+
+/**
+ * Ball-in-court label for an open RFI: the assigned party owes the answer.
+ * Answered RFIs put the ball back with the requester; closed RFIs have none.
+ */
+async function openRfiBicLabel(
+  supabase: SupabaseClient,
+  orgId: string,
+  rfi: { assigned_company_id?: string | null; assigned_to?: string | null },
+): Promise<string> {
+  if (rfi.assigned_company_id) {
+    const { data } = await supabase
+      .from("companies")
+      .select("name")
+      .eq("id", rfi.assigned_company_id)
+      .eq("org_id", orgId)
+      .maybeSingle()
+    if (data?.name) return data.name
+  }
+  if (rfi.assigned_to) {
+    const { data } = await supabase.from("app_users").select("full_name").eq("id", rfi.assigned_to).maybeSingle()
+    if (data?.full_name) return data.full_name
+  }
+  return "GC"
 }
 
 async function insertRfiWithNumberRetry({
@@ -184,6 +219,12 @@ export async function createRfi({
     drawing_reference: input.drawing_reference ?? null,
     spec_reference: input.spec_reference ?? null,
     attachment_file_id: input.attachment_file_id ?? null,
+    ball_in_court: shouldSendNow
+      ? await openRfiBicLabel(supabase, resolvedOrgId, {
+          assigned_company_id: input.assigned_company_id ?? null,
+          assigned_to: input.assigned_to ?? null,
+        })
+      : null,
   }
 
   const { data, insertPayload } = await insertRfiWithNumberRetry({
@@ -256,7 +297,7 @@ export async function sendRfi({
   const now = new Date().toISOString()
   const { data: existing, error } = await supabase
     .from("rfis")
-    .select("id, status, submitted_at, notify_contact_id")
+    .select("id, status, submitted_at, notify_contact_id, assigned_company_id, assigned_to")
     .eq("id", rfiId)
     .eq("org_id", resolvedOrgId)
     .maybeSingle()
@@ -278,6 +319,9 @@ export async function sendRfi({
   }
   if (!existing.submitted_at) {
     updatePayload.submitted_at = now
+  }
+  if (existing.status === "draft") {
+    updatePayload.ball_in_court = await openRfiBicLabel(supabase, resolvedOrgId, existing)
   }
 
   const { data: updated, error: updateError } = await supabase
@@ -349,6 +393,8 @@ export async function createPortalRfi({
     submitted_by: null,
     assigned_to: null,
     submitted_at: new Date().toISOString(),
+    // Portal-created RFIs ask the GC a question — the GC owes the answer.
+    ball_in_court: "GC",
   }
 
   const { data } = await insertRfiWithNumberRetry({
@@ -408,6 +454,7 @@ export async function addRfiResponse({ orgId, input }: { orgId?: string; input: 
   if (input.response_type === "answer") {
     updatePayload.answered_at = now
     updatePayload.status = "answered"
+    updatePayload.ball_in_court = "Requester"
   }
 
   await supabase.from("rfis").update(updatePayload).eq("id", input.rfi_id).eq("org_id", resolvedOrgId)
@@ -512,6 +559,7 @@ export async function addPortalRfiResponse({
   if (input.response_type === "answer") {
     updatePayload.answered_at = now
     updatePayload.status = "answered"
+    updatePayload.ball_in_court = "Requester"
   }
 
   await supabase.from("rfis").update(updatePayload).eq("id", input.rfi_id).eq("org_id", orgId)
@@ -574,7 +622,7 @@ export async function decideRfi({ orgId, input }: { orgId?: string; input: RfiDe
   const decidedAt = new Date().toISOString()
   const { data: existing, error: existingError } = await supabase
     .from("rfis")
-    .select("id, notify_contact_id")
+    .select("id, notify_contact_id, assigned_company_id, assigned_to")
     .eq("id", input.rfi_id)
     .eq("org_id", resolvedOrgId)
     .maybeSingle()
@@ -595,6 +643,10 @@ export async function decideRfi({ orgId, input }: { orgId?: string; input: RfiDe
       decided_at: decidedAt,
       answered_at: decidedAt,
       status: input.decision_status === "approved" ? "answered" : "open",
+      ball_in_court:
+        input.decision_status === "approved"
+          ? "Requester"
+          : await openRfiBicLabel(supabase, resolvedOrgId, existing),
     })
     .eq("id", input.rfi_id)
     .eq("org_id", resolvedOrgId)
@@ -642,7 +694,7 @@ export async function closeRfi({ rfiId, orgId }: { rfiId: string; orgId?: string
 
   const { data, error } = await supabase
     .from("rfis")
-    .update({ status: "closed", closed_at: now })
+    .update({ status: "closed", closed_at: now, ball_in_court: null })
     .eq("id", rfiId)
     .eq("org_id", resolvedOrgId)
     .neq("status", "closed")
@@ -679,7 +731,7 @@ export async function reopenRfi({ rfiId, orgId }: { rfiId: string; orgId?: strin
 
   const { data: existing, error: existingError } = await supabase
     .from("rfis")
-    .select("id, status, answered_at")
+    .select("id, status, answered_at, assigned_company_id, assigned_to")
     .eq("id", rfiId)
     .eq("org_id", resolvedOrgId)
     .maybeSingle()
@@ -694,7 +746,12 @@ export async function reopenRfi({ rfiId, orgId }: { rfiId: string; orgId?: strin
   const nextStatus = existing.answered_at ? "answered" : "open"
   const { data, error } = await supabase
     .from("rfis")
-    .update({ status: nextStatus, closed_at: null })
+    .update({
+      status: nextStatus,
+      closed_at: null,
+      ball_in_court:
+        nextStatus === "answered" ? "Requester" : await openRfiBicLabel(supabase, resolvedOrgId, existing),
+    })
     .eq("id", rfiId)
     .eq("org_id", resolvedOrgId)
     .select(RFI_SELECT)
@@ -729,6 +786,7 @@ export interface RfiLinkedChangeOrder {
   co_number: number | string | null
   title: string
   status: string
+  lifecycle?: string | null
   total_cents: number | null
 }
 
@@ -744,9 +802,9 @@ export async function getRfiLinkedChangeOrder({
 
   const { data, error } = await supabase
     .from("change_orders")
-    .select("id, co_number, title, status, total_cents")
+    .select("id, co_number, title, status, lifecycle, total_cents")
     .eq("org_id", resolvedOrgId)
-    .eq("metadata->>source_rfi_id", rfiId)
+    .eq("source_rfi_id", rfiId)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()
@@ -759,7 +817,7 @@ export async function getRfiLinkedChangeOrder({
 
 /**
  * Turns an RFI's cost/schedule impact into a draft change order and links the
- * two via change_orders.metadata.source_rfi_id. change_order.write is enforced
+ * two via change_orders.source_rfi_id. change_order.write is enforced
  * by createChangeOrder.
  */
 export async function convertRfiToChangeOrder({
@@ -787,7 +845,7 @@ export async function convertRfiToChangeOrder({
     .from("change_orders")
     .select("id, co_number")
     .eq("org_id", resolvedOrgId)
-    .eq("metadata->>source_rfi_id", rfiId)
+    .eq("source_rfi_id", rfiId)
     .limit(1)
     .maybeSingle()
 
@@ -811,29 +869,22 @@ export async function convertRfiToChangeOrder({
         description: `RFI #${rfi.rfi_number}: ${rfi.subject}`,
         quantity: 1,
         unit: "ls",
-        unit_cost: (rfi.cost_impact_cents ?? 0) / 100,
+        unit_cost: 0,
+        internal_cost_cents: rfi.cost_impact_cents ?? null,
       },
     ],
   })
 
   const changeOrder = await createChangeOrder({ input, orgId: resolvedOrgId })
 
-  const { data: coRow } = await supabase
-    .from("change_orders")
-    .select("metadata")
-    .eq("id", changeOrder.id)
-    .eq("org_id", resolvedOrgId)
-    .maybeSingle()
-
-  const mergedMetadata = {
-    ...((coRow?.metadata as Record<string, unknown> | null) ?? {}),
-    source_rfi_id: rfi.id,
-    source_rfi_number: rfi.rfi_number,
-  }
-
   await supabase
     .from("change_orders")
-    .update({ metadata: mergedMetadata })
+    .update({
+      source_rfi_id: rfi.id,
+      cost_total_cents: rfi.cost_impact_cents ?? null,
+      lifecycle: "draft",
+      metadata: { ...(changeOrder.metadata ?? {}), source_rfi_number: rfi.rfi_number },
+    })
     .eq("id", changeOrder.id)
     .eq("org_id", resolvedOrgId)
 
@@ -854,7 +905,13 @@ export async function convertRfiToChangeOrder({
     after: { converted_to_change_order_id: changeOrder.id },
   })
 
-  return changeOrder
+  return {
+    ...changeOrder,
+    source_rfi_id: rfi.id,
+    cost_total_cents: rfi.cost_impact_cents ?? null,
+    lifecycle: "draft",
+    lines: changeOrder.lines?.map((line) => ({ ...line, internal_cost_cents: rfi.cost_impact_cents ?? null })),
+  }
 }
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"
@@ -896,7 +953,7 @@ async function sendRfiEmail({
 
   const { data: org } = await supabase
     .from("orgs")
-    .select("name, logo_url, slug")
+    .select("name, logo_url, slug, document_numbering")
     .eq("id", orgId)
     .maybeSingle()
 
@@ -991,6 +1048,33 @@ async function sendRfiEmail({
         recipients.push({ email: submitterEmail.email, name: submitterEmail.full_name, audience: "internal", portalLink: null })
       }
     })(),
+    (async () => {
+      // Managed distribution list: everyone copied on this project's RFIs.
+      const members = await fetchDistributionRecipients(orgId, rfi.project_id, "rfis")
+      await Promise.all(
+        members.map(async (member) => {
+          if (member.userId) {
+            recipients.push({ email: member.email, name: member.name, audience: "internal", portalLink: null })
+            return
+          }
+          const link = member.contactId
+            ? await ensurePortalLink({
+                supabase,
+                orgId,
+                projectId: rfi.project_id,
+                portalType: "client",
+                contactId: member.contactId,
+                companyId: null,
+                createdBy: rfi.submitted_by ?? null,
+                scopedRfiId: rfi.id,
+                capabilities: rfiPortalCaps,
+                fallbackPath,
+              })
+            : null
+          recipients.push({ email: member.email, name: member.name, audience: "client", portalLink: link })
+        }),
+      )
+    })(),
   ])
 
   if (recipients.length === 0) {
@@ -999,16 +1083,17 @@ async function sendRfiEmail({
   }
 
   const projectName = project?.name ?? "Project"
+  const displayNumber = formatDocNumber("rfi", rfi.rfi_number, (org?.document_numbering ?? {}) as DocumentNumberingSettings)
   const subject = (() => {
     switch (kind) {
       case "created":
-        return `New RFI #${rfi.rfi_number}: ${rfi.subject}`
+        return `New RFI #${displayNumber}: ${rfi.subject}`
       case "response":
-        return `Response on RFI #${rfi.rfi_number}`
+        return `Response on RFI #${displayNumber}`
       case "decision":
-        return `Decision on RFI #${rfi.rfi_number}: ${decisionStatus}`
+        return `Decision on RFI #${displayNumber}: ${decisionStatus}`
       default:
-        return `Update on RFI #${rfi.rfi_number}`
+        return `Update on RFI #${displayNumber}`
     }
   })()
 
@@ -1053,7 +1138,7 @@ async function sendRfiEmail({
           recipientName: meta.name ?? null,
           audience: meta.audience,
           projectName,
-          rfiNumber: rfi.rfi_number,
+          rfiNumber: displayNumber,
           subject: rfi.subject,
           question: rfi.question,
           kind,

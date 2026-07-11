@@ -461,7 +461,7 @@ export interface ProjectPortalInviteEmailPayload {
   to: string
   recipientName?: string | null
   projectName: string
-  portalType: "client" | "sub"
+  portalType: "client" | "sub" | "reviewer"
   orgName?: string | null
   orgLogoUrl?: string | null
   portalLink: string

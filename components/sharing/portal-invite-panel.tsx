@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState, useTransition } from "react"
-import { Mail, Send, ShieldCheck, User, Users } from "lucide-react"
+import { Mail, PencilRuler, Send, ShieldCheck, User, Users } from "lucide-react"
 import { toast } from "sonner"
 
 import { sendPortalInviteAction } from "@/app/(app)/contacts/actions"
@@ -10,7 +10,14 @@ import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
-import type { Contact, PortalAccessToken, Project, ProjectVendor } from "@/lib/types"
+import {
+  REVIEWER_ROLE_LABELS,
+  type Contact,
+  type PortalAccessToken,
+  type Project,
+  type ProjectVendor,
+  type ReviewerRole,
+} from "@/lib/types"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -28,8 +35,11 @@ interface InviteCandidate {
   email: string
 }
 
+const REVIEWER_COMPANY_TYPES = new Set(["architect", "engineer", "consultant"])
+
 export function PortalInvitePanel({ project, contacts, projectVendors, onInviteSent }: PortalInvitePanelProps) {
-  const [portalType, setPortalType] = useState<"client" | "sub">("client")
+  const [portalType, setPortalType] = useState<"client" | "sub" | "reviewer">("client")
+  const [reviewerRole, setReviewerRole] = useState<ReviewerRole>("architect")
   const [selectedContactId, setSelectedContactId] = useState("")
   const [isPending, startTransition] = useTransition()
 
@@ -97,7 +107,31 @@ export function PortalInvitePanel({ project, contacts, projectVendors, onInviteS
     return Array.from(unique.values()).sort((a, b) => a.title.localeCompare(b.title))
   }, [contacts, projectVendors])
 
-  const candidates = portalType === "client" ? clientCandidates : subCandidates
+  const reviewerCandidates = useMemo(() => {
+    const withEmail = contacts.filter((contact) => !!contact.email)
+    const designTeam = withEmail.filter((contact) => {
+      const companies = [contact.primary_company, ...(contact.company_details ?? [])].filter(Boolean)
+      return companies.some((company) => REVIEWER_COMPANY_TYPES.has((company?.company_type ?? "").toLowerCase()))
+    })
+
+    const source = designTeam.length > 0 ? designTeam : withEmail
+    const unique = new Map<string, InviteCandidate>()
+    for (const contact of source) {
+      if (!contact.email || unique.has(contact.id)) continue
+      const companyName = contact.primary_company?.name || contact.company_details?.[0]?.name
+      unique.set(contact.id, {
+        contactId: contact.id,
+        title: contact.full_name,
+        subtitle: companyName || contact.role || "External reviewer",
+        email: contact.email,
+      })
+    }
+
+    return Array.from(unique.values()).sort((a, b) => a.title.localeCompare(b.title))
+  }, [contacts])
+
+  const candidates =
+    portalType === "client" ? clientCandidates : portalType === "sub" ? subCandidates : reviewerCandidates
   const selectedCandidate = candidates.find((candidate) => candidate.contactId === selectedContactId) ?? null
 
   useEffect(() => {
@@ -108,7 +142,9 @@ export function PortalInvitePanel({ project, contacts, projectVendors, onInviteS
   const emptyStateLabel =
     portalType === "client"
       ? "Add a client contact with an email to send a portal invite."
-      : "Add a project vendor contact with an email to send a sub portal invite."
+      : portalType === "sub"
+        ? "Add a project vendor contact with an email to send a sub portal invite."
+        : "Add an architect, engineer, or owner's rep contact with an email to send a reviewer invite."
 
   const handleSend = () => {
     if (!selectedContactId) {
@@ -122,6 +158,7 @@ export function PortalInvitePanel({ project, contacts, projectVendors, onInviteS
           contactId: selectedContactId,
           projectId: project.id,
           portalType,
+          reviewerRole: portalType === "reviewer" ? reviewerRole : undefined,
         }))
         onInviteSent(result.token)
 
@@ -159,7 +196,7 @@ export function PortalInvitePanel({ project, contacts, projectVendors, onInviteS
 
       <div className="space-y-2">
         <Label className="text-xs font-medium text-muted-foreground">Portal audience</Label>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-3 gap-2">
           <button
             type="button"
             onClick={() => setPortalType("client")}
@@ -193,8 +230,43 @@ export function PortalInvitePanel({ project, contacts, projectVendors, onInviteS
               <p className="text-[11px] text-muted-foreground">Trade partner or vendor</p>
             </div>
           </button>
+
+          <button
+            type="button"
+            onClick={() => setPortalType("reviewer")}
+            className={cn(
+              "flex items-center gap-3 border p-3 text-left transition-colors",
+              portalType === "reviewer" ? "border-primary bg-primary/5" : "border-border hover:bg-muted/50",
+            )}
+          >
+            <div className={cn("flex h-8 w-8 items-center justify-center", portalType === "reviewer" ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground")}>
+              <PencilRuler className="h-4 w-4" />
+            </div>
+            <div>
+              <p className="text-sm font-medium">Reviewer</p>
+              <p className="text-[11px] text-muted-foreground">Architect or engineer</p>
+            </div>
+          </button>
         </div>
       </div>
+
+      {portalType === "reviewer" ? (
+        <div className="space-y-2">
+          <Label className="text-xs font-medium text-muted-foreground">Reviewer role</Label>
+          <Select value={reviewerRole} onValueChange={(value) => setReviewerRole(value as ReviewerRole)} disabled={isPending}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(Object.entries(REVIEWER_ROLE_LABELS) as Array<[ReviewerRole, string]>).map(([value, label]) => (
+                <SelectItem key={value} value={value}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      ) : null}
 
       <div className="space-y-2">
         <Label className="text-xs font-medium text-muted-foreground">Recipient</Label>

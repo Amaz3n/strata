@@ -1,5 +1,32 @@
 # Workstream 08 — Daily Reports (Commercial Fields) + Schedule Hardening
 
+## STATUS — CODE COMPLETE 2026-07-11
+
+All five phases are implemented. The additive migration
+`20260711140000_daily_report_commercial_sections.sql` is written but intentionally
+not applied; local development points at production and requires human approval.
+
+- Phase 1: structured delay, equipment, visitor, and delivery tables; draft-only
+  CRUD; calm collapsible day-document sections; submitted reports lock all sections.
+- Phase 2: server-side Open-Meteo snapshots on report creation plus explicit refresh;
+  projects without coordinates continue without error and manual weather remains
+  authoritative.
+- Phase 3: `can_submit_daily_logs` token capability; subcontractor-only manpower,
+  narrative, and photo submissions; GC attribution strip; portal reads remain scoped
+  to the submitting company and cannot submit/lock the GC report.
+- Phase 4: filterable project delay register, expanded day PDF, and 31-day capped
+  merged PDF route with a date-range picker. Private daily-log photos are embedded in
+  a two-column grid. A PDF fixture was rendered and visually inspected after correcting
+  table widths.
+- Phase 5: project Gantt now loads dependency records, edits FS/SS/FF/SF and signed
+  lag directly on dependency lines, validates ±365 days, computes generalized CPM,
+  and rejects cycles server-side. Six schedule unit tests cover all relationship
+  types, lag, and cycle detection.
+
+Verification: `pnpm lint`, `pnpm exec tsc --noEmit`, and `pnpm test:schedule` pass.
+Manual QA and applying the migration remain pending. Mobile/iOS daily-section parity
+and server-authoritative CPM remain deferred as planned.
+
 > Prereq: 00 master, 01; 05's PDF kit for the daily-report PDF (build Part A phases in
 > any order relative to 05, but the PDF phase needs the kit). Two half-workstreams
 > bundled: commercial-grade daily reports (delay/equipment/visitor/delivery records,

@@ -2,6 +2,11 @@ import { z } from "zod"
 
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
+import { COST_TYPES } from "@/lib/cost-types"
+import {
+  CSI_MASTERFORMAT_DIVISIONS,
+  CSI_MASTERFORMAT_ROW_COUNT,
+} from "@/lib/data/csi-masterformat"
 
 const costCodeSchema = z.object({
   code: z.string().min(1),
@@ -14,6 +19,7 @@ const costCodeSchema = z.object({
   default_unit_cost_cents: z.number().int().min(0).optional(),
   is_reimbursable_default: z.boolean().optional(),
   default_markup_percent: z.number().min(0).max(200).nullable().optional(),
+  cost_type: z.enum(COST_TYPES).nullable().optional(),
 })
 
 const updateCostCodeSchema = z.object({
@@ -29,6 +35,7 @@ const updateCostCodeSchema = z.object({
   is_reimbursable_default: z.boolean().optional(),
   default_markup_percent: z.number().min(0).max(200).nullable().optional(),
   is_active: z.boolean().optional(),
+  cost_type: z.enum(COST_TYPES).nullable().optional(),
 })
 
 async function assertParentCodeInOrg(
@@ -242,6 +249,76 @@ export async function seedNAHBCostCodes(orgId?: string) {
   return { inserted: toInsert.length }
 }
 
+export async function seedCSICostCodes(orgId?: string) {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+
+  const divisionRows = CSI_MASTERFORMAT_DIVISIONS.map((division) => ({
+    org_id: resolvedOrgId,
+    code: `${division.division} 00 00`,
+    name: division.name,
+    division: division.division,
+    category: "csi-division",
+    standard: "csi" as const,
+    cost_type: division.costType,
+    is_active: true,
+  }))
+
+  const { error: divisionError } = await supabase.from("cost_codes").upsert(divisionRows, {
+    onConflict: "org_id,code",
+    ignoreDuplicates: true,
+  })
+
+  if (divisionError) {
+    throw new Error(`Failed to seed CSI divisions: ${divisionError.message}`)
+  }
+
+  const { data: storedDivisions, error: storedDivisionsError } = await supabase
+    .from("cost_codes")
+    .select("id, code")
+    .eq("org_id", resolvedOrgId)
+    .eq("standard", "csi")
+    .in("code", divisionRows.map((row) => row.code))
+
+  if (storedDivisionsError) {
+    throw new Error(`Failed to load CSI divisions: ${storedDivisionsError.message}`)
+  }
+
+  const divisionIds = new Map(
+    (storedDivisions ?? []).map((row) => [String(row.code).slice(0, 2), String(row.id)]),
+  )
+  const missingDivision = CSI_MASTERFORMAT_DIVISIONS.find(
+    (division) => !divisionIds.has(division.division),
+  )
+  if (missingDivision) {
+    throw new Error(`CSI division ${missingDivision.division} conflicts with an existing cost code`)
+  }
+
+  const sectionRows = CSI_MASTERFORMAT_DIVISIONS.flatMap((division) =>
+    division.sections.map(([code, name]) => ({
+      org_id: resolvedOrgId,
+      parent_id: divisionIds.get(division.division),
+      code,
+      name,
+      division: division.division,
+      category: "csi-section",
+      standard: "csi" as const,
+      cost_type: division.costType,
+      is_active: true,
+    })),
+  )
+
+  const { error: sectionError } = await supabase.from("cost_codes").upsert(sectionRows, {
+    onConflict: "org_id,code",
+    ignoreDuplicates: true,
+  })
+
+  if (sectionError) {
+    throw new Error(`Failed to seed CSI sections: ${sectionError.message}`)
+  }
+
+  return { inserted: CSI_MASTERFORMAT_ROW_COUNT }
+}
+
 export async function importCostCodes(
   rows: Array<{ code: string; name: string; division?: string; category?: string }>,
   orgId?: string,
@@ -269,5 +346,4 @@ export async function importCostCodes(
 
   return { imported: data?.length ?? 0 }
 }
-
 

@@ -111,6 +111,7 @@ import {
   getPendingDraftRevisionAction,
   searchSheetContentAction,
 } from "@/app/(app)/drawings/actions"
+import { createObservationAction } from "@/app/(app)/projects/[id]/safety/actions"
 import type { RevisionDraftStatus, SheetContentMatch } from "@/lib/services/drawings"
 import type {
   DrawingMarkup,
@@ -1514,6 +1515,15 @@ export function DrawingsSetsView({
           description: input.description,
           location: input.location,
           severity: input.priority,
+        }))
+        entityId = created.id
+      } else if (input.entityType === "observation") {
+        const created = unwrapAction(await createObservationAction({
+          project_id: pinProjectId,
+          kind: "safety",
+          category: "deficiency",
+          description: [input.title, input.description].filter(Boolean).join(" — "),
+          location: input.location ?? null,
         }))
         entityId = created.id
       } else if (input.entityType === "issue") {
@@ -2989,6 +2999,12 @@ function SheetRow({
               <DropdownMenuItem onClick={onUploadRevision}>
                 <Upload className="mr-2 h-4 w-4" />
                 Submit sheet issuance
+              </DropdownMenuItem>
+              <DropdownMenuItem asChild>
+                <a href={`/projects/${sheet.project_id}/transmittals?drawingSheet=${sheet.id}&description=${encodeURIComponent(title || sheet.sheet_number)}`}>
+                  <Send className="mr-2 h-4 w-4" />
+                  Send as transmittal
+                </a>
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={async () => {

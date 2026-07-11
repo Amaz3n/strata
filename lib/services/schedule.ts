@@ -29,6 +29,7 @@ import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission, requireProjectPermission } from "@/lib/services/permissions"
+import { wouldCreateDependencyCycle } from "@/lib/utils/schedule-calc"
 
 // ============================================================================
 // SCHEDULE ITEMS
@@ -344,19 +345,7 @@ export async function createScheduleItem({ input, orgId }: { input: ScheduleItem
 
   // Create dependencies if provided
   if (input.dependencies?.length) {
-    const dependencyRows = input.dependencies.map((depId) => ({
-      org_id: resolvedOrgId,
-      project_id: input.project_id,
-      item_id: data.id,
-      depends_on_item_id: depId,
-      dependency_type: "FS",
-      lag_days: 0,
-    }))
-
-    const { error: dependencyError } = await supabase.from("schedule_dependencies").insert(dependencyRows)
-    if (dependencyError) {
-      console.error("Failed to create schedule dependencies", dependencyError)
-    }
+    await Promise.all(input.dependencies.map((dependsOnItemId) => createDependency({ item_id: data.id, depends_on_item_id: dependsOnItemId, dependency_type: "FS", lag_days: 0 }, input.project_id, resolvedOrgId)))
   }
 
   await recordEvent({
@@ -462,17 +451,8 @@ export async function updateScheduleItem({
     await supabase.from("schedule_dependencies").delete().eq("org_id", resolvedOrgId).eq("item_id", itemId)
 
     if (parsed.dependencies.length) {
-      const dependencyRows = parsed.dependencies.map((depId) => ({
-        org_id: resolvedOrgId,
-        project_id: data.project_id,
-        item_id: data.id,
-        depends_on_item_id: depId,
-        dependency_type: "FS",
-        lag_days: 0,
-      }))
-      const { error: dependencyError } = await supabase.from("schedule_dependencies").insert(dependencyRows)
-      if (dependencyError) {
-        console.error("Failed to update schedule dependencies", dependencyError)
+      for (const dependsOnItemId of parsed.dependencies) {
+        await createDependency({ item_id: data.id, depends_on_item_id: dependsOnItemId, dependency_type: "FS", lag_days: 0 }, data.project_id, resolvedOrgId)
       }
     }
   }
@@ -526,6 +506,10 @@ export async function updateScheduleItem({
   return mapScheduleItem(data, dependencyMap)
 }
 
+// Legacy schedule-item inspections (item_type "inspection" with metadata
+// checklist). The standalone inspections engine (lib/services/inspections.ts)
+// supersedes this; consolidating the schedule-item type onto it is recorded
+// follow-up debt — leave this path working until then.
 async function maybeCreatePunchItemFromInspection({
   supabase,
   orgId,
@@ -726,6 +710,16 @@ export async function createDependency(input: ScheduleDependencyInput, projectId
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireProjectPermission(userId, projectId, "schedule.edit")
 
+  if (parsed.item_id === parsed.depends_on_item_id) throw new Error("A schedule item cannot depend on itself")
+  const [{ data: endpoints }, { data: existingDependencies }] = await Promise.all([
+    supabase.from("schedule_items").select("id").eq("org_id", resolvedOrgId).eq("project_id", projectId).in("id", [parsed.item_id, parsed.depends_on_item_id]),
+    supabase.from("schedule_dependencies").select("item_id, depends_on_item_id").eq("org_id", resolvedOrgId).eq("project_id", projectId),
+  ])
+  if ((endpoints ?? []).length !== 2) throw new Error("Both schedule items must belong to this project")
+  if (wouldCreateDependencyCycle(existingDependencies ?? [], parsed.depends_on_item_id, parsed.item_id)) {
+    throw new Error("This dependency would create a schedule cycle")
+  }
+
   const { data, error } = await supabase
     .from("schedule_dependencies")
     .insert({
@@ -752,6 +746,27 @@ export async function createDependency(input: ScheduleDependencyInput, projectId
     dependency_type: data.dependency_type ?? "FS",
     lag_days: data.lag_days ?? 0,
   }
+}
+
+export async function updateDependency(
+  dependencyId: string,
+  input: Pick<ScheduleDependencyInput, "dependency_type" | "lag_days">,
+  projectId: string,
+  orgId?: string,
+): Promise<ScheduleDependency> {
+  const parsed = scheduleDependencyInputSchema.pick({ dependency_type: true, lag_days: true }).parse(input)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "schedule.edit")
+  const { data, error } = await supabase
+    .from("schedule_dependencies")
+    .update(parsed)
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+    .eq("id", dependencyId)
+    .select("id, org_id, project_id, item_id, depends_on_item_id, dependency_type, lag_days")
+    .single()
+  if (error || !data) throw new Error(`Failed to update dependency: ${error?.message}`)
+  return { ...data, dependency_type: data.dependency_type ?? "FS", lag_days: data.lag_days ?? 0 }
 }
 
 export async function deleteDependency(dependencyId: string, orgId?: string): Promise<void> {

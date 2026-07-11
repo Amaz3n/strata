@@ -3,11 +3,13 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react"
 import { usePathname } from "next/navigation"
 import type { AppBreadcrumbItem } from "./app-header"
+import type { ProductTier, ProjectPosture } from "@/lib/product-tier"
 
 export interface ProjectShellContext {
   id: string
   name: string
   href: string
+  posture: ProjectPosture
 }
 
 interface PageTitleContextType {
@@ -15,6 +17,8 @@ interface PageTitleContextType {
   breadcrumbs: AppBreadcrumbItem[] | undefined
   fullBleed: boolean
   projectContext: ProjectShellContext | null
+  productTier: ProductTier
+  progressBillingEnabled: boolean
   setTitle: (title: string) => void
   setBreadcrumbs: (breadcrumbs: AppBreadcrumbItem[]) => void
   setFullBleed: (value: boolean) => void
@@ -27,11 +31,19 @@ interface PageTitleProviderProps {
   children: React.ReactNode
   title?: string
   breadcrumbs?: AppBreadcrumbItem[]
+  productTier?: ProductTier
+  progressBillingEnabled?: boolean
 }
 
 type Scoped<T> = { path: string; value: T } | undefined
 
-export function PageTitleProvider({ children, title: initialTitle, breadcrumbs: initialBreadcrumbs }: PageTitleProviderProps) {
+export function PageTitleProvider({
+  children,
+  title: initialTitle,
+  breadcrumbs: initialBreadcrumbs,
+  productTier = "residential",
+  progressBillingEnabled = false,
+}: PageTitleProviderProps) {
   const pathname = usePathname()
 
   const [scopedTitle, setScopedTitle] = useState<Scoped<string>>(
@@ -70,12 +82,14 @@ export function PageTitleProvider({ children, title: initialTitle, breadcrumbs: 
       breadcrumbs,
       fullBleed,
       projectContext,
+      productTier,
+      progressBillingEnabled,
       setTitle,
       setBreadcrumbs,
       setFullBleed,
       setProjectContext,
     }),
-    [title, breadcrumbs, fullBleed, projectContext, setTitle, setBreadcrumbs],
+    [title, breadcrumbs, fullBleed, projectContext, productTier, progressBillingEnabled, setTitle, setBreadcrumbs],
   )
 
   return <PageTitleContext.Provider value={value}>{children}</PageTitleContext.Provider>

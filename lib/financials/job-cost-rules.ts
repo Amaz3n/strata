@@ -7,6 +7,7 @@ export type JobCostActualsEntry = {
   cost_cents?: number | string | null
   status?: string | null
   is_billable?: boolean | null
+  cost_type?: import("@/lib/cost-types").CostType | null
 }
 
 export interface JobCostActualByCostCode {
@@ -16,6 +17,7 @@ export interface JobCostActualByCostCode {
   billable_actual_cents: number
   non_billable_actual_cents: number
   entry_count: number
+  cost_type?: import("@/lib/cost-types").CostType | null
 }
 
 export type JobCostGroupBy = "cost_code" | "budget_line"
@@ -47,6 +49,7 @@ export function summarizeJobCostEntriesByCostCode(
         billable_actual_cents: 0,
         non_billable_actual_cents: 0,
         entry_count: 0,
+        ...(entry.cost_type ? { cost_type: entry.cost_type } : {}),
       } satisfies JobCostActualByCostCode)
 
     const costCents = Math.round(Number(entry.cost_cents ?? 0))

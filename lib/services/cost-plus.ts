@@ -51,6 +51,8 @@ import { getProjectGmpControlSummary } from "@/lib/services/gmp-control"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { supportsApprovedCostInvoicing } from "@/lib/financials/billing-model"
+import { getProjectPosture } from "@/lib/product-tier"
+import { terminology } from "@/lib/terminology"
 import {
   approvalDecisionSchema,
   generateInvoiceFromCostsInputSchema,
@@ -404,7 +406,7 @@ async function requireProjectFinancialAccess({
 export async function getProjectCostContract(supabase: SupabaseClient, orgId: string, projectId: string) {
   const { data, error } = await supabase
     .from("contracts")
-    .select("id, status, contract_type, markup_percent, gmp_cents, fixed_fee_cents, fee_presentation, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, requires_client_cost_approval, open_book, retainage_percent, retainage_applies_to_fee, rate_schedule_id, snapshot")
+    .select("id, status, contract_type, markup_percent, gmp_cents, fixed_fee_cents, fee_presentation, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, requires_client_cost_approval, open_book, retainage_percent, retainage_applies_to_fee, rate_schedule_id, snapshot, projects!inner(property_type)")
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .eq("status", "active")
@@ -2321,11 +2323,13 @@ export function buildInvoiceDraft({
   costs,
   groupBy,
   feePresentation = "embedded",
+  feeLabel = "Builder's fee",
 }: {
   projectId: string
   costs: BillableCost[]
   groupBy: "cost_code" | "detail"
   feePresentation?: FeePresentation
+  feeLabel?: string
 }): InvoiceDraft {
   const issueDate = toDateOnly(new Date())
   const lineMap = new Map<string, InvoiceDraftLine>()
@@ -2365,8 +2369,8 @@ export function buildInvoiceDraft({
     if (separatesFee && cost.markup_cents !== 0) {
       const feeDescription =
         feePresentation === "separate_by_code"
-          ? `Builder's fee - ${fallbackDescription}`
-          : "Builder's fee"
+          ? `${feeLabel} - ${fallbackDescription}`
+          : feeLabel
       const feeLine =
         feeLineMap.get(feeKey) ??
         ({
@@ -2462,7 +2466,7 @@ export async function generateInvoiceFromCosts(
   orgId?: string,
 ): Promise<GenerateInvoiceFromCostsResult> {
   const parsed = generateInvoiceFromCostsInputSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId, productTier } = await requireOrgContext(orgId)
   await requireProjectFinancialAccess({ supabase, orgId: resolvedOrgId, userId, projectId: parsed.projectId, permission: "invoice.write" })
 
   const billingPeriod = parsed.billingPeriodId
@@ -2486,6 +2490,10 @@ export async function generateInvoiceFromCosts(
   if (!isCostPlusContract(contract)) throw new Error("Project contract is not cost-plus or T&M")
   const billingModel = resolveProjectBillingModel(contract as any)
   const feePresentation = resolveContractFeePresentation(contract as any)
+  const contractProject = Array.isArray(contract.projects) ? contract.projects[0] : contract.projects
+  const feeLabel = terminology(
+    getProjectPosture(contractProject?.property_type, productTier),
+  ).fee
 
   if (parsed.includeAllowanceVariances) {
     await ensureAllowanceOverageBillableCosts({
@@ -2651,6 +2659,7 @@ export async function generateInvoiceFromCosts(
     costs: refreshedCosts,
     groupBy: parsed.groupBy,
     feePresentation,
+    feeLabel,
   })
   const preview = applyRetainageToInvoiceDraft(
     earnedFeeCents > 0 ? appendEarnedFeeLineToDraft(costDraft, earnedFeeCents) : costDraft,

@@ -5,6 +5,7 @@ import { cookies } from "next/headers"
 import type { SupabaseClient, User } from "@supabase/supabase-js"
 import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server"
 import { isPlatformAdminUser } from "@/lib/auth/platform"
+import { normalizeProductTier, type ProductTier } from "@/lib/product-tier"
 
 export interface OrgMembership {
   id: string
@@ -13,6 +14,7 @@ export interface OrgMembership {
   status: string
   role_key?: string
   last_active_at?: string | null
+  org_product_tier: ProductTier
 }
 
 export interface AuthContext {
@@ -67,7 +69,7 @@ async function fetchMembership(
 ): Promise<OrgMembership | null> {
   const { data, error } = await supabase
     .from("memberships")
-    .select("id, org_id, role_id, status, last_active_at, roles:roles!inner(key)")
+    .select("id, org_id, role_id, status, last_active_at, roles:roles!inner(key), orgs:orgs!inner(product_tier)")
     .eq("org_id", orgId)
     .eq("user_id", userId)
     .maybeSingle()
@@ -86,6 +88,9 @@ async function fetchMembership(
     status: data.status as string,
     last_active_at: (data as { last_active_at?: string | null }).last_active_at ?? null,
     role_key: (data as { roles?: { key?: string } }).roles?.key,
+    org_product_tier: normalizeProductTier(
+      (data as { orgs?: { product_tier?: unknown } }).orgs?.product_tier,
+    ),
   }
 }
 
@@ -93,7 +98,7 @@ async function fetchMembershipWithServiceRole(orgId: string, userId: string): Pr
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("memberships")
-    .select("id, org_id, role_id, status, last_active_at, roles:roles!inner(key)")
+    .select("id, org_id, role_id, status, last_active_at, roles:roles!inner(key), orgs:orgs!inner(product_tier)")
     .eq("org_id", orgId)
     .eq("user_id", userId)
     .maybeSingle()
@@ -107,6 +112,9 @@ async function fetchMembershipWithServiceRole(orgId: string, userId: string): Pr
     status: data.status as string,
     last_active_at: (data as { last_active_at?: string | null }).last_active_at ?? null,
     role_key: (data as { roles?: { key?: string } }).roles?.key,
+    org_product_tier: normalizeProductTier(
+      (data as { orgs?: { product_tier?: unknown } }).orgs?.product_tier,
+    ),
   }
 }
 
@@ -201,7 +209,11 @@ export const requireOrgMembership = cache(async (
       })()) ??
       (await (async () => {
         const svc = createServiceSupabaseClient()
-        const { data } = await svc.from("orgs").select("id").order("created_at", { ascending: true }).limit(1)
+        const { data } = await svc
+          .from("orgs")
+          .select("id")
+          .order("created_at", { ascending: true })
+          .limit(1)
         return data?.[0]?.id ?? null
       })())
 
@@ -222,17 +234,25 @@ export const requireOrgMembership = cache(async (
       })
     }
 
+    const svc = createServiceSupabaseClient()
+    const { data: platformOrg } = await svc
+      .from("orgs")
+      .select("product_tier")
+      .eq("id", resolvedOrgId)
+      .maybeSingle()
+
     const pseudoMembership: OrgMembership = {
       id: "platform-admin",
       org_id: resolvedOrgId,
       role_id: "platform-admin",
       status: "active",
       role_key: "owner",
+      org_product_tier: normalizeProductTier(platformOrg?.product_tier),
     }
 
     return {
       ...context,
-      supabase: createServiceSupabaseClient(),
+      supabase: svc,
       orgId: resolvedOrgId,
       membership: pseudoMembership,
     }

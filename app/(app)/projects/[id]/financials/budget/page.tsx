@@ -58,6 +58,7 @@ async function FinancialsBudgetData({ id }: { id: string }) {
         feeSummary={data.feeSummary}
         gmpSummary={data.gmpSummary}
         loadErrors={data.errors}
+        budgetTransfers={data.budgetTransfers}
       />
     </PageLayout>
   )

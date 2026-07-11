@@ -28,6 +28,7 @@ import {
 import { requireOrgContext } from "@/lib/services/context"
 import { requireAnyPermission } from "@/lib/services/permissions"
 import { sendProjectPortalInviteEmail } from "@/lib/services/mailer"
+import { REVIEWER_DEFAULT_PERMISSIONS, type PortalType, type ReviewerRole } from "@/lib/types"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -160,10 +161,12 @@ export async function sendPortalInviteAction({
   contactId,
   projectId,
   portalType = "sub",
+  reviewerRole,
 }: {
   contactId: string
   projectId: string
-  portalType?: "client" | "sub"
+  portalType?: PortalType
+  reviewerRole?: ReviewerRole
 }) {
   return run(async () => {
       const contact = await getContact(contactId)
@@ -172,9 +175,9 @@ export async function sendPortalInviteAction({
       }
 
       const resolvedCompanyId =
-        portalType === "sub"
-          ? (contact.primary_company_id ?? contact.company_details[0]?.id ?? undefined)
-          : undefined
+        portalType === "client"
+          ? undefined
+          : (contact.primary_company_id ?? contact.company_details[0]?.id ?? undefined)
 
       if (portalType === "sub" && !resolvedCompanyId) {
         throw new Error("This subcontractor contact needs a company before you can send a sub portal invite")
@@ -200,7 +203,8 @@ export async function sendPortalInviteAction({
           portalType,
           contactId,
           companyId: resolvedCompanyId,
-          permissions: {},
+          reviewerRole: portalType === "reviewer" ? (reviewerRole ?? "other") : null,
+          permissions: portalType === "reviewer" ? REVIEWER_DEFAULT_PERMISSIONS : {},
           requireAccount: false,
           orgId,
         })
@@ -229,7 +233,7 @@ export async function sendPortalInviteAction({
       ])
 
       const appUrl = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "")
-      const portalPath = `/${portalType === "sub" ? "s" : "p"}/${token.token}`
+      const portalPath = `/${portalType === "sub" ? "s" : portalType === "reviewer" ? "r" : "p"}/${token.token}`
       const portalUrl = appUrl ? `${appUrl}${portalPath}` : portalPath
       const emailSent = await sendProjectPortalInviteEmail({
         to: contact.email,

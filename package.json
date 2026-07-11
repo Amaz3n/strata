@@ -7,9 +7,10 @@
     "dev": "NODE_OPTIONS='--max-old-space-size=6144' next dev --turbo",
     "db:schema:check": "bash ./scripts/check-schema-sync.sh",
     "lint": "eslint .",
-    "test:financials": "node --test tests/financials-regression.test.js tests/qbo-import-reliability.test.js",
+    "test:financials": "node --test tests/financials-regression.test.js tests/qbo-import-reliability.test.js tests/pay-app-math.test.js tests/change-order-math.test.js tests/budget-transfer-math.test.js",
     "test:auth": "node --test tests/authorization-policy.test.js",
     "test:mobile": "node --test tests/mobile-api-contract.test.js",
+    "test:schedule": "node --test tests/schedule-calc.test.js",
     "start": "next start"
   },
   "dependencies": {

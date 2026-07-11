@@ -6,6 +6,8 @@ import { recordEvent } from "@/lib/services/events"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { commitmentInputSchema, commitmentUpdateSchema, commitmentLineInputSchema, commitmentLineUpdateSchema, type CommitmentInput, type CommitmentUpdateInput, type CommitmentLineInput, type CommitmentLineUpdateInput } from "@/lib/validation/commitments"
+import { getCompanyPrequalificationWarning } from "@/lib/services/prequalification"
+import { getComplianceRules } from "@/lib/services/compliance"
 
 export type CommitmentStatus = "draft" | "approved" | "complete" | "canceled"
 
@@ -37,6 +39,7 @@ export interface CommitmentSummary {
   paid_cents?: number
   approved_change_orders_cents?: number
   revised_total_cents?: number
+  prequalification_warning?: string
 }
 
 export interface CommitmentLine {
@@ -87,6 +90,7 @@ function mapCommitment(row: any): CommitmentSummary {
     approved_change_orders_cents: approvedChangeOrdersCents,
     revised_total_cents:
       typeof totalCents === "number" ? totalCents + approvedChangeOrdersCents : approvedChangeOrdersCents,
+    prequalification_warning: typeof row.metadata?.prequalification_warning === "string" ? row.metadata.prequalification_warning : undefined,
   }
 }
 
@@ -417,7 +421,7 @@ export async function updateCommitment({
 
   const { data: existing, error: existingError } = await supabase
     .from("commitments")
-    .select("id, org_id, project_id, company_id, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, start_date, end_date, issued_at, created_at, updated_at")
+    .select("id, org_id, project_id, company_id, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, start_date, end_date, issued_at, metadata, created_at, updated_at")
     .eq("org_id", resolvedOrgId)
     .eq("id", commitmentId)
     .maybeSingle()
@@ -443,6 +447,14 @@ export async function updateCommitment({
       ? lineRollup.totalCents
       : parsed.total_cents ?? existing.total_cents
 
+  let prequalificationWarning: string | null = null
+  if (parsed.status === "approved" && existing.status !== "approved") {
+    await requireAuthorization({ permission: "commitment.approve", userId, orgId: resolvedOrgId, projectId: existing.project_id, supabase, logDecision: true, resourceType: "commitment", resourceId: commitmentId })
+    prequalificationWarning = await getCompanyPrequalificationWarning({ companyId: existing.company_id, commitmentTotalCents: nextTotalCents ?? 0, orgId: resolvedOrgId })
+    const rules = await getComplianceRules(resolvedOrgId)
+    if (prequalificationWarning && rules.block_commitment_on_prequal) throw new Error(prequalificationWarning)
+  }
+
   const { data, error } = await supabase
     .from("commitments")
     .update({
@@ -455,12 +467,17 @@ export async function updateCommitment({
       retainage_percent: parsed.retainage_percent ?? existing.retainage_percent ?? 0,
       start_date: parsed.start_date ?? existing.start_date,
       end_date: parsed.end_date ?? existing.end_date,
+      metadata: {
+        ...(existing.metadata ?? {}),
+        prequalification_warning: prequalificationWarning,
+        prequal_override_note: prequalificationWarning ? parsed.prequal_override_note ?? null : null,
+      },
     })
     .eq("org_id", resolvedOrgId)
     .eq("id", commitmentId)
     .select(
       `
-      id, org_id, project_id, company_id, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, issued_at, start_date, end_date, created_at, updated_at,
+      id, org_id, project_id, company_id, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, issued_at, start_date, end_date, metadata, created_at, updated_at,
       project:projects(id, name)
     `,
     )

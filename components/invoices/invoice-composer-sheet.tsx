@@ -30,7 +30,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent } from "@/components/ui/sheet"
 import { Spinner } from "@/components/ui/spinner"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -56,6 +56,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { unwrapAction } from "@/lib/action-result"
+import { useProductTerminology } from "@/components/layout/use-product-terminology"
+import { usePageTitle } from "@/components/layout/page-title-context"
+import { getProjectPosture } from "@/lib/product-tier"
+import { groupCostCodesByStandard } from "@/lib/cost-code-groups"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 
@@ -489,6 +493,8 @@ export function InvoiceComposerSheet({
   costCodes = [],
   enableApprovedCostsSource = false,
 }: Props) {
+  const terms = useProductTerminology()
+  const { productTier } = usePageTitle()
   const initialProjectId = defaultProjectId ?? invoice?.project_id ?? projects[0]?.id
   const initialProjectName = projects.find((project) => project.id === initialProjectId)?.name ?? "Project"
 
@@ -615,6 +621,10 @@ export function InvoiceComposerSheet({
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === projectId) ?? null,
     [projectId, projects],
+  )
+  const costCodeGroups = useMemo(
+    () => groupCostCodesByStandard(costCodes, getProjectPosture(selectedProject?.property_type, productTier)),
+    [costCodes, productTier, selectedProject?.property_type],
   )
   const showCustomerSelector = customerDetails.trim().length === 0
   const showQboWarning = Boolean(
@@ -1844,10 +1854,15 @@ export function InvoiceComposerSheet({
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="none">No cost code</SelectItem>
-                            {costCodes.map((code) => (
-                              <SelectItem key={code.id} value={code.id}>
-                                {code.code} — {code.name}
-                              </SelectItem>
+                            {costCodeGroups.map((group) => (
+                              <SelectGroup key={group.standard}>
+                                <SelectLabel>{group.label}</SelectLabel>
+                                {group.codes.map((code) => (
+                                  <SelectItem key={code.id} value={code.id}>
+                                    {code.code} — {code.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
                             ))}
                           </SelectContent>
                         </Select>
@@ -2200,8 +2215,8 @@ export function InvoiceComposerSheet({
             <DialogTitle>Send invoice {invoiceNumber.trim() || ""}</DialogTitle>
             <DialogDescription>
               {sendRecipient.trim()
-                ? "The client receives an email with a secure link to view and pay this invoice."
-                : "No recipient email — the invoice will be marked sent and visible in the client portal, but no email will be delivered."}
+                ? `The ${terms.owner.toLowerCase()} receives an email with a secure link to view and pay this invoice.`
+                : `No recipient email — the invoice will be marked sent and visible in the ${terms.ownerPortal.toLowerCase()}, but no email will be delivered.`}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">

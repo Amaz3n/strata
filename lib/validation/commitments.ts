@@ -16,6 +16,7 @@ export const commitmentInputSchema = z.object({
   start_date: z.string().optional(),
   end_date: z.string().optional(),
   status: commitmentStatusEnum.optional(),
+  prequal_override_note: z.string().trim().max(1000).optional(),
 })
 
 export const commitmentUpdateSchema = commitmentInputSchema.partial().omit({ project_id: true, company_id: true })

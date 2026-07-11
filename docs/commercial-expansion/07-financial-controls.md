@@ -1,5 +1,15 @@
 # Workstream 07 — Financial Controls: Budget Transfers, Contingency, Prequalification, Vendor Tax
 
+> **STATUS — CODE + MIGRATIONS COMPLETE 2026-07-11.** Migrations
+> `20260711120000_budget_transfers.sql`, `20260711120100_vendor_tax.sql`,
+> `20260711120200_prequalification.sql`, and the advisor follow-up
+> `20260711120300_phase7_fk_indexes.sql` are applied to production.
+> Automated verification passes (`pnpm lint`, `pnpm exec tsc --noEmit`, and all 52
+> `pnpm test:financials` tests). Manual QA remains for transfer posting/rollups,
+> portal prequalification + document upload, commitment warning/block behavior,
+> autopilot expiry, and cash-basis 1099 reconciliation/CSV. Full TIN storage was
+> deliberately omitted: Arc stores last-four plus the audited W-9 file only.
+
 > Prereq: 00 master, 01. Independent of 02–06. Three unrelated-but-small financial
 > control gaps: (A) budget can't move between lines without a CO, (B) prequalification
 > is a boolean, (C) vendors have no tax identity (W-9/1099).

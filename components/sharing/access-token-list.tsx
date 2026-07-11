@@ -17,6 +17,7 @@ import {
   Trash2 as Trash,
   User,
   Users,
+  PencilRuler,
   Clock,
   Lock,
   ShieldCheck,
@@ -56,7 +57,7 @@ export function AccessTokenList({
   }, [])
 
   const handleCopy = async (token: PortalAccessToken) => {
-    const url = `${origin}/${token.portal_type === "client" ? "p" : "s"}/${token.token}`
+    const url = `${origin}/${token.portal_type === "client" ? "p" : token.portal_type === "reviewer" ? "r" : "s"}/${token.token}`
 
     // Try modern clipboard API first
     if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
@@ -168,7 +169,7 @@ function TokenCard({
     setPinMode("view")
   }
 
-  const PortalIcon = token.portal_type === "client" ? User : Users
+  const PortalIcon = token.portal_type === "client" ? User : token.portal_type === "reviewer" ? PencilRuler : Users
 
   return (
     <div
@@ -274,7 +275,7 @@ function TokenCard({
         <div className="mx-3 mb-2 flex items-center gap-2 border bg-muted/30 px-2 py-1.5 overflow-hidden">
           <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground" />
           <span className="truncate font-mono text-[10px] text-muted-foreground">
-            .../{token.portal_type === "client" ? "p" : "s"}/{token.token.slice(0, 8)}...
+            .../{token.portal_type === "client" ? "p" : token.portal_type === "reviewer" ? "r" : "s"}/{token.token.slice(0, 8)}...
           </span>
           <Button size="sm" variant="ghost" onClick={onCopy} className="h-5 px-1.5 text-[10px] shrink-0 ml-auto">
             Copy
@@ -408,6 +409,7 @@ function TokenCard({
                 <PermissionPill label="Sub invoices" enabled={token.permissions.can_submit_invoices ?? true} />
                 <PermissionPill label="Time" enabled={token.permissions.can_submit_time ?? true} />
                 <PermissionPill label="Expenses" enabled={token.permissions.can_submit_expenses ?? true} />
+                <PermissionPill label="Daily logs" enabled={token.permissions.can_submit_daily_logs ?? false} />
                 <PermissionPill label="Compliance" enabled={token.permissions.can_upload_compliance_docs ?? true} />
               </div>
             </div>

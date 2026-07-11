@@ -9,6 +9,8 @@ export const changeOrderLineInputSchema = z.object({
     .min(0.01, "Quantity must be greater than zero"),
   unit: z.string().max(20).optional().default("unit"),
   unit_cost: z.number({ invalid_type_error: "Unit cost is required" }),
+  internal_cost_cents: z.number().int().nullable().optional(),
+  commitment_change_order_id: z.string().uuid().nullable().optional(),
   allowance: z.number().default(0),
   taxable: z.boolean().default(true),
   gmp_classification: z.enum(["inside_gmp", "outside_gmp"]).default("inside_gmp"),
@@ -31,6 +33,10 @@ export const changeOrderInputSchema = z.object({
   requires_signature: z.boolean().default(true),
   tax_rate: z.number().min(0).max(20).default(0),
   markup_percent: z.number().min(0).max(100).default(0),
+  markup_mode: z.enum(["percent", "manual"]).default("percent"),
+  lifecycle: z.enum(["draft", "pricing", "proposed", "approved", "rejected", "void"]).default("draft"),
+  owner_response_due: z.string().date().nullable().optional(),
+  zero_dollar: z.boolean().default(false),
   status: z.enum(["draft", "pending", "sent", "approved", "requested_changes", "cancelled"]).default("draft"),
   client_visible: z.boolean().default(false),
   lines: z.array(changeOrderLineInputSchema).min(1, "Add at least one line item"),
@@ -38,6 +44,5 @@ export const changeOrderInputSchema = z.object({
 
 export type ChangeOrderLineInput = z.infer<typeof changeOrderLineInputSchema>
 export type ChangeOrderInput = z.infer<typeof changeOrderInputSchema>
-
 
 

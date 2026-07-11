@@ -65,6 +65,43 @@ export const submittalDecisionSchema = z.object({
 
 export type SubmittalDecisionInput = z.infer<typeof submittalDecisionSchema>
 
+export const submittalReviewStepInputSchema = z.object({
+  reviewer_kind: z.enum(["internal", "external"]),
+  role_label: z.string().min(1, "Step label is required").max(80),
+  reviewer_user_id: z.string().uuid().optional().nullable(),
+  reviewer_contact_id: z.string().uuid().optional().nullable(),
+  reviewer_company_id: z.string().uuid().optional().nullable(),
+  due_date: z.string().optional().nullable(),
+})
+
+export const setSubmittalReviewStepsSchema = z.object({
+  submittal_id: z.string().uuid(),
+  steps: z.array(submittalReviewStepInputSchema).max(10),
+})
+
+export type SubmittalReviewStepInput = z.infer<typeof submittalReviewStepInputSchema>
+export type SetSubmittalReviewStepsInput = z.infer<typeof setSubmittalReviewStepsSchema>
+
+export const updateSubmittalReviewStepSchema = z.object({
+  step_id: z.string().uuid(),
+  role_label: z.string().min(1).max(80).optional(),
+  reviewer_user_id: z.string().uuid().optional().nullable(),
+  reviewer_contact_id: z.string().uuid().optional().nullable(),
+  reviewer_company_id: z.string().uuid().optional().nullable(),
+  due_date: z.string().optional().nullable(),
+})
+
+export type UpdateSubmittalReviewStepInput = z.infer<typeof updateSubmittalReviewStepSchema>
+
+export const decideSubmittalReviewStepSchema = z.object({
+  step_id: z.string().uuid(),
+  decision: z.enum(["approved", "approved_as_noted", "revise_resubmit", "rejected"]),
+  notes: z.string().optional().nullable(),
+  markup_file_id: z.string().uuid().optional().nullable(),
+})
+
+export type DecideSubmittalReviewStepInput = z.infer<typeof decideSubmittalReviewStepSchema>
+
 export const portalSubmittalItemSchema = z.object({
   submittal_id: z.string().uuid("Submittal is required"),
   description: z.string().min(2, "Description is required"),
