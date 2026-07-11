@@ -16,6 +16,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { Checkbox } from "@/components/ui/checkbox"
 import { cn } from "@/lib/utils"
+import { uploadFileAction } from "@/app/(app)/documents/actions"
 import {
   createObservationAction,
   createSafetyIncidentAction,
@@ -169,15 +170,27 @@ function IncidentsTab({ projectId, incidents, companies }: { projectId: string; 
                 is_osha_recordable: form.get("is_osha_recordable") === "on",
               }
               submit(async () => {
+                const photo = form.get("photo")
+                let photoFileId = selected?.photo_file_id ?? null
+                if (photo instanceof File && photo.size > 0) {
+                  const upload = new FormData()
+                  upload.append("file", photo)
+                  upload.append("projectId", projectId)
+                  upload.append("category", "photos")
+                  upload.append("visibility", "private")
+                  upload.append("folderPath", "/safety/incidents")
+                  photoFileId = unwrapAction(await uploadFileAction(upload)).id
+                }
                 if (selected) {
                   unwrapAction(await updateSafetyIncidentAction(projectId, selected.id, {
                     ...shared,
+                    photo_file_id: photoFileId,
                     root_cause: form.get("root_cause") || null,
                     status: form.get("status") || undefined,
                   }))
                   toast.success("Incident updated")
                 } else {
-                  unwrapAction(await createSafetyIncidentAction({ ...shared, project_id: projectId }))
+                  unwrapAction(await createSafetyIncidentAction({ ...shared, project_id: projectId, photo_file_id: photoFileId }))
                   toast.success("Incident reported")
                 }
                 setSheetOpen(false)
@@ -256,6 +269,11 @@ function IncidentsTab({ projectId, incidents, companies }: { projectId: string; 
                 <Label>Immediate action taken</Label>
                 <Textarea name="immediate_action" rows={2} defaultValue={selected?.immediate_action ?? ""} />
               </div>
+              <div className="space-y-2">
+                <Label htmlFor="incident-photo">Incident photo</Label>
+                <Input id="incident-photo" name="photo" type="file" accept="image/*" capture="environment" disabled={pending} />
+                {selected?.photo_file_id ? <a className="text-xs text-primary underline" href={`/api/files/${selected.photo_file_id}/raw`} target="_blank" rel="noreferrer">View current photo</a> : null}
+              </div>
               {selected ? (
                 <>
                   <div className="space-y-2">
@@ -304,19 +322,39 @@ function TalksTab({ projectId, talks }: { projectId: string; talks: ToolboxTalk[
   return (
     <div className="space-y-4">
       <form
-        className="grid gap-3 border p-4 md:grid-cols-[150px_1fr_180px_120px_auto]"
+        className="grid gap-3 border p-4 md:grid-cols-2"
         onSubmit={(event) => {
           event.preventDefault()
           const form = new FormData(event.currentTarget)
           const target = event.currentTarget
           submit(async () => {
+            const attendees = String(form.get("attendees") ?? "")
+              .split("\n")
+              .map((line) => line.trim())
+              .filter(Boolean)
+              .map((line) => {
+                const [name, ...companyParts] = line.split("|").map((part) => part.trim())
+                return { name, company: companyParts.join(" | ") || null }
+              })
+            const signInSheet = form.get("sign_in_sheet")
+            let fileId: string | null = null
+            if (signInSheet instanceof File && signInSheet.size > 0) {
+              const upload = new FormData()
+              upload.append("file", signInSheet)
+              upload.append("projectId", projectId)
+              upload.append("category", "other")
+              upload.append("visibility", "private")
+              upload.append("folderPath", "/safety/toolbox-talks")
+              fileId = unwrapAction(await uploadFileAction(upload)).id
+            }
             unwrapAction(await createToolboxTalkAction({
               project_id: projectId,
               held_at: form.get("held_at"),
               topic: form.get("topic"),
               presenter_name: form.get("presenter_name") || null,
-              attendee_count: form.get("attendee_count") ? Number(form.get("attendee_count")) : null,
-              attendees: [],
+              attendee_count: attendees.length || (form.get("attendee_count") ? Number(form.get("attendee_count")) : null),
+              attendees,
+              file_id: fileId,
             }))
             toast.success("Toolbox talk recorded")
             target.reset()
@@ -327,7 +365,12 @@ function TalksTab({ projectId, talks }: { projectId: string; talks: ToolboxTalk[
         <Input name="held_at" type="date" required disabled={pending} />
         <Input name="topic" required placeholder="Topic (e.g. Ladder safety)" disabled={pending} />
         <Input name="presenter_name" placeholder="Presenter" disabled={pending} />
-        <Input name="attendee_count" type="number" min={0} placeholder="Attendees" disabled={pending} />
+        <Input name="attendee_count" type="number" min={0} placeholder="Attendee count (if names unavailable)" disabled={pending} />
+        <Textarea name="attendees" rows={4} placeholder={"Attendees, one per line\nName | Company"} disabled={pending} />
+        <div className="space-y-1">
+          <Label htmlFor="sign-in-sheet">Signed attendance sheet</Label>
+          <Input id="sign-in-sheet" name="sign_in_sheet" type="file" accept="image/*,.pdf" disabled={pending} />
+        </div>
         <Button type="submit" disabled={pending}>Record talk</Button>
       </form>
       <div className="border">
@@ -346,7 +389,11 @@ function TalksTab({ projectId, talks }: { projectId: string; talks: ToolboxTalk[
               talks.map((talk) => (
                 <TableRow key={talk.id}>
                   <TableCell className="text-muted-foreground">{new Date(`${talk.held_at}T12:00:00`).toLocaleDateString()}</TableCell>
-                  <TableCell className="font-medium">{talk.topic}</TableCell>
+                  <TableCell>
+                    <div className="font-medium">{talk.topic}</div>
+                    {talk.attendees.length > 0 ? <div className="text-xs text-muted-foreground">{talk.attendees.map((attendee) => attendee.company ? `${attendee.name} (${attendee.company})` : attendee.name).join(", ")}</div> : null}
+                    {talk.file_id ? <a className="text-xs text-primary underline" href={`/api/files/${talk.file_id}/raw`} target="_blank" rel="noreferrer">Signed attendance sheet</a> : null}
+                  </TableCell>
                   <TableCell className="text-muted-foreground">{talk.presenter_name ?? "—"}</TableCell>
                   <TableCell className="text-center tabular-nums">{talk.attendee_count ?? "—"}</TableCell>
                   <TableCell>
@@ -392,12 +439,24 @@ function ObservationsTab({ projectId, observations, companies }: { projectId: st
           const target = event.currentTarget
           const companyValue = String(form.get("company_id") || "__none__")
           submit(async () => {
+            const photo = form.get("photo")
+            let photoFileId: string | null = null
+            if (photo instanceof File && photo.size > 0) {
+              const upload = new FormData()
+              upload.append("file", photo)
+              upload.append("projectId", projectId)
+              upload.append("category", "photos")
+              upload.append("visibility", "private")
+              upload.append("folderPath", "/safety/observations")
+              photoFileId = unwrapAction(await uploadFileAction(upload)).id
+            }
             unwrapAction(await createObservationAction({
               project_id: projectId,
               kind: form.get("kind"),
               category: form.get("category") || null,
               description: form.get("description"),
               company_id: companyValue === "__none__" ? null : companyValue,
+              photo_file_id: photoFileId,
             }))
             toast.success("Observation recorded")
             target.reset()
@@ -430,6 +489,7 @@ function ObservationsTab({ projectId, observations, companies }: { projectId: st
             ))}
           </SelectContent>
         </Select>
+        <Input className="md:col-span-4" name="photo" type="file" accept="image/*" capture="environment" disabled={pending} />
         <Button type="submit" disabled={pending}>Record</Button>
       </form>
       <div className="border">
@@ -471,6 +531,7 @@ function ObservationsTab({ projectId, observations, companies }: { projectId: st
                   </TableCell>
                   <TableCell className="max-w-0">
                     <span className="block truncate text-sm">{observation.description}</span>
+                    {observation.photo_file_id ? <a className="text-xs text-primary underline" href={`/api/files/${observation.photo_file_id}/raw`} target="_blank" rel="noreferrer">View photo</a> : null}
                   </TableCell>
                   <TableCell className="text-muted-foreground">{observation.company_name ?? "—"}</TableCell>
                   <TableCell className="text-muted-foreground">{new Date(observation.created_at).toLocaleDateString()}</TableCell>

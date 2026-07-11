@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { requireOrgContext } from "@/lib/services/context";
-import { applyReportingExclusion, getReportingExcludedProjectIds } from "@/lib/services/reporting-scope";
+import { applyProjectReportingScope, applyReportingExclusion, getReportingExcludedProjectIds } from "@/lib/services/reporting-scope";
 import { listProjectsWithClient } from "@/lib/services/projects";
 import { listTasksWithClient } from "@/lib/services/tasks";
 import type { DashboardStats, Project, Task } from "@/lib/types";
@@ -1524,18 +1524,14 @@ export async function getDecisionQueue(
       .eq("org_id", resolvedOrgId)
       .eq("status", "open")
       .in("severity", ["high", "urgent"]),
-    supabase.from("projects").select("id, name, excluded_from_reporting").eq("org_id", resolvedOrgId),
+    supabase.from("projects").select("id, name").eq("org_id", resolvedOrgId),
   ]);
 
   const projectMap = new Map(
     (projectsRes.data ?? []).map((p) => [p.id, p.name]),
   );
   // Items belonging to reporting-excluded projects are dropped from the queue.
-  const excludedProjects = new Set(
-    (projectsRes.data ?? [])
-      .filter((p) => (p as { excluded_from_reporting?: boolean }).excluded_from_reporting)
-      .map((p) => p.id),
-  );
+  const excludedProjects = new Set(await getReportingExcludedProjectIds(supabase, resolvedOrgId));
   const pName = (pid?: string) => (pid ? projectMap.get(pid) : undefined);
   const daysSince = (dateStr: string) =>
     Math.max(
@@ -1888,12 +1884,12 @@ export async function getWatchlist(
   const now = new Date();
 
   // Get active projects
-  const { data: projects } = await supabase
+  const excludedProjectIds = await getReportingExcludedProjectIds(supabase, resolvedOrgId);
+  const { data: projects } = await applyProjectReportingScope(supabase
     .from("projects")
     .select("id, name, status, total_value")
     .eq("org_id", resolvedOrgId)
-    .eq("excluded_from_reporting", false)
-    .in("status", ["active", "on_hold"]);
+    .in("status", ["active", "on_hold"]), excludedProjectIds);
 
   if (!projects || projects.length === 0) return [];
 

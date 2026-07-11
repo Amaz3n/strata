@@ -2,8 +2,8 @@
 
 import { revalidatePath } from "next/cache"
 import { actionError, type ActionResult } from "@/lib/action-result"
-import { addMeetingAttendee, addMeetingItem, createNextMeeting, createTaskFromMeetingItem, finalizeMeeting, updateMeetingItem } from "@/lib/services/meetings"
-import { createMeetingItemTaskSchema, createMeetingSchema, meetingAttendeeSchema, meetingItemSchema, updateMeetingItemSchema } from "@/lib/validation/meetings"
+import { addMeetingAttendee, addMeetingItem, createNextMeeting, createTaskFromMeetingItem, deleteMeeting, finalizeMeeting, updateMeeting, updateMeetingAttendee, updateMeetingItem } from "@/lib/services/meetings"
+import { createMeetingItemTaskSchema, createMeetingSchema, meetingAttendeeSchema, meetingItemSchema, updateMeetingAttendeeSchema, updateMeetingItemSchema, updateMeetingSchema } from "@/lib/validation/meetings"
 
 async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   try { return { success: true, data: await fn() } } catch (error) { return actionError(error) }
@@ -34,9 +34,33 @@ export async function updateMeetingItemAction(projectId: string, itemId: string,
   })
 }
 
+export async function updateMeetingAction(projectId: string, meetingId: string, input: unknown) {
+  return run(async () => {
+    const meeting = await updateMeeting(meetingId, updateMeetingSchema.parse(input))
+    revalidatePath(`/projects/${projectId}/meetings`)
+    return meeting
+  })
+}
+
+export async function deleteMeetingAction(projectId: string, meetingId: string) {
+  return run(async () => {
+    await deleteMeeting(meetingId)
+    revalidatePath(`/projects/${projectId}/meetings`)
+    return null
+  })
+}
+
 export async function addMeetingAttendeeAction(projectId: string, input: unknown) {
   return run(async () => {
     const attendee = await addMeetingAttendee(meetingAttendeeSchema.parse(input))
+    revalidatePath(`/projects/${projectId}/meetings`)
+    return attendee
+  })
+}
+
+export async function updateMeetingAttendeeAction(projectId: string, attendeeId: string, input: unknown) {
+  return run(async () => {
+    const attendee = await updateMeetingAttendee(attendeeId, updateMeetingAttendeeSchema.parse(input))
     revalidatePath(`/projects/${projectId}/meetings`)
     return attendee
   })
@@ -59,4 +83,3 @@ export async function finalizeMeetingAction(projectId: string, meetingId: string
     return meeting
   })
 }
-

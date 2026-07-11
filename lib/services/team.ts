@@ -136,6 +136,7 @@ export const TEAM_PERMISSION_OPTIONS: PermissionOption[] = [
   { key: "transmittal.write", label: "Manage transmittals", category: "Documents & Sharing" },
   { key: "punch.close", label: "Close punch items", category: "Field Operations" },
   { key: "inspection.write", label: "Run inspections", category: "Field Operations" },
+  { key: "safety.read", label: "View safety incidents", category: "Field Operations" },
   { key: "safety.write", label: "Record safety incidents & observations", category: "Field Operations" },
   { key: "budget.read", label: "View budgets", category: "Financials" },
   { key: "budget.write", label: "Edit budgets", category: "Financials" },

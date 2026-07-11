@@ -312,8 +312,8 @@ async function buildDetail(
 
 function resolveOriginalContractSum(contract: { total_cents?: number | null; snapshot?: Record<string, any> | null } | null): number {
   if (!contract) return 0
-  const original = Number(contract.snapshot?.original_total_cents ?? NaN)
-  if (Number.isFinite(original) && original > 0) return Math.round(original)
+  const original = Number(contract.snapshot?.base_total_cents ?? contract.snapshot?.original_total_cents ?? NaN)
+  if (Number.isFinite(original)) return Math.round(original)
   return Number(contract.total_cents ?? 0)
 }
 
@@ -536,6 +536,10 @@ export async function updatePayApplicationLines(
 
   const config = retainageConfigFromContract(contract)
   const overbilledLines: number[] = []
+  const pendingUpdates: Array<{
+    lineId: string
+    values: Record<string, unknown>
+  }> = []
 
   for (const entry of parsed.entries) {
     const lineRow = lineBySovId.get(entry.prime_sov_line_id)
@@ -582,9 +586,9 @@ export async function updatePayApplicationLines(
       overbilledLines.push(Number(sovLine.line_number))
     }
 
-    const { error: updateError } = await supabase
-      .from("pay_application_lines")
-      .update({
+    pendingUpdates.push({
+      lineId: lineRow.id as string,
+      values: {
         this_period_cents: computed.thisPeriodCents,
         stored_materials_cents: computed.storedMaterialsCents,
         percent_complete: computed.percentComplete,
@@ -596,18 +600,27 @@ export async function updatePayApplicationLines(
           work_retainage_percent: workRate,
           stored_retainage_percent: storedRate,
         },
-      })
-      .eq("org_id", resolvedOrgId)
-      .eq("id", lineRow.id)
-    if (updateError) {
-      throw new Error(`Failed to save pay application line: ${updateError.message}`)
-    }
+      },
+    })
   }
 
+  // Validate the complete batch before writing any line. Previously the guard
+  // threw only after persisting the rejected overbilling values.
   if (overbilledLines.length > 0 && !parsed.allow_overbilling) {
     throw new Error(
       `Line${overbilledLines.length > 1 ? "s" : ""} ${overbilledLines.join(", ")} would bill past the scheduled value. Confirm overbilling to continue.`,
     )
+  }
+
+  for (const update of pendingUpdates) {
+    const { error: updateError } = await supabase
+      .from("pay_application_lines")
+      .update(update.values)
+      .eq("org_id", resolvedOrgId)
+      .eq("id", update.lineId)
+    if (updateError) {
+      throw new Error(`Failed to save pay application line: ${updateError.message}`)
+    }
   }
 
   // Refresh the draft retainage total so the invoice context always matches
@@ -621,6 +634,7 @@ export async function updatePayApplicationLines(
         ...((appRow.metadata as Record<string, any> | null) ?? {}),
         current_retainage_cents: currentRetainage,
         overbilled: overbilledLines.length > 0 ? true : undefined,
+        overbilling_confirmed: overbilledLines.length > 0 && parsed.allow_overbilling ? true : undefined,
       },
     })
     .eq("org_id", resolvedOrgId)
@@ -666,6 +680,19 @@ export async function submitPayApplication(payApplicationId: string, orgId?: str
   ])
   if (!contract) {
     throw new Error("Billing contract not found")
+  }
+
+  const overbilledLines = lineRows.filter(
+    (row) =>
+      Number(row.previous_billed_cents ?? 0) +
+        Number(row.this_period_cents ?? 0) +
+        Number(row.stored_materials_cents ?? 0) >
+      Number(row.scheduled_value_cents ?? 0),
+  )
+  const overbillingConfirmed =
+    (appRow.metadata as Record<string, unknown> | null)?.overbilling_confirmed === true
+  if (overbilledLines.length > 0 && !overbillingConfirmed) {
+    throw new Error("This pay application contains overbilled lines that have not been explicitly confirmed. Save and confirm them before submitting.")
   }
 
   const sovById = new Map(sovState.lines.map((line) => [line.id, line]))
@@ -1033,7 +1060,7 @@ export async function releasePrimeRetainage(
       total_earned_less_retainage_cents: completedStored - retainageAfter,
       previous_certificates_cents: previousCertificates,
       current_payment_due_cents: amountCents,
-      balance_to_finish_cents: sovState.summary.contract_sum_cents - completedStored,
+      balance_to_finish_cents: sovState.summary.contract_sum_cents - (completedStored - retainageAfter),
       metadata: { type: "retainage_release", release_amount_cents: amountCents, current_retainage_cents: 0 },
     },
   })

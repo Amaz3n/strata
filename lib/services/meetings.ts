@@ -8,7 +8,7 @@ import { persistGeneratedProjectPdf } from "@/lib/services/generated-project-pdf
 import { getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
 import { requirePermission } from "@/lib/services/permissions"
 import { createTask } from "@/lib/services/tasks"
-import { createMeetingSchema, meetingAttendeeSchema, meetingItemSchema, updateMeetingItemSchema, type CreateMeetingInput, type MeetingAttendeeInput, type MeetingItemInput } from "@/lib/validation/meetings"
+import { createMeetingSchema, meetingAttendeeSchema, meetingItemSchema, updateMeetingAttendeeSchema, updateMeetingItemSchema, updateMeetingSchema, type CreateMeetingInput, type MeetingAttendeeInput, type MeetingItemInput, type UpdateMeetingInput } from "@/lib/validation/meetings"
 
 export type Meeting = {
   id: string
@@ -141,6 +141,28 @@ export async function addMeetingItem(input: MeetingItemInput, orgId?: string): P
   return data as MeetingItem
 }
 
+export async function updateMeeting(meetingId: string, input: UpdateMeetingInput, orgId?: string): Promise<Meeting> {
+  const parsed = updateMeetingSchema.parse(input)
+  const { supabase, orgId: resolvedOrgId, userId, meeting } = await requireEditableMeeting(meetingId, orgId)
+  const { data, error } = await supabase
+    .from("meetings")
+    .update(parsed)
+    .eq("org_id", resolvedOrgId)
+    .eq("id", meetingId)
+    .select(MEETING_SELECT)
+    .single()
+  if (error || !data) throw new Error(`Failed to update meeting: ${error?.message}`)
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "meeting", entityId: meetingId, before: meeting, after: data })
+  return data as Meeting
+}
+
+export async function deleteMeeting(meetingId: string, orgId?: string): Promise<void> {
+  const { supabase, orgId: resolvedOrgId, userId, meeting } = await requireEditableMeeting(meetingId, orgId)
+  const { error } = await supabase.from("meetings").delete().eq("org_id", resolvedOrgId).eq("id", meetingId)
+  if (error) throw new Error(`Failed to delete meeting: ${error.message}`)
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "delete", entityType: "meeting", entityId: meetingId, before: meeting })
+}
+
 export async function updateMeetingItem(meetingItemId: string, input: Partial<Omit<MeetingItemInput, "meeting_id">>, orgId?: string): Promise<MeetingItem> {
   const parsed = updateMeetingItemSchema.parse(input)
   const context = await requireOrgContext(orgId)
@@ -159,6 +181,18 @@ export async function addMeetingAttendee(input: MeetingAttendeeInput, orgId?: st
   const { data, error } = await supabase.from("meeting_attendees").insert({ org_id: resolvedOrgId, ...parsed }).select(ATTENDEE_SELECT).single()
   if (error || !data) throw new Error(`Failed to add attendee: ${error?.message}`)
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "insert", entityType: "meeting_attendee", entityId: data.id, after: data })
+  return data as MeetingAttendee
+}
+
+export async function updateMeetingAttendee(attendeeId: string, input: Partial<Omit<MeetingAttendeeInput, "meeting_id">>, orgId?: string): Promise<MeetingAttendee> {
+  const parsed = updateMeetingAttendeeSchema.parse(input)
+  const context = await requireOrgContext(orgId)
+  const { data: existing } = await context.supabase.from("meeting_attendees").select(ATTENDEE_SELECT).eq("org_id", context.orgId).eq("id", attendeeId).single()
+  if (!existing) throw new Error("Meeting attendee not found")
+  await requireEditableMeeting(existing.meeting_id, context.orgId)
+  const { data, error } = await context.supabase.from("meeting_attendees").update(parsed).eq("org_id", context.orgId).eq("id", attendeeId).select(ATTENDEE_SELECT).single()
+  if (error || !data) throw new Error(`Failed to update attendance: ${error?.message}`)
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "meeting_attendee", entityId: attendeeId, before: existing, after: data })
   return data as MeetingAttendee
 }
 

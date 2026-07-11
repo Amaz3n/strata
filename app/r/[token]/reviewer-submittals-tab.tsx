@@ -20,6 +20,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator"
 import { Spinner } from "@/components/ui/spinner"
 
+function isOverdue(value: string | null | undefined) {
+  return Boolean(value && new Date(`${value}T23:59:59`).getTime() < Date.now())
+}
+
 const decisionLabels: Record<string, string> = {
   approved: "Approve",
   approved_as_noted: "Approve as Noted",
@@ -41,6 +45,8 @@ export function ReviewerSubmittalsTab({ initialQueue, token, onQueueChange }: Re
   const [decidingStepId, setDecidingStepId] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
   const fileInputs = useRef<Record<string, HTMLInputElement | null>>({})
+  const activeQueue = queue.filter((entry) => !entry.is_history)
+  const history = queue.filter((entry) => entry.is_history)
 
   useEffect(() => {
     for (const entry of queue) {
@@ -71,7 +77,7 @@ export function ReviewerSubmittalsTab({ initialQueue, token, onQueueChange }: Re
         })
         const refreshed = await loadReviewerQueueAction(token)
         setQueue(refreshed)
-        onQueueChange?.(refreshed.length)
+        onQueueChange?.(refreshed.filter((item) => !item.is_history).length)
       } catch (error) {
         toast.error("Failed to return review", {
           description: error instanceof Error ? error.message : "Please try again.",
@@ -96,7 +102,8 @@ export function ReviewerSubmittalsTab({ initialQueue, token, onQueueChange }: Re
 
   return (
     <div className="space-y-4">
-      {queue.map((entry) => {
+      {activeQueue.length === 0 ? <div className="border p-6 text-center text-sm text-muted-foreground">No submittals are waiting on your review.</div> : null}
+      {activeQueue.map((entry) => {
         const { step, submittal } = entry
         const items = itemsBySubmittal[submittal.id]
         const stepId = step.id
@@ -117,7 +124,7 @@ export function ReviewerSubmittalsTab({ initialQueue, token, onQueueChange }: Re
               </CardTitle>
               <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
                 {submittal.spec_section ? <span>Spec {submittal.spec_section}</span> : null}
-                {step.due_date ? <span>Due {formatLocalDate(step.due_date, "MMM d, yyyy")}</span> : null}
+                {step.due_date ? <span className={isOverdue(step.due_date) ? "font-medium text-destructive" : undefined}>{isOverdue(step.due_date) ? "Overdue · " : "Due "}{formatLocalDate(step.due_date, "MMM d, yyyy")}</span> : null}
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -210,6 +217,17 @@ export function ReviewerSubmittalsTab({ initialQueue, token, onQueueChange }: Re
           </Card>
         )
       })}
+      {history.length > 0 ? (
+        <section className="space-y-2 border-t pt-4">
+          <div><h3 className="text-sm font-semibold">Review history</h3><p className="text-xs text-muted-foreground">Your returned decisions on this project.</p></div>
+          {history.map(({ step, submittal }) => (
+            <div className="flex flex-wrap items-center justify-between gap-3 border px-3 py-2 text-sm" key={step.id}>
+              <div className="min-w-0"><p className="truncate font-medium">Submittal #{submittal.submittal_number}: {submittal.title}</p><p className="text-xs text-muted-foreground">{step.role_label ?? "Review"}{step.decided_at ? ` · ${formatLocalDate(step.decided_at.slice(0, 10), "MMM d, yyyy")}` : ""}</p></div>
+              <Badge variant="outline">{step.decision ? decisionLabels[step.decision] ?? step.decision : "Returned"}</Badge>
+            </div>
+          ))}
+        </section>
+      ) : null}
     </div>
   )
 }

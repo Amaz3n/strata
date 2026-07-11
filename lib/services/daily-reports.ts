@@ -27,7 +27,7 @@ export async function listPortalDailyLogSubmissions({ orgId, projectId, companyI
   if (error) throw new Error(`Failed to load daily logs: ${error.message}`)
   return (data ?? []).map((row: any) => {
     const manpowerRows = row.manpower?.daily_report_manpower ?? []
-    const manpower = manpowerRows.find((item: any) => item.portal_company_id === companyId) ?? manpowerRows[0]
+    const manpower = manpowerRows.find((item: any) => item.portal_company_id === companyId)
     return { id: row.id, date: row.log_date, narrative: row.summary ?? undefined, company: manpower?.company ?? "Subcontractor", trade: manpower?.trade ?? undefined, workers: manpower?.workers ?? 0, hours: manpower?.hours == null ? undefined : Number(manpower.hours), created_at: row.created_at, photo_file_id: row.photos?.[0]?.id }
   })
 }

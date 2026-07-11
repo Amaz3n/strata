@@ -768,6 +768,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                       moduleKey: module.key,
                       posture,
                       overrides: moduleOverrides,
+                      postures: "postures" in module ? [...module.postures] : undefined,
                     })
                     return (
                       <div key={module.key} className="flex items-center justify-between gap-4 px-3 py-2.5">

@@ -450,9 +450,10 @@ export async function updateCommitment({
   let prequalificationWarning: string | null = null
   if (parsed.status === "approved" && existing.status !== "approved") {
     await requireAuthorization({ permission: "commitment.approve", userId, orgId: resolvedOrgId, projectId: existing.project_id, supabase, logDecision: true, resourceType: "commitment", resourceId: commitmentId })
-    prequalificationWarning = await getCompanyPrequalificationWarning({ companyId: existing.company_id, commitmentTotalCents: nextTotalCents ?? 0, orgId: resolvedOrgId })
+    prequalificationWarning = await getCompanyPrequalificationWarning({ companyId: existing.company_id, commitmentTotalCents: nextTotalCents ?? 0, excludeCommitmentId: commitmentId, orgId: resolvedOrgId })
     const rules = await getComplianceRules(resolvedOrgId)
     if (prequalificationWarning && rules.block_commitment_on_prequal) throw new Error(prequalificationWarning)
+    if (prequalificationWarning && !parsed.prequal_override_note?.trim()) throw new Error("A prequalification override justification is required")
   }
 
   const { data, error } = await supabase
@@ -469,8 +470,10 @@ export async function updateCommitment({
       end_date: parsed.end_date ?? existing.end_date,
       metadata: {
         ...(existing.metadata ?? {}),
-        prequalification_warning: prequalificationWarning,
-        prequal_override_note: prequalificationWarning ? parsed.prequal_override_note ?? null : null,
+        prequalification_warning: prequalificationWarning ?? existing.metadata?.prequalification_warning ?? null,
+        prequal_override_note: prequalificationWarning
+          ? parsed.prequal_override_note?.trim() ?? null
+          : existing.metadata?.prequal_override_note ?? null,
       },
     })
     .eq("org_id", resolvedOrgId)

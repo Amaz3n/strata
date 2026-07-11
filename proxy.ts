@@ -33,6 +33,14 @@ const PUBLIC_API_ROUTES = [
   "/api/jobs/task-reminders",
   // Recurring invoice generator — cron only, self-authenticates via CRON_SECRET.
   "/api/jobs/invoice-schedules",
+  // Scheduled jobs — no user session; each route self-authenticates via CRON_SECRET.
+  // Keep this list mirrored with vercel.json/CRON_JOBS or Vercel receives a sign-in 307.
+  "/api/jobs/weekly-executive-snapshot",
+  "/api/jobs/follow-up-reminders",
+  "/api/jobs/reminders",
+  "/api/jobs/compliance-autopilot",
+  "/api/jobs/esign",
+  "/api/jobs/late-fees",
   // Portal drawing sheet PDFs — self-authenticate via the portal access token
   // in the path (no session cookie on client/sub portals).
   "/api/portal/drawings/",

@@ -181,6 +181,8 @@ export function computePayAppSummary(input: PayAppSummaryInput): PayAppSummary {
     totalEarnedLessRetainageCents,
     previousCertificatesCents: input.previousCertificatesCents,
     currentPaymentDueCents,
-    balanceToFinishCents: contractSumToDateCents - totalCompletedStoredCents,
+    // G702 line 9 is line 3 less line 6. Because line 6 is earned less
+    // retainage, the balance includes retainage still held.
+    balanceToFinishCents: contractSumToDateCents - totalEarnedLessRetainageCents,
   }
 }

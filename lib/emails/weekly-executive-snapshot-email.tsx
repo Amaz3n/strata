@@ -133,7 +133,7 @@ export function WeeklyExecutiveSnapshotEmail({
       typeLabel: "Owner Decision",
       title: "Lobby finish alternate selection",
       projectName: "Gulfshore Offices Phase 2",
-      owner: "Client + PM",
+      owner: "External party + PM",
       dueBy: "Fri EOD",
       ageLabel: "4d",
       impactLabel: "Could shift handover by 3 days",

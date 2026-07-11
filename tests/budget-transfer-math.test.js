@@ -31,6 +31,15 @@ test("budget transfer blocks reductions below actual plus committed cost", () =>
   assert.deepEqual(result.floorViolations, [{ budgetLineId: "a", resultingBudgetCents: 40_000, floorCents: 50_000 }])
 })
 
+test("a cost-free line still cannot be transferred below zero", () => {
+  const result = validateBudgetTransfer([
+    line("empty", -1, 0, 0, 0),
+    line("destination", 1),
+  ])
+  assert.equal(result.valid, false)
+  assert.deepEqual(result.floorViolations, [{ budgetLineId: "empty", resultingBudgetCents: -1, floorCents: 0 }])
+})
+
 test("floor override requires a reason", () => {
   const lines = [line("a", -60_000, 100_000, 20_000, 30_000), line("b", 60_000)]
   assert.equal(validateBudgetTransfer(lines, { allowOverride: true }).valid, false)

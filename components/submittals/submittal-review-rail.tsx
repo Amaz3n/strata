@@ -32,6 +32,10 @@ const decisionLabels: Record<string, string> = {
   rejected: "Rejected",
 }
 
+function isOverdue(value: string | null | undefined) {
+  return Boolean(value && new Date(`${value}T23:59:59`).getTime() < Date.now())
+}
+
 interface SubmittalReviewRailProps {
   submittal: Submittal
   steps: SubmittalReviewStep[]
@@ -113,14 +117,36 @@ export function SubmittalReviewRail({
     })
   }
 
+  const handleParallelToggle = (step: SubmittalReviewStep, previousStep: SubmittalReviewStep | undefined) => {
+    const nextGroup = previousStep && step.review_group !== previousStep.review_group
+      ? previousStep.review_group
+      : step.step_order
+    startTransition(async () => {
+      try {
+        const updatedSteps = unwrapAction(await updateSubmittalReviewStepAction({
+          step_id: step.id,
+          review_group: nextGroup,
+        }))
+        onStepsChange(updatedSteps)
+        toast.success(nextGroup === step.step_order ? "Review step made sequential" : "Review step will run in parallel")
+      } catch (error) {
+        toast.error("Failed to update review grouping", {
+          description: error instanceof Error ? error.message : "Please try again.",
+        })
+      }
+    })
+  }
+
   if (steps.length === 0) return null
 
   return (
     <div className="space-y-2">
       <h4 className="text-sm font-medium">Review Workflow</h4>
       <div className="space-y-1.5">
-        {steps.map((step) => {
+        {steps.map((step, index) => {
           const isCurrent = step.status === "in_review"
+          const previousStep = steps[index - 1]
+          const isParallel = Boolean(previousStep && previousStep.review_group === step.review_group)
           const reviewerLine = [step.reviewer_name, step.reviewer_company_name].filter(Boolean).join(" · ")
           return (
             <div
@@ -142,6 +168,7 @@ export function SubmittalReviewRail({
                   <Badge variant="outline" className="text-[10px] capitalize">
                     {step.reviewer_kind}
                   </Badge>
+                  {isParallel ? <Badge variant="outline" className="text-[10px]">Parallel</Badge> : null}
                 </div>
                 <Badge variant="secondary" className={`text-[10px] capitalize border ${stepStatusStyles[step.status] ?? ""}`}>
                   {step.status === "returned" && step.decision ? decisionLabels[step.decision] : step.status.replace(/_/g, " ")}
@@ -150,8 +177,9 @@ export function SubmittalReviewRail({
 
               <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                 {reviewerLine ? <span>{reviewerLine}</span> : <span>No reviewer assigned</span>}
-                {step.due_date ? <span>Due {formatLocalDate(step.due_date, "MMM d, yyyy")}</span> : null}
+                {step.due_date ? <span className={isOverdue(step.due_date) && step.status !== "returned" ? "font-medium text-destructive" : undefined}>{isOverdue(step.due_date) && step.status !== "returned" ? "Overdue · " : "Due "}{formatLocalDate(step.due_date, "MMM d, yyyy")}</span> : null}
                 {step.decided_at ? <span>Returned {formatLocalDate(step.decided_at.slice(0, 10), "MMM d, yyyy")}</span> : null}
+                {step.reviewer_portal_url ? <a className="font-medium text-foreground underline underline-offset-2" href={step.reviewer_portal_url} target="_blank" rel="noreferrer">Open reviewer portal</a> : null}
               </div>
 
               {step.notes ? (
@@ -182,6 +210,18 @@ export function SubmittalReviewRail({
                     Assign reviewer
                   </Button>
                 )
+              ) : null}
+
+              {index > 0 && step.status === "pending" ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs"
+                  disabled={isPending}
+                  onClick={() => handleParallelToggle(step, previousStep)}
+                >
+                  {isParallel ? "Run after prior step" : "Run with prior step"}
+                </Button>
               ) : null}
 
               {isCurrent ? (

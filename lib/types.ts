@@ -1530,6 +1530,7 @@ export interface SubmittalReviewStep {
   org_id: string
   submittal_id: string
   step_order: number
+  review_group: number
   reviewer_kind: "internal" | "external"
   reviewer_user_id?: string | null
   reviewer_contact_id?: string | null
@@ -1543,6 +1544,7 @@ export interface SubmittalReviewStep {
   decided_at?: string | null
   due_date?: string | null
   markup_file_id?: string | null
+  reviewer_portal_url?: string | null
   created_at: string
 }
 

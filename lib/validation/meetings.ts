@@ -10,6 +10,11 @@ export const createMeetingSchema = z.object({
   location: z.string().max(240).optional().nullable(),
 })
 
+export const updateMeetingSchema = createMeetingSchema.omit({ project_id: true, series: true }).partial().refine(
+  (value) => Object.keys(value).length > 0,
+  "At least one meeting field is required",
+)
+
 export const meetingItemSchema = z.object({
   meeting_id: z.string().uuid(),
   topic: z.string().min(2).max(500),
@@ -31,6 +36,11 @@ export const meetingAttendeeSchema = z.object({
   present: z.boolean().default(true),
 })
 
+export const updateMeetingAttendeeSchema = meetingAttendeeSchema.omit({ meeting_id: true }).partial().refine(
+  (value) => Object.keys(value).length > 0,
+  "At least one attendance field is required",
+)
+
 export const createMeetingItemTaskSchema = z.object({
   meeting_item_id: z.string().uuid(),
   assignee_id: z.string().uuid().optional(),
@@ -40,4 +50,4 @@ export const createMeetingItemTaskSchema = z.object({
 export type CreateMeetingInput = z.infer<typeof createMeetingSchema>
 export type MeetingItemInput = z.infer<typeof meetingItemSchema>
 export type MeetingAttendeeInput = z.infer<typeof meetingAttendeeSchema>
-
+export type UpdateMeetingInput = z.infer<typeof updateMeetingSchema>

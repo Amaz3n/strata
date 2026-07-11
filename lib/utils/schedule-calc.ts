@@ -70,10 +70,9 @@ export function calculateScheduleImpacts(
     const currentItem = items.find(i => i.id === currentId)
     if (!currentItem) continue
 
-    const currentEndDateStr = currentImpact.end_date || currentItem.end_date || currentImpact.start_date || currentItem.start_date
-    if (!currentEndDateStr) continue
-    const currentEnd = parseDate(currentEndDateStr)
-    if (!currentEnd) continue
+    const currentStart = parseDate(currentImpact.start_date || currentItem.start_date || currentImpact.end_date || currentItem.end_date || "")
+    const currentEnd = parseDate(currentImpact.end_date || currentItem.end_date || currentImpact.start_date || currentItem.start_date || "")
+    if (!currentStart || !currentEnd) continue
 
     const outgoingDeps = forwardDeps.get(currentId) || []
     
@@ -82,39 +81,26 @@ export function calculateScheduleImpacts(
       const targetItem = items.find(i => i.id === targetId)
       if (!targetItem) continue
       
-      // If the target has a "Must Start On" constraint, it might not move, but for now we'll propagate FS (Finish to Start)
-      if (dep.dependency_type === "FS") {
-        const targetStartStr = targetItem.start_date
-        const targetEndStr = targetItem.end_date
-        if (!targetStartStr || !targetEndStr) continue
-        
-        const targetStart = parseDate(targetStartStr)
-        const targetEnd = parseDate(targetEndStr)
-        if (!targetStart || !targetEnd) continue
-        
-        const duration = daysBetween(targetStart, targetEnd)
-        
-        // Target should start after current finishes + lag_days
-        // In business days or calendar days? Usually we might want to skip weekends.
-        // Simplified approach: just calendar days for now, plus lag
-        const newStart = addDays(currentEnd, Math.max(1, dep.lag_days || 1)) 
-        
-        // If the new start date is strictly later than the target's current start date, we push it.
-        // In a true auto-schedule, we might also pull it back if it can start earlier. But usually, we only push.
-        // Let's implement full auto-schedule (push and pull) based strictly on dependencies.
-        const newStartStr = toDateString(newStart)
-        const newEnd = addDays(newStart, duration)
-        const newEndStr = toDateString(newEnd)
-        
-        const existingImpact = impacts.get(targetId)
-        if (!existingImpact || existingImpact.start_date !== newStartStr) {
-          impacts.set(targetId, {
-            id: targetId,
-            start_date: newStartStr,
-            end_date: newEndStr
-          })
-          queue.push(targetId)
-        }
+      const targetStart = parseDate(targetItem.start_date || "")
+      const targetEnd = parseDate(targetItem.end_date || "")
+      if (!targetStart || !targetEnd) continue
+
+      const duration = daysBetween(targetStart, targetEnd)
+      const lag = dep.lag_days ?? 0
+      const newStart = dep.dependency_type === "SS"
+        ? addDays(currentStart, lag)
+        : dep.dependency_type === "FF"
+          ? addDays(addDays(currentEnd, lag), -duration)
+          : dep.dependency_type === "SF"
+            ? addDays(addDays(currentStart, lag), -duration)
+            : addDays(currentEnd, lag)
+      const newStartStr = toDateString(newStart)
+      const newEndStr = toDateString(addDays(newStart, duration))
+
+      const existingImpact = impacts.get(targetId)
+      if (!existingImpact || existingImpact.start_date !== newStartStr || existingImpact.end_date !== newEndStr) {
+        impacts.set(targetId, { id: targetId, start_date: newStartStr, end_date: newEndStr })
+        queue.push(targetId)
       }
     }
   }

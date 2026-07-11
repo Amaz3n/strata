@@ -91,6 +91,8 @@ insert into permissions (key, description) values
   ('rfi.read', 'View RFIs'),
   ('rfi.respond', 'Respond to RFIs'),
   ('rfi.write', 'Create and edit RFIs'),
+  ('safety.read', 'View safety incidents and investigation details'),
+  ('safety.write', 'Record safety incidents, toolbox talks, and observations'),
   ('schedule.baseline.manage', 'Manage schedule baselines'),
   ('schedule.edit', 'Edit project schedule'),
   ('schedule.publish', 'Publish schedule updates'),
@@ -914,6 +916,10 @@ union all
   select id, 'time.read' from roles where key = 'pm'
 union all
   select id, 'time.write' from roles where key = 'pm'
+union all
+  select id, 'safety.read' from roles where key in ('org_owner', 'org_admin', 'org_office_admin', 'org_project_lead', 'pm', 'field')
+union all
+  select id, 'safety.write' from roles where key in ('org_owner', 'org_admin', 'org_office_admin', 'org_project_lead', 'pm', 'field')
 on conflict (role_id, permission_key) do nothing;
 
 -- 4. Prune grants no longer declared, so this file stays authoritative for managed roles.
@@ -1329,7 +1335,19 @@ with desired (role_key, permission_key) as (values
   ('org_project_lead', 'prequal.review'),
   ('pm', 'budget.approve'),
   ('pm', 'prequal.review'),
-  ('org_estimator', 'prequal.review')
+  ('org_estimator', 'prequal.review'),
+  ('org_owner', 'safety.read'),
+  ('org_owner', 'safety.write'),
+  ('org_admin', 'safety.read'),
+  ('org_admin', 'safety.write'),
+  ('org_office_admin', 'safety.read'),
+  ('org_office_admin', 'safety.write'),
+  ('org_project_lead', 'safety.read'),
+  ('org_project_lead', 'safety.write'),
+  ('pm', 'safety.read'),
+  ('pm', 'safety.write'),
+  ('field', 'safety.read'),
+  ('field', 'safety.write')
 )
 delete from role_permissions rp using roles r
 where rp.role_id = r.id

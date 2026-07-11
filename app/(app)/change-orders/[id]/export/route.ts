@@ -3,6 +3,8 @@ import { NextResponse } from "next/server"
 import { requireOrgContext } from "@/lib/services/context"
 import { fetchChangeOrder } from "@/lib/services/change-orders"
 import { renderChangeOrderPdf } from "@/lib/pdfs/change-order"
+import { getProjectPosture, normalizeProductTier } from "@/lib/product-tier"
+import { terminology } from "@/lib/terminology"
 
 export async function GET(
   _request: Request,
@@ -17,10 +19,10 @@ export async function GET(
   }
 
   const [orgResult, projectResult] = await Promise.all([
-    supabase.from("orgs").select("name, logo_url").eq("id", orgId).maybeSingle(),
+    supabase.from("orgs").select("name, logo_url, product_tier").eq("id", orgId).maybeSingle(),
     supabase
       .from("projects")
-      .select("name, client_id")
+      .select("name, client_id, property_type")
       .eq("org_id", orgId)
       .eq("id", changeOrder.project_id)
       .maybeSingle(),
@@ -41,6 +43,7 @@ export async function GET(
     projectName: project?.name ?? null,
     recipientName: contactResult.data?.full_name ?? null,
     recipientEmail: contactResult.data?.email ?? null,
+    signerRole: terminology(getProjectPosture(project?.property_type, normalizeProductTier(orgResult.data?.product_tier))).owner,
     changeOrder,
   })
 

@@ -159,7 +159,32 @@ test("G702 summary math reconciles payment due with the invoice amount", () => {
   assert.equal(summary.currentPaymentDueCents, 315000)
   // Payment due equals this period's gross (350,000) minus this app's retainage.
   assert.equal(summary.currentPaymentDueCents, 350000 - 35000)
-  assert.equal(summary.balanceToFinishCents, 500000)
+  // G702 line 9 is line 3 less line 6, so the balance includes the 50,000
+  // retainage still held.
+  assert.equal(summary.balanceToFinishCents, 550000)
+})
+
+test("G702 line 9 reconciles as contract sum less earned less retainage", () => {
+  const summary = computePayAppSummary({
+    originalContractSumCents: 1_000_000,
+    changeOrderSumCents: 100_000,
+    previousRetainageHeldCents: 25_000,
+    previousCertificatesCents: 225_000,
+    lines: [
+      computePayAppLine({
+        scheduledValueCents: 1_100_000,
+        previousBilledCents: 250_000,
+        thisPeriodCents: 100_000,
+        storedMaterialsCents: 50_000,
+        previousStoredMaterialsCents: 0,
+        workRetainagePercent: 10,
+        storedMaterialsRetainagePercent: 10,
+      }),
+    ],
+  })
+
+  assert.equal(summary.totalEarnedLessRetainageCents, 360_000)
+  assert.equal(summary.balanceToFinishCents, 1_100_000 - 360_000)
 })
 
 test("change orders extend the contract sum to date and balance to finish", () => {

@@ -70,13 +70,13 @@ export function EstimateExpiryEmail({
             <Text style={paragraph}>
               {expired ? (
                 <>
-                  The estimate <strong>{estimateTitle}</strong> passed its validity date without a client
-                  signature. Follow up with the client, or revise and re-send with a new date.
+                  The estimate <strong>{estimateTitle}</strong> passed its validity date without a recipient
+                  signature. Follow up with the recipient, or revise and re-send with a new date.
                 </>
               ) : (
                 <>
                   The estimate <strong>{estimateTitle}</strong> is still out for review and its validity date is
-                  approaching. A nudge to the client now can keep the decision moving.
+                  approaching. A nudge to the recipient now can keep the decision moving.
                 </>
               )}
             </Text>
@@ -89,7 +89,7 @@ export function EstimateExpiryEmail({
               ) : null}
               {recipientContactName ? (
                 <Text style={metaRow}>
-                  <span style={metaLabel}>Client:</span> <span style={metaValue}>{recipientContactName}</span>
+                  <span style={metaLabel}>Recipient:</span> <span style={metaValue}>{recipientContactName}</span>
                 </Text>
               ) : null}
               {totalLabel ? (

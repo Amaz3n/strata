@@ -20,6 +20,7 @@ import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { listRfiResponses } from "@/lib/services/rfis"
 import type { Rfi, RfiResponse } from "@/lib/types"
+import { getBidInvitePrequalificationWarnings } from "@/lib/services/prequalification"
 
 export interface BidPackage {
   id: string
@@ -69,6 +70,7 @@ export interface BidInvite {
   linked_active_account_count?: number
   linked_paused_account_count?: number
   linked_revoked_account_count?: number
+  prequalification_warning?: string
   company?: { id: string; name: string; phone?: string; email?: string }
   contact?: { id: string; full_name: string; email?: string; phone?: string }
 }
@@ -191,6 +193,7 @@ function mapBidInvite(row: any): BidInvite {
     created_by: row.created_by ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at ?? null,
+    prequalification_warning: row.prequalification_warning ?? undefined,
     access_total: row.access_total ?? undefined,
     active_access_count: row.active_access_count ?? undefined,
     paused_access_count: row.paused_access_count ?? undefined,
@@ -1296,6 +1299,7 @@ export async function listBidInvites(bidPackageId: string, orgId?: string): Prom
 
   const invites = (data ?? []).map(mapBidInvite)
   if (invites.length === 0) return invites
+  const prequalificationWarnings = await getBidInvitePrequalificationWarnings(invites.map((invite) => invite.company_id), resolvedOrgId)
 
   const inviteIds = invites.map((invite) => invite.id)
   const { data: tokenRows, error: tokenError } = await supabase
@@ -1394,6 +1398,7 @@ export async function listBidInvites(bidPackageId: string, orgId?: string): Prom
       linked_active_account_count: accountAgg.active,
       linked_paused_account_count: accountAgg.paused,
       linked_revoked_account_count: accountAgg.revoked,
+      prequalification_warning: prequalificationWarnings.get(invite.company_id),
     }
   })
 }
@@ -1502,6 +1507,7 @@ export async function createBidInvite({
   await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
   await ensureBidPackageInOrg(parsed.bid_package_id, resolvedOrgId, supabase)
   await ensureCompanyInOrg(parsed.company_id, resolvedOrgId, supabase)
+  const prequalificationWarning = (await getBidInvitePrequalificationWarnings([parsed.company_id], resolvedOrgId)).get(parsed.company_id)
   if (parsed.contact_id) {
     await ensureContactInOrg(parsed.contact_id, resolvedOrgId, supabase)
   }
@@ -1548,7 +1554,7 @@ export async function createBidInvite({
     after: data,
   })
 
-  return mapBidInvite(data)
+  return { ...mapBidInvite(data), prequalification_warning: prequalificationWarning }
 }
 
 export interface BulkBidInviteResult {
@@ -1806,7 +1812,13 @@ export async function bulkCreateBidInvites({
     }
   }
 
-  return { created, failed, emailsSent, companiesCreated }
+  const warningByCompany = await getBidInvitePrequalificationWarnings(created.map((invite) => invite.company_id), resolvedOrgId)
+  return {
+    created: created.map((invite) => ({ ...invite, prequalification_warning: warningByCompany.get(invite.company_id) })),
+    failed,
+    emailsSent,
+    companiesCreated,
+  }
 }
 
 export async function generateBidInviteLink(

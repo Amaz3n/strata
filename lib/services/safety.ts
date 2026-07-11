@@ -31,6 +31,7 @@ export type SafetyIncident = {
   involved_person_name: string | null
   witness_names: string | null
   immediate_action: string | null
+  photo_file_id: string | null
   root_cause: string | null
   is_osha_recordable: boolean
   reported_by: string | null
@@ -78,7 +79,7 @@ export type Observation = {
 export const ALERT_SEVERITIES = new Set(["lost_time", "fatality"])
 
 const INCIDENT_SELECT =
-  "id, org_id, project_id, incident_number, occurred_at, severity, classification, location, description, involved_company_id, involved_person_name, witness_names, immediate_action, root_cause, is_osha_recordable, reported_by, status, closed_at, created_at, updated_at, involved_company:companies(name)"
+  "id, org_id, project_id, incident_number, occurred_at, severity, classification, location, description, involved_company_id, involved_person_name, witness_names, immediate_action, root_cause, photo_file_id, is_osha_recordable, reported_by, status, closed_at, created_at, updated_at, involved_company:companies(name)"
 const TALK_SELECT =
   "id, org_id, project_id, held_at, topic, notes, presenter_name, presenter_user_id, attendee_count, attendees, file_id, created_at"
 const OBSERVATION_SELECT =
@@ -101,7 +102,8 @@ function mapObservation(row: Record<string, any>): Observation {
 // ---------------------------------------------------------------------------
 
 export async function listSafetyIncidents(projectId: string, orgId?: string): Promise<SafetyIncident[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("safety.read", { supabase, orgId: resolvedOrgId, userId })
   const { data, error } = await supabase
     .from("safety_incidents")
     .select(INCIDENT_SELECT)
@@ -137,6 +139,7 @@ export async function createSafetyIncident(input: SafetyIncidentInput, orgId?: s
       involved_person_name: parsed.involved_person_name ?? null,
       witness_names: parsed.witness_names ?? null,
       immediate_action: parsed.immediate_action ?? null,
+      photo_file_id: parsed.photo_file_id ?? null,
       is_osha_recordable: parsed.is_osha_recordable ?? false,
       reported_by: userId,
     },
@@ -202,6 +205,7 @@ export async function updateSafetyIncident(incidentId: string, input: SafetyInci
     "involved_person_name",
     "witness_names",
     "immediate_action",
+    "photo_file_id",
     "root_cause",
     "is_osha_recordable",
   ] as const) {

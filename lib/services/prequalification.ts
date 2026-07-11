@@ -112,11 +112,60 @@ export async function expirePrequalificationsWithClient(supabase: SupabaseClient
   return data.length
 }
 
-export async function getCompanyPrequalificationWarning(args: { companyId: string | null; commitmentTotalCents?: number; orgId?: string }): Promise<string | null> {
+export async function getCompanyPrequalificationWarning(args: { companyId: string | null; commitmentTotalCents?: number; excludeCommitmentId?: string; orgId?: string }): Promise<string | null> {
   if (!args.companyId) return "No vendor company is assigned; prequalification could not be checked."
   const latest = await getLatestPrequalification(args.companyId, args.orgId)
   if (!latest || !["approved", "approved_with_limits"].includes(latest.status)) return "Vendor does not have a current approved prequalification."
   if (latest.expires_at && latest.expires_at < new Date().toISOString().slice(0, 10)) return "Vendor prequalification has expired."
   if (args.commitmentTotalCents != null && latest.single_project_limit_cents != null && args.commitmentTotalCents > latest.single_project_limit_cents) return `Commitment exceeds the vendor's single-project prequalification limit by $${((args.commitmentTotalCents - latest.single_project_limit_cents) / 100).toLocaleString("en-US")}.`
+  if (args.commitmentTotalCents != null && latest.aggregate_limit_cents != null) {
+    const { supabase, orgId } = await requireOrgContext(args.orgId)
+    let query = supabase
+      .from("commitments")
+      .select("total_cents")
+      .eq("org_id", orgId)
+      .eq("company_id", args.companyId)
+      .eq("status", "approved")
+    if (args.excludeCommitmentId) query = query.neq("id", args.excludeCommitmentId)
+    const { data, error } = await query
+    if (error) throw new Error(`Failed to check aggregate prequalification capacity: ${error.message}`)
+    const activeTotal = (data ?? []).reduce((sum, commitment) => sum + Number(commitment.total_cents ?? 0), 0)
+    const resultingTotal = activeTotal + args.commitmentTotalCents
+    if (resultingTotal > latest.aggregate_limit_cents) {
+      return `Commitments exceed the vendor's aggregate prequalification limit by $${((resultingTotal - latest.aggregate_limit_cents) / 100).toLocaleString("en-US")}.`
+    }
+  }
   return null
+}
+
+export async function getBidInvitePrequalificationWarnings(
+  companyIds: string[],
+  orgId?: string,
+): Promise<Map<string, string>> {
+  if (companyIds.length === 0) return new Map()
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const uniqueIds = Array.from(new Set(companyIds))
+  const { data, error } = await supabase
+    .from("prequalifications")
+    .select("company_id, status, expires_at, created_at")
+    .eq("org_id", resolvedOrgId)
+    .in("company_id", uniqueIds)
+    .order("created_at", { ascending: false })
+  if (error) throw new Error(`Failed to check bid invite prequalification: ${error.message}`)
+
+  const latestByCompany = new Map<string, { status: string; expires_at: string | null }>()
+  for (const row of data ?? []) {
+    if (!latestByCompany.has(row.company_id)) latestByCompany.set(row.company_id, row)
+  }
+  const today = new Date().toISOString().slice(0, 10)
+  const warnings = new Map<string, string>()
+  for (const companyId of uniqueIds) {
+    const latest = latestByCompany.get(companyId)
+    if (!latest || !["approved", "approved_with_limits"].includes(latest.status)) {
+      warnings.set(companyId, "Vendor does not have a current approved prequalification.")
+    } else if (latest.expires_at && latest.expires_at < today) {
+      warnings.set(companyId, "Vendor prequalification has expired.")
+    }
+  }
+  return warnings
 }

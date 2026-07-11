@@ -72,6 +72,7 @@ export const submittalReviewStepInputSchema = z.object({
   reviewer_contact_id: z.string().uuid().optional().nullable(),
   reviewer_company_id: z.string().uuid().optional().nullable(),
   due_date: z.string().optional().nullable(),
+  review_group: z.number().int().positive().optional(),
 })
 
 export const setSubmittalReviewStepsSchema = z.object({
@@ -89,6 +90,7 @@ export const updateSubmittalReviewStepSchema = z.object({
   reviewer_contact_id: z.string().uuid().optional().nullable(),
   reviewer_company_id: z.string().uuid().optional().nullable(),
   due_date: z.string().optional().nullable(),
+  review_group: z.number().int().positive().optional(),
 })
 
 export type UpdateSubmittalReviewStepInput = z.infer<typeof updateSubmittalReviewStepSchema>

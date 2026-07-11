@@ -12,6 +12,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { COST_TYPES } from "@/lib/cost-types"
 import {
   approveBudgetTransfer,
+  closeBudgetTransfer,
   createBudgetTransfer,
   setBudgetLineContingency,
 } from "@/lib/services/budget-transfers"
@@ -202,6 +203,16 @@ export async function createBudgetTransferAction(projectId: string, input: unkno
 export async function approveBudgetTransferAction(projectId: string, transferId: string) {
   return run(async () => {
     const transfer = await approveBudgetTransfer(transferId)
+    revalidateBudgetPages(projectId)
+    return transfer
+  })
+}
+
+export async function closeBudgetTransferAction(projectId: string, transferId: string, status: unknown, reason: unknown) {
+  return run(async () => {
+    const parsedStatus = z.enum(["rejected", "void"]).parse(status)
+    const parsedReason = z.string().trim().min(3).max(1000).parse(reason)
+    const transfer = await closeBudgetTransfer(transferId, parsedStatus, parsedReason)
     revalidateBudgetPages(projectId)
     return transfer
   })

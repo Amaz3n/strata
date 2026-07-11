@@ -44,6 +44,15 @@ const statusLabels: Record<string, string> = {
   rejected: "Rejected",
 }
 
+function overdueDays(dueDate: string | null | undefined): number {
+  if (!dueDate) return 0
+  const due = parseLocalDate(dueDate)
+  if (!due) return 0
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return Math.max(0, Math.floor((today.getTime() - due.getTime()) / 86_400_000))
+}
+
 const statusStyles: Record<string, string> = {
   draft: "bg-muted text-muted-foreground border-muted",
   pending: "bg-muted text-muted-foreground border-muted",
@@ -399,7 +408,7 @@ export function SubmittalsClient({ submittals, projects, companies }: Submittals
                                     : "text-muted-foreground",
                                 )}
                               >
-                                {format(dueDate, "MMM d")}
+                                {isOverdue ? `${overdueDays(submittal.due_date)}d overdue` : format(dueDate, "MMM d")}
                               </span>
                             ) : null}
                           </div>
@@ -423,7 +432,7 @@ export function SubmittalsClient({ submittals, projects, companies }: Submittals
               <TableHead className="w-[32%] min-w-[280px]">Title</TableHead>
               <TableHead className="hidden md:table-cell w-[160px] text-center">Ball in Court</TableHead>
               <TableHead className="hidden sm:table-cell w-[128px] text-center">Status</TableHead>
-              <TableHead className="hidden lg:table-cell w-[112px] text-center">Review Due</TableHead>
+              <TableHead className="hidden lg:table-cell w-[112px] text-center">Aging / Due</TableHead>
               <TableHead className="hidden lg:table-cell w-[112px] text-center">On Site</TableHead>
               <TableHead className="hidden xl:table-cell w-[100px] text-center">Spec</TableHead>
               <TableHead className="w-[92px] pr-2" />
@@ -471,7 +480,7 @@ export function SubmittalsClient({ submittals, projects, companies }: Submittals
                         : "text-muted-foreground",
                     )}
                   >
-                    {submittal.due_date ? formatDate(submittal.due_date) : "—"}
+                    {submittal.due_date ? (overdueDays(submittal.due_date) > 0 && !submittal.decision_status ? `${overdueDays(submittal.due_date)}d overdue` : formatDate(submittal.due_date)) : "—"}
                   </span>
                 </TableCell>
                 <TableCell className="hidden lg:table-cell text-center">
@@ -532,8 +541,6 @@ export function SubmittalsClient({ submittals, projects, companies }: Submittals
     </>
   )
 }
-
-
 
 
 

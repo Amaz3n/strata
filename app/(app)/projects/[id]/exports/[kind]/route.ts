@@ -109,7 +109,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       }))).filter((photo): photo is { bytes: Buffer; mimeType: string; caption: string | null } => photo !== null)
       const pdf = await renderDailyReportPdf({
         header: { ...baseHeader, title: "Daily Report", documentNumber: report.report_date, date: new Date(`${report.report_date}T12:00:00`).toLocaleDateString() },
-        weather: weatherText(report.weather), dayType: report.day_type, summary: (logs ?? []).map((log) => log.summary).filter(Boolean).join("\n"),
+        weather: weatherText(report.weather) ?? weatherText(report.weather_auto), dayType: report.day_type, summary: (logs ?? []).map((log) => log.summary).filter(Boolean).join("\n"),
         manpower: (manpower ?? []).map((row) => ({ company: row.company ?? "Unspecified", trade: row.trade, workers: row.workers ?? 0, hours: row.hours == null ? null : Number(row.hours) })),
         entries: (logs ?? []).flatMap((log) => (log.daily_log_entries ?? []).map((entry) => ({ type: entry.entry_type, description: entry.description ?? "—", quantity: entry.quantity == null ? null : Number(entry.quantity), hours: entry.hours == null ? null : Number(entry.hours), location: entry.location }))),
         delays: (delays ?? []).map((row) => ({ type: row.delay_type, description: row.description, hoursLost: row.hours_lost == null ? null : Number(row.hours_lost), affectedTrades: row.affected_trades, potentialClaim: row.potential_claim })),

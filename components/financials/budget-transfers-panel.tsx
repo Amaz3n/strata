@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 
 import {
   approveBudgetTransferAction,
+  closeBudgetTransferAction,
   createBudgetTransferAction,
   setBudgetLineContingencyAction,
 } from "@/app/(app)/projects/[id]/budget/actions";
@@ -37,6 +38,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 
 type Line = {
@@ -70,6 +72,8 @@ export function BudgetTransfersPanel({
   const [fromId, setFromId] = useState("");
   const [toId, setToId] = useState("");
   const [amount, setAmount] = useState("");
+  const [allowOverride, setAllowOverride] = useState(false);
+  const [overrideReason, setOverrideReason] = useState("");
   const [contingencyLineId, setContingencyLineId] = useState("");
   const router = useRouter();
   const { toast } = useToast();
@@ -104,6 +108,8 @@ export function BudgetTransfersPanel({
               { budget_line_id: fromId, amount_cents: -amountCents },
               { budget_line_id: toId, amount_cents: amountCents },
             ],
+            allow_override: allowOverride,
+            override_reason: allowOverride ? overrideReason : null,
           }),
         );
         toast({ title: "Transfer submitted for approval" });
@@ -129,6 +135,19 @@ export function BudgetTransfersPanel({
         });
       }
     });
+  const close = (id: string, status: "rejected" | "void") => {
+    const reason = window.prompt(`Reason this transfer is being ${status === "void" ? "voided" : "rejected"}:`);
+    if (!reason?.trim()) return;
+    startTransition(async () => {
+      try {
+        unwrapAction(await closeBudgetTransferAction(projectId, id, status, reason));
+        toast({ title: `Budget transfer ${status === "void" ? "voided" : "rejected"}` });
+        router.refresh();
+      } catch (error) {
+        toast({ title: `Unable to ${status} transfer`, description: (error as Error).message });
+      }
+    });
+  };
   const markContingency = () =>
     startTransition(async () => {
       try {
@@ -263,6 +282,13 @@ export function BudgetTransfersPanel({
                   {Number.isNaN(net) ? "Enter a valid amount" : money(net)}
                 </span>
               </div>
+              <div className="space-y-2 border p-3">
+                <div className="flex items-center gap-2">
+                  <Checkbox id="budget-floor-override" checked={allowOverride} onCheckedChange={(value) => setAllowOverride(value === true)} />
+                  <Label htmlFor="budget-floor-override" className="font-normal">Request an authorized cost-floor override</Label>
+                </div>
+                {allowOverride ? <Textarea value={overrideReason} onChange={(event) => setOverrideReason(event.target.value)} placeholder="Required override justification" /> : null}
+              </div>
               <Button
                 className="w-full"
                 disabled={
@@ -271,6 +297,7 @@ export function BudgetTransfersPanel({
                   !fromId ||
                   !toId ||
                   amountCents <= 0
+                  || (allowOverride && overrideReason.trim().length < 3)
                 }
                 onClick={create}
               >
@@ -325,14 +352,12 @@ export function BudgetTransfersPanel({
                   </TableCell>
                   <TableCell className="text-right">
                     {transfer.status === "pending_approval" ? (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={pending}
-                        onClick={() => approve(transfer.id)}
-                      >
-                        Approve
-                      </Button>
+                      <div className="flex justify-end gap-1">
+                        <Button size="sm" variant="ghost" disabled={pending} onClick={() => close(transfer.id, "rejected")}>Reject</Button>
+                        <Button size="sm" variant="outline" disabled={pending} onClick={() => approve(transfer.id)}>Approve</Button>
+                      </div>
+                    ) : transfer.status === "approved" ? (
+                      <Button size="sm" variant="ghost" disabled={pending} onClick={() => close(transfer.id, "void")}>Void</Button>
                     ) : null}
                   </TableCell>
                 </TableRow>

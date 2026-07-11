@@ -588,7 +588,7 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
       internalCostCents: line.internal_cost_cents ?? null,
     })),
   )
-  const status = input.client_visible ? "pending" : input.status ?? "draft"
+  const status = input.client_visible ? "pending" : "draft"
 
   const payload = {
     org_id: resolvedOrgId,
@@ -596,7 +596,7 @@ export async function createChangeOrder({ input, orgId }: { input: ChangeOrderIn
     title: input.title,
     description: input.description ?? null,
     status,
-    lifecycle: input.lifecycle === "approved" || input.lifecycle === "void" ? "draft" : input.lifecycle,
+    lifecycle: "draft",
     owner_response_due: input.owner_response_due ?? null,
     cost_total_cents: costTotalCents,
     markup_mode: input.markup_mode,
@@ -1817,91 +1817,22 @@ export async function voidChangeOrder({
     return mapChangeOrderRow(data as ChangeOrderRow)
   }
 
-  const { data: linkedInvoices, error: linkedInvoicesError } = await supabase
-    .from("invoices")
-    .select("id, invoice_number")
-    .eq("org_id", resolvedOrgId)
-    .eq("metadata->>source_change_order_id", changeOrderId)
-    .neq("status", "void")
-
-  if (linkedInvoicesError) {
-    throw new Error(`Failed to check linked invoices: ${linkedInvoicesError.message}`)
-  }
-
-  if (linkedInvoices && linkedInvoices.length > 0) {
-    const labels = linkedInvoices.map((invoice) => `#${invoice.invoice_number}`).join(", ")
-    throw new Error(
-      `This change order has been billed (invoice ${labels}). Void or unlink the invoice before voiding the change order.`,
-    )
-  }
-
-  const nowIso = new Date().toISOString()
-
-  const { data, error } = await supabase
-    .from("change_orders")
-    .update({
-      status: "cancelled",
-      lifecycle: "void",
-      metadata: {
-        ...(existing.metadata ?? {}),
-        voided_at: nowIso,
-        voided_by: userId,
-        void_reason: reason ?? null,
-        financial_impact: {
-          ...(existing.metadata?.financial_impact ?? {}),
-          reversed_at: nowIso,
-        },
-      },
-    })
-    .eq("org_id", resolvedOrgId)
-    .eq("id", changeOrderId)
-    .select(CHANGE_ORDER_SELECT)
-    .single()
-
-  if (error || !data) {
-    throw new Error(`Failed to void change order: ${error?.message}`)
-  }
-
-  // Reverse the posted budget revision, if one was created at approval time.
-  // Budget/GMP consumers only count revisions with status "posted", so flipping
-  // it to "voided" removes its impact while keeping the record.
-  const { data: revisions, error: revisionsError } = await supabase
-    .from("budget_revisions")
-    .select("id, metadata")
-    .eq("org_id", resolvedOrgId)
-    .eq("change_order_id", changeOrderId)
-    .eq("status", "posted")
-
-  if (revisionsError) {
-    throw new Error(`Failed to load budget revision: ${revisionsError.message}`)
-  }
-
-  for (const revision of revisions ?? []) {
-    const { error: voidRevisionError } = await supabase
-      .from("budget_revisions")
-      .update({
-        status: "voided",
-        metadata: {
-          ...((revision.metadata as Record<string, any> | null) ?? {}),
-          voided_at: nowIso,
-          voided_by: userId,
-        },
-      })
-      .eq("id", revision.id)
-      .eq("org_id", resolvedOrgId)
-
-    if (voidRevisionError) {
-      throw new Error(`Failed to reverse budget revision: ${voidRevisionError.message}`)
-    }
-  }
-
-  // Recompute contract total, revised GMP, and pending draw amounts from the
-  // change orders that remain approved (the voided one no longer qualifies).
-  await applyChangeOrderFinancialImpact({
-    supabase,
-    orgId: resolvedOrgId,
-    projectId: data.project_id,
+  // Status, budget revision, SOV removal, contract/GMP recompute, and pending
+  // draw updates must commit or roll back together. The RPC also repeats the
+  // org membership + change_order.approve check inside its SECURITY DEFINER
+  // boundary so direct callers cannot bypass this service gate.
+  const { error: voidError } = await supabase.rpc("void_approved_change_order_atomic", {
+    p_org_id: resolvedOrgId,
+    p_change_order_id: changeOrderId,
+    p_actor_id: userId,
+    p_reason: reason ?? null,
   })
+  if (voidError) {
+    throw new Error(`Failed to void change order: ${voidError.message}`)
+  }
+
+  const data = await fetchChangeOrder(supabase, { id: changeOrderId, orgId: resolvedOrgId })
+  if (!data) throw new Error("Voided change order could not be reloaded")
 
   await recordEvent({
     orgId: resolvedOrgId,
@@ -1917,12 +1848,12 @@ export async function voidChangeOrder({
     action: "update",
     entityType: "change_order",
     entityId: data.id,
-    before: existing as any,
-    after: data,
+    before: { ...existing },
+    after: { ...data },
     source: "change_order.void",
   })
 
-  return mapChangeOrderRow(data as ChangeOrderRow)
+  return data
 }
 
 async function applyChangeOrderFinancialImpact({
@@ -2337,8 +2268,8 @@ export async function updateChangeOrder({
     resourceId: changeOrderId,
   })
 
-  if (existing.status === "approved") {
-    throw new Error("Approved change orders cannot be edited.")
+  if (["approved", "rejected", "void"].includes(existing.lifecycle ?? "draft")) {
+    throw new Error("Approved, rejected, or voided change orders cannot be edited.")
   }
 
   const normalizedLines = normalizeLines(input.lines)
@@ -2358,13 +2289,20 @@ export async function updateChangeOrder({
   const activeChangeRequest =
     existing.status === "requested_changes" ||
     existing.metadata?.portal_change_request_active === true
-  const status = activeChangeRequest ? "requested_changes" : input.client_visible ? "pending" : input.status ?? "draft"
+  const status =
+    activeChangeRequest
+      ? "requested_changes"
+      : existing.lifecycle === "proposed" || input.client_visible
+        ? "pending"
+        : "draft"
 
   const payload = {
     title: input.title,
     description: input.description ?? null,
     status,
-    lifecycle: existing.lifecycle === "proposed" ? "proposed" : input.lifecycle,
+    // Lifecycle transitions are permissioned business operations. Form edits
+    // may change content and visibility, but never workflow state.
+    lifecycle: existing.lifecycle ?? "draft",
     owner_response_due: input.owner_response_due ?? null,
     cost_total_cents: costTotalCents,
     markup_mode: input.markup_mode,

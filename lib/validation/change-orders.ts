@@ -34,6 +34,9 @@ export const changeOrderInputSchema = z.object({
   tax_rate: z.number().min(0).max(20).default(0),
   markup_percent: z.number().min(0).max(100).default(0),
   markup_mode: z.enum(["percent", "manual"]).default("percent"),
+  // The shared form schema must parse existing terminal records for read/edit
+  // initialization. Services never trust these workflow fields: create starts
+  // in draft and update preserves the persisted lifecycle/status.
   lifecycle: z.enum(["draft", "pricing", "proposed", "approved", "rejected", "void"]).default("draft"),
   owner_response_due: z.string().date().nullable().optional(),
   zero_dollar: z.boolean().default(false),
@@ -44,5 +47,3 @@ export const changeOrderInputSchema = z.object({
 
 export type ChangeOrderLineInput = z.infer<typeof changeOrderLineInputSchema>
 export type ChangeOrderInput = z.infer<typeof changeOrderInputSchema>
-
-

@@ -111,6 +111,21 @@ export function PrequalificationCard({
           <div className="text-right">{prequalification.emr ?? "—"}</div>
         </div>
       ) : null}
+      {prequalification && (Object.keys(prequalification.questionnaire ?? {}).length > 0 || (prequalification.references_data ?? []).length > 0 || (prequalification.trades ?? []).length > 0) ? (
+        <div className="space-y-2 border-t pt-3 text-sm">
+          <h4 className="font-medium">Submitted questionnaire</h4>
+          {(prequalification.trades ?? []).length > 0 ? <div><span className="text-muted-foreground">Trades:</span> {prequalification.trades?.join(", ")}</div> : null}
+          {Object.entries(prequalification.questionnaire ?? {}).map(([question, answer]) => (
+            <div key={question} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-4">
+              <div className="text-muted-foreground">{question.replaceAll("_", " ")}</div>
+              <div className="break-words text-right">{typeof answer === "string" || typeof answer === "number" || typeof answer === "boolean" ? String(answer) : JSON.stringify(answer)}</div>
+            </div>
+          ))}
+          {(prequalification.references_data ?? []).map((reference, index) => (
+            <div key={index} className="border p-2"><span className="text-muted-foreground">Reference {index + 1}:</span> {Object.entries(reference).map(([key, value]) => `${key.replaceAll("_", " ")}: ${String(value)}`).join(" · ")}</div>
+          ))}
+        </div>
+      ) : null}
       {canEdit &&
       prequalification &&
       ["submitted", "under_review"].includes(prequalification.status) ? (

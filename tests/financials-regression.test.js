@@ -352,6 +352,46 @@ test("receivables mutations remain routed through atomic database functions", ()
   assert.match(migration, /invoices_sync_retainage_release_status/)
 })
 
+test("commercial pay applications preserve base contract sums and reject unsafe posting", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../lib/services/pay-applications.ts"), "utf8")
+  const correction = fs.readFileSync(
+    path.join(__dirname, "../supabase/migrations/20260711191000_pay_application_void_corrections.sql"),
+    "utf8",
+  )
+
+  assert.match(source, /snapshot\?\.base_total_cents/)
+  assert.ok(source.indexOf("if (overbilledLines.length > 0 && !parsed.allow_overbilling)") < source.indexOf("for (const update of pendingUpdates)"))
+  assert.match(source, /overbilling_confirmed/)
+  assert.match(source, /contains overbilled lines that have not been explicitly confirmed/)
+  assert.match(correction, /metadata ->> 'type'.*= 'retainage_release'/)
+  assert.match(correction, /retainage_released_cents = retainage_released_cents - v_release_take/)
+  assert.match(correction, /order by line_number desc/)
+  assert.match(correction, /set search_path = ''/)
+  assert.match(correction, /permission_key = 'payapp\.write'/)
+  assert.match(correction, /m\.user_id = \(select auth\.uid\(\)\)/)
+  assert.match(correction, /revoke all on function public\.void_pay_application\(uuid, uuid\) from public, anon, authenticated/)
+})
+
+test("change-order content edits cannot perform lifecycle transitions", () => {
+  const service = fs.readFileSync(path.join(__dirname, "../lib/services/change-orders.ts"), "utf8")
+  const correction = fs.readFileSync(
+    path.join(__dirname, "../supabase/migrations/20260711191000_pay_application_void_corrections.sql"),
+    "utf8",
+  )
+
+  assert.match(service, /lifecycle: existing\.lifecycle \?\? "draft"/)
+  assert.match(service, /lifecycle: "draft"/)
+  assert.doesNotMatch(service, /lifecycle: existing\.lifecycle === "proposed" \? "proposed" : input\.lifecycle/)
+  assert.match(service, /rpc\("void_approved_change_order_atomic"/)
+  assert.match(correction, /create or replace function public\.void_approved_change_order_atomic/)
+  assert.match(correction, /permission_key = 'change_order\.approve'/)
+  assert.match(correction, /update public\.budget_revisions/)
+  assert.match(correction, /delete from public\.prime_sov_lines/)
+  assert.match(correction, /update public\.contracts/)
+  assert.match(correction, /update public\.draw_schedules/)
+  assert.match(correction, /revoke all on function public\.void_approved_change_order_atomic/)
+})
+
 test("financial jobs and public payment links keep their authorization boundaries", () => {
   for (const route of ["reminders", "late-fees", "payments"]) {
     const source = fs.readFileSync(path.join(__dirname, `../app/api/jobs/${route}/route.ts`), "utf8")

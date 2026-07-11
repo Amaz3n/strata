@@ -2168,6 +2168,7 @@ export function ProspectBidPackageDetailClient({
                           <span className="mx-1 text-border">·</span>
                           <span className={accessInfo.color}>{accessInfo.label}</span>
                         </p>
+                        {invite.prequalification_warning ? <p className="text-xs text-warning">Prequalification: {invite.prequalification_warning}</p> : null}
                       </div>
 
                       {/* Status + activity */}

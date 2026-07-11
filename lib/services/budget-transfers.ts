@@ -124,6 +124,9 @@ export async function createBudgetTransfer(input: unknown, orgId?: string): Prom
   const parsed = budgetTransferInputSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requireProjectPermission("budget.write", { ...context, projectId: parsed.project_id })
+  if (parsed.allow_override) {
+    await requireProjectPermission("budget.approve", { ...context, projectId: parsed.project_id })
+  }
   const { validation } = await buildValidatedLines(parsed, context.orgId)
 
   const { data: transfer } = await insertWithProjectNumberRetry<BudgetTransfer>({
@@ -175,6 +178,7 @@ export async function approveBudgetTransfer(transferId: string, orgId?: string):
   const transfer = existing as unknown as BudgetTransfer
   await requireProjectPermission("budget.approve", { ...context, projectId: transfer.project_id })
   if (transfer.status !== "pending_approval") throw new Error("Only pending transfers can be approved")
+  if (transfer.requested_by === context.userId) throw new Error("The requester cannot approve their own budget transfer")
 
   await buildValidatedLines({
     project_id: transfer.project_id,
@@ -197,10 +201,43 @@ export async function approveBudgetTransfer(transferId: string, orgId?: string):
   return updated
 }
 
+export async function closeBudgetTransfer(
+  transferId: string,
+  status: "rejected" | "void",
+  reason: string,
+  orgId?: string,
+): Promise<BudgetTransfer> {
+  const context = await requireOrgContext(orgId)
+  const { data: existing } = await context.supabase
+    .from("budget_transfers")
+    .select(TRANSFER_SELECT)
+    .eq("org_id", context.orgId)
+    .eq("id", transferId)
+    .maybeSingle()
+  if (!existing) throw new Error("Budget transfer not found")
+  const transfer = existing as unknown as BudgetTransfer
+  await requireProjectPermission("budget.approve", { ...context, projectId: transfer.project_id })
+  if (reason.trim().length < 3) throw new Error("A reason is required")
+  if (status === "rejected" && transfer.status !== "pending_approval") throw new Error("Only pending transfers can be rejected")
+  if (status === "void" && !["pending_approval", "approved"].includes(transfer.status)) throw new Error("Only pending or approved transfers can be voided")
+
+  const { error } = await context.supabase.rpc("close_budget_transfer", {
+    p_transfer_id: transferId,
+    p_actor_id: context.userId,
+    p_status: status,
+    p_reason: reason.trim(),
+  })
+  if (error) throw new Error(`Failed to ${status} budget transfer: ${error.message}`)
+  const updated = (await listBudgetTransfers(transfer.project_id, context.orgId)).find((item) => item.id === transfer.id)
+  if (!updated) throw new Error("Budget transfer could not be reloaded")
+  await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "budget_transfer", entityId: transfer.id, before: transfer, after: updated })
+  return updated
+}
+
 export async function setBudgetLineContingency(budgetLineId: string, isContingency: boolean, orgId?: string) {
   const context = await requireOrgContext(orgId)
   const { data: line } = await context.supabase.from("budget_lines").select("id, metadata, budget:budgets!inner(project_id)").eq("org_id", context.orgId).eq("id", budgetLineId).maybeSingle()
-  const relatedBudget = Array.isArray(line?.budget) ? line.budget[0] : null
+  const relatedBudget = Array.isArray(line?.budget) ? line.budget[0] : line?.budget
   const projectId = relatedBudget?.project_id
   if (!line || !projectId) throw new Error("Budget line not found")
   await requireProjectPermission("budget.write", { ...context, projectId })

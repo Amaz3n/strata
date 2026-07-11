@@ -5,6 +5,7 @@ import { requireAuthorization } from "@/lib/services/authorization"
 import { getBudgetWithActuals } from "@/lib/services/budgets"
 import { requireOrgContext } from "@/lib/services/context"
 import { listProjects } from "@/lib/services/projects"
+import { getReportingExcludedProjectIds } from "@/lib/services/reporting-scope"
 import { todayIsoDateOnly } from "@/lib/services/reports/dates"
 
 const BILLED_INVOICE_STATUSES = ["sent", "partial", "paid", "overdue"]
@@ -337,10 +338,14 @@ export async function getOrgWipOverUnderReport({
     }),
   ])
 
-  const allProjects = await listProjects(undefined, { supabase, orgId: resolvedOrgId, userId, productTier })
+  const [allProjects, excludedProjectIds] = await Promise.all([
+    listProjects(undefined, { supabase, orgId: resolvedOrgId, userId, productTier }),
+    getReportingExcludedProjectIds(supabase, resolvedOrgId),
+  ])
+  const excludedProjects = new Set(excludedProjectIds)
   const projects = allProjects
     .filter((project) => includeInactive || INCLUDED_PROJECT_STATUSES.has(project.status))
-    .filter((project) => !project.excluded_from_reporting)
+    .filter((project) => !excludedProjects.has(project.id))
     .sort((a, b) => a.name.localeCompare(b.name))
 
   const rollups = await loadRollups({

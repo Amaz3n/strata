@@ -7,6 +7,7 @@ type ChangeOrderPdfData = {
   projectName?: string | null
   recipientName?: string | null
   recipientEmail?: string | null
+  signerRole?: string | null
   changeOrder: ChangeOrder
 }
 
@@ -39,7 +40,7 @@ export async function renderChangeOrderPdf(data: ChangeOrderPdfData): Promise<Bu
   const signers: QuoteSigner[] | undefined = isApproved
     ? [
         {
-          role: "Client",
+          role: data.signerRole ?? "Client",
           name: signatureData?.signer_name ?? metadata.approved_signer_name ?? null,
           signedAt: signatureData?.signed_at ?? changeOrder.approved_at ?? null,
           signatureImage: signatureData?.signature_image ?? null,

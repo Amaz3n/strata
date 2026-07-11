@@ -4,6 +4,8 @@ import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { getChangeOrderForPortal } from "@/lib/services/change-orders"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { renderChangeOrderPdf } from "@/lib/pdfs/change-order"
+import { getProjectPosture, normalizeProductTier } from "@/lib/product-tier"
+import { terminology } from "@/lib/terminology"
 
 export async function GET(
   _request: Request,
@@ -27,8 +29,8 @@ export async function GET(
 
   const supabase = createServiceSupabaseClient()
   const [orgResult, projectResult, contactResult] = await Promise.all([
-    supabase.from("orgs").select("name, logo_url").eq("id", access.org_id).maybeSingle(),
-    supabase.from("projects").select("name").eq("id", access.project_id).maybeSingle(),
+    supabase.from("orgs").select("name, logo_url, product_tier").eq("id", access.org_id).maybeSingle(),
+    supabase.from("projects").select("name, property_type").eq("id", access.project_id).maybeSingle(),
     access.contact_id
       ? supabase.from("contacts").select("full_name, email").eq("org_id", access.org_id).eq("id", access.contact_id).maybeSingle()
       : Promise.resolve({ data: null }),
@@ -40,6 +42,7 @@ export async function GET(
     projectName: projectResult.data?.name ?? null,
     recipientName: contactResult.data?.full_name ?? null,
     recipientEmail: contactResult.data?.email ?? null,
+    signerRole: terminology(getProjectPosture(projectResult.data?.property_type, normalizeProductTier(orgResult.data?.product_tier))).owner,
     changeOrder,
   })
 

@@ -31,6 +31,13 @@ import type {
   UpdateSubmittalReviewStepInput,
 } from "@/lib/validation/submittals"
 import { formatDocNumber, type DocumentNumberingSettings } from "@/lib/document-number"
+import {
+  finalApprovedDecision,
+  nextPendingReviewGroup,
+  reviewGroupCourtLabel,
+  reviewGroupIsComplete,
+  type ReviewWorkflowStepState,
+} from "@/lib/submittal-review-workflow"
 
 const SUBMITTAL_SELECT =
   "id, org_id, project_id, submittal_number, revision, supersedes_submittal_id, superseded_by_id, title, description, status, spec_section, submittal_type, due_date, required_on_site, lead_time_days, assigned_company_id, submitted_by_company_id, submitted_by_contact_id, submitted_at, reviewed_by, review_notes, reviewed_at, attachment_file_id, last_item_submitted_at, decision_status, decision_note, decision_by_user_id, decision_by_contact_id, decision_at, decision_via_portal, decision_portal_token_id, current_review_step_id, ball_in_court, stamped_file_id, created_at, updated_at"
@@ -747,8 +754,9 @@ async function sendSubmittalEmail({
 // ---------------------------------------------------------------------------
 
 const REVIEW_STEP_SELECT = `
-  id, org_id, submittal_id, step_order, reviewer_kind, reviewer_user_id, reviewer_contact_id, reviewer_company_id,
+  id, org_id, submittal_id, step_order, review_group, reviewer_kind, reviewer_user_id, reviewer_contact_id, reviewer_company_id,
   role_label, status, decision, notes, decided_at, due_date, markup_file_id, created_at,
+  portal_token_id, portal_token:portal_access_tokens(token),
   reviewer_user:app_users(full_name),
   reviewer_contact:contacts(full_name),
   reviewer_company:companies(name)
@@ -757,6 +765,7 @@ const REVIEW_STEP_SELECT = `
 export interface SubmittalWorkflowTemplateStep {
   reviewer_kind: "internal" | "external"
   role_label: string
+  review_group?: number
 }
 
 export const DEFAULT_COMMERCIAL_REVIEW_WORKFLOW: SubmittalWorkflowTemplateStep[] = [
@@ -768,11 +777,13 @@ function mapReviewStep(row: any): SubmittalReviewStep {
   const reviewerUser = Array.isArray(row.reviewer_user) ? row.reviewer_user[0] : row.reviewer_user
   const reviewerContact = Array.isArray(row.reviewer_contact) ? row.reviewer_contact[0] : row.reviewer_contact
   const reviewerCompany = Array.isArray(row.reviewer_company) ? row.reviewer_company[0] : row.reviewer_company
+  const portalToken = Array.isArray(row.portal_token) ? row.portal_token[0] : row.portal_token
   return {
     id: row.id,
     org_id: row.org_id,
     submittal_id: row.submittal_id,
     step_order: row.step_order,
+    review_group: row.review_group,
     reviewer_kind: row.reviewer_kind,
     reviewer_user_id: row.reviewer_user_id ?? null,
     reviewer_contact_id: row.reviewer_contact_id ?? null,
@@ -786,6 +797,7 @@ function mapReviewStep(row: any): SubmittalReviewStep {
     decided_at: row.decided_at ?? null,
     due_date: row.due_date ?? null,
     markup_file_id: row.markup_file_id ?? null,
+    reviewer_portal_url: typeof portalToken?.token === "string" ? `${APP_URL}/r/${portalToken.token}` : null,
     created_at: row.created_at,
   }
 }
@@ -844,6 +856,7 @@ async function getOrgSubmittalWorkflowTemplate(
     .map((step) => ({
       reviewer_kind: step.reviewer_kind as "internal" | "external",
       role_label: step.role_label as string,
+      review_group: typeof step.review_group === "number" && step.review_group > 0 ? step.review_group : undefined,
     }))
   return steps.length > 0 ? steps : null
 }
@@ -892,6 +905,7 @@ async function instantiateSubmittalReviewWorkflow({
       org_id: orgId,
       submittal_id: submittal.id,
       step_order: index + 1,
+      review_group: step.review_group ?? index + 1,
       reviewer_kind: step.reviewer_kind,
       role_label: step.role_label,
       reviewer_user_id: step.reviewer_user_id ?? null,
@@ -955,6 +969,7 @@ export async function setSubmittalReviewSteps({
         org_id: resolvedOrgId,
         submittal_id: input.submittal_id,
         step_order: index + 1,
+        review_group: step.review_group ?? index + 1,
         reviewer_kind: step.reviewer_kind,
         role_label: step.role_label,
         reviewer_user_id: step.reviewer_user_id ?? null,
@@ -992,13 +1007,16 @@ export async function updateSubmittalReviewStep({
 
   const { data: step } = await serviceClient
     .from("submittal_review_steps")
-    .select("id, submittal_id, status")
+    .select("id, submittal_id, status, reviewer_kind, reviewer_contact_id, review_group")
     .eq("id", input.step_id)
     .eq("org_id", resolvedOrgId)
     .maybeSingle()
   if (!step) throw new Error("Review step not found")
   if (step.status === "returned" || step.status === "skipped") {
     throw new Error("This step has already been decided")
+  }
+  if (step.status === "in_review" && input.review_group !== undefined && input.review_group !== step.review_group) {
+    throw new Error("Parallel grouping cannot change after review starts")
   }
 
   const patch: Record<string, unknown> = {}
@@ -1007,6 +1025,7 @@ export async function updateSubmittalReviewStep({
   if (input.reviewer_contact_id !== undefined) patch.reviewer_contact_id = input.reviewer_contact_id
   if (input.reviewer_company_id !== undefined) patch.reviewer_company_id = input.reviewer_company_id
   if (input.due_date !== undefined) patch.due_date = input.due_date || null
+  if (input.review_group !== undefined) patch.review_group = input.review_group
 
   const { error } = await serviceClient
     .from("submittal_review_steps")
@@ -1014,6 +1033,14 @@ export async function updateSubmittalReviewStep({
     .eq("id", input.step_id)
     .eq("org_id", resolvedOrgId)
   if (error) throw new Error(`Failed to update review step: ${error.message}`)
+
+  const externalReviewerChanged =
+    step.reviewer_kind === "external" &&
+    typeof input.reviewer_contact_id === "string" &&
+    input.reviewer_contact_id !== step.reviewer_contact_id
+  if (step.status === "in_review" && externalReviewerChanged) {
+    await notifyReviewStepAssigned({ orgId: resolvedOrgId, submittalId: step.submittal_id, stepId: input.step_id })
+  }
 
   await recordAudit({
     orgId: resolvedOrgId,
@@ -1027,27 +1054,33 @@ export async function updateSubmittalReviewStep({
   return listSubmittalReviewSteps({ orgId: resolvedOrgId, submittalId: step.submittal_id })
 }
 
-/** Moves a step into review: step status, pointer on the submittal, BIC label. */
-async function activateReviewStep({
+/** Moves one review group into court concurrently. */
+async function activateReviewGroup({
   orgId,
   submittalId,
-  step,
+  steps,
 }: {
   orgId: string
   submittalId: string
-  step: { id: string; role_label?: string | null }
+  steps: Array<{ id: string; role_label?: string | null }>
 }) {
+  if (steps.length === 0) return
   const supabase = createServiceSupabaseClient()
   await supabase
     .from("submittal_review_steps")
     .update({ status: "in_review" })
-    .eq("id", step.id)
     .eq("org_id", orgId)
+    .in("id", steps.map((step) => step.id))
   await supabase
     .from("submittals")
     .update({
-      current_review_step_id: step.id,
-      ball_in_court: step.role_label ?? "In review",
+      current_review_step_id: steps[0].id,
+      ball_in_court: reviewGroupCourtLabel(steps.map((step, index) => ({
+        ...step,
+        step_order: index + 1,
+        review_group: 1,
+        status: "in_review" as const,
+      }))),
       status: "in_review",
     })
     .eq("id", submittalId)
@@ -1062,20 +1095,20 @@ async function startReviewWorkflowIfIdle({ orgId, submittalId }: { orgId: string
   const supabase = createServiceSupabaseClient()
   const { data: steps } = await supabase
     .from("submittal_review_steps")
-    .select("id, step_order, status, role_label, reviewer_kind, reviewer_contact_id, reviewer_user_id, reviewer_company_id")
+    .select("id, step_order, review_group, status, role_label, reviewer_kind, reviewer_contact_id, reviewer_user_id, reviewer_company_id")
     .eq("org_id", orgId)
     .eq("submittal_id", submittalId)
     .order("step_order", { ascending: true })
 
   if (!steps || steps.length === 0) return
   if (steps.some((step) => step.status === "in_review")) return
-  const firstPending = steps.find((step) => step.status === "pending")
-  if (!firstPending) return
   // Only auto-start a fresh workflow; a returned step means review already ran.
   if (steps.some((step) => step.status === "returned")) return
+  const firstGroup = nextPendingReviewGroup(steps as ReviewWorkflowStepState[])
+  if (firstGroup.length === 0) return
 
-  await activateReviewStep({ orgId, submittalId, step: firstPending })
-  await notifyReviewStepAssigned({ orgId, submittalId, stepId: firstPending.id })
+  await activateReviewGroup({ orgId, submittalId, steps: firstGroup })
+  await Promise.all(firstGroup.map((step) => notifyReviewStepAssigned({ orgId, submittalId, stepId: step.id })))
 }
 
 /**
@@ -1106,7 +1139,7 @@ export async function applyReviewStepDecision({
 
   const { data: step, error: stepError } = await supabase
     .from("submittal_review_steps")
-    .select("id, submittal_id, step_order, status, role_label, reviewer_kind")
+    .select("id, submittal_id, step_order, review_group, status, role_label, reviewer_kind")
     .eq("id", stepId)
     .eq("org_id", orgId)
     .maybeSingle()
@@ -1179,20 +1212,25 @@ export async function applyReviewStepDecision({
   })
 
   if (decision === "approved" || decision === "approved_as_noted") {
-    const { data: nextStep } = await supabase
+    const { data: workflowRows, error: workflowError } = await supabase
       .from("submittal_review_steps")
-      .select("id, role_label")
+      .select("id, step_order, review_group, status, role_label, decision")
       .eq("org_id", orgId)
       .eq("submittal_id", step.submittal_id)
-      .eq("status", "pending")
-      .gt("step_order", step.step_order)
       .order("step_order", { ascending: true })
-      .limit(1)
-      .maybeSingle()
+    if (workflowError) throw new Error(`Failed to advance review workflow: ${workflowError.message}`)
+    const workflow = (workflowRows ?? []) as ReviewWorkflowStepState[]
 
-    if (nextStep) {
-      await activateReviewStep({ orgId, submittalId: step.submittal_id, step: nextStep })
-      await notifyReviewStepAssigned({ orgId, submittalId: step.submittal_id, stepId: nextStep.id })
+    if (!reviewGroupIsComplete(workflow, step.review_group)) {
+      const activeGroup = workflow.filter((candidate) => candidate.review_group === step.review_group && candidate.status === "in_review")
+      await supabase
+        .from("submittals")
+        .update({
+          current_review_step_id: activeGroup[0]?.id ?? null,
+          ball_in_court: reviewGroupCourtLabel(activeGroup),
+        })
+        .eq("id", step.submittal_id)
+        .eq("org_id", orgId)
       const { data: refreshed } = await supabase
         .from("submittals")
         .select(SUBMITTAL_SELECT)
@@ -1202,16 +1240,31 @@ export async function applyReviewStepDecision({
       return refreshed as Submittal
     }
 
+    const nextGroup = nextPendingReviewGroup(workflow, step.review_group)
+    if (nextGroup.length > 0) {
+      await activateReviewGroup({ orgId, submittalId: step.submittal_id, steps: nextGroup })
+      await Promise.all(nextGroup.map((nextStep) => notifyReviewStepAssigned({ orgId, submittalId: step.submittal_id, stepId: nextStep.id })))
+      const { data: refreshed } = await supabase
+        .from("submittals")
+        .select(SUBMITTAL_SELECT)
+        .eq("id", step.submittal_id)
+        .eq("org_id", orgId)
+        .single()
+      return refreshed as Submittal
+    }
+
+    const finalDecision = finalApprovedDecision(workflow)
+
     const finalized = await finalizeSubmittalDecision({
       orgId,
       submittalId: step.submittal_id,
-      decisionStatus: decision,
+      decisionStatus: finalDecision,
       decisionNote: notes ?? null,
       actorUserId,
       actorContactId,
       portalTokenId,
     })
-    await stampReturnedSubmittal({ orgId, submittal: finalized, finalStepId: stepId, decision })
+    await stampReturnedSubmittal({ orgId, submittal: finalized, finalStepId: stepId, decision: finalDecision })
     return finalized
   }
 
@@ -1246,13 +1299,14 @@ export async function applyReviewStepDecision({
 
 export interface ReviewerQueueEntry {
   step: SubmittalReviewStep
+  is_history: boolean
   submittal: Pick<
     Submittal,
     "id" | "submittal_number" | "revision" | "title" | "description" | "spec_section" | "due_date" | "status"
   >
 }
 
-/** The reviewer portal's queue: steps currently waiting on this contact. */
+/** The reviewer portal's active queue plus that reviewer's returned-step history. */
 export async function listReviewStepsForReviewer({
   orgId,
   projectId,
@@ -1273,7 +1327,7 @@ export async function listReviewStepsForReviewer({
     )
     .eq("org_id", orgId)
     .eq("reviewer_contact_id", contactId)
-    .eq("status", "in_review")
+    .in("status", ["in_review", "returned"])
     .eq("submittal.project_id", projectId)
     .order("created_at", { ascending: true })
 
@@ -1283,6 +1337,7 @@ export async function listReviewStepsForReviewer({
     const submittal = Array.isArray(row.submittal) ? row.submittal[0] : row.submittal
     return {
       step: mapReviewStep(row),
+      is_history: row.status === "returned",
       submittal: {
         id: submittal.id,
         submittal_number: submittal.submittal_number,
@@ -1355,9 +1410,6 @@ async function notifyReviewStepAssigned({
 
   if (step.reviewer_kind === "external") {
     if (!step.reviewer_contact_id) return // nothing to notify until a reviewer is assigned
-    const contact = await fetchContactEmail(supabase, step.reviewer_contact_id)
-    if (!contact?.email) return
-    recipient = { email: contact.email, name: contact.full_name }
     audience = "reviewer"
     actionHref = await ensureReviewerLink({
       supabase,
@@ -1366,7 +1418,17 @@ async function notifyReviewStepAssigned({
       contactId: step.reviewer_contact_id,
       companyId: step.reviewer_company_id ?? null,
     })
+    const token = actionHref.split("/").filter(Boolean).at(-1)
+    if (token) {
+      const { data: portalToken } = await supabase.from("portal_access_tokens").select("id").eq("org_id", orgId).eq("token", token).maybeSingle()
+      if (portalToken) {
+        await supabase.from("submittal_review_steps").update({ portal_token_id: portalToken.id }).eq("org_id", orgId).eq("id", stepId)
+      }
+    }
     actionLabel = "Open Review Portal"
+    const contact = await fetchContactEmail(supabase, step.reviewer_contact_id)
+    if (!contact?.email) return
+    recipient = { email: contact.email, name: contact.full_name }
   } else {
     if (!step.reviewer_user_id) return
     const user = await fetchUserEmail(supabase, step.reviewer_user_id)

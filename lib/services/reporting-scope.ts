@@ -34,3 +34,13 @@ export function applyReportingExclusion<Q>(query: Q, excludedProjectIds: string[
     `project_id.is.null,project_id.not.in.(${excludedProjectIds.join(",")})`,
   )
 }
+
+/** Apply the same org reporting scope to a projects-table query. */
+export function applyProjectReportingScope<Q>(query: Q, excludedProjectIds: string[]): Q {
+  if (excludedProjectIds.length === 0) return query
+  return (query as { not: (column: string, operator: string, value: string) => Q }).not(
+    "id",
+    "in",
+    `(${excludedProjectIds.join(",")})`,
+  )
+}

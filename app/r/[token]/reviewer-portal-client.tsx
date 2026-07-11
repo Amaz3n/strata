@@ -46,7 +46,7 @@ export function ReviewerPortalClient({
 }: ReviewerPortalClientProps) {
   const [activeTab, setActiveTab] = useState<ReviewerPortalTab>("overview")
   const [pinVerified, setPinVerified] = useState(!pinRequired)
-  const [queueCount, setQueueCount] = useState(reviewQueue.length)
+  const [queueCount, setQueueCount] = useState(reviewQueue.filter((entry) => !entry.is_history).length)
   const isMobile = useIsMobile()
 
   const tabs: Array<{ id: ReviewerPortalTab; label: string; icon: typeof LayoutDashboard; indicator?: ReactNode }> = [

@@ -55,6 +55,8 @@ import {
 } from "@/app/(app)/documents/actions"
 
 import { unwrapAction } from "@/lib/action-result"
+import { getProjectPosture } from "@/lib/product-tier"
+import { terminology } from "@/lib/terminology"
 
 const statusLabels: Record<string, string> = {
   draft: "Draft",
@@ -139,6 +141,8 @@ export function ChangeOrderDetailSheet({
   onEdit,
   onPrepareInvoice,
 }: ChangeOrderDetailSheetProps) {
+  const ownerTerm = terminology(getProjectPosture(project?.property_type, "residential")).owner
+  const ownerTermLower = ownerTerm.toLowerCase()
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [isLoadingAttachments, setIsLoadingAttachments] = useState(false)
   const [approving, setApproving] = useState(false)
@@ -400,23 +404,23 @@ export function ChangeOrderDetailSheet({
     { label: "Created", value: formatDateTime(changeOrder.created_at), detail: "Change order was drafted in Arc." },
     metadata.email_sent_at || metadata.published_at
       ? {
-          label: metadata.email_sent ? "Sent to client" : "Published to portal",
+          label: metadata.email_sent ? `Sent to ${ownerTermLower}` : "Published to portal",
           value: formatDateTime((metadata.email_sent_at as string | undefined) ?? (metadata.published_at as string | undefined)),
-          detail: metadata.sent_to ? `Recipient: ${metadata.sent_to}` : "Client portal access was enabled.",
+          detail: metadata.sent_to ? `Recipient: ${metadata.sent_to}` : `${ownerTerm} portal access was enabled.`,
         }
       : null,
     metadata.portal_last_viewed_at
       ? {
-          label: "Opened by client",
+          label: `Opened by ${ownerTermLower}`,
           value: formatDateTime(metadata.portal_last_viewed_at as string),
-          detail: "Client viewed the change order portal.",
+          detail: `${ownerTerm} viewed the change order portal.`,
         }
       : null,
     latestChangeRequest
       ? {
           label: "Changes requested",
           value: formatDateTime(latestChangeRequest.requested_at ?? metadata.portal_change_requested_at as string | undefined),
-          detail: latestChangeRequest.note ?? "Client requested revisions.",
+          detail: latestChangeRequest.note ?? `${ownerTerm} requested revisions.`,
         }
       : null,
     changeOrder.approved_at
@@ -521,10 +525,10 @@ export function ChangeOrderDetailSheet({
     try {
       const result = unwrapAction(await publishChangeOrderAction(changeOrder.id))
       onUpdate?.(result.changeOrder)
-      toast.success(result.email_sent ? "Change order emailed to client" : "Change order published to client portal", {
+      toast.success(result.email_sent ? `Change order emailed to ${ownerTermLower}` : `Change order published to ${ownerTermLower} portal`, {
         description: result.email_sent
           ? `Sent to ${result.sent_to}.`
-          : "Email was not sent, but the client portal link is ready.",
+          : `Email was not sent, but the ${ownerTermLower} portal link is ready.`,
       })
     } catch (error: any) {
       toast.error("Could not send change order", { description: error?.message ?? "Please try again." })
@@ -748,9 +752,9 @@ export function ChangeOrderDetailSheet({
             <div className="space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-foreground">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h4 className="text-sm font-semibold">Client requested changes</h4>
+                  <h4 className="text-sm font-semibold">{ownerTerm} requested changes</h4>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {[latestChangeRequest.name, latestChangeRequest.email].filter(Boolean).join(" · ") || "Client"}
+                    {[latestChangeRequest.name, latestChangeRequest.email].filter(Boolean).join(" · ") || ownerTerm}
                     {latestChangeRequest.requested_at ? ` · ${formatDateTime(latestChangeRequest.requested_at)}` : ""}
                   </p>
                 </div>
@@ -933,7 +937,7 @@ export function ChangeOrderDetailSheet({
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <h4 className="text-sm font-semibold">Sub cost</h4>
-                  <p className="text-xs text-muted-foreground">Create or review subcontract change orders tied to this client CO.</p>
+                  <p className="text-xs text-muted-foreground">Create or review subcontract change orders tied to this {ownerTermLower} CO.</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <Button type="button" size="sm" variant="outline" onClick={openCcoLinkPicker} disabled={subCostLoading}>
@@ -979,7 +983,7 @@ export function ChangeOrderDetailSheet({
                 </div>
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  No subcontract change orders are linked to this client change order yet.
+                  No subcontract change orders are linked to this {ownerTermLower} change order yet.
                 </p>
               )}
             </div>
@@ -1165,12 +1169,12 @@ export function ChangeOrderDetailSheet({
                           {sendingToClient
                             ? "Sending..."
                             : resolvedStatus === "requested_changes"
-                              ? "Resend to client portal"
-                              : "Send to client portal"}
+                              ? `Resend to ${ownerTermLower} portal`
+                              : `Send to ${ownerTermLower} portal`}
                         </Button>
                       ) : (
                         <Button type="button" disabled>
-                          Sent to client
+                          Sent to {ownerTermLower}
                         </Button>
                       )}
                     </>
@@ -1193,7 +1197,7 @@ export function ChangeOrderDetailSheet({
           <DialogHeader>
             <DialogTitle>Record offline approval</DialogTitle>
             <DialogDescription>
-              Use this when the client approved this change order outside Arc and you need to post its financial impact.
+              Use this when the {ownerTermLower} approved this change order outside Arc and you need to post its financial impact.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -1217,7 +1221,7 @@ export function ChangeOrderDetailSheet({
                   id="offline-signer-name"
                   value={offlineSignerName}
                   onChange={(event) => setOfflineSignerName(event.target.value)}
-                  placeholder="Client name"
+                  placeholder={`${ownerTerm} name`}
                 />
               </div>
             </div>
@@ -1352,7 +1356,7 @@ export function ChangeOrderDetailSheet({
           <DialogHeader>
             <DialogTitle>Create commitment change order</DialogTitle>
             <DialogDescription>
-              Select the subcontract or PO that should absorb this client change order.
+              Select the subcontract or PO that should absorb this {ownerTermLower} change order.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">

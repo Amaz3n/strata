@@ -59,12 +59,12 @@ export function DecisionRequestEmail({
 
   const summaryText =
     kind === "request"
-      ? "Your builder needs your decision to keep the project moving."
+      ? "Your project team needs your decision to keep the project moving."
       : kind === "reminder"
         ? "This decision is still waiting on you — the schedule may depend on it."
         : decidedApproved
           ? "The decision has been approved and recorded."
-          : "The decision was declined and sent back to your builder."
+          : "The decision was declined and sent back to your project team."
 
   return (
     <Html>

@@ -20,6 +20,7 @@ export const safetyIncidentInputSchema = z.object({
   involved_person_name: z.string().trim().max(200).optional().nullable(),
   witness_names: z.string().trim().max(1000).optional().nullable(),
   immediate_action: z.string().trim().max(4000).optional().nullable(),
+  photo_file_id: z.string().uuid().optional().nullable(),
   is_osha_recordable: z.boolean().default(false),
 })
 export type SafetyIncidentInput = z.infer<typeof safetyIncidentInputSchema>

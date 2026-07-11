@@ -122,6 +122,7 @@ function buildWorkspaceGroups(
   myWorkBadgeCount?: number,
   readyToBillBadgeCount?: number,
   canAccessPlatform?: boolean,
+  productTier: ProductTier = "residential",
 ): SidebarNavGroup[] {
   const workspaceItems: SidebarNavItem[] = [
     {
@@ -186,6 +187,16 @@ function buildWorkspaceGroups(
       requiredAny: ["directory.read", "directory.write"],
     },
   ]
+
+  if (productTier === "commercial") {
+    officeItems.push({
+      title: "Safety",
+      url: "/safety",
+      icon: ShieldCheck,
+      isActive: pathname.startsWith("/safety"),
+      requiredAny: ["safety.read"],
+    })
+  }
 
   const groups: SidebarNavGroup[] = [{ items: workspaceItems }, { label: "Office", items: officeItems }]
 
@@ -277,7 +288,7 @@ export function AppSidebar({
       )
     }
     return filterGroups(
-      buildWorkspaceGroups(pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform),
+      buildWorkspaceGroups(pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, productTier),
       permissionSet,
     )
   }, [isSettings, isProject, projectId, section, currentProject, pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, permissionSet, projectReviewBadgeCounts, productTier])
