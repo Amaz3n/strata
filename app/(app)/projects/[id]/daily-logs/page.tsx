@@ -15,6 +15,8 @@ import { ProjectDailyLogsClient } from "./project-daily-logs-client"
 import { Skeleton } from "@/components/ui/skeleton"
 
 import { unwrapAction } from "@/lib/action-result"
+import { listProjectLocations } from "@/lib/services/locations"
+import { hasPermission } from "@/lib/services/permissions"
 
 interface ProjectDailyLogsPageProps {
   params: Promise<{ id: string }>
@@ -52,7 +54,7 @@ async function ProjectDailyLogsData({ id }: { id: string }) {
     notFound()
   }
 
-  const [dailyLogs, dailyReports, files, scheduleItems, tasks, punchItems, projectTeam] = await Promise.all([
+  const [dailyLogs, dailyReports, files, scheduleItems, tasks, punchItems, projectTeam, locations, canManageLocations] = await Promise.all([
     getProjectDailyLogsAction(id),
     getProjectDailyReportsAction(id),
     getProjectFilesAction(id),
@@ -60,6 +62,8 @@ async function ProjectDailyLogsData({ id }: { id: string }) {
     getProjectTasksAction(id),
     listProjectPunchItemsAction(id),
     getProjectTeamAction(id),
+    listProjectLocations(id),
+    hasPermission("project.manage"),
   ])
 
   return (
@@ -74,6 +78,8 @@ async function ProjectDailyLogsData({ id }: { id: string }) {
         scheduleItems={scheduleItems}
         tasks={tasks}
         punchItems={punchItems}
+        locations={locations}
+        canManageLocations={canManageLocations}
         mentionableUsers={projectTeam.map((member) => ({
           id: member.user_id,
           name: member.full_name,

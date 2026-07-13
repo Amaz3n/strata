@@ -29,6 +29,9 @@ const PUBLIC_API_ROUTES = [
   "/api/mobile/",
   // Drawings pipeline kick — self-authenticates via CRON_SECRET.
   "/api/jobs/drawings-pipeline",
+  "/api/jobs/specs-pipeline",
+  "/api/jobs/meeting-transcription",
+  "/api/jobs/meeting-audio-cleanup",
   // Task self-reminder sweep — cron only, self-authenticates via CRON_SECRET.
   "/api/jobs/task-reminders",
   // Recurring invoice generator — cron only, self-authenticates via CRON_SECRET.

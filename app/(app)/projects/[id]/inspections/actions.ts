@@ -7,6 +7,7 @@ import {
   createInspection,
   createObservationFromInspectionItem,
   createPunchItemFromInspectionItem,
+  getInspectionForScheduleItem,
   updateInspection,
   updateInspectionItem,
 } from "@/lib/services/inspections"
@@ -49,8 +50,14 @@ export async function completeInspectionAction(projectId: string, inspectionId: 
   return run(async () => {
     const inspection = await completeInspection(inspectionId)
     revalidatePath(`/projects/${projectId}/inspections`)
+    // Completing a linked inspection checks off its scheduled slot.
+    if (inspection.schedule_item_id) revalidatePath(`/projects/${projectId}/schedule`)
     return inspection
   })
+}
+
+export async function getInspectionForScheduleItemAction(scheduleItemId: string) {
+  return run(() => getInspectionForScheduleItem(scheduleItemId))
 }
 
 export async function createPunchFromInspectionItemAction(projectId: string, itemId: string, input: unknown) {

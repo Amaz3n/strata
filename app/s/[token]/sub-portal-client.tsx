@@ -34,6 +34,7 @@ interface SubPortalClientProps {
   canSubmitDailyLogs?: boolean
   canDownloadFiles?: boolean
   canUploadComplianceDocs?: boolean
+  canUploadSubtierWaivers?: boolean
   canWorkPunchItems?: boolean
   pinRequired?: boolean
   complianceDocumentTypes?: ComplianceDocumentType[]
@@ -52,6 +53,7 @@ export function SubPortalClient({
   canSubmitDailyLogs = false,
   canDownloadFiles = true,
   canUploadComplianceDocs = true,
+  canUploadSubtierWaivers = true,
   canWorkPunchItems = false,
   pinRequired = false,
   complianceDocumentTypes = [],
@@ -144,6 +146,7 @@ export function SubPortalClient({
           canSubmitTime={canSubmitTime}
           canSubmitExpenses={canSubmitExpenses}
           complianceStatus={complianceStatus}
+          canUploadSubtierWaivers={canUploadSubtierWaivers}
         />
       )
     }

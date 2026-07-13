@@ -176,7 +176,7 @@ export async function listFileSourceContexts(
       entity_id: row.id,
       label: `Submittal #${row.submittal_number} · ${row.title}`,
       status: row.decision_status ?? row.status,
-      href: projectHref(row.project_id, "/submittals"),
+      href: projectHref(row.project_id, `/submittals?submittal=${row.id}`),
       role: "legacy_attachment",
       primary_action_label: "Open submittal",
     })
@@ -193,7 +193,15 @@ export async function listFileSourceContexts(
       type: config.type,
       entity_id: row.entity_id,
       label: config.label,
-      href: row.project_id ? `/projects/${row.project_id}/${row.entity_type.replaceAll("_", "-")}s` : null,
+      href: row.project_id
+        ? row.entity_type === "punch_item"
+          ? `/projects/${row.project_id}/punch?item=${row.entity_id}`
+          : row.entity_type === "rfi"
+            ? `/projects/${row.project_id}/rfis?rfi=${row.entity_id}`
+            : row.entity_type === "submittal"
+              ? `/projects/${row.project_id}/submittals?submittal=${row.entity_id}`
+              : `/projects/${row.project_id}/${row.entity_type.replaceAll("_", "-")}s`
+        : null,
       role: row.link_role,
       primary_action_label: config.action,
     })

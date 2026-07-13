@@ -142,6 +142,7 @@ export default async function SubPortalPage({ params }: SubPortalPageProps) {
       canSubmitDailyLogs={access.permissions.can_submit_daily_logs ?? false}
       canDownloadFiles={access.permissions.can_download_files}
       canUploadComplianceDocs={access.permissions.can_upload_compliance_docs ?? true}
+      canUploadSubtierWaivers={access.permissions.can_upload_subtier_waivers ?? true}
       canWorkPunchItems={access.permissions.can_view_punch_items ?? false}
       pinRequired={access.pin_required}
       complianceDocumentTypes={complianceDocumentTypes}

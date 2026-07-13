@@ -27,6 +27,7 @@ import {
 } from "../actions"
 
 import { unwrapAction } from "@/lib/action-result"
+import type { ProjectLocation } from "@/lib/services/locations"
 
 interface ProjectDailyLogsClientProps {
   projectId: string
@@ -38,6 +39,8 @@ interface ProjectDailyLogsClientProps {
   scheduleItems: ScheduleItem[]
   tasks: Task[]
   punchItems: ProjectPunchItem[]
+  locations: ProjectLocation[]
+  canManageLocations: boolean
   mentionableUsers: Array<{
     id: string
     name: string
@@ -57,6 +60,8 @@ export function ProjectDailyLogsClient({
   scheduleItems,
   tasks,
   punchItems,
+  locations,
+  canManageLocations,
   mentionableUsers,
 }: ProjectDailyLogsClientProps) {
   const { user } = useUser()
@@ -119,6 +124,8 @@ export function ProjectDailyLogsClient({
       scheduleItems={scheduleItems}
       tasks={tasks}
       punchItems={punchItems}
+      locations={locations}
+      canManageLocations={canManageLocations}
       mentionableUsers={mentionableUsers}
       onUpdateReport={async (date, values) => {
         const report = unwrapAction(await updateDailyReportAction(projectId, date, values))

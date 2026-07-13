@@ -21,6 +21,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Skeleton } from "@/components/ui/skeleton"
 import { Plus, MoreHorizontal, FileText, Building2, Calendar } from "@/components/icons"
 import { cn, parseLocalDate, formatLocalDate, isDateExpired } from "@/lib/utils"
+import type { SpecSectionOption } from "@/components/specs/types"
 
 type StatusKey =
   | "draft"
@@ -107,9 +108,11 @@ interface SubmittalsClientProps {
   submittals: Submittal[]
   projects: Project[]
   companies: Company[]
+  initialSubmittalId?: string
+  specSections?: SpecSectionOption[]
 }
 
-export function SubmittalsClient({ submittals, projects, companies }: SubmittalsClientProps) {
+export function SubmittalsClient({ submittals, projects, companies, initialSubmittalId, specSections = [] }: SubmittalsClientProps) {
   const isMobile = useIsMobile()
   const [items, setItems] = useState<Submittal[]>(submittals)
   const [search, setSearch] = useState("")
@@ -117,8 +120,9 @@ export function SubmittalsClient({ submittals, projects, companies }: Submittals
   const [statusFilter, setStatusFilter] = useState<"all" | StatusKey>("all")
   const [waitingOnUsOnly, setWaitingOnUsOnly] = useState(false)
   const [sheetOpen, setSheetOpen] = useState(false)
-  const [detailSheetOpen, setDetailSheetOpen] = useState(false)
-  const [selectedSubmittal, setSelectedSubmittal] = useState<Submittal | null>(null)
+  const initialSubmittal = initialSubmittalId ? submittals.find((submittal) => submittal.id === initialSubmittalId) ?? null : null
+  const [detailSheetOpen, setDetailSheetOpen] = useState(Boolean(initialSubmittal))
+  const [selectedSubmittal, setSelectedSubmittal] = useState<Submittal | null>(initialSubmittal)
   const [isPending, startTransition] = useTransition()
 
   const handleSubmittalClick = (submittal: Submittal) => {
@@ -234,6 +238,7 @@ export function SubmittalsClient({ submittals, projects, companies }: Submittals
         defaultProjectId={filterProjectId !== "all" ? filterProjectId : projects[0]?.id}
         onSubmit={handleCreate}
         isSubmitting={isPending}
+        specSections={specSections}
       />
 
       <SubmittalDetailSheet
@@ -243,6 +248,7 @@ export function SubmittalsClient({ submittals, projects, companies }: Submittals
         open={detailSheetOpen}
         onOpenChange={setDetailSheetOpen}
         onUpdate={handleUpdated}
+        specSections={specSections}
       />
 
       <div className="-mx-4 -mb-4 -mt-6 flex h-[calc(100svh-3.5rem)] min-h-0 flex-col overflow-hidden bg-background">
@@ -541,7 +547,5 @@ export function SubmittalsClient({ submittals, projects, companies }: Submittals
     </>
   )
 }
-
-
 
 

@@ -12,10 +12,11 @@ import { unwrapAction } from "@/lib/action-result"
 
 interface ProjectRfisPageProps {
   params: Promise<{ id: string }>
+  searchParams: Promise<{ rfi?: string }>
 }
 
-export default async function ProjectRfisPage({ params }: ProjectRfisPageProps) {
-  const { id } = await params
+export default async function ProjectRfisPage({ params, searchParams }: ProjectRfisPageProps) {
+  const [{ id }, query] = await Promise.all([params, searchParams])
 
   return (
     <>
@@ -27,7 +28,7 @@ export default async function ProjectRfisPage({ params }: ProjectRfisPageProps) 
         ]}
       />
       <Suspense fallback={<ProjectRfisFallback />}>
-        <ProjectRfisData id={id} />
+        <ProjectRfisData id={id} initialRfiId={query.rfi} />
       </Suspense>
     </>
   )
@@ -46,7 +47,7 @@ function ProjectRfisFallback() {
   )
 }
 
-async function ProjectRfisData({ id }: { id: string }) {
+async function ProjectRfisData({ id, initialRfiId }: { id: string; initialRfiId?: string }) {
   const project = await getProjectAction(id)
 
   if (!project) {
@@ -67,7 +68,7 @@ async function ProjectRfisData({ id }: { id: string }) {
         { label: "RFIs" },
       ]}
     >
-      <RfisClient rfis={rfis} projects={[project]} companies={companies} contacts={contacts} />
+      <RfisClient rfis={rfis} projects={[project]} companies={companies} contacts={contacts} initialRfiId={initialRfiId} />
     </PageLayout>
   )
 }

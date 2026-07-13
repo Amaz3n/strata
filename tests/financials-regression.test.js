@@ -510,3 +510,29 @@ test("Autopilot treats completed linked milestones as billing evidence", () => {
   assert.match(source, /Number\(milestone\.progress \?\? 0\) >= 100/)
   assert.match(source, /Review the draw before preparing its invoice/)
 })
+
+test("fixed-price pay-app packages carry GC compliance and required full-tier waivers", () => {
+  const packageService = fs.readFileSync(
+    path.join(__dirname, "../lib/services/owner-billing-packages.ts"),
+    "utf8",
+  )
+  const actions = fs.readFileSync(
+    path.join(__dirname, "../app/(app)/projects/[id]/financials/actions.ts"),
+    "utf8",
+  )
+  const payAppUi = fs.readFileSync(
+    path.join(__dirname, "../components/financials/pay-applications-tab.tsx"),
+    "utf8",
+  )
+
+  assert.match(packageService, /source_pay_application_id/)
+  assert.match(packageService, /sourcePayApplication\?\.period_end/)
+  assert.match(packageService, /eq\("subject", "org"\)/)
+  assert.match(packageService, /require_subtier_waivers/)
+  assert.match(packageService, /role:.*"gc_compliance".*"lien_waiver"/)
+  assert.match(actions, /generatePayApplicationPackageAction/)
+  assert.match(actions, /generateSovPayApplicationPdf/)
+  assert.match(actions, /generateInvoiceBackupPackage/)
+  assert.match(payAppUi, /Attach our bonds, insurance, and licenses/)
+  assert.match(payAppUi, /Full-tier lien waivers are included automatically/)
+})

@@ -20,6 +20,7 @@ const dailyLogEntrySchema = z.object({
   punch_item_id: z.string().uuid().optional(),
   cost_code_id: z.string().uuid().optional(),
   location: z.string().optional(),
+  location_id: z.string().uuid().optional().nullable(),
   trade: z.string().optional(),
   labor_type: z.string().optional(),
   inspection_result: z.enum(["pass", "fail", "partial", "n_a"]).optional(),

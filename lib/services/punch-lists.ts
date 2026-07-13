@@ -11,7 +11,7 @@ import type { PunchItem } from "@/lib/types"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 const PORTAL_PUNCH_SELECT =
-  "id, org_id, project_id, title, description, status, due_date, severity, location, resolved_at, assigned_company_id, dispatched_at, sub_completed_at, verification_notes, created_at"
+  "id, org_id, project_id, title, description, status, due_date, severity, location, location_id, resolved_at, assigned_company_id, dispatched_at, sub_completed_at, verification_notes, created_at"
 
 export async function createPunchItemFromPortal({
   orgId,
@@ -44,7 +44,7 @@ export async function createPunchItemFromPortal({
       created_via_portal: true,
       portal_token_id: portalTokenId,
     })
-    .select("id, org_id, project_id, title, description, status, due_date, severity, location, resolved_at")
+    .select("id, org_id, project_id, title, description, status, due_date, severity, location, location_id, resolved_at")
     .single()
 
   if (error || !data) throw new Error(`Failed to create punch item: ${error?.message}`)
@@ -55,7 +55,7 @@ export async function listPunchItems(orgId: string, projectId: string): Promise<
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("punch_items")
-    .select("id, org_id, project_id, title, description, status, due_date, severity, location, resolved_at, assigned_company_id, dispatched_at, sub_completed_at, assigned_company:companies(name)")
+    .select("id, org_id, project_id, title, description, status, due_date, severity, location, location_id, resolved_at, assigned_company_id, dispatched_at, sub_completed_at, assigned_company:companies(name)")
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .order("created_at", { ascending: false })

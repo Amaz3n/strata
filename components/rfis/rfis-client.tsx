@@ -73,16 +73,18 @@ interface RfisClientProps {
   projects: Project[]
   companies: Company[]
   contacts: Contact[]
+  initialRfiId?: string
 }
 
-export function RfisClient({ rfis, projects, companies, contacts }: RfisClientProps) {
+export function RfisClient({ rfis, projects, companies, contacts, initialRfiId }: RfisClientProps) {
   const isMobile = useIsMobile()
   const [items, setItems] = useState<Rfi[]>(rfis)
   const [search, setSearch] = useState("")
   const [statusFilter, setStatusFilter] = useState<"all" | StatusKey>("all")
   const [sheetOpen, setSheetOpen] = useState(false)
-  const [detailSheetOpen, setDetailSheetOpen] = useState(false)
-  const [selectedRfi, setSelectedRfi] = useState<Rfi | null>(null)
+  const initialRfi = initialRfiId ? rfis.find((rfi) => rfi.id === initialRfiId) ?? null : null
+  const [detailSheetOpen, setDetailSheetOpen] = useState(Boolean(initialRfi))
+  const [selectedRfi, setSelectedRfi] = useState<Rfi | null>(initialRfi)
   const [isPending, startTransition] = useTransition()
 
   const handleRfiClick = (rfi: Rfi) => {

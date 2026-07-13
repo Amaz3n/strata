@@ -19,7 +19,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { unwrapAction } from "@/lib/action-result"
 
 export type AiProvider = "openai" | "anthropic" | "google"
-export type AiFeature = "search" | "document_extraction" | "drawings_vision"
+export type AiFeature = "search" | "document_extraction" | "drawings_vision" | "spec_classification" | "transcription" | "meeting_minutes"
 export type AiSource = "platform" | "env" | "default"
 
 export interface AiFeatureConfig {
@@ -57,12 +57,30 @@ const FEATURE_META: Record<AiFeature, { title: string; description: string; prov
     description: "OCR fallback for sheet number, title, and discipline.",
     providers: ["openai", "google"],
   },
+  spec_classification: {
+    title: "Specification Classification",
+    description: "CSI heading classification for ambiguous project-manual pages.",
+    providers: ["openai", "anthropic", "google"],
+  },
+  transcription: {
+    title: "Meeting Transcription",
+    description: "Audio-to-text processing for recorded and uploaded meeting audio.",
+    providers: ["openai", "google"],
+  },
+  meeting_minutes: {
+    title: "Meeting Minutes Drafting",
+    description: "Constrained proposal extraction from transcripts and the current item register.",
+    providers: ["openai", "anthropic", "google"],
+  },
 }
 
 const DEFAULT_MODELS: Record<AiFeature, Record<AiProvider, string>> = {
   search: { openai: "gpt-4.1-mini", anthropic: "claude-3-5-sonnet-latest", google: "gemini-2.0-flash" },
   document_extraction: { openai: "gpt-4.1-mini", anthropic: "claude-3-5-sonnet-latest", google: "gemini-2.5-flash-lite" },
   drawings_vision: { openai: "gpt-4.1-mini", anthropic: "claude-3-5-sonnet-latest", google: "gemini-2.5-flash-lite" },
+  spec_classification: { openai: "gpt-4.1-mini", anthropic: "claude-3-5-haiku-latest", google: "gemini-2.5-flash-lite" },
+  transcription: { openai: "whisper-1", anthropic: "claude-3-5-haiku-latest", google: "gemini-2.5-flash" },
+  meeting_minutes: { openai: "gpt-4.1-mini", anthropic: "claude-3-5-haiku-latest", google: "gemini-2.5-flash-lite" },
 }
 
 const PRESET_MODELS: Record<AiFeature, Partial<Record<AiProvider, string[]>>> = {
@@ -77,6 +95,20 @@ const PRESET_MODELS: Record<AiFeature, Partial<Record<AiProvider, string[]>>> = 
   drawings_vision: {
     openai: ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"],
     google: ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"],
+  },
+  spec_classification: {
+    openai: ["gpt-4.1-mini", "gpt-4o-mini"],
+    anthropic: ["claude-3-5-haiku-latest", "claude-3-5-sonnet-latest"],
+    google: ["gemini-2.5-flash-lite", "gemini-2.5-flash"],
+  },
+  transcription: {
+    openai: ["whisper-1", "gpt-4o-mini-transcribe"],
+    google: ["gemini-2.5-flash", "gemini-2.0-flash"],
+  },
+  meeting_minutes: {
+    openai: ["gpt-4.1-mini", "gpt-4o-mini"],
+    anthropic: ["claude-3-5-haiku-latest", "claude-3-5-sonnet-latest"],
+    google: ["gemini-2.5-flash-lite", "gemini-2.5-flash"],
   },
 }
 

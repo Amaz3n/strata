@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { unwrapAction } from "@/lib/action-result"
@@ -26,6 +26,8 @@ import {
   updateObservationAction,
   updateSafetyIncidentAction,
 } from "./actions"
+import { LocationPicker } from "@/components/locations/location-picker"
+import type { ProjectLocation } from "@/lib/services/locations"
 
 const SEVERITY_LABELS: Record<string, string> = {
   near_miss: "Near miss",
@@ -52,6 +54,10 @@ export function SafetyClient({
   observations,
   companies,
   initialTab,
+  initialIncidentId,
+  initialObservationId,
+  locations,
+  canManageLocations,
 }: {
   projectId: string
   incidents: SafetyIncident[]
@@ -59,6 +65,10 @@ export function SafetyClient({
   observations: Observation[]
   companies: CompanyOption[]
   initialTab?: string
+  initialIncidentId?: string
+  initialObservationId?: string
+  locations: ProjectLocation[]
+  canManageLocations: boolean
 }) {
   const defaultTab = initialTab === "talks" || initialTab === "observations" ? initialTab : "incidents"
   const offline = useOfflineSafetyDrafts(projectId)
@@ -72,13 +82,13 @@ export function SafetyClient({
         <TabsTrigger value="observations">Observations ({observations.filter((o) => o.status === "open").length} open)</TabsTrigger>
       </TabsList>
       <TabsContent value="incidents" className="m-0">
-        <IncidentsTab projectId={projectId} incidents={incidents} companies={companies} saveOfflineDraft={offline.saveDraft} />
+        <IncidentsTab projectId={projectId} incidents={incidents} initialIncidentId={initialIncidentId} companies={companies} locations={locations} canManageLocations={canManageLocations} saveOfflineDraft={offline.saveDraft} />
       </TabsContent>
       <TabsContent value="talks" className="m-0">
         <TalksTab projectId={projectId} talks={talks} saveOfflineDraft={offline.saveDraft} />
       </TabsContent>
       <TabsContent value="observations" className="m-0">
-        <ObservationsTab projectId={projectId} observations={observations} companies={companies} saveOfflineDraft={offline.saveDraft} />
+        <ObservationsTab projectId={projectId} observations={observations} initialObservationId={initialObservationId} companies={companies} locations={locations} canManageLocations={canManageLocations} saveOfflineDraft={offline.saveDraft} />
       </TabsContent>
     </Tabs>
   )
@@ -113,16 +123,19 @@ function useSubmit() {
   return { pending, submit }
 }
 
-function IncidentsTab({ projectId, incidents, companies, saveOfflineDraft }: { projectId: string; incidents: SafetyIncident[]; companies: CompanyOption[]; saveOfflineDraft: ReturnType<typeof useOfflineSafetyDrafts>["saveDraft"] }) {
+function IncidentsTab({ projectId, incidents, initialIncidentId, companies, locations, canManageLocations, saveOfflineDraft }: { projectId: string; incidents: SafetyIncident[]; initialIncidentId?: string; companies: CompanyOption[]; locations: ProjectLocation[]; canManageLocations: boolean; saveOfflineDraft: ReturnType<typeof useOfflineSafetyDrafts>["saveDraft"] }) {
   const router = useRouter()
   const { pending, submit } = useSubmit()
-  const [sheetOpen, setSheetOpen] = useState(false)
-  const [selected, setSelected] = useState<SafetyIncident | null>(null)
+  const initialIncident = initialIncidentId ? incidents.find((incident) => incident.id === initialIncidentId) ?? null : null
+  const [sheetOpen, setSheetOpen] = useState(Boolean(initialIncident))
+  const [selected, setSelected] = useState<SafetyIncident | null>(initialIncident)
+  const [locationId, setLocationId] = useState<string | null>(initialIncident?.location_id ?? null)
+  const [locationPath, setLocationPath] = useState<string | null>(initialIncident?.location ?? null)
 
   return (
     <div className="space-y-4">
       <div className="flex justify-end">
-        <Button onClick={() => { setSelected(null); setSheetOpen(true) }}>Report incident</Button>
+        <Button onClick={() => { setSelected(null); setLocationId(null); setLocationPath(null); setSheetOpen(true) }}>Report incident</Button>
       </div>
       <div className="border">
         <Table>
@@ -140,7 +153,7 @@ function IncidentsTab({ projectId, incidents, companies, saveOfflineDraft }: { p
           <TableBody>
             {incidents.length ? (
               incidents.map((incident) => (
-                <TableRow key={incident.id} className="cursor-pointer" onClick={() => { setSelected(incident); setSheetOpen(true) }}>
+                <TableRow key={incident.id} className="cursor-pointer" onClick={() => { setSelected(incident); setLocationId(incident.location_id); setLocationPath(incident.location); setSheetOpen(true) }}>
                   <TableCell className="font-mono text-xs">{incident.incident_number}</TableCell>
                   <TableCell className="text-muted-foreground">{new Date(incident.occurred_at).toLocaleDateString()}</TableCell>
                   <TableCell>
@@ -184,7 +197,8 @@ function IncidentsTab({ projectId, incidents, companies, saveOfflineDraft }: { p
                 occurred_at: form.get("occurred_at") ? new Date(String(form.get("occurred_at"))).toISOString() : undefined,
                 severity: form.get("severity"),
                 classification: form.get("classification") || null,
-                location: form.get("location") || null,
+                location_id: locationId === selected?.location_id ? undefined : locationId,
+                location: locationPath,
                 description: form.get("description"),
                 involved_company_id: form.get("involved_company_id") && form.get("involved_company_id") !== "__none__" ? form.get("involved_company_id") : null,
                 involved_person_name: form.get("involved_person_name") || null,
@@ -265,7 +279,7 @@ function IncidentsTab({ projectId, incidents, companies, saveOfflineDraft }: { p
                 </div>
                 <div className="space-y-2">
                   <Label>Location</Label>
-                  <Input name="location" defaultValue={selected?.location ?? ""} placeholder="Level 2, grid B-4" />
+                  <LocationPicker projectId={projectId} locations={locations} value={locationId} canCreate={canManageLocations} disabled={pending} placeholder={selected?.location ?? "Select location"} onValueChange={(id, path) => { setLocationId(id); setLocationPath(path) }} />
                 </div>
               </div>
               <div className="space-y-2">
@@ -460,9 +474,18 @@ function TalksTab({ projectId, talks, saveOfflineDraft }: { projectId: string; t
   )
 }
 
-function ObservationsTab({ projectId, observations, companies, saveOfflineDraft }: { projectId: string; observations: Observation[]; companies: CompanyOption[]; saveOfflineDraft: ReturnType<typeof useOfflineSafetyDrafts>["saveDraft"] }) {
+function ObservationsTab({ projectId, observations, initialObservationId, companies, locations, canManageLocations, saveOfflineDraft }: { projectId: string; observations: Observation[]; initialObservationId?: string; companies: CompanyOption[]; locations: ProjectLocation[]; canManageLocations: boolean; saveOfflineDraft: ReturnType<typeof useOfflineSafetyDrafts>["saveDraft"] }) {
   const router = useRouter()
   const { pending, submit } = useSubmit()
+  const [locationId, setLocationId] = useState<string | null>(null)
+  const [locationPath, setLocationPath] = useState<string | null>(null)
+  const [locationFilter, setLocationFilter] = useState("all")
+  const filteredObservations = observations.filter((observation) => locationFilter === "all" || observation.location_id === locationFilter)
+
+  useEffect(() => {
+    if (!initialObservationId) return
+    document.getElementById(`observation-${initialObservationId}`)?.scrollIntoView({ behavior: "smooth", block: "center" })
+  }, [initialObservationId])
 
   return (
     <div className="space-y-4">
@@ -480,6 +503,8 @@ function ObservationsTab({ projectId, observations, companies, saveOfflineDraft 
               kind: form.get("kind"),
               category: form.get("category") || null,
               description: form.get("description"),
+              location_id: locationId,
+              location: locationPath,
               company_id: companyValue === "__none__" ? null : companyValue,
             }
             if (!navigator.onLine) {
@@ -501,6 +526,8 @@ function ObservationsTab({ projectId, observations, companies, saveOfflineDraft 
             unwrapAction(await createObservationAction({ ...payload, photo_file_id: photoFileId }))
             toast.success("Observation recorded")
             target.reset()
+            setLocationId(null)
+            setLocationPath(null)
             router.refresh()
           })
         }}
@@ -530,9 +557,16 @@ function ObservationsTab({ projectId, observations, companies, saveOfflineDraft 
             ))}
           </SelectContent>
         </Select>
+        <LocationPicker projectId={projectId} locations={locations} value={locationId} canCreate={canManageLocations} disabled={pending} onValueChange={(id, path) => { setLocationId(id); setLocationPath(path) }} />
         <Input className="md:col-span-4" name="photo" type="file" accept="image/*" capture="environment" disabled={pending} />
         <Button type="submit" disabled={pending}>Record</Button>
       </form>
+      <div className="flex justify-end">
+        <Select value={locationFilter} onValueChange={setLocationFilter}>
+          <SelectTrigger className="w-56"><SelectValue placeholder="Location" /></SelectTrigger>
+          <SelectContent><SelectItem value="all">All locations</SelectItem>{locations.map((location) => <SelectItem key={location.id} value={location.id}>{location.full_path}</SelectItem>)}</SelectContent>
+        </Select>
+      </div>
       <div className="border">
         <Table>
           <TableHeader>
@@ -541,6 +575,7 @@ function ObservationsTab({ projectId, observations, companies, saveOfflineDraft 
               <TableHead className="w-24">Type</TableHead>
               <TableHead className="w-28">Category</TableHead>
               <TableHead>Description</TableHead>
+              <TableHead className="w-48">Location</TableHead>
               <TableHead className="w-36">Company</TableHead>
               <TableHead className="w-28">Date</TableHead>
               <TableHead className="w-28">Status</TableHead>
@@ -548,9 +583,16 @@ function ObservationsTab({ projectId, observations, companies, saveOfflineDraft 
             </TableRow>
           </TableHeader>
           <TableBody>
-            {observations.length ? (
-              observations.map((observation) => (
-                <TableRow key={observation.id}>
+            {filteredObservations.length ? (
+              filteredObservations.map((observation) => (
+                <TableRow
+                  key={observation.id}
+                  id={`observation-${observation.id}`}
+                  className={cn(
+                    "scroll-mt-24 transition-colors",
+                    observation.id === initialObservationId && "bg-primary/10 ring-2 ring-inset ring-primary/50",
+                  )}
+                >
                   <TableCell className="font-mono text-xs">{observation.observation_number}</TableCell>
                   <TableCell className="capitalize text-muted-foreground">{observation.kind}</TableCell>
                   <TableCell>
@@ -574,6 +616,7 @@ function ObservationsTab({ projectId, observations, companies, saveOfflineDraft 
                     <span className="block truncate text-sm">{observation.description}</span>
                     {observation.photo_file_id ? <a className="text-xs text-primary underline" href={`/api/files/${observation.photo_file_id}/raw`} target="_blank" rel="noreferrer">View photo</a> : null}
                   </TableCell>
+                  <TableCell className="text-muted-foreground">{observation.location ?? "—"}</TableCell>
                   <TableCell className="text-muted-foreground">{observation.company_name ?? "—"}</TableCell>
                   <TableCell className="text-muted-foreground">{new Date(observation.created_at).toLocaleDateString()}</TableCell>
                   <TableCell>
@@ -600,7 +643,7 @@ function ObservationsTab({ projectId, observations, companies, saveOfflineDraft 
               ))
             ) : (
               <TableRow>
-                <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">No observations recorded.</TableCell>
+                <TableCell colSpan={9} className="h-24 text-center text-muted-foreground">{observations.length ? "No observations match this location." : "No observations recorded."}</TableCell>
               </TableRow>
             )}
           </TableBody>

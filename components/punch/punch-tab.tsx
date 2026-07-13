@@ -26,6 +26,8 @@ import { Textarea } from "@/components/ui/textarea"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Plus, CheckSquare, CalendarDays, MoreHorizontal } from "@/components/icons"
 import { cn } from "@/lib/utils"
+import { LocationPicker } from "@/components/locations/location-picker"
+import type { ProjectLocation } from "@/lib/services/locations"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -71,22 +73,30 @@ const shortStatusLabel: Record<string, string> = {
 export function PunchTab({
   projectId,
   initialItems,
+  initialItemId,
   team,
   companies,
+  locations,
+  canManageLocations,
 }: {
   projectId: string
   initialItems: ProjectPunchItem[]
+  initialItemId?: string
   team: ProjectTeamMember[]
   companies: Array<{ id: string; name: string }>
+  locations: ProjectLocation[]
+  canManageLocations: boolean
 }) {
   const isMobile = useIsMobile()
   const [items, setItems] = useState<ProjectPunchItem[]>(initialItems)
   const [search, setSearch] = useState("")
   const [statusFilter, setStatusFilter] = useState<"all" | PunchStatus>("all")
+  const [locationFilter, setLocationFilter] = useState("all")
   const [groupByCompany, setGroupByCompany] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [sheetOpen, setSheetOpen] = useState(false)
-  const [selected, setSelected] = useState<ProjectPunchItem | null>(null)
+  const initialItem = initialItemId ? initialItems.find((item) => item.id === initialItemId) ?? null : null
+  const [sheetOpen, setSheetOpen] = useState(Boolean(initialItem))
+  const [selected, setSelected] = useState<ProjectPunchItem | null>(initialItem)
   const [isPending, startTransition] = useTransition()
 
   useEffect(() => setItems(initialItems), [initialItems])
@@ -97,11 +107,12 @@ export function PunchTab({
     return safeItems.filter((item) => {
       const status = (item.status as PunchStatus) || "open"
       const matchesStatus = statusFilter === "all" || status === statusFilter
+      const matchesLocation = locationFilter === "all" || item.location_id === locationFilter
       const haystack = [item.title, item.description ?? "", item.location ?? "", item.severity ?? ""].join(" ").toLowerCase()
       const matchesSearch = !term || haystack.includes(term)
-      return matchesStatus && matchesSearch
+      return matchesStatus && matchesLocation && matchesSearch
     })
-  }, [items, search, statusFilter])
+  }, [items, search, statusFilter, locationFilter])
 
   const openNew = () => {
     setSelected(null)
@@ -228,6 +239,10 @@ export function PunchTab({
                     </SelectItem>
                   ))}
                 </SelectContent>
+              </Select>
+              <Select value={locationFilter} onValueChange={setLocationFilter}>
+                <SelectTrigger className="w-full sm:w-52"><SelectValue placeholder="Location" /></SelectTrigger>
+                <SelectContent><SelectItem value="all">All locations</SelectItem>{locations.map((location) => <SelectItem key={location.id} value={location.id}>{location.full_path}</SelectItem>)}</SelectContent>
               </Select>
               <Button
                 variant={groupByCompany ? "secondary" : "outline"}
@@ -539,6 +554,8 @@ export function PunchTab({
         projectId={projectId}
         team={team}
         companies={companies}
+        locations={locations}
+        canManageLocations={canManageLocations}
         item={selected}
         onCreated={(created) => setItems((prev) => [created, ...prev])}
         onUpdated={(updated) => setItems((prev) => prev.map((p) => (p.id === updated.id ? updated : p)))}
@@ -553,6 +570,8 @@ function PunchItemSheet({
   projectId,
   team,
   companies,
+  locations,
+  canManageLocations,
   item,
   onCreated,
   onUpdated,
@@ -562,6 +581,8 @@ function PunchItemSheet({
   projectId: string
   team: ProjectTeamMember[]
   companies: Array<{ id: string; name: string }>
+  locations: ProjectLocation[]
+  canManageLocations: boolean
   item: ProjectPunchItem | null
   onCreated: (item: ProjectPunchItem) => void
   onUpdated: (item: ProjectPunchItem) => void
@@ -570,6 +591,7 @@ function PunchItemSheet({
   const [title, setTitle] = useState("")
   const [description, setDescription] = useState("")
   const [location, setLocation] = useState("")
+  const [locationId, setLocationId] = useState<string | null>(null)
   const [severity, setSeverity] = useState("")
   const [dueDate, setDueDate] = useState<Date | undefined>(undefined)
   const [assignedTo, setAssignedTo] = useState<string>("__none__")
@@ -589,6 +611,7 @@ function PunchItemSheet({
     setTitle(item?.title ?? "")
     setDescription(item?.description ?? "")
     setLocation(item?.location ?? "")
+    setLocationId(item?.location_id ?? null)
     setSeverity(item?.severity ?? "")
     setDueDate(item?.due_date ? new Date(item.due_date) : undefined)
     setAssignedTo(item?.assigned_to ?? "__none__")
@@ -689,6 +712,7 @@ function PunchItemSheet({
             title: title.trim(),
             description: description.trim() || null,
             location: location.trim() || null,
+            location_id: locationId,
             severity: severity.trim() || null,
             due_date: dueDate ? format(dueDate, "yyyy-MM-dd") : null,
             assigned_to: assignedTo === "__none__" ? null : assignedTo,
@@ -708,6 +732,7 @@ function PunchItemSheet({
           title: title.trim(),
           description: description.trim() || null,
           location: location.trim() || null,
+          location_id: locationId,
           severity: severity.trim() || null,
           due_date: dueDate ? format(dueDate, "yyyy-MM-dd") : null,
           assigned_to: assignedTo === "__none__" ? null : assignedTo,
@@ -767,7 +792,7 @@ function PunchItemSheet({
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label>Location</Label>
-                  <Input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Kitchen" />
+                  <LocationPicker projectId={projectId} locations={locations} value={locationId} canCreate={canManageLocations} onValueChange={(id, path) => { setLocationId(id); setLocation(path ?? "") }} />
                 </div>
                 <div className="space-y-2">
                   <Label>Priority</Label>

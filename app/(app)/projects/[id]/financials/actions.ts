@@ -12,6 +12,7 @@ import { listVendorBillsForProject } from "@/lib/services/vendor-bills"
 import { getProjectBuyoutStatus } from "@/lib/services/bids"
 import { getComplianceRules } from "@/lib/services/compliance"
 import { getCompaniesComplianceStatus } from "@/lib/services/compliance-documents"
+import { upsertProjectOwnComplianceDocument } from "@/lib/services/project-own-compliance"
 import {
   createManualBillableAdjustment,
   generateInvoiceFromCosts,
@@ -200,14 +201,13 @@ async function buildBudgetBucketCompanies(commitments: Awaited<ReturnType<typeof
  */
 export async function fetchReceivablesTabDataAction(projectId: string) {
       const setupStatus = await getProjectFinancialSetupStatusForProject(projectId).catch(() => null)
-      const isFixedPrice = setupStatus?.billingModel === "fixed_price"
       const isFixedFee = setupStatus?.billingModel === "cost_plus_fixed_fee"
       const [invoicesResult, contactsResult, costCodesResult, ownerPackagesResult, feeSummaryResult, arSummaryResult] = await Promise.allSettled([
         // First page only; the invoices tab lazy-loads the rest via "Load more".
         listInvoices({ projectId, limit: 100 }),
         listContacts(),
         listCostCodes(),
-        isFixedPrice ? Promise.resolve([]) : listProjectOwnerBillingPackageSummaries(projectId),
+        listProjectOwnerBillingPackageSummaries(projectId),
         isFixedFee ? getProjectFeeBillingSummary(projectId) : Promise.resolve(null),
         // Whole-book aging so the AR strip stays correct beyond the first invoice page.
         getProjectInvoiceArSummary({ projectId }),
@@ -224,7 +224,7 @@ export async function fetchReceivablesTabDataAction(projectId: string) {
           resultError("Invoices", invoicesResult),
           resultError("Contacts", contactsResult),
           resultError("Cost codes", costCodesResult),
-          isFixedPrice ? null : resultError("Owner billing packages", ownerPackagesResult),
+          resultError("Owner billing packages", ownerPackagesResult),
           isFixedFee ? resultError("Fee billing", feeSummaryResult) : null,
         ].filter(Boolean) as string[],
       }
@@ -398,7 +398,7 @@ export async function closeProjectBillingPeriodAction(input: CloseBillingPeriodI
   })
 }
 
-export async function generateOwnerBillingPackageAction(input: { projectId: string; invoiceId: string }) {
+export async function generateOwnerBillingPackageAction(input: { projectId: string; invoiceId: string; includeGcCompliance?: boolean }) {
   return run(async () => {
       const pkg = await generateInvoiceBackupPackage(input)
       revalidatePath(`/projects/${input.projectId}`)
@@ -406,6 +406,23 @@ export async function generateOwnerBillingPackageAction(input: { projectId: stri
       revalidatePath(`/projects/${input.projectId}/financials/review`)
       revalidatePath(`/projects/${input.projectId}/financials/receivables`)
       return summarizeOwnerBillingPackage(pkg)
+  })
+}
+
+export async function saveProjectOwnComplianceAction(input: {
+  projectId: string
+  documentTypeId: string
+  fileId: string
+  effectiveDate?: string | null
+  expiryDate?: string | null
+  policyNumber?: string | null
+  carrierName?: string | null
+  coverageAmountCents?: number | null
+}) {
+  return run(async () => {
+    const document = await upsertProjectOwnComplianceDocument(input)
+    revalidatePath(`/projects/${input.projectId}/financials/receivables`)
+    return document
   })
 }
 
@@ -533,6 +550,33 @@ export async function generatePayApplicationPdfAction(projectId: string, payAppl
       const { fileName, pdf } = await generateSovPayApplicationPdf({ projectId, payApplicationId })
       revalidatePath(`/projects/${projectId}/financials/receivables`)
       return { fileName, pdfBase64: pdf.toString("base64") }
+  })
+}
+
+export async function generatePayApplicationPackageAction(
+  projectId: string,
+  payApplicationId: string,
+  input: { includeGcCompliance?: boolean },
+) {
+  return run(async () => {
+      const detail = await getPayApplication(payApplicationId)
+      if (!detail.application.invoice_id) {
+        throw new Error("Submit the pay application before generating its package")
+      }
+
+      const { fileName, pdf } = await generateSovPayApplicationPdf({ projectId, payApplicationId })
+      const pkg = await generateInvoiceBackupPackage({
+        projectId,
+        invoiceId: detail.application.invoice_id,
+        includeGcCompliance: input.includeGcCompliance ?? false,
+      })
+      revalidatePath(`/projects/${projectId}/financials`)
+      revalidatePath(`/projects/${projectId}/financials/receivables`)
+      return {
+        fileName,
+        pdfBase64: pdf.toString("base64"),
+        package: summarizeOwnerBillingPackage(pkg),
+      }
   })
 }
 

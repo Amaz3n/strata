@@ -5,6 +5,7 @@ import { requirePermission } from "@/lib/services/permissions"
 import { insertWithProjectNumberRetry } from "@/lib/services/project-sequence"
 import { sendPunchDispatchEmail } from "@/lib/services/punch-lists"
 import { createObservation } from "@/lib/services/safety"
+import { resolveProjectLocation } from "@/lib/services/locations"
 import {
   checklistTemplateInputSchema,
   createInspectionSchema,
@@ -53,8 +54,10 @@ export type Inspection = {
   inspector_user_id: string | null
   inspector_name: string | null
   location: string | null
+  location_id: string | null
   company_id: string | null
   company_name?: string | null
+  schedule_item_id: string | null
   notes: string | null
   deficient_count?: number
   created_at: string
@@ -81,7 +84,7 @@ export type InspectionDetail = Inspection & { items: InspectionItem[] }
 const TEMPLATE_SELECT = "id, org_id, name, kind, trade, description, is_active, created_at, checklist_template_items(count)"
 const TEMPLATE_ITEM_SELECT = "id, template_id, section, prompt, response_type, sort_order"
 const INSPECTION_SELECT =
-  "id, org_id, project_id, inspection_number, template_id, kind, title, status, result, inspected_at, inspector_user_id, inspector_name, location, company_id, notes, created_at, updated_at, company:companies(name)"
+  "id, org_id, project_id, inspection_number, template_id, kind, title, status, result, inspected_at, inspector_user_id, inspector_name, location, location_id, company_id, schedule_item_id, notes, created_at, updated_at, company:companies(name)"
 const ITEM_SELECT =
   "id, inspection_id, section, prompt, response_type, response, is_deficient, note, photo_file_id, punch_item_id, observation_id, sort_order"
 
@@ -416,10 +419,37 @@ export async function getInspection(inspectionId: string, orgId?: string): Promi
   return { ...mapInspection(inspection), items: (items ?? []) as InspectionItem[] }
 }
 
+/** The inspection linked to a scheduled Gantt slot, if one has been started. */
+export async function getInspectionForScheduleItem(scheduleItemId: string, orgId?: string): Promise<Inspection | null> {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { data, error } = await supabase
+    .from("inspections")
+    .select(INSPECTION_SELECT)
+    .eq("org_id", resolvedOrgId)
+    .eq("schedule_item_id", scheduleItemId)
+    .order("inspection_number", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) throw new Error(`Failed to load linked inspection: ${error.message}`)
+  return data ? mapInspection(data) : null
+}
+
 export async function createInspection(input: CreateInspectionInput, orgId?: string): Promise<InspectionDetail> {
   const parsed = createInspectionSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("inspection.write", { supabase, orgId: resolvedOrgId, userId })
+  const location = await resolveProjectLocation(parsed.project_id, parsed.location_id, resolvedOrgId)
+
+  if (parsed.schedule_item_id) {
+    const { data: scheduleItem } = await supabase
+      .from("schedule_items")
+      .select("id")
+      .eq("org_id", resolvedOrgId)
+      .eq("project_id", parsed.project_id)
+      .eq("id", parsed.schedule_item_id)
+      .maybeSingle()
+    if (!scheduleItem) throw new Error("Scheduled item not found for this project")
+  }
 
   let templateItems: ChecklistTemplateItem[] = []
   if (parsed.template_id) {
@@ -443,8 +473,10 @@ export async function createInspection(input: CreateInspectionInput, orgId?: str
       kind: parsed.kind,
       title: parsed.title,
       status: "in_progress",
-      location: parsed.location ?? null,
+      location_id: location?.id ?? null,
+      location: location?.full_path ?? parsed.location ?? null,
       company_id: parsed.company_id ?? null,
+      schedule_item_id: parsed.schedule_item_id ?? null,
       inspector_user_id: userId,
       inspector_name: userRow?.full_name ?? null,
       inspected_at: new Date().toISOString(),
@@ -478,7 +510,13 @@ export async function updateInspection(inspectionId: string, input: UpdateInspec
 
   const updateData: Record<string, unknown> = {}
   if (parsed.title !== undefined) updateData.title = parsed.title
-  if (parsed.location !== undefined) updateData.location = parsed.location
+  if (parsed.location_id !== undefined) {
+    const { data: existing } = await supabase.from("inspections").select("project_id").eq("org_id", resolvedOrgId).eq("id", inspectionId).maybeSingle()
+    if (!existing) throw new Error("Inspection not found")
+    const location = await resolveProjectLocation(existing.project_id, parsed.location_id, resolvedOrgId)
+    updateData.location_id = location?.id ?? null
+    updateData.location = location?.full_path ?? null
+  } else if (parsed.location !== undefined) updateData.location = parsed.location
   if (parsed.company_id !== undefined) updateData.company_id = parsed.company_id
   if (parsed.inspector_name !== undefined) updateData.inspector_name = parsed.inspector_name
   if (parsed.notes !== undefined) updateData.notes = parsed.notes
@@ -560,6 +598,15 @@ export async function completeInspection(inspectionId: string, orgId?: string): 
     .single()
   if (error || !data) throw new Error(`Failed to complete inspection: ${error?.message}`)
 
+  // Completing the inspection checks off its scheduled slot on the Gantt.
+  if (detail.schedule_item_id) {
+    await supabase
+      .from("schedule_items")
+      .update({ status: "completed", progress: 100 })
+      .eq("org_id", resolvedOrgId)
+      .eq("id", detail.schedule_item_id)
+  }
+
   await recordEvent({
     orgId: resolvedOrgId,
     eventType: "inspection_completed",
@@ -588,7 +635,7 @@ export async function createPunchItemFromInspectionItem(
 
   const { data: item } = await supabase
     .from("inspection_items")
-    .select(`${ITEM_SELECT}, inspection:inspections(id, project_id, title, location, kind)`)
+    .select(`${ITEM_SELECT}, inspection:inspections(id, project_id, title, location, location_id, kind)`)
     .eq("org_id", resolvedOrgId)
     .eq("id", inspectionItemId)
     .maybeSingle()
@@ -607,6 +654,7 @@ export async function createPunchItemFromInspectionItem(
       description: [item.note, `From inspection: ${inspection.title}`].filter(Boolean).join("\n"),
       status: "open",
       location: inspection.location ?? null,
+      location_id: inspection.location_id ?? null,
       due_date: parsed.due_date ?? null,
       assigned_company_id: parsed.company_id ?? null,
       dispatched_at: parsed.company_id ? new Date().toISOString() : null,
@@ -673,7 +721,7 @@ export async function createObservationFromInspectionItem(
 
   const { data: item } = await supabase
     .from("inspection_items")
-    .select(`${ITEM_SELECT}, inspection:inspections(id, project_id, title, location, kind)`)
+    .select(`${ITEM_SELECT}, inspection:inspections(id, project_id, title, location, location_id, kind)`)
     .eq("org_id", resolvedOrgId)
     .eq("id", inspectionItemId)
     .maybeSingle()
@@ -690,6 +738,7 @@ export async function createObservationFromInspectionItem(
       category: "deficiency",
       description: [item.prompt, item.note].filter(Boolean).join(" — "),
       location: inspection.location ?? null,
+      location_id: inspection.location_id ?? null,
       company_id: parsed.company_id ?? null,
       photo_file_id: item.photo_file_id ?? null,
       due_date: parsed.due_date ?? null,

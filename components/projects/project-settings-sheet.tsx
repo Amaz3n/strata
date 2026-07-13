@@ -30,6 +30,9 @@ import {
   type FinancialSetupValue,
 } from "@/components/projects/project-financial-setup-fields"
 import { DistributionListManager } from "@/components/projects/distribution-list-manager"
+import { ProjectLocationsManager } from "@/components/locations/project-locations-manager"
+import { listLocationsAction } from "@/app/(app)/projects/[id]/locations/actions"
+import type { ProjectLocation } from "@/lib/services/locations"
 import { listProjectQboClassesAction, searchProjectQboCustomersAction, createProjectQboCustomerAction } from "@/app/(app)/projects/actions"
 import {
   removeSampleProjectAction,
@@ -82,7 +85,7 @@ interface ProjectSettingsSheetProps {
 }
 
 export function ProjectSettingsSheet({ project, contract, contacts = [], open, onOpenChange, onSave, initialStep = "details" }: ProjectSettingsSheetProps) {
-  const { productTier, progressBillingEnabled } = usePageTitle()
+  const { productTier } = usePageTitle()
   const initialLocation = useMemo(() => {
     const location = (project as any).location as Record<string, any> | undefined
     if (location) {
@@ -126,7 +129,10 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
   const [newCustomer, setNewCustomer] = useState({ name: "", email: "", line1: "", city: "", state: "", postalCode: "" })
   const [creatingCustomer, setCreatingCustomer] = useState(false)
   const [excludedFromReporting, setExcludedFromReporting] = useState<boolean>(project.excluded_from_reporting ?? false)
+  const [isPublicWork, setIsPublicWork] = useState<boolean>(project.is_public_work ?? false)
+  const [requireSubtierWaivers, setRequireSubtierWaivers] = useState<boolean>(project.require_subtier_waivers ?? false)
   const [moduleOverrides, setModuleOverrides] = useState<Record<string, boolean>>(project.module_overrides ?? {})
+  const [projectLocations, setProjectLocations] = useState<ProjectLocation[]>([])
   const [pendingModuleKey, setPendingModuleKey] = useState<ProjectModuleKey | null>(null)
   const [financialSetup, setFinancialSetup] = useState<FinancialSetupValue>(() => financialSetupFromProject(project, contract))
   const [step, setStep] = useState<"details" | "financials">(initialStep)
@@ -152,9 +158,20 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
     if (!open) return
     setFinancialSetup(financialSetupFromProject(project, contract))
     setModuleOverrides(project.module_overrides ?? {})
+    setIsPublicWork(project.is_public_work ?? false)
+    setRequireSubtierWaivers(project.require_subtier_waivers ?? false)
     setStep(initialStep)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, project.id, contract?.id, initialStep])
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    listLocationsAction(project.id, true)
+      .then((locations) => { if (!cancelled) setProjectLocations(locations) })
+      .catch(() => { if (!cancelled) setProjectLocations([]) })
+    return () => { cancelled = true }
+  }, [open, project.id])
 
   useEffect(() => {
     if (!open) return
@@ -278,6 +295,8 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
       qbo_customer_id: qboCustomerId,
       qbo_customer_name: qboCustomerName,
       excluded_from_reporting: excludedFromReporting,
+      is_public_work: isPublicWork,
+      require_subtier_waivers: requireSubtierWaivers,
       ...financialSetupToProjectInput(financialSetup),
     }
 
@@ -788,6 +807,8 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                 </div>
               </div>
 
+              <ProjectLocationsManager projectId={project.id} initialLocations={projectLocations} />
+
               <div className="flex items-start justify-between gap-4 rounded-md border bg-muted/30 px-3 py-3">
                 <div className="space-y-1">
                   <Label htmlFor="exclude-from-reporting" className="text-sm">
@@ -807,6 +828,22 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                 />
               </div>
 
+              <div className="flex items-start justify-between gap-4 border px-3 py-3">
+                <div className="space-y-1">
+                  <Label htmlFor="public-work-project" className="text-sm">Public work / prevailing wage</Label>
+                  <p className="text-xs text-muted-foreground">Enable wage determinations and certified payroll under this project's Time workbench.</p>
+                </div>
+                <Switch id="public-work-project" checked={isPublicWork} onCheckedChange={setIsPublicWork} className="mt-0.5 shrink-0" />
+              </div>
+
+              <div className="flex items-start justify-between gap-4 border px-3 py-3">
+                <div className="space-y-1">
+                  <Label htmlFor="require-subtier-waivers" className="text-sm">Require sub-tier lien waivers</Label>
+                  <p className="text-xs text-muted-foreground">Block subcontractor payment when declared supplier or sub-subcontractor waivers are missing for the pay period.</p>
+                </div>
+                <Switch id="require-subtier-waivers" checked={requireSubtierWaivers} onCheckedChange={setRequireSubtierWaivers} className="mt-0.5 shrink-0" />
+              </div>
+
               <div className="border-t pt-5">
                 <DistributionListManager projectId={project.id} contacts={contacts} />
               </div>
@@ -818,7 +855,6 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                   value={financialSetup}
                   onChange={setFinancialSetup}
                   posture={posture}
-                  progressBillingEnabled={progressBillingEnabled}
                 />
                 <p className="mt-4 text-xs text-muted-foreground">
                   These terms update the active project contract Arc uses for financial workflows.

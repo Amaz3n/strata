@@ -21,6 +21,18 @@
       "schedule": "*/5 * * * *"
     },
     {
+      "path": "/api/jobs/specs-pipeline",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/jobs/meeting-transcription",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/jobs/meeting-audio-cleanup",
+      "schedule": "10 3 * * *"
+    },
+    {
       "path": "/api/jobs/rbac-evidence",
       "schedule": "15 2 * * *"
     },
@@ -66,6 +78,15 @@
     },
     "app/api/jobs/drawings-pipeline/route.ts": {
       "maxDuration": 300
+    },
+    "app/api/jobs/specs-pipeline/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/jobs/meeting-transcription/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/jobs/meeting-audio-cleanup/route.ts": {
+      "maxDuration": 120
     },
     "app/api/qbo/process-outbox/route.ts": {
       "maxDuration": 120

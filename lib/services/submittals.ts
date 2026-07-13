@@ -1,4 +1,5 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import type { SupabaseClient } from "@supabase/supabase-js"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
 import { recordAudit } from "@/lib/services/audit"
@@ -40,7 +41,7 @@ import {
 } from "@/lib/submittal-review-workflow"
 
 const SUBMITTAL_SELECT =
-  "id, org_id, project_id, submittal_number, revision, supersedes_submittal_id, superseded_by_id, title, description, status, spec_section, submittal_type, due_date, required_on_site, lead_time_days, assigned_company_id, submitted_by_company_id, submitted_by_contact_id, submitted_at, reviewed_by, review_notes, reviewed_at, attachment_file_id, last_item_submitted_at, decision_status, decision_note, decision_by_user_id, decision_by_contact_id, decision_at, decision_via_portal, decision_portal_token_id, current_review_step_id, ball_in_court, stamped_file_id, created_at, updated_at"
+  "id, org_id, project_id, submittal_number, revision, supersedes_submittal_id, superseded_by_id, title, description, status, spec_section, spec_section_id, submittal_type, due_date, required_on_site, lead_time_days, assigned_company_id, submitted_by_company_id, submitted_by_contact_id, submitted_at, reviewed_by, review_notes, reviewed_at, attachment_file_id, last_item_submitted_at, decision_status, decision_note, decision_by_user_id, decision_by_contact_id, decision_at, decision_via_portal, decision_portal_token_id, current_review_step_id, ball_in_court, stamped_file_id, created_at, updated_at"
 
 const SUBMITTAL_NUMBER_CONFLICT_CONSTRAINT = "submittals_project_id_number_revision_key"
 const ORG_LIST_CAP = 500
@@ -116,9 +117,39 @@ export async function listSubmittalItems({
   })
 }
 
+async function resolveSpecSectionReference({
+  supabase,
+  orgId,
+  projectId,
+  sectionId,
+}: {
+  supabase: SupabaseClient
+  orgId: string
+  projectId: string
+  sectionId: string | null | undefined
+}) {
+  if (!sectionId) return null
+  const { data, error } = await supabase
+    .from("spec_sections")
+    .select("id, section_number")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("id", sectionId)
+    .eq("is_deleted", false)
+    .maybeSingle()
+  if (error || !data) throw new Error("Specification section not found for this project")
+  return data
+}
+
 export async function createSubmittal({ input, orgId }: { input: SubmittalInput; orgId?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("submittal.write", { supabase, orgId: resolvedOrgId, userId })
+  const specSection = await resolveSpecSectionReference({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: input.project_id,
+    sectionId: input.spec_section_id,
+  })
 
   const payload = {
     org_id: resolvedOrgId,
@@ -126,7 +157,8 @@ export async function createSubmittal({ input, orgId }: { input: SubmittalInput;
     title: input.title,
     description: input.description ?? null,
     status: input.status ?? "submitted",
-    spec_section: input.spec_section ?? null,
+    spec_section_id: specSection?.id ?? null,
+    spec_section: specSection?.section_number ?? input.spec_section ?? null,
     submittal_type: input.submittal_type ?? null,
     due_date: input.due_date || null,
     required_on_site: input.required_on_site || null,
@@ -211,7 +243,19 @@ export async function updateSubmittal({ input, orgId }: { input: SubmittalUpdate
   const updatePayload: Record<string, unknown> = { updated_at: new Date().toISOString() }
   if (input.title !== undefined) updatePayload.title = input.title
   if (input.description !== undefined) updatePayload.description = input.description
-  if (input.spec_section !== undefined) updatePayload.spec_section = input.spec_section
+  if (input.spec_section_id !== undefined) {
+    const specSection = await resolveSpecSectionReference({
+      supabase,
+      orgId: resolvedOrgId,
+      projectId: existing.project_id,
+      sectionId: input.spec_section_id,
+    })
+    updatePayload.spec_section_id = specSection?.id ?? null
+    updatePayload.spec_section = specSection?.section_number ?? input.spec_section ?? null
+  } else if (input.spec_section !== undefined) {
+    updatePayload.spec_section = input.spec_section
+    updatePayload.spec_section_id = null
+  }
   if (input.submittal_type !== undefined) updatePayload.submittal_type = input.submittal_type
   if (input.due_date !== undefined) updatePayload.due_date = input.due_date || null
   if (input.required_on_site !== undefined) updatePayload.required_on_site = input.required_on_site || null
@@ -490,6 +534,7 @@ export async function resubmitSubmittal({ submittalId, orgId }: { submittalId: s
     description: existing.description,
     status: "submitted",
     spec_section: existing.spec_section,
+    spec_section_id: existing.spec_section_id,
     submittal_type: existing.submittal_type,
     due_date: existing.due_date,
     required_on_site: existing.required_on_site,

@@ -24,7 +24,6 @@ import {
   scheduleAssignmentInputSchema,
   scheduleDependencyInputSchema,
 } from "@/lib/validation/schedule"
-import { inspectionMetadataSchema } from "@/lib/validation/inspections"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
@@ -490,14 +489,6 @@ export async function updateScheduleItem({
     after: data,
   })
 
-  await maybeCreatePunchItemFromInspection({
-    supabase,
-    orgId: resolvedOrgId,
-    userId,
-    existing: existing.data,
-    updated: data,
-  })
-
   const dependencyMap =
     parsed.dependencies !== undefined 
       ? { [data.id]: parsed.dependencies } 
@@ -506,73 +497,6 @@ export async function updateScheduleItem({
   return mapScheduleItem(data, dependencyMap)
 }
 
-// Legacy schedule-item inspections (item_type "inspection" with metadata
-// checklist). The standalone inspections engine (lib/services/inspections.ts)
-// supersedes this; consolidating the schedule-item type onto it is recorded
-// follow-up debt — leave this path working until then.
-async function maybeCreatePunchItemFromInspection({
-  supabase,
-  orgId,
-  userId,
-  existing,
-  updated,
-}: {
-  supabase: SupabaseClient
-  orgId: string
-  userId: string
-  existing: any
-  updated: any
-}) {
-  if (updated.item_type !== "inspection") return
-
-  const prevInspection = inspectionMetadataSchema.safeParse(existing?.metadata?.inspection ?? {})
-  const nextInspection = inspectionMetadataSchema.safeParse(updated?.metadata?.inspection ?? {})
-  if (!nextInspection.success) return
-
-  const prevResult = prevInspection.success ? prevInspection.data.result : "pending"
-  const nextResult = nextInspection.data.result
-
-  if (nextResult !== "fail" || prevResult === "fail") return
-
-  const { data: existingPunch } = await supabase
-    .from("punch_items")
-    .select("id")
-    .eq("org_id", orgId)
-    .eq("schedule_item_id", updated.id)
-    .eq("created_from_inspection", true)
-    .maybeSingle()
-
-  if (existingPunch) return
-
-  const failedChecklist = (nextInspection.data.checklist ?? [])
-    .filter((item) => !item.checked)
-    .map((item) => item.label)
-
-  const descriptionParts: string[] = []
-  if (nextInspection.data.notes) {
-    descriptionParts.push(nextInspection.data.notes)
-  }
-  if (failedChecklist.length > 0) {
-    descriptionParts.push(`Failed checklist: ${failedChecklist.join(", ")}`)
-  }
-
-  await supabase
-    .from("punch_items")
-    .insert({
-      org_id: orgId,
-      project_id: updated.project_id,
-      title: `Failed inspection: ${updated.name}`,
-      description: descriptionParts.length > 0 ? descriptionParts.join("\n") : "Inspection failed.",
-      status: "open",
-      severity: "High",
-      location: updated.location ?? null,
-      assigned_to: updated.assigned_to ?? null,
-      created_by: userId,
-      schedule_item_id: updated.id,
-      created_from_inspection: true,
-      verification_required: true,
-    })
-}
 
 // Set a single assignment (user/contact/company) for a schedule item.
 // Clears existing assignments for the item first.

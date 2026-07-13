@@ -1,6 +1,7 @@
 import { recordEvent } from "@/lib/services/events"
 import { sendComplianceAutopilotEmail } from "@/lib/services/mailer"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { expireProjectOwnComplianceDocuments } from "@/lib/services/project-own-compliance"
 import { expirePrequalificationsWithClient } from "@/lib/services/prequalification"
 
 const EXPIRY_REMINDER_DAYS = new Set([30, 14, 3])
@@ -276,6 +277,21 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
         org.id,
         today.toISOString().slice(0, 10),
       )
+      const ownDocumentsExpired = await expireProjectOwnComplianceDocuments(
+        supabase,
+        org.id,
+        today.toISOString().slice(0, 10),
+      )
+      if (ownDocumentsExpired > 0) {
+        await recordEvent({
+          orgId: org.id,
+          eventType: "project_own_compliance_expired",
+          entityType: "compliance",
+          entityId: org.id,
+          channel: "notification",
+          payload: { count: ownDocumentsExpired },
+        }).catch(() => null)
+      }
       const { data: requirements, error: requirementsError } = await supabase
         .from("company_compliance_requirements")
         .select(

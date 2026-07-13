@@ -9,6 +9,7 @@ import {
   createPayApplicationAction,
   deletePayApplicationAction,
   fetchPayApplicationAction,
+  generatePayApplicationPackageAction,
   generatePayApplicationPdfAction,
   markPayApplicationApprovedAction,
   submitPayApplicationAction,
@@ -275,6 +276,7 @@ function PayApplicationSheet({
   const [entries, setEntries] = useState<Record<string, EntryDraft>>({})
   const [dirty, setDirty] = useState(false)
   const [allowOverbilling, setAllowOverbilling] = useState(false)
+  const [includeGcCompliance, setIncludeGcCompliance] = useState(false)
   const [isPending, startTransition] = useTransition()
 
   const app = detail?.application ?? null
@@ -483,6 +485,32 @@ function PayApplicationSheet({
     })
   }
 
+  function generatePackage() {
+    if (!app) return
+    startTransition(async () => {
+      try {
+        const result = unwrapAction(
+          await generatePayApplicationPackageAction(projectId, app.id, { includeGcCompliance }),
+        )
+        const bytes = Uint8Array.from(atob(result.pdfBase64), (char) => char.charCodeAt(0))
+        const blob = new Blob([bytes], { type: "application/pdf" })
+        const url = URL.createObjectURL(blob)
+        const anchor = document.createElement("a")
+        anchor.href = url
+        anchor.download = result.fileName
+        anchor.click()
+        URL.revokeObjectURL(url)
+        toast.success("Owner pay-app package generated", {
+          description: `${result.package.proof_count} supporting file${result.package.proof_count === 1 ? "" : "s"} attached to the package manifest.`,
+        })
+      } catch (error) {
+        toast.error("Unable to generate the pay-app package", {
+          description: error instanceof Error ? error.message : "Try again.",
+        })
+      }
+    })
+  }
+
   function markApproved() {
     if (!app) return
     startTransition(async () => {
@@ -512,6 +540,7 @@ function PayApplicationSheet({
           setEntries({})
           setDirty(false)
           setAllowOverbilling(false)
+          setIncludeGcCompliance(false)
         }
         onOpenChange(next)
       }}
@@ -669,6 +698,22 @@ function PayApplicationSheet({
             </div>
           ) : null}
 
+          {app.status !== "draft" && app.status !== "void" ? (
+            <label className="flex items-center justify-between gap-4 border bg-muted/20 p-3 text-sm">
+              <span>
+                <span className="block font-medium">Attach our bonds, insurance, and licenses</span>
+                <span className="block text-xs text-muted-foreground">
+                  Full-tier lien waivers are included automatically when required for this project.
+                </span>
+              </span>
+              <Checkbox
+                checked={includeGcCompliance}
+                onCheckedChange={(checked) => setIncludeGcCompliance(checked === true)}
+                aria-label="Attach GC compliance documents"
+              />
+            </label>
+          ) : null}
+
           <div className="flex flex-wrap items-center justify-end gap-2">
             {isDraft ? (
               <>
@@ -689,9 +734,14 @@ function PayApplicationSheet({
               </>
             ) : null}
             {app.status !== "draft" && app.status !== "void" ? (
-              <Button type="button" variant="outline" size="sm" onClick={downloadPdf} disabled={isPending}>
-                Download PDF
-              </Button>
+              <>
+                <Button type="button" variant="ghost" size="sm" onClick={downloadPdf} disabled={isPending}>
+                  Download PDF only
+                </Button>
+                <Button type="button" variant="outline" size="sm" onClick={generatePackage} disabled={isPending}>
+                  Generate owner package
+                </Button>
+              </>
             ) : null}
             {(app.status === "invoiced" || app.status === "submitted") && !app.approved_at ? (
               <Button type="button" variant="outline" size="sm" onClick={markApproved} disabled={isPending}>

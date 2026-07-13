@@ -22,8 +22,7 @@ import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { getPlatformSessionState } from "@/lib/services/platform-session"
 import { getReleaseNotesSummary } from "@/lib/services/release-notes"
 import { getNavigationBadgeCounts } from "@/lib/services/navigation-badges"
-import { getOrgProductTier, requireOrgContext } from "@/lib/services/context"
-import { isProgressBillingEnabledForOrg } from "@/lib/services/feature-flags"
+import { getOrgProductTier } from "@/lib/services/context"
 
 export const dynamic = "force-dynamic"
 
@@ -33,7 +32,7 @@ export default async function AppLayout({
   children: React.ReactNode
 }) {
   // Fetch user data once at the layout level for the persistent shell
-  const [currentUser, crmStats, access, platformAccess, permissionResult, platformSessionState, releaseNotesSummary, navigationBadgeCounts, productTier, progressBillingEnabled] = await Promise.all([
+  const [currentUser, crmStats, access, platformAccess, permissionResult, platformSessionState, releaseNotesSummary, navigationBadgeCounts, productTier] = await Promise.all([
     getCurrentUserAction(),
     getCrmDashboardStats().catch(() => null),
     getOrgAccessState().catch((): OrgAccessState => ({ status: "unknown", locked: false })),
@@ -50,9 +49,6 @@ export default async function AppLayout({
       projectReviewBadgeCounts: {} as Record<string, number>,
     })),
     getOrgProductTier().catch(() => "residential" as const),
-    requireOrgContext(undefined, { allowLocked: true })
-      .then((context) => isProgressBillingEnabledForOrg({ supabase: context.supabase, orgId: context.orgId }))
-      .catch(() => false),
   ])
 
   const pipelineBadgeCount = crmStats ? crmStats.followUpsOverdue + crmStats.followUpsDueToday : 0
@@ -87,7 +83,7 @@ export default async function AppLayout({
         />
         <MobileActionProvider>
           <SidebarInset className="h-svh max-h-svh min-w-0 min-h-0 overflow-hidden">
-            <PageTitleProvider productTier={productTier} progressBillingEnabled={progressBillingEnabled}>
+            <PageTitleProvider productTier={productTier}>
               <AppHeader
                 platformSessionControlDesktop={<PlatformSessionControl access={platformAccess} state={platformSessionState} />}
                 platformSessionControlMobile={<PlatformSessionControl access={platformAccess} state={platformSessionState} />}

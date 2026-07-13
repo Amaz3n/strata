@@ -50,6 +50,8 @@ import {
   ChevronDown,
   ClipboardList,
 } from "@/components/icons"
+import { LocationPicker } from "@/components/locations/location-picker"
+import type { ProjectLocation } from "@/lib/services/locations"
 
 const weatherOptions = [
   { value: "Sunny", emoji: "☀️" },
@@ -67,6 +69,8 @@ interface QuickLogEntryProps {
   scheduleItems: ScheduleItem[]
   tasks: Task[]
   punchItems: ProjectPunchItem[]
+  locations: ProjectLocation[]
+  canManageLocations: boolean
   mentionableUsers: MentionableUser[]
   onCreateLog: (values: DailyLogInput) => Promise<DailyLog>
   onUploadFiles: (
@@ -100,6 +104,7 @@ type WorkEntryDraft = {
   hours: string
   progress: string
   location?: string
+  location_id?: string
   trade?: string
 }
 
@@ -186,6 +191,8 @@ export function QuickLogEntry({
   scheduleItems,
   tasks,
   punchItems,
+  locations,
+  canManageLocations,
   mentionableUsers,
   onCreateLog,
   onUploadFiles,
@@ -315,6 +322,7 @@ export function QuickLogEntry({
         progress: Number.isFinite(progressValue) ? progressValue : undefined,
         schedule_item_id: item.schedule_item_id || undefined,
         location: item.location || undefined,
+        location_id: item.location_id || undefined,
         trade: item.trade || undefined,
       })
     }
@@ -810,12 +818,7 @@ export function QuickLogEntry({
                         placeholder="Trade"
                         className="h-9 text-sm"
                       />
-                      <Input
-                        value={item.location ?? ""}
-                        onChange={(event) => updateWorkItem(item.id, { location: event.target.value })}
-                        placeholder="Location"
-                        className="h-9 text-sm"
-                      />
+                      <LocationPicker projectId={projectId} locations={locations} value={item.location_id ?? null} canCreate={canManageLocations} onValueChange={(id, path) => updateWorkItem(item.id, { location_id: id ?? undefined, location: path ?? undefined })} />
                     </div>
                   </div>
                 ))}

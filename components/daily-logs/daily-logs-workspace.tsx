@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button"
 import { BulkDailyReportExportButton } from "./bulk-export-button"
 import { buildDayBuckets, imageFilesOf } from "./day-aggregate"
 import type { MentionableUser } from "./mention-textarea"
+import type { ProjectLocation } from "@/lib/services/locations"
 
 interface DailyLogsWorkspaceProps {
   projectId: string
@@ -29,6 +30,8 @@ interface DailyLogsWorkspaceProps {
   scheduleItems: ScheduleItem[]
   tasks: Task[]
   punchItems: ProjectPunchItem[]
+  locations: ProjectLocation[]
+  canManageLocations: boolean
   mentionableUsers: MentionableUser[]
   onUpdateReport: (date: string, values: DailyReportUpdateInput) => Promise<DailyReport>
   onSubmitReport: (reportId: string) => Promise<DailyReport>
@@ -67,6 +70,8 @@ export function DailyLogsWorkspace({
   scheduleItems,
   tasks,
   punchItems,
+  locations,
+  canManageLocations,
   mentionableUsers,
   onUpdateReport,
   onSubmitReport,
@@ -257,6 +262,8 @@ export function DailyLogsWorkspace({
         scheduleItems={scheduleItems}
         tasks={tasks}
         punchItems={punchItems}
+        locations={locations}
+        canManageLocations={canManageLocations}
         mentionableUsers={mentionableUsers}
         onCreateLog={onCreateLog}
         onUploadFiles={onUploadFiles}

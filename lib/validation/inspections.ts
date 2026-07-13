@@ -1,44 +1,5 @@
 import { z } from "zod"
 
-// ---------------------------------------------------------------------------
-// Legacy schedule-item inspection metadata (schedule items of type
-// "inspection" store this in metadata). The standalone inspections engine
-// below (checklist_templates + inspections tables, lib/services/inspections.ts)
-// supersedes it; consolidating the schedule-item type onto the engine is
-// recorded follow-up debt.
-// ---------------------------------------------------------------------------
-
-export const inspectionResultSchema = z.enum(["pending", "pass", "fail", "partial"])
-export type InspectionResult = z.infer<typeof inspectionResultSchema>
-
-export const inspectionChecklistItemSchema = z.object({
-  id: z.string().min(1),
-  label: z.string().min(1),
-  checked: z.boolean().default(false),
-})
-export type InspectionChecklistItem = z.infer<typeof inspectionChecklistItemSchema>
-
-export const inspectionInspectorSchema = z.object({
-  type: z.enum(["user", "contact", "company"]).optional(),
-  id: z.string().uuid().optional(),
-  label: z.string().optional(),
-})
-export type InspectionInspector = z.infer<typeof inspectionInspectorSchema>
-
-export const inspectionMetadataSchema = z.object({
-  result: inspectionResultSchema.default("pending"),
-  inspector: inspectionInspectorSchema.optional(),
-  notes: z.string().optional(),
-  checklist: z.array(inspectionChecklistItemSchema).default([]),
-  signed_by: z.string().optional(),
-  signed_at: z.string().optional(),
-})
-export type InspectionMetadata = z.infer<typeof inspectionMetadataSchema>
-
-// ---------------------------------------------------------------------------
-// Standalone inspections engine (workstream 06)
-// ---------------------------------------------------------------------------
-
 export const checklistKindSchema = z.enum(["safety", "quality"])
 export type ChecklistKind = z.infer<typeof checklistKindSchema>
 
@@ -65,13 +26,16 @@ export const createInspectionSchema = z.object({
   kind: checklistKindSchema,
   title: z.string().trim().min(1).max(200),
   location: z.string().trim().max(200).optional().nullable(),
+  location_id: z.string().uuid().optional().nullable(),
   company_id: z.string().uuid().optional().nullable(),
+  schedule_item_id: z.string().uuid().optional().nullable(),
 })
 export type CreateInspectionInput = z.infer<typeof createInspectionSchema>
 
 export const updateInspectionSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   location: z.string().trim().max(200).optional().nullable(),
+  location_id: z.string().uuid().optional().nullable(),
   company_id: z.string().uuid().optional().nullable(),
   inspector_name: z.string().trim().max(200).optional().nullable(),
   notes: z.string().trim().max(4000).optional().nullable(),

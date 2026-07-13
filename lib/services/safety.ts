@@ -3,6 +3,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { requirePermission } from "@/lib/services/permissions"
 import { insertWithProjectNumberRetry } from "@/lib/services/project-sequence"
+import { resolveProjectLocation } from "@/lib/services/locations"
 import {
   observationInputSchema,
   observationUpdateSchema,
@@ -25,6 +26,7 @@ export type SafetyIncident = {
   severity: "near_miss" | "first_aid" | "medical_treatment" | "lost_time" | "fatality"
   classification: string | null
   location: string | null
+  location_id: string | null
   description: string
   involved_company_id: string | null
   involved_company_name?: string | null
@@ -65,6 +67,7 @@ export type Observation = {
   category: "positive" | "at_risk" | "deficiency" | null
   description: string
   location: string | null
+  location_id: string | null
   company_id: string | null
   company_name?: string | null
   photo_file_id: string | null
@@ -79,11 +82,11 @@ export type Observation = {
 export const ALERT_SEVERITIES = new Set(["lost_time", "fatality"])
 
 const INCIDENT_SELECT =
-  "id, org_id, project_id, incident_number, occurred_at, severity, classification, location, description, involved_company_id, involved_person_name, witness_names, immediate_action, root_cause, photo_file_id, is_osha_recordable, reported_by, status, closed_at, created_at, updated_at, involved_company:companies(name)"
+  "id, org_id, project_id, incident_number, occurred_at, severity, classification, location, location_id, description, involved_company_id, involved_person_name, witness_names, immediate_action, root_cause, photo_file_id, is_osha_recordable, reported_by, status, closed_at, created_at, updated_at, involved_company:companies(name)"
 const TALK_SELECT =
   "id, org_id, project_id, held_at, topic, notes, presenter_name, presenter_user_id, attendee_count, attendees, file_id, created_at"
 const OBSERVATION_SELECT =
-  "id, org_id, project_id, observation_number, kind, category, description, location, company_id, photo_file_id, status, resolved_at, due_date, created_by, created_at, company:companies(name)"
+  "id, org_id, project_id, observation_number, kind, category, description, location, location_id, company_id, photo_file_id, status, resolved_at, due_date, created_by, created_at, company:companies(name)"
 
 function mapIncident(row: Record<string, any>): SafetyIncident {
   const { involved_company, ...rest } = row
@@ -119,6 +122,7 @@ export async function createSafetyIncident(input: SafetyIncidentInput, orgId?: s
   const parsed = safetyIncidentInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("safety.write", { supabase, orgId: resolvedOrgId, userId })
+  const location = await resolveProjectLocation(parsed.project_id, parsed.location_id, resolvedOrgId)
 
   const { data } = await insertWithProjectNumberRetry<Record<string, any>>({
     supabase,
@@ -133,7 +137,8 @@ export async function createSafetyIncident(input: SafetyIncidentInput, orgId?: s
       occurred_at: parsed.occurred_at,
       severity: parsed.severity,
       classification: parsed.classification ?? null,
-      location: parsed.location ?? null,
+      location_id: location?.id ?? null,
+      location: location?.full_path ?? parsed.location ?? null,
       description: parsed.description,
       involved_company_id: parsed.involved_company_id ?? null,
       involved_person_name: parsed.involved_person_name ?? null,
@@ -195,11 +200,15 @@ export async function updateSafetyIncident(incidentId: string, input: SafetyInci
   if (!existing) throw new Error("Incident not found")
 
   const updateData: Record<string, unknown> = {}
+  if (parsed.location_id !== undefined) {
+    const location = await resolveProjectLocation(existing.project_id, parsed.location_id, resolvedOrgId)
+    updateData.location_id = location?.id ?? null
+    updateData.location = location?.full_path ?? null
+  }
   for (const key of [
     "occurred_at",
     "severity",
     "classification",
-    "location",
     "description",
     "involved_company_id",
     "involved_person_name",
@@ -304,6 +313,7 @@ export async function createObservation(input: ObservationInput, orgId?: string)
   const parsed = observationInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("safety.write", { supabase, orgId: resolvedOrgId, userId })
+  const location = await resolveProjectLocation(parsed.project_id, parsed.location_id, resolvedOrgId)
 
   const { data } = await insertWithProjectNumberRetry<Record<string, any>>({
     supabase,
@@ -318,7 +328,8 @@ export async function createObservation(input: ObservationInput, orgId?: string)
       kind: parsed.kind,
       category: parsed.category ?? null,
       description: parsed.description,
-      location: parsed.location ?? null,
+      location_id: location?.id ?? null,
+      location: location?.full_path ?? parsed.location ?? null,
       company_id: parsed.company_id ?? null,
       photo_file_id: parsed.photo_file_id ?? null,
       due_date: parsed.due_date ?? null,
@@ -356,7 +367,12 @@ export async function updateObservation(observationId: string, input: Observatio
   if (!existing) throw new Error("Observation not found")
 
   const updateData: Record<string, unknown> = {}
-  for (const key of ["description", "category", "location", "company_id", "due_date"] as const) {
+  if (parsed.location_id !== undefined) {
+    const location = await resolveProjectLocation(existing.project_id, parsed.location_id, resolvedOrgId)
+    updateData.location_id = location?.id ?? null
+    updateData.location = location?.full_path ?? null
+  }
+  for (const key of ["description", "category", "company_id", "due_date"] as const) {
     if (parsed[key] !== undefined) updateData[key] = parsed[key]
   }
   if (parsed.status !== undefined) {

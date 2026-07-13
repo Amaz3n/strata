@@ -227,17 +227,67 @@ async function buildPackageManifest({
   orgId,
   projectId,
   invoice,
+  includeGcCompliance,
 }: {
   supabase: SupabaseClient
   orgId: string
   projectId: string
   invoice: any
+  includeGcCompliance: boolean
 }) {
   const costs = await listOpenBookCostDetailsForInvoice({ invoiceId: invoice.id, orgId, projectId })
   const invoiceMetadata = invoice.metadata ?? {}
-  const invoiceFileId = invoice.file_id ?? invoiceMetadata.latest_pdf_file_id ?? null
+  const sourcePayApplicationId =
+    invoiceMetadata.source_type === "pay_application" && typeof invoiceMetadata.source_pay_application_id === "string"
+      ? invoiceMetadata.source_pay_application_id
+      : null
+  const { data: sourcePayApplication, error: sourcePayApplicationError } = sourcePayApplicationId
+    ? await supabase
+        .from("pay_applications")
+        .select("pdf_file_id, period_end")
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .eq("id", sourcePayApplicationId)
+        .maybeSingle()
+    : { data: null, error: null }
+  if (sourcePayApplicationError) {
+    throw new Error(`Failed to load the source pay application: ${sourcePayApplicationError.message}`)
+  }
+  const invoiceFileId = sourcePayApplication?.pdf_file_id ?? invoice.file_id ?? invoiceMetadata.latest_pdf_file_id ?? null
   const proofFileIds = uniq(costs.map((cost: any) => cost.proof_file_id))
-  const fileIds = uniq([invoiceFileId, ...proofFileIds])
+  const { data: complianceRows, error: complianceError } = includeGcCompliance
+    ? await supabase
+        .from("compliance_documents")
+        .select("id, document_type_id, file_id, status, effective_date, expiry_date, policy_number, carrier_name, coverage_amount_cents, compliance_document_types(name)")
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .eq("subject", "org")
+        .eq("status", "approved")
+    : { data: [], error: null }
+  if (complianceError) throw new Error(`Failed to load GC compliance attachments: ${complianceError.message}`)
+  const gcComplianceFileIds = uniq((complianceRows ?? []).map((row: any) => row.file_id))
+  const { data: projectControls, error: projectControlsError } = await supabase
+    .from("projects")
+    .select("require_subtier_waivers")
+    .eq("org_id", orgId)
+    .eq("id", projectId)
+    .maybeSingle()
+  if (projectControlsError) throw new Error(`Failed to load waiver package controls: ${projectControlsError.message}`)
+  const waiverPeriodEnd =
+    sourcePayApplication?.period_end ??
+    invoiceMetadata.billing_period_end ??
+    invoice.due_date ??
+    invoice.issue_date ??
+    new Date().toISOString().slice(0, 10)
+  const { data: waiverRows, error: waiverError } = projectControls?.require_subtier_waivers
+    ? await supabase.from("lien_waivers")
+        .select("id, tier, through_company_id, claimant_company_name, claimant_name, waiver_type, status, amount_cents, through_date, document_file_id, signed_file_id, metadata")
+        .eq("org_id", orgId).eq("project_id", projectId).eq("status", "signed").eq("through_date", waiverPeriodEnd)
+    : { data: [], error: null }
+  if (waiverError) throw new Error(`Failed to load full-tier lien waivers: ${waiverError.message}`)
+  const waiverFileIds = uniq((waiverRows ?? []).flatMap((row: any) => [row.signed_file_id, row.document_file_id]))
+  const packageAttachmentIds = uniq([...proofFileIds, ...gcComplianceFileIds, ...waiverFileIds])
+  const fileIds = uniq([invoiceFileId, ...packageAttachmentIds])
   const files = await loadFilesById({ supabase, orgId, fileIds })
   const fileById = new Map(files.map((file: any) => [file.id, file]))
 
@@ -297,6 +347,7 @@ async function buildPackageManifest({
       billing_period_id: invoice.billing_period_id ?? invoiceMetadata.billing_period_id ?? null,
       file_id: invoiceFileId,
       client_visible: invoice.client_visible ?? false,
+      source_pay_application_id: sourcePayApplicationId,
     },
     totals,
     lines,
@@ -309,7 +360,7 @@ async function buildPackageManifest({
       category: file.category ?? null,
       folder_path: file.folder_path ?? null,
       share_with_clients: file.share_with_clients ?? false,
-      role: file.id === invoiceFileId ? "invoice_pdf" : "cost_proof",
+      role: file.id === invoiceFileId ? "invoice_pdf" : gcComplianceFileIds.includes(file.id) ? "gc_compliance" : waiverFileIds.includes(file.id) ? "lien_waiver" : "cost_proof",
       created_at: file.created_at ?? null,
     })),
     proof: {
@@ -317,9 +368,36 @@ async function buildPackageManifest({
       proof_file_ids: proofFileIds,
       missing_cost_ids: costRows.filter((cost) => !cost.proof_file_id).map((cost) => cost.id),
     },
+    gc_compliance_documents: (complianceRows ?? []).map((row: any) => ({
+      id: row.id,
+      document_type_id: row.document_type_id,
+      document_type_name: row.compliance_document_types?.name ?? null,
+      file_id: row.file_id,
+      status: row.status,
+      effective_date: row.effective_date ?? null,
+      expiry_date: row.expiry_date ?? null,
+      policy_number: row.policy_number ?? null,
+      carrier_or_surety: row.carrier_name ?? null,
+      coverage_amount_cents: row.coverage_amount_cents == null ? null : Number(row.coverage_amount_cents),
+    })),
+    lien_waivers: (waiverRows ?? []).map((row: any) => ({
+      id: row.id,
+      tier: row.tier ?? 1,
+      through_company_id: row.through_company_id ?? null,
+      claimant_company_name: row.claimant_company_name ?? row.claimant_name,
+      waiver_type: row.waiver_type,
+      status: row.status,
+      amount_cents: Number(row.amount_cents ?? 0),
+      through_date: row.through_date,
+      file_id: row.signed_file_id ?? row.document_file_id ?? null,
+      commitment_id: row.metadata?.commitment_id ?? null,
+    })),
     controls: {
-      source: "arc_phase_5_owner_billing_package",
+      source: sourcePayApplicationId ? "wave_2_pay_application_package" : "arc_phase_5_owner_billing_package",
       package_artifact_status: "manifest_only",
+      gc_compliance_included: includeGcCompliance,
+      full_tier_waivers_required: Boolean(projectControls?.require_subtier_waivers),
+      waiver_period_end: waiverPeriodEnd,
     },
   }
 
@@ -328,6 +406,7 @@ async function buildPackageManifest({
     manifestHash: hashManifest(manifest),
     invoiceFileId,
     proofFileIds,
+    packageAttachmentIds,
     filesById: fileById,
     totals,
     costIds: costRows.map((cost) => cost.id),
@@ -356,7 +435,7 @@ export async function listProjectOwnerBillingPackageSummaries(projectId: string,
   return (data ?? []).map(mapPackage).map(summarizeOwnerBillingPackage)
 }
 
-export async function generateInvoiceBackupPackage(input: { projectId: string; invoiceId: string }, orgId?: string) {
+export async function generateInvoiceBackupPackage(input: { projectId: string; invoiceId: string; includeGcCompliance?: boolean }, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireInvoicePackagePermission({
     supabase,
@@ -378,6 +457,7 @@ export async function generateInvoiceBackupPackage(input: { projectId: string; i
     orgId: resolvedOrgId,
     projectId: input.projectId,
     invoice,
+    includeGcCompliance: input.includeGcCompliance ?? false,
   })
   const packageName = `Backup package ${invoice.invoice_number ?? invoice.id}`
   const batchName = `Owner approval ${invoice.invoice_number ?? invoice.id}`
@@ -450,7 +530,7 @@ export async function generateInvoiceBackupPackage(input: { projectId: string; i
     manifest_hash: built.manifestHash,
     invoice_file_id: built.invoiceFileId,
     package_file_id: existingPackage?.package_file_id ?? null,
-    proof_file_ids: built.proofFileIds,
+    proof_file_ids: built.packageAttachmentIds,
     generated_at: now,
     generated_by: userId,
     portal_token_id: existingPackage?.portal_token_id ?? null,

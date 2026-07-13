@@ -132,12 +132,11 @@ function displayMoneyInput(raw: string) {
 export function emptyFinancialSetup(
   model: ProjectBillingModel = "fixed_price",
   posture: ProjectPosture = "residential",
-  progressBillingEnabled = false,
 ): FinancialSetupValue {
   const costDriven = isCostDrivenModel(model)
   return {
     billingModel: model,
-    fixedPriceBillingBasis: progressBillingEnabled && posture === "commercial" ? "progress" : "draws",
+    fixedPriceBillingBasis: posture === "commercial" ? "progress" : "draws",
     retainageSchedule: [],
     storedMaterialsRetainagePercent: "",
     totalContractValue: "",
@@ -340,12 +339,10 @@ export function ProjectFinancialSetupFields({
   value,
   onChange,
   posture = "residential",
-  progressBillingEnabled = false,
 }: {
   value: FinancialSetupValue
   onChange: (value: FinancialSetupValue) => void
   posture?: ProjectPosture
-  progressBillingEnabled?: boolean
 }) {
   const costDriven = isCostDrivenModel(value.billingModel)
   const isGmp = value.billingModel === "cost_plus_gmp"
@@ -404,7 +401,7 @@ export function ProjectFinancialSetupFields({
           <h3 className="text-sm font-semibold">Contract terms</h3>
           <p className="text-xs text-muted-foreground">Stored on the active contract used by financial pages.</p>
         </div>
-        {value.billingModel === "fixed_price" && (progressBillingEnabled || value.fixedPriceBillingBasis === "progress") ? (
+        {value.billingModel === "fixed_price" ? (
           <div className="space-y-2">
             <Label>Owner billing</Label>
             <div className="grid gap-2 sm:grid-cols-2">

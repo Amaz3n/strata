@@ -9,6 +9,7 @@ import { hasPermission } from "@/lib/services/permissions"
 import { listTeamMembers } from "@/lib/services/team"
 import { PageLayout } from "@/components/layout/page-layout"
 import { TimeEntriesClient } from "@/components/time/time-entries-client"
+import { Button } from "@/components/ui/button"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -69,6 +70,7 @@ async function ProjectTimeData({ id }: { id: string }) {
         { label: "Time" },
       ]}
     >
+      {project.is_public_work ? <div className="mb-4 flex justify-end"><Button asChild variant="outline" size="sm"><a href={`/projects/${project.id}/time/certified-payroll`}>Certified payroll</a></Button></div> : null}
       <TimeEntriesClient
         projectId={project.id}
         initialEntries={data ?? []}

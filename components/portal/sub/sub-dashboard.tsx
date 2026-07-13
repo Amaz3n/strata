@@ -17,6 +17,7 @@ interface SubDashboardProps {
   canSubmitTime?: boolean
   canSubmitExpenses?: boolean
   complianceStatus?: ComplianceStatusSummary
+  canUploadSubtierWaivers?: boolean
 }
 
 export function SubDashboard({
@@ -26,6 +27,7 @@ export function SubDashboard({
   canSubmitTime = true,
   canSubmitExpenses = true,
   complianceStatus,
+  canUploadSubtierWaivers = true,
 }: SubDashboardProps) {
   const upcomingSchedule = data.schedule
     .filter((s) => s.status === "planned" || s.status === "in_progress")
@@ -130,6 +132,15 @@ export function SubDashboard({
       <SubFinancialSummary summary={data.financialSummary} />
 
       {/* Commitments */}
+      {canUploadSubtierWaivers ? (
+        <Card>
+          <CardContent className="flex items-center justify-between gap-4 p-4">
+            <div><p className="text-sm font-medium">Supplier &amp; sub-subcontractor waivers</p><p className="text-xs text-muted-foreground">Upload requested sub-tier waivers by pay period.</p></div>
+            <Button asChild size="sm" variant="outline"><Link href={`/s/${token}/subtier-waivers`}>Manage waivers</Link></Button>
+          </CardContent>
+        </Card>
+      ) : null}
+
       <Card>
         <CardHeader className="pb-2 flex flex-row items-center justify-between">
           <CardTitle className="text-base">My Commitments</CardTitle>

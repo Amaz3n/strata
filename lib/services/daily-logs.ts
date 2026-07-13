@@ -66,6 +66,11 @@ export async function createDailyLog({ input, orgId }: { input: DailyLogInput; o
   }
 
   if (input.entries?.length) {
+    const locationIds = [...new Set(input.entries.map((entry) => entry.location_id).filter((id): id is string => Boolean(id)))]
+    const { data: locationRows, error: locationError } = locationIds.length ? await supabase
+      .from("project_locations").select("id, full_path").eq("org_id", resolvedOrgId).eq("project_id", input.project_id).eq("is_active", true).in("id", locationIds) : { data: [], error: null }
+    if (locationError || (locationRows?.length ?? 0) !== locationIds.length) throw new Error("One or more locations are unavailable")
+    const locationsById = new Map((locationRows ?? []).map((location) => [location.id, location.full_path]))
     const { error: entryError } = await supabase
       .from("daily_log_entries")
       .insert(
@@ -82,7 +87,8 @@ export async function createDailyLog({ input, orgId }: { input: DailyLogInput; o
           task_id: entry.task_id ?? null,
           punch_item_id: entry.punch_item_id ?? null,
           cost_code_id: entry.cost_code_id ?? null,
-          location: entry.location ?? null,
+          location_id: entry.location_id ?? null,
+          location: entry.location_id ? locationsById.get(entry.location_id) ?? null : entry.location ?? null,
           trade: entry.trade ?? null,
           labor_type: entry.labor_type ?? null,
           inspection_result: entry.inspection_result ?? null,

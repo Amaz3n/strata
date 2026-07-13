@@ -16,11 +16,13 @@ export type ProjectSection =
   | "signatures"
   | "schedule"
   | "daily-logs"
+  | "photos"
   | "tasks"
   | "time"
   | "punch"
   | "rfis"
   | "submittals"
+  | "specs"
   | "meetings"
   | "transmittals"
   | "inspections"
@@ -29,6 +31,7 @@ export type ProjectSection =
   | "financials"
   | "financials-review"
   | "financials-tm-tickets"
+  | "financials-waivers"
   | "budget"
   | "commitments"
   | "payables"
@@ -74,6 +77,7 @@ const FINANCIAL_SECTIONS = new Set<ProjectSection>([
   "financials",
   "financials-review",
   "financials-tm-tickets",
+  "financials-waivers",
   "budget",
   "commitments",
   "payables",
@@ -89,6 +93,7 @@ const FINANCIAL_SECTIONS = new Set<ProjectSection>([
 export const BUILD_SECTIONS = new Set<ProjectSection>([
   "schedule",
   "daily-logs",
+  "photos",
   "tasks",
   "time",
   "punch",
@@ -101,7 +106,7 @@ export const BUILD_SECTIONS = new Set<ProjectSection>([
   "decisions",
 ])
 
-export const PLAN_SECTIONS = new Set<ProjectSection>(["documents", "drawings", "bids", "signatures"])
+export const PLAN_SECTIONS = new Set<ProjectSection>(["documents", "drawings", "specs", "bids", "signatures"])
 
 export function getProjectIdFromPath(pathname: string): string | null {
   const segments = pathname.split("?")[0]?.split("/").filter(Boolean) ?? []
@@ -123,6 +128,8 @@ export function getProjectSection(pathname: string): ProjectSection {
         return "financials-review"
       case "tm-tickets":
         return "financials-tm-tickets"
+      case "waivers":
+        return "financials-waivers"
       case "close":
         return "receivables"
       case "budget":
@@ -145,11 +152,13 @@ export function getProjectSection(pathname: string): ProjectSection {
     case "signatures":
     case "schedule":
     case "daily-logs":
+    case "photos":
     case "tasks":
     case "time":
     case "punch":
     case "rfis":
     case "submittals":
+    case "specs":
     case "meetings":
     case "transmittals":
     case "inspections":
@@ -232,6 +241,12 @@ function buildFinancialSubs(
       requiredAny: ["bill.read", "commitment.read"],
     },
     {
+      title: "Lien Waivers",
+      url: url("/financials/waivers"),
+      isActive: section === "financials-waivers",
+      requiredAny: ["bill.read", "commitment.read"],
+    },
+    {
       title: "Trust Center",
       url: url("/financials/trust-center"),
       isActive: section === "trust-center",
@@ -298,6 +313,14 @@ export function buildProjectNavGroups({
       requiredAny: ["drawing.read", "docs.read"],
     },
     {
+      title: "Specifications",
+      moduleKey: "specs",
+      url: url("/specs"),
+      isActive: section === "specs",
+      requiredAny: ["docs.read"],
+      postures: ["commercial"],
+    },
+    {
       title: "Bids",
       moduleKey: "bids",
       url: url("/bids"),
@@ -326,6 +349,13 @@ export function buildProjectNavGroups({
       url: url("/daily-logs"),
       isActive: section === "daily-logs",
       requiredAny: ["daily_log.read"],
+    },
+    {
+      title: "Photos",
+      moduleKey: "photos",
+      url: url("/photos"),
+      isActive: section === "photos",
+      requiredAny: ["docs.read"],
     },
     config?.showTime === false
       ? null

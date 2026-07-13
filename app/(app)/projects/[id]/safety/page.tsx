@@ -2,21 +2,25 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { listObservations, listSafetyIncidents, listToolboxTalks } from "@/lib/services/safety"
 import { getOrgCompaniesAction, getProjectVendorsAction } from "../actions"
 import { SafetyClient } from "./safety-client"
+import { listProjectLocations } from "@/lib/services/locations"
+import { hasPermission } from "@/lib/services/permissions"
 
 export default async function SafetyPage({
   params,
   searchParams,
 }: {
   params: Promise<{ id: string }>
-  searchParams: Promise<{ tab?: string }>
+  searchParams: Promise<{ tab?: string; incident?: string; observation?: string }>
 }) {
   const [{ id }, query] = await Promise.all([params, searchParams])
-  const [incidents, talks, observations, vendors, orgCompanies] = await Promise.all([
+  const [incidents, talks, observations, vendors, orgCompanies, locations, canManageLocations] = await Promise.all([
     listSafetyIncidents(id),
     listToolboxTalks(id),
     listObservations(id),
     getProjectVendorsAction(id),
     getOrgCompaniesAction(),
+    listProjectLocations(id),
+    hasPermission("project.manage"),
   ])
 
   const vendorCompanies = vendors
@@ -36,6 +40,10 @@ export default async function SafetyPage({
         observations={observations}
         companies={companies}
         initialTab={query.tab}
+        initialIncidentId={query.incident}
+        initialObservationId={query.observation}
+        locations={locations}
+        canManageLocations={canManageLocations}
       />
     </PageLayout>
   )

@@ -18,7 +18,6 @@ interface PageTitleContextType {
   fullBleed: boolean
   projectContext: ProjectShellContext | null
   productTier: ProductTier
-  progressBillingEnabled: boolean
   setTitle: (title: string) => void
   setBreadcrumbs: (breadcrumbs: AppBreadcrumbItem[]) => void
   setFullBleed: (value: boolean) => void
@@ -32,7 +31,6 @@ interface PageTitleProviderProps {
   title?: string
   breadcrumbs?: AppBreadcrumbItem[]
   productTier?: ProductTier
-  progressBillingEnabled?: boolean
 }
 
 type Scoped<T> = { path: string; value: T } | undefined
@@ -42,7 +40,6 @@ export function PageTitleProvider({
   title: initialTitle,
   breadcrumbs: initialBreadcrumbs,
   productTier = "residential",
-  progressBillingEnabled = false,
 }: PageTitleProviderProps) {
   const pathname = usePathname()
 
@@ -83,13 +80,12 @@ export function PageTitleProvider({
       fullBleed,
       projectContext,
       productTier,
-      progressBillingEnabled,
       setTitle,
       setBreadcrumbs,
       setFullBleed,
       setProjectContext,
     }),
-    [title, breadcrumbs, fullBleed, projectContext, productTier, progressBillingEnabled, setTitle, setBreadcrumbs],
+    [title, breadcrumbs, fullBleed, projectContext, productTier, setTitle, setBreadcrumbs],
   )
 
   return <PageTitleContext.Provider value={value}>{children}</PageTitleContext.Provider>

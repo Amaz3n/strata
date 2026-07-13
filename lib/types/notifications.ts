@@ -68,6 +68,7 @@ export type NotificationType =
   | "recipient_signed"
   | "payable_email_ingest"
   | "meeting_finalized"
+  | "meeting_minutes_distributed"
   | "transmittal_sent"
   | "safety_incident_reported"
   | "safety_incident_alert"
@@ -119,6 +120,11 @@ export const EMAIL_NOTIFICATION_TYPES = [
     key: "meeting_finalized",
     label: "Meeting minutes finalized",
     description: "Email me when project meeting minutes are finalized.",
+  },
+  {
+    key: "meeting_minutes_distributed",
+    label: "Meeting minutes distributed",
+    description: "Email me when finalized meeting minutes are distributed.",
   },
   {
     key: "transmittal_sent",

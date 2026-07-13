@@ -39,6 +39,10 @@ export type SearchEntityType =
   | 'observation'
   | 'budget_transfer'
   | 'prequalification'
+  | 'spec_section'
+  | 'certified_payroll_report'
+  | 'meeting_transcript'
+  | 'project_location'
 
 export type SearchEntityConfig = {
   table: string
@@ -53,6 +57,36 @@ export type SearchEntityConfig = {
 
 // Entity search configurations
 export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
+  project_location: {
+    table: 'project_locations',
+    titleField: 'full_path',
+    subtitleFields: ['name'],
+    searchableFields: ['name', 'full_path'],
+    hrefTemplate: '/projects/{project_id}',
+    filters: { is_active: true },
+  },
+  meeting_transcript: {
+    table: 'meeting_transcripts',
+    titleField: 'source',
+    subtitleFields: ['status', 'created_at'],
+    descriptionFields: ['transcript_text'],
+    searchableFields: ['transcript_text', 'source', 'status'],
+    hrefTemplate: '/projects/{project_id}/meetings?meeting={meeting_id}',
+  },
+  certified_payroll_report: {
+    table: 'certified_payroll_reports',
+    titleField: 'week_ending',
+    subtitleFields: ['payroll_number', 'status'],
+    searchableFields: ['week_ending', 'status'],
+    hrefTemplate: '/projects/{project_id}/time/certified-payroll?report={id}',
+  },
+  spec_section: {
+    table: 'spec_sections',
+    titleField: 'title',
+    subtitleFields: ['section_number', 'division'],
+    searchableFields: ['title', 'section_number', 'division'],
+    hrefTemplate: '/projects/{project_id}/specs?section={id}',
+  },
   budget_transfer: {
     table: 'budget_transfers',
     titleField: 'reason',
@@ -346,6 +380,10 @@ export const PROJECT_SCOPED_ENTITY_TYPES = new Set<SearchEntityType>([
   "payable",
   "expense",
   "pay_application",
+  "spec_section",
+  "certified_payroll_report",
+  "meeting_transcript",
+  "project_location",
 ])
 
 // Builds a PostgREST select clause limited to the fields needed to render and

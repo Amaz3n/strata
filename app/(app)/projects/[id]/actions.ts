@@ -43,6 +43,7 @@ import { deleteSampleProject } from "@/lib/services/demo-seed"
 import type { ProjectVendorInput } from "@/lib/validation/project-vendors"
 import { addProjectVendor, listProjectVendors, removeProjectVendor, updateProjectVendor } from "@/lib/services/project-vendors"
 import { sendPunchDispatchEmail } from "@/lib/services/punch-lists"
+import { resolveProjectLocation } from "@/lib/services/locations"
 import { createContact } from "@/lib/services/contacts"
 import { createCompany, listCompanies } from "@/lib/services/companies"
 import { getProjectContract } from "@/lib/services/contracts"
@@ -1274,6 +1275,7 @@ export interface ProjectPunchItem {
   due_date?: string | null
   severity?: string | null
   location?: string | null
+  location_id?: string | null
   assigned_to?: string | null
   assigned_company_id?: string | null
   assigned_company_name?: string | null
@@ -1292,7 +1294,7 @@ export interface ProjectPunchItem {
 }
 
 const PUNCH_ITEM_SELECT =
-  "id, org_id, project_id, title, description, status, due_date, severity, location, assigned_to, assigned_company_id, dispatched_at, sub_completed_at, back_charge_flag, resolved_at, schedule_item_id, created_from_inspection, verification_required, verified_at, verified_by, verification_notes, created_at, updated_at, assigned_company:companies(id, name)"
+  "id, org_id, project_id, title, description, status, due_date, severity, location, location_id, assigned_to, assigned_company_id, dispatched_at, sub_completed_at, back_charge_flag, resolved_at, schedule_item_id, created_from_inspection, verification_required, verified_at, verified_by, verification_notes, created_at, updated_at, assigned_company:companies(id, name)"
 
 function mapPunchItem(row: Record<string, any>): ProjectPunchItem {
   const { assigned_company, ...rest } = row
@@ -1324,6 +1326,7 @@ export async function createProjectPunchItemAction(
     title: string
     description?: string | null
     location?: string | null
+    location_id?: string | null
     severity?: string | null
     due_date?: string | null
     assigned_to?: string | null
@@ -1333,6 +1336,7 @@ export async function createProjectPunchItemAction(
 ): Promise<ActionResult<ProjectPunchItem>> {
   return run(async () => {
       const { supabase, orgId, userId } = await requireOrgContext()
+      const location = await resolveProjectLocation(projectId, input.location_id, orgId)
 
       const { data, error } = await supabase
         .from("punch_items")
@@ -1344,7 +1348,8 @@ export async function createProjectPunchItemAction(
           status: "open",
           due_date: input.due_date ?? null,
           severity: input.severity ?? null,
-          location: input.location ?? null,
+          location_id: location?.id ?? null,
+          location: location?.full_path ?? input.location ?? null,
           assigned_to: input.assigned_to ?? null,
           assigned_company_id: input.assigned_company_id ?? null,
           dispatched_at: input.assigned_company_id ? new Date().toISOString() : null,
@@ -1395,7 +1400,7 @@ export async function createProjectPunchItemAction(
 export async function updateProjectPunchItemAction(
   projectId: string,
   punchItemId: string,
-  input: Partial<Pick<ProjectPunchItem, "title" | "description" | "status" | "due_date" | "severity" | "location" | "assigned_to" | "assigned_company_id" | "back_charge_flag" | "verification_required" | "verification_notes">>,
+  input: Partial<Pick<ProjectPunchItem, "title" | "description" | "status" | "due_date" | "severity" | "location" | "location_id" | "assigned_to" | "assigned_company_id" | "back_charge_flag" | "verification_required" | "verification_notes">>,
 ): Promise<ActionResult<ProjectPunchItem>> {
   return run(async () => {
       const { supabase, orgId, userId } = await requireOrgContext()
@@ -1418,7 +1423,11 @@ export async function updateProjectPunchItemAction(
       if (input.description !== undefined) updateData.description = input.description
       if (input.due_date !== undefined) updateData.due_date = input.due_date
       if (input.severity !== undefined) updateData.severity = input.severity
-      if (input.location !== undefined) updateData.location = input.location
+      if (input.location_id !== undefined) {
+        const location = await resolveProjectLocation(projectId, input.location_id, orgId)
+        updateData.location_id = location?.id ?? null
+        updateData.location = location?.full_path ?? null
+      } else if (input.location !== undefined) updateData.location = input.location
       if (input.assigned_to !== undefined) updateData.assigned_to = input.assigned_to
       if (input.back_charge_flag !== undefined) updateData.back_charge_flag = input.back_charge_flag
       if (input.verification_required !== undefined) updateData.verification_required = input.verification_required
@@ -1905,7 +1914,7 @@ export async function getProjectDailyLogsAction(projectId: string): Promise<Dail
         const [entriesResult, commentsResult, mentionsResult] = await Promise.all([
           supabase
             .from("daily_log_entries")
-            .select("id, org_id, project_id, daily_log_id, entry_type, description, quantity, hours, progress, schedule_item_id, task_id, punch_item_id, cost_code_id, location, trade, labor_type, inspection_result, metadata, created_at")
+            .select("id, org_id, project_id, daily_log_id, entry_type, description, quantity, hours, progress, schedule_item_id, task_id, punch_item_id, cost_code_id, location, location_id, trade, labor_type, inspection_result, metadata, created_at")
             .eq("org_id", orgId)
             .in("daily_log_id", logIds)
             .order("created_at", { ascending: true }),
@@ -3213,6 +3222,11 @@ export async function createProjectDailyLogAction(projectId: string, input: unkn
 
       const entries = Array.isArray(parsed.entries) ? parsed.entries : []
       if (entries.length > 0) {
+        const locationIds = [...new Set(entries.map((entry) => entry.location_id).filter((id): id is string => Boolean(id)))]
+        const { data: locationRows, error: locationError } = locationIds.length ? await supabase
+          .from("project_locations").select("id, full_path").eq("org_id", orgId).eq("project_id", projectId).eq("is_active", true).in("id", locationIds) : { data: [], error: null }
+        if (locationError || (locationRows?.length ?? 0) !== locationIds.length) throw new Error("One or more locations are unavailable")
+        const locationsById = new Map((locationRows ?? []).map((location) => [location.id, location.full_path]))
         const { error: entryError } = await supabase
           .from("daily_log_entries")
           .insert(entries.map((entry: DailyLogEntryInput) => ({
@@ -3228,7 +3242,8 @@ export async function createProjectDailyLogAction(projectId: string, input: unkn
             task_id: entry.task_id ?? null,
             punch_item_id: entry.punch_item_id ?? null,
             cost_code_id: entry.cost_code_id ?? null,
-            location: entry.location ?? null,
+            location_id: entry.location_id ?? null,
+            location: entry.location_id ? locationsById.get(entry.location_id) ?? null : entry.location ?? null,
             trade: entry.trade ?? null,
             labor_type: entry.labor_type ?? null,
             inspection_result: entry.inspection_result ?? null,
@@ -4692,6 +4707,7 @@ export async function uploadProjectFileAction(
 ): Promise<ActionResult<EnhancedFileMetadata>> {
   return run(async () => {
       const { supabase, orgId, userId } = await requireOrgContext()
+      await requireProjectPermission(userId, projectId, "docs.upload")
       
       const file = formData.get("file") as File
       if (!file) {
@@ -4704,6 +4720,33 @@ export async function uploadProjectFileAction(
       const description = formData.get("description")?.toString() ?? null
       const folderPath = formData.get("folderPath")?.toString() ?? null
       const tagsRaw = formData.get("tags")?.toString()
+
+      const [dailyLogResult, scheduleItemResult] = await Promise.all([
+        dailyLogId
+          ? supabase
+              .from("daily_logs")
+              .select("id")
+              .eq("org_id", orgId)
+              .eq("project_id", projectId)
+              .eq("id", dailyLogId)
+              .maybeSingle()
+          : Promise.resolve({ data: null, error: null }),
+        scheduleItemId
+          ? supabase
+              .from("schedule_items")
+              .select("id")
+              .eq("org_id", orgId)
+              .eq("project_id", projectId)
+              .eq("id", scheduleItemId)
+              .maybeSingle()
+          : Promise.resolve({ data: null, error: null }),
+      ])
+      if (dailyLogResult.error || (dailyLogId && !dailyLogResult.data)) {
+        throw new Error("Daily log not found for this project")
+      }
+      if (scheduleItemResult.error || (scheduleItemId && !scheduleItemResult.data)) {
+        throw new Error("Schedule item not found for this project")
+      }
       let tags: string[] = []
       if (tagsRaw) {
         try {

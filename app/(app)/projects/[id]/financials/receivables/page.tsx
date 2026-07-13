@@ -3,11 +3,14 @@ import { Suspense } from "react"
 import { fetchReceivablesTabDataAction } from "@/app/(app)/projects/[id]/financials/actions"
 import { FinancialSetupStatusBanner } from "@/components/financials/financial-setup-status-banner"
 import { ReceivablesTab } from "@/components/financials/receivables-tab"
+import { OurComplianceCard } from "@/components/financials/our-compliance-card"
 import { PageLayout } from "@/components/layout/page-layout"
 import { Skeleton } from "@/components/ui/skeleton"
 import { loadFinancialsReceivablesData } from "../page-data"
 
 import { unwrapAction } from "@/lib/action-result"
+import { listComplianceDocumentTypes } from "@/lib/services/compliance-documents"
+import { listProjectOwnComplianceDocuments } from "@/lib/services/project-own-compliance"
 
 export const dynamic = "force-dynamic"
 
@@ -28,9 +31,11 @@ export default async function FinancialsReceivablesPage({ params, searchParams }
 }
 
 async function FinancialsReceivablesData({ id, periodId }: { id: string; periodId: string | null }) {
-  const [financialsData, receivablesData] = await Promise.all([
+  const [financialsData, receivablesData, ownCompliance, complianceTypes] = await Promise.all([
     loadFinancialsReceivablesData(id, periodId),
     fetchReceivablesTabDataAction(id),
+    listProjectOwnComplianceDocuments(id),
+    listComplianceDocumentTypes(),
   ])
   const { project, scheduleItems, contract, draws, retainage, builderInfo, featureConfig, setupStatus } = financialsData
 
@@ -45,6 +50,11 @@ async function FinancialsReceivablesData({ id, periodId }: { id: string; periodI
       fullBleed
     >
       <FinancialSetupStatusBanner setup={setupStatus} />
+      <OurComplianceCard
+        projectId={project.id}
+        documents={ownCompliance}
+        documentTypes={complianceTypes.map((type) => ({ id: type.id, name: type.name, has_expiry: type.has_expiry }))}
+      />
       <ReceivablesTab
         projectId={project.id}
         project={project}

@@ -202,6 +202,8 @@ export interface Project {
   qbo_customer_id?: string | null
   qbo_customer_name?: string | null
   excluded_from_reporting?: boolean
+  is_public_work?: boolean
+  require_subtier_waivers?: boolean
   financial_settings?: ProjectFinancialSettings | null
   billing_contract?: Contract | null
   created_at: string
@@ -581,6 +583,7 @@ export interface DailyLogEntry {
   punch_item_id?: string
   cost_code_id?: string
   location?: string
+  location_id?: string | null
   trade?: string
   labor_type?: string
   inspection_result?: string
@@ -750,6 +753,7 @@ export interface PortalPermissions {
   can_submit_expenses?: boolean
   can_submit_daily_logs?: boolean
   can_upload_compliance_docs?: boolean  // Can upload compliance documents
+  can_upload_subtier_waivers?: boolean  // Can upload supplier and sub-subcontractor waivers
   can_view_punch_items?: boolean     // Can see + work punch items assigned to their company
   // Reviewer-specific permissions
   can_review_submittals?: boolean    // Can decide submittal review steps routed to them
@@ -798,6 +802,7 @@ export const REVIEWER_DEFAULT_PERMISSIONS: Partial<PortalPermissions> = {
   can_submit_expenses: false,
   can_submit_daily_logs: false,
   can_upload_compliance_docs: false,
+  can_upload_subtier_waivers: false,
   can_view_punch_items: false,
 }
 
@@ -1416,6 +1421,7 @@ export interface PunchItem {
   due_date?: string | null
   severity?: string | null
   location?: string | null
+  location_id?: string | null
   resolved_at?: string | null
   assigned_company_id?: string | null
   assigned_company_name?: string | null
@@ -1568,6 +1574,7 @@ export interface Submittal {
   description?: string | null
   status: string
   spec_section?: string | null
+  spec_section_id?: string | null
   submittal_type?: string | null
   due_date?: string | null
   required_on_site?: string | null

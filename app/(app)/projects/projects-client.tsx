@@ -65,7 +65,6 @@ import {
   type FinancialSetupValue,
 } from "@/components/projects/project-financial-setup-fields"
 import { ArrowLeft, ArrowRight } from "@/components/icons"
-import { usePageTitle } from "@/components/layout/page-title-context"
 import { cn } from "@/lib/utils"
 import {
   getDefaultProjectPropertyType,
@@ -162,7 +161,6 @@ function normalizeProjectInput(values: ProjectInput): ProjectInput {
 }
 
 export function ProjectsClient({ projects, clientContacts, scheduleSummaries, productTier }: ProjectsClientProps) {
-  const { progressBillingEnabled } = usePageTitle()
   const defaultPropertyType = getDefaultProjectPropertyType(productTier)
   const orgTerms = terminology(productTier)
   const [projectsState, setProjectsState] = useState<Project[]>(projects)
@@ -188,7 +186,7 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries, pr
   const [isCreating, setIsCreating] = useState(false)
   const [createDateRange, setCreateDateRange] = useState<DateRange | undefined>()
   const [createFinancialSetup, setCreateFinancialSetup] = useState<FinancialSetupValue>(() =>
-    emptyFinancialSetup("fixed_price", defaultPropertyType, progressBillingEnabled),
+    emptyFinancialSetup("fixed_price", defaultPropertyType),
   )
 
   // Edit sheet
@@ -337,7 +335,7 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries, pr
         qbo_customer_id: null,
         qbo_customer_name: null,
       })
-      setCreateFinancialSetup(emptyFinancialSetup("fixed_price", defaultPropertyType, progressBillingEnabled))
+      setCreateFinancialSetup(emptyFinancialSetup("fixed_price", defaultPropertyType))
       setCreateDateRange(undefined)
       toast.success("Project created", { description: created.name })
       setCreateSheetOpen(false)
@@ -620,10 +618,9 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries, pr
         financialSetup={createFinancialSetup}
         onFinancialSetupChange={setCreateFinancialSetup}
         productTier={productTier}
-        progressBillingEnabled={progressBillingEnabled}
         onClose={() => {
           createForm.reset()
-          setCreateFinancialSetup(emptyFinancialSetup("fixed_price", defaultPropertyType, progressBillingEnabled))
+          setCreateFinancialSetup(emptyFinancialSetup("fixed_price", defaultPropertyType))
           setCreateDateRange(undefined)
           setCreateSheetOpen(false)
         }}
@@ -644,7 +641,6 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries, pr
         financialSetup={editFinancialSetup}
         onFinancialSetupChange={setEditFinancialSetup}
         productTier={productTier}
-        progressBillingEnabled={progressBillingEnabled}
         onClose={() => {
           setEditSheetOpen(false)
           setEditingProject(null)
@@ -778,7 +774,6 @@ interface ProjectFormSheetProps {
   financialSetup: FinancialSetupValue
   onFinancialSetupChange: (value: FinancialSetupValue) => void
   productTier: ProductTier
-  progressBillingEnabled: boolean
   onClose: () => void
 }
 
@@ -796,7 +791,6 @@ function ProjectFormSheet({
   financialSetup,
   onFinancialSetupChange,
   productTier,
-  progressBillingEnabled,
   onClose,
 }: ProjectFormSheetProps) {
   const isEdit = mode === "edit"
@@ -1277,8 +1271,12 @@ function ProjectFormSheet({
                       <Select
                         onValueChange={(value) => {
                           field.onChange(value)
-                          if (value === "commercial" && (!financialSetup.retainagePercent || financialSetup.retainagePercent === "0")) {
-                            onFinancialSetupChange({ ...financialSetup, retainagePercent: "10" })
+                          if (mode === "create") {
+                            onFinancialSetupChange({
+                              ...financialSetup,
+                              fixedPriceBillingBasis: value === "commercial" ? "progress" : "draws",
+                              retainagePercent: value === "commercial" ? "10" : "0",
+                            })
                           }
                         }}
                         value={field.value ?? ""}
@@ -1342,7 +1340,6 @@ function ProjectFormSheet({
                   value={financialSetup}
                   onChange={onFinancialSetupChange}
                   posture={posture}
-                  progressBillingEnabled={progressBillingEnabled}
                 />
                 {financialMessages.blocking[0] || financialMessages.warnings[0] ? (
                   <p

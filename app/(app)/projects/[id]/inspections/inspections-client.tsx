@@ -6,6 +6,7 @@ import Link from "next/link"
 import { toast } from "sonner"
 import { unwrapAction } from "@/lib/action-result"
 import type { ChecklistTemplate, Inspection, InspectionDetail, InspectionItem } from "@/lib/services/inspections"
+import type { CreateInspectionInput } from "@/lib/validation/inspections"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -21,6 +22,9 @@ import {
   updateInspectionAction,
   updateInspectionItemAction,
 } from "./actions"
+import { InspectionForm } from "@/components/inspections/inspection-form"
+import type { ProjectLocation } from "@/lib/services/locations"
+import { Plus } from "@/components/icons"
 
 const resultStyles: Record<string, string> = {
   pass: "bg-success/15 text-success border-success/30",
@@ -34,76 +38,64 @@ export function InspectionsClient({
   templates,
   selected,
   companies,
+  locations,
+  canManageLocations,
+  scheduleLink,
 }: {
   projectId: string
   inspections: Inspection[]
   templates: ChecklistTemplate[]
   selected?: InspectionDetail | null
   companies: Array<{ id: string; name: string }>
+  locations: ProjectLocation[]
+  canManageLocations: boolean
+  scheduleLink?: { id: string; title: string } | null
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
-  const [templateId, setTemplateId] = useState<string>("")
+  const [locationFilter, setLocationFilter] = useState("all")
+  const [sheetOpen, setSheetOpen] = useState(Boolean(scheduleLink))
+  const [isCreating, setIsCreating] = useState(false)
 
   const submit = (work: () => Promise<void>) =>
     startTransition(() => {
       void work().catch((error) => toast.error(error instanceof Error ? error.message : "Something went wrong"))
     })
 
-  const selectedTemplate = templates.find((template) => template.id === templateId)
+  const filteredInspections = inspections.filter((inspection) => locationFilter === "all" || inspection.location_id === locationFilter)
+
+  const handleCreate = async (payload: CreateInspectionInput) => {
+    setIsCreating(true)
+    try {
+      const inspection = unwrapAction(await createInspectionAction(payload))
+      setSheetOpen(false)
+      toast.success("Inspection started")
+      router.push(`/projects/${projectId}/inspections?inspection=${inspection.id}`)
+      router.refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Something went wrong")
+    } finally {
+      setIsCreating(false)
+    }
+  }
 
   return (
     <div className="space-y-6">
-      <form
-        className="grid gap-3 border p-4 md:grid-cols-[240px_1fr_180px_auto]"
-        onSubmit={(event) => {
-          event.preventDefault()
-          const form = new FormData(event.currentTarget)
-          submit(async () => {
-            const inspection = unwrapAction(
-              await createInspectionAction({
-                project_id: projectId,
-                template_id: templateId || null,
-                kind: selectedTemplate?.kind ?? (form.get("kind") || "quality"),
-                title: form.get("title") || selectedTemplate?.name,
-                location: form.get("location") || null,
-              }),
-            )
-            toast.success("Inspection started")
-            router.push(`/projects/${projectId}/inspections?inspection=${inspection.id}`)
-            router.refresh()
-          })
-        }}
-      >
-        <Select value={templateId || "__blank__"} onValueChange={(v) => setTemplateId(v === "__blank__" ? "" : v)} disabled={pending}>
-          <SelectTrigger><SelectValue placeholder="Template" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__blank__">Blank inspection</SelectItem>
-            {templates.map((template) => (
-              <SelectItem key={template.id} value={template.id}>
-                {template.name} ({template.kind})
-              </SelectItem>
-            ))}
-          </SelectContent>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <Select value={locationFilter} onValueChange={setLocationFilter}>
+          <SelectTrigger className="w-full sm:w-56"><SelectValue placeholder="Location" /></SelectTrigger>
+          <SelectContent><SelectItem value="all">All locations</SelectItem>{locations.map((location) => <SelectItem key={location.id} value={location.id}>{location.full_path}</SelectItem>)}</SelectContent>
         </Select>
-        <Input name="title" placeholder={selectedTemplate ? selectedTemplate.name : "Inspection title"} required={!selectedTemplate} disabled={pending} />
-        <Input name="location" placeholder="Location (optional)" disabled={pending} />
-        <div className="flex gap-2">
-          {!selectedTemplate ? (
-            <Select name="kind" defaultValue="quality" disabled={pending}>
-              <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="quality">Quality</SelectItem>
-                <SelectItem value="safety">Safety</SelectItem>
-              </SelectContent>
-            </Select>
-          ) : null}
-          <Button type="submit" disabled={pending}>Start inspection</Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" asChild>
+            <Link href="/settings/checklists">Checklist library</Link>
+          </Button>
+          <Button onClick={() => setSheetOpen(true)}>
+            <Plus className="mr-2 h-4 w-4" />
+            New inspection
+          </Button>
         </div>
-        <p className="text-xs text-muted-foreground md:col-span-4">
-          Manage the org checklist library in <Link className="underline underline-offset-2" href="/settings/checklists">Settings → Checklists</Link>.
-        </p>
-      </form>
+      </div>
 
       <div className="border">
         <Table>
@@ -120,8 +112,8 @@ export function InspectionsClient({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {inspections.length ? (
-              inspections.map((inspection) => (
+            {filteredInspections.length ? (
+              filteredInspections.map((inspection) => (
                 <TableRow
                   key={inspection.id}
                   className="cursor-pointer"
@@ -150,7 +142,17 @@ export function InspectionsClient({
             ) : (
               <TableRow>
                 <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
-                  No inspections yet. Start one from a template above.
+                  {inspections.length ? (
+                    "No inspections match this location."
+                  ) : (
+                    <div className="flex flex-col items-center gap-2">
+                      <span>No inspections yet.</span>
+                      <Button variant="outline" size="sm" onClick={() => setSheetOpen(true)}>
+                        <Plus className="mr-2 h-4 w-4" />
+                        New inspection
+                      </Button>
+                    </div>
+                  )}
                 </TableCell>
               </TableRow>
             )}
@@ -168,6 +170,18 @@ export function InspectionsClient({
           submit={submit}
         />
       ) : null}
+
+      <InspectionForm
+        open={sheetOpen}
+        onOpenChange={setSheetOpen}
+        projectId={projectId}
+        templates={templates}
+        locations={locations}
+        canManageLocations={canManageLocations}
+        scheduleLink={scheduleLink}
+        isSubmitting={isCreating}
+        onSubmit={handleCreate}
+      />
     </div>
   )
 }

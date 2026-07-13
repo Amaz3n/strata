@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { formatLocalDate } from "@/lib/utils"
 
 import type { Company, Submittal, SubmittalItem, SubmittalReviewStep, Project } from "@/lib/types"
+import type { SpecSectionOption } from "@/components/specs/types"
 import { SubmittalReviewRail } from "@/components/submittals/submittal-review-rail"
 import { unwrapAction } from "@/lib/action-result"
 import { Badge } from "@/components/ui/badge"
@@ -43,6 +44,7 @@ import {
   listSubmittalReviewStepsAction,
   listSubmittalRevisionsAction,
   resubmitSubmittalAction,
+  updateSubmittalAction,
 } from "@/app/(app)/submittals/actions"
 
 const statusLabels: Record<string, string> = {
@@ -74,6 +76,7 @@ interface SubmittalDetailSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onUpdate?: (submittal: Submittal) => void
+  specSections?: SpecSectionOption[]
 }
 
 export function SubmittalDetailSheet({
@@ -83,6 +86,7 @@ export function SubmittalDetailSheet({
   open,
   onOpenChange,
   onUpdate,
+  specSections = [],
 }: SubmittalDetailSheetProps) {
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
   const [items, setItems] = useState<SubmittalItem[]>([])
@@ -352,12 +356,34 @@ export function SubmittalDetailSheet({
             {typeof submittal.lead_time_days === "number" && (
               <Badge variant="outline" className="text-xs">Lead time: {submittal.lead_time_days}d</Badge>
             )}
-            {submittal.spec_section && (
+            {specSections.length ? (
+              <Select
+                value={submittal.spec_section_id ?? "__none__"}
+                disabled={isPending}
+                onValueChange={(value) => startTransition(async () => {
+                  try {
+                    const section = specSections.find((item) => item.id === value)
+                    const updated = unwrapAction(await updateSubmittalAction({
+                      submittal_id: submittal.id,
+                      spec_section_id: value === "__none__" ? null : value,
+                      spec_section: section?.section_number ?? null,
+                    }))
+                    onUpdate?.(updated)
+                    toast.success("Spec section updated")
+                  } catch (error) {
+                    toast.error(error instanceof Error ? error.message : "Could not update spec section")
+                  }
+                })}
+              >
+                <SelectTrigger className="h-8 w-[260px]"><SelectValue placeholder="Spec section" /></SelectTrigger>
+                <SelectContent><SelectItem value="__none__">No spec section</SelectItem>{specSections.map((section) => <SelectItem key={section.id} value={section.id}>{section.section_number} · {section.title}</SelectItem>)}</SelectContent>
+              </Select>
+            ) : submittal.spec_section ? (
               <div className="flex items-center gap-1">
                 <Tag className="h-4 w-4" />
                 Spec {submittal.spec_section}
               </div>
-            )}
+            ) : null}
             {submittal.submittal_type && (
               <Badge variant="outline" className="text-xs capitalize">
                 {submittal.submittal_type.replace(/_/g, " ")}

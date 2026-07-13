@@ -51,6 +51,8 @@ export const projectInputSchema = z.object({
   qbo_customer_id: z.string().optional().nullable(),
   qbo_customer_name: z.string().optional().nullable(),
   excluded_from_reporting: z.boolean().optional(),
+  is_public_work: z.boolean().optional(),
+  require_subtier_waivers: z.boolean().optional(),
 })
 
 export const projectUpdateSchema = projectInputSchema.partial()

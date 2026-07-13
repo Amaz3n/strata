@@ -54,6 +54,10 @@ const AUDIT_ENTITY_TYPE_TO_SEARCH: Record<string, SearchEntityType> = {
   observation: "observation",
   budget_transfer: "budget_transfer",
   prequalification: "prequalification",
+  spec_section: "spec_section",
+  certified_payroll_report: "certified_payroll_report",
+  meeting_transcript: "meeting_transcript",
+  project_location: "project_location",
   // Aliases → canonical search type
   vendor_bill: "payable",
   bill: "payable",

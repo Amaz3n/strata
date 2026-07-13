@@ -7,13 +7,16 @@ import { ProjectPunchClient } from "./project-punch-client"
 import { Button } from "@/components/ui/button"
 
 import { unwrapAction } from "@/lib/action-result"
+import { listProjectLocations } from "@/lib/services/locations"
+import { hasPermission } from "@/lib/services/permissions"
 
 interface ProjectPunchPageProps {
   params: Promise<{ id: string }>
+  searchParams: Promise<{ item?: string }>
 }
 
-export default async function ProjectPunchPage({ params }: ProjectPunchPageProps) {
-  const { id } = await params
+export default async function ProjectPunchPage({ params, searchParams }: ProjectPunchPageProps) {
+  const [{ id }, query] = await Promise.all([params, searchParams])
 
   return (
     <>
@@ -25,7 +28,7 @@ export default async function ProjectPunchPage({ params }: ProjectPunchPageProps
         ]}
       />
       <Suspense fallback={<ProjectPunchFallback />}>
-        <ProjectPunchData id={id} />
+        <ProjectPunchData id={id} initialItemId={query.item} />
       </Suspense>
     </>
   )
@@ -44,18 +47,20 @@ function ProjectPunchFallback() {
   )
 }
 
-async function ProjectPunchData({ id }: { id: string }) {
+async function ProjectPunchData({ id, initialItemId }: { id: string; initialItemId?: string }) {
   const project = await getProjectAction(id)
 
   if (!project) {
     notFound()
   }
 
-  const [team, punchItems, vendors, orgCompanies] = await Promise.all([
+  const [team, punchItems, vendors, orgCompanies, locations, canManageLocations] = await Promise.all([
     getProjectTeamAction(id),
     listProjectPunchItemsAction(id),
     getProjectVendorsAction(id),
     getOrgCompaniesAction(),
+    listProjectLocations(id),
+    hasPermission("project.manage"),
   ])
 
   // Companies on the project first; fall back to the whole org list when the
@@ -71,7 +76,7 @@ async function ProjectPunchData({ id }: { id: string }) {
   return (
     <div className="space-y-6">
       <div className="flex justify-end px-6"><Button variant="outline" asChild><a href={`/projects/${project.id}/exports/punch-list`} target="_blank" rel="noreferrer">Export punch list PDF</a></Button></div>
-      <ProjectPunchClient projectId={project.id} initialItems={punchItems} team={team} companies={companies} />
+      <ProjectPunchClient projectId={project.id} initialItems={punchItems} initialItemId={initialItemId} team={team} companies={companies} locations={locations} canManageLocations={canManageLocations} />
     </div>
   )
 }

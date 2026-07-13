@@ -104,6 +104,8 @@ function mapProject(row: any): Project {
     qbo_customer_id: row.qbo_customer_id ?? null,
     qbo_customer_name: row.qbo_customer_name ?? null,
     excluded_from_reporting: row.excluded_from_reporting ?? false,
+    is_public_work: row.is_public_work ?? false,
+    require_subtier_waivers: row.require_subtier_waivers ?? false,
     financial_settings: row.project_financial_settings?.[0] ?? null,
     billing_contract: billingContractRow ? mapProjectBillingContract(billingContractRow) : null,
     created_at: row.created_at,
@@ -172,7 +174,7 @@ function mapProjectBillingContract(row: any): Contract {
 }
 
 const PROJECT_SELECT = `
-  id, org_id, name, status, start_date, end_date, location, client_id, prospect_id, property_type, project_type, description, total_value, retainage_percent, total_contract_value_cents, qbo_class_id, qbo_class_name, qbo_customer_id, qbo_customer_name, excluded_from_reporting, created_at, updated_at,
+  id, org_id, name, status, start_date, end_date, location, client_id, prospect_id, property_type, project_type, description, total_value, retainage_percent, total_contract_value_cents, qbo_class_id, qbo_class_name, qbo_customer_id, qbo_customer_name, excluded_from_reporting, is_public_work, require_subtier_waivers, created_at, updated_at,
   project_financial_settings(id, org_id, project_id, billing_model, fixed_price_billing_basis, paid_costs_required, proof_required, client_cost_approval_required, open_book_required, cost_codes_enabled, setup_completed_at, metadata),
   project_module_overrides(module_key, enabled),
   contracts(id, org_id, project_id, proposal_id, number, title, status, contract_type, total_cents, currency, markup_percent, gmp_cents, contingency_cents, fixed_fee_cents, fee_presentation, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, rate_schedule_id, requires_client_cost_approval, open_book, retainage_percent, retainage_applies_to_fee, retainage_release_trigger, retainage_schedule, stored_materials_retainage_percent, terms, effective_date, signed_at, signature_data, parent_contract_id, snapshot, created_at, updated_at)
@@ -398,6 +400,8 @@ export async function updateProject({
     qbo_customer_id: projectNullableValue<string>(parsed, "qbo_customer_id", existing.data.qbo_customer_id),
     qbo_customer_name: projectNullableValue<string>(parsed, "qbo_customer_name", existing.data.qbo_customer_name),
     excluded_from_reporting: parsed.excluded_from_reporting ?? existing.data.excluded_from_reporting ?? false,
+    is_public_work: parsed.is_public_work ?? existing.data.is_public_work ?? false,
+    require_subtier_waivers: parsed.require_subtier_waivers ?? existing.data.require_subtier_waivers ?? false,
   }
 
   const { data, error } = await supabase

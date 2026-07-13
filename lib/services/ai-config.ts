@@ -4,7 +4,7 @@ import type { OrgServiceContext } from "@/lib/services/context"
 
 export const AI_PROVIDER_VALUES = ["openai", "anthropic", "google"] as const
 export type AiProvider = (typeof AI_PROVIDER_VALUES)[number]
-export const AI_FEATURE_VALUES = ["search", "document_extraction", "drawings_vision"] as const
+export const AI_FEATURE_VALUES = ["search", "document_extraction", "drawings_vision", "spec_classification", "transcription", "meeting_minutes"] as const
 export type AiFeature = (typeof AI_FEATURE_VALUES)[number]
 
 export type AiConfigSource = "org" | "platform" | "env" | "default"
@@ -53,6 +53,21 @@ export const AI_FEATURE_DEFAULT_MODELS: Record<AiFeature, Record<AiProvider, str
     anthropic: "claude-3-5-sonnet-latest",
     google: "gemini-2.5-flash-lite",
   },
+  spec_classification: {
+    openai: "gpt-4.1-mini",
+    anthropic: "claude-3-5-haiku-latest",
+    google: "gemini-2.5-flash-lite",
+  },
+  transcription: {
+    openai: "whisper-1",
+    anthropic: "claude-3-5-haiku-latest",
+    google: "gemini-2.5-flash",
+  },
+  meeting_minutes: {
+    openai: "gpt-4.1-mini",
+    anthropic: "claude-3-5-haiku-latest",
+    google: "gemini-2.5-flash-lite",
+  },
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -81,7 +96,7 @@ export function inferKnownAiProviderForModel(model: string): AiProvider | null {
   if (!normalized) return null
   if (normalized.startsWith("gemini-")) return "google"
   if (normalized.startsWith("claude-")) return "anthropic"
-  if (normalized.startsWith("gpt-") || /^o\d/.test(normalized) || normalized.startsWith("chatgpt-")) {
+  if (normalized.startsWith("gpt-") || normalized.startsWith("whisper-") || /^o\d/.test(normalized) || normalized.startsWith("chatgpt-")) {
     return "openai"
   }
   return null
@@ -111,6 +126,9 @@ function resolveProviderDefaultModel(provider: AiProvider) {
 function envNameForFeature(feature: AiFeature) {
   if (feature === "document_extraction") return "DOCUMENT_EXTRACTION"
   if (feature === "drawings_vision") return "DRAWINGS_VISION"
+  if (feature === "spec_classification") return "SPEC_CLASSIFICATION"
+  if (feature === "transcription") return "TRANSCRIPTION"
+  if (feature === "meeting_minutes") return "MEETING_MINUTES"
   return "AI_SEARCH"
 }
 
@@ -129,7 +147,7 @@ function resolveDefaultConfigFromEnv(feature: AiFeature = "search") {
   const provider =
     normalizeAiProvider(process.env[`${prefix}_PROVIDER_DEFAULT`]) ??
     (feature === "search" ? normalizeAiProvider(process.env.AI_SEARCH_PROVIDER_DEFAULT) : null) ??
-    (feature === "search" ? "openai" : "google")
+    (feature === "search" || feature === "transcription" ? "openai" : "google")
   const model =
     sanitizeModel(process.env[`${prefix}_MODEL_DEFAULT`]) ??
     (feature === "search" ? sanitizeModel(process.env.AI_SEARCH_MODEL_DEFAULT) : null) ??

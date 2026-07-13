@@ -20,6 +20,7 @@ import { enqueueBillPaymentSync, enqueueVendorBillSync } from "@/lib/services/qb
 import { APPROVAL_GATE_REASONS, loadApprovalGateSettings } from "@/lib/financials/approval-gates"
 import { isCostDrivenBillingModel } from "@/lib/financials/billing-model"
 import { payableOutstandingCents } from "@/lib/financials/payables-rules"
+import { listMissingSubtierWaiversForBill } from "@/lib/services/lien-waivers"
 
 export type VendorBillStatus = "pending" | "approved" | "partial" | "paid"
 
@@ -695,6 +696,33 @@ export async function updateVendorBillStatus({
   }
 
   if (parsed.status === "paid" || parsed.status === "partial") {
+    const { data: projectControls } = await supabase
+      .from("projects")
+      .select("require_subtier_waivers")
+      .eq("org_id", resolvedOrgId)
+      .eq("id", existing.project_id)
+      .maybeSingle()
+    if (projectControls?.require_subtier_waivers) {
+      if (existing.lien_waiver_status !== "received") {
+        throw new Error("First-tier lien waiver required before payment")
+      }
+      if (!existing.commitment_id) {
+        throw new Error("A commitment is required to validate sub-tier lien waivers before payment")
+      }
+      const periodEnd = String(existingMetadata.billing_period_end ?? existing.due_date ?? existing.bill_date ?? "")
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(periodEnd)) {
+        throw new Error("Set the payable period end before validating sub-tier lien waivers")
+      }
+      const missing = await listMissingSubtierWaiversForBill({
+        orgId: resolvedOrgId,
+        projectId: existing.project_id,
+        commitmentId: existing.commitment_id,
+        periodEnd,
+      })
+      if (missing.length) {
+        throw new Error(`Sub-tier lien waivers required before payment: ${missing.map((row: any) => row.claimant_company_name).join(", ")}`)
+      }
+    }
     const rules = await getComplianceRules(resolvedOrgId).catch(() => ({
       require_lien_waiver: false,
       block_payment_on_missing_docs: true,

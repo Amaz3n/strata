@@ -2,21 +2,28 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { getInspection, listChecklistTemplates, listInspections } from "@/lib/services/inspections"
 import { getOrgCompaniesAction, getProjectVendorsAction } from "../actions"
 import { InspectionsClient } from "./inspections-client"
+import { listProjectLocations } from "@/lib/services/locations"
+import { hasPermission } from "@/lib/services/permissions"
 
 export default async function InspectionsPage({
   params,
   searchParams,
 }: {
   params: Promise<{ id: string }>
-  searchParams: Promise<{ inspection?: string }>
+  searchParams: Promise<{ inspection?: string; schedule_item?: string; title?: string }>
 }) {
   const [{ id }, query] = await Promise.all([params, searchParams])
-  const [inspections, templates, selected, vendors, orgCompanies] = await Promise.all([
+  const scheduleLink = query.schedule_item
+    ? { id: query.schedule_item, title: query.title?.trim() ?? "" }
+    : null
+  const [inspections, templates, selected, vendors, orgCompanies, locations, canManageLocations] = await Promise.all([
     listInspections(id),
     listChecklistTemplates(),
     query.inspection ? getInspection(query.inspection) : Promise.resolve(null),
     getProjectVendorsAction(id),
     getOrgCompaniesAction(),
+    listProjectLocations(id),
+    hasPermission("project.manage"),
   ])
 
   const vendorCompanies = vendors
@@ -29,7 +36,7 @@ export default async function InspectionsPage({
 
   return (
     <PageLayout title="Inspections" breadcrumbs={[{ label: "Project" }, { label: "Inspections" }]}>
-      <InspectionsClient projectId={id} inspections={inspections} templates={templates} selected={selected} companies={companies} />
+      <InspectionsClient projectId={id} inspections={inspections} templates={templates} selected={selected} companies={companies} locations={locations} canManageLocations={canManageLocations} scheduleLink={scheduleLink} />
     </PageLayout>
   )
 }

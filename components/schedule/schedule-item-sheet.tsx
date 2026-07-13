@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useRef, useCallback } from "react"
+import { useRouter } from "next/navigation"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { format } from "date-fns"
@@ -20,9 +21,8 @@ import { useSchedule } from "./schedule-context"
 import { PHASE_COLORS, parseDate, toDateString } from "./types"
 import { getProjectAssignableResourcesAction, type AssignableResource } from "@/app/(app)/projects/[id]/actions"
 import { setScheduleAssigneeAction } from "@/app/(app)/schedule/assignment-actions"
-import { inspectionMetadataSchema, type InspectionChecklistItem, type InspectionResult } from "@/lib/validation/inspections"
-import { EntityAttachments, type AttachedFile } from "@/components/files"
-import { listAttachmentsAction, detachFileLinkAction, uploadFileAction, attachFileAction } from "@/app/(app)/documents/actions"
+import type { Inspection } from "@/lib/services/inspections"
+import { getInspectionForScheduleItemAction } from "@/app/(app)/projects/[id]/inspections/actions"
 import { listCostCodesAction } from "@/app/(app)/settings/cost-codes/actions"
 import { ChangeOrderImpactBadge } from "./change-order-impact-badge"
 import { DrawMilestoneOverlay } from "./draw-milestone-overlay"
@@ -96,8 +96,6 @@ import {
   ExternalLink,
 } from "lucide-react"
 import { DateRange } from "react-day-picker"
-
-import { unwrapAction } from "@/lib/action-result"
 
 interface ScheduleItemSheetProps {
   open: boolean
@@ -177,15 +175,9 @@ export function ScheduleItemSheet({
   const [assignableResources, setAssignableResources] = useState<AssignableResource[]>([])
   const [loadingResources, setLoadingResources] = useState(false)
   const [selectedProjectId, setSelectedProjectId] = useState<string>(projectId)
-  const [inspectionResult, setInspectionResult] = useState<InspectionResult>("pending")
-  const [inspectionNotes, setInspectionNotes] = useState("")
-  const [inspectionChecklist, setInspectionChecklist] = useState<InspectionChecklistItem[]>([])
-  const [inspectionSignedBy, setInspectionSignedBy] = useState("")
-  const [inspectionSignedAt, setInspectionSignedAt] = useState<string | undefined>(undefined)
-  const [inspectionAttachments, setInspectionAttachments] = useState<AttachedFile[]>([])
-  const [inspectionAttachmentsLoading, setInspectionAttachmentsLoading] = useState(false)
-  const [shareInspectionAttachmentsWithClients, setShareInspectionAttachmentsWithClients] = useState(false)
-  const [newChecklistItem, setNewChecklistItem] = useState("")
+  const [linkedInspection, setLinkedInspection] = useState<Inspection | null>(null)
+  const [linkedInspectionLoading, setLinkedInspectionLoading] = useState(false)
+  const router = useRouter()
 
   // CO/Draw integration state
   const [changeOrderImpacts, setChangeOrderImpacts] = useState<ScheduleItemChangeOrder[]>([])
@@ -315,20 +307,6 @@ export function ScheduleItemSheet({
         setDateRange({ from: startDate, to: endDate || startDate })
       }
 
-      const inspectionMeta = inspectionMetadataSchema.safeParse((item.metadata as any)?.inspection ?? {})
-      if (item.item_type === "inspection" && inspectionMeta.success) {
-        setInspectionResult(inspectionMeta.data.result)
-        setInspectionNotes(inspectionMeta.data.notes ?? "")
-        setInspectionChecklist(inspectionMeta.data.checklist ?? [])
-        setInspectionSignedBy(inspectionMeta.data.signed_by ?? "")
-        setInspectionSignedAt(inspectionMeta.data.signed_at ?? undefined)
-      } else {
-        setInspectionResult("pending")
-        setInspectionNotes("")
-        setInspectionChecklist([])
-        setInspectionSignedBy("")
-        setInspectionSignedAt(undefined)
-      }
     } else {
       form.reset({
         project_id: activeProjectId,
@@ -359,14 +337,6 @@ export function ScheduleItemSheet({
         setDateRange(undefined)
       }
 
-      setInspectionResult("pending")
-      setInspectionNotes("")
-      setInspectionChecklist([])
-      setInspectionSignedBy("")
-      setInspectionSignedAt(undefined)
-      setInspectionAttachments([])
-      setShareInspectionAttachmentsWithClients(false)
-      setNewChecklistItem("")
     }
   }, [item, activeProjectId, form, initialDates, open, setDateRange])
 
@@ -413,27 +383,25 @@ export function ScheduleItemSheet({
     }
   }, [assignedToValue, form, getSelectedResource])
 
+  // Load the inspection linked to this scheduled slot, if one has been started.
   useEffect(() => {
-    if (!open || !isEditing || !item || !isInspection) return
-    setInspectionAttachmentsLoading(true)
-    listAttachmentsAction("schedule_item", item.id)
-      .then((links) =>
-        setInspectionAttachments(
-          links.map((link) => ({
-            id: link.file.id,
-            linkId: link.id,
-            file_name: link.file.file_name,
-            mime_type: link.file.mime_type,
-            size_bytes: link.file.size_bytes,
-            download_url: link.file.download_url,
-            thumbnail_url: link.file.thumbnail_url,
-            created_at: link.created_at,
-            link_role: link.link_role,
-          })),
-        ),
-      )
-      .catch((error) => console.error("Failed to load inspection attachments", error))
-      .finally(() => setInspectionAttachmentsLoading(false))
+    if (!open || !isEditing || !item || !isInspection) {
+      setLinkedInspection(null)
+      return
+    }
+    let cancelled = false
+    setLinkedInspectionLoading(true)
+    getInspectionForScheduleItemAction(item.id)
+      .then((result) => {
+        if (cancelled) return
+        setLinkedInspection(result.success ? result.data : null)
+      })
+      .finally(() => {
+        if (!cancelled) setLinkedInspectionLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [open, isEditing, item, isInspection])
 
   // Load CO impacts and linked draws when editing
@@ -512,7 +480,6 @@ export function ScheduleItemSheet({
       }
 
       const existingMetadata = isEditing && item ? (item.metadata ?? {}) : {}
-      const selectedAssignee = assigneeValue ? getSelectedResource(assigneeValue) : null
 
       const nextMetadata: Record<string, any> = {
         ...existingMetadata,
@@ -520,21 +487,9 @@ export function ScheduleItemSheet({
         notes: formattedValues.notes || "",
       }
 
-      if (formattedValues.item_type === "inspection") {
-        const parsedInspection = inspectionMetadataSchema.parse({
-          result: inspectionResult,
-          inspector: selectedAssignee
-            ? { type: selectedAssignee.type, id: selectedAssignee.id, label: selectedAssignee.name }
-            : undefined,
-          notes: inspectionNotes || undefined,
-          checklist: inspectionChecklist,
-          signed_by: inspectionSignedBy || undefined,
-          signed_at: inspectionSignedAt,
-        })
-        nextMetadata.inspection = parsedInspection
-      } else if (nextMetadata.inspection) {
-        delete nextMetadata.inspection
-      }
+      // Inspection execution now lives in the standalone inspections engine
+      // (see the Inspection panel below); never persist legacy checklist blobs.
+      if (nextMetadata.inspection) delete nextMetadata.inspection
 
       // For contact/company, we can't set assigned_to FK. Strip it before sending to server.
       const payload =
@@ -592,53 +547,18 @@ export function ScheduleItemSheet({
   // Get other items for dependencies (excluding current item)
   const availableDependencies = items?.filter((i) => i.id !== item?.id) ?? []
 
-  const handleAttachInspection = async (files: File[], linkRole?: string) => {
+  const openLinkedInspection = (inspectionId: string) => {
     if (!item) return
-
-    for (const file of files) {
-      const formData = new FormData()
-      formData.append("file", file)
-      formData.append("projectId", item.project_id)
-      formData.append("category", file.type.startsWith("image/") ? "photos" : "other")
-      formData.append("shareWithClients", shareInspectionAttachmentsWithClients ? "true" : "false")
-
-      const uploaded = unwrapAction(await uploadFileAction(formData))
-      unwrapAction(await attachFileAction(uploaded.id, "schedule_item", item.id, item.project_id, linkRole))
-    }
-
-    const links = await listAttachmentsAction("schedule_item", item.id)
-    setInspectionAttachments(
-      links.map((link) => ({
-        id: link.file.id,
-        linkId: link.id,
-        file_name: link.file.file_name,
-        mime_type: link.file.mime_type,
-        size_bytes: link.file.size_bytes,
-        download_url: link.file.download_url,
-        thumbnail_url: link.file.thumbnail_url,
-        created_at: link.created_at,
-        link_role: link.link_role,
-      })),
-    )
+    onOpenChange(false)
+    router.push(`/projects/${item.project_id}/inspections?inspection=${inspectionId}`)
   }
 
-  const handleDetachInspection = async (linkId: string) => {
-    unwrapAction(await detachFileLinkAction(linkId))
+  const startLinkedInspection = () => {
     if (!item) return
-    const links = await listAttachmentsAction("schedule_item", item.id)
-    setInspectionAttachments(
-      links.map((link) => ({
-        id: link.file.id,
-        linkId: link.id,
-        file_name: link.file.file_name,
-        mime_type: link.file.mime_type,
-        size_bytes: link.file.size_bytes,
-        download_url: link.file.download_url,
-        thumbnail_url: link.file.thumbnail_url,
-        created_at: link.created_at,
-        link_role: link.link_role,
-      })),
-    )
+    const params = new URLSearchParams({ schedule_item: item.id })
+    if (item.name) params.set("title", item.name)
+    onOpenChange(false)
+    router.push(`/projects/${item.project_id}/inspections?${params.toString()}`)
   }
 
   return (
@@ -1669,144 +1589,40 @@ export function ScheduleItemSheet({
                     <AccordionItem value="inspection">
                       <AccordionTrigger className="text-sm">Inspection</AccordionTrigger>
                       <AccordionContent>
-                        <div className="space-y-4">
-                          <div className="grid gap-3 sm:grid-cols-2">
-                            <div className="space-y-2">
-                              <Label>Result</Label>
-                              <Select value={inspectionResult} onValueChange={(v) => setInspectionResult(v as InspectionResult)}>
-                                <SelectTrigger>
-                                  <SelectValue placeholder="Select result" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="pending">Pending</SelectItem>
-                                  <SelectItem value="pass">Pass</SelectItem>
-                                  <SelectItem value="fail">Fail</SelectItem>
-                                  <SelectItem value="partial">Partial</SelectItem>
-                                </SelectContent>
-                              </Select>
-                            </div>
-                            <div className="space-y-2">
-                              <Label>Signoff</Label>
-                              <div className="flex gap-2">
-                                <Input
-                                  value={inspectionSignedBy}
-                                  onChange={(e) => setInspectionSignedBy(e.target.value)}
-                                  placeholder="Signer name"
-                                />
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  onClick={() => {
-                                    if (!inspectionSignedBy.trim()) return
-                                    setInspectionSignedAt(new Date().toISOString())
-                                  }}
-                                >
-                                  Sign
-                                </Button>
+                        <div className="space-y-3">
+                          {!isEditing || !item ? (
+                            <p className="text-xs text-muted-foreground">
+                              Save this scheduled inspection first, then start its checklist here.
+                            </p>
+                          ) : linkedInspectionLoading ? (
+                            <p className="text-xs text-muted-foreground">Loading inspection…</p>
+                          ) : linkedInspection ? (
+                            <div className="space-y-3">
+                              <div className="flex items-center justify-between gap-3 border p-3">
+                                <div className="min-w-0">
+                                  <p className="font-mono text-xs text-muted-foreground">
+                                    INSP-{linkedInspection.inspection_number} · {linkedInspection.kind.toUpperCase()}
+                                  </p>
+                                  <p className="truncate text-sm font-medium">{linkedInspection.title}</p>
+                                </div>
+                                <Badge variant="outline" className="shrink-0 uppercase">
+                                  {linkedInspection.result ?? linkedInspection.status.replace(/_/g, " ")}
+                                </Badge>
                               </div>
-                              {inspectionSignedAt ? (
-                                <p className="text-xs text-muted-foreground">
-                                  Signed {new Date(inspectionSignedAt).toLocaleString()}
-                                </p>
-                              ) : null}
-                            </div>
-                          </div>
-
-                          <div className="space-y-2">
-                            <Label>Inspection notes</Label>
-                            <Textarea
-                              value={inspectionNotes}
-                              onChange={(e) => setInspectionNotes(e.target.value)}
-                              placeholder="Notes, corrections, reinspection details..."
-                              className="min-h-[90px] resize-none"
-                            />
-                          </div>
-
-                          <div className="space-y-2">
-                            <Label>Checklist</Label>
-                            <div className="flex gap-2">
-                              <Input
-                                value={newChecklistItem}
-                                onChange={(e) => setNewChecklistItem(e.target.value)}
-                                placeholder="Add checklist item"
-                              />
-                              <Button
-                                type="button"
-                                variant="outline"
-                                onClick={() => {
-                                  const label = newChecklistItem.trim()
-                                  if (!label) return
-                                  setInspectionChecklist((prev) => [
-                                    ...prev,
-                                    { id: `${Date.now()}_${Math.random().toString(16).slice(2)}`, label, checked: false },
-                                  ])
-                                  setNewChecklistItem("")
-                                }}
-                              >
-                                Add
+                              <Button type="button" variant="outline" className="w-full" onClick={() => openLinkedInspection(linkedInspection.id)}>
+                                Open inspection
                               </Button>
                             </div>
-
-                            <div className="space-y-2 pt-2">
-                              {inspectionChecklist.map((entry) => (
-                                <div key={entry.id} className="flex items-center justify-between gap-2 rounded-md border p-2">
-                                  <Label className="flex items-center gap-2 text-sm font-normal">
-                                    <Checkbox
-                                      checked={entry.checked}
-                                      onCheckedChange={(checked) =>
-                                        setInspectionChecklist((prev) =>
-                                          prev.map((i) => (i.id === entry.id ? { ...i, checked: Boolean(checked) } : i)),
-                                        )
-                                      }
-                                    />
-                                    {entry.label}
-                                  </Label>
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() =>
-                                      setInspectionChecklist((prev) => prev.filter((i) => i.id !== entry.id))
-                                    }
-                                  >
-                                    Remove
-                                  </Button>
-                                </div>
-                              ))}
-                              {inspectionChecklist.length === 0 ? (
-                                <p className="text-xs text-muted-foreground">No checklist items yet.</p>
-                              ) : null}
-                            </div>
-                          </div>
-
-                          {isEditing && item ? (
-                            <div className="space-y-2">
-                              <div className="flex items-center gap-2">
-                                <Checkbox
-                                  checked={shareInspectionAttachmentsWithClients}
-                                  onCheckedChange={(value) => setShareInspectionAttachmentsWithClients(Boolean(value))}
-                                  id="share-inspection-attachments"
-                                />
-                                <Label htmlFor="share-inspection-attachments" className="text-xs font-normal text-muted-foreground">
-                                  Share new attachments with client portal
-                                </Label>
-                              </div>
-                              <EntityAttachments
-                                entityType="schedule_item"
-                                entityId={item.id}
-                                projectId={item.project_id}
-                                attachments={inspectionAttachments}
-                                onAttach={handleAttachInspection}
-                                onDetach={handleDetachInspection}
-                                readOnly={inspectionAttachmentsLoading}
-                                compact
-                                acceptedTypes=".pdf,.png,.jpg,.jpeg,.webp,.heic"
-                              />
-                            </div>
                           ) : (
-                            <p className="text-xs text-muted-foreground">
-                              Create the inspection first to add attachments.
-                            </p>
+                            <div className="space-y-2">
+                              <p className="text-xs text-muted-foreground">
+                                No inspection started for this slot yet. Starting one opens its checklist; completing it
+                                checks this item off the schedule.
+                              </p>
+                              <Button type="button" variant="outline" className="w-full" onClick={startLinkedInspection}>
+                                Start inspection
+                              </Button>
+                            </div>
                           )}
                         </div>
                       </AccordionContent>

@@ -19,6 +19,7 @@ import { FileViewer } from "@/components/files/file-viewer"
 import { useMobileAction } from "@/components/layout/mobile-action-context"
 import { useUser } from "@/lib/auth/client"
 import { QuickLogEntry } from "./quick-log-entry"
+import type { ProjectLocation } from "@/lib/services/locations"
 import { DailyLogsWorkspace } from "./daily-logs-workspace"
 import { HighlightedMentionsText, MentionTextarea, type MentionableUser } from "./mention-textarea"
 import { buildDayBuckets, dayCompleteness, daySummaryLine, imageFilesOf, weatherEmoji, type DayBucket } from "./day-aggregate"
@@ -666,6 +667,8 @@ interface DailyLogsTabProps {
   scheduleItems: ScheduleItem[]
   tasks: Task[]
   punchItems: ProjectPunchItem[]
+  locations: ProjectLocation[]
+  canManageLocations: boolean
   mentionableUsers: MentionableUser[]
   onCreateLog: (values: DailyLogInput) => Promise<DailyLog>
   onCreateComment: (dailyLogId: string, values: { body: string; mentioned_user_ids?: string[] }) => Promise<NonNullable<DailyLog["comments"]>[number]>
@@ -703,6 +706,8 @@ export function DailyLogsTab({
   scheduleItems,
   tasks,
   punchItems,
+  locations,
+  canManageLocations,
   mentionableUsers,
   onCreateLog,
   onCreateComment,
@@ -864,7 +869,9 @@ export function DailyLogsTab({
         files={files}
         scheduleItems={scheduleItems}
         tasks={tasks}
-        punchItems={punchItems}
+      punchItems={punchItems}
+      locations={locations}
+      canManageLocations={canManageLocations}
         mentionableUsers={mentionableUsers}
         onCreateLog={onCreateLog}
         onCreateComment={onCreateComment}
@@ -1032,6 +1039,8 @@ export function DailyLogsTab({
         scheduleItems={scheduleItems}
         tasks={tasks}
         punchItems={punchItems}
+        locations={locations}
+        canManageLocations={canManageLocations}
         mentionableUsers={mentionableUsers}
         onCreateLog={onCreateLog}
         onUploadFiles={onUploadFiles}

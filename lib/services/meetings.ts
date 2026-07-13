@@ -4,8 +4,9 @@ import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { listDistributionMembers } from "@/lib/services/distribution-lists"
 import { recordEvent } from "@/lib/services/events"
+import { createFileShareLink } from "@/lib/services/file-share-links"
 import { persistGeneratedProjectPdf } from "@/lib/services/generated-project-pdfs"
-import { getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
+import { escapeHtml, getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
 import { requirePermission } from "@/lib/services/permissions"
 import { createTask } from "@/lib/services/tasks"
 import { createMeetingSchema, meetingAttendeeSchema, meetingItemSchema, updateMeetingAttendeeSchema, updateMeetingItemSchema, updateMeetingSchema, type CreateMeetingInput, type MeetingAttendeeInput, type MeetingItemInput, type UpdateMeetingInput } from "@/lib/validation/meetings"
@@ -22,6 +23,8 @@ export type Meeting = {
   status: "draft" | "finalized"
   finalized_at: string | null
   pdf_file_id: string | null
+  minutes_distributed_at: string | null
+  minutes_distributed_by: string | null
   metadata: Record<string, unknown>
   created_at: string
   updated_at: string
@@ -40,6 +43,10 @@ export type MeetingItem = {
   ball_in_court: string | null
   due_date: string | null
   task_id: string | null
+  linked_entity_type: "rfi" | "submittal" | "change_order" | "task" | null
+  linked_entity_id: string | null
+  linked_entity: { type: string; id: string; label: string; status: string | null } | null
+  meetings_elapsed: number
   sort_order: number
 }
 
@@ -54,11 +61,23 @@ export type MeetingAttendee = {
   present: boolean
 }
 
-export type MeetingDetail = Meeting & { items: MeetingItem[]; attendees: MeetingAttendee[]; display_number: string }
+export type MeetingDistributionRecipient = {
+  id: string
+  email: string
+  display_name: string
+  company_name: string | null
+  share_link_id: string | null
+  sent_at: string
+  first_viewed_at: string | null
+  first_downloaded_at: string | null
+}
 
-const MEETING_SELECT = "id, org_id, project_id, meeting_number, series, title, held_at, location, status, finalized_at, pdf_file_id, metadata, created_at, updated_at"
-const ITEM_SELECT = "id, meeting_id, project_id, item_number, first_meeting_id, carried_from_item_id, topic, discussion, status, ball_in_court, due_date, task_id, sort_order"
+export type MeetingDetail = Meeting & { items: MeetingItem[]; attendees: MeetingAttendee[]; distributions: MeetingDistributionRecipient[]; display_number: string }
+
+const MEETING_SELECT = "id, org_id, project_id, meeting_number, series, title, held_at, location, status, finalized_at, pdf_file_id, minutes_distributed_at, minutes_distributed_by, metadata, created_at, updated_at"
+const ITEM_SELECT = "id, meeting_id, project_id, item_number, first_meeting_id, carried_from_item_id, topic, discussion, status, ball_in_court, due_date, task_id, linked_entity_type, linked_entity_id, sort_order"
 const ATTENDEE_SELECT = "id, meeting_id, contact_id, user_id, display_name, company_name, email, present"
+const DISTRIBUTION_SELECT = "id, email, display_name, company_name, share_link_id, sent_at, first_viewed_at, first_downloaded_at"
 
 async function loadNumbering(supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"], orgId: string) {
   const { data } = await supabase.from("orgs").select("document_numbering").eq("id", orgId).single()
@@ -79,14 +98,51 @@ export async function listMeetings(projectId: string, orgId?: string): Promise<A
 export async function getMeeting(meetingId: string, orgId?: string): Promise<MeetingDetail> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("project.read", { supabase, orgId: resolvedOrgId, userId })
-  const [{ data: meeting, error }, { data: items }, { data: attendees }, numbering] = await Promise.all([
+  const [{ data: meeting, error }, { data: items }, { data: attendees }, { data: distributionRows }, numbering] = await Promise.all([
     supabase.from("meetings").select(MEETING_SELECT).eq("org_id", resolvedOrgId).eq("id", meetingId).single(),
     supabase.from("meeting_items").select(ITEM_SELECT).eq("org_id", resolvedOrgId).eq("meeting_id", meetingId).order("sort_order"),
     supabase.from("meeting_attendees").select(ATTENDEE_SELECT).eq("org_id", resolvedOrgId).eq("meeting_id", meetingId).order("display_name"),
+    supabase.from("meeting_distribution_recipients").select(DISTRIBUTION_SELECT).eq("org_id", resolvedOrgId).eq("meeting_id", meetingId).order("sent_at"),
     loadNumbering(supabase, resolvedOrgId),
   ])
   if (error || !meeting) throw new Error("Meeting not found")
-  return { ...meeting, items: items ?? [], attendees: attendees ?? [], display_number: formatDocNumber("meeting", meeting.meeting_number, numbering) } as MeetingDetail
+  const itemRows = items ?? []
+  const linkedIds = (type: string) => itemRows.filter((item) => item.linked_entity_type === type && item.linked_entity_id).map((item) => item.linked_entity_id as string)
+  const firstMeetingIds = [...new Set(itemRows.map((item) => item.first_meeting_id).filter((id): id is string => Boolean(id)))]
+  const [rfis, submittals, changeOrders, tasks, firstMeetings, seriesMeetings, accessEvents] = await Promise.all([
+    linkedIds("rfi").length ? supabase.from("rfis").select("id, rfi_number, subject, status").eq("org_id", resolvedOrgId).eq("project_id", meeting.project_id).in("id", linkedIds("rfi")) : Promise.resolve({ data: [] }),
+    linkedIds("submittal").length ? supabase.from("submittals").select("id, submittal_number, title, status").eq("org_id", resolvedOrgId).eq("project_id", meeting.project_id).in("id", linkedIds("submittal")) : Promise.resolve({ data: [] }),
+    linkedIds("change_order").length ? supabase.from("change_orders").select("id, co_number, executed_change_order_number, title, status, lifecycle").eq("org_id", resolvedOrgId).eq("project_id", meeting.project_id).in("id", linkedIds("change_order")) : Promise.resolve({ data: [] }),
+    linkedIds("task").length ? supabase.from("tasks").select("id, title, status").eq("org_id", resolvedOrgId).eq("project_id", meeting.project_id).in("id", linkedIds("task")) : Promise.resolve({ data: [] }),
+    firstMeetingIds.length ? supabase.from("meetings").select("id, meeting_number").eq("org_id", resolvedOrgId).in("id", firstMeetingIds) : Promise.resolve({ data: [] }),
+    supabase.from("meetings").select("meeting_number").eq("org_id", resolvedOrgId).eq("project_id", meeting.project_id).eq("series", meeting.series).lte("meeting_number", meeting.meeting_number),
+    meeting.pdf_file_id ? supabase.from("file_access_events").select("action, metadata, created_at").eq("org_id", resolvedOrgId).eq("file_id", meeting.pdf_file_id).order("created_at", { ascending: true }) : Promise.resolve({ data: [] }),
+  ])
+  const linked = new Map<string, MeetingItem["linked_entity"]>()
+  for (const row of rfis.data ?? []) linked.set(`rfi:${row.id}`, { type: "rfi", id: row.id, label: `RFI ${row.rfi_number}: ${row.subject}`, status: row.status })
+  for (const row of submittals.data ?? []) linked.set(`submittal:${row.id}`, { type: "submittal", id: row.id, label: `Submittal ${row.submittal_number}: ${row.title}`, status: row.status })
+  for (const row of changeOrders.data ?? []) linked.set(`change_order:${row.id}`, { type: "change_order", id: row.id, label: `CO ${row.executed_change_order_number ?? row.co_number ?? "—"}: ${row.title}`, status: row.lifecycle ?? row.status })
+  for (const row of tasks.data ?? []) linked.set(`task:${row.id}`, { type: "task", id: row.id, label: row.title, status: row.status })
+  const firstNumberById = new Map((firstMeetings.data ?? []).map((row) => [row.id, Number(row.meeting_number)]))
+  const meetingNumbers = (seriesMeetings.data ?? []).map((row) => Number(row.meeting_number))
+  const enrichedItems = itemRows.map((item) => {
+    const firstNumber = item.first_meeting_id ? firstNumberById.get(item.first_meeting_id) : meeting.meeting_number
+    const meetingsElapsed = meetingNumbers.filter((number) => firstNumber != null && number >= firstNumber).length || 1
+    return {
+      ...item,
+      linked_entity: item.linked_entity_type && item.linked_entity_id ? linked.get(`${item.linked_entity_type}:${item.linked_entity_id}`) ?? null : null,
+      meetings_elapsed: meetingsElapsed,
+    }
+  })
+  const distributions = (distributionRows ?? []).map((recipient) => {
+    const events = (accessEvents.data ?? []).filter((event) => event.metadata?.share_link_id === recipient.share_link_id)
+    return {
+      ...recipient,
+      first_viewed_at: recipient.first_viewed_at ?? events.find((event) => event.action === "view")?.created_at ?? null,
+      first_downloaded_at: recipient.first_downloaded_at ?? events.find((event) => event.action === "download")?.created_at ?? null,
+    }
+  })
+  return { ...meeting, items: enrichedItems, attendees: attendees ?? [], distributions, display_number: formatDocNumber("meeting", meeting.meeting_number, numbering) } as MeetingDetail
 }
 
 export async function createNextMeeting(input: CreateMeetingInput, orgId?: string): Promise<MeetingDetail> {
@@ -109,6 +165,7 @@ export async function createNextMeeting(input: CreateMeetingInput, orgId?: strin
         item_number: item.item_number, first_meeting_id: item.first_meeting_id ?? previous.id,
         carried_from_item_id: item.id, topic: item.topic, discussion: null, status: "open",
         ball_in_court: item.ball_in_court, due_date: item.due_date, task_id: item.task_id, sort_order: item.sort_order,
+        linked_entity_type: item.linked_entity_type, linked_entity_id: item.linked_entity_id,
       })))
       if (carryError) throw new Error(`Meeting created but items could not be carried forward: ${carryError.message}`)
     }
@@ -126,15 +183,25 @@ async function requireEditableMeeting(meetingId: string, orgId?: string) {
   return { ...context, meeting: data as Meeting }
 }
 
+async function validateMeetingItemLink(supabase: any, orgId: string, projectId: string, type?: string | null, id?: string | null) {
+  if (!type && !id) return
+  if (!type || !id) throw new Error("Linked record type and id are required together")
+  const table = type === "rfi" ? "rfis" : type === "submittal" ? "submittals" : type === "change_order" ? "change_orders" : type === "task" ? "tasks" : null
+  if (!table) throw new Error("Unsupported linked meeting record")
+  const { data } = await supabase.from(table).select("id").eq("org_id", orgId).eq("project_id", projectId).eq("id", id).maybeSingle()
+  if (!data) throw new Error("Linked record does not belong to this project")
+}
+
 export async function addMeetingItem(input: MeetingItemInput, orgId?: string): Promise<MeetingItem> {
   const parsed = meetingItemSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId, meeting } = await requireEditableMeeting(parsed.meeting_id, orgId)
+  await validateMeetingItemLink(supabase, resolvedOrgId, meeting.project_id, parsed.linked_entity_type, parsed.linked_entity_id)
   const { count } = await supabase.from("meeting_items").select("id", { count: "exact", head: true }).eq("org_id", resolvedOrgId).eq("meeting_id", meeting.id).is("carried_from_item_id", null)
   const itemNumber = `${meeting.meeting_number}.${(count ?? 0) + 1}`
   const { data, error } = await supabase.from("meeting_items").insert({
     org_id: resolvedOrgId, project_id: meeting.project_id, meeting_id: meeting.id, item_number: itemNumber,
     first_meeting_id: meeting.id, topic: parsed.topic, discussion: parsed.discussion ?? null, status: parsed.status,
-    ball_in_court: parsed.ball_in_court ?? null, due_date: parsed.due_date ?? null, sort_order: (count ?? 0) + 1000,
+    ball_in_court: parsed.ball_in_court ?? null, due_date: parsed.due_date ?? null, linked_entity_type: parsed.linked_entity_type ?? null, linked_entity_id: parsed.linked_entity_id ?? null, sort_order: (count ?? 0) + 1000,
   }).select(ITEM_SELECT).single()
   if (error || !data) throw new Error(`Failed to add meeting item: ${error?.message}`)
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "insert", entityType: "meeting_item", entityId: data.id, after: data })
@@ -169,6 +236,7 @@ export async function updateMeetingItem(meetingItemId: string, input: Partial<Om
   const { data: existing } = await context.supabase.from("meeting_items").select(ITEM_SELECT).eq("org_id", context.orgId).eq("id", meetingItemId).single()
   if (!existing) throw new Error("Meeting item not found")
   await requireEditableMeeting(existing.meeting_id, context.orgId)
+  await validateMeetingItemLink(context.supabase, context.orgId, existing.project_id, parsed.linked_entity_type, parsed.linked_entity_id)
   const { data, error } = await context.supabase.from("meeting_items").update(parsed).eq("org_id", context.orgId).eq("id", meetingItemId).select(ITEM_SELECT).single()
   if (error || !data) throw new Error(`Failed to update meeting item: ${error?.message}`)
   await recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "meeting_item", entityId: meetingItemId, before: existing, after: data })
@@ -206,16 +274,76 @@ export async function createTaskFromMeetingItem({ itemId, assigneeId, assigneeKi
   return task
 }
 
+export async function distributeMeetingMinutes({
+  meetingId,
+  recipients,
+  orgId,
+}: {
+  meetingId: string
+  recipients?: Array<{ email: string; display_name?: string | null; company_name?: string | null; contact_id?: string | null; user_id?: string | null }>
+  orgId?: string
+}) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("meeting.write", { supabase, orgId: resolvedOrgId, userId })
+  const { data: meeting } = await supabase.from("meetings").select(MEETING_SELECT).eq("org_id", resolvedOrgId).eq("id", meetingId).single()
+  if (!meeting || meeting.status !== "finalized" || !meeting.pdf_file_id) throw new Error("Finalize the meeting before distributing minutes")
+  const [{ data: project }, { data: org }, attendees, distribution] = await Promise.all([
+    supabase.from("projects").select("name").eq("org_id", resolvedOrgId).eq("id", meeting.project_id).single(),
+    supabase.from("orgs").select("name, slug").eq("id", resolvedOrgId).single(),
+    supabase.from("meeting_attendees").select("contact_id, user_id, display_name, company_name, email").eq("org_id", resolvedOrgId).eq("meeting_id", meetingId),
+    listDistributionMembers(meeting.project_id, resolvedOrgId),
+  ])
+  const defaults = [
+    ...(attendees.data ?? []).filter((row) => row.email).map((row) => ({ ...row, email: row.email as string })),
+    ...distribution.filter((member) => member.scope === "all" && member.email).map((member) => ({ email: member.email as string, display_name: member.name, company_name: member.company_name, contact_id: member.contact_id, user_id: member.user_id })),
+  ]
+  const chosen = recipients?.length ? recipients : defaults
+  const unique = [...new Map(chosen.map((recipient) => [recipient.email.trim().toLowerCase(), { ...recipient, email: recipient.email.trim().toLowerCase() }])).values()]
+  if (!unique.length) throw new Error("Choose at least one recipient")
+  const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "https://arcnaples.com").replace(/\/$/, "")
+  const sentAt = new Date().toISOString()
+  for (const recipient of unique) {
+    const link = await createFileShareLink({ file_id: meeting.pdf_file_id, label: `${meeting.title} minutes for ${recipient.display_name ?? recipient.email}`, allow_download: true }, resolvedOrgId)
+    const { data: recipientRow, error } = await supabase.from("meeting_distribution_recipients").upsert({
+      org_id: resolvedOrgId,
+      project_id: meeting.project_id,
+      meeting_id: meetingId,
+      contact_id: recipient.contact_id ?? null,
+      user_id: recipient.user_id ?? null,
+      email: recipient.email,
+      display_name: recipient.display_name?.trim() || recipient.email,
+      company_name: recipient.company_name?.trim() || null,
+      share_link_id: link.id,
+      sent_at: sentAt,
+    }, { onConflict: "meeting_id,email" }).select("id").single()
+    if (error || !recipientRow) throw new Error(`Failed to record meeting distribution: ${error?.message}`)
+    const html = renderStandardEmailLayout({
+      title: `${meeting.title} minutes`,
+      messageHtml: `Meeting minutes for ${escapeHtml(project?.name ?? "the project")} are ready. This individual link records delivery and viewing for the project record.`,
+      buttonText: "View meeting minutes",
+      buttonUrl: `${appUrl}/f/${link.token}`,
+      orgName: org?.name,
+      showManageSettings: false,
+    })
+    await sendEmail({ to: [recipient.email], subject: `${meeting.title} — meeting minutes`, html, from: getOrgSenderEmail(org?.slug, org?.name) })
+  }
+  await supabase.from("meetings").update({ minutes_distributed_at: sentAt, minutes_distributed_by: userId }).eq("org_id", resolvedOrgId).eq("id", meetingId)
+  await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "meeting_minutes_distributed", entityType: "meeting", entityId: meetingId, channel: "activity", payload: { project_id: meeting.project_id, recipient_count: unique.length } })
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "meeting", entityId: meetingId, before: meeting, after: { ...meeting, minutes_distributed_at: sentAt, minutes_distributed_by: userId }, source: "meetings.distribute" })
+  return getMeeting(meetingId, resolvedOrgId)
+}
+
 export async function finalizeMeeting(meetingId: string, orgId?: string): Promise<MeetingDetail> {
   const { supabase, orgId: resolvedOrgId, userId, meeting } = await requireEditableMeeting(meetingId, orgId)
   const detail = await getMeeting(meetingId, resolvedOrgId)
-  const [{ data: project }, { data: org }] = await Promise.all([
+  const [{ data: project }, { data: org }, { count: recordedTranscriptCount }] = await Promise.all([
     supabase.from("projects").select("name").eq("org_id", resolvedOrgId).eq("id", meeting.project_id).single(),
     supabase.from("orgs").select("name, slug, address, document_numbering").eq("id", resolvedOrgId).single(),
+    supabase.from("meeting_transcripts").select("id", { count: "exact", head: true }).eq("org_id", resolvedOrgId).eq("meeting_id", meetingId).eq("source", "recorded").eq("status", "ready"),
   ])
   const displayNumber = formatDocNumber("meeting", meeting.meeting_number, (org?.document_numbering ?? {}) as DocumentNumberingSettings)
   const pdf = await renderMeetingMinutesPdf({
-    header: { orgName: org?.name ?? "Arc", orgAddress: typeof org?.address === "string" ? org.address : null, projectName: project?.name ?? "Project", title: "Meeting Minutes", documentNumber: displayNumber, date: meeting.held_at ? new Date(meeting.held_at).toLocaleDateString() : null },
+    header: { orgName: org?.name ?? "Arc", orgAddress: typeof org?.address === "string" ? org.address : null, projectName: project?.name ?? "Project", title: "Meeting Minutes", documentNumber: displayNumber, date: meeting.held_at ? new Date(meeting.held_at).toLocaleDateString() : null, footerNote: recordedTranscriptCount ? "Minutes drafted from a recorded session" : null },
     series: meeting.series, title: meeting.title, heldAt: meeting.held_at, location: meeting.location,
     attendees: detail.attendees.map((attendee) => ({ name: attendee.display_name, company: attendee.company_name, present: attendee.present })),
     items: detail.items.map((item) => ({ number: item.item_number, topic: item.topic, discussion: item.discussion, status: item.status, ballInCourt: item.ball_in_court, dueDate: item.due_date, carried: Boolean(item.carried_from_item_id) })),
@@ -225,13 +353,12 @@ export async function finalizeMeeting(meetingId: string, orgId?: string): Promis
   const finalizedAt = new Date().toISOString()
   const { error } = await supabase.from("meetings").update({ status: "finalized", finalized_at: finalizedAt, pdf_file_id: file.id }).eq("org_id", resolvedOrgId).eq("id", meetingId)
   if (error) throw new Error(`Failed to finalize meeting: ${error.message}`)
-  const distribution = await listDistributionMembers(meeting.project_id, resolvedOrgId)
-  const recipients = [...detail.attendees.map((attendee) => attendee.email), ...distribution.filter((member) => member.scope === "all").map((member) => member.email)].filter((email): email is string => Boolean(email))
-  if (recipients.length) {
-    const html = renderStandardEmailLayout({ title: `${meeting.title} minutes finalized`, messageHtml: `Meeting minutes ${displayNumber} for ${project?.name ?? "the project"} are finalized and attached.`, orgName: org?.name, showManageSettings: false })
-    await sendEmail({ to: recipients, subject: `${meeting.title} — ${displayNumber}`, html, from: getOrgSenderEmail(org?.slug, org?.name), attachments: [{ filename: fileName, content: pdf.toString("base64"), contentType: "application/pdf" }] })
-  }
   await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "meeting_finalized", entityType: "meeting", entityId: meetingId, payload: { project_id: meeting.project_id, meeting_number: meeting.meeting_number } })
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "meeting", entityId: meetingId, before: meeting, after: { ...meeting, status: "finalized", finalized_at: finalizedAt, pdf_file_id: file.id } })
-  return getMeeting(meetingId, resolvedOrgId)
+  try {
+    return await distributeMeetingMinutes({ meetingId, orgId: resolvedOrgId })
+  } catch (distributionError) {
+    if (distributionError instanceof Error && distributionError.message === "Choose at least one recipient") return getMeeting(meetingId, resolvedOrgId)
+    throw distributionError
+  }
 }

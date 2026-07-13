@@ -64,6 +64,7 @@ export function PeriodCloseWorkflow({
     Boolean(feeSummary?.enabled && (feeSummary.billable_fee_cents ?? 0) > 0),
   )
   const [overrideGmpCap, setOverrideGmpCap] = useState(false)
+  const [includeGcCompliance, setIncludeGcCompliance] = useState(false)
   const selectedPeriodId = selectedPeriod?.id ?? null
   const periodRange = selectedPeriod ? { from: selectedPeriod.period_start, to: selectedPeriod.period_end } : null
   const canGenerate = summary.readyCostIds.length > 0
@@ -105,7 +106,7 @@ export function PeriodCloseWorkflow({
         }))
         const invoiceId = (result as any).invoiceId as string | undefined
         if (invoiceId) {
-          unwrapAction(await generateOwnerBillingPackageAction({ projectId, invoiceId }))
+          unwrapAction(await generateOwnerBillingPackageAction({ projectId, invoiceId, includeGcCompliance }))
           toast.success("Invoice and backup package created")
           router.push(`/projects/${projectId}/financials/receivables?invoice=${invoiceId}`)
         } else {
@@ -238,6 +239,13 @@ export function PeriodCloseWorkflow({
                 : "No ready costs are available for the selected period"
             }
           >
+            <label className="mt-3 flex items-center justify-between gap-3 border bg-muted/20 p-3 text-sm">
+              <span>Attach our bonds, insurance, and licenses</span>
+              <Checkbox
+                checked={includeGcCompliance}
+                onCheckedChange={(checked) => setIncludeGcCompliance(checked === true)}
+              />
+            </label>
             <div className="mt-3 flex flex-wrap gap-2">
               <Button disabled={isPending || !canGenerate} onClick={generateInvoiceAndBackup}>
                 <PackageCheck className="h-4 w-4" />

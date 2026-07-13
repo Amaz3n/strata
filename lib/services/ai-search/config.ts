@@ -67,6 +67,7 @@ export const ENTITY_INTENTS: EntityIntentDefinition[] = [
   { type: "contact", label: "contact", tokens: ["contact", "people"], aliases: [/\bcontacts?\b/, /\bpeople\b/] },
   { type: "company", label: "company", tokens: ["company", "vendor"], aliases: [/\bcompanies?\b/, /\bvendors?\b/] },
   { type: "photo", label: "photo", tokens: ["photo", "image"], aliases: [/\bphotos?\b/, /\bimages?\b/] },
+  { type: "project_location", label: "project location", tokens: ["location", "area", "floor"], aliases: [/\bproject locations?\b/, /\bjob locations?\b/, /\bbuilding areas?\b/] },
 ]
 
 export const ENTITY_STATUS_VALUES: Partial<Record<SearchEntityType, string[]>> = {
@@ -102,6 +103,7 @@ export const COUNT_QUERY_CONFIGS: Partial<Record<SearchEntityType, CountQueryCon
   schedule_item: { table: "schedule_items", searchableFields: ["name", "phase", "trade", "location"] },
   photo: { table: "photos", searchableFields: ["tags"] },
   portal_access: { table: "portal_access_tokens", searchableFields: [] },
+  project_location: { table: "project_locations", searchableFields: ["name", "full_path"] },
 }
 
 export const ANALYTICS_ENTITY_CONFIGS: Partial<Record<SearchEntityType, AnalyticsEntityConfig>> = {
@@ -123,6 +125,7 @@ export const ANALYTICS_ENTITY_CONFIGS: Partial<Record<SearchEntityType, Analytic
   punch_item: { table: "punch_items", titleField: "title", searchableFields: ["title", "description", "location"], statusField: "status", projectIdField: "project_id", createdAtField: "created_at" },
   schedule_item: { table: "schedule_items", titleField: "name", searchableFields: ["name", "phase", "trade", "location"], statusField: "status", projectIdField: "project_id", createdAtField: "created_at" },
   photo: { table: "photos", titleField: "id", searchableFields: ["tags"], projectIdField: "project_id", createdAtField: "created_at" },
+  project_location: { table: "project_locations", titleField: "full_path", searchableFields: ["name", "full_path"], projectIdField: "project_id", createdAtField: "created_at" },
 }
 
 export const STATUS_ALIASES: Array<{ pattern: RegExp; normalized: string }> = [
@@ -163,9 +166,10 @@ export const FINANCIAL_ENTITY_TYPES: SearchEntityType[] = [
   "contract",
   "proposal",
   "pay_application",
+  "certified_payroll_report",
 ]
-export const DOCUMENT_ENTITY_TYPES: SearchEntityType[] = ["rfi", "submittal", "meeting", "transmittal", "drawing_set", "drawing_sheet", "file"]
-export const FIELD_ENTITY_TYPES: SearchEntityType[] = ["task", "schedule_item", "daily_log", "punch_item", "photo", "inspection", "safety_incident", "observation"]
+export const DOCUMENT_ENTITY_TYPES: SearchEntityType[] = ["rfi", "submittal", "spec_section", "meeting", "meeting_transcript", "transmittal", "drawing_set", "drawing_sheet", "file"]
+export const FIELD_ENTITY_TYPES: SearchEntityType[] = ["task", "schedule_item", "daily_log", "punch_item", "photo", "inspection", "safety_incident", "observation", "project_location"]
 export const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
   project: "/projects/{id}",
   task: "/tasks/{id}",
@@ -184,6 +188,7 @@ export const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
   rfi: "/rfis/{id}",
   submittal: "/submittals/{id}",
   meeting: "/projects/{project_id}/meetings?meeting={id}",
+  meeting_transcript: "/projects/{project_id}/meetings?meeting={meeting_id}",
   transmittal: "/projects/{project_id}/transmittals",
   drawing_set: "/drawings/sets/{id}",
   drawing_sheet: "/drawings/sheets/{id}",
@@ -200,6 +205,9 @@ export const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
   observation: "/projects/{project_id}/safety?tab=observations",
   budget_transfer: "/projects/{project_id}/financials/budget",
   prequalification: "/companies/{company_id}",
+  spec_section: "/projects/{project_id}/specs?section={id}",
+  certified_payroll_report: "/projects/{project_id}/time/certified-payroll?report={id}",
+  project_location: "/projects/{project_id}",
 }
 export const ENTITY_SEMANTIC_FALLBACKS: Partial<Record<SearchEntityType, SearchEntityType[]>> = {
   contract: ["commitment", "proposal", "change_order"],

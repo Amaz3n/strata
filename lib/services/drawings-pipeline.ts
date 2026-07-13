@@ -131,14 +131,14 @@ type MupdfModule = typeof import("mupdf")
 
 let mupdfModulePromise: Promise<MupdfModule> | null = null
 
-function loadMupdf(): Promise<MupdfModule> {
+export function loadMupdf(): Promise<MupdfModule> {
   if (!mupdfModulePromise) {
     mupdfModulePromise = import("mupdf")
   }
   return mupdfModulePromise
 }
 
-function extractPageTextLines(page: any): string[] {
+export function extractPageTextLines(page: any): string[] {
   try {
     const stext = JSON.parse(page.toStructuredText("preserve-whitespace").asJSON())
     const lines: string[] = []
@@ -159,7 +159,7 @@ function extractPageTextLines(page: any): string[] {
   }
 }
 
-function renderPagePng(mupdf: MupdfModule, page: any): { png: Buffer; width: number; height: number } {
+export function renderPagePng(mupdf: MupdfModule, page: any): { png: Buffer; width: number; height: number } {
   const dpi = Number.isFinite(RENDER_DPI) && RENDER_DPI > 0 ? RENDER_DPI : 96
   const pixmap = page.toPixmap(
     mupdf.Matrix.scale(dpi / 72, dpi / 72),

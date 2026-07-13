@@ -29,6 +29,7 @@ import { Calendar as CalendarPicker } from "@/components/ui/calendar"
 import { format } from "date-fns"
 import { cn, parseLocalDate, formatLocalDate } from "@/lib/utils"
 import { FileText, Calendar } from "@/components/icons"
+import type { SpecSectionOption } from "@/components/specs/types"
 
 const NONE_COMPANY = "__none__"
 
@@ -40,6 +41,7 @@ interface SubmittalFormProps {
   defaultProjectId?: string
   onSubmit: (values: SubmittalInput) => Promise<void>
   isSubmitting?: boolean
+  specSections?: SpecSectionOption[]
 }
 
 type SubmittalFormValues = Omit<SubmittalInput, "submittal_number">
@@ -52,6 +54,7 @@ export function SubmittalForm({
   defaultProjectId,
   onSubmit,
   isSubmitting,
+  specSections = [],
 }: SubmittalFormProps) {
   const defaultValues: SubmittalFormValues = {
     project_id: defaultProjectId ?? projects[0]?.id ?? "",
@@ -59,6 +62,7 @@ export function SubmittalForm({
     description: "",
     status: "submitted",
     spec_section: "",
+    spec_section_id: null,
     submittal_type: "",
     due_date: "",
     required_on_site: null,
@@ -297,19 +301,40 @@ export function SubmittalForm({
                   )}
                 />
 
-                <FormField
-                  control={form.control}
-                  name="spec_section"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Spec section</FormLabel>
-                      <FormControl>
-                        <Input placeholder="23 31 00" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
+                {specSections.length ? (
+                  <FormField
+                    control={form.control}
+                    name="spec_section_id"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Spec section</FormLabel>
+                        <Select
+                          value={field.value ?? "__none__"}
+                          onValueChange={(value) => {
+                            const section = specSections.find((item) => item.id === value)
+                            field.onChange(value === "__none__" ? null : value)
+                            form.setValue("spec_section", section?.section_number ?? "")
+                          }}
+                        >
+                          <FormControl><SelectTrigger className="w-full"><SelectValue placeholder="Select a section" /></SelectTrigger></FormControl>
+                          <SelectContent>
+                            <SelectItem value="__none__">No section</SelectItem>
+                            {specSections.map((section) => <SelectItem key={section.id} value={section.id}>{section.section_number} · {section.title}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                ) : (
+                  <FormField
+                    control={form.control}
+                    name="spec_section"
+                    render={({ field }) => (
+                      <FormItem><FormLabel>Spec section</FormLabel><FormControl><Input placeholder="23 31 00" {...field} /></FormControl><FormMessage /></FormItem>
+                    )}
+                  />
+                )}
               </div>
             </div>
 

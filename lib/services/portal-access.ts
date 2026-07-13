@@ -85,6 +85,7 @@ function mapPermissions(row: any): PortalPermissions {
     can_submit_expenses: row.can_submit_expenses ?? true,
     can_submit_daily_logs: row.can_submit_daily_logs ?? false,
     can_upload_compliance_docs: row.can_upload_compliance_docs ?? true,
+    can_upload_subtier_waivers: row.can_upload_subtier_waivers ?? true,
     can_view_punch_items: row.can_view_punch_items ?? false,
     // Reviewer-specific permissions
     can_review_submittals: row.can_review_submittals ?? false,
@@ -1338,6 +1339,7 @@ function permissionsToColumns(overrides?: Partial<PortalPermissions>) {
     can_submit_expenses: overrides?.can_submit_expenses ?? true,
     can_submit_daily_logs: overrides?.can_submit_daily_logs ?? false,
     can_upload_compliance_docs: overrides?.can_upload_compliance_docs ?? true,
+    can_upload_subtier_waivers: overrides?.can_upload_subtier_waivers ?? true,
     can_view_punch_items: overrides?.can_view_punch_items ?? false,
     // Reviewer-specific permissions (least-privilege: opt-in only)
     can_review_submittals: overrides?.can_review_submittals ?? false,
