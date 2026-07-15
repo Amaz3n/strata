@@ -32,7 +32,7 @@ export default async function PlatformBugsPage() {
 
   return (
     <PageLayout title="Platform Issues">
-      <div className="-m-4 -mt-6 h-[calc(100vh-3.5rem)]">
+      <div className="-m-4 -mt-6 h-[calc(100svh-3.5rem)]">
         <PlatformBugsClient
           initialBugs={bugs}
           initialEvents={events}

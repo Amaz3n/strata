@@ -1,6 +1,6 @@
 import Link from "next/link"
 import { notFound } from "next/navigation"
-import { ArrowRight, BarChart3, Receipt, TrendingUp, Wallet, Wrench } from "lucide-react"
+import { ArrowRight, BarChart3, Receipt, ShieldCheck, TrendingUp, Wallet, Wrench } from "lucide-react"
 
 import { PageLayout } from "@/components/layout/page-layout"
 import { Card } from "@/components/ui/card"
@@ -43,6 +43,13 @@ export default async function ProjectReportsPage({ params }: PageProps) {
       description: "Cost-to-cost earned revenue, billed revenue, and over-under billing position.",
       icon: BarChart3,
       href: `${base}/wip`,
+    },
+    {
+      key: "reconciliation",
+      title: "Financial Reconciliation",
+      description: "Integrity checks across invoices, job costs, payments, and retainage, with links to fix each exception.",
+      icon: ShieldCheck,
+      href: `${base}/reconciliation`,
     },
     {
       key: "ctc",

@@ -13,6 +13,16 @@ export type PlatformBugPerson = {
   avatar_url: string | null
 }
 
+export type PlatformBugAttachment = {
+  id: string
+  bug_id: string
+  file_name: string
+  content_type: string | null
+  size_bytes: number | null
+  created_at: string
+  download_url: string
+}
+
 export type PlatformBug = {
   id: string
   issue_key: string
@@ -34,6 +44,7 @@ export type PlatformBug = {
   resolved_at: string | null
   archived_at: string | null
   attachment_names: string[]
+  attachments: PlatformBugAttachment[]
   created_at: string
   updated_at: string
   assignee?: PlatformBugPerson | null

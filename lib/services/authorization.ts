@@ -1,5 +1,4 @@
 import { cache } from "react"
-import { after } from "next/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { isPlatformAdminId } from "@/lib/auth/platform"
@@ -273,20 +272,17 @@ async function logAuthorizationDecision(
   }
 }
 
-// Audit writes must not block the request: they were adding a serial round-trip
-// to every permission gate. after() defers past the response; the fallback keeps
-// non-request contexts (outbox worker, scripts) logging inline-but-unawaited.
+// Keep this shared service independent of App Router-only request APIs. It is
+// imported by server actions, route handlers, workers, and other entry points;
+// importing next/server's after() here makes the entire module unusable from a
+// Pages Router-compatible bundle. Audit writes remain best-effort and
+// non-blocking for every caller.
 function scheduleAuthorizationAudit(
   supabase: SupabaseClient,
   input: AuthorizeInput,
   decision: AuthorizationDecision,
 ) {
-  const write = () => logAuthorizationDecision(supabase, input, decision)
-  try {
-    after(write)
-  } catch {
-    void write()
-  }
+  void logAuthorizationDecision(supabase, input, decision)
 }
 
 export async function authorize(input: AuthorizeInput): Promise<AuthorizationDecision> {

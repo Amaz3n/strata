@@ -43,7 +43,6 @@ export type ProjectSection =
   | "closeout"
   | "warranty"
   | "cost-inbox"
-  | "trust-center"
 
 export type ProjectNavSubItem = {
   title: string
@@ -87,7 +86,6 @@ const FINANCIAL_SECTIONS = new Set<ProjectSection>([
   "change-orders",
   "reports",
   "cost-inbox",
-  "trust-center",
 ])
 
 export const BUILD_SECTIONS = new Set<ProjectSection>([
@@ -138,8 +136,6 @@ export function getProjectSection(pathname: string): ProjectSection {
         return "payables"
       case "receivables":
         return "receivables"
-      case "trust-center":
-        return "trust-center"
       default:
         return "financials"
     }
@@ -245,12 +241,6 @@ function buildFinancialSubs(
       url: url("/financials/waivers"),
       isActive: section === "financials-waivers",
       requiredAny: ["bill.read", "commitment.read"],
-    },
-    {
-      title: "Trust Center",
-      url: url("/financials/trust-center"),
-      isActive: section === "trust-center",
-      requiredAny: ["invoice.read", "budget.read", "bill.read"],
     },
     {
       title: "Expenses",

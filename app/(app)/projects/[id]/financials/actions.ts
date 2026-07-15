@@ -290,7 +290,6 @@ export async function generateInvoiceFromCostsAction(input: unknown) {
         revalidatePath(`/projects/${parsed.projectId}/financials`)
         revalidatePath(`/projects/${parsed.projectId}/financials/review`)
         revalidatePath(`/projects/${parsed.projectId}/financials/receivables`)
-        revalidatePath(`/projects/${parsed.projectId}/financials/trust-center`)
       }
       return result
   })
@@ -305,7 +304,6 @@ export async function createManualBillableAdjustmentAction(input: unknown) {
       revalidatePath(`/projects/${parsed.projectId}/financials/review`)
       revalidatePath(`/projects/${parsed.projectId}/financials/receivables`)
       revalidatePath(`/projects/${parsed.projectId}/financials/budget`)
-      revalidatePath(`/projects/${parsed.projectId}/financials/trust-center`)
       return adjustment
   })
 }
@@ -318,7 +316,6 @@ export async function saveProjectFinancialSetupAction(input: FinancialSetupInput
       revalidatePath(`/projects/${input.projectId}/financials/budget`)
       revalidatePath(`/projects/${input.projectId}/financials/payables`)
       revalidatePath(`/projects/${input.projectId}/financials/receivables`)
-      revalidatePath(`/projects/${input.projectId}/financials/trust-center`)
       return result
   })
 }

@@ -3,24 +3,28 @@
 import Image from "next/image"
 import Link from "next/link"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { format, parseISO } from "date-fns"
-import { ChevronLeft, ChevronRight, ExternalLink, ImagePlus, Loader2, MapPin, RotateCcw } from "lucide-react"
+import { format, parseISO, startOfMonth, subDays } from "date-fns"
+import { ExternalLink, ImagePlus, Loader2, SlidersHorizontal } from "lucide-react"
 import { toast } from "sonner"
+import type { DateRange } from "react-day-picker"
 
-import { uploadProjectFileAction } from "../actions"
-import { Button } from "@/components/ui/button"
+import { getFileDownloadUrlAction, uploadProjectFileAction } from "../actions"
 import { Badge } from "@/components/ui/badge"
-import { DateRangePicker } from "@/components/ui/date-range-picker"
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog"
+import { Button } from "@/components/ui/button"
+import { Calendar } from "@/components/ui/calendar"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { FileViewer } from "@/components/files/file-viewer"
+import { downloadUrlToFile } from "@/components/files/download"
+import { formatFileSize, type FileWithDetails } from "@/components/files/types"
 import { unwrapAction } from "@/lib/action-result"
 import type { ProjectPhoto, ProjectPhotoPage, ProjectPhotoUploader } from "@/lib/services/photos"
 import type { ProjectPhotoFilters } from "@/lib/validation/photos"
-import { cn } from "@/lib/utils"
 import { ensureTodayDailyLogForPhotosAction, listProjectPhotosAction } from "./actions"
-import type { DateRange } from "react-day-picker"
 
 const ALL = "__all__"
+const PAGE_SIZE = 30
+
 const SOURCE_OPTIONS = [
   { value: "daily_log", label: "Daily logs" },
   { value: "punch_item", label: "Punch" },
@@ -32,22 +36,39 @@ const SOURCE_OPTIONS = [
   { value: "files", label: "Files" },
 ] as const
 
-type FilterDraft = {
-  dateRange?: DateRange
-  sourceType: string
-  uploaderId: string
-  locationId: string
+const RANGE_OPTIONS = [
+  { value: "all", label: "Any time" },
+  { value: "7d", label: "Last 7 days" },
+  { value: "30d", label: "Last 30 days" },
+  { value: "90d", label: "Last 90 days" },
+  { value: "month", label: "This month" },
+  { value: "custom", label: "Custom range" },
+] as const
+
+type RangePreset = (typeof RANGE_OPTIONS)[number]["value"]
+
+function toIsoDate(date: Date) {
+  return format(date, "yyyy-MM-dd")
 }
 
-const EMPTY_FILTERS: FilterDraft = { sourceType: ALL, uploaderId: ALL, locationId: ALL }
-
-function toServiceFilters(draft: FilterDraft): ProjectPhotoFilters {
-  return {
-    date_from: draft.dateRange?.from ? format(draft.dateRange.from, "yyyy-MM-dd") : undefined,
-    date_to: draft.dateRange?.to ? format(draft.dateRange.to, "yyyy-MM-dd") : undefined,
-    source_type: draft.sourceType === ALL ? undefined : draft.sourceType,
-    uploader_id: draft.uploaderId === ALL ? undefined : draft.uploaderId,
-    location_id: draft.locationId === ALL ? undefined : draft.locationId,
+function rangeToFilters(preset: RangePreset, custom: DateRange | undefined): Pick<ProjectPhotoFilters, "date_from" | "date_to"> {
+  const today = new Date()
+  switch (preset) {
+    case "all":
+      return {}
+    case "7d":
+      return { date_from: toIsoDate(subDays(today, 6)), date_to: toIsoDate(today) }
+    case "30d":
+      return { date_from: toIsoDate(subDays(today, 29)), date_to: toIsoDate(today) }
+    case "90d":
+      return { date_from: toIsoDate(subDays(today, 89)), date_to: toIsoDate(today) }
+    case "month":
+      return { date_from: toIsoDate(startOfMonth(today)), date_to: toIsoDate(today) }
+    case "custom":
+      return {
+        date_from: custom?.from ? toIsoDate(custom.from) : undefined,
+        date_to: custom?.to ? toIsoDate(custom.to) : undefined,
+      }
   }
 }
 
@@ -55,10 +76,68 @@ function sourceLabel(type: string) {
   return SOURCE_OPTIONS.find((option) => option.value === type)?.label.replace(/s$/, "") ?? type.replaceAll("_", " ")
 }
 
-function formatBytes(bytes: number | null) {
-  if (!bytes) return "Unknown size"
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+function toViewerFile(photo: ProjectPhoto): FileWithDetails {
+  return {
+    id: photo.id,
+    org_id: photo.org_id,
+    project_id: photo.project_id,
+    file_name: photo.file_name,
+    storage_path: photo.storage_path,
+    visibility: photo.visibility,
+    mime_type: photo.mime_type ?? undefined,
+    size_bytes: photo.size_bytes ?? undefined,
+    created_at: photo.created_at,
+    uploaded_by: photo.uploaded_by ?? undefined,
+    uploader_name: photo.uploader_name ?? undefined,
+    uploader_avatar: photo.uploader_avatar ?? undefined,
+    thumbnail_url: photo.thumbnail_url,
+    download_url: photo.download_url,
+  }
+}
+
+function PhotoDetails({ photo }: { photo: ProjectPhoto }) {
+  return (
+    <div className="p-4">
+      <p className="truncate text-sm font-medium">{photo.file_name}</p>
+      <p className="mt-0.5 text-xs text-muted-foreground">
+        {format(parseISO(photo.created_at), "EEE, MMM d, yyyy 'at' h:mm a")}
+      </p>
+
+      <dl className="mt-5 divide-y border-y text-xs">
+        <div className="grid grid-cols-[72px_1fr] gap-3 py-2.5">
+          <dt className="text-muted-foreground">Uploader</dt>
+          <dd className="min-w-0 truncate">{photo.uploader_name ?? "Unknown"}</dd>
+        </div>
+        <div className="grid grid-cols-[72px_1fr] gap-3 py-2.5">
+          <dt className="text-muted-foreground">Size</dt>
+          <dd className="min-w-0 truncate tabular-nums">{formatFileSize(photo.size_bytes ?? undefined)}</dd>
+        </div>
+        <div className="grid grid-cols-[72px_1fr] gap-3 py-2.5">
+          <dt className="text-muted-foreground">Location</dt>
+          <dd className="min-w-0">{photo.locations.length ? photo.locations.join(", ") : "Not assigned"}</dd>
+        </div>
+      </dl>
+
+      <p className="mt-5 text-xs font-medium uppercase tracking-wide text-muted-foreground">Filed under</p>
+      <div className="mt-1 -mx-2">
+        {photo.sources.map((source) => (
+          <Link
+            key={`${source.type}:${source.entity_id}`}
+            href={source.href}
+            className="flex items-start justify-between gap-2 px-2 py-2 text-xs transition-colors hover:bg-accent/50"
+          >
+            <span className="min-w-0">
+              <span className="block truncate font-medium">{source.label}</span>
+              {source.location ? (
+                <span className="mt-0.5 block truncate text-muted-foreground">{source.location}</span>
+              ) : null}
+            </span>
+            <ExternalLink className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+          </Link>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 export function PhotosLens({
@@ -76,17 +155,36 @@ export function PhotosLens({
 }) {
   const [photos, setPhotos] = useState(initialPage.photos)
   const [cursor, setCursor] = useState(initialPage.next_cursor)
-  const [draftFilters, setDraftFilters] = useState<FilterDraft>(EMPTY_FILTERS)
-  const [filters, setFilters] = useState<ProjectPhotoFilters>({})
+  const [range, setRange] = useState<RangePreset>("all")
+  const [customRange, setCustomRange] = useState<DateRange | undefined>()
+  const [sourceType, setSourceType] = useState<string>(ALL)
+  const [uploaderId, setUploaderId] = useState<string>(ALL)
+  const [locationId, setLocationId] = useState<string>(ALL)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const loadSentinel = useRef<HTMLDivElement | null>(null)
   const fileInput = useRef<HTMLInputElement | null>(null)
-  const selectedIndex = photos.findIndex((photo) => photo.id === selectedId)
-  const selected = selectedIndex >= 0 ? photos[selectedIndex] : null
+  const requestRef = useRef(0)
 
+  const filters = useMemo<ProjectPhotoFilters>(() => ({
+    ...rangeToFilters(range, customRange),
+    source_type: sourceType === ALL ? undefined : sourceType,
+    uploader_id: uploaderId === ALL ? undefined : uploaderId,
+    location_id: locationId === ALL ? undefined : locationId,
+  }), [range, customRange, sourceType, uploaderId, locationId])
+  const filtersKey = JSON.stringify(filters)
+
+  // "Custom range" only narrows anything once a start date is picked.
+  const rangeActive = range !== "all" && (range !== "custom" || Boolean(customRange?.from))
+  const activeFilterCount =
+    (rangeActive ? 1 : 0) +
+    (sourceType === ALL ? 0 : 1) +
+    (uploaderId === ALL ? 0 : 1) +
+    (locationId === ALL ? 0 : 1)
+
+  const currentYear = new Date().getFullYear()
   const grouped = useMemo(() => {
     const groups = new Map<string, ProjectPhoto[]>()
     for (const photo of photos) {
@@ -96,43 +194,70 @@ export function PhotosLens({
     return Array.from(groups.entries())
   }, [photos])
 
-  const loadPage = useCallback(async (nextCursor: string | null, replace = false, nextFilters = filters) => {
-    if (loading) return
+  const viewerFiles = useMemo(() => photos.map(toViewerFile), [photos])
+  const selected = photos.find((photo) => photo.id === selectedId) ?? null
+  const selectedViewerFile = useMemo(
+    () => viewerFiles.find((file) => file.id === selectedId) ?? null,
+    [viewerFiles, selectedId],
+  )
+
+  const loadPage = useCallback(async (nextCursor: string | null, replace: boolean, nextFilters: ProjectPhotoFilters) => {
+    const requestId = ++requestRef.current
     setLoading(true)
     setLoadError(null)
     try {
-      const page = unwrapAction(await listProjectPhotosAction({ projectId, cursor: nextCursor, limit: 30, filters: nextFilters }))
-      setPhotos((current) => replace ? page.photos : [...current, ...page.photos.filter((photo) => !current.some((existing) => existing.id === photo.id))])
+      const page = unwrapAction(
+        await listProjectPhotosAction({ projectId, cursor: nextCursor, limit: PAGE_SIZE, filters: nextFilters }),
+      )
+      if (requestId !== requestRef.current) return
+      setPhotos((current) =>
+        replace
+          ? page.photos
+          : [...current, ...page.photos.filter((photo) => !current.some((existing) => existing.id === photo.id))],
+      )
       setCursor(page.next_cursor)
     } catch (error) {
+      if (requestId !== requestRef.current) return
       const message = error instanceof Error ? error.message : "Photos could not be loaded"
       setLoadError(message)
       toast.error(message)
     } finally {
-      setLoading(false)
+      if (requestId === requestRef.current) setLoading(false)
     }
-  }, [filters, loading, projectId])
+  }, [projectId])
+
+  // The server rendered the first page unfiltered; reload whenever the filter set actually changes.
+  const loadedFiltersKey = useRef(filtersKey)
+  useEffect(() => {
+    if (filtersKey === loadedFiltersKey.current) return
+    loadedFiltersKey.current = filtersKey
+    void loadPage(null, true, filters)
+  }, [filters, filtersKey, loadPage])
 
   useEffect(() => {
     const node = loadSentinel.current
     if (!node || !cursor) return
     const observer = new IntersectionObserver((entries) => {
-      if (entries[0]?.isIntersecting && !loading) void loadPage(cursor)
+      if (entries[0]?.isIntersecting && !loading) void loadPage(cursor, false, filters)
     }, { rootMargin: "300px" })
     observer.observe(node)
     return () => observer.disconnect()
-  }, [cursor, loadPage, loading])
+  }, [cursor, filters, loadPage, loading])
 
-  async function applyFilters() {
-    const nextFilters = toServiceFilters(draftFilters)
-    setFilters(nextFilters)
-    await loadPage(null, true, nextFilters)
+  function clearFilters() {
+    setRange("all")
+    setCustomRange(undefined)
+    setSourceType(ALL)
+    setUploaderId(ALL)
+    setLocationId(ALL)
   }
 
-  async function clearFilters() {
-    setDraftFilters(EMPTY_FILTERS)
-    setFilters({})
-    await loadPage(null, true, {})
+  async function handleDownload(file: FileWithDetails) {
+    try {
+      await downloadUrlToFile(await getFileDownloadUrlAction(file.id), file.file_name)
+    } catch {
+      toast.error("Photo could not be downloaded")
+    }
   }
 
   async function uploadPhotos(files: FileList | null) {
@@ -148,7 +273,7 @@ export function PhotosLens({
     }
     setUploading(true)
     try {
-      const dailyLog = unwrapAction(await ensureTodayDailyLogForPhotosAction(projectId, format(new Date(), "yyyy-MM-dd")))
+      const dailyLog = unwrapAction(await ensureTodayDailyLogForPhotosAction(projectId, toIsoDate(new Date())))
       for (const file of selectedFiles) {
         const formData = new FormData()
         formData.append("file", file)
@@ -167,16 +292,116 @@ export function PhotosLens({
   }
 
   return (
-    <div className="min-h-0 px-4 py-4 sm:px-6">
-      <div className="mb-4 flex flex-col gap-3 border-b pb-4 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <p className="text-sm font-medium">Project photo register</p>
-          <p className="text-xs text-muted-foreground">One chronological lens across field records and project files.</p>
-        </div>
+    <div className="min-h-0">
+      <div className="sticky top-0 z-20 flex h-12 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur sm:px-6">
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button variant="outline" size="sm" className="h-8">
+              <SlidersHorizontal className="size-4" />
+              Filter
+              {activeFilterCount > 0 ? (
+                <Badge className="ml-1 h-4 min-w-4 justify-center rounded-none px-1 text-[10px] tabular-nums">
+                  {activeFilterCount}
+                </Badge>
+              ) : null}
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-72 space-y-3 p-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Filters</p>
+              {activeFilterCount > 0 ? (
+                <button type="button" onClick={clearFilters} className="text-xs text-muted-foreground hover:text-foreground">
+                  Clear all
+                </button>
+              ) : null}
+            </div>
+
+            <div className="space-y-1.5">
+              <p className="text-xs text-muted-foreground">Taken</p>
+              <Select value={range} onValueChange={(value) => setRange(value as RangePreset)}>
+                <SelectTrigger size="sm" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {RANGE_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {range === "custom" ? (
+                <Calendar
+                  mode="range"
+                  numberOfMonths={1}
+                  defaultMonth={customRange?.from}
+                  selected={customRange}
+                  onSelect={setCustomRange}
+                  className="border p-2"
+                />
+              ) : null}
+            </div>
+
+            <div className="space-y-1.5">
+              <p className="text-xs text-muted-foreground">Source</p>
+              <Select value={sourceType} onValueChange={setSourceType}>
+                <SelectTrigger size="sm" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL}>All sources</SelectItem>
+                  {SOURCE_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <p className="text-xs text-muted-foreground">Uploader</p>
+              <Select value={uploaderId} onValueChange={setUploaderId}>
+                <SelectTrigger size="sm" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL}>All uploaders</SelectItem>
+                  {uploaders.map((uploader) => (
+                    <SelectItem key={uploader.id} value={uploader.id}>{uploader.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {locations.length > 0 ? (
+              <div className="space-y-1.5">
+                <p className="text-xs text-muted-foreground">Location</p>
+                <Select value={locationId} onValueChange={setLocationId}>
+                  <SelectTrigger size="sm" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL}>All locations</SelectItem>
+                    {locations.map((location) => (
+                      <SelectItem key={location.id} value={location.id}>{location.full_path}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : null}
+          </PopoverContent>
+        </Popover>
+
+        <div className="flex-1" />
+
         {canUpload ? (
           <>
-            <input ref={fileInput} className="sr-only" type="file" accept="image/*,.heic,.heif" multiple onChange={(event) => void uploadPhotos(event.target.files)} />
-            <Button size="sm" onClick={() => fileInput.current?.click()} disabled={uploading}>
+            <input
+              ref={fileInput}
+              className="sr-only"
+              type="file"
+              accept="image/*,.heic,.heif"
+              multiple
+              onChange={(event) => void uploadPhotos(event.target.files)}
+            />
+            <Button size="sm" className="h-8" onClick={() => fileInput.current?.click()} disabled={uploading}>
               {uploading ? <Loader2 className="animate-spin" /> : <ImagePlus />}
               Add photos
             </Button>
@@ -184,96 +409,103 @@ export function PhotosLens({
         ) : null}
       </div>
 
-      <div className="mb-6 grid gap-2 border bg-muted/20 p-2 sm:grid-cols-2 xl:grid-cols-[minmax(220px,1.2fr)_repeat(3,minmax(150px,0.8fr))_auto]">
-        <DateRangePicker dateRange={draftFilters.dateRange} onDateRangeChange={(dateRange) => setDraftFilters((current) => ({ ...current, dateRange }))} placeholder="Date range" />
-        <Select value={draftFilters.sourceType} onValueChange={(sourceType) => setDraftFilters((current) => ({ ...current, sourceType }))}>
-          <SelectTrigger className="w-full"><SelectValue placeholder="Source" /></SelectTrigger>
-          <SelectContent><SelectItem value={ALL}>All sources</SelectItem>{SOURCE_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
-        </Select>
-        <Select value={draftFilters.uploaderId} onValueChange={(uploaderId) => setDraftFilters((current) => ({ ...current, uploaderId }))}>
-          <SelectTrigger className="w-full"><SelectValue placeholder="Uploader" /></SelectTrigger>
-          <SelectContent><SelectItem value={ALL}>All uploaders</SelectItem>{uploaders.map((uploader) => <SelectItem key={uploader.id} value={uploader.id}>{uploader.name}</SelectItem>)}</SelectContent>
-        </Select>
-        <Select value={draftFilters.locationId} onValueChange={(locationId) => setDraftFilters((current) => ({ ...current, locationId }))}>
-          <SelectTrigger className="w-full"><SelectValue placeholder="Location" /></SelectTrigger>
-          <SelectContent><SelectItem value={ALL}>All locations</SelectItem>{locations.map((location) => <SelectItem key={location.id} value={location.id}>{location.full_path}</SelectItem>)}</SelectContent>
-        </Select>
-        <div className="flex gap-2"><Button className="flex-1" variant="outline" onClick={() => void applyFilters()} disabled={loading}>Apply</Button><Button variant="ghost" size="icon" onClick={() => void clearFilters()} disabled={loading} aria-label="Clear photo filters"><RotateCcw /></Button></div>
-      </div>
-
-      {photos.length === 0 && !loading ? (
-        <div className="border border-dashed px-6 py-20 text-center">
-          <ImagePlus className="mx-auto size-8 text-muted-foreground" />
-          <h2 className="mt-4 text-sm font-semibold">No photos yet</h2>
-          <p className="mx-auto mt-2 max-w-md text-xs text-muted-foreground">Photos attached to daily logs, punch items, inspections, observations, RFIs, and project files appear here. Photos added here are filed on today's daily log.</p>
-          {canUpload ? <Button className="mt-5" variant="outline" size="sm" onClick={() => fileInput.current?.click()}>Add the first photos</Button> : null}
+      {grouped.length === 0 && !loading ? (
+        <div className="flex flex-col items-center px-6 py-24 text-center">
+          <ImagePlus className="size-6 text-muted-foreground" />
+          <p className="mt-4 text-sm font-medium">
+            {activeFilterCount > 0 ? "No photos match these filters" : "No photos yet"}
+          </p>
+          <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+            {activeFilterCount > 0 ? (
+              <button type="button" onClick={clearFilters} className="underline underline-offset-2 hover:text-foreground">
+                Clear filters
+              </button>
+            ) : (
+              "Photos filed on daily logs, punch items, inspections, observations, RFIs, and project files land here."
+            )}
+          </p>
+          {activeFilterCount === 0 && canUpload ? (
+            <Button className="mt-5" variant="outline" size="sm" onClick={() => fileInput.current?.click()}>
+              Add the first photos
+            </Button>
+          ) : null}
         </div>
       ) : (
-        <div className="space-y-8">
-          {grouped.map(([date, datePhotos]) => (
-            <section key={date} aria-labelledby={`photo-day-${date}`}>
-              <div className="mb-2 flex items-baseline gap-3 border-b pb-2">
-                <h2 id={`photo-day-${date}`} className="text-sm font-semibold">{format(parseISO(date), "EEEE, MMMM d")}</h2>
-                <span className="text-xs tabular-nums text-muted-foreground">{datePhotos.length} photo{datePhotos.length === 1 ? "" : "s"}</span>
-              </div>
-              <div className="grid grid-cols-2 gap-px border bg-border sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 2xl:grid-cols-6">
-                {datePhotos.map((photo) => (
-                  <button key={photo.id} type="button" className="group relative aspect-[4/3] overflow-hidden bg-muted text-left focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => setSelectedId(photo.id)} aria-label={`Open ${photo.file_name}`}>
-                    <Image src={photo.thumbnail_url} alt="" fill unoptimized sizes="(max-width: 640px) 50vw, (max-width: 1024px) 25vw, 17vw" className="object-cover transition-transform duration-200 group-hover:scale-[1.02]" />
-                    <div className="absolute inset-x-0 bottom-0 border-t bg-background p-2">
-                      <div className="flex min-w-0 items-center justify-between gap-2">
-                        <span className="truncate text-[11px] font-medium">{photo.primary_source.label}</span>
-                        <Badge variant="outline" className="bg-background px-1.5 py-0 text-[10px]">{sourceLabel(photo.primary_source.type)}</Badge>
-                      </div>
-                      {photo.locations[0] ? <p className="mt-1 flex items-center gap-1 truncate text-[10px] text-muted-foreground"><MapPin className="size-2.5 shrink-0" />{photo.locations[0]}</p> : null}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </section>
-          ))}
-        </div>
-      )}
+        <ol className="px-4 sm:px-6">
+          {grouped.map(([date, dayPhotos]) => {
+            const day = parseISO(date)
+            return (
+              <li key={date} className="flex">
+                <div className="w-20 shrink-0 pr-3 text-right sm:w-28 sm:pr-4">
+                  {/* Clears the h-12 toolbar stuck above it. */}
+                  <div className="sticky top-14 py-5">
+                    <p className="text-xs font-medium tabular-nums">
+                      {format(day, day.getFullYear() === currentYear ? "MMM d" : "MMM d, yyyy")}
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">{format(day, "EEE")}</p>
+                    <p className="mt-2 hidden text-[11px] tabular-nums text-muted-foreground sm:block">
+                      {dayPhotos.length} photo{dayPhotos.length === 1 ? "" : "s"}
+                    </p>
+                  </div>
+                </div>
 
-      <div ref={loadSentinel} className="flex h-20 items-center justify-center" aria-live="polite">
-        {loading ? <span className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-4 animate-spin" />Loading photos</span> : null}
-        {loadError && cursor ? <Button size="sm" variant="outline" onClick={() => void loadPage(cursor)}>Try again</Button> : null}
-      </div>
-
-      <Dialog open={Boolean(selected)} onOpenChange={(open) => { if (!open) setSelectedId(null) }}>
-        <DialogContent className="h-[min(88vh,860px)] max-w-[min(96vw,1280px)] grid-cols-1 gap-0 overflow-hidden p-0 lg:grid-cols-[minmax(0,1fr)_320px]" showCloseButton>
-          {selected ? (
-            <>
-              <div className="relative min-h-0 bg-muted/40">
-                <Image src={selected.image_url} alt={selected.file_name} fill unoptimized sizes="(max-width: 1024px) 100vw, 75vw" className="object-contain" />
-                <Button className="absolute left-3 top-1/2 -translate-y-1/2" size="icon" variant="secondary" disabled={selectedIndex <= 0} onClick={() => setSelectedId(photos[selectedIndex - 1]?.id ?? null)} aria-label="Previous photo"><ChevronLeft /></Button>
-                <Button className="absolute right-3 top-1/2 -translate-y-1/2 lg:right-3" size="icon" variant="secondary" disabled={selectedIndex >= photos.length - 1} onClick={() => setSelectedId(photos[selectedIndex + 1]?.id ?? null)} aria-label="Next photo"><ChevronRight /></Button>
-              </div>
-              <aside className="min-h-0 overflow-y-auto border-t bg-background p-5 lg:border-l lg:border-t-0">
-                <DialogTitle className="pr-8 text-sm">{selected.file_name}</DialogTitle>
-                <DialogDescription className="mt-1 text-xs">{format(parseISO(selected.created_at), "MMM d, yyyy 'at' h:mm a")}</DialogDescription>
-                <dl className="mt-6 divide-y border-y text-xs">
-                  <div className="grid grid-cols-[88px_1fr] gap-3 py-3"><dt className="text-muted-foreground">Uploader</dt><dd>{selected.uploader_name ?? "Unknown"}</dd></div>
-                  <div className="grid grid-cols-[88px_1fr] gap-3 py-3"><dt className="text-muted-foreground">File</dt><dd>{formatBytes(selected.size_bytes)}{selected.mime_type ? ` · ${selected.mime_type}` : ""}</dd></div>
-                  <div className="grid grid-cols-[88px_1fr] gap-3 py-3"><dt className="text-muted-foreground">Location</dt><dd>{selected.locations.length ? selected.locations.join(", ") : "Not assigned"}</dd></div>
-                </dl>
-                <div className="mt-6">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Sources</p>
-                  <div className="mt-2 divide-y border">
-                    {selected.sources.map((source) => (
-                      <Link key={`${source.type}:${source.entity_id}`} href={source.href} className="flex items-start justify-between gap-3 p-3 text-xs hover:bg-muted/50">
-                        <span><span className="block font-medium">{source.label}</span>{source.location ? <span className="mt-1 block text-muted-foreground">{source.location}</span> : null}</span>
-                        <ExternalLink className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-                      </Link>
+                <div className="relative min-w-0 flex-1 border-l py-5 pl-3 sm:pl-4">
+                  <span aria-hidden className="absolute -left-[3px] top-[26px] size-[5px] bg-foreground" />
+                  <div className="grid grid-cols-3 gap-px sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 2xl:grid-cols-8">
+                    {dayPhotos.map((photo) => (
+                      <button
+                        key={photo.id}
+                        type="button"
+                        className="group relative aspect-square overflow-hidden bg-muted text-left focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        onClick={() => setSelectedId(photo.id)}
+                        aria-label={`Open ${photo.file_name}`}
+                      >
+                        <Image
+                          src={photo.thumbnail_url}
+                          alt=""
+                          fill
+                          unoptimized
+                          sizes="(max-width: 640px) 33vw, (max-width: 1024px) 20vw, 13vw"
+                          className="object-cover"
+                        />
+                        <span className="absolute inset-x-0 bottom-0 translate-y-full truncate bg-background px-1.5 py-1 text-[10px] font-medium transition-transform duration-150 group-hover:translate-y-0 group-focus-visible:translate-y-0">
+                          {sourceLabel(photo.primary_source.type)}
+                        </span>
+                      </button>
                     ))}
                   </div>
                 </div>
-                <Button asChild variant="outline" size="sm" className="mt-6 w-full"><a href={selected.image_url} target="_blank" rel="noreferrer">Open original</a></Button>
-              </aside>
-            </>
-          ) : null}
-        </DialogContent>
-      </Dialog>
+              </li>
+            )
+          })}
+        </ol>
+      )}
+
+      <div ref={loadSentinel} className="flex h-20 items-center justify-center" aria-live="polite">
+        {loading ? (
+          <span className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" />
+            Loading photos
+          </span>
+        ) : null}
+        {loadError && cursor ? (
+          <Button size="sm" variant="outline" onClick={() => void loadPage(cursor, false, filters)}>
+            Try again
+          </Button>
+        ) : null}
+      </div>
+
+      <FileViewer
+        file={selectedViewerFile}
+        files={viewerFiles}
+        open={Boolean(selectedViewerFile)}
+        onOpenChange={(open) => {
+          if (!open) setSelectedId(null)
+        }}
+        onDownload={(file) => void handleDownload(file)}
+        onFileChange={(file) => setSelectedId(file.id)}
+        details={selected ? <PhotoDetails photo={selected} /> : undefined}
+      />
     </div>
   )
 }

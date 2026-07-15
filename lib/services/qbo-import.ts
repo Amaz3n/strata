@@ -7,7 +7,9 @@ import {
   extractLinkedQboAmounts,
   extractLinkedQboIds,
   isUsableQboPaymentMapping,
+  qboImportedExpenseCostCents,
   qboImportProviderPaymentId,
+  qboJournalEntryLineAmounts,
   qboPurchaseCreditCents,
   qboPurchaseIsCredit,
   qboVendorCreditCents,
@@ -1315,7 +1317,7 @@ async function postJobCostActualsForImportedExpense(ctx: ResolvedContext, expens
     .eq("id", expenseId)
     .maybeSingle()
   if (!e?.project_id) return
-  const metadata = (e.metadata as { source?: string } | null) ?? {}
+  const metadata = (e.metadata as { source?: string; qbo_signed_amount_cents?: number } | null) ?? {}
   const isExpenseCredit = String(metadata.source ?? "").startsWith("expense_credit")
   const { data: lines } = await supabase
     .from("project_expense_lines")
@@ -1356,7 +1358,11 @@ async function postJobCostActualsForImportedExpense(ctx: ResolvedContext, expens
     return
   }
 
-  const costCents = Math.round(Number(e.amount_cents ?? 0) + Number(e.tax_cents ?? 0)) * (isExpenseCredit ? -1 : 1)
+  const costCents = qboImportedExpenseCostCents({
+    amountCents: e.amount_cents,
+    taxCents: e.tax_cents,
+    metadata,
+  })
 
   await supabase.from("job_cost_entries").upsert(
     {
@@ -3107,7 +3113,7 @@ async function importJournalEntry(
   for (const line of pending) {
     const detail = line.JournalEntryLineDetail
     const isCredit = String(detail?.PostingType ?? "").toLowerCase() === "credit"
-    const amountCents = toCents(line.Amount) * (isCredit ? -1 : 1)
+    const { storedCents, signedCents } = qboJournalEntryLineAmounts(line.Amount, detail?.PostingType)
     const entity = detail?.Entity
     const entityType = String(entity?.Type ?? "").toLowerCase()
     const isCustomer = entityType === "customer"
@@ -3142,7 +3148,9 @@ async function importJournalEntry(
         project_id: lineProjectId,
         expense_date: jeDate,
         description,
-        amount_cents: amountCents,
+        // project_expenses stores a nonnegative magnitude; signed cost impact lives in metadata
+        // and is applied when the job-cost actual is posted.
+        amount_cents: storedCents,
         cost_code_id: costCodeId,
         tax_cents: 0,
         is_billable: false,
@@ -3157,6 +3165,8 @@ async function importJournalEntry(
           source: "journal_entry",
           qbo_je_id: qboId,
           qbo_je_line_id: String(line.Id),
+          qbo_posting_type: isCredit ? "credit" : "debit",
+          qbo_signed_amount_cents: signedCents,
         },
         qbo_id: qboId,
         qbo_transaction_type: "journal_entry",
@@ -3191,7 +3201,7 @@ async function importJournalEntry(
       eventType: "expense_imported_from_qbo",
       entityType: "project_expense",
       entityId: expenseRow.id,
-      payload: { qbo_id: qboId, source: "journal_entry", amount_cents: amountCents, project_id: lineProjectId },
+      payload: { qbo_id: qboId, source: "journal_entry", amount_cents: signedCents, project_id: lineProjectId },
     })
     created += 1
   }

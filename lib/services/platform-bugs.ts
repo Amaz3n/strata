@@ -9,6 +9,7 @@ import type {
   PlatformBugAiFix,
   PlatformBugAiReview,
   PlatformBug,
+  PlatformBugAttachment,
   PlatformBugEvent,
   PlatformBugInput,
   PlatformBugPerson,
@@ -127,6 +128,7 @@ function normalizeBug(row: any): PlatformBug {
   return {
     ...row,
     attachment_names: Array.isArray(row.attachment_names) ? row.attachment_names : [],
+    attachments: [],
     assignee: normalizePerson(row.assignee),
     creator: normalizePerson(row.creator),
     org: normalizeRef(row.org),
@@ -312,7 +314,49 @@ export async function listPlatformBugs() {
     throw new Error(`Failed to load platform bugs: ${error.message}`)
   }
 
-  return (data ?? []).map(normalizeBug)
+  const bugs = (data ?? []).map(normalizeBug)
+  if (bugs.length === 0) return bugs
+
+  const { data: attachmentRows, error: attachmentError } = await supabase
+    .from("platform_bug_attachments")
+    .select("id, bug_id, bucket_id, storage_path, file_name, content_type, size_bytes, created_at")
+    .in("bug_id", bugs.map((bug) => bug.id))
+    .order("created_at", { ascending: true })
+
+  if (attachmentError) {
+    throw new Error(`Failed to load platform bug attachments: ${attachmentError.message}`)
+  }
+
+  const attachments = await Promise.all(
+    (attachmentRows ?? []).map(async (attachment: any): Promise<PlatformBugAttachment> => {
+      const { data: signed, error: signedError } = await supabase.storage
+        .from(attachment.bucket_id || BUG_ATTACHMENT_BUCKET)
+        .createSignedUrl(attachment.storage_path, 60 * 60)
+
+      if (signedError || !signed?.signedUrl) {
+        throw new Error(`Failed to open ${attachment.file_name}: ${signedError?.message ?? "Unable to create preview URL"}`)
+      }
+
+      return {
+        id: attachment.id,
+        bug_id: attachment.bug_id,
+        file_name: attachment.file_name,
+        content_type: attachment.content_type ?? null,
+        size_bytes: attachment.size_bytes ?? null,
+        created_at: attachment.created_at,
+        download_url: signed.signedUrl,
+      }
+    }),
+  )
+
+  const attachmentsByBug = new Map<string, PlatformBugAttachment[]>()
+  for (const attachment of attachments) {
+    const current = attachmentsByBug.get(attachment.bug_id) ?? []
+    current.push(attachment)
+    attachmentsByBug.set(attachment.bug_id, current)
+  }
+
+  return bugs.map((bug) => ({ ...bug, attachments: attachmentsByBug.get(bug.id) ?? [] }))
 }
 
 export async function listPlatformBugEvents(bugIds: string[]) {

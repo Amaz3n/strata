@@ -17,6 +17,7 @@ type PhotoFileRow = {
   daily_log_id: string | null
   file_name: string
   storage_path: string
+  visibility: string
   mime_type: string | null
   size_bytes: number | null
   uploaded_by: string | null
@@ -36,15 +37,21 @@ export type ProjectPhotoSource = {
 
 export type ProjectPhoto = {
   id: string
+  org_id: string
+  project_id: string
   file_name: string
+  storage_path: string
+  visibility: string
   mime_type: string | null
   size_bytes: number | null
   created_at: string
   uploaded_by: string | null
   uploader_name: string | null
   uploader_avatar: string | null
+  /** Renderable preview: the original for web-native formats, a generated preview for HEIC. */
   thumbnail_url: string
-  image_url: string
+  /** The original file. HEIC originals are not browser-renderable — preview with `thumbnail_url`. */
+  download_url: string
   sources: ProjectPhotoSource[]
   primary_source: ProjectPhotoSource
   location_ids: string[]
@@ -252,7 +259,11 @@ async function hydratePhotoRows(
     const locations = Array.from(new Set(effectiveSources.map((source) => source.location).filter((value): value is string => Boolean(value))))
     return {
       id: row.id,
+      org_id: row.org_id,
+      project_id: row.project_id,
       file_name: row.file_name,
+      storage_path: row.storage_path,
+      visibility: row.visibility,
       mime_type: row.mime_type,
       size_bytes: row.size_bytes,
       created_at: row.created_at,
@@ -260,7 +271,7 @@ async function hydratePhotoRows(
       uploader_name: uploader?.full_name ?? null,
       uploader_avatar: uploader?.avatar_url ?? null,
       thumbnail_url: isHeic ? `/api/files/${row.id}/preview` : signed,
-      image_url: isHeic ? `/api/files/${row.id}/preview` : signed,
+      download_url: signed,
       sources: effectiveSources,
       primary_source: effectiveSources[0],
       location_ids: locationIds,
@@ -284,7 +295,7 @@ export async function listProjectPhotos(input: ListProjectPhotosInput, orgId?: s
   const photos: ProjectPhoto[] = []
 
   while (photos.length < parsed.limit) {
-    let query = supabase.from("files").select("id, org_id, project_id, daily_log_id, file_name, storage_path, mime_type, size_bytes, uploaded_by, created_at, app_users!files_uploaded_by_fkey(full_name, avatar_url)")
+    let query = supabase.from("files").select("id, org_id, project_id, daily_log_id, file_name, storage_path, visibility, mime_type, size_bytes, uploaded_by, created_at, app_users!files_uploaded_by_fkey(full_name, avatar_url)")
       .eq("org_id", resolvedOrgId).eq("project_id", parsed.projectId).is("archived_at", null).like("mime_type", "image/%")
       .order("created_at", { ascending: false }).order("id", { ascending: false }).limit(SCAN_BATCH_SIZE)
     if (parsed.filters.date_from) query = query.gte("created_at", `${parsed.filters.date_from}T00:00:00.000Z`)

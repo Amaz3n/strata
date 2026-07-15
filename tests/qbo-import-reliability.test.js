@@ -8,7 +8,9 @@ const {
   extractLinkedQboAmounts,
   extractLinkedQboIds,
   isUsableQboPaymentMapping,
+  qboImportedExpenseCostCents,
   qboImportProviderPaymentId,
+  qboJournalEntryLineAmounts,
   qboPurchaseCreditCents,
   qboPurchaseIsCredit,
   qboVendorCreditCents,
@@ -144,6 +146,50 @@ test("credit-card purchase credits are detected and signed exactly once", () => 
   assert.equal(qboPurchaseCreditCents(-7.21), -721)
 })
 
+test("journal-entry credits keep a nonnegative expense magnitude and post a negative actual", () => {
+  assert.deepEqual(qboJournalEntryLineAmounts(8450, "Credit"), {
+    storedCents: 845000,
+    signedCents: -845000,
+  })
+  assert.deepEqual(qboJournalEntryLineAmounts(-8450, "credit"), {
+    storedCents: 845000,
+    signedCents: -845000,
+  })
+  assert.deepEqual(qboJournalEntryLineAmounts(8450, "Debit"), {
+    storedCents: 845000,
+    signedCents: 845000,
+  })
+
+  assert.equal(
+    qboImportedExpenseCostCents({
+      amountCents: 845000,
+      taxCents: 0,
+      metadata: { source: "journal_entry", qbo_signed_amount_cents: -845000 },
+    }),
+    -845000,
+  )
+  assert.equal(
+    qboImportedExpenseCostCents({
+      amountCents: 845000,
+      taxCents: 0,
+      metadata: { source: "journal_entry" },
+    }),
+    845000,
+  )
+
+  const importSource = require("node:fs").readFileSync(
+    require("node:path").join(__dirname, "../lib/services/qbo-import.ts"),
+    "utf8",
+  )
+  const journalEntryBlock = importSource.slice(
+    importSource.indexOf("async function importJournalEntry"),
+    importSource.indexOf("async function importClientDeposit"),
+  )
+  assert.match(journalEntryBlock, /amount_cents: storedCents/)
+  assert.match(journalEntryBlock, /qbo_signed_amount_cents: signedCents/)
+  assert.match(journalEntryBlock, /amount_cents: signedCents/)
+})
+
 test("vendor credits never enter outstanding payables or payment balances", () => {
   const credit = {
     payable_type: "vendor_credit",
@@ -192,7 +238,7 @@ test("QBO purchase credits import as inbound-only expense credits with negative 
   assert.doesNotMatch(importExpenseCreditBlock, /if \(existing\?\.id\) return \{ skipped: true as const \}/)
   assert.match(importSource, /entityType: "project_expense"[\s\S]*pushable: false[\s\S]*metadata: \{ source: "expense_credit" \}/)
   assert.match(importSource, /source_label: isExpenseCredit \? "project_expense_credit" : "project_expense"/)
-  assert.match(importSource, /costCents[\s\S]*\* \(isExpenseCredit \? -1 : 1\)/)
+  assert.match(importSource, /qboImportedExpenseCostCents/)
 })
 
 test("outbound vendor bills preserve job costing without creating billable customer charges", () => {

@@ -7,6 +7,8 @@ export { FileList } from "./file-list"
 export { FileCategoryNav } from "./file-category-nav"
 export { FileToolbar, type ViewMode } from "./file-toolbar"
 export { EntityAttachments, type AttachedFile } from "./entity-attachments"
+export { AttachmentField } from "./attachment-field"
 export { VersionHistoryPanel, type FileVersionInfo } from "./version-history-panel"
+export { downloadUrlToFile, getDownloadFileName } from "./download"
 export * from "./types"
 

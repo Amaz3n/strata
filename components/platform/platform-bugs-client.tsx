@@ -17,11 +17,9 @@ import {
 import {
   AlertCircle,
   Archive,
-  Ban,
   Building2,
   Bug,
   Check,
-  CheckCircle2,
   ChevronDown,
   Circle,
   ExternalLink,
@@ -41,6 +39,17 @@ import {
   X,
 } from "@/components/icons"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import {
+  Attachment,
+  AttachmentAction,
+  AttachmentActions,
+  AttachmentContent,
+  AttachmentDescription,
+  AttachmentGroup,
+  AttachmentMedia,
+  AttachmentTitle,
+  AttachmentTrigger,
+} from "@/components/ui/attachment"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -69,6 +78,9 @@ import {
 } from "@/components/ui/select"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
+import { FileViewer } from "@/components/files/file-viewer"
+import { formatFileSize } from "@/components/files/types"
+import { useIsMobile } from "@/hooks/use-mobile"
 import { cn } from "@/lib/utils"
 import {
   PLATFORM_BUG_PRIORITIES,
@@ -82,6 +94,31 @@ import {
   type PlatformBugRef,
   type PlatformBugStatus,
 } from "@/lib/platform-bugs/types"
+import { PlatformBugsMobile } from "./platform-bugs-mobile"
+import {
+  AiReviewProposal,
+  PRIORITY_LABELS,
+  STATUS_LABELS,
+  StatusCircle,
+  activeStatuses,
+  applyFilesToInput,
+  attachmentToViewerFile,
+  canRequestCodexFix,
+  eventText,
+  formatDate,
+  getFixStatusLabel,
+  getReviewStatusLabel,
+  initials,
+  isAiRunning,
+  isFileDrag,
+  isPdfPreview,
+  isSupportedAttachment,
+  previewsForFiles,
+  priorityClass,
+  priorityDot,
+  statusOrder,
+  type AttachmentPreview,
+} from "./platform-bug-ui"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -92,98 +129,6 @@ type Props = {
   initialAiFixes: PlatformBugAiFix[]
   owners: PlatformBugPerson[]
   orgs: { id: string; name: string }[]
-}
-
-type AttachmentPreview = {
-  name: string
-  type: string
-  url?: string
-}
-
-const STATUS_LABELS: Record<PlatformBugStatus, string> = {
-  triage: "Triage",
-  backlog: "Backlog",
-  todo: "Todo",
-  in_progress: "In Progress",
-  in_review: "In Review",
-  done: "Done",
-  wont_fix: "Won't Fix",
-}
-
-const PRIORITY_LABELS: Record<PlatformBugPriority, string> = {
-  urgent: "Urgent",
-  high: "High",
-  medium: "Medium",
-  low: "Low",
-}
-
-const statusOrder: PlatformBugStatus[] = ["triage", "in_progress", "in_review", "todo", "backlog", "done", "wont_fix"]
-const activeStatuses = new Set<PlatformBugStatus>(["triage", "todo", "in_progress", "in_review"])
-
-function initials(person?: PlatformBugPerson | null) {
-  const name = person?.full_name || person?.email || "Arc"
-  return name
-    .split(/\s|@/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase())
-    .join("")
-}
-
-function formatDate(value?: string | null) {
-  if (!value) return "No date"
-  return new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(value))
-}
-
-function priorityClass(priority: PlatformBugPriority) {
-  if (priority === "urgent") return "text-red-500"
-  if (priority === "high") return "text-orange-500"
-  if (priority === "medium") return "text-yellow-500"
-  return "text-muted-foreground"
-}
-
-function priorityDot(priority: PlatformBugPriority) {
-  if (priority === "urgent") return "bg-red-500"
-  if (priority === "high") return "bg-orange-500"
-  if (priority === "medium") return "bg-yellow-500"
-  return "bg-muted-foreground/40"
-}
-
-const STATUS_FILL: Record<PlatformBugStatus, { color: string; fraction: number; dashed?: boolean }> = {
-  triage: { color: "text-muted-foreground", fraction: 0, dashed: true },
-  backlog: { color: "text-muted-foreground", fraction: 0, dashed: true },
-  todo: { color: "text-muted-foreground", fraction: 0 },
-  in_progress: { color: "text-yellow-500", fraction: 0.5 },
-  in_review: { color: "text-yellow-500", fraction: 0.85 },
-  done: { color: "text-green-600", fraction: 1 },
-  wont_fix: { color: "text-muted-foreground", fraction: 0 },
-}
-
-// Linear-style status glyph: empty ring for todo, a growing yellow pie for
-// in-progress/in-review, a green check when done, and a slashed circle for won't fix.
-function StatusCircle({ status, className }: { status: PlatformBugStatus; className?: string }) {
-  if (status === "done") return <CheckCircle2 className={cn("size-4 text-green-600", className)} />
-  if (status === "wont_fix") return <Ban className={cn("size-4 text-muted-foreground", className)} />
-
-  const { color, fraction, dashed } = STATUS_FILL[status]
-  const pieR = 2.5
-  const circ = 2 * Math.PI * pieR
-  return (
-    <svg viewBox="0 0 16 16" fill="none" className={cn("size-4", color, className)} aria-hidden>
-      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5" strokeDasharray={dashed ? "1.8 1.8" : undefined} />
-      {fraction > 0 && (
-        <circle
-          cx="8"
-          cy="8"
-          r={pieR}
-          stroke="currentColor"
-          strokeWidth={pieR * 2}
-          strokeDasharray={`${circ * fraction} ${circ}`}
-          transform="rotate(-90 8 8)"
-        />
-      )}
-    </svg>
-  )
 }
 
 function StatusMenu({
@@ -211,55 +156,6 @@ function StatusMenu({
   )
 }
 
-function eventText(event: PlatformBugEvent) {
-  if (event.event_type === "created") return "created this issue"
-  if (event.event_type === "commented") return "commented"
-  if (event.event_type === "status_changed") return `moved from ${event.from_value} to ${event.to_value}`
-  if (event.event_type === "priority_changed") return `changed priority from ${event.from_value} to ${event.to_value}`
-  if (event.event_type === "severity_changed") return `changed severity from ${event.from_value} to ${event.to_value}`
-  if (event.event_type === "assignee_changed") return "changed assignee"
-  if (event.event_type === "archived") return "archived this issue"
-  return "updated this issue"
-}
-
-function getReviewStatusLabel(status: PlatformBugAiReview["status"]) {
-  if (status === "proposal_ready") return "Proposal ready"
-  if (status === "failed") return "Failed"
-  if (status === "cancelled") return "Cancelled"
-  if (status === "running") return "Running"
-  if (status === "dispatched") return "Dispatched"
-  return "Queued"
-}
-
-function getFixStatusLabel(status: PlatformBugAiFix["status"]) {
-  if (status === "pr_ready") return "PR ready"
-  if (status === "failed") return "Failed"
-  if (status === "cancelled") return "Cancelled"
-  if (status === "running") return "Running"
-  if (status === "dispatched") return "Dispatched"
-  return "Queued"
-}
-
-function canRequestCodexFix(bug: PlatformBug) {
-  const source = bug.source.toLowerCase()
-  const title = bug.title.toLowerCase()
-  if (source === "support:feedback" || title.startsWith("feature request:")) return false
-  return bug.status !== "triage" && bug.status !== "done" && bug.status !== "wont_fix"
-}
-
-function stringArray(value: unknown) {
-  if (!Array.isArray(value)) return []
-  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-}
-
-function proposalText(proposal: Record<string, unknown>, keys: string[]) {
-  for (const key of keys) {
-    const value = proposal[key]
-    if (typeof value === "string" && value.trim()) return value.trim()
-  }
-  return null
-}
-
 export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReviews, initialAiFixes, owners, orgs }: Props) {
   const router = useRouter()
   const [bugs, setBugs] = useState(initialBugs)
@@ -280,9 +176,11 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
   const [newProjects, setNewProjects] = useState<PlatformBugRef[]>([])
   const [projectsLoading, setProjectsLoading] = useState(false)
   const [attachmentPreviews, setAttachmentPreviews] = useState<AttachmentPreview[]>([])
+  const [viewerAttachmentId, setViewerAttachmentId] = useState<string | null>(null)
   const [comment, setComment] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
+  const isMobile = useIsMobile()
 
   useEffect(() => {
     setBugs(initialBugs)
@@ -300,6 +198,7 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
   }, [attachmentPreviews])
 
   useEffect(() => {
+    if (isMobile) return
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
       const isTyping = Boolean(target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)))
@@ -314,7 +213,7 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [showNew, detailOpen])
+  }, [showNew, detailOpen, isMobile])
 
   const filteredBugs = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -347,6 +246,13 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
   const fixAllowed = panelBug ? canRequestCodexFix(panelBug) : false
   const panelOrg = panelBug?.org ?? null
   const panelProject = panelBug?.project ?? null
+  const panelAttachmentFiles = useMemo(
+    () => panelBug?.attachments.map(attachmentToViewerFile) ?? [],
+    [panelBug],
+  )
+  const viewerAttachment = viewerAttachmentId
+    ? panelAttachmentFiles.find((file) => file.id === viewerAttachmentId) ?? null
+    : null
 
   const handleNewOrgChange = (value: string) => {
     setNewOrgId(value)
@@ -411,25 +317,24 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
     })
   }
 
-  const addComment = () => {
-    if (!selectedBug || !comment.trim()) return
+  const addComment = (id: string, body: string, onSuccess: () => void) => {
+    if (!body.trim()) return
     setError(null)
     startTransition(async () => {
-      const result = unwrapAction(await addPlatformBugCommentAction(selectedBug.id, comment))
+      const result = unwrapAction(await addPlatformBugCommentAction(id, body))
       if (result.error) {
         setError(result.error)
         return
       }
-      setComment("")
+      onSuccess()
       router.refresh()
     })
   }
 
-  const startAiReview = () => {
-    if (!selectedBug) return
+  const startAiReview = (id: string) => {
     setError(null)
     startTransition(async () => {
-      const result = unwrapAction(await startPlatformBugAiReviewAction(selectedBug.id))
+      const result = unwrapAction(await startPlatformBugAiReviewAction(id))
       if (result.error) {
         setError(result.error)
         return
@@ -444,11 +349,10 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
     })
   }
 
-  const startAiFix = () => {
-    if (!selectedBug) return
+  const startAiFix = (id: string) => {
     setError(null)
     startTransition(async () => {
-      const result = unwrapAction(await startPlatformBugAiFixAction(selectedBug.id))
+      const result = unwrapAction(await startPlatformBugAiFixAction(id))
       if (result.error) {
         setError(result.error)
         return
@@ -502,6 +406,7 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
   }
 
   const openDetails = (id: string) => {
+    setViewerAttachmentId(null)
     setSelectedId(id)
     setDetailOpen(true)
   }
@@ -511,6 +416,64 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
       current.includes(status)
         ? current.filter((item) => item !== status)
         : [...current, status],
+    )
+  }
+
+  // Shared by both layouts: attachment previews open the full-screen viewer,
+  // which also hides the mobile bottom nav while it is up.
+  const fileViewer = (
+    <FileViewer
+      file={viewerAttachment}
+      files={panelAttachmentFiles}
+      open={Boolean(viewerAttachment)}
+      onOpenChange={(open) => {
+        if (!open) setViewerAttachmentId(null)
+      }}
+      onFileChange={(file) => setViewerAttachmentId(file.id)}
+      onDownload={(file) => {
+        if (file.download_url) window.open(file.download_url, "_blank", "noopener,noreferrer")
+      }}
+    />
+  )
+
+  if (isMobile) {
+    return (
+      <>
+        <PlatformBugsMobile
+          bugs={bugs}
+          owners={owners}
+          orgs={orgs}
+          isPending={isPending}
+          error={error}
+          panelBug={panelBug}
+          panelOpen={panelOpen}
+          panelEvents={panelEvents}
+          panelReview={panelReview}
+          panelFix={panelFix}
+          onOpenDetails={openDetails}
+          onCloseDetails={() => setDetailOpen(false)}
+          onViewAttachment={setViewerAttachmentId}
+          viewerOpen={Boolean(viewerAttachment)}
+          onUpdateBug={updateBug}
+          onArchiveBug={archiveBug}
+          onDeleteBug={deleteBug}
+          onAddComment={addComment}
+          onStartAiReview={startAiReview}
+          onStartAiFix={startAiFix}
+          composerOpen={showNew}
+          onComposerOpenChange={setShowNew}
+          onCreateBug={createBug}
+          orgId={newOrgId}
+          projectId={newProjectId}
+          projects={newProjects}
+          projectsLoading={projectsLoading}
+          onOrgChange={handleNewOrgChange}
+          onProjectChange={setNewProjectId}
+          attachmentPreviews={attachmentPreviews}
+          onAttachmentsChange={setAttachmentPreviews}
+        />
+        {fileViewer}
+      </>
     )
   }
 
@@ -829,6 +792,48 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
                   )}
                 </div>
 
+                {panelBug.attachments.length > 0 && (
+                  <div className="mt-5">
+                    <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      Attachments ({panelBug.attachments.length})
+                    </p>
+                    <AttachmentGroup className="flex-col gap-2 overflow-visible py-0">
+                      {panelBug.attachments.map((attachment) => {
+                        const isImage = attachment.content_type?.startsWith("image/")
+                        return (
+                          <Attachment key={attachment.id} size="sm" className="w-full">
+                            <AttachmentMedia variant={isImage ? "image" : "icon"}>
+                              {isImage ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img src={attachment.download_url} alt="" />
+                              ) : (
+                                <FileText className="size-4" />
+                              )}
+                            </AttachmentMedia>
+                            <AttachmentContent>
+                              <AttachmentTitle>{attachment.file_name}</AttachmentTitle>
+                              <AttachmentDescription>{formatFileSize(attachment.size_bytes ?? undefined)}</AttachmentDescription>
+                            </AttachmentContent>
+                            <AttachmentActions className="pr-1">
+                              <AttachmentAction
+                                type="button"
+                                aria-label={`Open ${attachment.file_name}`}
+                                onClick={() => setViewerAttachmentId(attachment.id)}
+                              >
+                                <ExternalLink className="size-3.5" />
+                              </AttachmentAction>
+                            </AttachmentActions>
+                            <AttachmentTrigger
+                              aria-label={`Open ${attachment.file_name}`}
+                              onClick={() => setViewerAttachmentId(attachment.id)}
+                            />
+                          </Attachment>
+                        )
+                      })}
+                    </AttachmentGroup>
+                  </div>
+                )}
+
                 <div className="mt-6 border-t pt-4">
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-2">
@@ -843,8 +848,8 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
                     <Button
                       size="sm"
                       variant={panelReview ? "outline" : "default"}
-                      onClick={startAiReview}
-                      disabled={isPending || panelReview?.status === "queued" || panelReview?.status === "dispatched" || panelReview?.status === "running"}
+                      onClick={() => startAiReview(panelBug.id)}
+                      disabled={isPending || isAiRunning(panelReview?.status)}
                     >
                       {isPending ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
                       {panelReview ? "Run again" : "Run review"}
@@ -898,14 +903,8 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
                     <Button
                       size="sm"
                       variant={panelFix ? "outline" : "default"}
-                      onClick={startAiFix}
-                      disabled={
-                        isPending ||
-                        !fixAllowed ||
-                        panelFix?.status === "queued" ||
-                        panelFix?.status === "dispatched" ||
-                        panelFix?.status === "running"
-                      }
+                      onClick={() => startAiFix(panelBug.id)}
+                      disabled={isPending || !fixAllowed || isAiRunning(panelFix?.status)}
                     >
                       {isPending ? <Loader2 className="size-4 animate-spin" /> : <GitPullRequest className="size-4" />}
                       {panelFix ? "Run again" : "Create PR"}
@@ -968,7 +967,12 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
                       placeholder="Add a note…"
                       className="min-h-16 text-sm"
                     />
-                    <Button size="icon" onClick={addComment} disabled={isPending || !comment.trim()} aria-label="Add comment">
+                    <Button
+                      size="icon"
+                      onClick={() => addComment(panelBug.id, comment, () => setComment(""))}
+                      disabled={isPending || !comment.trim()}
+                      aria-label="Add comment"
+                    >
                       <Plus className="size-4" />
                     </Button>
                   </div>
@@ -1013,64 +1017,8 @@ export function PlatformBugsClient({ initialBugs, initialEvents, initialAiReview
         onProjectChange={setNewProjectId}
         onAttachmentsChange={setAttachmentPreviews}
       />
-    </div>
-  )
-}
 
-function AiReviewProposal({ review }: { review: PlatformBugAiReview }) {
-  const proposal = review.proposal ?? {}
-  const likelyFiles = stringArray(proposal.likely_affected_files ?? proposal.relevant_files)
-  const plan = stringArray(proposal.implementation_plan ?? proposal.proposed_plan ?? proposal.plan)
-  const risks = stringArray(proposal.risks)
-  const tests = stringArray(proposal.tests_to_run ?? proposal.tests)
-  const rootCause = proposalText(proposal, ["root_cause_hypothesis", "rootCauseHypothesis", "root_cause"])
-
-  if (Object.keys(proposal).length === 0 || review.status !== "proposal_ready") return null
-
-  return (
-    <div className="space-y-3">
-      {rootCause && (
-        <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Hypothesis</p>
-          <p className="mt-1 whitespace-pre-wrap leading-6">{rootCause}</p>
-        </div>
-      )}
-      {likelyFiles.length > 0 && (
-        <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Likely files</p>
-          <div className="mt-1 flex flex-wrap gap-1.5">
-            {likelyFiles.slice(0, 8).map((file) => (
-              <code key={file} className="border bg-background px-1.5 py-0.5 text-xs">{file}</code>
-            ))}
-          </div>
-        </div>
-      )}
-      {plan.length > 0 && (
-        <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Plan</p>
-          <ol className="mt-1 list-decimal space-y-1 pl-4">
-            {plan.slice(0, 8).map((item) => <li key={item}>{item}</li>)}
-          </ol>
-        </div>
-      )}
-      {risks.length > 0 && (
-        <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Risks</p>
-          <ul className="mt-1 list-disc space-y-1 pl-4">
-            {risks.slice(0, 6).map((item) => <li key={item}>{item}</li>)}
-          </ul>
-        </div>
-      )}
-      {tests.length > 0 && (
-        <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Tests</p>
-          <div className="mt-1 flex flex-wrap gap-1.5">
-            {tests.slice(0, 6).map((test) => (
-              <code key={test} className="border bg-background px-1.5 py-0.5 text-xs">{test}</code>
-            ))}
-          </div>
-        </div>
-      )}
+      {fileViewer}
     </div>
   )
 }
@@ -1113,22 +1061,10 @@ function NewBugDialog({
   const [dragActive, setDragActive] = useState(false)
   const dragDepth = useRef(0)
 
-  const isFileDrag = (event: React.DragEvent) => Array.from(event.dataTransfer.types).includes("Files")
-  const isSupportedAttachment = (file: File) => {
-    const lowerName = file.name.toLowerCase()
-    return file.type.startsWith("image/") || file.type === "application/pdf" || lowerName.endsWith(".pdf")
-  }
-  const previewsForFiles = (files: File[]): AttachmentPreview[] => files.map((file) => ({
-    name: file.name,
-    type: file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "application/octet-stream"),
-    url: file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined,
-  }))
   const setAttachmentFiles = (files: File[]) => {
     const input = fileInputRef.current
     if (!input) return
-    const transfer = new DataTransfer()
-    for (const file of files) transfer.items.add(file)
-    input.files = transfer.files
+    applyFilesToInput(input, files)
     onAttachmentsChange(previewsForFiles(files))
   }
 
@@ -1175,6 +1111,11 @@ function NewBugDialog({
           onDrop={handleDrop}
           className="relative flex flex-col"
         >
+          {/* The org/project selects live in a Popover that unmounts on close, so
+              their own fields are gone by submit time. Carry the values here. */}
+          <input type="hidden" name="orgId" value={orgId} />
+          <input type="hidden" name="projectId" value={projectId} />
+
           {dragActive && (
             <div className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 border-2 border-dashed border-primary bg-background/90 text-sm font-medium">
               <Paperclip className="size-6 text-muted-foreground" />
@@ -1236,7 +1177,6 @@ function NewBugDialog({
                   <div className="space-y-1.5">
                     <p className="text-xs text-muted-foreground">Organization</p>
                     <PillSelect
-                      name="orgId"
                       value={orgId}
                       onValueChange={onOrgChange}
                       icon={Building2}
@@ -1250,7 +1190,6 @@ function NewBugDialog({
                   <div className="space-y-1.5">
                     <p className="text-xs text-muted-foreground">Project</p>
                     <PillSelect
-                      name="projectId"
                       value={projectId}
                       onValueChange={onProjectChange}
                       icon={FolderOpen}
@@ -1289,43 +1228,50 @@ function NewBugDialog({
                 </label>
               </Button>
               {attachmentPreviews.length > 0 && (
-                <div className="flex min-w-0 items-center gap-2 overflow-x-auto py-1">
+                <AttachmentGroup className="max-w-[390px] flex-1 gap-2">
                   {attachmentPreviews.map((preview, index) => {
-                    const isPdf = preview.type === "application/pdf" || preview.name.toLowerCase().endsWith(".pdf")
+                    const isPdf = isPdfPreview(preview)
                     return (
-                      <div
+                      <Attachment
                         key={`${preview.name}-${index}`}
-                        title={preview.name}
-                        className="group relative size-9 shrink-0 overflow-hidden border border-blue-400/45 bg-muted/40 ring-1 ring-blue-400/15"
+                        size="xs"
+                        className="w-44"
                       >
                         {preview.url ? (
-                          <div
-                            className="size-full bg-cover bg-center"
-                            style={{ backgroundImage: `url("${preview.url}")` }}
-                            aria-hidden
-                          />
+                          <AttachmentMedia variant={preview.type.startsWith("image/") ? "image" : "icon"}>
+                            {preview.type.startsWith("image/") ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={preview.url} alt="" />
+                            ) : (
+                              <FileText className="size-4" />
+                            )}
+                          </AttachmentMedia>
                         ) : (
-                          <div className="flex size-full flex-col items-center justify-center gap-0.5 text-muted-foreground">
+                          <AttachmentMedia variant="icon">
                             <FileText className="size-5" />
-                            <span className="text-[9px] font-semibold uppercase leading-none">{isPdf ? "PDF" : "File"}</span>
-                          </div>
+                          </AttachmentMedia>
                         )}
-                        <button
-                          type="button"
-                          aria-label={`Remove ${preview.name}`}
-                          onClick={() => {
-                            const input = fileInputRef.current
-                            const nextFiles = Array.from(input?.files ?? []).filter((_, fileIndex) => fileIndex !== index)
-                            setAttachmentFiles(nextFiles)
-                          }}
-                          className="absolute right-0.5 top-0.5 flex size-4 items-center justify-center bg-background/90 text-muted-foreground opacity-0 shadow-sm transition-opacity hover:text-foreground group-hover:opacity-100"
-                        >
-                          <X className="size-3" />
-                        </button>
-                      </div>
+                        <AttachmentContent>
+                          <AttachmentTitle>{preview.name}</AttachmentTitle>
+                          <AttachmentDescription>{isPdf ? "PDF" : formatFileSize(preview.size)}</AttachmentDescription>
+                        </AttachmentContent>
+                        <AttachmentActions className="pr-0.5">
+                          <AttachmentAction
+                            type="button"
+                            aria-label={`Remove ${preview.name}`}
+                            onClick={() => {
+                              const input = fileInputRef.current
+                              const nextFiles = Array.from(input?.files ?? []).filter((_, fileIndex) => fileIndex !== index)
+                              setAttachmentFiles(nextFiles)
+                            }}
+                          >
+                            <X className="size-3" />
+                          </AttachmentAction>
+                        </AttachmentActions>
+                      </Attachment>
                     )
                   })}
-                </div>
+                </AttachmentGroup>
               )}
             </div>
             <div className="flex items-center gap-2">
@@ -1353,7 +1299,7 @@ function PillSelect({
   disabled,
   placeholder,
 }: {
-  name: string
+  name?: string
   value?: string
   defaultValue?: string
   onValueChange?: (value: string) => void

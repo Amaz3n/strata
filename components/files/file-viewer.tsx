@@ -1,8 +1,11 @@
 "use client"
 
-import { useState, useCallback, useEffect, useRef } from "react"
+import { useState, useCallback, useEffect, useRef, type ReactNode } from "react"
+import { createPortal } from "react-dom"
 import Image from "next/image"
 import { cn } from "@/lib/utils"
+import { useHydrated } from "@/hooks/use-hydrated"
+import { useIsMobile } from "@/hooks/use-mobile"
 import {
   X,
   ChevronLeft,
@@ -11,6 +14,7 @@ import {
   ZoomOut,
   RotateCw,
   Download,
+  Info,
   Maximize2,
   Minimize2,
   FileText,
@@ -53,6 +57,11 @@ interface FileViewerProps {
   onDeleteVersion?: (versionId: string) => Promise<void>
   onRefreshVersions?: () => Promise<void>
   onFileChange?: (file: FileWithDetails) => void
+  /**
+   * Optional side panel describing the file on screen. Opens by default on desktop.
+   * Track the visible file with `onFileChange` to keep this in sync while navigating.
+   */
+  details?: ReactNode
 }
 
 export function FileViewer({
@@ -69,13 +78,17 @@ export function FileViewer({
   onDeleteVersion,
   onRefreshVersions,
   onFileChange,
+  details,
 }: FileViewerProps) {
+  const isMobile = useIsMobile()
+  const hydrated = useHydrated()
   const [zoom, setZoom] = useState(1)
   const [rotation, setRotation] = useState(0)
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [swipeX, setSwipeX] = useState(0)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [showVersions, setShowVersions] = useState(false)
+  const [showDetails, setShowDetails] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [currentIndex, setCurrentIndex] = useState(0)
   const [imageDimensions, setImageDimensions] = useState<{ width: number; height: number } | null>(null)
@@ -261,6 +274,27 @@ export function FileViewer({
       onDeleteVersion &&
       onRefreshVersions
     )
+  const hasDetailsPanel = Boolean(details)
+
+  // Details lead on desktop, where they sit beside the file rather than on top of it.
+  useEffect(() => {
+    if (!open) return
+    setShowDetails(hasDetailsPanel && !isMobile)
+  }, [open, hasDetailsPanel, isMobile])
+
+  const toggleDetails = useCallback(() => {
+    setShowDetails((prev) => {
+      if (!prev) setShowVersions(false)
+      return !prev
+    })
+  }, [])
+
+  const toggleVersions = useCallback(() => {
+    setShowVersions((prev) => {
+      if (!prev) setShowDetails(false)
+      return !prev
+    })
+  }, [])
 
   const handlePrev = useCallback(() => {
     if (canPrev) {
@@ -488,7 +522,7 @@ export function FileViewer({
     }
   }, [onOpenChange])
 
-  if (!open || !currentFile) return null
+  if (!open || !currentFile || !hydrated) return null
 
   const isImage = currentFileIsImage
   const isHeic = currentFileIsHeic
@@ -508,9 +542,15 @@ export function FileViewer({
 
   const hasBottomStrip = showPdfThumbnails || hasMultiple
 
-  return (
+  // Portalled to the body so the viewer escapes whatever opened it: rendered
+  // inline it sat earlier in the DOM than a drawer's portal (and inside vaul's
+  // transformed panel), so it opened *behind* the drawer. Overlays here all share
+  // z-50 and stack by mount order — last opened wins — which keeps the version
+  // AlertDialog below on top of the viewer. A modal drawer also sets
+  // `pointer-events: none` on the body, hence pointer-events-auto.
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex bg-neutral-900"
+      className="pointer-events-auto fixed inset-0 z-50 flex bg-neutral-900"
       onClick={handleBackdropClick}
     >
       {/* Main viewer column */}
@@ -612,8 +652,14 @@ export function FileViewer({
                     <><Maximize2 className="mr-2 h-4 w-4" /> Fullscreen</>
                   )}
                 </DropdownMenuItem>
+                {hasDetailsPanel && (
+                  <DropdownMenuItem onClick={toggleDetails}>
+                    <Info className="mr-2 h-4 w-4" />
+                    {showDetails ? "Hide details" : "Details"}
+                  </DropdownMenuItem>
+                )}
                 {hasVersionsPanel && (
-                  <DropdownMenuItem onClick={() => setShowVersions((prev) => !prev)}>
+                  <DropdownMenuItem onClick={toggleVersions}>
                     <History className="mr-2 h-4 w-4" />
                     {showVersions ? "Hide versions" : "Version history"}
                   </DropdownMenuItem>
@@ -684,12 +730,23 @@ export function FileViewer({
                 <RotateCw className="h-4 w-4" />
               </Button>
             )}
+            {hasDetailsPanel && (
+              <Button
+                variant={showDetails ? "secondary" : "ghost"}
+                size="icon"
+                className="h-9 w-9"
+                onClick={toggleDetails}
+                title="Details"
+              >
+                <Info className="h-4 w-4" />
+              </Button>
+            )}
             {hasVersionsPanel && (
               <Button
                 variant={showVersions ? "secondary" : "ghost"}
                 size="icon"
                 className="h-9 w-9"
-                onClick={() => setShowVersions((prev) => !prev)}
+                onClick={toggleVersions}
                 title="Version history"
               >
                 <History className="h-4 w-4" />
@@ -1006,6 +1063,16 @@ export function FileViewer({
         )}
       </div>
 
+      {/* Details side panel */}
+      {hasDetailsPanel && showDetails && (
+        <aside
+          className="w-full sm:w-[320px] sm:max-w-[40vw] bg-background text-foreground border-l border-border overflow-y-auto flex-shrink-0"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {details}
+        </aside>
+      )}
+
       {/* Versions side panel */}
       {hasVersionsPanel && showVersions && (
         <aside
@@ -1027,6 +1094,7 @@ export function FileViewer({
           </div>
         </aside>
       )}
-    </div>
+    </div>,
+    document.body,
   )
 }

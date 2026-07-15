@@ -10,6 +10,7 @@ import { usePageTitle } from "@/components/layout/page-title-context";
 import { useProductTerminology } from "@/components/layout/use-product-terminology";
 import { FileDropOverlay } from "@/components/files/file-drop-overlay";
 import { FileViewer } from "@/components/files/file-viewer";
+import { downloadUrlToFile, getDownloadFileName } from "@/components/files/download";
 import { DrawingViewer } from "@/components/drawings/drawing-viewer";
 import { CreateFromDrawingDialog } from "@/components/drawings/create-from-drawing-dialog";
 import { Button } from "@/components/ui/button";
@@ -106,50 +107,6 @@ import { unwrapAction } from "@/lib/action-result"
 
 function dispatchNavRefresh() {
   window.dispatchEvent(new CustomEvent("docs-nav-refresh"));
-}
-
-function getDownloadFileName(contentDisposition: string | null, fallback?: string) {
-  if (fallback) return fallback;
-  if (!contentDisposition) return "download";
-
-  const utf8Match = contentDisposition.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
-  if (utf8Match?.[1]) {
-    return decodeURIComponent(utf8Match[1]);
-  }
-
-  const quotedMatch = contentDisposition.match(/filename\s*=\s*"([^"]+)"/i);
-  if (quotedMatch?.[1]) {
-    return quotedMatch[1];
-  }
-
-  const bareMatch = contentDisposition.match(/filename\s*=\s*([^;]+)/i);
-  return bareMatch?.[1]?.trim() || "download";
-}
-
-async function downloadUrlToFile(url: string, fileName?: string) {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Download request failed with status ${response.status}`);
-  }
-
-  const blob = await response.blob();
-  const objectUrl = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  const resolvedFileName = getDownloadFileName(
-    response.headers.get("content-disposition"),
-    fileName,
-  );
-
-  try {
-    link.href = objectUrl;
-    link.download = resolvedFileName;
-    link.rel = "noopener";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-  } finally {
-    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
-  }
 }
 
 interface FileVersionInfo {

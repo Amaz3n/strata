@@ -569,7 +569,7 @@ export async function listWaiverMatrixForPayPeriod(
   await requirePermission("bill.read", { supabase, orgId: resolvedOrgId, userId })
   const [{ data: requirements, error: requirementError }, { data: waivers, error: waiverError }] = await Promise.all([
     supabase.from("subtier_waiver_requirements")
-      .select("*, commitment:commitments(id, title), through_company:companies!subtier_waiver_requirements_through_company_id_fkey(id, name)")
+      .select("*, commitment:commitments!subtier_requirements_commitment_org_fkey(id, title), through_company:companies!subtier_waiver_requirements_through_company_id_fkey(id, name)")
       .eq("org_id", resolvedOrgId).eq("project_id", projectId).eq("period_end", period.end).eq("is_active", true),
     supabase.from("lien_waivers")
       .select("*, company:companies!lien_waivers_company_id_fkey(id, name), through_company:companies!lien_waivers_through_company_id_fkey(id, name)")
@@ -607,7 +607,7 @@ export async function listWaiverMatrixForPayPeriod(
 export async function listSubtierRequirementsForPortal(args: { orgId: string; projectId: string; companyId: string }) {
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase.from("subtier_waiver_requirements")
-    .select("*, commitment:commitments(id, title), waivers:lien_waivers(id, status, document_file_id, signed_at)")
+    .select("*, commitment:commitments!subtier_requirements_commitment_org_fkey(id, title), waivers:lien_waivers(id, status, document_file_id, signed_at)")
     .eq("org_id", args.orgId).eq("project_id", args.projectId).eq("through_company_id", args.companyId)
     .eq("is_active", true).order("period_end", { ascending: false })
   if (error) throw new Error(`Failed to load required sub-tier waivers: ${error.message}`)

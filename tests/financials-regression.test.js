@@ -133,7 +133,7 @@ test("cost-plus ledger carries budget-line and GMP classification on billable co
 test("cost-plus guardrails cover locked costs, direct change orders, manual adjustments, and tie-outs", () => {
   const costPlusSource = fs.readFileSync(path.join(__dirname, "../lib/services/cost-plus.ts"), "utf8")
   const invoiceSource = fs.readFileSync(path.join(__dirname, "../lib/services/invoices.ts"), "utf8")
-  const trustCenterSource = fs.readFileSync(path.join(__dirname, "../lib/services/trust-center.ts"), "utf8")
+  const reconciliationSource = fs.readFileSync(path.join(__dirname, "../lib/services/reports/reconciliation.ts"), "utf8")
   const actionsSource = fs.readFileSync(path.join(__dirname, "../app/(app)/projects/[id]/financials/actions.ts"), "utf8")
   const reviewQueueSource = fs.readFileSync(path.join(__dirname, "../components/cost-inbox/review-queue-table.tsx"), "utf8")
 
@@ -142,21 +142,28 @@ test("cost-plus guardrails cover locked costs, direct change orders, manual adju
   assert.match(costPlusSource, /createManualBillableAdjustment/)
   assert.match(actionsSource, /createManualBillableAdjustmentAction/)
   assert.match(reviewQueueSource, /adjustmentDialogOpen/)
-  assert.match(trustCenterSource, /incurred_billable_tieout/)
+  assert.match(reconciliationSource, /incurred_billable_tieout/)
 })
 
-test("cost-plus trust center has a real route for incurred versus billable tie-out", () => {
-  const trustCenterTypes = fs.readFileSync(path.join(__dirname, "../lib/financials/trust-center-types.ts"), "utf8")
+test("reconciliation report has a real route and trust center stays retired", () => {
+  const reconciliationSource = fs.readFileSync(path.join(__dirname, "../lib/services/reports/reconciliation.ts"), "utf8")
+  const reconciliationPage = fs.readFileSync(
+    path.join(__dirname, "../app/(app)/projects/[id]/reports/reconciliation/page.tsx"),
+    "utf8",
+  )
   const trustCenterPage = fs.readFileSync(
     path.join(__dirname, "../app/(app)/projects/[id]/financials/trust-center/page.tsx"),
     "utf8",
   )
   const projectNav = fs.readFileSync(path.join(__dirname, "../components/layout/project-nav-items.ts"), "utf8")
 
-  assert.match(trustCenterTypes, /incurred_billable_tieout/)
-  assert.doesNotMatch(trustCenterPage, /redirect\(/)
-  assert.match(trustCenterPage, /TrustCenterTab/)
-  assert.match(projectNav, /trust-center/)
+  assert.match(reconciliationSource, /incurred_billable_tieout/)
+  assert.match(reconciliationPage, /ReconciliationReportView/)
+  // Trust Center was deliberately removed from nav (navigation-scopes refactor);
+  // its route must stay a redirect into the reconciliation report.
+  assert.match(trustCenterPage, /redirect\(/)
+  assert.match(trustCenterPage, /reports\/reconciliation/)
+  assert.doesNotMatch(projectNav, /trust-center/)
 })
 
 test("markup and retainage policies are explicit in cost-plus billing", () => {
@@ -535,4 +542,15 @@ test("fixed-price pay-app packages carry GC compliance and required full-tier wa
   assert.match(actions, /generateInvoiceBackupPackage/)
   assert.match(payAppUi, /Attach our bonds, insurance, and licenses/)
   assert.match(payAppUi, /Full-tier lien waivers are included automatically/)
+})
+
+test("sub-tier waiver queries disambiguate the org-scoped commitment relationship", () => {
+  const waiverService = fs.readFileSync(
+    path.join(__dirname, "../lib/services/lien-waivers.ts"),
+    "utf8",
+  )
+
+  const relationshipHint = "commitments!subtier_requirements_commitment_org_fkey"
+  assert.equal(waiverService.split(relationshipHint).length - 1, 2)
+  assert.doesNotMatch(waiverService, /commitment:commitments\(id, title\)/)
 })

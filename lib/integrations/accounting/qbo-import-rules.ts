@@ -46,6 +46,34 @@ export function qboPurchaseCreditCents(value: unknown): number {
   return -Math.abs(qboImportCents(value))
 }
 
+export function qboJournalEntryLineAmounts(
+  value: unknown,
+  postingType: unknown,
+): { storedCents: number; signedCents: number } {
+  const storedCents = Math.abs(qboImportCents(value))
+  const isCredit = String(postingType ?? "").toLowerCase() === "credit"
+  return {
+    storedCents,
+    signedCents: storedCents * (isCredit ? -1 : 1),
+  }
+}
+
+export function qboImportedExpenseCostCents(input: {
+  amountCents: unknown
+  taxCents?: unknown
+  metadata?: { source?: unknown; qbo_signed_amount_cents?: unknown } | null
+}): number {
+  const source = String(input.metadata?.source ?? "")
+  const signedAmountValue = input.metadata?.qbo_signed_amount_cents
+  const signedAmount = Number(signedAmountValue)
+  if (source === "journal_entry" && signedAmountValue != null && Number.isFinite(signedAmount)) {
+    return Math.round(signedAmount)
+  }
+
+  const storedTotal = Math.round(Number(input.amountCents ?? 0) + Number(input.taxCents ?? 0))
+  return source.startsWith("expense_credit") ? -Math.abs(storedTotal) : storedTotal
+}
+
 export function extractLinkedQboIds(transaction: any, txnType: "invoice" | "bill"): string[] {
   const ids = new Set<string>()
   for (const line of (transaction?.Line ?? []) as any[]) {
