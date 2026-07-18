@@ -5,7 +5,7 @@ import {
   validateBidPortalToken,
 } from "@/lib/services/bid-portal"
 import { getExternalPortalGateContext, getExternalPortalWorkspaceContext, hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
-import { BidPortalClientNew } from "@/components/bid-portal/bid-portal-client-new"
+import { BidPortalClient } from "@/components/bid-portal/bid-portal-client"
 import { PortalAccountGate } from "@/components/portal/account/portal-account-gate"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -28,6 +28,8 @@ const EMPTY_BID_PORTAL_DATA = {
   submissions: [],
   currentSubmission: undefined,
   rfis: [],
+  scopeItems: [],
+  draft: null,
 }
 
 export default async function BidPortalPage({ params }: BidPortalPageProps) {
@@ -42,11 +44,9 @@ export default async function BidPortalPage({ params }: BidPortalPageProps) {
             <p className="text-xs uppercase tracking-wider text-muted-foreground">Bid Portal</p>
             <h1 className="text-2xl font-semibold">Link not found</h1>
             <p className="text-sm text-muted-foreground">
-              This bid link is invalid or expired. Ask the builder to generate a new link.
+              This bid link is invalid or expired. Reply to the invitation email and the builder
+              can send you a fresh link.
             </p>
-            <Button asChild>
-              <a href="mailto:">Contact builder</a>
-            </Button>
           </CardContent>
         </Card>
       </div>
@@ -80,12 +80,12 @@ export default async function BidPortalPage({ params }: BidPortalPageProps) {
   const hasPinAccess = access.pin_required ? await isBidPortalPinVerified(token) : true
   if (!hasPinAccess) {
     const workspace = await getExternalPortalWorkspaceContext({ orgId: access.org_id })
-    return <BidPortalClientNew token={token} access={access} data={EMPTY_BID_PORTAL_DATA} pinRequired workspace={workspace} />
+    return <BidPortalClient token={token} access={access} data={EMPTY_BID_PORTAL_DATA} pinRequired workspace={workspace} />
   }
 
-  const data = await loadBidPortalData(access)
+  const data = await loadBidPortalData(access, token)
   await recordBidPortalAccess(access.id, access.bid_invite_id, access.org_id)
   const workspace = await getExternalPortalWorkspaceContext({ orgId: access.org_id })
 
-  return <BidPortalClientNew token={token} access={access} data={data} pinRequired={false} workspace={workspace} />
+  return <BidPortalClient token={token} access={access} data={data} pinRequired={false} workspace={workspace} />
 }

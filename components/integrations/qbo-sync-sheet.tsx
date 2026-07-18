@@ -42,6 +42,7 @@ const SECTIONS: { key: string; label: string; types: QboSyncEntityType[] }[] = [
   { key: "expense", label: "Expenses", types: ["expense"] },
   { key: "bill", label: "Bills", types: ["bill"] },
   { key: "payment", label: "Payments", types: ["payment", "bill_payment"] },
+  { key: "webhook", label: "Inbound events", types: ["webhook_event"] },
 ]
 
 function formatMoney(cents: number) {
@@ -102,7 +103,7 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
     if (open) setActiveTab(canImport ? initialTab : initialTab === "import" ? "sync" : initialTab)
   }, [canImport, initialTab, open])
 
-  const failedCount = useMemo(() => items.filter((item) => item.status === "error").length, [items])
+  const failedCount = useMemo(() => items.filter((item) => item.status === "error" || item.status === "needs_review").length, [items])
   const pendingCount = items.length - failedCount
   const lastSyncedAt = useMemo(
     () => history.find((entry) => entry.status !== "error" && entry.syncedAt)?.syncedAt ?? null,
@@ -123,8 +124,8 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
       SECTIONS.map((section) => {
         const sectionItems = items
           .filter((item) => section.types.includes(item.entityType))
-          .filter((item) => !showFailedOnly || item.status === "error")
-          .sort((a, b) => Number(b.status === "error") - Number(a.status === "error"))
+          .filter((item) => !showFailedOnly || item.status === "error" || item.status === "needs_review")
+          .sort((a, b) => Number(b.status !== "pending") - Number(a.status !== "pending"))
         const total = sectionItems.reduce((sum, item) => sum + item.amountCents, 0)
         return { ...section, items: sectionItems, total }
       }).filter((section) => section.items.length > 0),
@@ -137,7 +138,7 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
     try {
       const result = await syncAllQboPendingAction({ projectId })
       if (result.failed > 0) {
-        toast.warning(`Synced ${result.synced}, ${result.failed} failed`, { description: "Open the failed items to see why." })
+        toast.warning(`Synced ${result.synced}, ${result.failed} failed`, { description: result.errors[0] ?? "Open the failed items to see why." })
       } else {
         toast.success(result.synced > 0 ? `Synced ${result.synced} to QuickBooks` : "Nothing to sync")
       }
@@ -154,7 +155,7 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
     setSyncingId(item.id)
     try {
       await syncQboItemAction(item.entityType, item.id)
-      toast.success("Synced to QuickBooks")
+      toast.success(item.entityType === "webhook_event" ? "Webhook event queued" : "Synced to QuickBooks")
     } catch (error: any) {
       toast.error("Sync failed", { description: error?.message ?? "Try again." })
     } finally {
@@ -432,7 +433,7 @@ function SyncRow({
   onSync: () => void
   onOpen?: () => void
 }) {
-  const failed = item.status === "error"
+  const failed = item.status === "error" || item.status === "needs_review"
   const lastAttempt = formatRelative(item.lastAttemptAt)
 
   return (
@@ -456,7 +457,7 @@ function SyncRow({
           {item.sublabel && <span className="truncate">{item.sublabel}</span>}
           {item.sublabel && (lastAttempt || failed) && <span aria-hidden>·</span>}
           {failed ? (
-            <span className="truncate text-destructive">{item.error || "Sync failed"}</span>
+            <span className="truncate text-destructive">{item.error || (item.status === "needs_review" ? "Needs review" : "Sync failed")}</span>
           ) : (
             <span className="truncate">{lastAttempt ? `Last tried ${lastAttempt}` : "Waiting to sync"}</span>
           )}
@@ -471,7 +472,7 @@ function SyncRow({
         disabled={disabled}
       >
         {syncing ? <Spinner className="size-3.5" /> : <RefreshCcw className="size-3.5" />}
-        <span className="ml-1.5 hidden sm:inline">{failed ? "Retry" : "Sync"}</span>
+        <span className="ml-1.5 hidden sm:inline">{item.entityType === "webhook_event" ? "Retry" : failed ? "Retry" : "Sync"}</span>
       </Button>
     </li>
   )

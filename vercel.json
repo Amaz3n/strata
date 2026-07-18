@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/qbo/process-outbox",
-      "schedule": "0 2 * * *"
+      "schedule": "*/10 * * * *"
     },
     {
       "path": "/api/qbo/process-cdc",

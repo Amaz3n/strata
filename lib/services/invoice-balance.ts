@@ -1,67 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-type InvoiceRow = {
-  id: string
-  org_id: string
-  project_id: string | null
-  total_cents: number | null
-  due_date: string | null
-  status: string | null
-  client_visible: boolean | null
-  sent_at: string | null
-}
-
-type PaymentRow = {
-  amount_cents: number | null
-  status: string | null
-}
-
-type PaymentAllocationRow = {
-  amount_cents: number | null
-  payment: { status: string | null } | { status: string | null }[] | null
-}
-
-type PaymentReversalRow = {
-  amount_cents: number | null
-  status: string | null
-}
-
-function isOverdue(dueDate: string | null | undefined) {
-  if (!dueDate) return false
-  const due = new Date(dueDate)
-  if (Number.isNaN(due.getTime())) return false
-  return due.getTime() < Date.now()
-}
-
-export function deriveInvoiceLifecycleStatus(params: {
-  currentStatus: string | null | undefined
-  totalCents: number
-  balanceCents: number
-  paidCents: number
-  dueDate: string | null | undefined
-  clientVisible: boolean | null | undefined
-  sentAt: string | null | undefined
-}) {
-  const currentStatus = params.currentStatus ?? "sent"
-  const hasBeenSent =
-    Boolean(params.clientVisible || params.sentAt) ||
-    ["sent", "partial", "paid", "overdue"].includes(currentStatus)
-
-  if (params.totalCents > 0 && params.balanceCents === 0) {
-    return "paid"
-  }
-  if (params.paidCents > 0 && params.balanceCents > 0) {
-    return "partial"
-  }
-  if (!hasBeenSent) {
-    return currentStatus === "draft" ? "draft" : "saved"
-  }
-  if (isOverdue(params.dueDate) && params.balanceCents > 0) {
-    return "overdue"
-  }
-  return "sent"
-}
-
+/**
+ * Invoice balance/status derivation lives in ONE place: the SQL functions
+ * invoice_paid_cents + derive_invoice_status (see migration
+ * 20260715100001_unify_invoice_status_engine.sql). The payment RPCs and this
+ * recalc all call the same functions, so an invoice's status can never depend
+ * on which write path last touched it.
+ */
 export async function recalcInvoiceBalanceAndStatus({
   supabase,
   orgId,
@@ -71,98 +16,16 @@ export async function recalcInvoiceBalanceAndStatus({
   orgId: string
   invoiceId: string
 }) {
-  const { data: invoice, error: invoiceError } = await supabase
-    .from("invoices")
-    .select("id, org_id, project_id, total_cents, due_date, status, client_visible, sent_at")
-    .eq("id", invoiceId)
-    .eq("org_id", orgId)
-    .maybeSingle()
-
-  if (invoiceError || !invoice) {
-    throw new Error(invoiceError?.message ?? "Invoice not found or inaccessible")
-  }
-
-  const [paymentsResult, allocationsResult, reversalsResult] = await Promise.all([
-    supabase
-      .from("payments")
-      .select("amount_cents, status")
-      .eq("org_id", orgId)
-      .eq("invoice_id", invoiceId)
-      .in("status", ["succeeded", "completed", "processing", "refunded"])
-      .returns<PaymentRow[]>(),
-    supabase
-      .from("payment_allocations")
-      .select("amount_cents, payment:payments(status)")
-      .eq("org_id", orgId)
-      .eq("invoice_id", invoiceId)
-      .returns<PaymentAllocationRow[]>(),
-    supabase
-      .from("payment_reversals")
-      .select("amount_cents, status")
-      .eq("org_id", orgId)
-      .eq("invoice_id", invoiceId)
-      .in("status", ["pending", "succeeded"])
-      .returns<PaymentReversalRow[]>(),
-  ])
-
-  if (paymentsResult.error) {
-    throw new Error(`Failed to aggregate payments: ${paymentsResult.error.message}`)
-  }
-  if (allocationsResult.error) {
-    throw new Error(`Failed to aggregate payment allocations: ${allocationsResult.error.message}`)
-  }
-  if (reversalsResult.error) {
-    throw new Error(`Failed to aggregate payment reversals: ${reversalsResult.error.message}`)
-  }
-
-  const invoiceRow = invoice as unknown as InvoiceRow
-  const directPaidCents = (paymentsResult.data ?? []).reduce((sum, row) => sum + (row.amount_cents ?? 0), 0)
-  const allocatedPaidCents = (allocationsResult.data ?? []).reduce((sum, row) => {
-    const payment = Array.isArray(row.payment) ? row.payment[0] : row.payment
-    const status = payment?.status ?? null
-    if (!status || !["succeeded", "completed", "processing", "refunded"].includes(status)) return sum
-    return sum + (row.amount_cents ?? 0)
-  }, 0)
-  const grossPaidCents = directPaidCents + allocatedPaidCents
-  const reversedCents = (reversalsResult.data ?? []).reduce((sum, row) => sum + (row.amount_cents ?? 0), 0)
-  const paidCents = Math.max(grossPaidCents - reversedCents, 0)
-  const totalCents = invoiceRow.total_cents ?? 0
-
-  const currentStatus = invoiceRow.status ?? "sent"
-  if (currentStatus === "void") {
-    await supabase
-      .from("invoices")
-      .update({ balance_due_cents: 0, status: "void" })
-      .eq("id", invoiceId)
-      .eq("org_id", orgId)
-    await syncDrawStatusForInvoice({ supabase, orgId, invoiceId, invoiceStatus: "void" })
-    return { balance_due_cents: 0, status: "void" as const, paid_cents: paidCents }
-  }
-
-  const nextBalance = Math.max(totalCents - paidCents, 0)
-  const nextStatus = deriveInvoiceLifecycleStatus({
-    currentStatus,
-    totalCents,
-    balanceCents: nextBalance,
-    paidCents,
-    dueDate: invoiceRow.due_date,
-    clientVisible: invoiceRow.client_visible,
-    sentAt: invoiceRow.sent_at,
+  const { data, error } = await supabase.rpc("recalc_invoice_balance_atomic", {
+    p_org_id: orgId,
+    p_invoice_id: invoiceId,
   })
-
-  const { error: updateError } = await supabase
-    .from("invoices")
-    .update({ balance_due_cents: nextBalance, status: nextStatus })
-    .eq("id", invoiceId)
-    .eq("org_id", orgId)
-
-  if (updateError) {
-    throw new Error(`Failed to update invoice balance: ${updateError.message}`)
+  if (error) {
+    throw new Error(`Failed to recalc invoice balance: ${error.message}`)
   }
-
-  await syncDrawStatusForInvoice({ supabase, orgId, invoiceId, invoiceStatus: nextStatus })
-
-  return { balance_due_cents: nextBalance, status: nextStatus, paid_cents: paidCents }
+  const result = data as { balance_due_cents: number; status: string; paid_cents: number }
+  await syncDrawStatusForInvoice({ supabase, orgId, invoiceId, invoiceStatus: result.status })
+  return result
 }
 
 export async function syncDrawStatusForInvoice({

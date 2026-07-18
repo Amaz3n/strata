@@ -1,12 +1,11 @@
 "use client"
 
 import { useEffect, useMemo, useState, useTransition } from "react"
-import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { format } from "date-fns"
 import { toast } from "sonner"
 
-import type { BidPackage, BuyoutSummaryRow } from "@/lib/services/bids"
+import type { BidPackage } from "@/lib/services/bids"
+import { getBidPackageStage } from "@/lib/bids/stage"
 import type { CostCode } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -14,7 +13,7 @@ import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { Badge } from "@/components/ui/badge"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Calendar } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -28,12 +27,25 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { CalendarDays, Plus } from "@/components/icons"
-import { createBidPackageAction } from "@/app/(app)/projects/[id]/bids/actions"
-import { createProspectBidPackageAction } from "@/app/(app)/pipeline/prospects/[prospectId]/bids/actions"
-import { BidStatusBadge } from "@/components/bids/bid-status-badge"
+import { createBidPackageAction } from "@/app/(app)/bids/actions"
 import { CostCodeSelectItems } from "@/components/cost-codes/cost-code-select-items"
-
 import { unwrapAction } from "@/lib/action-result"
+import {
+  STAGE_LABELS,
+  US_TIMEZONES,
+  formatDueDate,
+  isDuePast,
+  money,
+  relativeDueDate,
+  signedMoney,
+} from "@/components/bids/bid-workbench-helpers"
+import type { BidPackageStage } from "@/lib/bids/stage"
+
+interface BudgetLineOption {
+  id: string
+  description: string | null
+  amount_cents: number | null
+}
 
 interface BidPackagesClientProps {
   projectId?: string
@@ -41,6 +53,7 @@ interface BidPackagesClientProps {
   packages: BidPackage[]
   tradeOptions: string[]
   costCodes: CostCode[]
+  budgetLines?: BudgetLineOption[]
   detailBasePath?: string
   createDescription?: string
   initialDraft?: {
@@ -50,11 +63,13 @@ interface BidPackagesClientProps {
     budget_line_id?: string | null
     amount_cents?: number | null
   } | null
-  buyoutRows?: BuyoutSummaryRow[]
 }
 
 const NO_TRADE_VALUE = "__none__"
+const NO_COST_CODE = "__none__"
 const ALL_STATUSES = "__all__"
+const DEFAULT_TZ = "America/New_York"
+
 const sortOptions = [
   { value: "needs_attention", label: "Needs attention" },
   { value: "due_soon", label: "Due soon" },
@@ -64,36 +79,41 @@ const sortOptions = [
 ] as const
 
 type SortOption = (typeof sortOptions)[number]["value"]
+type BidMode = "quote" | "tender"
 
-function formatCurrency(cents?: number | null): string {
-  if (cents == null) return "-"
-  return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
-}
-
-function getDueInfo(dueAt?: string | null): { label: string; tone: string; weight: number; timestamp: number } {
-  if (!dueAt) return { label: "-", tone: "text-muted-foreground", weight: 3, timestamp: Number.POSITIVE_INFINITY }
-  const dueDate = new Date(dueAt)
-  const now = new Date()
-  const msUntilDue = dueDate.getTime() - now.getTime()
-  const daysUntilDue = Math.ceil(msUntilDue / 86_400_000)
-
-  if (msUntilDue < 0) {
-    return { label: format(dueDate, "MMM d, h:mm a"), tone: "text-rose-600 font-medium", weight: 0, timestamp: dueDate.getTime() }
-  }
-  if (daysUntilDue <= 2) {
-    return { label: format(dueDate, "MMM d, h:mm a"), tone: "text-amber-600 font-medium", weight: 1, timestamp: dueDate.getTime() }
-  }
-  return { label: format(dueDate, "MMM d, h:mm a"), tone: "text-muted-foreground", weight: 2, timestamp: dueDate.getTime() }
+const STAGE_TONE: Record<BidPackageStage, string> = {
+  setup: "text-muted-foreground",
+  bidding: "text-primary",
+  leveling: "text-warning",
+  awarded: "text-success",
+  cancelled: "text-muted-foreground",
 }
 
 function combineDateAndTime(date: Date, time: string): Date {
   const [hoursRaw, minutesRaw] = time.split(":")
   const hours = Number.parseInt(hoursRaw ?? "", 10)
   const minutes = Number.parseInt(minutesRaw ?? "", 10)
-
   const next = new Date(date)
   next.setHours(Number.isFinite(hours) ? hours : 17, Number.isFinite(minutes) ? minutes : 0, 0, 0)
   return next
+}
+
+function CoverageBar({ responses, invited }: { responses: number; invited: number }) {
+  const ratio = invited > 0 ? Math.min(1, responses / invited) : 0
+  const incomplete = invited > 0 && responses < invited
+  return (
+    <div className="flex items-center justify-end gap-2">
+      <div className="h-1.5 w-16 overflow-hidden rounded-full bg-muted" aria-hidden>
+        <div
+          className={cn("h-full rounded-full", incomplete ? "bg-warning" : "bg-success")}
+          style={{ width: `${Math.round(ratio * 100)}%` }}
+        />
+      </div>
+      <span className="tabular-nums text-xs text-muted-foreground">
+        {responses} of {invited}
+      </span>
+    </div>
+  )
 }
 
 export function BidPackagesClient({
@@ -102,10 +122,10 @@ export function BidPackagesClient({
   packages,
   tradeOptions,
   costCodes,
+  budgetLines = [],
   detailBasePath,
   createDescription,
   initialDraft = null,
-  buyoutRows = [],
 }: BidPackagesClientProps) {
   const router = useRouter()
   const [items, setItems] = useState(packages)
@@ -116,14 +136,21 @@ export function BidPackagesClient({
   const [isCreating, startCreating] = useTransition()
 
   const [title, setTitle] = useState("")
-  const [costCodeId, setCostCodeId] = useState("__none__")
+  const [costCodeId, setCostCodeId] = useState(NO_COST_CODE)
   const [budgetLineId, setBudgetLineId] = useState<string | null>(null)
   const [trade, setTrade] = useState(NO_TRADE_VALUE)
+  const [mode, setMode] = useState<BidMode>("quote")
   const [dueDate, setDueDate] = useState<Date | undefined>(undefined)
   const [dueTime, setDueTime] = useState("17:00")
+  const [dueTz, setDueTz] = useState(DEFAULT_TZ)
+  const [bondRequired, setBondRequired] = useState(false)
   const [scope, setScope] = useState("")
   const [instructions, setInstructions] = useState("")
   const [initialDraftApplied, setInitialDraftApplied] = useState(false)
+
+  useEffect(() => {
+    setItems(packages)
+  }, [packages])
 
   useEffect(() => {
     if (initialDraftApplied || !initialDraft) return
@@ -132,16 +159,27 @@ export function BidPackagesClient({
     if (initialDraft.cost_code_id) setCostCodeId(initialDraft.cost_code_id)
     if (initialDraft.budget_line_id) setBudgetLineId(initialDraft.budget_line_id)
     if (initialDraft.amount_cents && initialDraft.amount_cents > 0) {
-      setInstructions(`Budget target: ${formatCurrency(initialDraft.amount_cents)}`)
+      setInstructions(`Budget target: ${money(initialDraft.amount_cents)}`)
     }
     setCreateOpen(true)
     setInitialDraftApplied(true)
   }, [initialDraft, initialDraftApplied])
 
+  const coveredBudgetLineIds = useMemo(
+    () => new Set(items.map((item) => item.budget_line_id).filter((id): id is string => Boolean(id))),
+    [items],
+  )
+
   const filtered = useMemo(() => {
     const term = search.toLowerCase()
     const visible = items.filter((item) => {
-      const haystack = [item.title, item.trade ?? "", item.scope ?? "", item.cost_code_code ?? "", item.cost_code_name ?? ""]
+      const haystack = [
+        item.title,
+        item.trade ?? "",
+        item.scope ?? "",
+        item.cost_code_code ?? "",
+        item.cost_code_name ?? "",
+      ]
         .join(" ")
         .toLowerCase()
       if (term && !haystack.includes(term)) return false
@@ -154,32 +192,58 @@ export function BidPackagesClient({
       const bInvites = b.invite_count ?? 0
       const aResponses = a.response_count ?? 0
       const bResponses = b.response_count ?? 0
-      const aDue = getDueInfo(a.due_at)
-      const bDue = getDueInfo(b.due_at)
+      const aDue = a.due_at ? new Date(a.due_at).getTime() : Number.POSITIVE_INFINITY
+      const bDue = b.due_at ? new Date(b.due_at).getTime() : Number.POSITIVE_INFINITY
 
-      if (sortBy === "due_soon") return aDue.timestamp - bDue.timestamp
-      if (sortBy === "coverage") return aResponses / Math.max(aInvites, 1) - bResponses / Math.max(bInvites, 1)
-      if (sortBy === "lowest_bid") return (a.lowest_bid_cents ?? Number.POSITIVE_INFINITY) - (b.lowest_bid_cents ?? Number.POSITIVE_INFINITY)
+      if (sortBy === "due_soon") return aDue - bDue
+      if (sortBy === "coverage") {
+        return aResponses / Math.max(aInvites, 1) - bResponses / Math.max(bInvites, 1)
+      }
+      if (sortBy === "lowest_bid") {
+        return (a.lowest_bid_cents ?? Number.POSITIVE_INFINITY) - (b.lowest_bid_cents ?? Number.POSITIVE_INFINITY)
+      }
       if (sortBy === "newest") return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
 
-      const aNeedsResponses = aInvites > 0 && aResponses < aInvites
-      const bNeedsResponses = bInvites > 0 && bResponses < bInvites
-      const aAttention = (aNeedsResponses ? 0 : 4) + aDue.weight
-      const bAttention = (bNeedsResponses ? 0 : 4) + bDue.weight
-      if (aAttention !== bAttention) return aAttention - bAttention
-      return aDue.timestamp - bDue.timestamp
+      const aNeeds = aInvites > 0 && aResponses < aInvites
+      const bNeeds = bInvites > 0 && bResponses < bInvites
+      if (aNeeds !== bNeeds) return aNeeds ? -1 : 1
+      return aDue - bDue
     })
   }, [items, search, sortBy, statusFilter])
 
+  const uncoveredBudgetLines = useMemo(() => {
+    if (!projectId) return []
+    const term = search.toLowerCase()
+    return budgetLines.filter((line) => {
+      if (coveredBudgetLineIds.has(line.id)) return false
+      if (statusFilter !== ALL_STATUSES) return false
+      if (term && !(line.description ?? "").toLowerCase().includes(term)) return false
+      return true
+    })
+  }, [budgetLines, coveredBudgetLineIds, projectId, search, statusFilter])
+
   const resetForm = () => {
     setTitle("")
-    setCostCodeId("__none__")
+    setCostCodeId(NO_COST_CODE)
     setBudgetLineId(null)
     setTrade(NO_TRADE_VALUE)
+    setMode("quote")
     setDueDate(undefined)
     setDueTime("17:00")
+    setDueTz(DEFAULT_TZ)
+    setBondRequired(false)
     setScope("")
     setInstructions("")
+  }
+
+  const openCreateForBudgetLine = (line: BudgetLineOption) => {
+    resetForm()
+    setTitle(line.description?.trim() || "New package")
+    setBudgetLineId(line.id)
+    if (line.amount_cents && line.amount_cents > 0) {
+      setInstructions(`Budget target: ${money(line.amount_cents)}`)
+    }
+    setCreateOpen(true)
   }
 
   const handleCreate = () => {
@@ -194,25 +258,31 @@ export function BidPackagesClient({
         }
         const payload = {
           title: title.trim(),
-          cost_code_id: costCodeId === "__none__" ? null : costCodeId,
+          cost_code_id: costCodeId === NO_COST_CODE ? null : costCodeId,
           budget_line_id: budgetLineId,
           trade: trade === NO_TRADE_VALUE ? null : trade,
+          mode,
+          bond_required: mode === "tender" ? bondRequired : false,
           scope: scope.trim() || null,
           instructions: instructions.trim() || null,
           due_at: dueDate ? combineDateAndTime(dueDate, dueTime).toISOString() : null,
+          due_tz: dueDate ? dueTz : null,
         }
-        const created = projectId
-          ? unwrapAction(await createBidPackageAction(projectId, payload))
-          : unwrapAction(await createProspectBidPackageAction(prospectId ?? "", payload))
+        const created = unwrapAction(await createBidPackageAction({ projectId, prospectId }, payload))
         setItems((prev) => [created, ...prev])
         toast.success("Bid package created")
         resetForm()
         setCreateOpen(false)
-      } catch (error: any) {
-        toast.error("Failed to create package", { description: error?.message ?? "Please try again." })
+      } catch (error) {
+        toast.error("Failed to create package", {
+          description: error instanceof Error ? error.message : "Please try again.",
+        })
       }
     })
   }
+
+  const basePath = detailBasePath ?? (projectId ? `/projects/${projectId}/bids` : "")
+  const columnCount = projectId ? 7 : 6
 
   return (
     <div className="space-y-4">
@@ -223,23 +293,47 @@ export function BidPackagesClient({
           if (!open) resetForm()
         }}
       >
-        <SheetContent
-          side="right"
-          mobileFullscreen
-          className="sm:max-w-lg sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 fast-sheet-animation"
-          style={{ animationDuration: "150ms", transitionDuration: "150ms" } as React.CSSProperties}
-        >
-          <SheetHeader className="px-6 pt-6 pb-4 border-b bg-muted/30">
+        <SheetContent side="right" className="flex w-full flex-col p-0 sm:max-w-lg">
+          <SheetHeader className="border-b px-6 py-4">
             <SheetTitle>New bid package</SheetTitle>
             <SheetDescription>
               {createDescription ?? "Create an invite-to-bid package for this project."}
             </SheetDescription>
           </SheetHeader>
-          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
+          <div className="flex-1 space-y-5 overflow-y-auto px-6 py-4">
             <div className="space-y-2">
               <Label>Title</Label>
-              <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Electrical - Rough & Trim" />
+              <Input
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+                placeholder="Electrical — Rough & Trim"
+              />
             </div>
+
+            <div className="space-y-2">
+              <Label>Bid type</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {(["quote", "tender"] as const).map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => setMode(option)}
+                    className={cn(
+                      "flex flex-col items-start gap-0.5 border px-3 py-2 text-left text-sm transition-colors",
+                      mode === option
+                        ? "border-primary bg-primary/5 text-foreground"
+                        : "border-border text-muted-foreground hover:bg-muted/50",
+                    )}
+                  >
+                    <span className="font-medium capitalize">{option}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {option === "quote" ? "Single number, scope optional" : "Line-item scope, apples-to-apples"}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="space-y-2">
               <Label>Cost code</Label>
               <Select value={costCodeId} onValueChange={setCostCodeId}>
@@ -247,11 +341,12 @@ export function BidPackagesClient({
                   <SelectValue placeholder="Select cost code" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="__none__">No cost code yet</SelectItem>
+                  <SelectItem value={NO_COST_CODE}>No cost code yet</SelectItem>
                   <CostCodeSelectItems costCodes={costCodes} />
                 </SelectContent>
               </Select>
             </div>
+
             <div className="space-y-2">
               <Label>Trade</Label>
               <Select value={trade} onValueChange={setTrade}>
@@ -268,6 +363,7 @@ export function BidPackagesClient({
                 </SelectContent>
               </Select>
             </div>
+
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>Due date</Label>
@@ -279,7 +375,7 @@ export function BidPackagesClient({
                       className={cn("w-full justify-start text-left font-normal", !dueDate && "text-muted-foreground")}
                     >
                       <CalendarDays className="mr-2 h-4 w-4" />
-                      {dueDate ? format(dueDate, "LLL dd, y") : "Pick a date"}
+                      {dueDate ? formatDueDate(combineDateAndTime(dueDate, dueTime).toISOString(), dueTz) : "Pick a date"}
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent className="w-auto p-0" align="start">
@@ -289,27 +385,55 @@ export function BidPackagesClient({
               </div>
               <div className="space-y-2">
                 <Label>Due time</Label>
-                <Input type="time" value={dueTime} onChange={(e) => setDueTime(e.target.value)} />
+                <Input type="time" value={dueTime} onChange={(event) => setDueTime(event.target.value)} />
               </div>
             </div>
+
+            <div className="space-y-2">
+              <Label>Timezone</Label>
+              <Select value={dueTz} onValueChange={setDueTz}>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {US_TIMEZONES.map((zone) => (
+                    <SelectItem key={zone.value} value={zone.value}>
+                      {zone.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {mode === "tender" ? (
+              <label className="flex items-center gap-2 text-sm">
+                <Checkbox checked={bondRequired} onCheckedChange={(value) => setBondRequired(value === true)} />
+                <span>Payment &amp; performance bond required</span>
+              </label>
+            ) : null}
+
             <div className="space-y-2">
               <Label>Scope</Label>
-              <Textarea value={scope} onChange={(e) => setScope(e.target.value)} placeholder="Scope notes" />
+              <Textarea value={scope} onChange={(event) => setScope(event.target.value)} placeholder="Scope notes" />
             </div>
             <div className="space-y-2">
               <Label>Instructions</Label>
-              <Textarea value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="Bid instructions" />
+              <Textarea
+                value={instructions}
+                onChange={(event) => setInstructions(event.target.value)}
+                placeholder="Bid instructions"
+              />
             </div>
           </div>
-          <SheetFooter className="border-t bg-background/80 px-6 py-4">
-            <div className="flex flex-col gap-2 sm:flex-row">
+          <SheetFooter className="border-t px-6 py-4">
+            <div className="flex w-full gap-2">
               <SheetClose asChild>
-                <Button variant="outline" className="w-full sm:flex-1">
+                <Button variant="outline" className="flex-1">
                   Cancel
                 </Button>
               </SheetClose>
-              <Button onClick={handleCreate} disabled={isCreating} className="w-full sm:flex-1">
-                {isCreating ? "Creating..." : "Create package"}
+              <Button onClick={handleCreate} disabled={isCreating} className="flex-1">
+                {isCreating ? "Creating…" : "Create package"}
               </Button>
             </div>
           </SheetFooter>
@@ -319,10 +443,10 @@ export function BidPackagesClient({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="grid flex-1 gap-2 sm:grid-cols-[minmax(220px,1fr)_160px_180px]">
           <Input
-            placeholder="Search bid packages..."
+            placeholder="Search packages…"
             className="w-full"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(event) => setSearch(event.target.value)}
           />
           <Select value={statusFilter} onValueChange={setStatusFilter}>
             <SelectTrigger className="w-full">
@@ -352,146 +476,120 @@ export function BidPackagesClient({
         </div>
         <Button onClick={() => setCreateOpen(true)}>
           <Plus className="mr-2 h-4 w-4" />
-          New bid package
+          New package
         </Button>
       </div>
 
-      <div className="rounded-lg border overflow-hidden">
+      <div className="overflow-hidden rounded-lg border">
         <Table>
           <TableHeader>
-            <TableRow className="divide-x">
-              <TableHead className="px-4 py-4">Package</TableHead>
-              <TableHead className="px-4 py-4">Trade</TableHead>
-              <TableHead className="px-4 py-4">Cost code</TableHead>
-              <TableHead className="px-4 py-4 text-center">Status</TableHead>
-              <TableHead className="px-4 py-4 text-center">Responses</TableHead>
-              <TableHead className="px-4 py-4 text-right">Low bid</TableHead>
-              <TableHead className="px-4 py-4 text-center">Due</TableHead>
+            <TableRow>
+              <TableHead className="px-4 py-2.5">Trade / Package</TableHead>
+              {projectId ? <TableHead className="px-4 py-2.5 text-right">Budget</TableHead> : null}
+              <TableHead className="px-4 py-2.5 text-right">Coverage</TableHead>
+              <TableHead className="px-4 py-2.5 text-right">Low bid</TableHead>
+              {projectId ? <TableHead className="px-4 py-2.5 text-right">Δ Budget</TableHead> : null}
+              <TableHead className="px-4 py-2.5">Stage</TableHead>
+              <TableHead className="px-4 py-2.5">Due</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {filtered.length === 0 ? (
+            {filtered.length === 0 && uncoveredBudgetLines.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="py-12 text-center text-muted-foreground">
-                  No bid packages yet.
+                <TableCell colSpan={columnCount} className="py-12 text-center text-sm text-muted-foreground">
+                  {search || statusFilter !== ALL_STATUSES
+                    ? "No packages match your filters."
+                    : "No bid packages yet. Create one to invite vendors."}
                 </TableCell>
               </TableRow>
             ) : (
-              filtered.map((pkg) => {
-                const href = `${detailBasePath ?? `/projects/${projectId}/bids`}/${pkg.id}`
-                const inviteCount = pkg.invite_count ?? 0
-                const responseCount = pkg.response_count ?? 0
-                const dueInfo = getDueInfo(pkg.due_at)
-
-                return (
-                <TableRow
-                  key={pkg.id}
-                  className="divide-x hover:bg-muted/40 cursor-pointer"
-                  onClick={() => router.push(href)}
-                >
-                  <TableCell className="px-4 py-4">
-                    <Link
-                      href={href}
-                      className="font-medium hover:underline"
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      {pkg.title}
-                    </Link>
-                  </TableCell>
-                  <TableCell className="px-4 py-4 text-muted-foreground">{pkg.trade ?? "—"}</TableCell>
-                  <TableCell className="px-4 py-4 text-muted-foreground">
-                    {pkg.cost_code_code ? `${pkg.cost_code_code} ${pkg.cost_code_name ? `· ${pkg.cost_code_name}` : ""}` : "—"}
-                  </TableCell>
-                  <TableCell className="px-4 py-4 text-center">
-                    <BidStatusBadge status={pkg.status} />
-                  </TableCell>
-                  <TableCell className="px-4 py-4 text-center">
-                    <Badge variant={inviteCount > 0 && responseCount < inviteCount ? "outline" : "secondary"}>
-                      {responseCount} of {inviteCount}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="px-4 py-4 text-right text-sm tabular-nums">
-                    {formatCurrency(pkg.lowest_bid_cents)}
-                  </TableCell>
-                  <TableCell className={cn("px-4 py-4 text-center text-sm", dueInfo.tone)}>
-                    {dueInfo.label}
-                  </TableCell>
-                </TableRow>
-              )})
-            )}
-          </TableBody>
-        </Table>
-      </div>
-
-      {buyoutRows.length > 0 ? (
-        <div className="space-y-2">
-          <div className="flex items-baseline justify-between">
-            <h2 className="text-sm font-semibold">Buyout</h2>
-            <p className="text-xs text-muted-foreground">
-              Awarded packages: budget vs. award, and how far each subcontract has progressed.
-            </p>
-          </div>
-          <div className="rounded-lg border overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow className="divide-x">
-                  <TableHead className="px-4 py-3">Package</TableHead>
-                  <TableHead className="px-4 py-3">Vendor</TableHead>
-                  <TableHead className="px-4 py-3 text-right">Budget</TableHead>
-                  <TableHead className="px-4 py-3 text-right">Awarded</TableHead>
-                  <TableHead className="px-4 py-3 text-right">Variance</TableHead>
-                  <TableHead className="px-4 py-3 text-center">Subcontract</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {buyoutRows.map((row) => {
+              <>
+                {filtered.map((pkg) => {
+                  const href = `${basePath}/${pkg.id}`
+                  const invited = pkg.invite_count ?? 0
+                  const responses = pkg.response_count ?? 0
+                  const stage = getBidPackageStage(pkg)
                   const variance =
-                    row.budget_cents != null && row.awarded_total_cents != null
-                      ? row.awarded_total_cents - row.budget_cents
+                    pkg.budget_cents != null && pkg.lowest_bid_cents != null
+                      ? pkg.lowest_bid_cents - pkg.budget_cents
                       : null
+                  const overdue = isDuePast(pkg.due_at) && stage === "bidding"
                   return (
-                    <TableRow key={row.bid_package_id} className="divide-x">
-                      <TableCell className="px-4 py-3">
-                        <span className="font-medium">{row.title}</span>
-                        {row.cost_code_code ? (
-                          <span className="ml-2 text-xs text-muted-foreground">{row.cost_code_code}</span>
-                        ) : null}
+                    <TableRow
+                      key={pkg.id}
+                      className="cursor-pointer hover:bg-muted/40"
+                      onClick={() => router.push(href)}
+                    >
+                      <TableCell className="px-4 py-2.5">
+                        <div className="font-medium">{pkg.title}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {pkg.trade ?? "No trade"}
+                          {pkg.cost_code_code ? ` · ${pkg.cost_code_code}` : ""}
+                        </div>
                       </TableCell>
-                      <TableCell className="px-4 py-3 text-muted-foreground">{row.company_name ?? "—"}</TableCell>
-                      <TableCell className="px-4 py-3 text-right text-sm tabular-nums">
-                        {formatCurrency(row.budget_cents)}
+                      {projectId ? (
+                        <TableCell className="px-4 py-2.5 text-right tabular-nums text-sm">
+                          {money(pkg.budget_cents)}
+                        </TableCell>
+                      ) : null}
+                      <TableCell className="px-4 py-2.5">
+                        <CoverageBar responses={responses} invited={invited} />
                       </TableCell>
-                      <TableCell className="px-4 py-3 text-right text-sm tabular-nums">
-                        {formatCurrency(row.awarded_total_cents)}
+                      <TableCell className="px-4 py-2.5 text-right tabular-nums text-sm">
+                        {money(pkg.lowest_bid_cents)}
+                      </TableCell>
+                      {projectId ? (
+                        <TableCell
+                          className={cn(
+                            "px-4 py-2.5 text-right tabular-nums text-sm",
+                            variance == null && "text-muted-foreground",
+                            variance != null && variance > 0 && "text-destructive",
+                            variance != null && variance <= 0 && "text-success",
+                          )}
+                        >
+                          {variance == null ? "—" : signedMoney(variance)}
+                        </TableCell>
+                      ) : null}
+                      <TableCell className={cn("px-4 py-2.5 text-sm", STAGE_TONE[stage])}>
+                        {STAGE_LABELS[stage]}
                       </TableCell>
                       <TableCell
-                        className={cn(
-                          "px-4 py-3 text-right text-sm tabular-nums",
-                          variance != null && variance > 0 ? "text-rose-600" : "text-emerald-600",
-                          variance == null && "text-muted-foreground",
-                        )}
+                        className={cn("px-4 py-2.5 text-sm", overdue ? "text-destructive" : "text-muted-foreground")}
                       >
-                        {variance == null ? "—" : `${variance > 0 ? "+" : ""}${formatCurrency(variance)}`}
-                      </TableCell>
-                      <TableCell className="px-4 py-3 text-center">
-                        {row.executed_at ? (
-                          <Badge variant="secondary">Executed</Badge>
-                        ) : row.out_for_signature ? (
-                          <Badge variant="outline">Out for signature</Badge>
-                        ) : row.commitment_status === "approved" ? (
-                          <Badge variant="outline">Not sent</Badge>
-                        ) : (
-                          <Badge variant="outline">{row.commitment_status ?? "—"}</Badge>
-                        )}
+                        <div>{formatDueDate(pkg.due_at, pkg.due_tz)}</div>
+                        {relativeDueDate(pkg.due_at) ? (
+                          <div className="text-xs text-muted-foreground">{relativeDueDate(pkg.due_at)}</div>
+                        ) : null}
                       </TableCell>
                     </TableRow>
                   )
                 })}
-              </TableBody>
-            </Table>
-          </div>
-        </div>
-      ) : null}
+                {uncoveredBudgetLines.map((line) => (
+                  <TableRow key={`budget-${line.id}`} className="bg-muted/20">
+                    <TableCell className="px-4 py-2.5">
+                      <div className="font-medium text-muted-foreground">{line.description ?? "Budget line"}</div>
+                      <div className="text-xs text-muted-foreground">Not out to bid</div>
+                    </TableCell>
+                    <TableCell className="px-4 py-2.5 text-right tabular-nums text-sm text-muted-foreground">
+                      {money(line.amount_cents)}
+                    </TableCell>
+                    <TableCell className="px-4 py-2.5 text-right text-xs text-muted-foreground">—</TableCell>
+                    <TableCell className="px-4 py-2.5 text-right text-sm text-muted-foreground">—</TableCell>
+                    <TableCell className="px-4 py-2.5 text-right text-sm text-muted-foreground">—</TableCell>
+                    <TableCell className="px-4 py-2.5 text-sm text-muted-foreground">—</TableCell>
+                    <TableCell className="px-4 py-2.5">
+                      <Button variant="outline" size="sm" className="h-7" onClick={() => openCreateForBudgetLine(line)}>
+                        <Plus className="mr-1 h-3.5 w-3.5" />
+                        Start package
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </>
+            )}
+          </TableBody>
+        </Table>
+      </div>
     </div>
   )
 }

@@ -1,19 +1,21 @@
 import { notFound } from "next/navigation"
 
-import { ProspectBidPackageDetailClient } from "@/components/bids/prospect-bid-package-detail-client"
+import { BidPackageWorkbench } from "@/components/bids/bid-package-workbench"
+import { tradeOptionsFromCompanies } from "@/components/bids/trade-options"
 import { PageLayout } from "@/components/layout/page-layout"
 import { listCompanies } from "@/lib/services/companies"
 import { getProspect } from "@/lib/services/prospects"
-import { listCostCodes } from "@/lib/services/cost-codes"
 
 import {
-  getProspectBidPackageAction,
-  listProspectBidAddendaAction,
-  listProspectBidInvitesAction,
-  listProspectBidSubmissionsAction,
-} from "../actions"
-
-import { unwrapAction } from "@/lib/action-result"
+  getBidPackageAction,
+  getPackageIntelligenceAction,
+  listBidAddendaAction,
+  listBidInvitesAction,
+  listBidPackageActivityAction,
+  listBidPackageRfisAction,
+  listBidScopeItemsAction,
+  listBidSubmissionsAction,
+} from "@/app/(app)/bids/actions"
 
 interface ProspectBidPackageDetailPageProps {
   params: Promise<{ prospectId: string; packageId: string }>
@@ -25,10 +27,7 @@ export default async function ProspectBidPackageDetailPage({ params }: ProspectB
   let prospect
   let bidPackage
   try {
-    ;[prospect, bidPackage] = await Promise.all([
-      getProspect(prospectId),
-      getProspectBidPackageAction(packageId),
-    ])
+    ;[prospect, bidPackage] = await Promise.all([getProspect(prospectId), getBidPackageAction(packageId)])
   } catch {
     notFound()
   }
@@ -37,12 +36,15 @@ export default async function ProspectBidPackageDetailPage({ params }: ProspectB
     notFound()
   }
 
-  const [invites, addenda, submissions, companies, costCodes] = await Promise.all([
-    listProspectBidInvitesAction(bidPackage.id),
-    listProspectBidAddendaAction(bidPackage.id),
-    listProspectBidSubmissionsAction(bidPackage.id),
+  const [invites, addenda, submissions, scopeItems, companies, rfis, activity, intelligence] = await Promise.all([
+    listBidInvitesAction(bidPackage.id),
+    listBidAddendaAction(bidPackage.id),
+    listBidSubmissionsAction(bidPackage.id),
+    listBidScopeItemsAction(bidPackage.id),
     listCompanies(),
-    listCostCodes().catch(() => []),
+    listBidPackageRfisAction(bidPackage.id),
+    listBidPackageActivityAction(bidPackage.id),
+    getPackageIntelligenceAction(bidPackage.id).catch(() => null),
   ])
 
   return (
@@ -54,16 +56,19 @@ export default async function ProspectBidPackageDetailPage({ params }: ProspectB
         { label: bidPackage.title },
       ]}
     >
-      <ProspectBidPackageDetailClient
-        prospectId={prospect.id}
+      <BidPackageWorkbench
+        context={{ prospectId: prospect.id }}
         bidPackage={bidPackage}
         invites={invites}
         addenda={addenda}
         submissions={submissions}
+        scopeItems={scopeItems}
+        rfis={rfis}
+        activity={activity}
+        intelligence={intelligence}
         companies={companies}
-        costCodes={costCodes}
+        tradeOptions={tradeOptionsFromCompanies(companies)}
       />
     </PageLayout>
   )
 }
-

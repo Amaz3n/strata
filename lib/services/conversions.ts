@@ -361,6 +361,7 @@ export async function runBidAwardConversion(input: {
   bidSubmissionId: string
   awardedBy?: string | null
   notes?: string | null
+  acceptedAlternateIds?: string[]
 }) {
   const supabase = createServiceSupabaseClient()
 
@@ -427,6 +428,7 @@ export async function runBidAwardConversion(input: {
       p_bid_submission_id: input.bidSubmissionId,
       p_awarded_by: input.awardedBy ?? null,
       p_notes: input.notes ?? null,
+      p_accepted_alternate_ids: input.acceptedAlternateIds ?? [],
     })
 
     if (rpcError || !rpcResult) {

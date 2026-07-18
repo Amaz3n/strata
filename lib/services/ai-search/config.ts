@@ -181,6 +181,7 @@ export const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
   budget: "/budgets/{id}",
   estimate: "/estimates/{id}",
   commitment: "/commitments/{id}",
+  bid_package: "/projects/{project_id}/bids/{id}",
   change_order: "/change-orders/{id}",
   contract: "/contracts/{id}",
   proposal: "/signatures",

@@ -52,6 +52,7 @@ export interface EntityPreview {
 }
 
 const CATEGORY_BY_TYPE: Record<SearchEntityType, PreviewCategory> = {
+  bid_package: "financial",
   invoice: "financial",
   payment: "financial",
   budget: "financial",

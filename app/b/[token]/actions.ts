@@ -1,15 +1,17 @@
 "use server"
 
-import { bidPortalPinSchema, bidPortalSubmissionInputSchema } from "@/lib/validation/bid-portal"
+import { bidPortalPinSchema, bidPortalSubmissionInputSchema, bidPortalDraftSchema, bidPortalWithdrawSchema } from "@/lib/validation/bid-portal"
 import { portalRfiInputSchema, rfiResponseInputSchema } from "@/lib/validation/rfis"
 import {
   assertBidPortalActionAccess,
   acknowledgeBidAddendum,
   declineBidFromPortal,
   markBidPortalPinVerified,
+  saveBidPortalDraft,
   submitBidFromPortal,
   validateBidPortalPin,
   validateBidPortalToken,
+  withdrawBidFromPortal,
   type BidPortalSubmission,
 } from "@/lib/services/bid-portal"
 import { createPortalRfi, addPortalRfiResponse, listRfiResponses } from "@/lib/services/rfis"
@@ -137,6 +139,15 @@ export async function uploadBidFileAction({
 
     const supabase = createServiceSupabaseClient()
 
+    const { count: uploadedCount } = await supabase
+      .from("files")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", access.org_id)
+      .eq("metadata->>bid_invite_id", access.bid_invite_id)
+    if ((uploadedCount ?? 0) >= 100) {
+      return { success: false, error: "Upload limit reached for this bid. Contact the builder to continue." }
+    }
+
     const timestamp = Date.now()
     const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_")
     const storagePath = `${access.org_id}/${access.project.id}/bid-submissions/${access.bid_invite_id}/${timestamp}_${safeName}`
@@ -224,6 +235,52 @@ export async function createBidPortalRfiAction({ token, input }: { token: string
     return { success: true, rfi: created }
   } catch (error) {
     return { success: false, error: (error as Error)?.message ?? "Failed to create RFI" as const }
+  }
+}
+
+export async function saveBidDraftAction({
+  token,
+  input,
+}: {
+  token: string
+  input: unknown
+}) {
+  try {
+    const parsed = bidPortalDraftSchema.safeParse(input)
+    if (!parsed.success) {
+      return { success: false, error: "Invalid draft" }
+    }
+    const access = await assertBidPortalActionAccess(token)
+    await saveBidPortalDraft({ access, payload: parsed.data.payload })
+    return { success: true }
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : "Failed to save draft",
+    }
+  }
+}
+
+export async function withdrawBidAction({
+  token,
+  reason,
+}: {
+  token: string
+  reason?: string | null
+}) {
+  try {
+    const parsed = bidPortalWithdrawSchema.safeParse({ reason: reason ?? null })
+    const access = await assertBidPortalActionAccess(token)
+    const result = await withdrawBidFromPortal({
+      access,
+      reason: parsed.success ? parsed.data.reason ?? null : null,
+    })
+    return { success: true, withdrawn_at: result.withdrawn_at }
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : "Failed to withdraw bid",
+    }
   }
 }
 

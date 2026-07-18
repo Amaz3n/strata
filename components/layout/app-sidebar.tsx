@@ -15,6 +15,7 @@ import {
   CreditCard,
   FileText,
   FolderOpen,
+  Gavel,
   HardHat,
   Home,
   Link2,
@@ -171,6 +172,13 @@ function buildWorkspaceGroups(
       icon: CreditCard,
       isActive: pathname.startsWith("/payables"),
       requiredAny: ["bill.read", "payment.read"],
+    },
+    {
+      title: "Bids",
+      url: "/bids",
+      icon: Gavel,
+      isActive: pathname.startsWith("/bids"),
+      requiredAny: ["bid.read", "bid.write"],
     },
     {
       title: "Schedule",

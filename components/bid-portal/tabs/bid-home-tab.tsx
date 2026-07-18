@@ -6,24 +6,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import type { BidPortalAccess, BidPortalSubmission } from "@/lib/services/bid-portal"
+import { formatCurrency, packageStatusStyles } from "@/components/bid-portal/lib"
 
 interface BidHomeTabProps {
   access: BidPortalAccess
   currentSubmission?: BidPortalSubmission
-}
-
-const statusStyles: Record<string, string> = {
-  draft: "bg-muted text-muted-foreground",
-  sent: "bg-blue-100 text-blue-700 border-blue-200",
-  open: "bg-green-100 text-green-700 border-green-200",
-  closed: "bg-muted text-muted-foreground",
-  awarded: "bg-amber-100 text-amber-700 border-amber-200",
-  cancelled: "bg-red-100 text-red-700 border-red-200",
-}
-
-function formatCurrency(cents?: number | null) {
-  if (cents == null) return "—"
-  return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
 }
 
 export function BidHomeTab({ access, currentSubmission }: BidHomeTabProps) {
@@ -45,7 +32,7 @@ export function BidHomeTab({ access, currentSubmission }: BidHomeTabProps) {
             </div>
             <Badge
               variant="outline"
-              className={cn("capitalize shrink-0", statusStyles[access.bidPackage.status] ?? "")}
+              className={cn("capitalize shrink-0", packageStatusStyles[access.bidPackage.status] ?? "")}
             >
               {packageStatusLabel}
             </Badge>
@@ -103,11 +90,11 @@ export function BidHomeTab({ access, currentSubmission }: BidHomeTabProps) {
 
       {/* Current Submission Status */}
       {currentSubmission ? (
-        <Card className="border-green-200 bg-green-50/50">
+        <Card className="border-success/40 bg-success/5">
           <CardContent className="p-4">
             <div className="flex items-start gap-3">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100">
-                <CheckCircle2 className="h-4 w-4 text-green-600" />
+              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-success/15">
+                <CheckCircle2 className="h-4 w-4 text-success" />
               </div>
               <div className="flex-1">
                 <p className="text-sm font-medium">Bid Submitted</p>
@@ -124,11 +111,11 @@ export function BidHomeTab({ access, currentSubmission }: BidHomeTabProps) {
           </CardContent>
         </Card>
       ) : (
-        <Card className="border-amber-200 bg-amber-50/50">
+        <Card className="border-warning/40 bg-warning/5">
           <CardContent className="p-4">
             <div className="flex items-start gap-3">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-amber-100">
-                <Clock className="h-4 w-4 text-amber-600" />
+              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-warning/15">
+                <Clock className="h-4 w-4 text-warning" />
               </div>
               <div>
                 <p className="text-sm font-medium">No Bid Submitted Yet</p>

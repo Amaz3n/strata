@@ -217,16 +217,18 @@ export interface QBOClassOption {
 export class QBOClient {
   private token: string
   private realmId: string
+  private orgId: string | null
 
-  constructor(token: string, realmId: string) {
+  constructor(token: string, realmId: string, orgId?: string) {
     this.token = token
     this.realmId = realmId
+    this.orgId = orgId ?? null
   }
 
   static async forOrg(orgId: string): Promise<QBOClient | null> {
     const auth = await getQBOAccessToken(orgId)
     if (!auth) return null
-    return new QBOClient(auth.token, auth.realmId)
+    return new QBOClient(auth.token, auth.realmId, orgId)
   }
 
   private async fetchEndpoint(
@@ -250,12 +252,26 @@ export class QBOClient {
   }
 
   private async request<T>(method: "GET" | "POST", endpoint: string, body?: any): Promise<T> {
-    const response = await this.fetchEndpoint(method, endpoint, {
+    let response = await this.fetchEndpoint(method, endpoint, {
       headers: {
         "Content-Type": "application/json",
       },
       body: body ? JSON.stringify(body) : undefined,
     })
+
+    if (response.status === 401 && this.orgId) {
+      const refreshed = await getQBOAccessToken(this.orgId, { forceRefresh: true })
+      if (refreshed?.token) {
+        this.token = refreshed.token
+        this.realmId = refreshed.realmId
+        response = await this.fetchEndpoint(method, endpoint, {
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: body ? JSON.stringify(body) : undefined,
+        })
+      }
+    }
 
     if (!response.ok) {
       const errorPayload = await response.json().catch(() => ({}))

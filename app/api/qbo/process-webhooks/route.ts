@@ -17,6 +17,7 @@ type WebhookEventRow = {
   entity_name: string | null
   entity_qbo_id: string | null
   operation: string | null
+  attempts: number | null
 }
 
 type ActiveConnection = {
@@ -243,6 +244,45 @@ async function reconcileInvoiceFromQbo(params: {
     dueDate,
   })
 
+  const { data: localInvoice } = await params.supabase
+    .from("invoices")
+    .select("updated_at, qbo_synced_at, subtotal_cents, tax_cents, total_cents, balance_due_cents")
+    .eq("org_id", params.orgId)
+    .eq("id", invoiceId)
+    .maybeSingle()
+  const localUpdatedAt = localInvoice?.updated_at ? new Date(localInvoice.updated_at).getTime() : 0
+  const localSyncedAt = localInvoice?.qbo_synced_at ? new Date(localInvoice.qbo_synced_at).getTime() : 0
+  const arcChangedAfterSync = localUpdatedAt > localSyncedAt
+  const amountsDiffer =
+    (totalCents !== null && Number(localInvoice?.total_cents ?? 0) !== totalCents) ||
+    (balanceCents !== null && Number(localInvoice?.balance_due_cents ?? 0) !== Math.max(balanceCents, 0)) ||
+    Number(localInvoice?.subtotal_cents ?? 0) !== subtotalCents ||
+    Number(localInvoice?.tax_cents ?? 0) !== taxCents
+
+  if (arcChangedAfterSync && amountsDiffer) {
+    const reason = "Arc invoice changed after its last QuickBooks sync and QuickBooks amounts differ."
+    await params.supabase
+      .from("invoices")
+      .update({ qbo_sync_status: "needs_review" })
+      .eq("org_id", params.orgId)
+      .eq("id", invoiceId)
+    await params.supabase.from("qbo_sync_records").upsert(
+      {
+        org_id: params.orgId,
+        connection_id: params.connectionId,
+        entity_type: "invoice",
+        entity_id: invoiceId,
+        qbo_id: params.qboInvoiceId,
+        qbo_sync_token: qboInvoice.SyncToken ?? null,
+        last_synced_at: nowIso,
+        status: "needs_review",
+        error_message: reason,
+      },
+      { onConflict: "org_id,entity_type,entity_id" },
+    )
+    return { reconciled: false as const, reason }
+  }
+
   const invoiceUpdate: Record<string, unknown> = {
     qbo_id: params.qboInvoiceId,
     qbo_sync_status: "synced",
@@ -261,42 +301,15 @@ async function reconcileInvoiceFromQbo(params: {
   if (totalCents !== null) invoiceUpdate.total_cents = totalCents
   if (balanceCents !== null) invoiceUpdate.balance_due_cents = Math.max(balanceCents, 0)
 
-  const { error: updateError } = await params.supabase
-    .from("invoices")
-    .update(invoiceUpdate)
-    .eq("org_id", params.orgId)
-    .eq("id", invoiceId)
+  const { error: reconcileError } = await params.supabase.rpc("replace_invoice_lines_atomic", {
+    p_org_id: params.orgId,
+    p_invoice_id: invoiceId,
+    p_invoice_update: invoiceUpdate,
+    p_lines: nextLines,
+  })
 
-  if (updateError) {
-    return { reconciled: false as const, reason: updateError.message }
-  }
-
-  if (nextLines.length > 0) {
-    const { error: deleteError } = await params.supabase
-      .from("invoice_lines")
-      .delete()
-      .eq("org_id", params.orgId)
-      .eq("invoice_id", invoiceId)
-
-    if (deleteError) {
-      return { reconciled: false as const, reason: deleteError.message }
-    }
-
-    const { error: insertError } = await params.supabase.from("invoice_lines").insert(
-      nextLines.map((line) => ({
-        org_id: params.orgId,
-        invoice_id: invoiceId,
-        description: line.description,
-        quantity: line.quantity,
-        unit: line.unit,
-        unit_price_cents: line.unit_price_cents,
-        metadata: line.metadata,
-      })),
-    )
-
-    if (insertError) {
-      return { reconciled: false as const, reason: insertError.message }
-    }
+  if (reconcileError) {
+    return { reconciled: false as const, reason: reconcileError.message }
   }
 
   if (typeof qboInvoice.DocNumber === "string" && qboInvoice.DocNumber.trim().length > 0) {
@@ -718,8 +731,8 @@ async function processQBOWebhookEvents(request: NextRequest) {
   const supabase = createServiceSupabaseClient()
   const { data: events, error } = await supabase
     .from("qbo_webhook_events")
-    .select("id, event_id, realm_id, entity_name, entity_qbo_id, operation")
-    .eq("process_status", "pending")
+    .select("id, event_id, realm_id, entity_name, entity_qbo_id, operation, attempts")
+    .or(`process_status.eq.pending,and(process_status.in.(error,retry),attempts.lt.5,next_attempt_at.lte.${new Date().toISOString()})`)
     .order("received_at", { ascending: true })
     .limit(BATCH_SIZE)
 
@@ -745,7 +758,7 @@ async function processQBOWebhookEvents(request: NextRequest) {
           process_error: null,
         })
         .eq("id", row.id)
-        .eq("process_status", "pending")
+        .in("process_status", ["pending", "error", "retry"])
         .select("id")
         .maybeSingle()
 
@@ -921,7 +934,7 @@ async function processQBOWebhookEvents(request: NextRequest) {
 
       processed += 1
     } catch (eventError: any) {
-      await markEventProcessed(supabase, row.id, "error", eventError?.message ?? "Webhook processing failed")
+      await markEventProcessed(supabase, row.id, "error", eventError?.message ?? "Webhook processing failed", row.attempts ?? 0)
       processed += 1
     }
   }
@@ -938,13 +951,21 @@ async function markEventProcessed(
   eventId: string,
   status: "reconciled" | "ignored" | "error",
   error?: string,
+  previousAttempts = 0,
 ) {
+  const attempts = status === "error" ? previousAttempts + 1 : previousAttempts
+  const retryDelaySeconds = Math.min(60 * 60, 2 ** Math.max(attempts - 1, 0) * 60)
+  const nextAttemptAt = status === "error" && attempts < 5
+    ? new Date(Date.now() + retryDelaySeconds * 1000).toISOString()
+    : null
   await supabase
     .from("qbo_webhook_events")
     .update({
       process_status: status,
       process_error: error ?? null,
-      processed_at: new Date().toISOString(),
+      processed_at: status === "error" && attempts < 5 ? null : new Date().toISOString(),
+      attempts,
+      next_attempt_at: nextAttemptAt,
     })
     .eq("id", eventId)
 }

@@ -6,6 +6,7 @@ import {
   createInvoice,
   deleteInvoice,
   ensureInvoiceToken,
+  getOrCreateInvoiceToken,
   getInvoiceWithLines,
   listInvoiceViews,
   listInvoices,
@@ -18,6 +19,7 @@ import { listProjects } from "@/lib/services/projects"
 import { forceSyncInvoiceToQBO } from "@/lib/services/qbo-sync"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
+import { requireAuthorization } from "@/lib/services/authorization"
 import { invoiceInputSchema } from "@/lib/validation/invoices"
 import { sendReminderEmail } from "@/lib/services/mailer"
 import { listChangeOrders } from "@/lib/services/change-orders"
@@ -221,9 +223,11 @@ async function loadInvoiceDetail(invoiceId: string) {
   const invoice = await getInvoiceWithLines(invoiceId)
   if (!invoice) throw new Error("Invoice not found")
 
+  // Viewing detail must never mutate lifecycle — only guarantee a token exists
+  // for invoices that were already shared.
   const token =
     invoice.client_visible || invoice.sent_at || invoice.status === "sent"
-      ? await ensureInvoiceToken(invoiceId, invoice.org_id)
+      ? await getOrCreateInvoiceToken(invoiceId, invoice.org_id)
       : invoice.token ?? null
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || "https://arcnaples.com"
   const views = await listInvoiceViews(invoiceId, invoice.org_id)
@@ -283,7 +287,24 @@ export async function voidInvoiceLienWaiverAction(waiverId: string) {
 export async function updateInvoiceNotesAction(invoiceId: string, notes: string) {
   return run(async () => {
     if (!invoiceId) throw new Error("Invoice id is required")
-    const { supabase, orgId } = await requireOrgContext()
+    const { supabase, orgId, userId } = await requireOrgContext()
+    const { data: invoice } = await supabase
+      .from("invoices")
+      .select("id, project_id")
+      .eq("org_id", orgId)
+      .eq("id", invoiceId)
+      .maybeSingle()
+    if (!invoice) throw new Error("Invoice not found")
+    await requireAuthorization({
+      permission: "invoice.write",
+      userId,
+      orgId,
+      projectId: invoice.project_id ?? undefined,
+      supabase,
+      logDecision: true,
+      resourceType: "invoice",
+      resourceId: invoiceId,
+    })
     const trimmed = notes.trim()
     const { error } = await supabase
       .from("invoices")
@@ -694,7 +715,7 @@ async function generateInvoicePdf(
       : Promise.resolve({ data: null as any }),
     supabase.from("orgs").select("name, billing_email, address, logo_url").eq("id", orgId).maybeSingle(),
     supabase.from("org_settings").select("settings").eq("org_id", orgId).maybeSingle(),
-    ensureInvoiceToken(invoice.id, orgId),
+    getOrCreateInvoiceToken(invoice.id, orgId),
   ])
 
   const project = projectResult.data

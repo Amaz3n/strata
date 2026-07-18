@@ -2,6 +2,7 @@ import { z } from "zod"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { requireOrgContext } from "@/lib/services/context"
+import { requireAuthorization } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -43,7 +44,23 @@ function projectLocationText(location: unknown): string | null {
 }
 
 export async function listInvoiceLienWaivers(invoiceId: string, orgId?: string): Promise<InvoiceLienWaiver[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { data: invoice } = await supabase
+    .from("invoices")
+    .select("id, project_id")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", invoiceId)
+    .maybeSingle()
+  if (!invoice) return []
+  await requireAuthorization({
+    permission: "invoice.read",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: invoice.project_id ?? undefined,
+    supabase,
+    logDecision: true,
+    resourceType: "invoice_lien_waiver",
+  })
   const { data, error } = await supabase
     .from("invoice_lien_waivers")
     .select(WAIVER_SELECT)
@@ -73,6 +90,15 @@ export async function createInvoiceLienWaiver(
   if (invoiceError || !invoice) {
     throw new Error("Invoice not found")
   }
+  await requireAuthorization({
+    permission: "invoice.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: invoice.project_id ?? undefined,
+    supabase,
+    logDecision: true,
+    resourceType: "invoice_lien_waiver",
+  })
   if (invoice.status === "void") {
     throw new Error("Cannot attach a waiver to a voided invoice")
   }
@@ -148,6 +174,25 @@ export async function createInvoiceLienWaiver(
 
 export async function voidInvoiceLienWaiver(waiverId: string, orgId?: string): Promise<void> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const { data: waiver } = await supabase
+    .from("invoice_lien_waivers")
+    .select("id, project_id")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", waiverId)
+    .maybeSingle()
+  if (!waiver) {
+    throw new Error("Waiver not found or already released")
+  }
+  await requireAuthorization({
+    permission: "invoice.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: waiver.project_id ?? undefined,
+    supabase,
+    logDecision: true,
+    resourceType: "invoice_lien_waiver",
+    resourceId: waiverId,
+  })
   const { data, error } = await supabase
     .from("invoice_lien_waivers")
     .update({ status: "void", updated_at: new Date().toISOString() })

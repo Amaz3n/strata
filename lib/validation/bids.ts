@@ -9,6 +9,15 @@ export type BidInviteStatus = z.infer<typeof bidInviteStatusEnum>
 export const bidSubmissionStatusEnum = z.enum(["draft", "submitted", "revised", "withdrawn"])
 export type BidSubmissionStatus = z.infer<typeof bidSubmissionStatusEnum>
 
+export const bidPackageModeEnum = z.enum(["quote", "tender"])
+export type BidPackageMode = z.infer<typeof bidPackageModeEnum>
+
+export const bidScopeItemTypeEnum = z.enum(["base", "alternate", "allowance", "unit_price"])
+export type BidScopeItemType = z.infer<typeof bidScopeItemTypeEnum>
+
+export const bidSubmissionItemResponseEnum = z.enum(["priced", "excluded", "no_bid"])
+export type BidSubmissionItemResponse = z.infer<typeof bidSubmissionItemResponseEnum>
+
 export const createBidPackageInputSchema = z
   .object({
     project_id: z.string().uuid().optional().nullable(),
@@ -20,6 +29,9 @@ export const createBidPackageInputSchema = z
     scope: z.string().optional().nullable(),
     instructions: z.string().optional().nullable(),
     due_at: z.string().datetime().optional().nullable(),
+    due_tz: z.string().optional().nullable(),
+    mode: bidPackageModeEnum.optional(),
+    bond_required: z.boolean().optional(),
     status: bidPackageStatusEnum.optional(),
   })
   .refine((data) => data.project_id || data.prospect_id, {
@@ -34,7 +46,26 @@ export const updateBidPackageInputSchema = z.object({
   scope: z.string().optional().nullable(),
   instructions: z.string().optional().nullable(),
   due_at: z.string().datetime().optional().nullable(),
+  due_tz: z.string().optional().nullable(),
+  mode: bidPackageModeEnum.optional(),
+  bond_required: z.boolean().optional(),
   status: bidPackageStatusEnum.optional(),
+})
+
+export const bidScopeItemInputSchema = z.object({
+  id: z.string().uuid().optional().nullable(),
+  item_type: bidScopeItemTypeEnum.default("base"),
+  description: z.string().trim().min(1, "Scope description is required"),
+  details: z.string().optional().nullable(),
+  quantity: z.number().positive().optional().nullable(),
+  unit: z.string().trim().max(20).optional().nullable(),
+  budget_cents: z.number().int().optional().nullable(),
+  cost_code_id: z.string().uuid().optional().nullable(),
+})
+
+export const saveBidScopeItemsInputSchema = z.object({
+  bid_package_id: z.string().uuid(),
+  items: z.array(bidScopeItemInputSchema).max(200),
 })
 
 export const createBidInviteInputSchema = z.object({
@@ -71,6 +102,28 @@ export const createBidAddendumInputSchema = z.object({
 export const awardBidSubmissionInputSchema = z.object({
   bid_submission_id: z.string().uuid(),
   notes: z.string().optional().nullable(),
+  accepted_alternate_ids: z.array(z.string().uuid()).default([]),
+})
+
+export const rescindBidAwardInputSchema = z.object({
+  bid_package_id: z.string().uuid(),
+  reason: z.string().trim().min(1, "A rescind reason is required"),
+})
+
+export const bidSubmissionItemInputSchema = z.object({
+  bid_scope_item_id: z.string().uuid().optional().nullable(),
+  description: z.string().trim().min(1),
+  response: bidSubmissionItemResponseEnum.default("priced"),
+  amount_cents: z.number().int().optional().nullable(),
+  unit_rate_cents: z.number().int().optional().nullable(),
+  quantity: z.number().optional().nullable(),
+  notes: z.string().optional().nullable(),
+})
+
+export const updateBidSubmissionItemLevelingInputSchema = z.object({
+  bid_submission_item_id: z.string().uuid(),
+  gc_plug_cents: z.number().int().optional().nullable(),
+  gc_note: z.string().optional().nullable(),
 })
 
 export const bidSubmissionLineItemSchema = z.object({
@@ -99,6 +152,7 @@ export const manualBidSubmissionInputSchema = z.object({
   leveled_adjustment_cents: z.number().int().default(0),
   leveling_notes: z.string().optional().nullable(),
   line_items: z.array(bidSubmissionLineItemSchema).default([]),
+  items: z.array(bidSubmissionItemInputSchema).default([]),
 }).refine(
   (data) => data.bid_invite_id || data.company_id,
   { message: "Select an existing invite or company for the manual bid" },

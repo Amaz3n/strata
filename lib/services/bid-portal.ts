@@ -3,10 +3,10 @@ import { compare } from "bcryptjs"
 import { cookies } from "next/headers"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { buildFilesPublicUrl, ensureOrgScopedPath } from "@/lib/storage/files-storage"
 import type { FileMetadata, Rfi } from "@/lib/types"
 import { getCurrentExternalPortalSession, hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
 import { recordEvent } from "@/lib/services/events"
+import { enqueueOutboxJob } from "@/lib/services/outbox"
 
 const MAX_PIN_ATTEMPTS = 5
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000
@@ -37,7 +37,31 @@ export interface BidPortalPackage {
   scope?: string | null
   instructions?: string | null
   due_at?: string | null
+  due_tz?: string | null
+  mode: "quote" | "tender"
+  bond_required: boolean
   status: string
+}
+
+export interface BidPortalScopeItem {
+  id: string
+  position: number
+  item_type: "base" | "alternate" | "allowance" | "unit_price"
+  description: string
+  details?: string | null
+  quantity?: number | null
+  unit?: string | null
+}
+
+export interface BidPortalSubmissionItem {
+  id: string
+  bid_scope_item_id?: string | null
+  description: string
+  response: "priced" | "excluded" | "no_bid"
+  amount_cents?: number | null
+  unit_rate_cents?: number | null
+  quantity?: number | null
+  notes?: string | null
 }
 
 export interface BidPortalInvite {
@@ -97,6 +121,7 @@ export interface BidPortalSubmission {
   submitted_by_email?: string | null
   submitted_at?: string | null
   created_at: string
+  items?: BidPortalSubmissionItem[]
 }
 
 export interface BidPriceBenchmarkSignal {
@@ -119,6 +144,8 @@ export interface BidPortalData {
   submissions: BidPortalSubmission[]
   currentSubmission?: BidPortalSubmission
   rfis: Rfi[]
+  scopeItems: BidPortalScopeItem[]
+  draft: Record<string, unknown> | null
 }
 
 function getBidPortalSecret() {
@@ -254,13 +281,10 @@ export async function assertBidPortalActionAccess(token: string): Promise<BidPor
   return access
 }
 
-function mapFile(file: any, orgId: string): FileMetadata {
-  let url: string | undefined
-  try {
-    url = buildFilesPublicUrl(ensureOrgScopedPath(orgId, file.storage_path)) ?? undefined
-  } catch {
-    url = undefined
-  }
+function mapFile(file: any, token: string): FileMetadata {
+  // Files are served through the token-authenticated portal route, never as
+  // permanent public URLs — access dies with the token.
+  const url = `/api/portal/b/${encodeURIComponent(token)}/files/${file.id}`
   return {
     id: file.id,
     org_id: file.org_id,
@@ -322,9 +346,17 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
     return null
   }
 
+  if (tokenRow.revoked_at) {
+    console.warn("Bid portal token revoked", {
+      tokenPrefix: token.slice(0, 6),
+      revokedAt: tokenRow.revoked_at,
+    })
+    return null
+  }
+
   const { data: bidPackage } = await supabase
     .from("bid_packages")
-    .select("id, project_id, prospect_id, title, trade, scope, instructions, due_at, status")
+    .select("id, project_id, prospect_id, title, trade, scope, instructions, due_at, due_tz, mode, bond_required, status")
     .eq("id", inviteRow.bid_package_id)
     .maybeSingle()
 
@@ -419,6 +451,9 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
       scope: bidPackage.scope ?? null,
       instructions: bidPackage.instructions ?? null,
       due_at: bidPackage.due_at ?? null,
+      due_tz: bidPackage.due_tz ?? null,
+      mode: (bidPackage.mode as "quote" | "tender") ?? "quote",
+      bond_required: !!bidPackage.bond_required,
       status: bidPackage.status,
     },
     project: {
@@ -516,10 +551,10 @@ export async function validateBidPortalPin({
   }
 }
 
-export async function loadBidPortalData(access: BidPortalAccess): Promise<BidPortalData> {
+export async function loadBidPortalData(access: BidPortalAccess, token: string): Promise<BidPortalData> {
   const supabase = createServiceSupabaseClient()
 
-  const [packageLinksResult, addendaResult, submissionsResult, rfisResult] = await Promise.all([
+  const [packageLinksResult, addendaResult, submissionsResult, scopeItemsResult, draftResult, rfisResult] = await Promise.all([
     supabase
       .from("file_links")
       .select(
@@ -543,12 +578,27 @@ export async function loadBidPortalData(access: BidPortalAccess): Promise<BidPor
       .select(
         `
         id, status, version, is_current, total_cents, currency, valid_until, lead_time_days, duration_days, start_available_on,
-        exclusions, clarifications, notes, submitted_by_name, submitted_by_email, submitted_at, created_at
+        exclusions, clarifications, notes, submitted_by_name, submitted_by_email, submitted_at, created_at,
+        items:bid_submission_items!bid_submission_items_org_submission_fk(
+          id, bid_scope_item_id, description, response, amount_cents, unit_rate_cents, quantity, notes
+        )
       `,
       )
       .eq("org_id", access.org_id)
       .eq("bid_invite_id", access.bid_invite_id)
       .order("version", { ascending: false }),
+    supabase
+      .from("bid_scope_items")
+      .select("id, position, item_type, description, details, quantity, unit")
+      .eq("org_id", access.org_id)
+      .eq("bid_package_id", access.bidPackage.id)
+      .order("position", { ascending: true }),
+    supabase
+      .from("bid_portal_drafts")
+      .select("payload")
+      .eq("org_id", access.org_id)
+      .eq("bid_invite_id", access.bid_invite_id)
+      .maybeSingle(),
     access.bidPackage.project_id
       ? supabase
           .from("rfis")
@@ -565,7 +615,7 @@ export async function loadBidPortalData(access: BidPortalAccess): Promise<BidPor
 
   const packageFiles = (packageLinksResult.data ?? [])
     .filter((link) => link.file)
-    .map((link) => mapFile(link.file, access.org_id))
+    .map((link) => mapFile(link.file, token))
 
   const addenda = addendaResult.data ?? []
   const addendaIds = addenda.map((item) => item.id)
@@ -600,12 +650,12 @@ export async function loadBidPortalData(access: BidPortalAccess): Promise<BidPor
     addendumFilesById = (addendumLinks ?? []).reduce((acc, link: any) => {
       if (!link.entity_id || !link.file) return acc
       if (!acc[link.entity_id]) acc[link.entity_id] = []
-      acc[link.entity_id].push(mapFile(link.file, access.org_id))
+      acc[link.entity_id].push(mapFile(link.file, token))
       return acc
     }, {} as Record<string, FileMetadata[]>)
   }
 
-  const submissions = (submissionsResult.data ?? []).map((row) => ({
+  const submissions = (submissionsResult.data ?? []).map((row: any) => ({
     id: row.id,
     status: row.status,
     version: row.version,
@@ -623,6 +673,18 @@ export async function loadBidPortalData(access: BidPortalAccess): Promise<BidPor
     submitted_by_email: row.submitted_by_email ?? null,
     submitted_at: row.submitted_at ?? null,
     created_at: row.created_at,
+    items: Array.isArray(row.items)
+      ? row.items.map((item: any) => ({
+          id: item.id,
+          bid_scope_item_id: item.bid_scope_item_id ?? null,
+          description: item.description,
+          response: item.response ?? "priced",
+          amount_cents: item.amount_cents != null ? Number(item.amount_cents) : null,
+          unit_rate_cents: item.unit_rate_cents != null ? Number(item.unit_rate_cents) : null,
+          quantity: item.quantity != null ? Number(item.quantity) : null,
+          notes: item.notes ?? null,
+        }))
+      : [],
   }))
 
   return {
@@ -639,6 +701,16 @@ export async function loadBidPortalData(access: BidPortalAccess): Promise<BidPor
     submissions,
     currentSubmission: submissions.find((item) => item.is_current),
     rfis: (rfisResult.data ?? []) as Rfi[],
+    scopeItems: (scopeItemsResult.data ?? []).map((item: any) => ({
+      id: item.id,
+      position: Number(item.position ?? 0),
+      item_type: item.item_type ?? "base",
+      description: item.description,
+      details: item.details ?? null,
+      quantity: item.quantity != null ? Number(item.quantity) : null,
+      unit: item.unit ?? null,
+    })),
+    draft: (draftResult.data?.payload as Record<string, unknown> | undefined) ?? null,
   }
 }
 
@@ -697,6 +769,9 @@ async function recordBidSubmissionBenchmarkSignal(submissionId: string): Promise
   const row = Array.isArray(data) ? data[0] : data
   if (!row) return undefined
 
+  // Persist the snapshot so workbench reads carry the signal without recomputing
+  await supabase.from("bid_submissions").update({ benchmark: row }).eq("id", submissionId)
+
   return {
     has_benchmark: !!row.has_benchmark,
     signal: (row.signal ?? "insufficient_data") as BidPriceBenchmarkSignal["signal"],
@@ -730,6 +805,14 @@ export async function submitBidFromPortal({
     submitted_by_name?: string | null
     submitted_by_email?: string | null
     file_ids?: string[]
+    items?: Array<{
+      bid_scope_item_id: string
+      response: "priced" | "excluded" | "no_bid"
+      amount_cents?: number | null
+      unit_rate_cents?: number | null
+      quantity?: number | null
+      notes?: string | null
+    }>
   }
 }): Promise<BidPortalSubmission> {
   const supabase = createServiceSupabaseClient()
@@ -765,37 +848,86 @@ export async function submitBidFromPortal({
     }
   }
 
-  const { data: current } = await supabase
-    .from("bid_submissions")
-    .select("id, version")
+  // Structured pricing: when the package has a scope schedule, every base
+  // and allowance line needs a response, and priced base lines must sum to
+  // the submitted total — the bid tab depends on this reconciliation.
+  const { data: scopeRows } = await supabase
+    .from("bid_scope_items")
+    .select("id, item_type, description, quantity, unit")
     .eq("org_id", access.org_id)
-    .eq("bid_invite_id", access.bid_invite_id)
-    .eq("is_current", true)
-    .maybeSingle()
+    .eq("bid_package_id", access.bidPackage.id)
+    .order("position", { ascending: true })
 
-  const nextVersion = (current?.version ?? 0) + 1
-  const now = new Date().toISOString()
+  const scopeById = new Map((scopeRows ?? []).map((row: any) => [row.id as string, row]))
+  const inputItems = input.items ?? []
+  let rpcItems: Array<Record<string, unknown>> = []
 
-  if (current?.id) {
-    const { error: demoteError } = await supabase
-      .from("bid_submissions")
-      .update({ is_current: false, updated_at: now })
-      .eq("id", current.id)
-    if (demoteError) {
-      throw new Error(`Failed to update previous bid revision: ${demoteError.message}`)
+  if ((scopeRows ?? []).length > 0) {
+    const responsesByScopeId = new Map(inputItems.map((item) => [item.bid_scope_item_id, item]))
+
+    for (const scopeRow of scopeRows ?? []) {
+      const isRequired = scopeRow.item_type === "base" || scopeRow.item_type === "allowance"
+      const response = responsesByScopeId.get(scopeRow.id as string)
+      if (isRequired && !response) {
+        throw new Error(`Missing a response for scope line "${scopeRow.description}"`)
+      }
+      if (response?.response === "priced") {
+        const amount =
+          response.amount_cents ??
+          (response.unit_rate_cents != null && response.quantity != null
+            ? Math.round(response.unit_rate_cents * response.quantity)
+            : null)
+        if (amount == null || amount < 0) {
+          throw new Error(`A price is required for scope line "${scopeRow.description}"`)
+        }
+      }
     }
+
+    for (const item of inputItems) {
+      if (!scopeById.has(item.bid_scope_item_id)) {
+        throw new Error("Bid response references an unknown scope line")
+      }
+    }
+
+    const baseSum = inputItems.reduce((sum, item) => {
+      const scopeRow = scopeById.get(item.bid_scope_item_id)
+      if (!scopeRow || scopeRow.item_type === "alternate") return sum
+      if (item.response !== "priced") return sum
+      const amount =
+        item.amount_cents ??
+        (item.unit_rate_cents != null && item.quantity != null
+          ? Math.round(item.unit_rate_cents * item.quantity)
+          : 0)
+      return sum + (amount ?? 0)
+    }, 0)
+
+    if (baseSum !== input.total_cents) {
+      throw new Error("Line items do not add up to the submitted total")
+    }
+
+    rpcItems = inputItems.map((item) => {
+      const scopeRow = scopeById.get(item.bid_scope_item_id)
+      const amount =
+        item.amount_cents ??
+        (item.unit_rate_cents != null && item.quantity != null
+          ? Math.round(item.unit_rate_cents * item.quantity)
+          : null)
+      return {
+        bid_scope_item_id: item.bid_scope_item_id,
+        description: scopeRow?.description ?? "Scope item",
+        response: item.response,
+        amount_cents: item.response === "priced" ? amount : null,
+        unit_rate_cents: item.unit_rate_cents ?? null,
+        quantity: item.quantity ?? scopeRow?.quantity ?? null,
+        notes: item.notes ?? null,
+      }
+    })
   }
 
-  const status = nextVersion > 1 ? "revised" : "submitted"
-
-  const { data: created, error } = await supabase
-    .from("bid_submissions")
-    .insert({
-      org_id: access.org_id,
-      bid_invite_id: access.bid_invite_id,
-      status,
-      version: nextVersion,
-      is_current: true,
+  const { data: rpcResult, error: rpcError } = await supabase.rpc("create_bid_submission_version", {
+    p_org_id: access.org_id,
+    p_bid_invite_id: access.bid_invite_id,
+    p_payload: {
       total_cents: input.total_cents,
       currency: input.currency ?? "usd",
       valid_until: input.valid_until ?? null,
@@ -807,35 +939,21 @@ export async function submitBidFromPortal({
       notes: input.notes ?? null,
       submitted_by_name: input.submitted_by_name ?? null,
       submitted_by_email: input.submitted_by_email ?? null,
-      submitted_at: now,
-      source: "portal",
       line_items: [],
-    })
-    .select(
-      `
-      id, status, version, is_current, total_cents, currency, valid_until, lead_time_days, duration_days, start_available_on,
-      exclusions, clarifications, notes, submitted_by_name, submitted_by_email, submitted_at, created_at
-    `,
-    )
-    .single()
+    },
+    p_items: rpcItems,
+    p_source: "portal",
+    p_entered_by: null,
+  })
 
-  if (error || !created) {
-    if (current?.id) {
-      await supabase
-        .from("bid_submissions")
-        .update({ is_current: true, updated_at: new Date().toISOString() })
-        .eq("id", current.id)
-        .eq("org_id", access.org_id)
-        .eq("bid_invite_id", access.bid_invite_id)
-    }
-    throw new Error(`Failed to submit bid: ${error?.message}`)
+  if (rpcError || !rpcResult) {
+    throw new Error(`Failed to submit bid: ${rpcError?.message}`)
   }
 
-  await supabase
-    .from("bid_invites")
-    .update({ status: "submitted", submitted_at: now })
-    .eq("org_id", access.org_id)
-    .eq("id", access.bid_invite_id)
+  const createdId = (rpcResult as any).submission_id as string
+  const createdVersion = Number((rpcResult as any).version ?? 1)
+  const createdStatus = ((rpcResult as any).status as string) ?? "submitted"
+  const now = new Date().toISOString()
 
   // Link uploaded files to the submission
   if (input.file_ids && input.file_ids.length > 0) {
@@ -843,30 +961,32 @@ export async function submitBidFromPortal({
       org_id: access.org_id,
       file_id: fileId,
       entity_type: "bid_submission",
-      entity_id: created.id,
+      entity_id: createdId,
     }))
     await supabase.from("file_links").insert(fileLinks)
   }
 
   const submission: BidPortalSubmission = {
-    id: created.id,
-    status: created.status,
-    version: created.version,
-    is_current: created.is_current,
-    total_cents: created.total_cents ?? null,
-    currency: created.currency ?? null,
-    valid_until: created.valid_until ?? null,
-    lead_time_days: created.lead_time_days ?? null,
-    duration_days: created.duration_days ?? null,
-    start_available_on: created.start_available_on ?? null,
-    exclusions: created.exclusions ?? null,
-    clarifications: created.clarifications ?? null,
-    notes: created.notes ?? null,
-    submitted_by_name: created.submitted_by_name ?? null,
-    submitted_by_email: created.submitted_by_email ?? null,
-    submitted_at: created.submitted_at ?? null,
-    created_at: created.created_at,
+    id: createdId,
+    status: createdStatus,
+    version: createdVersion,
+    is_current: true,
+    total_cents: input.total_cents,
+    currency: input.currency ?? "usd",
+    valid_until: input.valid_until ?? null,
+    lead_time_days: input.lead_time_days ?? null,
+    duration_days: input.duration_days ?? null,
+    start_available_on: input.start_available_on ?? null,
+    exclusions: input.exclusions ?? null,
+    clarifications: input.clarifications ?? null,
+    notes: input.notes ?? null,
+    submitted_by_name: input.submitted_by_name ?? null,
+    submitted_by_email: input.submitted_by_email ?? null,
+    submitted_at: now,
+    created_at: now,
   }
+
+  const created = { id: createdId }
 
   try {
     await recordBidSubmissionBenchmarkSignal(created.id)
@@ -877,7 +997,139 @@ export async function submitBidFromPortal({
     })
   }
 
+  try {
+    await recordEvent({
+      orgId: access.org_id,
+      eventType: "bid_submission_received",
+      entityType: "bid_submission",
+      entityId: created.id,
+      payload: {
+        bid_package_id: access.bidPackage.id,
+        bid_invite_id: access.bid_invite_id,
+        company_name: access.invite.company?.name ?? access.invite.invite_email ?? null,
+        total_cents: submission.total_cents ?? null,
+        version: submission.version,
+      },
+    })
+  } catch (eventError) {
+    console.warn("Failed to record bid submission event", {
+      submissionId: created.id,
+      error: (eventError as Error)?.message,
+    })
+  }
+
+  // Submission receipt: subs keep proof of what they bid and when
+  try {
+    const receiptTo = input.submitted_by_email ?? access.invite.invite_email ?? access.invite.contact?.email
+    if (receiptTo) {
+      await enqueueOutboxJob({
+        orgId: access.org_id,
+        jobType: "send_bid_email",
+        payload: {
+          kind: "receipt",
+          to: receiptTo,
+          companyName: access.invite.company?.name,
+          contactName: access.invite.contact?.full_name ?? input.submitted_by_name,
+          projectName: access.project.name,
+          bidPackageTitle: access.bidPackage.title,
+          orgName: access.org.name,
+          totalCents: submission.total_cents,
+          version: submission.version,
+          submittedAt: submission.submitted_at,
+          validUntil: submission.valid_until,
+          bidPackageId: access.bidPackage.id,
+          inviteId: access.bid_invite_id,
+          submissionId: created.id,
+        },
+      })
+    }
+  } catch (receiptError) {
+    console.warn("Failed to queue bid receipt email", {
+      submissionId: created.id,
+      error: (receiptError as Error)?.message,
+    })
+  }
+
   return submission
+}
+
+/** Autosaved portal draft — one per invite, replaced on every save, deleted on
+ * submit by the versioning RPC. */
+export async function saveBidPortalDraft({
+  access,
+  payload,
+}: {
+  access: BidPortalAccess
+  payload: Record<string, unknown>
+}) {
+  const supabase = createServiceSupabaseClient()
+  const { error } = await supabase
+    .from("bid_portal_drafts")
+    .upsert(
+      {
+        org_id: access.org_id,
+        bid_invite_id: access.bid_invite_id,
+        payload,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "bid_invite_id" },
+    )
+
+  if (error) {
+    throw new Error(`Failed to save draft: ${error.message}`)
+  }
+}
+
+/** A sub retracts their current bid before award. The submission history is
+ * kept; the invite drops to withdrawn and the GC sees it in the bid tab. */
+export async function withdrawBidFromPortal({
+  access,
+  reason,
+}: {
+  access: BidPortalAccess
+  reason?: string | null
+}) {
+  const supabase = createServiceSupabaseClient()
+  const now = new Date().toISOString()
+
+  if (["closed", "awarded", "cancelled"].includes(access.bidPackage.status)) {
+    throw new Error("Bidding is closed for this package")
+  }
+
+  if (access.invite.status !== "submitted") {
+    throw new Error("There is no submitted bid to withdraw")
+  }
+
+  const { error: inviteError } = await supabase
+    .from("bid_invites")
+    .update({ status: "withdrawn", updated_at: now })
+    .eq("org_id", access.org_id)
+    .eq("id", access.bid_invite_id)
+
+  if (inviteError) {
+    throw new Error(`Failed to withdraw bid: ${inviteError.message}`)
+  }
+
+  await supabase
+    .from("bid_submissions")
+    .update({ status: "withdrawn", updated_at: now })
+    .eq("org_id", access.org_id)
+    .eq("bid_invite_id", access.bid_invite_id)
+    .eq("is_current", true)
+
+  await recordEvent({
+    orgId: access.org_id,
+    eventType: "bid_submission_withdrawn",
+    entityType: "bid_invite",
+    entityId: access.bid_invite_id,
+    payload: {
+      bid_package_id: access.bidPackage.id,
+      company_name: access.invite.company?.name ?? access.invite.invite_email ?? null,
+      reason: reason ?? null,
+    },
+  })
+
+  return { withdrawn_at: now }
 }
 
 export async function declineBidFromPortal({

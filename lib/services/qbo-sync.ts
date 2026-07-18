@@ -130,6 +130,7 @@ function vendorBillHasQboExpenseCoding(bill: Pick<VendorBillForSync, "qbo_expens
 }
 
 type SyncRecordEntityType = "invoice" | "payment" | "project_expense" | "bill" | "vendor_credit" | "bill_payment"
+const QBO_DELETED_REVIEW_MESSAGE = "Deleted in QuickBooks — resync manually to recreate."
 
 /**
  * Inbound-only ("shadow") records — e.g. expenses projected from a QBO journal entry, or one QBO
@@ -154,7 +155,7 @@ async function isSyncPushBlocked(
   return data?.pushable === false
 }
 
-export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
+export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options?: { allowRecreateDeleted?: boolean }) {
   const supabase = createServiceSupabaseClient()
   const client = await QBOClient.forOrg(orgId)
 
@@ -189,7 +190,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
 
   const { data: connection } = await supabase
     .from("qbo_connections")
-    .select("settings")
+    .select("id, settings")
     .eq("org_id", orgId)
     .eq("status", "active")
     .maybeSingle()
@@ -212,7 +213,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
       .eq("entity_id", invoiceId)
       .maybeSingle()
 
-    const existingQboId = existingSync.data?.qbo_id ?? typedInvoice.qbo_id ?? null
+    const existingQboId = existingSync.data?.qbo_id || typedInvoice.qbo_id || null
     if (typedInvoice.status === "void") {
       if (!existingQboId) {
         await supabase
@@ -339,11 +340,23 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
     const invoiceTarget = await resolveQBOSyncTarget({
       client,
       entityType: "invoice",
-      qboId: existingSync.data?.qbo_id ?? typedInvoice.qbo_id,
+      qboId: existingSync.data?.qbo_id || typedInvoice.qbo_id,
       cachedSyncToken: existingSync.data?.qbo_sync_token,
       logContext: { orgId, invoiceId },
+      allowRecreateDeleted: options?.allowRecreateDeleted === true,
     })
     invoiceIsUpdate = invoiceTarget.mode === "update"
+    if (invoiceTarget.mode === "create") {
+      const claimed = await claimSyncCreate({
+        orgId,
+        connectionId: connection?.id ?? null,
+        entityType: "invoice",
+        entityId: invoiceId,
+      })
+      if (!claimed) {
+        return { success: true, skipped: true, pending: true }
+      }
+    }
 
     qboInvoice = {
       ...(invoiceTarget.mode === "update" ? { Id: invoiceTarget.id, SyncToken: invoiceTarget.syncToken } : {}),
@@ -549,6 +562,15 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
     }
 
     const errorMessage = err instanceof QBOError ? err.message : String(err)
+    if (errorMessage === QBO_DELETED_REVIEW_MESSAGE) {
+      await supabase
+        .from("invoices")
+        .update({ qbo_sync_status: "needs_review" })
+        .eq("id", invoiceId)
+        .eq("org_id", orgId)
+      await markSyncRecordNeedsReview(orgId, "invoice", invoiceId, errorMessage)
+      return { success: false, error: errorMessage }
+    }
     await supabase.from("invoices").update({ qbo_sync_status: "error" }).eq("id", invoiceId)
     await markSyncRecordError(orgId, "invoice", invoiceId, errorMessage)
     await markConnectionErrorIfConnectionLevel(orgId, err, errorMessage)
@@ -569,7 +591,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string) {
 export async function forceSyncInvoiceToQBO(invoiceId: string, orgId: string) {
   const supabase = createServiceSupabaseClient()
   await supabase.from("invoices").update({ qbo_sync_status: "pending" }).eq("id", invoiceId).eq("org_id", orgId)
-  return syncInvoiceToQBO(invoiceId, orgId)
+  return syncInvoiceToQBO(invoiceId, orgId, { allowRecreateDeleted: true })
 }
 
 export async function syncPaymentToQBO(paymentId: string, orgId: string) {
@@ -609,7 +631,24 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string) {
     if (error || !payment) return { success: false, error: error?.message ?? "Payment not found" }
     
     const invoice = Array.isArray(payment.invoice) ? payment.invoice[0] : payment.invoice
-    if (!invoice?.qbo_id) return { success: false, error: "Invoice not synced to QBO" }
+    if (!invoice?.qbo_id) {
+      const message = "Invoice not synced to QBO"
+      await markSyncRecordError(orgId, "payment", paymentId, message)
+      if (payment.invoice_id) {
+        await enqueueInvoiceSync(payment.invoice_id as string, orgId)
+      }
+      return { success: false, error: message }
+    }
+
+    const claimed = await claimSyncCreate({
+      orgId,
+      connectionId: null,
+      entityType: "payment",
+      entityId: paymentId,
+    })
+    if (!claimed) {
+      return { success: true, skipped: true, pending: true }
+    }
 
     const { data: customerSync } = await supabase
       .from("qbo_sync_records")
@@ -1295,14 +1334,23 @@ export async function enqueueInvoiceSync(invoiceId: string, orgId: string) {
     return
   }
 
-  await supabase.from("invoices").update({ qbo_sync_status: "pending" }).eq("id", invoiceId)
-
-  await enqueueOutboxJob({
+  const queued = await enqueueOutboxJob({
     orgId,
     jobType: "qbo_sync_invoice",
     payload: { invoice_id: invoiceId },
     dedupeByPayloadKeys: ["invoice_id"],
   })
+  if (queued.reason === "error") {
+    await supabase
+      .from("invoices")
+      .update({ qbo_sync_status: "error" })
+      .eq("id", invoiceId)
+      .eq("org_id", orgId)
+    await markSyncRecordError(orgId, "invoice", invoiceId, "Unable to enqueue QuickBooks sync job.")
+    return
+  }
+
+  await supabase.from("invoices").update({ qbo_sync_status: "pending" }).eq("id", invoiceId).eq("org_id", orgId)
 }
 
 export async function enqueuePaymentSync(paymentId: string, orgId: string) {
@@ -1321,12 +1369,15 @@ export async function enqueuePaymentSync(paymentId: string, orgId: string) {
     return
   }
 
-  await enqueueOutboxJob({
+  const queued = await enqueueOutboxJob({
     orgId,
     jobType: "qbo_sync_payment",
     payload: { payment_id: paymentId },
     dedupeByPayloadKeys: ["payment_id"],
   })
+  if (queued.reason === "error") {
+    await markSyncRecordError(orgId, "payment", paymentId, "Unable to enqueue QuickBooks payment sync job.")
+  }
 }
 
 export async function enqueueProjectExpenseSync(expenseId: string, orgId: string) {
@@ -1367,14 +1418,22 @@ export async function enqueueProjectExpenseSync(expenseId: string, orgId: string
     return
   }
 
-  await supabase.from("project_expenses").update({ qbo_sync_status: "pending", qbo_sync_error: null }).eq("id", expenseId).eq("org_id", orgId)
-
-  await enqueueOutboxJob({
+  const queued = await enqueueOutboxJob({
     orgId,
     jobType: "qbo_sync_project_expense",
     payload: { expense_id: expenseId },
     dedupeByPayloadKeys: ["expense_id"],
   })
+  if (queued.reason === "error") {
+    await supabase
+      .from("project_expenses")
+      .update({ qbo_sync_status: "error", qbo_sync_error: "Unable to enqueue QuickBooks expense sync job." })
+      .eq("id", expenseId)
+      .eq("org_id", orgId)
+    return
+  }
+
+  await supabase.from("project_expenses").update({ qbo_sync_status: "pending", qbo_sync_error: null }).eq("id", expenseId).eq("org_id", orgId)
 }
 
 export async function enqueueVendorBillSync(billId: string, orgId: string) {
@@ -1416,14 +1475,22 @@ export async function enqueueVendorBillSync(billId: string, orgId: string) {
     return
   }
 
-  await supabase.from("vendor_bills").update({ qbo_sync_status: "pending", qbo_sync_error: null }).eq("id", billId).eq("org_id", orgId)
-
-  await enqueueOutboxJob({
+  const queued = await enqueueOutboxJob({
     orgId,
     jobType: "qbo_sync_vendor_bill",
     payload: { bill_id: billId },
     dedupeByPayloadKeys: ["bill_id"],
   })
+  if (queued.reason === "error") {
+    await supabase
+      .from("vendor_bills")
+      .update({ qbo_sync_status: "error", qbo_sync_error: "Unable to enqueue QuickBooks payable sync job." })
+      .eq("id", billId)
+      .eq("org_id", orgId)
+    return
+  }
+
+  await supabase.from("vendor_bills").update({ qbo_sync_status: "pending", qbo_sync_error: null }).eq("id", billId).eq("org_id", orgId)
 }
 
 export async function enqueueBillPaymentSync(paymentId: string, orgId: string) {
@@ -1440,12 +1507,15 @@ export async function enqueueBillPaymentSync(paymentId: string, orgId: string) {
 
   if (!connection?.settings?.sync_payments) return
 
-  await enqueueOutboxJob({
+  const queued = await enqueueOutboxJob({
     orgId,
     jobType: "qbo_sync_bill_payment",
     payload: { payment_id: paymentId },
     dedupeByPayloadKeys: ["payment_id"],
   })
+  if (queued.reason === "error") {
+    await markSyncRecordError(orgId, "bill_payment", paymentId, "Unable to enqueue QuickBooks bill payment sync job.")
+  }
 }
 
 export async function retryFailedQBOSyncJobs(orgId: string) {
@@ -1571,15 +1641,91 @@ async function upsertSyncRecord(input: {
     )
 }
 
+async function claimSyncCreate(input: {
+  orgId: string
+  connectionId: string | null
+  entityType: string
+  entityId: string
+}) {
+  const supabase = createServiceSupabaseClient()
+  let connectionId = input.connectionId
+  if (!connectionId) {
+    const { data: connection } = await supabase
+      .from("qbo_connections")
+      .select("id")
+      .eq("org_id", input.orgId)
+      .eq("status", "active")
+      .maybeSingle()
+    connectionId = connection?.id ?? null
+  }
+  if (!connectionId) return false
+
+  const { data, error } = await supabase.rpc("qbo_claim_sync_create", {
+    p_org_id: input.orgId,
+    p_connection_id: connectionId,
+    p_entity_type: input.entityType,
+    p_entity_id: input.entityId,
+  })
+  if (error) {
+    logQBO("warn", "qbo_sync_claim_failed", {
+      orgId: input.orgId,
+      entityType: input.entityType,
+      entityId: input.entityId,
+      error: error.message,
+    })
+    return false
+  }
+  return data === true
+}
+
 async function markSyncRecordError(orgId: string, entityType: string, entityId: string, message: string) {
+  const supabase = createServiceSupabaseClient()
+  const { data: connection } = await supabase
+    .from("qbo_connections")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("status", "active")
+    .maybeSingle()
+  if (!connection?.id) return
+
+  const { data: existing } = await supabase
+    .from("qbo_sync_records")
+    .select("id, qbo_id")
+    .eq("org_id", orgId)
+    .eq("entity_type", entityType)
+    .eq("entity_id", entityId)
+    .maybeSingle()
+
+  if (existing?.id) {
+    await supabase
+      .from("qbo_sync_records")
+      .update({
+        status: "error",
+        error_message: message.slice(0, 4000),
+        last_synced_at: new Date().toISOString(),
+      })
+      .eq("id", existing.id)
+    return
+  }
+
+  await supabase.from("qbo_sync_records").insert({
+    org_id: orgId,
+    connection_id: connection.id,
+    entity_type: entityType,
+    entity_id: entityId,
+    qbo_id: "",
+    status: "error",
+    error_message: message.slice(0, 4000),
+    last_synced_at: new Date().toISOString(),
+  })
+}
+
+async function markSyncRecordNeedsReview(orgId: string, entityType: string, entityId: string, message: string) {
+  await markSyncRecordError(orgId, entityType, entityId, message)
   const supabase = createServiceSupabaseClient()
   await supabase
     .from("qbo_sync_records")
-    .update({
-      status: "error",
-      error_message: message.slice(0, 4000),
-      last_synced_at: new Date().toISOString(),
-    })
+    .update({ status: "needs_review", error_message: message.slice(0, 4000) })
     .eq("org_id", orgId)
     .eq("entity_type", entityType)
     .eq("entity_id", entityId)
@@ -2055,6 +2201,7 @@ async function resolveQBOSyncTarget(params: {
   qboId?: string | null
   cachedSyncToken?: string | null
   logContext?: Record<string, unknown>
+  allowRecreateDeleted?: boolean
 }): Promise<{ mode: "create" } | { mode: "update"; id: string; syncToken: string }> {
   const qboId = params.qboId?.toString().trim() || undefined
   if (!qboId) return { mode: "create" }
@@ -2064,7 +2211,10 @@ async function resolveQBOSyncTarget(params: {
 
   const latest = await fetchQBOEntityById(params.client, params.entityType, qboId)
   if (!latest) {
-    // Record was deleted in QuickBooks; recreate it instead of erroring forever.
+    if (!params.allowRecreateDeleted) {
+      logQBO("warn", "qbo_entity_deleted_needs_review", { entityType: params.entityType, qboId, ...params.logContext })
+      throw new Error(QBO_DELETED_REVIEW_MESSAGE)
+    }
     logQBO("warn", "qbo_entity_recreated_after_delete", { entityType: params.entityType, qboId, ...params.logContext })
     return { mode: "create" }
   }

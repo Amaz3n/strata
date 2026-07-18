@@ -1,14 +1,16 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useTransition, useState } from "react"
 import { format } from "date-fns"
 import { Download, CheckCircle2, Bell, FileText } from "lucide-react"
 import { toast } from "sonner"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Checkbox } from "@/components/ui/checkbox"
 import type { BidPortalAddendum } from "@/lib/services/bid-portal"
 import { acknowledgeBidAddendumAction } from "@/app/b/[token]/actions"
+import { formatFileSize } from "@/components/bid-portal/lib"
 
 interface BidAddendaTabProps {
   addenda: BidPortalAddendum[]
@@ -16,16 +18,8 @@ interface BidAddendaTabProps {
   onAddendaChange?: (addenda: BidPortalAddendum[]) => void
 }
 
-function formatFileSize(bytes?: number) {
-  if (!bytes) return "—"
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
-
-export function BidAddendaTab({ addenda: initialAddenda, token, onAddendaChange }: BidAddendaTabProps) {
-  const [addenda, setAddenda] = useState(initialAddenda)
-  const [isAcknowledging, startAcknowledging] = useTransition()
+export function BidAddendaTab({ addenda, token, onAddendaChange }: BidAddendaTabProps) {
+  const [, startAcknowledging] = useTransition()
   const [acknowledgingId, setAcknowledgingId] = useState<string | null>(null)
 
   const handleAcknowledge = (addendumId: string) => {
@@ -42,7 +36,6 @@ export function BidAddendaTab({ addenda: initialAddenda, token, onAddendaChange 
           ? { ...item, acknowledged_at: result.acknowledged_at ?? new Date().toISOString() }
           : item
       )
-      setAddenda(updated)
       onAddendaChange?.(updated)
       toast.success("Addendum acknowledged")
       setAcknowledgingId(null)
@@ -53,7 +46,7 @@ export function BidAddendaTab({ addenda: initialAddenda, token, onAddendaChange 
     return (
       <Card>
         <CardContent className="py-12 text-center">
-          <Bell className="h-12 w-12 mx-auto text-muted-foreground/50 mb-4" />
+          <Bell className="mx-auto mb-4 h-12 w-12 text-muted-foreground/50" />
           <p className="text-sm text-muted-foreground">No addenda have been issued for this bid package.</p>
         </CardContent>
       </Card>
@@ -66,86 +59,89 @@ export function BidAddendaTab({ addenda: initialAddenda, token, onAddendaChange 
         <CardHeader className="pb-2">
           <CardTitle className="text-base">Addenda</CardTitle>
           <p className="text-sm text-muted-foreground">
-            Review and acknowledge all addenda before submitting your bid
+            Review and acknowledge every addendum before submitting your bid.
           </p>
         </CardHeader>
         <CardContent className="space-y-4">
-          {addenda.map((addendum) => (
-            <div
-              key={addendum.id}
-              className="rounded-lg border p-4 space-y-3"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold">Addendum {addendum.number}</span>
-                    {addendum.acknowledged_at ? (
-                      <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
-                        <CheckCircle2 className="h-3 w-3 mr-1" />
-                        Acknowledged
-                      </Badge>
-                    ) : (
-                      <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200">
-                        Pending
-                      </Badge>
-                    )}
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Issued {format(new Date(addendum.issued_at), "MMMM d, yyyy")}
-                  </p>
-                </div>
-              </div>
-
-              {addendum.title && (
-                <p className="text-sm font-medium">{addendum.title}</p>
-              )}
-
-              {addendum.message && (
-                <p className="text-sm text-muted-foreground whitespace-pre-wrap">{addendum.message}</p>
-              )}
-
-              {addendum.files.length > 0 && (
-                <div className="space-y-2 pt-2 border-t">
-                  <p className="text-xs font-medium text-muted-foreground">Attachments</p>
-                  {addendum.files.map((file) => (
-                    <div
-                      key={file.id}
-                      className="flex items-center justify-between gap-3 rounded-md border bg-muted/30 px-3 py-2"
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
-                        <div className="min-w-0">
-                          <p className="text-xs font-medium truncate">{file.file_name}</p>
-                          <p className="text-[11px] text-muted-foreground">
-                            {formatFileSize(file.size_bytes)}
-                          </p>
-                        </div>
-                      </div>
-                      {file.url && (
-                        <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" asChild>
-                          <a href={file.url} target="_blank" rel="noopener noreferrer">
-                            <Download className="h-3.5 w-3.5" />
-                          </a>
-                        </Button>
+          {addenda.map((addendum) => {
+            const acknowledged = Boolean(addendum.acknowledged_at)
+            return (
+              <div key={addendum.id} className="space-y-3 rounded-md border p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold">Addendum {addendum.number}</span>
+                      {acknowledged ? (
+                        <Badge
+                          variant="outline"
+                          className="border-success/30 bg-success/10 text-success"
+                        >
+                          <CheckCircle2 className="mr-1 h-3 w-3" />
+                          Acknowledged
+                        </Badge>
+                      ) : (
+                        <Badge
+                          variant="outline"
+                          className="border-warning/30 bg-warning/10 text-warning"
+                        >
+                          Pending
+                        </Badge>
                       )}
                     </div>
-                  ))}
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Issued {format(new Date(addendum.issued_at), "MMMM d, yyyy")}
+                    </p>
+                  </div>
                 </div>
-              )}
 
-              {!addendum.acknowledged_at && (
-                <Button
-                  size="sm"
-                  onClick={() => handleAcknowledge(addendum.id)}
-                  disabled={isAcknowledging && acknowledgingId === addendum.id}
-                >
-                  {isAcknowledging && acknowledgingId === addendum.id
-                    ? "Acknowledging..."
-                    : "Acknowledge Addendum"}
-                </Button>
-              )}
-            </div>
-          ))}
+                {addendum.title ? <p className="text-sm font-medium">{addendum.title}</p> : null}
+
+                {addendum.message ? (
+                  <p className="whitespace-pre-wrap text-sm text-muted-foreground">{addendum.message}</p>
+                ) : null}
+
+                {addendum.files.length > 0 ? (
+                  <div className="space-y-2 border-t pt-2">
+                    <p className="text-xs font-medium text-muted-foreground">Attachments</p>
+                    {addendum.files.map((file) => (
+                      <div
+                        key={file.id}
+                        className="flex items-center justify-between gap-3 rounded-md border bg-muted/30 px-3 py-2"
+                      >
+                        <div className="flex min-w-0 items-center gap-2">
+                          <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-medium">{file.file_name}</p>
+                            <p className="text-[11px] text-muted-foreground">
+                              {formatFileSize(file.size_bytes)}
+                            </p>
+                          </div>
+                        </div>
+                        {file.url ? (
+                          <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" asChild>
+                            <a href={file.url} target="_blank" rel="noopener noreferrer">
+                              <Download className="h-3.5 w-3.5" />
+                            </a>
+                          </Button>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+
+                {!acknowledged ? (
+                  <label className="flex cursor-pointer items-center gap-2 border-t pt-3 text-sm">
+                    <Checkbox
+                      checked={false}
+                      disabled={acknowledgingId === addendum.id}
+                      onCheckedChange={() => handleAcknowledge(addendum.id)}
+                    />
+                    <span className="font-medium">I acknowledge this addendum</span>
+                  </label>
+                ) : null}
+              </div>
+            )
+          })}
         </CardContent>
       </Card>
     </div>

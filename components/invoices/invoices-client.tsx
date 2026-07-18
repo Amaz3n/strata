@@ -7,28 +7,23 @@ import { AnimatePresence } from "framer-motion"
 
 import { useRouter, useSearchParams } from "next/navigation"
 
-import type { Contact, CostCode, Invoice, InvoiceLienWaiver, Project, InvoiceView, Payment, PaymentReversal } from "@/lib/types"
+import type { Contact, CostCode, Invoice, Project } from "@/lib/types"
 import type { OwnerBillingPackageSummary } from "@/lib/services/owner-billing-packages"
-import type { InvoiceInput } from "@/lib/validation/invoices"
 import {
-  createInvoiceAction,
   deleteInvoiceAction,
   generateInvoiceLinkAction,
-  getInvoiceDetailAction,
   listInvoicesAction,
   listMovableProjectsAction,
-  manualResyncInvoiceAction,
   moveInvoiceToProjectAction,
   reviseInvoiceAction,
   sendInvoiceReminderAction,
-  updateInvoiceAction,
   voidInvoiceAction,
 } from "@/app/(app)/invoices/actions"
 import {
   generateOwnerBillingPackageAction,
   shareOwnerBillingPackageAction,
 } from "@/app/(app)/projects/[id]/financials/actions"
-import { InvoiceComposerSheet } from "@/components/invoices/invoice-composer-sheet"
+import { ReceivablesWorkspace } from "@/components/invoices/receivables-workspace"
 import { InvoiceSchedulesDialog, MakeRecurringDialog } from "@/components/invoices/invoice-schedules"
 import { unwrapAction } from "@/lib/action-result"
 import { useProductTerminology } from "@/components/layout/use-product-terminology"
@@ -71,10 +66,8 @@ import {
 } from "@/components/ui/dialog"
 import { Ban, Plus, Building2, Calendar, Copy, Filter, FolderOpen, List, MoreHorizontal, RefreshCcw, Search, Trash2 } from "@/components/icons"
 import { ChevronDown, ChevronUp, Repeat, X } from "lucide-react"
-import { InvoiceDetailSheet } from "@/components/invoices/invoice-detail-sheet"
 import { InvoiceBottomBar } from "@/components/invoices/invoice-bottom-bar"
 import { QboSyncSheet } from "@/components/integrations/qbo-sync-sheet"
-import { Skeleton } from "@/components/ui/skeleton"
 
 type StatusKey = "draft" | "saved" | "sent" | "partial" | "paid" | "overdue" | "void"
 type StatusFilter = StatusKey | "all"
@@ -301,32 +294,8 @@ export function InvoicesClient({
   const [sendingBulkReminders, setSendingBulkReminders] = useState(false)
   const [hasMore, setHasMore] = useState(invoices.length >= INVOICE_PAGE_SIZE)
   const [loadingMore, setLoadingMore] = useState(false)
-  const [sheetOpen, setSheetOpen] = useState(false)
-  const [isCreating, setIsCreating] = useState(false)
-  const [isUpdating, setIsUpdating] = useState(false)
   const [linkingId, setLinkingId] = useState<string | null>(null)
-  const [detailOpen, setDetailOpen] = useState(false)
-  const [detailLoading, setDetailLoading] = useState(false)
-  const [detailInvoice, setDetailInvoice] = useState<Invoice | null>(null)
-  const [detailLink, setDetailLink] = useState<string | undefined>(undefined)
-  const [detailViews, setDetailViews] = useState<InvoiceView[] | undefined>(undefined)
-  const [detailSyncHistory, setDetailSyncHistory] = useState<
-    Array<{
-      id: string
-      status: string
-      last_synced_at: string
-      error_message?: string | null
-      qbo_id?: string | null
-    }>
-  >()
-  const [detailPayments, setDetailPayments] = useState<Payment[] | undefined>(undefined)
-  const [detailReversals, setDetailReversals] = useState<PaymentReversal[] | undefined>(undefined)
-  const [detailLienWaivers, setDetailLienWaivers] = useState<InvoiceLienWaiver[] | undefined>(undefined)
-  const [isResyncing, setIsResyncing] = useState(false)
   const [queueOpen, setQueueOpen] = useState(false)
-  const [editOpen, setEditOpen] = useState(false)
-  const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null)
-  const [duplicatingInvoice, setDuplicatingInvoice] = useState<Invoice | null>(null)
   const [recurringSourceInvoice, setRecurringSourceInvoice] = useState<Invoice | null>(null)
   const [schedulesOpen, setSchedulesOpen] = useState(false)
   const [sendingReminderId, setSendingReminderId] = useState<string | null>(null)
@@ -344,49 +313,32 @@ export function InvoicesClient({
   const [packageActionInvoiceId, setPackageActionInvoiceId] = useState<string | null>(null)
   const [packageActionKind, setPackageActionKind] = useState<"generate" | "share" | null>(null)
   const lastAutoOpenedInvoiceId = useRef<string | undefined>(undefined)
-  // The invoice id currently being opened/loaded. Guards the URL-watcher effect from firing a
-  // second fetch for an open that handleOpenDetail itself triggered via router.replace.
-  const openingInvoiceIdRef = useRef<string | null>(null)
   const invoiceReleaseDescription = enableApprovedCostsSource
     ? "linked draws, billable costs, or retainage"
     : "linked draws, change orders, or retainage"
 
-  const handleOpenDetail = useCallback(async (invoiceId: string) => {
-    openingInvoiceIdRef.current = invoiceId
-    setDetailOpen(true)
-    setDetailLoading(true)
-    setDetailInvoice(null)
-    setDetailLink(undefined)
-    setDetailViews(undefined)
-    setDetailSyncHistory(undefined)
-    setDetailPayments(undefined)
-    setDetailReversals(undefined)
-    setDetailLienWaivers(undefined)
-
-    if (typeof window !== "undefined") {
+  // Navigate to (or open) an invoice in the workspace via the ?invoice URL param.
+  const goToInvoice = useCallback(
+    (value: string, opts?: { duplicate?: string }) => {
+      if (typeof window === "undefined") return
       const params = new URLSearchParams(window.location.search)
-      params.set("invoice", invoiceId)
+      params.set("invoice", value)
+      if (opts?.duplicate) params.set("duplicate", opts.duplicate)
+      else params.delete("duplicate")
+      params.delete("source")
       router.replace(window.location.pathname + `?${params.toString()}`, { scroll: false })
-    }
+    },
+    [router],
+  )
 
-    try {
-      const result = unwrapAction(await getInvoiceDetailAction(invoiceId))
-      setDetailInvoice(result.invoice)
-      setDetailLink(result.link)
-      setDetailViews(result.views)
-      setDetailSyncHistory(result.syncHistory)
-      setDetailPayments(result.payments ?? [])
-      setDetailReversals(result.reversals ?? [])
-      setDetailLienWaivers(result.lienWaivers ?? [])
-    } catch (error: any) {
-      console.error(error)
-      toast.error("Could not load invoice", {
-        description: error?.message ?? "Please try again.",
-      })
-    } finally {
-      setDetailLoading(false)
-    }
-  }, [router])
+  const upsertInvoice = useCallback((invoice: Invoice) => {
+    setItems((prev) => (prev.some((item) => item.id === invoice.id) ? prev.map((item) => (item.id === invoice.id ? invoice : item)) : [invoice, ...prev]))
+  }, [])
+
+  const removeInvoiceFromList = useCallback((invoiceId: string) => {
+    setItems((prev) => prev.filter((item) => item.id !== invoiceId))
+    setSelectedIds((prev) => prev.filter((id) => id !== invoiceId))
+  }, [])
 
   useEffect(() => {
     setItems(invoices)
@@ -397,47 +349,14 @@ export function InvoicesClient({
     setPackageSummaries(ownerBillingPackages)
   }, [ownerBillingPackages])
 
+  // Source flows (draw generate, fee billing, pay app, period close) create an invoice then hand
+  // us its id — open it in the workspace by pushing the ?invoice param.
   useEffect(() => {
     if (!initialOpenInvoiceId || lastAutoOpenedInvoiceId.current === initialOpenInvoiceId) return
     lastAutoOpenedInvoiceId.current = initialOpenInvoiceId
-    void handleOpenDetail(initialOpenInvoiceId)
+    goToInvoice(initialOpenInvoiceId)
     onInitialOpenInvoiceHandled?.()
-  }, [initialOpenInvoiceId, onInitialOpenInvoiceHandled, handleOpenDetail])
-
-  useEffect(() => {
-    if (urlInvoiceId && urlInvoiceId !== detailInvoice?.id && urlInvoiceId !== openingInvoiceIdRef.current) {
-      void handleOpenDetail(urlInvoiceId)
-    }
-    if (!urlInvoiceId) {
-      openingInvoiceIdRef.current = null
-    }
-  }, [urlInvoiceId, detailInvoice?.id, handleOpenDetail])
-
-  const prevPendingLabelRef = useRef<string | undefined>(undefined)
-
-  useEffect(() => {
-    if (pendingOpenInvoiceLabel && !initialOpenInvoiceId) {
-      setDetailOpen(true)
-      setDetailLoading(true)
-      setDetailInvoice(null)
-      setDetailLink(undefined)
-      setDetailViews(undefined)
-      setDetailSyncHistory(undefined)
-      setDetailPayments(undefined)
-      setDetailReversals(undefined)
-      setDetailLienWaivers(undefined)
-    } else if (
-      prevPendingLabelRef.current &&
-      !pendingOpenInvoiceLabel &&
-      !initialOpenInvoiceId &&
-      detailLoading &&
-      !detailInvoice
-    ) {
-      setDetailLoading(false)
-      setDetailOpen(false)
-    }
-    prevPendingLabelRef.current = pendingOpenInvoiceLabel
-  }, [detailInvoice, detailLoading, initialOpenInvoiceId, pendingOpenInvoiceLabel])
+  }, [initialOpenInvoiceId, onInitialOpenInvoiceHandled, goToInvoice])
 
   // When the project has more invoices than are loaded, client-side search would silently miss
   // unloaded rows — fall through to a debounced server search over the whole book instead.
@@ -631,59 +550,6 @@ export function InvoicesClient({
       })
     } finally {
       setLoadingMore(false)
-    }
-  }
-
-  async function handleCreate(values: InvoiceInput, sendToClient: boolean, options?: { silent?: boolean }) {
-    setIsCreating(true)
-    try {
-      const created = unwrapAction(await createInvoiceAction(values))
-      setItems((prev) => [created, ...prev])
-      setSheetOpen(false)
-      setDuplicatingInvoice(null)
-      router.refresh()
-      if (!options?.silent) {
-        toast.success(sendToClient ? "Invoice sent" : "Invoice saved", {
-          description: sendToClient ? `${terms.owner} can now view this invoice.` : "Invoice saved to receivables.",
-        })
-      }
-      return created
-    } catch (error: any) {
-      console.error(error)
-      toast.error("Could not save invoice", {
-        description: error?.message ?? "Please try again.",
-      })
-      throw error
-    } finally {
-      setIsCreating(false)
-    }
-  }
-
-  async function handleUpdate(values: InvoiceInput, sendToClient: boolean, options?: { silent?: boolean }) {
-    if (!editingInvoice) {
-      throw new Error("No invoice selected for editing")
-    }
-    setIsUpdating(true)
-    try {
-      const updated = unwrapAction(await updateInvoiceAction(editingInvoice.id, values))
-      setItems((prev) => prev.map((inv) => (inv.id === updated.id ? updated : inv)))
-      router.refresh()
-      if (!options?.silent) {
-        toast.success(sendToClient ? "Invoice sent" : "Invoice saved")
-      }
-      if (sendToClient) {
-        setEditOpen(false)
-        setEditingInvoice(null)
-      }
-      return updated
-    } catch (error: any) {
-      console.error(error)
-      toast.error("Could not update invoice", {
-        description: error?.message ?? "Please try again.",
-      })
-      throw error
-    } finally {
-      setIsUpdating(false)
     }
   }
 
@@ -891,9 +757,7 @@ export function InvoicesClient({
         ),
       ])
       setRevisingInvoice(null)
-      setEditingInvoice(replacement)
-      setEditOpen(true)
-      setDetailOpen(false)
+      goToInvoice(replacement.id)
       toast.success("Replacement draft created", {
         description: `Invoice ${replacement.invoice_number} is ready for review.`,
       })
@@ -1077,7 +941,7 @@ export function InvoicesClient({
           </div>
 
           <div className="flex flex-row gap-2">
-            <Button onClick={() => setSheetOpen(true)} size="sm" className="h-9 flex-1 whitespace-nowrap sm:flex-none">
+            <Button onClick={() => goToInvoice("new")} size="sm" className="h-9 flex-1 whitespace-nowrap sm:flex-none">
               <Plus className="h-4 w-4 mr-2" />
               New invoice
             </Button>
@@ -1183,45 +1047,12 @@ export function InvoicesClient({
         </div>
       )}
 
-      <InvoiceComposerSheet
-        open={sheetOpen}
-        onOpenChange={(open) => {
-          setSheetOpen(open)
-          if (!open) setDuplicatingInvoice(null)
-        }}
-        projects={projects}
-        defaultProjectId={projects[0]?.id}
-        duplicateFrom={duplicatingInvoice}
-        onSubmit={handleCreate}
-        isSubmitting={isCreating}
-        builderInfo={builderInfo}
-        contacts={contacts}
-        costCodes={costCodes}
-        enableApprovedCostsSource={enableApprovedCostsSource}
-      />
-      <InvoiceComposerSheet
-        open={editOpen}
-        onOpenChange={(open) => {
-          setEditOpen(open)
-          if (!open) setEditingInvoice(null)
-        }}
-        projects={projects}
-        defaultProjectId={editingInvoice?.project_id ?? projects[0]?.id}
-        onSubmit={handleUpdate}
-        isSubmitting={isUpdating}
-        builderInfo={builderInfo}
-        contacts={contacts}
-        costCodes={costCodes}
-        enableApprovedCostsSource={enableApprovedCostsSource}
-        mode="edit"
-        invoice={editingInvoice}
-      />
       <QboSyncSheet
         open={queueOpen}
         onOpenChange={setQueueOpen}
         projectId={scopedProject?.id}
         projectName={scopedProject?.name}
-        onOpenInvoice={handleOpenDetail}
+        onOpenInvoice={goToInvoice}
       />
       <MakeRecurringDialog
         invoice={recurringSourceInvoice}
@@ -1276,7 +1107,7 @@ export function InvoicesClient({
                       // controls (checkbox, menus, buttons) which keep their own behavior.
                       const target = event.target as HTMLElement
                       if (target.closest("button, a, input, [role='checkbox'], [role='menu'], [data-row-noclick]")) return
-                      void handleOpenDetail(invoice.id)
+                      goToInvoice(invoice.id)
                     }}
                   >
                     <TableCell className="w-12 text-center align-middle py-4 relative">
@@ -1292,7 +1123,7 @@ export function InvoicesClient({
                       <div className="flex flex-col gap-1">
                         <button
                           type="button"
-                          onClick={() => handleOpenDetail(invoice.id)}
+                          onClick={() => goToInvoice(invoice.id)}
                           className="font-semibold text-left hover:text-primary transition-colors"
                           aria-label={`View invoice ${invoice.invoice_number ?? invoice.title ?? ""}`}
                         >
@@ -1356,8 +1187,7 @@ export function InvoicesClient({
                               }
                               onSelect={(event) => {
                                 event.preventDefault()
-                                setEditingInvoice(invoice)
-                                setEditOpen(true)
+                                goToInvoice(invoice.id)
                               }}
                             >
                               Edit invoice
@@ -1376,8 +1206,7 @@ export function InvoicesClient({
                             <DropdownMenuItem
                               onSelect={(event) => {
                                 event.preventDefault()
-                                setDuplicatingInvoice(invoice)
-                                setSheetOpen(true)
+                                goToInvoice("new", { duplicate: invoice.id })
                               }}
                             >
                               <Copy className="mr-2 h-4 w-4" />
@@ -1499,7 +1328,7 @@ export function InvoicesClient({
                   </TableRow>
                 )
               })}
-              {filtered.length === 0 && !isCreating && (
+              {filtered.length === 0 && (
                 <TableRow className="divide-x">
                   <TableCell colSpan={columnCount} className="py-10 text-center text-muted-foreground">
                     {items.length === 0 ? (
@@ -1511,7 +1340,7 @@ export function InvoicesClient({
                           <p className="font-medium">No invoices yet</p>
                           <p className="text-sm">Create your first invoice to get started.</p>
                         </div>
-                        <Button onClick={() => setSheetOpen(true)}>
+                        <Button onClick={() => goToInvoice("new")}>
                           <Plus className="mr-2 h-4 w-4" />
                           Create invoice
                         </Button>
@@ -1541,13 +1370,6 @@ export function InvoicesClient({
                   </TableCell>
                 </TableRow>
               )}
-              {isCreating && filtered.length === 0 && (
-                <TableRow className="divide-x">
-                  <TableCell colSpan={columnCount} className="px-4 py-4">
-                    <Skeleton className="h-8 w-full" />
-                  </TableCell>
-                </TableRow>
-              )}
             </TableBody>
           </Table>
           {hasMore && !serverSearchResults && (
@@ -1571,80 +1393,21 @@ export function InvoicesClient({
         )}
       </AnimatePresence>
 
-      <InvoiceDetailSheet
-        open={detailOpen}
-        onOpenChange={(open) => {
-          setDetailOpen(open)
-          if (!open) {
-            const params = new URLSearchParams(window.location.search)
-            params.delete("invoice")
-            params.delete("invoiceId")
-            const newSearch = params.toString()
-            const newPath = window.location.pathname + (newSearch ? `?${newSearch}` : "")
-            router.replace(newPath, { scroll: false })
-          }
+      <ReceivablesWorkspace
+        projectId={scopedProject?.id ?? projects[0]?.id ?? ""}
+        projects={projects}
+        invoices={items}
+        builderInfo={builderInfo}
+        contacts={contacts}
+        costCodes={costCodes}
+        enableApprovedCostsSource={enableApprovedCostsSource}
+        pendingLabel={pendingOpenInvoiceLabel}
+        onUpsertInvoice={upsertInvoice}
+        onRemoveInvoice={removeInvoiceFromList}
+        onRefresh={() => {
+          void refreshInvoices()
+          router.refresh()
         }}
-        invoice={detailInvoice}
-        link={detailLink}
-        views={detailViews}
-        syncHistory={detailSyncHistory}
-        payments={detailPayments}
-        reversals={detailReversals}
-        lienWaivers={detailLienWaivers}
-        loading={detailLoading}
-        manualResyncing={isResyncing}
-        onCopyLink={async () => {
-          if (detailLink && typeof navigator !== "undefined" && navigator.clipboard) {
-            await navigator.clipboard.writeText(detailLink)
-            toast.success("Link copied")
-          }
-        }}
-        onManualResync={async () => {
-          if (!detailInvoice) return
-          setIsResyncing(true)
-          try {
-            unwrapAction(await manualResyncInvoiceAction(detailInvoice.id))
-            toast.success("Resync enqueued")
-            await handleOpenDetail(detailInvoice.id)
-          } catch (error: any) {
-            console.error(error)
-            toast.error("Failed to resync", {
-              description: error?.message ?? "Please try again.",
-            })
-          } finally {
-            setIsResyncing(false)
-          }
-        }}
-        onPaymentRecorded={async () => {
-          await refreshInvoices()
-          if (detailInvoice) {
-            await handleOpenDetail(detailInvoice.id)
-          }
-        }}
-        onWaiversChanged={async () => {
-          if (detailInvoice) {
-            const result = unwrapAction(await getInvoiceDetailAction(detailInvoice.id))
-            setDetailLienWaivers(result.lienWaivers ?? [])
-          }
-        }}
-        onEdit={
-          detailInvoice &&
-          ["draft", "saved"].includes(resolveStatusKey(detailInvoice.status)) &&
-          !detailInvoice.sent_at &&
-          !detailInvoice.qbo_id
-            ? () => {
-                setEditingInvoice(detailInvoice)
-                setEditOpen(true)
-                setDetailOpen(false)
-              }
-            : undefined
-        }
-        onRevise={
-          detailInvoice &&
-          !["draft", "saved", "partial", "paid", "void"].includes(resolveStatusKey(detailInvoice.status))
-            ? () => setRevisingInvoice(detailInvoice)
-            : undefined
-        }
       />
 
       <AlertDialog open={Boolean(sharingDraftInvoice)} onOpenChange={(open) => !open && setSharingDraftInvoice(null)}>

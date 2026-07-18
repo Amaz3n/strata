@@ -97,6 +97,8 @@ async function processQBOCdc(request: NextRequest) {
       const payload = await client.changeDataCapture(CDC_ENTITIES, changedSince)
       const rows = getChangedRows(payload)
       scanned += rows.length
+      let insertedAllRows = true
+      let maxInsertedUpdatedAt: string | null = null
 
       for (const row of rows) {
         const eventId = `cdc:${connection.realm_id}:${row.entityName}:${row.id}:${row.lastUpdated}`
@@ -116,18 +118,24 @@ async function processQBOCdc(request: NextRequest) {
         }, {
           onConflict: "event_id",
         })
-        if (!insertError) inserted += 1
+        if (!insertError) {
+          inserted += 1
+          const rowUpdatedAt = new Date(row.lastUpdated).toISOString()
+          if (!maxInsertedUpdatedAt || rowUpdatedAt > maxInsertedUpdatedAt) {
+            maxInsertedUpdatedAt = rowUpdatedAt
+          }
+        } else {
+          insertedAllRows = false
+        }
       }
 
-      await supabase
-        .from("qbo_connections")
-        .update({
-          settings: {
-            ...settings,
-            qbo_cdc_last_synced_at: nowIso,
-          },
+      if (insertedAllRows) {
+        const nextCursor = maxInsertedUpdatedAt ?? nowIso
+        await supabase.rpc("update_qbo_cdc_cursor", {
+          p_connection_id: connection.id,
+          p_cursor: nextCursor,
         })
-        .eq("id", connection.id)
+      }
     } catch (cdcError: any) {
       logQBO("warn", "qbo_cdc_failed", {
         orgId,

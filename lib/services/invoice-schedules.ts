@@ -3,6 +3,7 @@ import { addDays, addMonths, format } from "date-fns"
 import type { Invoice } from "@/lib/types"
 import { invoiceInputSchema } from "@/lib/validation/invoices"
 import { requireOrgContext } from "@/lib/services/context"
+import { calculateInvoiceTotals } from "@/lib/financials/invoice-totals"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { createInvoice, getInvoiceWithLines } from "@/lib/services/invoices"
 import { compareInvoiceNumbers, incrementInvoiceNumber } from "@/lib/services/invoice-numbers"
@@ -37,11 +38,19 @@ const SCHEDULE_COLUMNS =
   "id, org_id, project_id, source_invoice_id, template, frequency, next_run_on, day_of_month, auto_send, recipient_email, active, last_run_at, last_invoice_id, created_by, created_at, org:orgs(product_tier)"
 
 function templateTotalCents(template: Record<string, any>): number {
-  const lines = Array.isArray(template.lines) ? template.lines : []
-  return lines.reduce(
-    (sum: number, line: any) => sum + Math.round(Number(line.quantity ?? 0) * Number(line.unit_cost ?? 0) * 100),
-    0,
-  )
+  const rawLines = Array.isArray(template.lines) ? template.lines : []
+  const lines = rawLines.map((line: any) => ({
+    quantity: Number(line.quantity ?? 0),
+    unit_cost_cents: Math.round(Number(line.unit_cost ?? 0) * 100),
+    taxable: line.taxable !== false,
+    tax_rate_percent: line.tax_rate_percent != null ? Number(line.tax_rate_percent) : null,
+  }))
+  const discountValue = Number(template.discount_value ?? 0)
+  const discount =
+    (template.discount_type === "percent" || template.discount_type === "fixed") && discountValue > 0
+      ? { type: template.discount_type as "percent" | "fixed", value: discountValue }
+      : null
+  return calculateInvoiceTotals(lines, Number(template.tax_rate ?? 0), discount).total_cents
 }
 
 function mapScheduleRow(row: any): InvoiceSchedule {
@@ -192,7 +201,16 @@ export async function createInvoiceScheduleFromInvoice(input: {
 }
 
 export async function listInvoiceSchedules(projectId?: string): Promise<InvoiceSchedule[]> {
-  const { supabase, orgId } = await requireOrgContext()
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireAuthorization({
+    permission: "invoice.read",
+    userId,
+    orgId,
+    projectId,
+    supabase,
+    logDecision: true,
+    resourceType: "invoice_schedule",
+  })
   let query = supabase
     .from("invoice_schedules")
     .select(SCHEDULE_COLUMNS)
@@ -205,7 +223,8 @@ export async function listInvoiceSchedules(projectId?: string): Promise<InvoiceS
 }
 
 export async function setInvoiceScheduleActive(scheduleId: string, active: boolean): Promise<InvoiceSchedule> {
-  const { supabase, orgId } = await requireOrgContext()
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireScheduleWriteAccess({ supabase, orgId, userId, scheduleId })
   const { data, error } = await supabase
     .from("invoice_schedules")
     .update({ active, updated_at: new Date().toISOString() })
@@ -225,7 +244,8 @@ export async function setInvoiceScheduleActive(scheduleId: string, active: boole
 }
 
 export async function deleteInvoiceSchedule(scheduleId: string): Promise<void> {
-  const { supabase, orgId } = await requireOrgContext()
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requireScheduleWriteAccess({ supabase, orgId, userId, scheduleId })
   const { error } = await supabase.from("invoice_schedules").delete().eq("org_id", orgId).eq("id", scheduleId)
   if (error) throw new Error(`Failed to delete schedule: ${error.message}`)
   await recordAudit({
@@ -233,6 +253,31 @@ export async function deleteInvoiceSchedule(scheduleId: string): Promise<void> {
     action: "delete",
     entityType: "invoice_schedule",
     entityId: scheduleId,
+  })
+}
+
+async function requireScheduleWriteAccess(params: {
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"]
+  orgId: string
+  userId: string
+  scheduleId: string
+}) {
+  const { data: schedule } = await params.supabase
+    .from("invoice_schedules")
+    .select("id, project_id")
+    .eq("org_id", params.orgId)
+    .eq("id", params.scheduleId)
+    .maybeSingle()
+  if (!schedule) throw new Error("Schedule not found")
+  await requireAuthorization({
+    permission: "invoice.write",
+    userId: params.userId,
+    orgId: params.orgId,
+    projectId: schedule.project_id ?? undefined,
+    supabase: params.supabase,
+    logDecision: true,
+    resourceType: "invoice_schedule",
+    resourceId: params.scheduleId,
   })
 }
 

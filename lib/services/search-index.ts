@@ -34,6 +34,7 @@ const AUDIT_ENTITY_TYPE_TO_SEARCH: Record<string, SearchEntityType> = {
   budget: "budget",
   estimate: "estimate",
   commitment: "commitment",
+  bid_package: "bid_package",
   change_order: "change_order",
   contract: "contract",
   proposal: "proposal",
@@ -185,7 +186,11 @@ export async function reindexEntity(
 
   const client = supabase ?? createServiceSupabaseClient()
   const includeProject = PROJECT_SCOPED_ENTITY_TYPES.has(entityType)
-  const selectClause = buildEntitySelectClause(entityType, config, includeProject)
+  const baseSelectClause = buildEntitySelectClause(entityType, config, includeProject)
+  // Bid packages can hang off a project OR a pipeline prospect; pull prospect_id
+  // too so the href can route to the right workbench (see below).
+  const selectClause =
+    entityType === "bid_package" ? `${baseSelectClause},prospect_id` : baseSelectClause
 
   const { data: row, error } = await client
     .from(config.table)
@@ -228,7 +233,15 @@ export async function reindexEntity(
     .join(" ")
 
   const body = buildBody(row, [...(config.descriptionFields ?? []), ...config.searchableFields])
-  const href = config.hrefTemplate.replace("{id}", entityId).replace("{project_id}", projectId ?? "")
+  let href = config.hrefTemplate.replace("{id}", entityId).replace("{project_id}", projectId ?? "")
+  if (entityType === "bid_package") {
+    const prospectId = typeof row.prospect_id === "string" ? row.prospect_id : null
+    href = projectId
+      ? `/projects/${projectId}/bids/${entityId}`
+      : prospectId
+        ? `/pipeline/prospects/${prospectId}/bids/${entityId}`
+        : "/bids"
+  }
 
   const { data: upserted, error: upsertError } = await client
     .from("search_documents")

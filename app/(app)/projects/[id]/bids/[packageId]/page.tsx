@@ -3,15 +3,16 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { getProjectAction, getOrgCompaniesAction } from "../../actions"
 import {
   getBidPackageAction,
+  getPackageIntelligenceAction,
   listBidAddendaAction,
   listBidInvitesAction,
+  listBidPackageActivityAction,
+  listBidPackageRfisAction,
+  listBidScopeItemsAction,
   listBidSubmissionsAction,
-} from "../actions"
-import { BidPackageDetailClientNew } from "@/components/bids/bid-package-detail-client-new"
-import { listProjectVendors } from "@/lib/services/project-vendors"
-import { listCostCodes } from "@/lib/services/cost-codes"
-
-import { unwrapAction } from "@/lib/action-result"
+} from "@/app/(app)/bids/actions"
+import { BidPackageWorkbench } from "@/components/bids/bid-package-workbench"
+import { tradeOptionsFromCompanies } from "@/components/bids/trade-options"
 
 interface BidPackageDetailPageProps {
   params: Promise<{ id: string; packageId: string }>
@@ -20,10 +21,7 @@ interface BidPackageDetailPageProps {
 export default async function BidPackageDetailPage({ params }: BidPackageDetailPageProps) {
   const { id, packageId } = await params
 
-  const [project, bidPackage] = await Promise.all([
-    getProjectAction(id),
-    getBidPackageAction(packageId),
-  ])
+  const [project, bidPackage] = await Promise.all([getProjectAction(id), getBidPackageAction(packageId)])
 
   const packageBelongsToProject =
     bidPackage.project_id === project?.id ||
@@ -33,13 +31,15 @@ export default async function BidPackageDetailPage({ params }: BidPackageDetailP
     notFound()
   }
 
-  const [invites, addenda, submissions, companies, projectVendors, costCodes] = await Promise.all([
+  const [invites, addenda, submissions, scopeItems, companies, rfis, activity, intelligence] = await Promise.all([
     listBidInvitesAction(bidPackage.id),
     listBidAddendaAction(bidPackage.id),
     listBidSubmissionsAction(bidPackage.id),
+    listBidScopeItemsAction(bidPackage.id),
     getOrgCompaniesAction(),
-    listProjectVendors(project.id),
-    listCostCodes().catch(() => []),
+    listBidPackageRfisAction(bidPackage.id),
+    listBidPackageActivityAction(bidPackage.id),
+    getPackageIntelligenceAction(bidPackage.id).catch(() => null),
   ])
 
   return (
@@ -51,15 +51,18 @@ export default async function BidPackageDetailPage({ params }: BidPackageDetailP
         { label: bidPackage.title },
       ]}
     >
-      <BidPackageDetailClientNew
-        projectId={project.id}
+      <BidPackageWorkbench
+        context={{ projectId: project.id }}
         bidPackage={bidPackage}
         invites={invites}
         addenda={addenda}
         submissions={submissions}
+        scopeItems={scopeItems}
+        rfis={rfis}
+        activity={activity}
+        intelligence={intelligence}
         companies={companies}
-        projectVendors={projectVendors}
-        costCodes={costCodes}
+        tradeOptions={tradeOptionsFromCompanies(companies)}
       />
     </PageLayout>
   )

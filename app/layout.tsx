@@ -40,12 +40,9 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={`${_dmSans.variable} ${_dmMono.variable} font-sans antialiased`} style={{ fontOpticalSizing: "auto" }}>
-        <script
-          id="arc-ui-size-init"
-          dangerouslySetInnerHTML={{
-            __html: `try{var s=localStorage.getItem("arc-ui-size");document.documentElement.dataset.uiSize=s==="compact"||s==="comfortable"?s:"default"}catch(e){document.documentElement.dataset.uiSize="default"}`
-          }}
-        />
+        <Script id="arc-ui-size-init" strategy="beforeInteractive">
+          {`try{var s=localStorage.getItem("arc-ui-size");document.documentElement.dataset.uiSize=s==="compact"||s==="comfortable"?s:"default"}catch(e){document.documentElement.dataset.uiSize="default"}`}
+        </Script>
         <ThemeProvider
           attribute="class"
           defaultTheme="dark"

@@ -1,15 +1,14 @@
 "use client"
 
 import { useMemo, useState, useTransition } from "react"
-import dynamic from "next/dynamic"
+import { useRouter } from "next/navigation"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
 import { cn } from "@/lib/utils"
 import { useIsMobile } from "@/hooks/use-mobile"
-import type { BudgetLineOption, ChangeOrder, CostCode, Invoice, Project } from "@/lib/types"
+import type { BudgetLineOption, ChangeOrder, CostCode, Project } from "@/lib/types"
 import type { ChangeOrderInput } from "@/lib/validation/change-orders"
-import type { InvoiceInput } from "@/lib/validation/invoices"
 import { resolveProjectBillingModel } from "@/lib/financials/billing-model"
 import {
   createChangeOrderAction,
@@ -18,7 +17,6 @@ import {
   voidChangeOrderAction,
   publishChangeOrderAction,
 } from "@/app/(app)/change-orders/actions"
-import { createInvoiceAction } from "@/app/(app)/invoices/actions"
 import { unwrapAction } from "@/lib/action-result"
 import { ArrowDown, ArrowUp, Ban, ChevronsUpDown, FileCheck2, FileText, Pencil, Receipt, Trash2 } from "lucide-react"
 import { ChangeOrderForm } from "@/components/change-orders/change-order-form"
@@ -32,10 +30,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Plus, FolderOpen, MoreHorizontal, PenLine } from "@/components/icons"
-
-const InvoiceComposerSheet = dynamic(() =>
-  import("@/components/invoices/invoice-composer-sheet").then((module) => module.InvoiceComposerSheet),
-)
 
 type StatusKey = "draft" | "pricing" | "proposed" | "approved" | "requested_changes" | "rejected" | "voided"
 type StatusFilter = StatusKey | "all"
@@ -314,8 +308,8 @@ export function ChangeOrdersClient({
   budgetLines = [],
   costCodesEnabled = true,
   hideProjectFilter,
-  builderInfo,
 }: ChangeOrdersClientProps) {
+  const router = useRouter()
   const isMobile = useIsMobile()
   const [items, setItems] = useState<ChangeOrder[]>(changeOrders)
   const [filterProjectId, setFilterProjectId] = useState<string>(() =>
@@ -329,9 +323,6 @@ const [sheetOpen, setSheetOpen] = useState(false)
   const [detailSheetOpen, setDetailSheetOpen] = useState(false)
   const [selectedChangeOrder, setSelectedChangeOrder] = useState<ChangeOrder | null>(null)
   const [editingChangeOrder, setEditingChangeOrder] = useState<ChangeOrder | null>(null)
-  const [invoiceComposerOpen, setInvoiceComposerOpen] = useState(false)
-  const [invoiceSource, setInvoiceSource] = useState<ChangeOrder | null>(null)
-  const [creatingInvoice, setCreatingInvoice] = useState(false)
   const [isPending, startTransition] = useTransition()
 
   const handleRowClick = (changeOrder: ChangeOrder) => {
@@ -361,48 +352,15 @@ const [sheetOpen, setSheetOpen] = useState(false)
     })
   }
 
+  // Prepare-invoice hands off to the receivables workspace, pre-seeded from this change order.
   const handlePrepareInvoice = (changeOrder: ChangeOrder) => {
-    setInvoiceSource(changeOrder)
-    setInvoiceComposerOpen(true)
+    router.push(`/projects/${changeOrder.project_id}/financials/receivables?invoice=new&source=change_order:${changeOrder.id}`)
   }
 
   const handleEditFromDetail = (changeOrder: ChangeOrder) => {
     setEditingChangeOrder(changeOrder)
     setDetailSheetOpen(false)
     setSheetOpen(true)
-  }
-
-  const handleCreateInvoice = async (
-    values: InvoiceInput,
-    sendToClient: boolean,
-    options?: { silent?: boolean },
-  ): Promise<Invoice> => {
-    setCreatingInvoice(true)
-    try {
-      const created = unwrapAction(await createInvoiceAction(values))
-      const linkedInvoice = {
-        id: created.id,
-        invoice_number: created.invoice_number,
-        status: created.status,
-      }
-      if (invoiceSource) {
-        setItems((prev) => prev.map((item) => item.id === invoiceSource.id ? { ...item, linked_invoice: linkedInvoice } : item))
-        setSelectedChangeOrder((current) => current?.id === invoiceSource.id ? { ...current, linked_invoice: linkedInvoice } : current)
-      }
-      setInvoiceComposerOpen(false)
-      setInvoiceSource(null)
-      if (!options?.silent) {
-        toast.success(sendToClient ? "Invoice sent" : "Invoice saved", {
-          description: sendToClient ? "Client can now view this invoice." : "Invoice saved to receivables.",
-        })
-      }
-      return created
-    } catch (error: any) {
-      toast.error("Could not save invoice", { description: error?.message ?? "Please try again." })
-      throw error
-    } finally {
-      setCreatingInvoice(false)
-    }
   }
 
   const projectLookup = useMemo(() => {
@@ -1017,23 +975,6 @@ const [sheetOpen, setSheetOpen] = useState(false)
         onEdit={handleEditFromDetail}
         onPrepareInvoice={handlePrepareInvoice}
       />
-
-      {invoiceSource ? (
-        <InvoiceComposerSheet
-          open={invoiceComposerOpen}
-          onOpenChange={(nextOpen) => {
-            setInvoiceComposerOpen(nextOpen)
-            if (!nextOpen) setInvoiceSource(null)
-          }}
-          projects={projects.filter((project) => project.id === invoiceSource.project_id)}
-          defaultProjectId={invoiceSource.project_id}
-          initialSourceChangeOrderId={invoiceSource.id}
-          initialSourceChangeOrder={invoiceSource}
-          onSubmit={handleCreateInvoice}
-          isSubmitting={creatingInvoice}
-          builderInfo={builderInfo}
-        />
-      ) : null}
     </>
   )
 }

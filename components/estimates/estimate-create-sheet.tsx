@@ -19,7 +19,7 @@ import { Receipt, CalendarDays, ChevronsUpDown, Trash2, Plus, LayoutGrid, ImageI
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { uploadEstimatePhotoAction } from "@/app/(app)/estimates/actions"
-import { listProspectBidQuotesAction } from "@/app/(app)/pipeline/prospects/[prospectId]/bids/actions"
+import { listProspectBidQuotesAction } from "@/app/(app)/bids/actions"
 import type { ProspectBidQuote } from "@/lib/services/bids"
 import type { PricingDisplayMode } from "@/lib/validation/estimates"
 

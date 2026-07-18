@@ -16,6 +16,7 @@ export type SearchEntityType =
   | 'budget'
   | 'estimate'
   | 'commitment'
+  | 'bid_package'
   | 'change_order'
   | 'contract'
   | 'proposal'
@@ -228,6 +229,16 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     hrefTemplate: '/commitments/{id}',
     joins: ['LEFT JOIN projects p ON c.project_id = p.id'],
   },
+  bid_package: {
+    // Packages live on a project OR a pipeline prospect; reindexEntity resolves
+    // the correct workbench href (project vs. prospect) at index time.
+    table: 'bid_packages',
+    titleField: 'title',
+    subtitleFields: ['trade', 'status'],
+    descriptionFields: ['scope'],
+    searchableFields: ['title', 'trade', 'scope', 'instructions'],
+    hrefTemplate: '/projects/{project_id}/bids/{id}',
+  },
   change_order: {
     table: 'change_orders',
     titleField: 'title',
@@ -365,6 +376,7 @@ export const PROJECT_SCOPED_ENTITY_TYPES = new Set<SearchEntityType>([
   "budget",
   "estimate",
   "commitment",
+  "bid_package",
   "change_order",
   "contract",
   "proposal",

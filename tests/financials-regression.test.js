@@ -473,7 +473,10 @@ test("invoice revisions preserve the original and create a linked replacement dr
 
 test("retainage is derived from the active contract and shown before invoice issuance", () => {
   const invoiceService = fs.readFileSync(path.join(__dirname, "../lib/services/invoices.ts"), "utf8")
-  const composer = fs.readFileSync(path.join(__dirname, "../components/invoices/invoice-composer-sheet.tsx"), "utf8")
+  const composer = fs.readFileSync(
+    path.join(__dirname, "../components/invoices/workspace/invoice-editable-document.tsx"),
+    "utf8",
+  )
   const receivables = fs.readFileSync(path.join(__dirname, "../components/financials/receivables-tab.tsx"), "utf8")
   const retainageTracker = fs.readFileSync(path.join(__dirname, "../components/projects/retainage-tracker.tsx"), "utf8")
 

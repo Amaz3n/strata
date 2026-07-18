@@ -45,6 +45,16 @@ interface EventRecord {
 }
 
 const FINANCIAL_NOTIFICATION_PERMISSIONS = ["invoice.read", "payment.read", "budget.read", "bill.read", "commitment.read"]
+
+// Bid lifecycle events fire from the public bid portal (and the leveling
+// workbench). They carry only a bid_package_id, so we resolve the package's job
+// + creator to decide who hears about them. In-app only — never email.
+const BID_NOTIFICATION_EVENTS = new Set<string>([
+  "bid_submission_received",
+  "bid_submission_withdrawn",
+  "bid_award_rescinded",
+  "bid_invite_declined",
+])
 const RESTRICTED_PROJECT_ROLE_KEYS = new Set(["client", "project_client", "portal_client", "sub", "portal_sub"])
 
 export async function recordEvent(input: EventInput) {
@@ -216,6 +226,13 @@ function resolveMeta(event: ActivityEvent) {
 async function createNotificationsFromEvent(event: EventRecord, orgId: string) {
   const notificationService = new NotificationService()
 
+  // Bid events only carry a bid_package_id — hydrate the package title, its
+  // project, and its creator onto the payload so both audience resolution and
+  // notification copy have what they need.
+  if (BID_NOTIFICATION_EVENTS.has(event.event_type)) {
+    await enrichBidEvent(event, orgId)
+  }
+
   // Define who should be notified based on event type
   const recipients = await getNotificationRecipients(event, orgId)
 
@@ -287,6 +304,23 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     "qbo_connected",
     "qbo_disconnected",
   ])
+
+  if (BID_NOTIFICATION_EVENTS.has(event.event_type)) {
+    const createdBy = typeof (event.payload as any)?.package_created_by === "string"
+      ? ((event.payload as any).package_created_by as string)
+      : null
+    const userIds: string[] = createdBy ? [createdBy] : []
+    if (projectId) {
+      const { data: members, error } = await supabase
+        .from("project_members")
+        .select("user_id")
+        .eq("project_id", projectId)
+      if (!error && members?.length) {
+        for (const member of members) if (member.user_id) userIds.push(member.user_id as string)
+      }
+    }
+    return uniqUserIds(userIds).filter((id) => id && id !== actorId)
+  }
 
   // Serious incidents (lost-time+) alert everyone who can administer the org,
   // regardless of project membership — this is the email-eligible alert type.
@@ -650,6 +684,68 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
         eventId: event.id,
       }
 
+    case "bid_submission_received": {
+      const company = typeof safePayload.company_name === "string" ? safePayload.company_name : "A subcontractor"
+      const pkg = typeof safePayload.package_title === "string" ? safePayload.package_title : "a bid package"
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "bid_submission_received" as NotificationType,
+        title: "Bid received",
+        message: `${company} submitted a bid on ${pkg}.`,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
+    case "bid_submission_withdrawn": {
+      const company = typeof safePayload.company_name === "string" ? safePayload.company_name : "A subcontractor"
+      const pkg = typeof safePayload.package_title === "string" ? safePayload.package_title : "a bid package"
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "bid_submission_withdrawn" as NotificationType,
+        title: "Bid withdrawn",
+        message: `${company} withdrew their bid on ${pkg}.`,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
+    case "bid_invite_declined": {
+      const pkg = typeof safePayload.package_title === "string" ? safePayload.package_title : "a bid package"
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "bid_invite_declined" as NotificationType,
+        title: "Bid invite declined",
+        message: `An invited subcontractor declined to bid on ${pkg}.`,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
+    case "bid_award_rescinded": {
+      const pkg = typeof safePayload.package_title === "string" ? safePayload.package_title : "a bid package"
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "bid_award_rescinded" as NotificationType,
+        title: "Award rescinded",
+        message: `The award on ${pkg} was rescinded.`,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
     case "portal_message":
       return {
         orgId: event.org_id,
@@ -679,6 +775,31 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
         entityId: entity_id,
         eventId: event.id,
       }
+  }
+}
+
+/** Merge the bid package's title, project_id and creator onto a bid event's
+ * payload so downstream audience + copy resolution can rely on them. */
+async function enrichBidEvent(event: EventRecord, orgId: string) {
+  const payload = (event.payload ?? {}) as Record<string, any>
+  const packageId = typeof payload.bid_package_id === "string" ? payload.bid_package_id : null
+  if (!packageId) return
+
+  const supabase = createServiceSupabaseClient()
+  const { data: pkg } = await supabase
+    .from("bid_packages")
+    .select("title, project_id, created_by")
+    .eq("org_id", orgId)
+    .eq("id", packageId)
+    .maybeSingle()
+
+  if (!pkg) return
+
+  event.payload = {
+    ...payload,
+    package_title: pkg.title ?? payload.package_title ?? null,
+    ...(pkg.project_id ? { project_id: pkg.project_id } : {}),
+    ...(pkg.created_by ? { package_created_by: pkg.created_by } : {}),
   }
 }
 

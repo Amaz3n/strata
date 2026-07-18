@@ -10,6 +10,19 @@ interface OutboxJobInput {
   dedupeByPayloadKeys?: string[]
 }
 
+function buildDedupeKey(jobType: string, payload: Record<string, unknown>, keys?: string[]) {
+  const parts = (keys ?? [])
+    .map((key) => {
+      const value = payload[key]
+      if (value === undefined || value === null) return null
+      return `${key}:${String(value)}`
+    })
+    .filter((part): part is string => part !== null)
+
+  if (parts.length === 0) return null
+  return `${jobType}:${parts.join("|")}`
+}
+
 export async function enqueueOutboxJob(input: OutboxJobInput) {
   try {
     const supabase = createServiceSupabaseClient()
@@ -22,30 +35,7 @@ export async function enqueueOutboxJob(input: OutboxJobInput) {
       return { enqueued: false as const, reason: "error" as const }
     }
     const payload = input.payload ?? {}
-
-    if ((input.dedupeByPayloadKeys ?? []).length > 0) {
-      let query = supabase
-        .from("outbox")
-        .select("id")
-        .eq("org_id", orgId)
-        .eq("job_type", input.jobType)
-        .in("status", ["pending", "processing"])
-      let matchedKeys = 0
-
-      for (const key of input.dedupeByPayloadKeys ?? []) {
-        const value = payload[key]
-        if (value === undefined || value === null) continue
-        matchedKeys += 1
-        query = query.contains("payload", { [key]: value })
-      }
-
-      if (matchedKeys > 0) {
-        const { data: existing } = await query.limit(1).maybeSingle()
-        if (existing?.id) {
-          return { enqueued: false as const, reason: "duplicate" as const }
-        }
-      }
-    }
+    const dedupeKey = buildDedupeKey(input.jobType, payload, input.dedupeByPayloadKeys)
 
     const { error } = await supabase.from("outbox").insert({
       org_id: orgId,
@@ -53,9 +43,13 @@ export async function enqueueOutboxJob(input: OutboxJobInput) {
       payload,
       event_id: input.eventId,
       run_at: input.runAt,
+      dedupe_key: dedupeKey,
     })
 
     if (error) {
+      if (dedupeKey && error.code === "23505") {
+        return { enqueued: false as const, reason: "duplicate" as const }
+      }
       console.error("Failed to enqueue outbox job", error)
       return { enqueued: false as const, reason: "error" as const }
     }

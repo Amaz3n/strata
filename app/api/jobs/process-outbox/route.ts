@@ -941,6 +941,46 @@ async function sendBidEmailJob(supabase: ReturnType<typeof createServiceSupabase
     return
   }
 
+  if (kind === "receipt") {
+    const orgName = typeof payload.orgName === "string" ? payload.orgName : undefined
+    const contactName = typeof payload.contactName === "string" ? payload.contactName : ""
+    const projectName = typeof payload.projectName === "string" ? payload.projectName : null
+    const bidPackageTitle = String(payload.bidPackageTitle ?? "Bid package")
+    const totalCents = Number(payload.totalCents ?? 0)
+    const version = Number(payload.version ?? 1)
+    const submittedAt = typeof payload.submittedAt === "string" ? payload.submittedAt : null
+    const validUntil = typeof payload.validUntil === "string" ? payload.validUntil : null
+
+    const amount = (totalCents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
+    const submittedLine = submittedAt ? new Date(submittedAt).toLocaleString("en-US", { timeZone: "UTC", dateStyle: "medium", timeStyle: "short" }) + " UTC" : ""
+    const title = `Bid received: ${bidPackageTitle}`
+    const detailsHtml = [
+      `Package: ${escapeHtml(bidPackageTitle)}`,
+      projectName ? `Project: ${escapeHtml(projectName)}` : null,
+      `Amount: ${escapeHtml(amount)}`,
+      `Revision: v${version}`,
+      submittedLine ? `Submitted: ${escapeHtml(submittedLine)}` : null,
+      validUntil ? `Valid until: ${escapeHtml(validUntil)}` : null,
+    ]
+      .filter(Boolean)
+      .join("<br/>")
+
+    const html = renderStandardEmailLayout({
+      title,
+      messageHtml: `Hi ${escapeHtml(contactName || "there")},<br/><br/>This confirms your bid was received.<br/><br/>${detailsHtml}<br/><br/>Keep this email for your records. You can revise your bid from the same link until bidding closes.`,
+      orgName,
+      appUrl: process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com",
+    })
+
+    await sendEmail({
+      to: [to],
+      subject: title,
+      html,
+      from: getOrgSenderEmail(typeof payload.orgSlug === "string" ? payload.orgSlug : undefined, orgName),
+    })
+    return
+  }
+
   throw new Error(`Unknown bid email kind: ${kind}`)
 }
 

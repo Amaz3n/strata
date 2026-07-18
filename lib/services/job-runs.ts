@@ -14,7 +14,7 @@ export interface CronJobDefinition {
 }
 
 export const CRON_JOBS: CronJobDefinition[] = [
-  { name: "qbo-process-outbox", path: "/api/qbo/process-outbox", schedule: "0 2 * * *", scheduleLabel: "Daily 2:00 UTC", expectedIntervalMinutes: 1440 },
+  { name: "qbo-process-outbox", path: "/api/qbo/process-outbox", schedule: "*/10 * * * *", scheduleLabel: "Every 10 min", expectedIntervalMinutes: 10 },
   { name: "qbo-process-cdc", path: "/api/qbo/process-cdc", schedule: "*/15 * * * *", scheduleLabel: "Every 15 min", expectedIntervalMinutes: 15 },
   { name: "qbo-process-webhooks", path: "/api/qbo/process-webhooks", schedule: "5-59/15 * * * *", scheduleLabel: "Every 15 min", expectedIntervalMinutes: 15 },
   { name: "process-outbox", path: "/api/jobs/process-outbox", schedule: "0 * * * *", scheduleLabel: "Hourly", expectedIntervalMinutes: 60 },

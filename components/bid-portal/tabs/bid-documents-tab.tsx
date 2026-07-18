@@ -7,16 +7,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import type { FileMetadata } from "@/lib/types"
+import { formatFileSize } from "@/components/bid-portal/lib"
 
 interface BidDocumentsTabProps {
   files: FileMetadata[]
-}
-
-function formatFileSize(bytes?: number) {
-  if (!bytes) return "—"
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 function getFileIcon(mimeType?: string) {

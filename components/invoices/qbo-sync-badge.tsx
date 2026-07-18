@@ -3,7 +3,7 @@ import { AlertCircle, CheckCircle2, Clock, CloudOff } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
-type QBOSyncStatus = "pending" | "synced" | "error" | "skipped" | null | undefined
+type QBOSyncStatus = "pending" | "synced" | "error" | "skipped" | "needs_review" | null | undefined
 
 interface Props {
   status: QBOSyncStatus
@@ -39,6 +39,12 @@ export function QBOSyncBadge({ status, syncedAt, qboId, compact = false }: Props
       label: "Not synced",
       variant: "secondary" as const,
       tooltip: "QuickBooks sync disabled or not connected",
+    },
+    needs_review: {
+      icon: AlertCircle,
+      label: "Needs review",
+      variant: "destructive" as const,
+      tooltip: "Arc and QuickBooks disagree on this invoice. Review it in the sync queue, then resync.",
     },
   } as const
 

@@ -208,6 +208,7 @@ export function getQBOEnvironmentInfo() {
 
 export async function getQBOAccessToken(
   orgId: string,
+  options?: { forceRefresh?: boolean },
 ): Promise<{ token: string; realmId: string } | null> {
   const supabase = createServiceSupabaseClient()
 
@@ -220,7 +221,7 @@ export async function getQBOAccessToken(
 
   if (error || !connection) return null
   return refreshConnectionTokens(supabase, connection as QBOConnectionTokenRow, {
-    force: false,
+    force: options?.forceRefresh === true,
     orgIdForLogs: orgId,
     source: "auto",
   })

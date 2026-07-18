@@ -50,6 +50,7 @@ const PUBLIC_API_ROUTES = [
   "/api/portal/files/",
   "/api/portal/log-file-access",
   "/api/portal/s/",
+  "/api/portal/b/",
 ]
 const PUBLIC_FILE_EXTENSIONS = [
   ".svg",
