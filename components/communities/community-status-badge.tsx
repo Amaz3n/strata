@@ -11,6 +11,10 @@ const TONES: Record<string, string> = {
   developed: "border-border bg-secondary text-secondary-foreground",
   assigned: "border-border bg-muted text-muted-foreground",
   started: "border-primary/30 bg-primary/10 text-primary",
+  open: "border-primary/30 bg-primary/10 text-primary",
+  built_out: "border-border bg-secondary text-secondary-foreground",
+  scheduled: "border-border bg-muted text-muted-foreground",
+  cancelled: "border-destructive/30 bg-destructive/10 text-destructive",
 }
 
 export function CommunityStatusBadge({ status }: { status: string }) {

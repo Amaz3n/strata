@@ -9,6 +9,15 @@ export const LOT_STATUSES = [
 
 export type LotStatus = (typeof LOT_STATUSES)[number]
 
+export const LOT_STATUS_META: Record<LotStatus, { label: string; barClass: string }> = {
+  controlled: { label: "Controlled", barClass: "bg-muted-foreground/25" },
+  owned: { label: "Owned", barClass: "bg-muted-foreground/50" },
+  developed: { label: "Developed", barClass: "bg-chart-3" },
+  assigned: { label: "Assigned", barClass: "bg-chart-2" },
+  started: { label: "Started", barClass: "bg-chart-1" },
+  closed: { label: "Closed", barClass: "bg-chart-4" },
+}
+
 const STATUS_INDEX = new Map<LotStatus, number>(LOT_STATUSES.map((status, index) => [status, index]))
 
 export function assertLotStatusTransition({

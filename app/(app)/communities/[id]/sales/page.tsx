@@ -1,16 +1,83 @@
-import Link from "next/link"
 import { notFound } from "next/navigation"
 
-import { Badge } from "@/components/ui/badge"
+import {
+  SalesTab,
+  type ClosingRowDTO,
+  type PriceSheetRowDTO,
+  type ReservationRowDTO,
+  type SpecRowDTO,
+} from "@/components/communities/sales-tab"
 import { getCommunity } from "@/lib/services/communities"
 import { getCommunityPriceSheet, getCommunitySalesPipeline } from "@/lib/services/community-sales"
+import { listContacts } from "@/lib/services/contacts"
+import { getCurrentUserPermissions } from "@/lib/services/permissions"
 
-const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
+export const dynamic = "force-dynamic"
 
 export default async function CommunitySalesPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  const [community, pipeline, priceSheet] = await Promise.all([getCommunity(id).catch(() => null), getCommunitySalesPipeline(id), getCommunityPriceSheet(id)])
+  const [community, pipeline, priceSheet, permissions, contacts] = await Promise.all([
+    getCommunity(id).catch(() => null),
+    getCommunitySalesPipeline(id),
+    getCommunityPriceSheet(id),
+    getCurrentUserPermissions(),
+    listContacts().catch(() => []),
+  ])
   if (!community) notFound()
-  const stages = [["Available specs", pipeline.specs], ["Holds", pipeline.holds], ["Reserved", pipeline.reserved], ["Agreements", pipeline.agreements]] as const
-  return <div className="space-y-5 p-4"><div className="grid gap-3 sm:grid-cols-5">{Object.entries(pipeline.counts).map(([label, value]) => <div key={label} className="rounded-lg border px-3 py-2"><p className="text-[11px] capitalize text-muted-foreground">{label}</p><p className="text-xl font-semibold">{value}</p></div>)}</div><div className="grid gap-4 xl:grid-cols-4">{stages.map(([title, rows]) => <section key={title} className="rounded-lg border bg-background"><div className="border-b px-3 py-2 text-xs font-semibold">{title}</div><div className="divide-y">{rows.length ? rows.map((row: any) => <div key={row.id ?? row.lotId} className="px-3 py-2.5"><p className="font-medium">Lot {row.lotLabel}</p><p className="text-xs text-muted-foreground">{row.buyerName ?? row.planLabel ?? "Available"}</p><p className="mt-1 text-xs tabular-nums">{money.format(Number(row.askingPriceCents ?? 0) / 100)}</p></div>) : <p className="px-3 py-6 text-center text-xs text-muted-foreground">None</p>}</div></section>)}</div><section className="overflow-hidden rounded-lg border"><div className="border-b px-4 py-3"><h2 className="text-sm font-semibold">Price sheet · {priceSheet.asOfDate}</h2></div><table className="w-full text-xs"><thead className="bg-muted/40 text-left text-muted-foreground"><tr><th className="px-4 py-2">Plan</th><th className="px-4 py-2">Elevation</th><th className="px-4 py-2">Beds / Baths / Sqft</th><th className="px-4 py-2 text-right">From</th></tr></thead><tbody>{priceSheet.rows.map((row: any) => <tr key={`${row.planId}-${row.elevationId ?? "base"}`} className="border-t"><td className="px-4 py-2.5 font-medium">{row.planName}</td><td className="px-4 py-2.5">{row.elevationName}</td><td className="px-4 py-2.5">{row.beds ?? "—"} / {row.baths ?? "—"} / {row.sqft?.toLocaleString() ?? "—"}</td><td className="px-4 py-2.5 text-right font-medium">{money.format(row.fromPriceCents / 100)}</td></tr>)}</tbody></table>{priceSheet.incentives.length > 0 && <div className="flex flex-wrap gap-2 border-t p-3">{priceSheet.incentives.map((row: any) => <Badge key={row.id} variant="secondary">{row.name}</Badge>)}</div>}</section>{pipeline.closings.length > 0 && <section className="rounded-lg border"><div className="border-b px-4 py-3 text-sm font-semibold">Closings</div>{pipeline.closings.map((row: any) => <Link key={row.id} href={`/projects/${row.project_id}/closing`} className="flex justify-between border-t px-4 py-3 text-sm hover:bg-muted/30"><span>{row.project?.name ?? "Home"} · Lot {row.lot?.lot_number}</span><span>{row.scheduled_date ?? row.status}</span></Link>)}</section>}</div>
+  const canManage = permissions.permissions.some((permission) => ["sales.manage", "org.admin", "*"].includes(permission))
+
+  const toReservationRow = (row: (typeof pipeline.holds)[number]): ReservationRowDTO => ({
+    id: row.id,
+    lotLabel: row.lotLabel,
+    buyerName: row.buyerName,
+    status: row.status,
+    expiresAt: row.expiresAt,
+    askingPriceCents: row.askingPriceCents,
+    depositRequiredCents: row.depositRequiredCents,
+    projectId: row.projectId,
+  })
+
+  const specs: SpecRowDTO[] = pipeline.specs.map((row) => ({
+    lotId: row.lotId,
+    lotLabel: row.lotLabel,
+    projectId: row.projectId,
+    planLabel: row.planLabel,
+    agingDays: row.agingDays,
+    askingPriceCents: row.askingPriceCents,
+  }))
+
+  const priceRows: PriceSheetRowDTO[] = priceSheet.rows.map((row) => ({
+    key: `${row.planId}-${row.elevationId ?? "base"}`,
+    planName: row.planName ?? "—",
+    elevationName: row.elevationName,
+    beds: row.beds ?? null,
+    baths: row.baths ?? null,
+    sqft: row.sqft ?? null,
+    fromPriceCents: row.fromPriceCents,
+  }))
+
+  const closings: ClosingRowDTO[] = pipeline.closings.map((row) => ({
+    id: row.id,
+    projectId: row.project_id,
+    projectName: row.project?.name ?? "Home",
+    lotLabel: row.lot?.lot_number ?? null,
+    status: String(row.status),
+    scheduledDate: row.scheduled_date ?? null,
+  }))
+
+  return (
+    <SalesTab
+      specs={specs}
+      holds={pipeline.holds.map(toReservationRow)}
+      reserved={pipeline.reserved.map(toReservationRow)}
+      agreements={pipeline.agreements.map(toReservationRow)}
+      priceSheet={priceRows}
+      incentives={priceSheet.incentives.map((row) => ({ id: String(row.id), name: String(row.name) }))}
+      premiumRange={{ minCents: priceSheet.minPremiumCents, maxCents: priceSheet.maxPremiumCents }}
+      asOfDate={priceSheet.asOfDate}
+      closings={closings}
+      buyers={contacts.map((contact) => ({ id: contact.id, name: contact.full_name }))}
+      canManage={canManage}
+    />
+  )
 }

@@ -540,7 +540,7 @@ async function commitCommunitiesLots(rows: ImportRowRecord[], context: ResolvedI
         if (existing) phase = existing
         else {
           const trailing = /(\d+)\s*$/.exec(String(row.parsed.phase))
-          const { data, error } = await context.supabase.from("community_phases").insert({ org_id: context.orgId, community_id: community.id, name: row.parsed.phase, phase_number: trailing ? Number(trailing[1]) : phaseCache.size + 1, status: "active", metadata: { imported: true } }).select("id").single()
+          const { data, error } = await context.supabase.from("community_phases").insert({ org_id: context.orgId, community_id: community.id, name: row.parsed.phase, phase_number: trailing ? Number(trailing[1]) : phaseCache.size + 1, status: "open", metadata: { imported: true } }).select("id").single()
           if (error || !data) throw new Error(`Failed to create phase: ${error?.message}`)
           phase = data
         }

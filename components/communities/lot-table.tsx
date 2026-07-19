@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState, useTransition } from "react";
-import { Plus, Search } from "@/components/icons";
+import { MoreHorizontal, Plus, Search } from "@/components/icons";
 import { toast } from "sonner";
 
 import {
@@ -27,6 +27,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -52,6 +59,8 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { unwrapAction } from "@/lib/action-result";
 import { LOT_STATUSES, type LotStatus } from "@/lib/land/lot-lifecycle";
 import type {
@@ -754,44 +763,42 @@ export function LotTable({
                 </TableCell>
                 {canWrite ? (
                   <TableCell className="text-right">
-                    <div className="flex justify-end gap-1">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => openEdit(lot)}
-                      >
-                        Edit
-                      </Button>
-                      {!lot.projectId ? (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setAttachLot(lot)}
-                        >
-                          Attach
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="sm" className="h-7 w-7 p-0">
+                          <MoreHorizontal className="h-4 w-4" />
+                          <span className="sr-only">Lot {lot.lotNumber} actions</span>
                         </Button>
-                      ) : (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => detach(lot)}
-                        >
-                          Detach
-                        </Button>
-                      )}
-                      {!lot.projectId &&
-                      ["controlled", "owned", "developed"].includes(
-                        lot.status,
-                      ) ? (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => remove(lot)}
-                        >
-                          Delete
-                        </Button>
-                      ) : null}
-                    </div>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => openEdit(lot)}>
+                          Edit lot
+                        </DropdownMenuItem>
+                        {!lot.projectId ? (
+                          <DropdownMenuItem onClick={() => setAttachLot(lot)}>
+                            Attach project
+                          </DropdownMenuItem>
+                        ) : (
+                          <DropdownMenuItem onClick={() => detach(lot)}>
+                            Detach project
+                          </DropdownMenuItem>
+                        )}
+                        {!lot.projectId &&
+                        ["controlled", "owned", "developed"].includes(
+                          lot.status,
+                        ) ? (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              variant="destructive"
+                              onClick={() => remove(lot)}
+                            >
+                              Delete lot
+                            </DropdownMenuItem>
+                          </>
+                        ) : null}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </TableCell>
                 ) : null}
               </TableRow>
@@ -826,32 +833,31 @@ export function LotTable({
         </div>
       ) : null}
 
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="rounded-none sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Add lots</DialogTitle>
-            <DialogDescription>
+      <Sheet open={createOpen} onOpenChange={setCreateOpen}>
+        <SheetContent
+          side="right"
+          mobileFullscreen
+          className="fast-sheet-animation flex flex-col p-0 shadow-2xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] sm:max-w-lg"
+          style={{ animationDuration: "150ms", transitionDuration: "150ms" }}
+        >
+          <SheetHeader className="border-b bg-muted/30 px-6 pb-4 pt-6">
+            <SheetTitle>Add lots</SheetTitle>
+            <SheetDescription className="text-left">
               Add one detailed lot or create a numbered range of up to 500.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex border-b text-xs">
-            <button
-              type="button"
-              className={`px-3 py-2 ${createMode === "range" ? "border-b-2 border-primary font-medium" : "text-muted-foreground"}`}
-              onClick={() => setCreateMode("range")}
-            >
-              Range
-            </button>
-            <button
-              type="button"
-              className={`px-3 py-2 ${createMode === "single" ? "border-b-2 border-primary font-medium" : "text-muted-foreground"}`}
-              onClick={() => setCreateMode("single")}
-            >
-              Single
-            </button>
-          </div>
-          {createMode === "range" ? (
-            <div className="grid grid-cols-2 gap-3">
+            </SheetDescription>
+          </SheetHeader>
+          <ScrollArea className="flex-1">
+            <div className="px-6 py-4">
+          <Tabs
+            value={createMode}
+            onValueChange={(value) => setCreateMode(value as "range" | "single")}
+          >
+            <TabsList>
+              <TabsTrigger value="range">Range</TabsTrigger>
+              <TabsTrigger value="single">Single lot</TabsTrigger>
+            </TabsList>
+            <TabsContent value="range" className="pt-4">
+              <div className="grid grid-cols-2 gap-3">
               <div className="grid gap-1.5">
                 <Label>From</Label>
                 <Input
@@ -916,16 +922,20 @@ export function LotTable({
                   </Select>
                 </div>
               ) : null}
+              </div>
+            </TabsContent>
+            <TabsContent value="single" className="pt-4">
+              <LotFields
+                draft={singleDraft}
+                onChange={setSingleDraft}
+                phases={phases}
+                takedowns={takedowns}
+              />
+            </TabsContent>
+          </Tabs>
             </div>
-          ) : (
-            <LotFields
-              draft={singleDraft}
-              onChange={setSingleDraft}
-              phases={phases}
-              takedowns={takedowns}
-            />
-          )}
-          <DialogFooter>
+          </ScrollArea>
+          <SheetFooter className="border-t px-6 py-4">
             <Button variant="outline" onClick={() => setCreateOpen(false)}>
               Cancel
             </Button>
@@ -946,32 +956,39 @@ export function LotTable({
                 {isPending ? "Creating…" : "Create lot"}
               </Button>
             )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
       <Sheet
         open={Boolean(editingLot)}
         onOpenChange={(open) => {
           if (!open) setEditingLot(null);
         }}
       >
-        <SheetContent className="overflow-y-auto sm:max-w-lg">
-          <SheetHeader>
+        <SheetContent
+          side="right"
+          mobileFullscreen
+          className="fast-sheet-animation flex flex-col p-0 shadow-2xl sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] sm:max-w-lg"
+          style={{ animationDuration: "150ms", transitionDuration: "150ms" }}
+        >
+          <SheetHeader className="border-b bg-muted/30 px-6 pb-4 pt-6">
             <SheetTitle>Edit lot {editingLot?.lotNumber}</SheetTitle>
-            <SheetDescription>
+            <SheetDescription className="text-left">
               Update the land record. Status changes remain separately audited
               from the table.
             </SheetDescription>
           </SheetHeader>
-          <div className="py-6">
-            <LotFields
-              draft={editDraft}
-              onChange={setEditDraft}
-              phases={phases}
-              takedowns={takedowns}
-            />
-          </div>
-          <SheetFooter>
+          <ScrollArea className="flex-1">
+            <div className="px-6 py-4">
+              <LotFields
+                draft={editDraft}
+                onChange={setEditDraft}
+                phases={phases}
+                takedowns={takedowns}
+              />
+            </div>
+          </ScrollArea>
+          <SheetFooter className="border-t px-6 py-4">
             <Button variant="outline" onClick={() => setEditingLot(null)}>
               Cancel
             </Button>
