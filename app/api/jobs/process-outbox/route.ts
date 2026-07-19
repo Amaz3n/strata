@@ -19,7 +19,10 @@ import { markCommitmentChangeOrderExecutedFromEnvelope } from "@/lib/services/co
 import { markCommitmentExecutedFromEnvelope } from "@/lib/services/commitments"
 import { executeEstimateFromEnvelopeExecution } from "@/lib/services/estimate-portal"
 import { acceptProposalFromEnvelopeExecution } from "@/lib/services/proposals"
+import { executePurchaseAgreementFromEnvelopeExecution } from "@/lib/services/community-sales"
 import { confirmSelectionFromEnvelopeExecution } from "@/lib/services/selections"
+import { recomputeProjectSelectionCutoffs } from "@/lib/services/selection-cutoffs"
+import { enrollProjectWarrantyCoverageFromClosing } from "@/lib/services/warranty"
 import { isEmailNotificationTypeEnabled, isEmailEligibleNotificationType } from "@/lib/services/notifications"
 import { isApnsConfigured, sendApnsNotification } from "@/lib/services/apns"
 import { buildDrawingsTilesBaseUrl } from "@/lib/storage/drawings-urls"
@@ -460,7 +463,7 @@ async function processOutboxQueue(request: NextRequest) {
   const { data: jobs, error } = await supabase
     .from("outbox")
     .select("*")
-    .in("job_type", ["deliver_notification", "deliver_push", "send_daily_log_mention_email", "send_esign_executed_email", "send_bid_email", "process_esign_execution_side_effects", "refresh_drawing_sheets_list", "index_file", "generate_file_preview", "reindex_search", "remove_search_index", "process_inbound_bill_email"])
+    .in("job_type", ["deliver_notification", "deliver_push", "send_daily_log_mention_email", "send_esign_executed_email", "send_bid_email", "process_esign_execution_side_effects", "refresh_drawing_sheets_list", "index_file", "generate_file_preview", "reindex_search", "remove_search_index", "process_inbound_bill_email", "selection_cutoff_recompute", "warranty_enroll_coverage"])
     .eq("status", "pending")
     .lte("run_at", now)
     .order("created_at", { ascending: false })
@@ -507,6 +510,15 @@ async function processOutboxQueue(request: NextRequest) {
         await removeSearchIndexJob(supabase, job)
       } else if (job.job_type === "process_inbound_bill_email") {
         await processInboundBillEmailJob(job)
+      } else if (job.job_type === "selection_cutoff_recompute") {
+        const projectId = typeof job.payload?.project_id === "string" ? job.payload.project_id : null
+        if (!projectId) throw new Error("Selection cutoff recompute is missing project_id")
+        await recomputeProjectSelectionCutoffs(projectId, job.org_id)
+      } else if (job.job_type === "warranty_enroll_coverage") {
+        const projectId = typeof job.payload?.project_id === "string" ? job.payload.project_id : null
+        const effectiveDate = typeof job.payload?.effective_date === "string" ? job.payload.effective_date : null
+        if (!projectId || !effectiveDate) throw new Error("Warranty enrollment is missing project_id or effective_date")
+        await enrollProjectWarrantyCoverageFromClosing({ orgId: job.org_id, projectId, effectiveDate })
       } else {
         await supabase
           .from("outbox")
@@ -1024,6 +1036,27 @@ async function processESignExecutionSideEffectsJob(supabase: ReturnType<typeof c
       signerEmail,
       signerIp,
     })
+  }
+
+  const contractId =
+    document.source_entity_type === "contract"
+      ? document.source_entity_id
+      : (document.metadata?.contract_id as string | undefined)
+  if (contractId && envelopeId) {
+    const { data: contract } = await supabase
+      .from("contracts")
+      .select("contract_type")
+      .eq("org_id", orgId)
+      .eq("id", contractId)
+      .maybeSingle()
+    if (contract?.contract_type === "purchase_agreement") {
+      await executePurchaseAgreementFromEnvelopeExecution({
+        orgId,
+        contractId,
+        envelopeId,
+        executedFileId,
+      })
+    }
   }
 
   const estimateId =

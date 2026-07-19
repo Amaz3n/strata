@@ -356,7 +356,7 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
 
   const { data: bidPackage } = await supabase
     .from("bid_packages")
-    .select("id, project_id, prospect_id, title, trade, scope, instructions, due_at, due_tz, mode, bond_required, status")
+    .select("id, project_id, prospect_id, community_id, house_plan_id, title, trade, scope, instructions, due_at, due_tz, mode, bond_required, status")
     .eq("id", inviteRow.bid_package_id)
     .maybeSingle()
 
@@ -391,6 +391,24 @@ export async function validateBidPortalToken(token: string): Promise<BidPortalAc
           status: "planning",
         }
       : null
+  } else if (bidPackage.community_id || bidPackage.house_plan_id) {
+    const [communityResult, planResult] = await Promise.all([
+      bidPackage.community_id
+        ? supabase.from("communities").select("id,org_id,name,status").eq("id", bidPackage.community_id).maybeSingle()
+        : Promise.resolve({ data: null }),
+      bidPackage.house_plan_id
+        ? supabase.from("house_plans").select("id,org_id,name,status").eq("id", bidPackage.house_plan_id).maybeSingle()
+        : Promise.resolve({ data: null }),
+    ])
+    const context = communityResult.data ?? planResult.data
+    if (context) {
+      job = {
+        id: context.id,
+        org_id: context.org_id,
+        name: [communityResult.data?.name, planResult.data?.name].filter(Boolean).join(" — "),
+        status: context.status ?? "active",
+      }
+    }
   }
 
   if (!job) {

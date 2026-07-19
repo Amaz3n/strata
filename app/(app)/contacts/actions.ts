@@ -190,6 +190,26 @@ export async function sendPortalInviteAction({
         userId,
       })
 
+      const { data: portalProject } = await supabase
+        .from("projects")
+        .select("property_type")
+        .eq("org_id", orgId)
+        .eq("id", projectId)
+        .maybeSingle()
+      const productionBuyerPermissions = portalType === "client" && portalProject?.property_type === "production"
+        ? {
+            can_view_schedule: true,
+            can_view_photos: true,
+            can_view_documents: true,
+            can_download_files: true,
+            can_approve_change_orders: true,
+            can_submit_selections: true,
+            can_view_invoices: true,
+            can_pay_invoices: true,
+            can_view_budget: false,
+          }
+        : {}
+
       let token =
         await findReusablePortalAccessToken({
           projectId,
@@ -204,7 +224,7 @@ export async function sendPortalInviteAction({
           contactId,
           companyId: resolvedCompanyId,
           reviewerRole: portalType === "reviewer" ? (reviewerRole ?? "other") : null,
-          permissions: portalType === "reviewer" ? REVIEWER_DEFAULT_PERMISSIONS : {},
+          permissions: portalType === "reviewer" ? REVIEWER_DEFAULT_PERMISSIONS : productionBuyerPermissions,
           requireAccount: false,
           orgId,
         })

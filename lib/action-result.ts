@@ -5,7 +5,7 @@ import { ZodError } from "zod"
  * thrown errors get redacted to an opaque digest in production, so the client would
  * never see the real message.
  */
-export type ActionResult<T> = { success: true; data: T } | { success: false; error: string }
+export type ActionResult<T> = { success: true; data: T } | { success: false; error: string; code?: string }
 
 /**
  * Structural check for AuthorizationError without importing it — that class pulls in
@@ -22,6 +22,7 @@ function isAuthorizationError(error: unknown): boolean {
 export function actionError(error: unknown, fallback = "Something went wrong. Please try again."): {
   success: false
   error: string
+  code?: string
 } {
   if (isAuthorizationError(error)) {
     return { success: false, error: "You don't have permission to do that." }
@@ -32,7 +33,11 @@ export function actionError(error: unknown, fallback = "Something went wrong. Pl
     return { success: false, error: issue ? `${path}${issue.message}` : fallback }
   }
   if (error instanceof Error && error.message) {
-    return { success: false, error: error.message }
+    const codedError: Error & { code?: unknown } = error
+    const code = typeof codedError.code === "string"
+      ? codedError.code
+      : undefined
+    return { success: false, error: error.message, ...(code ? { code } : {}) }
   }
   return { success: false, error: fallback }
 }

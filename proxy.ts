@@ -34,6 +34,11 @@ const PUBLIC_API_ROUTES = [
   "/api/jobs/meeting-audio-cleanup",
   // Task self-reminder sweep — cron only, self-authenticates via CRON_SECRET.
   "/api/jobs/task-reminders",
+  // Selection deadline reminder and lock sweep — cron only, self-authenticates via CRON_SECRET.
+  "/api/jobs/selection-cutoff-sweep",
+  "/api/jobs/purchasing-maintenance",
+  "/api/jobs/starts-pipeline",
+  "/api/jobs/warranty-sla-sweep",
   // Recurring invoice generator — cron only, self-authenticates via CRON_SECRET.
   "/api/jobs/invoice-schedules",
   // Scheduled jobs — no user session; each route self-authenticates via CRON_SECRET.

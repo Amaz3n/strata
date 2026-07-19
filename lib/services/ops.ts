@@ -182,9 +182,9 @@ export async function getQboConnectionHealth(): Promise<QboConnectionHealth[]> {
   const supabase = createServiceSupabaseClient()
 
   const { data, error } = await supabase
-    .from("qbo_connections")
+    .from("accounting_connections")
     .select(
-      "org_id, company_name, status, last_sync_at, last_error, token_expires_at, refresh_token_expires_at, refresh_failure_count, org:orgs(name)",
+      "org_id, external_account_name, status, last_sync_at, last_error, token_expires_at, refresh_token_expires_at, refresh_failure_count, org:orgs(name)",
     )
     .is("disconnected_at", null)
     .order("last_sync_at", { ascending: true, nullsFirst: true })
@@ -196,7 +196,7 @@ export async function getQboConnectionHealth(): Promise<QboConnectionHealth[]> {
     return {
       orgId: row.org_id,
       orgName: org?.name ?? "Unknown",
-      companyName: row.company_name ?? null,
+      companyName: row.external_account_name ?? null,
       status: row.status,
       lastSyncAt: row.last_sync_at ?? null,
       lastError: row.last_error ?? null,

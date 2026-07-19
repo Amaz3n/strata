@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Company, Contact, ContactCompanyLink } from "@/lib/types";
 import { requireOrgContext } from "@/lib/services/context";
 import { requireAnyPermission } from "@/lib/services/permissions";
+import { getCompanyAccountingLinks, type CompanyAccountingLink } from "@/lib/services/companies";
 
 export type DirectoryView = "all" | "companies" | "people";
 export type DirectorySortKey = "name" | "type" | "detail";
@@ -31,7 +32,7 @@ export interface DirectoryPageResult {
   pageSize: number;
 }
 
-function mapCompany(row: any): Company {
+function mapCompany(row: any, accountingLink?: CompanyAccountingLink | null): Company {
   const metadata = row?.metadata ?? {};
   const contactCount =
     Array.isArray(row?.contact_company_links) &&
@@ -60,19 +61,17 @@ function mapCompany(row: any): Company {
       row.default_payment_terms ?? metadata.default_payment_terms ?? undefined,
     internal_notes: row.internal_notes ?? metadata.internal_notes ?? undefined,
     notes: row.notes ?? metadata.notes ?? undefined,
-    qbo_vendor_id: row.qbo_vendor_id ?? metadata.qbo_vendor_id ?? undefined,
-    qbo_vendor_name: row.qbo_vendor_name ?? metadata.qbo_vendor_name ?? undefined,
-    qbo_vendor_synced_at:
-      row.qbo_vendor_synced_at ?? metadata.qbo_vendor_synced_at ?? undefined,
-    qbo_vendor_sync_status:
-      row.qbo_vendor_sync_status ?? metadata.qbo_vendor_sync_status ?? undefined,
+    qbo_vendor_id: accountingLink?.external_id || undefined,
+    qbo_vendor_name: (accountingLink?.metadata?.display_name as string | undefined) ?? undefined,
+    qbo_vendor_synced_at: accountingLink?.last_synced_at ?? undefined,
+    qbo_vendor_sync_status: accountingLink?.status ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at ?? undefined,
     contact_count: contactCount,
   };
 }
 
-function mapContactCompany(row: any): Company {
+function mapContactCompany(row: any, accountingLink?: CompanyAccountingLink | null): Company {
   const metadata = row?.metadata ?? {};
   const trade = row.directory_trades?.name ?? metadata.trade ?? undefined;
 
@@ -86,18 +85,16 @@ function mapContactCompany(row: any): Company {
     website: row.website ?? undefined,
     address: row.address ?? undefined,
     trade,
-    qbo_vendor_id: row.qbo_vendor_id ?? metadata.qbo_vendor_id ?? undefined,
-    qbo_vendor_name: row.qbo_vendor_name ?? metadata.qbo_vendor_name ?? undefined,
-    qbo_vendor_synced_at:
-      row.qbo_vendor_synced_at ?? metadata.qbo_vendor_synced_at ?? undefined,
-    qbo_vendor_sync_status:
-      row.qbo_vendor_sync_status ?? metadata.qbo_vendor_sync_status ?? undefined,
+    qbo_vendor_id: accountingLink?.external_id || undefined,
+    qbo_vendor_name: (accountingLink?.metadata?.display_name as string | undefined) ?? undefined,
+    qbo_vendor_synced_at: accountingLink?.last_synced_at ?? undefined,
+    qbo_vendor_sync_status: accountingLink?.status ?? undefined,
     created_at: row.created_at ?? "",
     updated_at: row.updated_at ?? undefined,
   };
 }
 
-function mapContact(row: any): Contact {
+function mapContact(row: any, accountingLinks?: Map<string, CompanyAccountingLink>): Contact {
   const metadata = row?.metadata ?? {};
   const companies: ContactCompanyLink[] =
     row.contact_company_links?.map((link: any) => ({
@@ -120,7 +117,7 @@ function mapContact(row: any): Contact {
     contact_type: row.contact_type ?? "subcontractor",
     primary_company_id: row.primary_company_id ?? undefined,
     primary_company: row.primary_company
-      ? mapContactCompany(row.primary_company)
+      ? mapContactCompany(row.primary_company, accountingLinks?.get(row.primary_company.id))
       : undefined,
     has_portal_access: metadata.has_portal_access ?? false,
     preferred_contact_method: metadata.preferred_contact_method ?? undefined,
@@ -403,7 +400,6 @@ async function listCompanyPage(
       `
       id, org_id, name, company_type, phone, email, website, address,
       license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes,
-      qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status,
       metadata, created_at, updated_at,
       directory_trades(name),
       contact_company_links(count)
@@ -419,7 +415,9 @@ async function listCompanyPage(
     .order(sort.column, { ascending: sort.ascending })
     .range(offset, offset + limit - 1);
   if (error) throw new Error(`Failed to list companies: ${error.message}`);
-  return { rows: (data ?? []).map(mapCompany), total: count ?? 0 };
+  const rows = data ?? [];
+  const links = await getCompanyAccountingLinks(supabase, orgId, rows.map((row: any) => row.id));
+  return { rows: rows.map((row: any) => mapCompany(row, links.get(row.id))), total: count ?? 0 };
 }
 
 async function listContactPage(
@@ -446,7 +444,7 @@ async function listContactPage(
     .select(
       `
       id, org_id, full_name, email, phone, address, role, contact_type, primary_company_id, external_crm_id, crm_source, metadata, created_at, updated_at,
-      primary_company:companies!contacts_primary_company_id_fkey(id, org_id, name, company_type, phone, email, website, address, qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status, metadata, directory_trades(name)),
+      primary_company:companies!contacts_primary_company_id_fkey(id, org_id, name, company_type, phone, email, website, address, metadata, directory_trades(name)),
       contact_company_links(id, org_id, contact_id, company_id, relationship, created_at)
     `,
       { count: "exact" },
@@ -468,7 +466,10 @@ async function listContactPage(
     .order(sort.column, { ascending: sort.ascending })
     .range(offset, offset + limit - 1);
   if (error) throw new Error(`Failed to list contacts: ${error.message}`);
-  return { rows: (data ?? []).map(mapContact), total: count ?? 0 };
+  const rows = data ?? [];
+  const companyIds = rows.map((row: any) => row.primary_company?.id).filter(Boolean);
+  const links = await getCompanyAccountingLinks(supabase, orgId, companyIds);
+  return { rows: rows.map((row: any) => mapContact(row, links)), total: count ?? 0 };
 }
 
 export async function listDirectoryPage(

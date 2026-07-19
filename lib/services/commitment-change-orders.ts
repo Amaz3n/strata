@@ -17,6 +17,7 @@ import {
   type CommitmentChangeOrderLinkInput,
   type CommitmentChangeOrderUpdateInput,
 } from "@/lib/validation/commitment-change-orders"
+import { parseVpoApprovalBands, requiredVpoApprovalPermission } from "@/lib/financials/vpo-approval-thresholds"
 
 export type CommitmentChangeOrderStatus = "draft" | "sent" | "approved" | "rejected" | "voided"
 
@@ -49,6 +50,12 @@ export interface CommitmentChangeOrderSummary {
   title: string
   description?: string | null
   status: CommitmentChangeOrderStatus
+  reason_code_id?: string | null
+  reason_code?: string | null
+  reason_label?: string | null
+  origin?: "field_mobile" | "office" | "design_studio_co" | "trade_portal" | null
+  requested_by?: string | null
+  photo_file_ids: string[]
   total_cents: number
   currency: string
   approved_at?: string | null
@@ -83,6 +90,7 @@ type ParentCommitmentRow = {
   company_id?: string | null
   title: string
   status?: string | null
+  commitment_type?: "subcontract" | "purchase_order" | string | null
   company?: { id: string; name: string } | null
 }
 
@@ -125,6 +133,12 @@ function mapSummary(row: any, lines: CommitmentChangeOrderLine[] = []): Commitme
     title: row.title,
     description: row.description ?? null,
     status: (row.status ?? "draft") as CommitmentChangeOrderStatus,
+    reason_code_id: row.reason_code_id ?? null,
+    reason_code: row.reason?.code ?? null,
+    reason_label: row.reason?.label ?? null,
+    origin: row.origin ?? null,
+    requested_by: row.requested_by ?? null,
+    photo_file_ids: Array.isArray(row.photo_file_ids) ? row.photo_file_ids : [],
     total_cents: row.total_cents ?? 0,
     currency: row.currency ?? "usd",
     approved_at: row.approved_at ?? null,
@@ -148,7 +162,7 @@ async function loadParentCommitment(
 ): Promise<ParentCommitmentRow> {
   const { data, error } = await supabase
     .from("commitments")
-    .select("id, org_id, project_id, company_id, title, status, company:companies(id, name)")
+    .select("id, org_id, project_id, company_id, commitment_type, title, status, company:companies(id, name)")
     .eq("org_id", orgId)
     .eq("id", commitmentId)
     .maybeSingle()
@@ -173,9 +187,9 @@ async function loadRowsByIds(
     .select(
       `
       id, org_id, project_id, commitment_id, company_id, title, description, status, total_cents, currency,
-      approved_at, approved_by, source_document_id, executed_file_id, signature_envelope_id, prime_change_order_id, metadata, created_at, updated_at,
+      approved_at, approved_by, source_document_id, executed_file_id, signature_envelope_id, prime_change_order_id, reason_code_id, origin, requested_by, photo_file_ids, metadata, created_at, updated_at,
       commitment:commitments(id, title),
-      company:companies(id, name)
+      company:companies(id, name), reason:variance_reason_codes(code, label)
     `,
     )
     .eq("org_id", orgId)
@@ -356,9 +370,9 @@ export async function listCommitmentChangeOrders({
     .select(
       `
       id, org_id, project_id, commitment_id, company_id, title, description, status, total_cents, currency,
-      approved_at, approved_by, source_document_id, executed_file_id, signature_envelope_id, prime_change_order_id, metadata, created_at, updated_at,
+      approved_at, approved_by, source_document_id, executed_file_id, signature_envelope_id, prime_change_order_id, reason_code_id, origin, requested_by, photo_file_ids, metadata, created_at, updated_at,
       commitment:commitments(id, title),
-      company:companies(id, name)
+      company:companies(id, name), reason:variance_reason_codes(code, label)
     `,
     )
     .eq("org_id", resolvedOrgId)
@@ -375,6 +389,79 @@ export async function listCommitmentChangeOrders({
   return hydrate(data ?? [], supabase, resolvedOrgId)
 }
 
+export async function listVarianceOrders({
+  status,
+  reasonCodeId,
+  origin,
+  projectId,
+  communityId,
+  page = 1,
+  pageSize = 50,
+  orgId,
+}: {
+  status?: CommitmentChangeOrderStatus | "pending"
+  reasonCodeId?: string
+  origin?: CommitmentChangeOrderSummary["origin"]
+  projectId?: string
+  communityId?: string
+  page?: number
+  pageSize?: number
+  orgId?: string
+} = {}) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({ permission: "price_book.read", userId, orgId: resolvedOrgId, supabase, logDecision: true })
+  const from = Math.max(page - 1, 0) * Math.min(Math.max(pageSize, 1), 100)
+  let projectIds: string[] | null = null
+  if (communityId) {
+    const { data: lots, error: lotError } = await supabase.from("lots").select("project_id")
+      .eq("org_id", resolvedOrgId).eq("community_id", communityId).not("project_id", "is", null)
+    if (lotError) throw new Error(`Failed to resolve community projects: ${lotError.message}`)
+    projectIds = (lots ?? []).flatMap((lot) => typeof lot.project_id === "string" ? [lot.project_id] : [])
+    if (projectIds.length === 0) return { items: [], count: 0, page, pageSize }
+  }
+
+  let query = supabase.from("commitment_change_orders").select(`
+    id, org_id, project_id, commitment_id, company_id, title, description, status, total_cents, currency,
+    approved_at, approved_by, source_document_id, executed_file_id, signature_envelope_id,
+    prime_change_order_id, reason_code_id, origin, requested_by, photo_file_ids, metadata, created_at, updated_at,
+    commitment:commitments(id, title), company:companies(id, name), reason:variance_reason_codes(code, label)
+  `, { count: "exact" }).eq("org_id", resolvedOrgId).not("reason_code_id", "is", null)
+    .order("created_at", { ascending: false })
+  if (status === "pending") query = query.in("status", ["draft", "sent"])
+  else if (status) query = query.eq("status", status)
+  if (reasonCodeId) query = query.eq("reason_code_id", reasonCodeId)
+  if (origin) query = query.eq("origin", origin)
+  if (projectId) query = query.eq("project_id", projectId)
+  if (projectIds) query = query.in("project_id", projectIds)
+  const { data, error, count } = await query.range(from, from + Math.min(Math.max(pageSize, 1), 100) - 1)
+  if (error) throw new Error(`Failed to list variance orders: ${error.message}`)
+  return { items: await hydrate(data ?? [], supabase, resolvedOrgId), count: count ?? 0, page, pageSize }
+}
+
+export async function rejectVarianceOrder({
+  commitmentChangeOrderId,
+  reason,
+  orgId,
+}: { commitmentChangeOrderId: string; reason: string; orgId?: string }) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const existing = await loadSingle(supabase, resolvedOrgId, commitmentChangeOrderId)
+  if (!existing?.reason_code_id) throw new Error("Variance order not found")
+  await requireAuthorization({
+    permission: "vpo.approve", userId, orgId: resolvedOrgId, projectId: existing.project_id,
+    supabase, logDecision: true, resourceType: "commitment_change_order", resourceId: commitmentChangeOrderId,
+  })
+  if (!reason.trim()) throw new Error("A rejection reason is required.")
+  const { error } = await supabase.from("commitment_change_orders").update({
+    status: "rejected", metadata: { ...(existing.metadata ?? {}), rejection_reason: reason.trim(), rejected_by: userId },
+  }).eq("org_id", resolvedOrgId).eq("id", commitmentChangeOrderId)
+  if (error) throw new Error(`Failed to reject variance order: ${error.message}`)
+  const rejected = await loadSingle(supabase, resolvedOrgId, commitmentChangeOrderId)
+  if (!rejected) throw new Error("Rejected variance order could not be reloaded")
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "commitment_change_order", entityId: commitmentChangeOrderId, before: existing as any, after: rejected as any })
+  await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "vpo.rejected", entityType: "commitment_change_order", entityId: commitmentChangeOrderId, payload: { project_id: rejected.project_id } })
+  return rejected
+}
+
 export async function createCommitmentChangeOrder({
   input,
   orgId,
@@ -387,7 +474,7 @@ export async function createCommitmentChangeOrder({
   const commitment = await loadParentCommitment(supabase, resolvedOrgId, parsed.commitment_id)
 
   await requireAuthorization({
-    permission: "commitment.write",
+    permission: parsed.reason_code_id ? "vpo.request" : "commitment.write",
     userId,
     orgId: resolvedOrgId,
     projectId: commitment.project_id,
@@ -398,6 +485,20 @@ export async function createCommitmentChangeOrder({
   })
 
   const totalCents = parsed.lines.reduce((sum, line) => sum + calculateLineAmount(line), 0)
+  if (parsed.reason_code_id && commitment.commitment_type !== "purchase_order") {
+    throw new Error("Variance orders can only be created against purchase orders.")
+  }
+  if (commitment.commitment_type === "purchase_order" && !parsed.reason_code_id) {
+    const { data: settings } = await supabase.from("purchasing_settings")
+      .select("vpo_reason_code_required").eq("org_id", resolvedOrgId).maybeSingle()
+    if (settings?.vpo_reason_code_required !== false) throw new Error("A variance reason is required for purchase-order changes.")
+  }
+  if (parsed.reason_code_id) {
+    const { data: reason, error: reasonError } = await supabase.from("variance_reason_codes")
+      .select("is_backcharge").eq("org_id", resolvedOrgId).eq("id", parsed.reason_code_id).maybeSingle()
+    if (reasonError || !reason) throw new Error("Variance reason not found.")
+    if (reason.is_backcharge && totalCents >= 0) throw new Error("Trade back-charges must have a negative total.")
+  }
   const { data, error } = await supabase
     .from("commitment_change_orders")
     .insert({
@@ -409,6 +510,10 @@ export async function createCommitmentChangeOrder({
       description: parsed.description ?? null,
       total_cents: totalCents,
       currency: "usd",
+      reason_code_id: parsed.reason_code_id ?? null,
+      origin: parsed.origin ?? (parsed.reason_code_id ? "office" : null),
+      requested_by: parsed.requested_by ?? (parsed.reason_code_id ? userId : null),
+      photo_file_ids: parsed.photo_file_ids,
       metadata: parsed.metadata ?? {},
     })
     .select("id")
@@ -440,7 +545,7 @@ export async function createCommitmentChangeOrder({
   await recordEvent({
     orgId: resolvedOrgId,
     actorId: userId,
-    eventType: "commitment_change_order_created",
+    eventType: parsed.reason_code_id ? "vpo.requested" : "commitment_change_order_created",
     entityType: "commitment_change_order",
     entityId: created.id,
     payload: {
@@ -496,6 +601,9 @@ export async function updateCommitmentChangeOrder({
     .update({
       title: parsed.title ?? existing.title,
       description: parsed.description ?? existing.description ?? null,
+      reason_code_id: parsed.reason_code_id === undefined ? existing.reason_code_id : parsed.reason_code_id,
+      origin: parsed.origin === undefined ? existing.origin : parsed.origin,
+      photo_file_ids: parsed.photo_file_ids ?? existing.photo_file_ids,
       total_cents: totalCents,
       metadata: parsed.metadata ? { ...(existing.metadata ?? {}), ...parsed.metadata } : existing.metadata ?? {},
       updated_at: new Date().toISOString(),
@@ -536,8 +644,20 @@ export async function approveCommitmentChangeOrder({
   const existing = await loadSingle(supabase, resolvedOrgId, commitmentChangeOrderId)
   if (!existing) throw new Error("Commitment change order not found")
 
+  let approvalPermission = "commitment.write"
+  if (existing.reason_code_id) {
+    const [{ data: settings }, { data: reason }] = await Promise.all([
+      supabase.from("purchasing_settings").select("vpo_approval_thresholds").eq("org_id", resolvedOrgId).maybeSingle(),
+      supabase.from("variance_reason_codes").select("is_backcharge").eq("org_id", resolvedOrgId).eq("id", existing.reason_code_id).maybeSingle(),
+    ])
+    approvalPermission = requiredVpoApprovalPermission({
+      totalCents: existing.total_cents,
+      isBackcharge: reason?.is_backcharge === true,
+      bands: parseVpoApprovalBands(settings?.vpo_approval_thresholds),
+    })
+  }
   await requireAuthorization({
-    permission: "commitment.write",
+    permission: approvalPermission,
     userId,
     orgId: resolvedOrgId,
     projectId: existing.project_id,
@@ -589,7 +709,7 @@ export async function approveCommitmentChangeOrder({
   await recordEvent({
     orgId: resolvedOrgId,
     actorId: userId,
-    eventType: "commitment_change_order_approved",
+    eventType: existing.reason_code_id ? "vpo.approved" : "commitment_change_order_approved",
     entityType: "commitment_change_order",
     entityId: commitmentChangeOrderId,
     payload: {
@@ -816,9 +936,9 @@ export async function listCommitmentChangeOrdersForClientChangeOrder({
     .select(
       `
       id, org_id, project_id, commitment_id, company_id, title, description, status, total_cents, currency,
-      approved_at, approved_by, source_document_id, executed_file_id, signature_envelope_id, prime_change_order_id, metadata, created_at, updated_at,
+      approved_at, approved_by, source_document_id, executed_file_id, signature_envelope_id, prime_change_order_id, reason_code_id, origin, requested_by, photo_file_ids, metadata, created_at, updated_at,
       commitment:commitments(id, title),
-      company:companies(id, name)
+      company:companies(id, name), reason:variance_reason_codes(code, label)
     `,
     )
     .eq("org_id", resolvedOrgId)
@@ -898,6 +1018,7 @@ export async function createCommitmentChangeOrderFromClientChangeOrder({
     input: {
       commitment_id: parsed.commitment_id,
       title,
+      photo_file_ids: [],
       description: parsed.description ?? changeOrder.summary ?? changeOrder.description ?? null,
       metadata: {
         source_change_order_title: changeOrder.title,

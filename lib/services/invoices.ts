@@ -13,10 +13,16 @@ import { recordEvent } from "@/lib/services/events"
 import { sendEmail, renderEmailTemplate, getOrgSenderEmail } from "@/lib/services/mailer"
 import { InvoiceEmail } from "@/lib/emails/invoice-email"
 import { getNextInvoiceNumber, markReservationUsed, releaseInvoiceNumberReservation } from "@/lib/services/invoice-numbers"
-import { enqueueInvoiceSync } from "@/lib/services/qbo-sync"
+import { enqueueInvoiceSync } from "@/lib/services/accounting-sync"
 import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { releaseInvoiceFromBillingPeriod } from "@/lib/services/billing-periods"
+import {
+  getAccountingSyncState,
+  getAccountingSyncStates,
+  hasAccountingExternalId,
+  type AccountingSyncState,
+} from "@/lib/services/accounting-sync-state"
 
 type InvoiceRow = {
   id: string
@@ -57,7 +63,7 @@ type SourceBillingContext = {
   metadata: Record<string, any>
 }
 
-type InvoicePermission = "invoice.read" | "invoice.write" | "invoice.send"
+type InvoicePermission = string
 
 async function requireInvoicePermission(params: {
   supabase: SupabaseClient
@@ -774,7 +780,7 @@ async function releaseInvoiceSourceLinks(params: {
   }
 }
 
-function mapInvoiceRow(row: InvoiceRow): Invoice {
+function mapInvoiceRow(row: InvoiceRow, accountingState?: AccountingSyncState | null): Invoice {
   const metadata = row.metadata ?? {}
   const lines = (metadata.lines as InvoiceLine[] | undefined) ?? []
   const totalsFromMetadata = (metadata.totals as InvoiceTotals | undefined) ?? undefined
@@ -801,9 +807,9 @@ function mapInvoiceRow(row: InvoiceRow): Invoice {
     invoice_number: row.invoice_number,
     title: row.title ?? `Invoice ${row.invoice_number}`,
     status: (row.status as Invoice["status"]) ?? "saved",
-    qbo_id: row.qbo_id ?? undefined,
-    qbo_synced_at: row.qbo_synced_at ?? undefined,
-    qbo_sync_status: (row.qbo_sync_status as Invoice["qbo_sync_status"]) ?? null,
+    qbo_id: accountingState?.externalId ?? undefined,
+    qbo_synced_at: accountingState?.syncedAt ?? undefined,
+    qbo_sync_status: (accountingState?.status as Invoice["qbo_sync_status"]) ?? null,
     issue_date: row.issue_date ?? undefined,
     due_date: row.due_date ?? undefined,
     notes: row.notes ?? undefined,
@@ -825,8 +831,21 @@ function mapInvoiceRow(row: InvoiceRow): Invoice {
   }
 }
 
-function mapInvoiceWithLines(row: any) {
-  const mapped = mapInvoiceRow(row as InvoiceRow)
+async function mapInvoiceRowsWithAccounting(
+  supabase: SupabaseClient,
+  orgId: string,
+  rows: InvoiceRow[],
+) {
+  const states = await getAccountingSyncStates(supabase, {
+    orgId,
+    entityType: "invoice",
+    entityIds: rows.map((row) => row.id),
+  })
+  return rows.map((row) => mapInvoiceRow(row, states.get(row.id)))
+}
+
+function mapInvoiceWithLines(row: any, accountingState?: AccountingSyncState | null) {
+  const mapped = mapInvoiceRow(row as InvoiceRow, accountingState)
   const rawLines = (row as any).invoice_lines || []
   const mappedLines = rawLines.map((l: any) => ({
     ...l,
@@ -892,7 +911,7 @@ export async function listInvoices({
   let query = supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, sent_at, sent_to_emails",
+      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at, sent_to_emails",
     )
     .eq("org_id", resolvedOrgId)
     .order("created_at", { ascending: false })
@@ -919,7 +938,7 @@ export async function listInvoices({
 
   if (error) throw new Error(`Failed to list invoices: ${error.message}`)
 
-  return (data ?? []).map((row: any) => mapInvoiceRow(row as InvoiceRow))
+  return mapInvoiceRowsWithAccounting(supabase, resolvedOrgId, (data ?? []) as InvoiceRow[])
 }
 
 export interface InvoiceArSummary {
@@ -987,6 +1006,8 @@ export async function createInvoice({
   input,
   orgId,
   context,
+  authorizationPermission = "invoice.write",
+  sendAuthorizationPermission = "invoice.send",
 }: {
   input: InvoiceInput
   orgId?: string
@@ -995,6 +1016,8 @@ export async function createInvoice({
    * Runs as context.userId with the provided client — permission checks still apply.
    */
   context?: OrgServiceContext
+  authorizationPermission?: string
+  sendAuthorizationPermission?: string
 }) {
   const { supabase, orgId: resolvedOrgId, userId } = context ?? (await requireOrgContext(orgId))
   const reservationId = input.reservation_id ?? undefined
@@ -1002,7 +1025,7 @@ export async function createInvoice({
     supabase,
     orgId: resolvedOrgId,
     userId,
-    permission: "invoice.write",
+    permission: authorizationPermission,
     projectId: input.project_id,
   })
   if (input.status === "sent" || input.client_visible) {
@@ -1010,7 +1033,7 @@ export async function createInvoice({
       supabase,
       orgId: resolvedOrgId,
       userId,
-      permission: "invoice.send",
+      permission: sendAuthorizationPermission,
       projectId: input.project_id,
     })
   }
@@ -1107,8 +1130,9 @@ export async function createInvoice({
         payment_terms_days: input.payment_terms_days,
         source_type: sourceType,
         ...parsedCustomerDetails,
-        qbo_customer_id: input.qbo_customer_id ?? null,
-        qbo_customer_name: input.qbo_customer_name ?? null,
+        accounting_customer_ref: input.qbo_customer_id
+          ? { id: input.qbo_customer_id, name: input.qbo_customer_name ?? null }
+          : null,
         qbo_income_account_id: input.qbo_income_account_id ?? null,
         qbo_income_account_name: input.qbo_income_account_name ?? null,
         org_name: orgData?.name ?? null,
@@ -1182,6 +1206,7 @@ export async function createInvoice({
     source_change_order_id: sourceChangeOrderId,
     source_pay_application_id: sourcePayApplicationId,
     metadata: {
+      ...(input.metadata ?? {}),
       lines,
       totals,
       tax_rate: input.tax_rate,
@@ -1191,8 +1216,9 @@ export async function createInvoice({
       customer_name: input.customer_name,
       customer_address: input.customer_address,
       customer_email: input.sent_to_emails?.[0],
-      qbo_customer_id: input.qbo_customer_id ?? null,
-      qbo_customer_name: input.qbo_customer_name ?? null,
+      accounting_customer_ref: input.qbo_customer_id
+        ? { id: input.qbo_customer_id, name: input.qbo_customer_name ?? null }
+        : null,
       from_name: input.from_name ?? orgData?.name ?? null,
       from_email: input.from_email ?? orgData?.email ?? null,
       from_address: input.from_address ?? orgData?.address ?? null,
@@ -1358,7 +1384,7 @@ export async function updateInvoice({
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const { data: existing, error: existingError } = await supabase
     .from("invoices")
-    .select("id, org_id, project_id, token, client_visible, status, sent_at, sent_to_emails, balance_due_cents, metadata, qbo_id")
+    .select("id, org_id, project_id, token, client_visible, status, sent_at, sent_to_emails, balance_due_cents, metadata")
     .eq("id", invoiceId)
     .eq("org_id", resolvedOrgId)
     .maybeSingle()
@@ -1366,6 +1392,11 @@ export async function updateInvoice({
   if (existingError || !existing) {
     throw new Error(existingError?.message ?? "Invoice not found")
   }
+  const existingAccountingState = await getAccountingSyncState(supabase, {
+    orgId: resolvedOrgId,
+    entityType: "invoice",
+    entityId: invoiceId,
+  })
   await requireInvoicePermission({
     supabase,
     orgId: resolvedOrgId,
@@ -1374,7 +1405,7 @@ export async function updateInvoice({
     projectId: existing.project_id,
     invoiceId,
   })
-  if (existing.sent_at || existing.qbo_id || !["draft", "saved"].includes(existing.status)) {
+  if (existing.sent_at || hasAccountingExternalId(existingAccountingState) || !["draft", "saved"].includes(existing.status)) {
     throw new Error("Issued or accounting-synced invoices are immutable. Void and reissue the invoice instead.")
   }
   if (input.status === "sent" || input.client_visible) {
@@ -1460,8 +1491,9 @@ export async function updateInvoice({
       customer_name: input.customer_name ?? (existing.metadata as any)?.customer_name,
       customer_address: input.customer_address ?? (existing.metadata as any)?.customer_address,
       customer_email: (input.sent_to_emails ?? [])[0] ?? (existing.metadata as any)?.customer_email,
-      qbo_customer_id: input.qbo_customer_id ?? null,
-      qbo_customer_name: input.qbo_customer_name ?? null,
+      accounting_customer_ref: input.qbo_customer_id
+        ? { id: input.qbo_customer_id, name: input.qbo_customer_name ?? null }
+        : null,
       from_name: input.from_name ?? (existing.metadata as any)?.from_name ?? null,
       from_email: input.from_email ?? (existing.metadata as any)?.from_email ?? null,
       from_address: input.from_address ?? (existing.metadata as any)?.from_address ?? null,
@@ -1487,7 +1519,7 @@ export async function updateInvoice({
     .eq("id", invoiceId)
     .eq("org_id", resolvedOrgId)
     .select(
-      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, sent_at",
+      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at",
     )
     .single()
 
@@ -1591,7 +1623,7 @@ export async function updateInvoice({
   if (
     shouldQueueQboSync(payload.status, payload.client_visible) ||
     shouldQueueQboSync(existing.status, existing.client_visible) ||
-    Boolean(existing.qbo_id)
+    hasAccountingExternalId(existingAccountingState)
   ) {
     await enqueueInvoiceSync(invoiceId, resolvedOrgId)
   }
@@ -1632,7 +1664,7 @@ export async function voidInvoice({ invoiceId, orgId }: { invoiceId: string; org
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const { data: existing, error } = await supabase
     .from("invoices")
-    .select("id, org_id, project_id, invoice_number, status, metadata, qbo_id")
+    .select("id, org_id, project_id, invoice_number, status, metadata")
     .eq("org_id", resolvedOrgId)
     .eq("id", invoiceId)
     .maybeSingle()
@@ -1640,6 +1672,11 @@ export async function voidInvoice({ invoiceId, orgId }: { invoiceId: string; org
   if (error || !existing) {
     throw new Error(error?.message ?? "Invoice not found")
   }
+  const existingAccountingState = await getAccountingSyncState(supabase, {
+    orgId: resolvedOrgId,
+    entityType: "invoice",
+    entityId: invoiceId,
+  })
   await requireInvoicePermission({
     supabase,
     orgId: resolvedOrgId,
@@ -1649,7 +1686,7 @@ export async function voidInvoice({ invoiceId, orgId }: { invoiceId: string; org
     invoiceId,
   })
   if (existing.status === "void") {
-    return mapInvoiceRow(existing as InvoiceRow)
+    return mapInvoiceRow(existing as InvoiceRow, existingAccountingState)
   }
   if (existing.status === "paid" || existing.status === "partial") {
     throw new Error("Paid or partially paid invoices cannot be voided.")
@@ -1695,7 +1732,7 @@ export async function voidInvoice({ invoiceId, orgId }: { invoiceId: string; org
     .eq("org_id", resolvedOrgId)
     .eq("id", invoiceId)
     .select(
-      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, sent_at",
+      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at",
     )
     .single()
 
@@ -1719,18 +1756,18 @@ export async function voidInvoice({ invoiceId, orgId }: { invoiceId: string; org
     before: existing,
     after: data,
   })
-  if (existing.qbo_id) {
+  if (hasAccountingExternalId(existingAccountingState)) {
     await enqueueInvoiceSync(invoiceId, resolvedOrgId)
   }
 
-  return mapInvoiceRow(data as InvoiceRow)
+  return mapInvoiceRow(data as InvoiceRow, existingAccountingState)
 }
 
 export async function deleteInvoice({ invoiceId, orgId }: { invoiceId: string; orgId?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const { data: existing, error } = await supabase
     .from("invoices")
-    .select("id, org_id, project_id, invoice_number, status, client_visible, sent_at, metadata, qbo_id")
+    .select("id, org_id, project_id, invoice_number, status, client_visible, sent_at, metadata")
     .eq("org_id", resolvedOrgId)
     .eq("id", invoiceId)
     .maybeSingle()
@@ -1738,6 +1775,11 @@ export async function deleteInvoice({ invoiceId, orgId }: { invoiceId: string; o
   if (error || !existing) {
     throw new Error(error?.message ?? "Invoice not found")
   }
+  const existingAccountingState = await getAccountingSyncState(supabase, {
+    orgId: resolvedOrgId,
+    entityType: "invoice",
+    entityId: invoiceId,
+  })
   await requireInvoicePermission({
     supabase,
     orgId: resolvedOrgId,
@@ -1746,7 +1788,7 @@ export async function deleteInvoice({ invoiceId, orgId }: { invoiceId: string; o
     projectId: existing.project_id,
     invoiceId,
   })
-  if (!["draft", "saved"].includes(existing.status) || existing.client_visible || existing.sent_at || existing.qbo_id) {
+  if (!["draft", "saved"].includes(existing.status) || existing.client_visible || existing.sent_at || hasAccountingExternalId(existingAccountingState)) {
     throw new Error("Only unsent draft or saved invoices can be deleted. Void sent or synced invoices instead.")
   }
 
@@ -1759,7 +1801,7 @@ export async function deleteInvoice({ invoiceId, orgId }: { invoiceId: string; o
   })
 
   await supabase.from("invoice_lines").delete().eq("org_id", resolvedOrgId).eq("invoice_id", invoiceId)
-  await supabase.from("qbo_sync_records").delete().eq("org_id", resolvedOrgId).eq("entity_type", "invoice").eq("entity_id", invoiceId)
+  await supabase.from("accounting_sync_records").delete().eq("org_id", resolvedOrgId).eq("entity_type", "invoice").eq("entity_id", invoiceId)
   await supabase.from("invoice_views").delete().eq("org_id", resolvedOrgId).eq("invoice_id", invoiceId)
 
   const { error: deleteError } = await supabase.from("invoices").delete().eq("org_id", resolvedOrgId).eq("id", invoiceId)
@@ -1807,6 +1849,14 @@ export async function moveInvoiceToProject({
 
   if (error || !existing) {
     throw new Error(error?.message ?? "Invoice not found")
+  }
+  const existingAccountingState = await getAccountingSyncState(supabase, {
+    orgId: resolvedOrgId,
+    entityType: "invoice",
+    entityId: invoiceId,
+  })
+  if (hasAccountingExternalId(existingAccountingState)) {
+    throw new Error("Accounting-synced invoices cannot be moved between projects. Void and reissue the invoice instead.")
   }
   if (existing.project_id === targetProjectId) {
     throw new Error("Invoice is already on this project")
@@ -1879,7 +1929,7 @@ export async function moveInvoiceToProject({
     .eq("org_id", resolvedOrgId)
     .eq("id", invoiceId)
     .select(
-      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, sent_at",
+      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, sent_at",
     )
     .single()
 
@@ -1909,7 +1959,7 @@ export async function moveInvoiceToProject({
   })
 
   return {
-    invoice: mapInvoiceRow(updated as InvoiceRow),
+    invoice: mapInvoiceRow(updated as InvoiceRow, existingAccountingState),
     fromProjectId: existing.project_id as string | null,
     toProjectId: targetProjectId,
   }
@@ -1965,8 +2015,8 @@ export async function reviseInvoice({ invoiceId, orgId }: { invoiceId: string; o
         customer_id: original.metadata?.customer_id ?? null,
         customer_name: original.customer_name ?? original.metadata?.customer_name ?? null,
         customer_address: original.metadata?.customer_address ?? null,
-        qbo_customer_id: original.metadata?.qbo_customer_id ?? null,
-        qbo_customer_name: original.metadata?.qbo_customer_name ?? null,
+        qbo_customer_id: original.metadata?.accounting_customer_ref?.id ?? null,
+        qbo_customer_name: original.metadata?.accounting_customer_ref?.name ?? null,
         from_name: original.metadata?.from_name ?? null,
         from_email: original.metadata?.from_email ?? null,
         from_address: original.metadata?.from_address ?? null,
@@ -2077,7 +2127,8 @@ export async function getInvoiceForPortal(invoiceId: string, orgId: string, proj
 
   if (error) throw new Error(`Failed to load invoice: ${error.message}`)
   if (!data) return null
-  return mapInvoiceWithLines(data)
+  const accountingState = await getAccountingSyncState(supabase, { orgId, entityType: "invoice", entityId: invoiceId })
+  return mapInvoiceWithLines(data, accountingState)
 }
 
 export async function getInvoiceByToken(token: string) {
@@ -2099,7 +2150,8 @@ export async function getInvoiceByToken(token: string) {
   }
 
   if (!data) return null
-  return mapInvoiceWithLines(data)
+  const accountingState = await getAccountingSyncState(supabase, { orgId: data.org_id, entityType: "invoice", entityId: data.id })
+  return mapInvoiceWithLines(data, accountingState)
 }
 
 export async function getInvoiceWithLines(invoiceId: string, orgId?: string): Promise<Invoice | null> {
@@ -2107,7 +2159,7 @@ export async function getInvoiceWithLines(invoiceId: string, orgId?: string): Pr
   const { data, error } = await supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, sent_at, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, qbo_id, qbo_synced_at, qbo_sync_status, created_at, updated_at, viewed_at, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
+      "id, org_id, project_id, file_id, billing_period_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, sent_to_emails, sent_at, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, viewed_at, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
     )
     .eq("id", invoiceId)
     .eq("org_id", resolvedOrgId)
@@ -2127,7 +2179,8 @@ export async function getInvoiceWithLines(invoiceId: string, orgId?: string): Pr
     projectId: data.project_id,
     invoiceId,
   })
-  return mapInvoiceWithLines(data)
+  const accountingState = await getAccountingSyncState(supabase, { orgId: resolvedOrgId, entityType: "invoice", entityId: invoiceId })
+  return mapInvoiceWithLines(data, accountingState)
 }
 
 /**

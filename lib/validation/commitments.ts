@@ -4,9 +4,12 @@ export const commitmentStatusEnum = z
   .enum(["draft", "approved", "complete", "canceled"])
   .default("draft")
 
+export const commitmentTypeEnum = z.enum(["subcontract", "purchase_order"])
+
 export const commitmentInputSchema = z.object({
   project_id: z.string().uuid(),
   company_id: z.string().uuid(),
+  commitment_type: commitmentTypeEnum.default("subcontract"),
   title: z.string().min(2, "Title is required"),
   total_cents: z.number().int().min(0),
   contract_number: z.string().max(100).nullable().optional(),
@@ -19,7 +22,7 @@ export const commitmentInputSchema = z.object({
   prequal_override_note: z.string().trim().max(1000).optional(),
 })
 
-export const commitmentUpdateSchema = commitmentInputSchema.partial().omit({ project_id: true, company_id: true })
+export const commitmentUpdateSchema = commitmentInputSchema.partial().omit({ project_id: true, company_id: true, commitment_type: true })
 
 export const commitmentLineInputSchema = z.object({
   cost_code_id: z.string().uuid().nullable().optional(),

@@ -1,9 +1,9 @@
 "use client"
 
-import { LayoutDashboard, FileText, HelpCircle, ShieldCheck, CheckSquare, ClipboardList } from "lucide-react"
+import { LayoutDashboard, FileText, HelpCircle, ShieldCheck, CheckSquare, ClipboardList, ShoppingCart } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-export type SubPortalTab = "dashboard" | "documents" | "daily-logs" | "rfis" | "submittals" | "punch" | "compliance" | "prequalification"
+export type SubPortalTab = "dashboard" | "documents" | "purchase-orders" | "daily-logs" | "rfis" | "submittals" | "punch" | "compliance" | "prequalification"
 
 interface SubBottomNavProps {
   activeTab: SubPortalTab
@@ -14,12 +14,14 @@ interface SubBottomNavProps {
   pendingPunch?: number
   showPunch?: boolean
   showDailyLogs?: boolean
+  showPurchaseOrders?: boolean
   complianceIssues?: number
 }
 
 const tabs: { id: SubPortalTab; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "dashboard", label: "Home", icon: LayoutDashboard },
   { id: "documents", label: "Docs", icon: FileText },
+  { id: "purchase-orders", label: "POs", icon: ShoppingCart },
   { id: "daily-logs", label: "Logs", icon: ClipboardList },
   { id: "rfis", label: "RFIs", icon: HelpCircle },
   { id: "punch", label: "Punch", icon: CheckSquare },
@@ -34,12 +36,13 @@ export function SubBottomNav({
   pendingPunch = 0,
   showPunch = false,
   showDailyLogs = false,
+  showPurchaseOrders = false,
   complianceIssues = 0,
 }: SubBottomNavProps) {
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-20 border-t bg-background pb-[env(safe-area-inset-bottom)]">
       <div className="flex h-14">
-        {tabs.filter((tab) => (tab.id !== "punch" || showPunch) && (tab.id !== "daily-logs" || showDailyLogs)).map((tab) => {
+        {tabs.filter((tab) => (tab.id !== "punch" || showPunch) && (tab.id !== "daily-logs" || showDailyLogs) && (tab.id !== "purchase-orders" || showPurchaseOrders)).map((tab) => {
           const Icon = tab.icon
           const isActive = activeTab === tab.id
           const showDot =

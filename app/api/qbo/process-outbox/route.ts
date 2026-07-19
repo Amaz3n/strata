@@ -1,15 +1,9 @@
 import { NextRequest, NextResponse } from "next/server"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import {
-  syncBillPaymentToQBO,
-  syncInvoiceToQBO,
-  syncPaymentToQBO,
-  syncProjectExpenseToQBO,
-  syncVendorBillToQBO,
-} from "@/lib/services/qbo-sync"
-import { refreshQBOConnectionsDueForKeepalive } from "@/lib/services/qbo-connection"
-import { logQBO } from "@/lib/services/qbo-logger"
+import { ACCOUNTING_JOB_TYPES, processAccountingPush, type AccountingPushEntityType } from "@/lib/services/accounting-sync"
+import { refreshQBOConnectionsDueForKeepalive } from "@/lib/services/accounting-connections"
+import { logQBO } from "@/lib/services/accounting-logger"
 import { withCronRun } from "@/lib/services/job-runs"
 
 const CRON_SECRET = process.env.CRON_SECRET
@@ -17,7 +11,7 @@ const MAX_RETRIES = 3
 const BATCH_SIZE = 25
 const TOKEN_KEEPALIVE_BATCH_SIZE = 10
 const PROCESSING_TIMEOUT_MINUTES = 20
-const QBO_JOB_TYPES = ["qbo_sync_invoice", "qbo_sync_payment", "qbo_sync_project_expense", "qbo_sync_vendor_bill", "qbo_sync_bill_payment"]
+const QBO_JOB_TYPES = [...ACCOUNTING_JOB_TYPES]
 
 type ClaimedJob = {
   id?: number
@@ -124,60 +118,15 @@ async function processQBOOutbox(request: NextRequest) {
     const jobId = job.job_id ?? job.id
     const payload = job.payload ?? {}
     try {
-      if (job.job_type === "qbo_sync_invoice") {
-        const invoiceId = payload.invoice_id as string | undefined
-        if (!invoiceId || !job.org_id) throw new Error("Missing invoice_id or org_id")
-        const result = await syncInvoiceToQBO(invoiceId, job.org_id)
-        if (result.success) {
-          await supabase.from("outbox").update({ status: "completed" }).eq("id", jobId)
-          processed++
-        } else {
-          throw new Error(result.error ?? "Unknown sync error")
-        }
-      } else if (job.job_type === "qbo_sync_payment") {
-        const paymentId = payload.payment_id as string | undefined
-        if (!paymentId || !job.org_id) throw new Error("Missing payment_id or org_id")
-        const result = await syncPaymentToQBO(paymentId, job.org_id)
-        if (result.success) {
-          await supabase.from("outbox").update({ status: "completed" }).eq("id", jobId)
-          processed++
-        } else {
-          throw new Error(result.error ?? "Unknown sync error")
-        }
-      } else if (job.job_type === "qbo_sync_project_expense") {
-        const expenseId = payload.expense_id as string | undefined
-        if (!expenseId || !job.org_id) throw new Error("Missing expense_id or org_id")
-        const result = await syncProjectExpenseToQBO(expenseId, job.org_id)
-        if (result.success) {
-          await supabase.from("outbox").update({ status: "completed" }).eq("id", jobId)
-          processed++
-        } else {
-          throw new Error(result.error ?? "Unknown sync error")
-        }
-      } else if (job.job_type === "qbo_sync_vendor_bill") {
-        const billId = payload.bill_id as string | undefined
-        if (!billId || !job.org_id) throw new Error("Missing bill_id or org_id")
-        const result = await syncVendorBillToQBO(billId, job.org_id)
-        if (result.success) {
-          await supabase.from("outbox").update({ status: "completed" }).eq("id", jobId)
-          processed++
-        } else {
-          throw new Error(result.error ?? "Unknown sync error")
-        }
-      } else if (job.job_type === "qbo_sync_bill_payment") {
-        const paymentId = payload.payment_id as string | undefined
-        if (!paymentId || !job.org_id) throw new Error("Missing payment_id or org_id")
-        const result = await syncBillPaymentToQBO(paymentId, job.org_id)
-        if (result.success) {
-          await supabase.from("outbox").update({ status: "completed" }).eq("id", jobId)
-          processed++
-        } else {
-          throw new Error(result.error ?? "Unknown sync error")
-        }
-      } else {
-        await supabase.from("outbox").update({ status: "failed", last_error: "Unknown job type" }).eq("id", jobId)
-        failed++
-      }
+      if (!job.org_id) throw new Error("Missing org_id")
+      const normalized = job.job_type.replace(/^qbo_sync_/, "").replace(/^accounting_push_/, "")
+      const entityType = normalized as AccountingPushEntityType
+      const payloadKey = entityType === "invoice" ? "invoice_id" : entityType === "project_expense" ? "expense_id" : entityType === "vendor_bill" ? "bill_id" : "payment_id"
+      const entityId = payload[payloadKey]
+      if (typeof entityId !== "string") throw new Error(`Missing ${payloadKey}`)
+      await processAccountingPush({ orgId: job.org_id, entityType, entityId })
+      await supabase.from("outbox").update({ status: "completed" }).eq("id", jobId)
+      processed++
     } catch (err: any) {
       const newRetry = (job.retry_count ?? 0) + 1
       const shouldRetry = newRetry < MAX_RETRIES

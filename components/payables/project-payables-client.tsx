@@ -268,9 +268,8 @@ export function ProjectPayablesClient({
                   toast.error(blockReason, { description: bill.bill_number ?? undefined })
                   continue
                 }
-                const result = unwrapAction(await syncProjectVendorBillToQBOAction(projectId, bill.id))
-                if (result.success) synced += 1
-                else toast.error(result.error ?? "QuickBooks sync failed", { description: bill.bill_number ?? undefined })
+                unwrapAction(await syncProjectVendorBillToQBOAction(projectId, bill.id))
+                synced += 1
               }
               if (synced > 0) toast.success(`${synced} payable${synced === 1 ? "" : "s"} synced`)
               router.refresh()
@@ -284,14 +283,9 @@ export function ProjectPayablesClient({
                 if (!bill.qbo_vendor_id) openBill(bill.id)
                 return
               }
-              const result = unwrapAction(await syncProjectVendorBillToQBOAction(projectId, bill.id))
-              if (result.success) {
-                toast.success("Synced to QuickBooks")
-                router.refresh()
-              } else {
-                toast.error(result.error ?? "QuickBooks sync failed")
-                router.refresh()
-              }
+              unwrapAction(await syncProjectVendorBillToQBOAction(projectId, bill.id))
+              toast.success("Synced to QuickBooks")
+              router.refresh()
             })
           }}
           onDelete={setDeleteBill}

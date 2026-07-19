@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache"
 
 import { archiveCompany, createCompany, getCompany, getCompanyProjects, listCompanies, restoreCompany, updateCompany } from "@/lib/services/companies"
 import { requireOrgContext } from "@/lib/services/context"
-import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
+import { QBOClient } from "@/lib/integrations/accounting/qbo/client"
 import {
   getCompanyComplianceStatus,
   getCompanyRequirements,

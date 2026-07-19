@@ -1,6 +1,23 @@
 # Workstream 04 — Purchasing: Price Book, Auto-PO, Pay-on-PO, VPO/Variance
 
-> **STATUS: NOT STARTED**
+> **STATUS: IMPLEMENTED AND DEPLOYED — MANUAL QA/ACCEPTANCE PENDING**
+>
+> Implemented and deployed 2026-07-18 across four additive feature migrations,
+> one FK-index hardening migration, pure financial math,
+> org/project services and actions, the Purchasing desk, lot financials generation
+> panel, trade portal completion loop, mobile VPO API, RBAC/search/notifications,
+> and purchasing maintenance cron. Static verification passes (`pnpm lint`,
+> `pnpm exec tsc --noEmit`) and the financial suite passes 77/77. Supabase MCP
+> recorded production migrations `20260718210156`, `20260718210206`,
+> `20260718210237`, `20260718210240`, and `20260718210409`. Live verification
+> confirmed all six tables, evolved columns, RLS policies, RBAC catalog, RPC
+> presence/search paths/grants, and FK coverage; security advisors report no
+> Workstream 04 findings. Representative-data, portal, QBO, commercial-regression,
+> and 400-lot acceptance remain pending.
+>
+> Two legacy bid packages have both project and prospect context. The new parent
+> and award-target checks are therefore `NOT VALID`: PostgreSQL enforces them for
+> all new or changed rows without rewriting or deleting production history.
 >
 > Prereqs: `00-MASTER-production-expansion.md` (read FIRST, fully — especially §5.4,
 > §5.5, §4, §9), workstream 01 (divisions/communities/lots) shipped, workstream 02

@@ -503,6 +503,62 @@ export async function createInspection(input: CreateInspectionInput, orgId?: str
   return getInspection(inspection.id as string, resolvedOrgId)
 }
 
+export type InspectionSnapshotInput = {
+  projectId: string
+  kind: "safety" | "quality"
+  title: string
+  sourceTemplateId?: string | null
+  items: Array<{
+    section?: string | null
+    prompt: string
+    response_type?: "pass_fail" | "yes_no" | "text" | "number"
+    sort_order?: number
+  }>
+}
+
+/** Seeds a draft inspection from pinned plan-version content without re-reading a live template. */
+export async function createInspectionFromSnapshot(
+  input: InspectionSnapshotInput,
+  orgId?: string,
+  authorizationPermission: "inspection.write" | "plan.instantiate" = "inspection.write",
+): Promise<InspectionDetail> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission(authorizationPermission, { supabase, orgId: resolvedOrgId, userId })
+  if (!input.title.trim()) throw new Error("Inspection title is required")
+  if (input.items.length === 0) throw new Error(`Checklist ${input.title} has no items`)
+  const { data: inspection } = await insertWithProjectNumberRetry<Record<string, unknown>>({
+    supabase,
+    table: "inspections",
+    numberColumn: "inspection_number",
+    rpcName: "next_inspection_number",
+    conflictConstraint: "inspections_project_id_inspection_number_key",
+    projectId: input.projectId,
+    payload: {
+      org_id: resolvedOrgId,
+      project_id: input.projectId,
+      template_id: null,
+      kind: input.kind,
+      title: input.title.trim(),
+      status: "draft",
+      metadata: { source_template_id: input.sourceTemplateId ?? null, source: "plan_version_snapshot" },
+    },
+    select: INSPECTION_SELECT,
+    entityLabel: "inspection",
+  })
+  const inspectionId = String(inspection.id)
+  const { error } = await supabase.from("inspection_items").insert(input.items.map((item, index) => ({
+    org_id: resolvedOrgId,
+    inspection_id: inspectionId,
+    section: item.section ?? null,
+    prompt: item.prompt,
+    response_type: item.response_type ?? "pass_fail",
+    sort_order: item.sort_order ?? index,
+  })))
+  if (error) throw new Error(`Inspection created but snapshot items failed: ${error.message}`)
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "insert", entityType: "inspection", entityId: inspectionId, after: inspection })
+  return getInspection(inspectionId, resolvedOrgId)
+}
+
 export async function updateInspection(inspectionId: string, input: UpdateInspectionInput, orgId?: string): Promise<Inspection> {
   const parsed = updateInspectionSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)

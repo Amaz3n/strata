@@ -18,6 +18,8 @@ import { provisionOrganization } from "@/lib/services/provisioning"
 import { setPlatformOrganizationStatus } from "@/lib/services/platform-access"
 import { activateOrgBilling } from "@/lib/services/billing"
 import { seedSampleProject } from "@/lib/services/demo-seed"
+import { seedSampleCommunity } from "@/lib/services/demo-community-seed"
+import { createOnboardingRun } from "@/lib/services/onboarding"
 import { createOrgMemberInvite } from "@/lib/services/team"
 import {
   AI_FEATURE_VALUES,
@@ -67,6 +69,7 @@ const provisionPlatformOrgSchema = z.object({
   collectionMethod: z.enum(["checkout", "invoice"]).optional(),
   netDays: z.coerce.number().int().min(1).max(90).optional(),
   seedSampleProject: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),
+  seedSampleCommunity: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
   sendInvites: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
   teamMembers: z
     .array(
@@ -239,6 +242,7 @@ export async function provisionPlatformOrgAction(
     collectionMethod: formData.get("collectionMethod") || undefined,
     netDays: formData.get("netDays") || undefined,
     seedSampleProject: formData.get("seedSampleProject") ?? "true",
+    seedSampleCommunity: formData.get("seedSampleCommunity") ?? "false",
     sendInvites: formData.get("sendInvites") ?? "false",
     teamMembers: parseTeamMembers(formData),
   })
@@ -296,12 +300,28 @@ export async function provisionPlatformOrgAction(
     }
 
     let seedWarning = ""
+    if (parsed.data.productTier === "production") {
+      try {
+        await createOnboardingRun({ orgId: org.id })
+      } catch (onboardingError) {
+        console.error("Failed to create production onboarding run", onboardingError)
+        seedWarning += " The production onboarding run could not be created automatically."
+      }
+    }
+    if (parsed.data.productTier === "production" && parsed.data.seedSampleCommunity) {
+      try {
+        await seedSampleCommunity(org.id, user.id)
+      } catch (sampleCommunityError) {
+        console.error("Failed to seed sample production community", sampleCommunityError)
+        seedWarning += " Sample community seeding failed; the org was still created."
+      }
+    }
     if (parsed.data.seedSampleProject) {
       try {
         await seedSampleProject(org.id, user.id)
       } catch (seedError) {
         console.error("Failed to seed sample project", seedError)
-        seedWarning = " Sample project seeding failed; the org was still created."
+        seedWarning += " Sample project seeding failed; the org was still created."
       }
     }
 

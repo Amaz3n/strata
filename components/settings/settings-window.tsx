@@ -20,7 +20,7 @@ import { AppearanceSettings } from "@/components/settings/appearance-settings"
 import { ComplianceSettings } from "@/components/settings/compliance-settings"
 import { ContractTemplateSettings } from "@/components/settings/contract-template-settings"
 import { CostCodeManager } from "@/components/cost-codes/cost-code-manager"
-import { QBOConnectionCard } from "@/components/integrations/qbo-connection-card"
+import { AccountingConnectionsPanel } from "@/components/integrations/accounting-connections-panel"
 import { StripeConnectionCard } from "@/components/integrations/stripe-connection-card"
 import { Spinner } from "@/components/ui/spinner"
 import { AlertTriangle, ArrowRight, Bell, Building2, Check, Clock, CreditCard, Link2, Receipt, Settings, Shield, SlidersHorizontal, Sparkles, Tag, User as UserIcon, Users, Zap } from "@/components/icons"
@@ -29,11 +29,12 @@ import { getQBOConnectionAction, getStripeConnectedAccountAction } from "@/app/(
 import { listCostCodesAction } from "@/app/(app)/settings/cost-codes/actions"
 import { createBillingPortalSessionAction, createCheckoutSessionAction, getBillingPageDataAction, getOrganizationSettingsAction, getTeamSettingsDataAction, updateOrganizationLogoAction, updateOrganizationSettingsAction, updateUserAvatarAction } from "@/app/(app)/settings/actions"
 import { useIsMobile } from "@/hooks/use-mobile"
-import type { QBOConnection } from "@/lib/services/qbo-connection"
+import type { QBOConnection } from "@/lib/services/accounting-connections"
 import type { StripeConnectedAccount } from "@/lib/services/stripe-connected-accounts"
 import type { ComplianceRequirementTemplateItem, ComplianceRules, CostCode, OrgRoleOption, PermissionOption, TeamMember, User } from "@/lib/types"
 import { TeamTable } from "@/components/team/team-table"
 import { MemberFormPanel } from "@/components/team/member-form-panel"
+import type { DivisionDTO } from "@/lib/services/divisions"
 import { MfaSettingsCard } from "@/components/settings/mfa-settings-card"
 import { SessionsSettingsCard } from "@/components/settings/sessions-settings-card"
 import Link from "next/link"
@@ -247,6 +248,7 @@ interface SettingsWindowProps {
   teamMembers?: TeamMember[]
   roleOptions?: OrgRoleOption[]
   permissionOptions?: PermissionOption[]
+  divisions?: DivisionDTO[]
   canManageMembers?: boolean
   canEditRoles?: boolean
   initialBilling?: BillingDetails
@@ -274,6 +276,7 @@ export function SettingsWindow({
   teamMembers: initialTeamMembers,
   roleOptions: initialRoleOptions,
   permissionOptions: initialPermissionOptions,
+  divisions = [],
   canManageMembers: initialCanManageMembers,
   canEditRoles: initialCanEditRoles,
   initialBilling = null,
@@ -292,7 +295,7 @@ export function SettingsWindow({
   const settingsReturnTo = searchParams.get("returnTo")
   const defaultTab = sections.some((section) => section.value === initialTab) ? initialTab : "profile"
   const [tab, setTab] = useState<string>(defaultTab)
-  const [qboConnection, setQboConnection] = useState<QBOConnection | null>(initialQboConnection)
+  const [, setQboConnection] = useState<QBOConnection | null>(initialQboConnection)
   const [stripeConnection, setStripeConnection] = useState<StripeConnectedAccount | null>(initialStripeConnection)
   const [hasFetchedIntegrations, setHasFetchedIntegrations] = useState<boolean>(Boolean(initialQboConnection) || Boolean(initialStripeConnection))
   const [loadingIntegrations, setLoadingIntegrations] = useState(false)
@@ -1423,7 +1426,7 @@ export function SettingsWindow({
                         <div className="flex flex-col border-y border-border/70">
                           <StripeConnectionCard connection={stripeConnection} canManage={Boolean(organizationSettings?.canManageOrganization)} onConnectionChange={setStripeConnection} />
                           <div className="h-px bg-border/70" />
-                          <QBOConnectionCard connection={qboConnection} onConnectionChange={setQboConnection} />
+                          <AccountingConnectionsPanel />
                         </div>
 
                       </div>
@@ -1471,6 +1474,7 @@ export function SettingsWindow({
                         member={lastTeamFormView.mode === "edit" ? lastTeamFormView.member : undefined}
                         roleOptions={roleOptions}
                         permissionOptions={permissionOptions}
+                        divisions={divisions}
                         canManageMembers={canManageMembers}
                         canEditRoles={canEditRoles}
                         onCancel={() => setTeamView({ mode: "list" })}

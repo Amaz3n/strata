@@ -5,12 +5,14 @@ import { TEAM_PERMISSION_OPTIONS, listAssignableOrgRoles, listTeamMembers } from
 import { TeamPageClient } from "@/components/team/team-page-client"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { Skeleton } from "@/components/ui/skeleton"
+import { listDivisions } from "@/lib/services/divisions"
 
 async function TeamData() {
-  const [members, permissionResult, roleOptions] = await Promise.all([
+  const [members, permissionResult, roleOptions, divisions] = await Promise.all([
     listTeamMembers(),
     getCurrentUserPermissions(),
     listAssignableOrgRoles().catch(() => []),
+    listDivisions().catch(() => []),
   ])
 
   const canManageMembers = permissionResult.permissions.includes("members.manage")
@@ -23,6 +25,7 @@ async function TeamData() {
       canEditRoles={canEditRoles}
       roleOptions={roleOptions}
       permissionOptions={TEAM_PERMISSION_OPTIONS}
+      divisions={divisions}
     />
   )
 }

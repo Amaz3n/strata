@@ -14,8 +14,8 @@ import { createCompany, getCompany } from "@/lib/services/companies"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { AuthorizationError } from "@/lib/services/authorization"
-import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
-import { syncVendorBillToQBO } from "@/lib/services/qbo-sync"
+import { QBOClient } from "@/lib/integrations/accounting/qbo/client"
+import { processAccountingPush } from "@/lib/services/accounting-sync"
 import { extractPayableInvoiceFromFile, type ExtractedPayableInvoice } from "@/lib/services/receipt-extraction"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
@@ -206,7 +206,7 @@ export async function getPayablesAccountingContextAction() {
       }
 
       const [{ data: connection }, expenseAccounts, apAccounts, vendors] = await Promise.all([
-        supabase.from("qbo_connections").select("settings").eq("org_id", orgId).eq("status", "active").maybeSingle(),
+        supabase.from("accounting_connections").select("settings").eq("org_id", orgId).eq("provider", "qbo").eq("status", "active").order("connected_at", { ascending: true }).limit(1).maybeSingle(),
         client.listExpenseAccounts().catch(() => []),
         client.listAccountsPayableAccounts().catch(() => []),
         client.listVendors().catch(() => []),
@@ -228,7 +228,7 @@ export async function getPayablesAccountingContextAction() {
 export async function syncProjectVendorBillToQBOAction(projectId: string, billId: string) {
   return run(async () => {
       const { orgId } = await requireOrgContext()
-      const result = await syncVendorBillToQBO(billId, orgId)
+      const result = await processAccountingPush({ orgId, entityType: "vendor_bill", entityId: billId })
       revalidatePayablesPages(projectId)
       return result
   })

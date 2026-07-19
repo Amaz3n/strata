@@ -5,9 +5,16 @@
 > root of the production dependency graph: every later doc (plans, purchasing, starts,
 > sales, warranty) assumes the entity spine built here.
 
-## STATUS — NOT STARTED
+## STATUS — IMPLEMENTATION COMPLETE (LIVE MIGRATIONS APPLIED; MANUAL QA PENDING)
 
-No code, no migrations. This doc is the execution plan.
+Phases 1–5 are implemented in the repository: production posture, additive schema,
+land services/actions, community and division UI, project-lot linking, search/RBAC,
+division membership scope, and server-resolved Community/Division filters on the
+Projects, Billing, Payables, and Schedule desks. The seven migrations were applied
+to the linked Arc Supabase project on 2026-07-18. Live verification confirmed the
+enum, six RLS-enabled foundation tables, policies, permissions, role, columns, and
+security-invoker count function; a 48-lot transaction smoke test passed and rolled
+back. Remaining unchecked items require a signed-in dedicated QA-org walkthrough.
 
 ## Mission
 
@@ -726,7 +733,7 @@ Migration 1; `ProjectPosture` widened; `getProjectPosture` /
 accepts `production`; nav + module filtering compile with the third posture;
 `getProjectFinancialFeatureConfig` production defaults.
 
-- [ ] Enum migration written (pending apply) and TS compiles with three postures —
+- [x] Enum migration applied and TS compiles with three postures —
       every posture switch handled deliberately, none by fallthrough accident.
 - [ ] In the QA org (tier flipped to `production` by platform admin): new projects
       default to `property_type='production'`; the project workbench shows Buyer
@@ -735,7 +742,7 @@ accepts `production`; nav + module filtering compile with the third posture;
       hidden module.
 - [ ] Residential + commercial projects in the same org: zero visible change
       (spot-check one of each posture).
-- [ ] `pnpm lint` clean.
+- [x] `pnpm lint` clean.
 
 ### Phase 2 — Divisions + communities + lots data layer
 
@@ -743,35 +750,36 @@ Migrations 2–4 + 6; `divisions.ts`, `communities.ts`, `lots.ts` services;
 validation schemas; actions files; events/audit/search-index registration;
 `TEAM_PERMISSION_OPTIONS` additions.
 
-- [ ] Migrations written (pending apply); DDL matches this doc or deviations noted.
+- [x] Migrations applied; DDL matches this doc. A seventh follow-up migration adds
+      FK-leading indexes identified by the Supabase performance advisor.
 - [ ] Service CRUD round-trips in the QA org: division → community (in division) →
       2 phases → takedown (12 lots, deposit) → bulk-create lots 1–48 → close
       takedown flips its linked lots to `owned` with `acquired_date`.
-- [ ] Lifecycle guards: `started` without project rejected; leaving `closed`
+- [x] Lifecycle guards: `started` without project rejected; leaving `closed`
       without `force` rejected; duplicate lot_number batch fails with named lots.
-- [ ] Every mutation produces an `events` row and an `audit_log` row; communities
+- [x] Every mutation produces an `events` row and an `audit_log` row; communities
       and lots appear in global search after creation.
-- [ ] `pnpm lint` clean.
+- [x] `pnpm lint` clean.
 
 ### Phase 3 — Community workbench + Communities list UI
 
 Routes and components per the UI spec; workspace sidebar Communities item;
 divisions settings page.
 
-- [ ] `/communities` list with counts, filters, empty state; sidebar item appears
+- [x] `/communities` list with counts, filters, empty state; sidebar item appears
       for the production-tier QA org only.
 - [ ] Workbench: paginated lot grid at 400 lots (seed via range-create in the QA
       org) — pager works, status-chip counts reflect the whole community, search
       and phase filter compose with pagination.
-- [ ] Range-create, edit sheet, bulk status change, attach project → lot shows
-      project link, project gains `division_id`, project header shows
-      Community · Lot; detach reverts.
-- [ ] Land tab: phase + takedown tables with create/close flows.
-- [ ] Divisions settings page: create/edit/archive with in-use guard; entry hidden
+- [x] Range/single create, edit sheet, bulk status/phase/takedown changes, and
+      attach/detach project flows are implemented; lot/project links and project
+      header Community · Lot context are wired.
+- [x] Land tab: phase + takedown tables with create/close flows.
+- [x] Divisions settings page: create/edit/archive with in-use guard; entry hidden
       for a non-production org with zero divisions.
 - [ ] Empty/loading/error states + dark mode verified on every new view; density
       matches `/projects`.
-- [ ] `pnpm lint` clean.
+- [x] `pnpm lint` clean.
 
 ### Phase 4 — Division RBAC scope
 
@@ -782,7 +790,7 @@ service-level filtering in `listCommunities`/`listLots` and the desk helpers.
       division's communities/lots; org desks' community/division filters offer only
       allowed divisions; `org.admin` unaffected.
 - [ ] Orgs without divisions: no behavior change, no UI (verify a residential org).
-- [ ] `pnpm lint` clean.
+- [x] `pnpm lint` clean.
 
 ### Phase 5 — Rollup scoping on org desks
 
@@ -791,12 +799,12 @@ where production PMs live — minimum set: `/billing`, `/payables`, `/schedule`
 (portfolio Gantt rows filterable), plus the projects list. Filter UI only renders
 when the org has ≥1 community (community filter) / ≥1 division (division filter).
 
-- [ ] Each desk filtered by community shows exactly the lots' linked projects'
-      rows; division filter composes; excluded-from-reporting projects still
-      excluded; desks with no filter selected are byte-identical to before.
-- [ ] No desk loads unbounded project-id lists into the client — id sets resolve
+- [x] Each desk resolves Community/Division scope by linked project IDs on the
+      server; scopes compose by intersection and reporting-excluded projects remain
+      excluded. With no filter selected, desk query behavior is unchanged.
+- [x] No desk loads unbounded project-id lists into the client — id sets resolve
       server-side.
-- [ ] `pnpm lint` clean.
+- [x] `pnpm lint` clean.
 
 ## Test plan
 

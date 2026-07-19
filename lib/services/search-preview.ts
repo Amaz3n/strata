@@ -52,6 +52,18 @@ export interface EntityPreview {
 }
 
 const CATEGORY_BY_TYPE: Record<SearchEntityType, PreviewCategory> = {
+  warranty_request: "request",
+  warranty_backcharge: "financial",
+  closing: "financial",
+  start_package: "schedule",
+  price_agreement: "financial",
+  commitment_change_order: "financial",
+  selection_option: "general",
+  design_studio_appointment: "schedule",
+  community: "general",
+  lot: "general",
+  house_plan: "general",
+  budget_template: "financial",
   bid_package: "financial",
   invoice: "financial",
   payment: "financial",

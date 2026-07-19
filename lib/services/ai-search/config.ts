@@ -155,8 +155,10 @@ export const STATUS_ALIASES: Array<{ pattern: RegExp; normalized: string }> = [
   { pattern: /\banswered\b/, normalized: "answered" },
 ]
 
-export const BASE_ENTITY_TYPES: SearchEntityType[] = ["project", "task", "file", "contact", "company"]
+export const BASE_ENTITY_TYPES: SearchEntityType[] = ["project", "start_package", "house_plan", "budget_template", "selection_option", "design_studio_appointment", "task", "file", "contact", "company"]
 export const FINANCIAL_ENTITY_TYPES: SearchEntityType[] = [
+  "price_agreement",
+  "commitment_change_order",
   "invoice",
   "payment",
   "budget",
@@ -171,6 +173,18 @@ export const FINANCIAL_ENTITY_TYPES: SearchEntityType[] = [
 export const DOCUMENT_ENTITY_TYPES: SearchEntityType[] = ["rfi", "submittal", "spec_section", "meeting", "meeting_transcript", "transmittal", "drawing_set", "drawing_sheet", "file"]
 export const FIELD_ENTITY_TYPES: SearchEntityType[] = ["task", "schedule_item", "daily_log", "punch_item", "photo", "inspection", "safety_incident", "observation", "project_location"]
 export const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
+  warranty_request: "/warranty?request={id}",
+  warranty_backcharge: "/warranty?backcharge={id}",
+  closing: "/projects/{project_id}/closing",
+  start_package: "/starts/pipeline/{id}",
+  price_agreement: "/purchasing?tab=price-book&agreement={id}",
+  commitment_change_order: "/projects/{project_id}/financials/budget?vpo={id}",
+  selection_option: "/design-studio?option={id}",
+  design_studio_appointment: "/design-studio?tab=appointments&appointment={id}",
+  community: "/communities/{id}",
+  lot: "/communities/{community_id}?lot={id}",
+  house_plan: "/plans/{id}",
+  budget_template: "/settings/templates?budgetTemplate={id}",
   project: "/projects/{id}",
   task: "/tasks/{id}",
   file: "/files/{id}",

@@ -23,6 +23,10 @@ import { getPlatformSessionState } from "@/lib/services/platform-session"
 import { getReleaseNotesSummary } from "@/lib/services/release-notes"
 import { getNavigationBadgeCounts } from "@/lib/services/navigation-badges"
 import { getOrgProductTier } from "@/lib/services/context"
+import { orgHasDivisions } from "@/lib/services/divisions"
+import { orgHasProductionProjects } from "@/lib/services/production-desk-scope"
+import { shouldShowProductionOrgNavigation } from "@/lib/product-tier"
+import { orgHasPriceAgreements } from "@/lib/services/price-book"
 
 export const dynamic = "force-dynamic"
 
@@ -32,7 +36,7 @@ export default async function AppLayout({
   children: React.ReactNode
 }) {
   // Fetch user data once at the layout level for the persistent shell
-  const [currentUser, crmStats, access, platformAccess, permissionResult, platformSessionState, releaseNotesSummary, navigationBadgeCounts, productTier] = await Promise.all([
+  const [currentUser, crmStats, access, platformAccess, permissionResult, platformSessionState, releaseNotesSummary, navigationBadgeCounts, productTier, hasDivisions, hasProductionProjects, hasPriceAgreements] = await Promise.all([
     getCurrentUserAction(),
     getCrmDashboardStats().catch(() => null),
     getOrgAccessState().catch((): OrgAccessState => ({ status: "unknown", locked: false })),
@@ -49,9 +53,14 @@ export default async function AppLayout({
       projectReviewBadgeCounts: {} as Record<string, number>,
     })),
     getOrgProductTier().catch(() => "residential" as const),
+    orgHasDivisions().catch(() => false),
+    orgHasProductionProjects().catch(() => false),
+    orgHasPriceAgreements().catch(() => false),
   ])
 
   const pipelineBadgeCount = crmStats ? crmStats.followUpsOverdue + crmStats.followUpsDueToday : 0
+  const showProductionNavigation = shouldShowProductionOrgNavigation(productTier, hasProductionProjects)
+  const showPurchasingNavigation = showProductionNavigation || hasPriceAgreements
 
   if (access.locked) {
     return (
@@ -80,6 +89,9 @@ export default async function AppLayout({
           permissions={permissionResult.permissions}
           whatsNewUnreadCount={releaseNotesSummary.unreadCount}
           productTier={productTier}
+          hasDivisions={hasDivisions}
+          showProductionNavigation={showProductionNavigation}
+          showPurchasingNavigation={showPurchasingNavigation}
         />
         <MobileActionProvider>
           <SidebarInset className="h-svh max-h-svh min-w-0 min-h-0 overflow-hidden">
@@ -102,6 +114,8 @@ export default async function AppLayout({
             permissions={permissionResult.permissions}
             whatsNewUnreadCount={releaseNotesSummary.unreadCount}
             productTier={productTier}
+            showProductionNavigation={showProductionNavigation}
+            showPurchasingNavigation={showPurchasingNavigation}
           />
         </MobileActionProvider>
       </OptimisticPathProvider>

@@ -97,7 +97,14 @@ export const ASSIGNABLE_ORG_ROLE_KEYS = [
   "org_office_admin",
   "org_bookkeeper",
   "org_project_lead",
+  "org_design_studio_coordinator",
   "org_estimator",
+  "org_land_manager",
+  "org_purchasing_manager",
+  "org_sales_agent",
+  "org_starts_coordinator",
+  "org_superintendent",
+  "org_warranty_manager",
   "org_user",
   "org_viewer",
 ] as const
@@ -108,7 +115,14 @@ function defaultRoleDescription(roleKey: string) {
     org_office_admin: "Administrative control across projects, members, and business operations.",
     org_bookkeeper: "Accounts payable/receivable. Enters bills and invoices, but cannot approve payments or release funds.",
     org_project_lead: "Project delivery and field coordination across projects.",
+    org_design_studio_coordinator: "Option catalogs, buyer selections, cutoffs, appointments, and selection change orders.",
     org_estimator: "Preconstruction: bids, proposals, and the sales pipeline. No active-job financials.",
+    org_land_manager: "Land pipeline and community operations, including phases, lots, and takedowns.",
+    org_purchasing_manager: "Price agreements, bid awards, generated purchase orders, VPO approvals, and completion-to-pay workflows.",
+    org_sales_agent: "Community inventory, pricing, reservations, purchase agreements, and buyer handoff.",
+    org_starts_coordinator: "Gate completeness, even-flow release planning, and start orchestration across communities.",
+    org_superintendent: "Field lead for assigned production houses, schedules, logs, punch, inspections, and VPO requests.",
+    org_warranty_manager: "Coverage, service dispatch, SLA performance, warranty cost, and trade backcharge recovery.",
     org_user: "Internal team member. Access is scoped by project assignments and optional permission overrides.",
     org_viewer: "Read-only visibility for stakeholders and observers.",
   }
@@ -117,6 +131,36 @@ function defaultRoleDescription(roleKey: string) {
 }
 
 export const TEAM_PERMISSION_OPTIONS: PermissionOption[] = [
+  { key: "import.manage", label: "Manage staged data imports", category: "Business Ops" },
+  { key: "sales.read", label: "View sales pipeline and closings", category: "Plans & Production" },
+  { key: "sales.manage", label: "Manage reservations and agreements", category: "Plans & Production" },
+  { key: "closing.manage", label: "Schedule and settle closings", category: "Plans & Production" },
+  { key: "start.read", label: "View starts and release board", category: "Plans & Production" },
+  { key: "start.write", label: "Manage start packages and gates", category: "Plans & Production" },
+  { key: "start.release", label: "Approve, waive, and release starts", category: "Plans & Production" },
+  { key: "start.slots", label: "Edit even-flow slots", category: "Plans & Production" },
+  { key: "price_book.read", label: "View purchasing and price book", category: "Purchasing" },
+  { key: "price_book.write", label: "Manage price agreements", category: "Purchasing" },
+  { key: "po.generate", label: "Generate purchase orders", category: "Purchasing" },
+  { key: "po_exception.resolve", label: "Resolve PO exceptions", category: "Purchasing" },
+  { key: "vpo.request", label: "Request VPOs", category: "Purchasing" },
+  { key: "vpo.approve", label: "Approve standard VPOs", category: "Purchasing" },
+  { key: "vpo.approve_large", label: "Approve large VPOs and backcharges", category: "Purchasing" },
+  { key: "po_completion.report", label: "Report PO completion", category: "Purchasing" },
+  { key: "po_completion.verify", label: "Verify PO completion", category: "Purchasing" },
+  { key: "selections.read", label: "View selections", category: "Plans & Production" },
+  { key: "selections.write", label: "Choose and confirm selections", category: "Plans & Production" },
+  { key: "selections.catalog.manage", label: "Manage option catalog", category: "Plans & Production" },
+  { key: "selections.cutoff.override", label: "Override selection cutoffs", category: "Plans & Production" },
+  { key: "design_studio.manage", label: "Manage Design Studio", category: "Plans & Production" },
+  { key: "plan.read", label: "View plan library", category: "Plans & Production" },
+  { key: "plan.write", label: "Manage draft plans", category: "Plans & Production" },
+  { key: "plan.release", label: "Release plan versions", category: "Plans & Production" },
+  { key: "plan.instantiate", label: "Instantiate plans on lots", category: "Plans & Production" },
+  { key: "community.read", label: "View communities and lots", category: "Land & Communities" },
+  { key: "community.write", label: "Manage communities and takedowns", category: "Land & Communities" },
+  { key: "lot.write", label: "Manage lots and lot status", category: "Land & Communities" },
+  { key: "division.manage", label: "Manage divisions and scope", category: "Land & Communities" },
   { key: "project.create", label: "Create projects", category: "Project Access" },
   { key: "project.archive", label: "Archive projects", category: "Project Access" },
   { key: "project.settings.update", label: "Manage project settings", category: "Project Access" },
@@ -139,6 +183,10 @@ export const TEAM_PERMISSION_OPTIONS: PermissionOption[] = [
   { key: "inspection.write", label: "Run inspections", category: "Field Operations" },
   { key: "safety.read", label: "View safety incidents", category: "Field Operations" },
   { key: "safety.write", label: "Record safety incidents & observations", category: "Field Operations" },
+  { key: "warranty.read", label: "View warranty requests", category: "Field Operations" },
+  { key: "warranty.write", label: "Manage warranty requests and visits", category: "Field Operations" },
+  { key: "warranty.manage", label: "Manage warranty coverage and SLAs", category: "Field Operations" },
+  { key: "warranty.backcharge", label: "Manage warranty backcharges", category: "Financials" },
   { key: "budget.read", label: "View budgets", category: "Financials" },
   { key: "budget.write", label: "Edit budgets", category: "Financials" },
   { key: "budget.approve", label: "Approve budget transfers", category: "Financials" },
@@ -319,7 +367,7 @@ export async function createOrgMemberInvite(input: {
     })
     .select(
       `
-      id, org_id, user_id, role_id, status, project_scope, last_active_at, created_at, invited_by,
+      id, org_id, user_id, role_id, status, project_scope, division_scope, last_active_at, created_at, invited_by,
       user:app_users!memberships_user_id_fkey(id, email, full_name, avatar_url),
       role:roles!memberships_role_id_fkey(key, label),
       invited_by_user:app_users!memberships_invited_by_fkey(id, email, full_name, avatar_url)
@@ -391,6 +439,63 @@ async function mapPermissionOverrides(serviceClient: SupabaseClient, membershipI
     acc[row.membership_id].push({ permission_key: row.permission_key, effect: row.effect })
     return acc
   }, {})
+}
+
+async function mapMembershipDivisions(client: SupabaseClient, membershipIds: string[]) {
+  if (membershipIds.length === 0) return {}
+  const { data, error } = await client
+    .from("membership_divisions")
+    .select("membership_id, division_id")
+    .in("membership_id", membershipIds)
+  if (error) {
+    if (String(error.message ?? "").includes("membership_divisions")) return {}
+    throw new Error(`Failed to load division assignments: ${error.message}`)
+  }
+  return (data ?? []).reduce<Record<string, string[]>>((acc, row) => {
+    acc[row.membership_id] = acc[row.membership_id] ?? []
+    acc[row.membership_id].push(row.division_id)
+    return acc
+  }, {})
+}
+
+async function replaceMembershipDivisions({
+  client,
+  membershipId,
+  orgId,
+  scope,
+  divisionIds,
+}: {
+  client: SupabaseClient
+  membershipId: string
+  orgId: string
+  scope: "all" | "assigned"
+  divisionIds: string[]
+}) {
+  const uniqueIds = Array.from(new Set(divisionIds))
+  if (scope === "assigned" && uniqueIds.length > 0) {
+    const { data, error } = await client
+      .from("divisions")
+      .select("id")
+      .eq("org_id", orgId)
+      .in("id", uniqueIds)
+    if (error || (data ?? []).length !== uniqueIds.length) {
+      throw new Error("One or more selected divisions are invalid.")
+    }
+  }
+  const { error: deleteError } = await client
+    .from("membership_divisions")
+    .delete()
+    .eq("membership_id", membershipId)
+  if (deleteError && !String(deleteError.message ?? "").includes("membership_divisions")) {
+    throw new Error(`Failed to clear division assignments: ${deleteError.message}`)
+  }
+  if (scope !== "assigned" || uniqueIds.length === 0) return []
+  const { data, error } = await client
+    .from("membership_divisions")
+    .insert(uniqueIds.map((divisionId) => ({ membership_id: membershipId, division_id: divisionId })))
+    .select("division_id")
+  if (error) throw new Error(`Failed to save division assignments: ${error.message}`)
+  return (data ?? []).map((row) => row.division_id as string)
 }
 
 function normalizePermissionOverrides(input: MemberPermissionOverride[] | undefined) {
@@ -480,6 +585,7 @@ function mapTeamMember(
   projectCounts: Record<string, number>,
   mfaEnabledByUser: Record<string, boolean>,
   permissionOverridesByMembership: Record<string, MemberPermissionOverride[]> = {},
+  divisionIdsByMembership: Record<string, string[]> = {},
 ): TeamMember {
   const user = row.user || row.users
   const invitedBy = row.invited_by_user || row.invited_by
@@ -496,6 +602,8 @@ function mapTeamMember(
     role: roleKey,
     role_label: normalizeRoleLabel((row.role?.label as string | null) ?? null, roleKey),
     project_scope: row.project_scope === "assigned" ? "assigned" : "all",
+    division_scope: row.division_scope === "assigned" ? "assigned" : "all",
+    division_ids: divisionIdsByMembership[row.id] ?? [],
     permission_overrides: permissionOverridesByMembership[row.id] ?? [],
     status: row.status ?? "invited",
     labor_cost_rate_cents: row.labor_cost_rate_cents ?? 0,
@@ -550,7 +658,7 @@ export async function listTeamMembers(
     .from("memberships")
     .select(
       `
-      id, org_id, user_id, role_id, status, project_scope, last_active_at, created_at, invited_by,
+      id, org_id, user_id, role_id, status, project_scope, division_scope, last_active_at, created_at, invited_by,
       labor_cost_rate_cents, labor_bill_rate_cents, labor_burden_multiplier, labor_is_billable_default,
       user:app_users!memberships_user_id_fkey(id, email, full_name, avatar_url),
       role:roles!memberships_role_id_fkey(key, label),
@@ -573,8 +681,9 @@ export async function listTeamMembers(
   const mfaEnabledByUser = await mapMfaEnabledByUser(serviceClient, userIds)
   const membershipIds = (data ?? []).map((row: any) => row.id).filter(Boolean)
   const permissionOverridesByMembership = await mapPermissionOverrides(serviceClient, membershipIds)
+  const divisionIdsByMembership = await mapMembershipDivisions(serviceClient, membershipIds)
 
-  return (data ?? []).map((row) => mapTeamMember(row, projectCounts, mfaEnabledByUser, permissionOverridesByMembership))
+  return (data ?? []).map((row) => mapTeamMember(row, projectCounts, mfaEnabledByUser, permissionOverridesByMembership, divisionIdsByMembership))
 }
 
 export async function updateMemberLaborSettings({
@@ -768,13 +877,14 @@ export async function inviteTeamMember({
       role_id: roleId,
       status: "invited",
       project_scope: parsed.projectScope,
+      division_scope: parsed.divisionScope,
       invited_by: userId,
       invite_token: inviteToken,
       invite_token_expires_at: inviteTokenExpiresAt.toISOString(),
     })
     .select(
       `
-      id, org_id, user_id, role_id, status, project_scope, last_active_at, created_at, invited_by,
+      id, org_id, user_id, role_id, status, project_scope, division_scope, last_active_at, created_at, invited_by,
       user:app_users!memberships_user_id_fkey(id, email, full_name, avatar_url),
       role:roles!memberships_role_id_fkey(key, label),
       invited_by_user:app_users!memberships_invited_by_fkey(id, email, full_name, avatar_url)
@@ -787,6 +897,13 @@ export async function inviteTeamMember({
   }
 
   const savedOverrides = await replacePermissionOverrides(serviceClient, data.id as string, parsed.permissionOverrides)
+  const savedDivisionIds = await replaceMembershipDivisions({
+    client: serviceClient,
+    membershipId: data.id as string,
+    orgId: resolvedOrgId,
+    scope: parsed.divisionScope,
+    divisionIds: parsed.divisionIds,
+  })
 
   // Send invite email with our token-based link
   const orgBrand = await getOrgBrand(serviceClient, resolvedOrgId)
@@ -822,23 +939,33 @@ export async function inviteTeamMember({
   const projectCounts = await mapProjectCounts(serviceClient, resolvedOrgId)
   const selectedUser = Array.isArray((data as any).user) ? (data as any).user[0] : (data as any).user
   const mfaEnabledByUser = await mapMfaEnabledByUser(serviceClient, [selectedUser?.id].filter(Boolean))
-  return mapTeamMember(data, projectCounts, mfaEnabledByUser, { [data.id as string]: savedOverrides })
+  return mapTeamMember(
+    data,
+    projectCounts,
+    mfaEnabledByUser,
+    { [data.id as string]: savedOverrides },
+    { [data.id as string]: savedDivisionIds },
+  )
 }
 
 export async function updateMemberRole({
   membershipId,
   role,
   projectScope,
+  divisionScope,
+  divisionIds,
   permissionOverrides,
   orgId,
 }: {
   membershipId: string
   role: OrgRole
   projectScope?: "all" | "assigned"
+  divisionScope?: "all" | "assigned"
+  divisionIds?: string[]
   permissionOverrides?: MemberPermissionOverride[]
   orgId?: string
 }) {
-  const parsed = updateMemberRoleSchema.parse({ role, projectScope, permissionOverrides })
+  const parsed = updateMemberRoleSchema.parse({ role, projectScope, divisionScope, divisionIds, permissionOverrides })
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAuthorization({
     permission: "org.admin",
@@ -866,10 +993,11 @@ export async function updateMemberRole({
   // Never let the org lose its last admin via a demotion.
   await assertNotLastOrgAdmin({ client: serviceClient, orgId: resolvedOrgId, membershipId, nextRoleId: roleId })
 
-  const updatePayload: { role_id: string; project_scope?: string } = { role_id: roleId }
+  const updatePayload: { role_id: string; project_scope?: string; division_scope?: string } = { role_id: roleId }
   if (parsed.projectScope !== undefined) {
     updatePayload.project_scope = parsed.projectScope
   }
+  if (parsed.divisionScope !== undefined) updatePayload.division_scope = parsed.divisionScope
 
   const { data, error } = await supabase
     .from("memberships")
@@ -878,7 +1006,7 @@ export async function updateMemberRole({
     .eq("id", membershipId)
     .select(
       `
-      id, org_id, user_id, role_id, status, project_scope, last_active_at, created_at, invited_by,
+      id, org_id, user_id, role_id, status, project_scope, division_scope, last_active_at, created_at, invited_by,
       user:app_users!memberships_user_id_fkey(id, email, full_name, avatar_url),
       role:roles!memberships_role_id_fkey(key, label)
     `,
@@ -893,6 +1021,16 @@ export async function updateMemberRole({
     parsed.permissionOverrides === undefined
       ? await mapPermissionOverrides(serviceClient, [data.id as string]).then((map) => map[data.id as string] ?? [])
       : await replacePermissionOverrides(serviceClient, data.id as string, parsed.permissionOverrides)
+  const currentDivisionMap = await mapMembershipDivisions(serviceClient, [data.id as string])
+  const savedDivisionIds = parsed.divisionScope === undefined && parsed.divisionIds === undefined
+    ? currentDivisionMap[data.id as string] ?? []
+    : await replaceMembershipDivisions({
+        client: serviceClient,
+        membershipId: data.id as string,
+        orgId: resolvedOrgId,
+        scope: parsed.divisionScope ?? (data.division_scope === "assigned" ? "assigned" : "all"),
+        divisionIds: parsed.divisionIds ?? currentDivisionMap[data.id as string] ?? [],
+      })
 
   await recordAudit({
     orgId: resolvedOrgId,
@@ -907,7 +1045,13 @@ export async function updateMemberRole({
   const projectCounts = await mapProjectCounts(supabase, resolvedOrgId)
   const selectedUser = Array.isArray((data as any).user) ? (data as any).user[0] : (data as any).user
   const mfaEnabledByUser = await mapMfaEnabledByUser(serviceClient, [selectedUser?.id].filter(Boolean))
-  return mapTeamMember(data, projectCounts, mfaEnabledByUser, { [data.id as string]: savedOverrides })
+  return mapTeamMember(
+    data,
+    projectCounts,
+    mfaEnabledByUser,
+    { [data.id as string]: savedOverrides },
+    { [data.id as string]: savedDivisionIds },
+  )
 }
 
 async function updateMemberStatus(membershipId: string, status: "active" | "invited" | "suspended", orgId?: string) {
@@ -941,7 +1085,7 @@ async function updateMemberStatus(membershipId: string, status: "active" | "invi
     .eq("id", membershipId)
     .select(
       `
-      id, org_id, user_id, role_id, status, project_scope, last_active_at, created_at, invited_by,
+      id, org_id, user_id, role_id, status, project_scope, division_scope, last_active_at, created_at, invited_by,
       user:app_users!memberships_user_id_fkey(id, email, full_name, avatar_url),
       role:roles!memberships_role_id_fkey(key, label)
     `,

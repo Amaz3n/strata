@@ -6,10 +6,30 @@
 > against the repo on 2026-07-16; re-verify against live schema before writing
 > migrations (Supabase MCP `list_tables` / SELECT-only `execute_sql`).
 
-## STATUS — NOT STARTED
+## STATUS — IMPLEMENTED; DATABASE DEPLOYED; QA ACCEPTANCE PENDING
 
-No code, no migrations. `docs/production-expansion/` contains only `00-MASTER` and
-this doc at time of writing.
+Updated 2026-07-18. All four implementation phases are present in the repository.
+The following additive migrations were applied to the live Arc Supabase project
+through the Supabase MCP and verified after deployment:
+
+- [x] `budget_templates`
+- [x] `house_plans`
+- [x] `plan_rbac_catalog`
+- [x] `plan_fk_indexes` (post-deployment performance-advisor hardening)
+
+Automated verification is complete: `pnpm lint`, `pnpm exec tsc --noEmit`,
+`pnpm test:financials` (65/65), `pnpm test:land` (7/7), and `git diff --check`
+passed. Live verification confirmed all eight WS02 tables, RLS policies and
+grants, the security-invoker release RPC, the four `plan.*` permissions, lot
+plan pins, and all 18 advisor-requested FK-leading indexes. No new security or
+unindexed-foreign-key findings remain.
+
+Still open:
+
+- [ ] Run each phase's acceptance scenario with representative records in the
+  dedicated internal QA org.
+- [ ] Run the existing budget-from-estimate and undated `applyTemplate`
+  regression flows manually in that QA org.
 
 ## Mission
 
@@ -700,6 +720,8 @@ mutations live here), not a project desk.
    prod — verify with `list_tables` first; if absent, STOP and coordinate.
 3. `<ts>_plan_rbac_catalog.sql` — RBAC catalog seed extension for the four
    `plan.*` keys.
+4. `<ts>_plan_fk_indexes.sql` — FK-leading indexes identified by the Supabase
+   performance advisor after applying Migrations 1–3.
 
 All additive; no destructive statements. Write files to `supabase/migrations/`,
 then STOP for human approval before assuming tables exist (local env is
@@ -708,7 +730,7 @@ pending, and say so.
 
 ## Phases (each ends `pnpm lint` clean)
 
-**Phase 1 — Budget templates (neutral slice).**
+**Phase 1 — Budget templates (neutral slice) — IMPLEMENTED IN REPO.**
 Migration 1 + `budget-templates.ts` + validation + org-settings UI +
 "Start from template" and "Save as template" wiring in the project budget flow.
 *Accept:* create a 20-line template (mixed amount & qty basis); seed a
@@ -716,7 +738,7 @@ residential project's budget from it — draft review shows resolved amounts;
 `createBudget` totals match Σ resolved lines; cost-codes-off org gets
 one-line-per-template-line; save-as-template round-trips a project budget.
 
-**Phase 2 — Plan catalog.**
+**Phase 2 — Plan catalog — IMPLEMENTED IN REPO.**
 Migration 2 + `house-plans.ts` CRUD (plans, elevations, versions, takeoff
 grid) + `/plans` index + detail (Versions/Takeoff/Elevations tabs) + RBAC
 migration + search registration.
@@ -724,7 +746,7 @@ migration + search registration.
 enter a 30-line base takeoff + 4-line elevation-C delta; totals foot; a user
 without `plan.write` gets read-only; plan searchable from the command bar.
 
-**Phase 3 — Bundles + release + availability.**
+**Phase 3 — Bundles + release + availability — IMPLEMENTED IN REPO.**
 Bundle tab, `releasePlanVersion` snapshotting, immutability (trigger + service),
 supersede flow, availability matrix, `getPlanVersionDrift`.
 *Accept:* attach budget template + schedule template + 2 checklists + plan PDF;
@@ -734,7 +756,7 @@ indicator on v1, snapshot unchanged; create v2 (copy from v1), change qty,
 release → v1 superseded; availability matrix saves per-community base prices
 with effective dates.
 
-**Phase 4 — Instantiation engine.**
+**Phase 4 — Instantiation engine — IMPLEMENTED IN REPO.**
 `plan-instantiation.ts` all four steps + `applyScheduleTemplateSnapshot`
 refactor + schedule-template editor gains offset/duration fields + drawings
 queue path. Dev-only trigger: an "Instantiate plan" action on a

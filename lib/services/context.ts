@@ -1,3 +1,6 @@
+import "server-only"
+
+import { AsyncLocalStorage } from "node:async_hooks"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { isPlatformAdminId, isPlatformAdminUser } from "@/lib/auth/platform"
@@ -12,6 +15,17 @@ export interface OrgServiceContext {
   productTier: ProductTier
 }
 
+const trustedServiceContext = new AsyncLocalStorage<OrgServiceContext>()
+
+/**
+ * Runs permission-checked services from a trusted background worker while
+ * retaining the human actor who authorized the operation. Callers must load
+ * and validate the org, actor, and membership before entering this scope.
+ */
+export function runWithServiceOrgContext<T>(context: OrgServiceContext, work: () => Promise<T>) {
+  return trustedServiceContext.run(context, work)
+}
+
 async function hasLockedOrgBypassPermission(userId: string, email?: string | null) {
   if (isPlatformAdminId(userId, email ?? undefined)) {
     return true
@@ -24,6 +38,10 @@ export async function requireOrgContext(
   orgId?: string,
   options: { allowLocked?: boolean } = {},
 ): Promise<OrgServiceContext> {
+  const backgroundContext = trustedServiceContext.getStore()
+  if (backgroundContext && (!orgId || backgroundContext.orgId === orgId)) {
+    return backgroundContext
+  }
   const { supabase, orgId: resolvedOrgId, user, membership } = await requireOrgMembership(orgId)
 
   if (!options.allowLocked) {

@@ -19,6 +19,8 @@ import { SubPortalClient } from "./sub-portal-client"
 import { SubPortalSetupRequired } from "./sub-portal-setup-required"
 import type { ComplianceDocumentType } from "@/lib/types"
 import { getLatestPrequalificationWithClient } from "@/lib/services/prequalification"
+import { isPortalPayOnPoEnabled } from "@/lib/services/po-completions"
+import { listWarrantyVisitsForCompanyPortal } from "@/lib/services/warranty"
 
 interface SubPortalPageProps {
   params: Promise<{ token: string }>
@@ -92,7 +94,7 @@ export default async function SubPortalPage({ params }: SubPortalPageProps) {
   const supabase = createServiceSupabaseClient()
 
   // Load portal data and compliance data in parallel
-  const [data, complianceStatus, documentTypesResult, prequalification] = await Promise.all([
+  const [data, complianceStatus, documentTypesResult, prequalification, payOnPoEnabled, warrantyVisits] = await Promise.all([
     loadSubPortalData({
       orgId: access.org_id,
       projectId: access.project_id,
@@ -110,6 +112,8 @@ export default async function SubPortalPage({ params }: SubPortalPageProps) {
       .order("is_system", { ascending: false })
       .order("name", { ascending: true }),
     getLatestPrequalificationWithClient(supabase, access.org_id, access.company_id),
+    isPortalPayOnPoEnabled(access),
+    listWarrantyVisitsForCompanyPortal({ orgId: access.org_id, companyId: access.company_id, projectId: access.project_id }),
   ])
 
   // Add compliance status to data
@@ -144,12 +148,14 @@ export default async function SubPortalPage({ params }: SubPortalPageProps) {
       canUploadComplianceDocs={access.permissions.can_upload_compliance_docs ?? true}
       canUploadSubtierWaivers={access.permissions.can_upload_subtier_waivers ?? true}
       canWorkPunchItems={access.permissions.can_view_punch_items ?? false}
+      canViewPurchaseOrders={payOnPoEnabled}
       pinRequired={access.pin_required}
       complianceDocumentTypes={complianceDocumentTypes}
       workspace={workspace}
       inviteEmail={gateContext?.expectedEmail ?? ""}
       suggestedFullName={gateContext?.suggestedFullName ?? ""}
       prequalification={prequalification}
+      warrantyVisits={warrantyVisits}
     />
   )
 }

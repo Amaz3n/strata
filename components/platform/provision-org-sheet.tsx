@@ -73,6 +73,7 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
   const [collectionMethod, setCollectionMethod] = useState<"checkout" | "invoice">("checkout")
   const [sendInvites, setSendInvites] = useState(false)
   const [seedSampleProject, setSeedSampleProject] = useState(true)
+  const [seedSampleCommunity, setSeedSampleCommunity] = useState(false)
   const [teamMembers, setTeamMembers] = useState<TeamMemberDraft[]>([])
 
   const addTeamMember = () => {
@@ -156,6 +157,8 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
                           const value = event.target.value
                           if (value === "residential" || value === "commercial" || value === "production") {
                             setProductTier(value)
+                            setSeedSampleProject(value !== "production")
+                            setSeedSampleCommunity(value === "production")
                           }
                         }}
                         className={selectClassName}
@@ -172,17 +175,22 @@ export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }
                   </div>
                   <div className="flex items-center justify-between gap-3 border bg-muted/20 px-4 py-3">
                     <div className="grid gap-1.5">
-                      <Label htmlFor="platform-seed-sample-project" className="text-sm font-medium">
-                        Seed sample project
+                      <Label htmlFor={productTier === "production" ? "platform-seed-sample-community" : "platform-seed-sample-project"} className="text-sm font-medium">
+                        {productTier === "production" ? "Seed sample production community" : "Seed sample project"}
                       </Label>
-                      <p className="text-sm text-muted-foreground">Adds a Naples remodel sample so the workspace is useful on first login.</p>
+                      <p className="text-sm text-muted-foreground">
+                        {productTier === "production"
+                          ? "Adds Cypress Landing with plans, lots, options, price agreements, and six open-WIP houses."
+                          : "Adds a Naples remodel sample so the workspace is useful on first login."}
+                      </p>
                     </div>
-                    <Switch
-                      id="platform-seed-sample-project"
-                      checked={seedSampleProject}
-                      onCheckedChange={setSeedSampleProject}
-                    />
+                    {productTier === "production" ? (
+                      <Switch id="platform-seed-sample-community" checked={seedSampleCommunity} onCheckedChange={setSeedSampleCommunity} />
+                    ) : (
+                      <Switch id="platform-seed-sample-project" checked={seedSampleProject} onCheckedChange={setSeedSampleProject} />
+                    )}
                     <input type="hidden" name="seedSampleProject" value={seedSampleProject ? "true" : "false"} />
+                    <input type="hidden" name="seedSampleCommunity" value={seedSampleCommunity ? "true" : "false"} />
                   </div>
                 </section>
 

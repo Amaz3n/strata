@@ -5,7 +5,7 @@ import { buildApprovedCostInvoiceIdempotencyKey } from "@/lib/financials/approve
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { assertApprovedCostsMeetProjectFinancialRules } from "@/lib/services/project-financial-setup"
-import { enqueueInvoiceSync } from "@/lib/services/qbo-sync"
+import { enqueueInvoiceSync } from "@/lib/services/accounting-sync"
 import type { InvoiceDraft } from "@/lib/services/cost-plus"
 
 type ApprovedCostInvoiceStatus = "draft" | "saved" | "sent" | "partial" | "paid" | "overdue" | "void"

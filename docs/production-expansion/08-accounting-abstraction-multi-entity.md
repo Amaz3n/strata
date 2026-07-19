@@ -1,6 +1,7 @@
 # 08 — Accounting Abstraction & Multi-Entity Connections
 
-> **STATUS: NOT STARTED**
+> **STATUS: PHASES A–C + D1 IMPLEMENTED; ADDITIVE DATABASE CUTOVER LIVE;
+> APPLICATION DEPLOY AND SOAK-GATED CLEANUP PENDING (2026-07-19)**
 >
 > Platform workstream. Highest architectural risk in the production-expansion suite:
 > real customer money flows through the QBO sync every day, and this doc rewires the
@@ -9,6 +10,60 @@
 > `docs/commercial-expansion/09-platform-deferred-and-production.md` §A1, then the
 > QBO sharp-edges notes in the repo `CLAUDE.md`. This doc is self-contained for a
 > fresh executor, but those files are binding context.
+
+### Progress and deployment boundary (2026-07-19)
+
+The backward-compatible database cutover is live. The application code has not
+been deployed. Compatibility views keep the currently deployed QBO code working;
+the destructive B3/D2 files remain outside the active migration directory.
+
+- [x] **Phase A repository work:** provider contract and registry, QBO adapter and
+  file move, provider-neutral orchestration, target resolution rules, unconnected
+  silent-no-op behavior, and adapter/resolution regression tests.
+- [x] **Phase B repository + database work:** additive/cutover migration files B1–B3,
+  provider-neutral connection and sync-ledger services, id-preserving copy,
+  compatibility views/RPC, and direct consumers moved to the new names. B3 is a
+  destructive follow-up and is held under `supabase/pending-migrations/` so it
+  cannot be applied with B1/B2 accidentally. B1/B2 are live as migrations
+  `20260719011735` and `20260719011822`; both compatibility views remain active.
+- [x] **Phase C repository + database work:** multi-connection management UI, scoped entity
+  maps and precedence, dimension pickers, stability guard and audited override,
+  QBO import connection selection, RBAC/events migration, and connection-aware
+  sync/health/vendor resolution. C1/C2 are live as `20260719011920` and
+  `20260719012335`.
+- [x] **Connection-scoped counterparties:** `accounting_counterparty_links`
+  separates vendor/customer relationships from transaction sync state, so one
+  Arc company can link to a different vendor in each book without overwriting
+  another connection. Its 142-row live backfill is migration `20260719020641`.
+- [x] **Unconnected/export work:** entity-scoped AP bills/payments, aggregated job
+  cost, and balanced invoice revenue/cost journal exports with audit events.
+- [x] **Phase D1 database work:** neutral coding/ledger backfill is live as
+  `20260719012456`. D2
+  destructive column/RPC cleanup are authored locally. D2 is held under
+  `supabase/pending-migrations/` and is explicitly ineligible to apply before
+  Gate C.
+- [x] **Database security hardening:** Workstream RPC/trigger execute privileges
+  are service-only and missing FK indexes are covered (`20260719014231`,
+  `20260719014317`, `20260719021055`, `20260719021658`).
+- [ ] **Phase A production gate:** application deploy plus 48-hour baseline/soak.
+- [ ] **Phase B production gate:** application deploy, full QBO
+  push/import/CDC/webhook QA, next-day B3 cleanup, and soak.
+- [ ] **Phase C production gate:** two-connection sandbox proof and 14 consecutive
+  days of zero legacy/map divergence.
+- [ ] **Phase D application cleanup:** after Gate C, finish the source census that
+  repoints remaining transaction/UI reads from denormalized business-table
+  `qbo_*` columns to `accounting_sync_records`/`accounting_coding`, rerun the Gate
+  D grep and manual QA, then—and only then—apply D2. The currently authored D2
+  file is not production-safe while these reads remain.
+
+Live verification: all 14 legacy connection rows and all 1,728 sync rows are
+visible through both neutral tables and compatibility views. Patagonia
+Development LLC's connection id and realm are unchanged, status is active,
+refresh failures are zero, and `last_error` is null. Read-only gate queries are
+saved in `docs/production-expansion/08-accounting-soak-queries.sql`.
+
+Local verification: `pnpm lint`, TypeScript with `--noEmit`, the optimized Next.js
+production build, and `pnpm test:financials` all pass (95/95 tests).
 
 ## 1. Mission
 
@@ -310,7 +365,7 @@ export interface AccountingProvider {
     kind: "income" | "expense" | "payment" | "ap" }):
     Promise<Array<{ id: string; name: string }>>
   /** Find-or-create the provider-side counterparty for an Arc company/contact,
-   *  recording it as an accounting_sync_records row (entity_type 'vendor'|'customer'). */
+   *  recording it as a connection-scoped accounting_counterparty_links row. */
   resolveCounterparty(input: { connectionId: string; role: "customer" | "vendor";
     companyId?: string; displayName: string; projectId?: string }):
     Promise<{ id: string; name: string }>
@@ -488,9 +543,11 @@ table. Justification in §5 (cutover safety). Shape changes:
 - `qbo_id` → `external_id`, `qbo_sync_token` → `external_version` (view aliases
   old names during cutover).
 - `connection_id` re-pointed to `accounting_connections(id)`.
-- Unique key becomes `(org_id, entity_type, entity_id)` **unchanged** — one
-  external counterpart per Arc row; the stability guardrail (§3.4) is what keeps
-  that counterpart on one set of books. `(connection_id, external_id)` index kept.
+- Unique key remains `(org_id, entity_type, entity_id)` for transaction records;
+  the stability guardrail (§3.4) keeps a transaction on one set of books.
+  Reusable vendor/customer relationships live in `accounting_counterparty_links`,
+  whose unique key includes `connection_id`, so the same Arc company can be a
+  different vendor in several books. `(connection_id, external_id)` index kept.
 - `qbo_claim_sync_create` RPC → `accounting_claim_sync_create` (same body, new
   table; old name kept as a delegating wrapper until code cutover completes, then
   dropped).
@@ -513,7 +570,7 @@ motivates a generalization. The master's rule is "no NEW qbo_* columns", not
 | `project_expenses/vendor_bills . qbo_class_id/_name` (per-row overrides) | **MIGRATE** into the same `accounting_coding` jsonb (`"class"` key) — these are per-transaction dimension overrides, distinct from the project-level map. |
 | `project_expenses.qbo_transaction_type` | **KEEP, renamed conceptually only** — it records which QBO entity shape the row round-trips as ('purchase','bill','journal_entry'). It is provider metadata → moves to `accounting_sync_records.metadata.transaction_shape` during backfill; column dropped. |
 | `projects.qbo_class_id/_name, qbo_customer_id/_name` | **MIGRATE to `accounting_entity_map` project-scope rows** (`dimensions.class`, `dimensions.customer`), then **DELETE** — this is the §5.7 flagship. `qbo-project-link.ts` reimplemented over the map (same DTO), then inlined/deleted. |
-| `companies.qbo_vendor_id/_name/_synced_at/_sync_status` | **MIGRATE to `accounting_sync_records`** rows (`entity_type='vendor'`, `entity_id=company_id`, status mapped from `qbo_vendor_sync_status`), then **DELETE**. Directory UI reads via a `getCompanyAccountingLinks(companyIds)` helper (multi-connection: a company can be a vendor in several books). |
+| `companies.qbo_vendor_id/_name/_synced_at/_sync_status` | **MIGRATE to `accounting_counterparty_links`** rows (`role='vendor'`, `entity_type='company'`, keyed by connection), then **DELETE**. A transitional sync-ledger relationship row is dual-written until D2. Directory UI reads via `getCompanyAccountingLinks(companyIds)`; a company can be a vendor in several books without collisions. |
 | `invoices.metadata.qbo_customer_id` (composer override) | **MIGRATE key name** to `metadata.accounting_customer_ref` during the same phase; write path updated first, one-time backfill for rows still carrying the old key. |
 
 ### 3.7 Capability matrix (initial)
@@ -811,16 +868,19 @@ override), `accounting_export`. None join `EMAIL_NOTIFICATION_TYPES`.
 |---|---|---|---|
 | B1 | `…_accounting_connections.sql` | table + indexes + RLS + data copy from `qbo_connections` (id-preserving) + `qbo_connections` dropped-and-viewed + `update_qbo_cdc_cursor` re-point | B |
 | B2 | `…_accounting_sync_records.sql` | rename + `provider` + column renames + compat view + `accounting_claim_sync_create` + delegating wrapper | B |
-| B3 | `…_accounting_drop_compat_views.sql` | drop both views + wrapper RPC (applied only after B deploy verified) | B+1 |
+| B3 | `supabase/pending-migrations/…_accounting_drop_compat_views.sql` | drop both views + wrapper RPC (promote into `supabase/migrations/` with a fresh timestamp only after B deploy is verified) | B+1 |
 | C1 | `…_accounting_entity_map.sql` | table + indexes + RLS + backfill from `projects.qbo_*` + org-default rows + stability trigger | C |
 | C2 | `…_accounting_rbac_and_events.sql` | RBAC catalog seed entries | C |
 | D1 | `…_accounting_coding_backfill.sql` | `accounting_coding` jsonb on `project_expenses`/`vendor_bills` + backfill + companies→sync-records backfill + `metadata.transaction_shape` + invoice `metadata` key rename | D |
-| D2 | `…_drop_qbo_columns.sql` | drop every §3.6 delete set + legacy partial indexes + new sync-status index + `replace_invoice_lines_atomic` rewrite | D |
+| C3 | `…_accounting_counterparty_links.sql` | connection-scoped vendor/customer link table + RLS + validation + backfill from transitional ledger relationships | C |
+| H1 | `…_accounting_security_hardening.sql`, `…_accounting_trigger_function_privileges.sql`, `…_accounting_fk_indexes_and_qbo_trigger_lockdown.sql` | service-only RPC/trigger privileges + FK indexes | A–D |
+| D2 | `supabase/pending-migrations/…_drop_qbo_columns.sql` | drop every §3.6 delete set + legacy partial indexes + new sync-status index + `replace_invoice_lines_atomic` rewrite; promote with a fresh timestamp only after Gate C and the source census | D |
 
 Rules: applied via `apply_migration` with repo copies; every backfill idempotent
 (`on conflict do nothing` / `where not exists`); B1/B2 in single transactions;
-destructive files (B3, D2) always a separate later migration from the additive
-ones. Divisions/communities FKs on the entity map are added by ws-01's own
+destructive files (B3, D2) remain outside the active migrations directory until
+their gates pass, then are promoted with a fresh timestamp as separate later
+migrations. Divisions/communities FKs on the entity map are added by ws-01's own
 migrations if 01 lands first, else C1 creates the columns FK-less and 01 adds the
 constraints — coordinate via the master's execution order.
 

@@ -6,7 +6,8 @@ import { createProject, listProjects, updateProject, archiveProject, deleteProje
 import { getProjectScheduleSummaries, listScheduleItemsByProject } from "@/lib/services/schedule"
 import { projectInputSchema, projectUpdateSchema } from "@/lib/validation/projects"
 import { requireOrgContext } from "@/lib/services/context"
-import { QBOClient, type QBOClassOption } from "@/lib/integrations/accounting/qbo-api"
+import { QBOClient, type QBOClassOption } from "@/lib/integrations/accounting/qbo/client"
+import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 import type { Contact, ProjectScheduleSummary, ScheduleItem } from "@/lib/types"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
@@ -49,18 +50,18 @@ export async function listProjectClientContactsAction(): Promise<Contact[]> {
       return (data ?? []) as Contact[]
 }
 
-export async function listProjectQboClassesAction(): Promise<QBOClassOption[]> {
+export async function listProjectQboClassesAction(connectionId?: string | null): Promise<QBOClassOption[]> {
       const { orgId } = await requireOrgContext()
-      const client = await QBOClient.forOrg(orgId)
+      const client = connectionId ? await QBOClient.forConnection(connectionId) : await QBOClient.forOrg(orgId)
       if (!client) return []
       return client.listClasses().catch(() => [])
 }
 
 // Typeahead for the project settings "QuickBooks customer" picker. QBO is the source of truth, so we
 // query it live by DisplayName. Returns connected=false when QBO isn't linked.
-export async function searchProjectQboCustomersAction(term: string) {
+export async function searchProjectQboCustomersAction(term: string, connectionId?: string | null) {
       const { orgId } = await requireOrgContext()
-      const client = await QBOClient.forOrg(orgId).catch(() => null)
+      const client = await (connectionId ? QBOClient.forConnection(connectionId) : QBOClient.forOrg(orgId)).catch(() => null)
       if (!client) return { connected: false, customers: [] as Awaited<ReturnType<QBOClient["searchCustomers"]>> }
       try {
         const customers = await client.searchCustomers(term)
@@ -78,15 +79,16 @@ export async function getProjectAccountingCustomerPreviewAction(
   projectId: string,
 ): Promise<{ hasDefault: boolean; customerName: string | null }> {
       const { supabase, orgId } = await requireOrgContext()
+      const target = await resolveAccountingTarget({ orgId, projectId })
       const { data: project } = await supabase
         .from("projects")
-        .select("qbo_customer_id, qbo_customer_name, client_id, name")
+        .select("client_id, name")
         .eq("org_id", orgId)
         .eq("id", projectId)
         .maybeSingle()
       if (!project) return { hasDefault: false, customerName: null }
-      if (project.qbo_customer_id) {
-        return { hasDefault: true, customerName: project.qbo_customer_name ?? null }
+      if (target?.dimensions.customer?.id) {
+        return { hasDefault: true, customerName: target.dimensions.customer.name ?? null }
       }
       let customerName: string | null = null
       if (project.client_id) {
@@ -104,6 +106,7 @@ export async function getProjectAccountingCustomerPreviewAction(
 // Create a customer directly in QuickBooks from project settings (with optional mailing address), so
 // new customers are born in the source of truth. Returns the new customer to set as the project default.
 export async function createProjectQboCustomerAction(input: {
+  connectionId?: string | null
   name: string
   email?: string | null
   line1?: string | null
@@ -115,7 +118,7 @@ export async function createProjectQboCustomerAction(input: {
       const { orgId } = await requireOrgContext()
       const name = input.name?.trim()
       if (!name) throw new Error("Customer name is required")
-      const client = await QBOClient.forOrg(orgId)
+      const client = input.connectionId ? await QBOClient.forConnection(input.connectionId) : await QBOClient.forOrg(orgId)
       if (!client) throw new Error("QuickBooks is not connected")
       return client.createCustomerOption({
         name,

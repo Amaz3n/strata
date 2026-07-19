@@ -214,6 +214,130 @@ accounting_connections           (provider-agnostic, MANY per org, entity-mapped
 | 08 | `08-accounting-abstraction-multi-entity.md` | Provider-agnostic accounting layer: `AccountingProvider` interface extracted from `qbo-sync.ts`, `accounting_connections` (many per org) + entity/dimension mapping (division/community/project), migration of qbo_* tables/columns, QBO adapter first, second adapter target (Sage Intacct) speced not built | — (platform track; 01 consumes its mapping) |
 | 09 | `09-onboarding-provisioning-migration.md` | Onboarding a big builder end-to-end: provisioning flow (org → divisions → accounting connections → cost codes → plan library → price book → communities/lots → open-WIP migration for in-flight houses → team/RBAC), importers (CSV + AI-assisted from MarkSystems/NEWSTAR/Buildertrend exports), phased go-live playbook (pilot community/division), admin tooling | all (executes last, drafts early) |
 
+### Current implementation progress — updated 2026-07-18
+
+- [x] Workstream 01 database prerequisites required by Workstream 02 were
+  verified in the live Arc Supabase project. This is not a fresh audit of every
+  Workstream 01 acceptance scenario.
+- [x] Workstream 02 implementation is complete in the repository and its four
+  additive migrations are deployed: budget templates, house plans/bundles,
+  plan RBAC, and FK-index hardening. Automated code checks and live schema,
+  RLS, RPC, RBAC, and advisor verification passed.
+- [ ] Workstream 02's dedicated QA-org acceptance scenarios and the two manual
+  regression flows remain to be executed with representative data.
+- [x] Workstream 03 repository implementation is complete: additive catalog/RBAC
+  migrations, Design Studio desk, buyer group/package flow, schedule-derived
+  cutoffs and reminders, hard mutation gates, and fee-bearing CO integration.
+  `pnpm lint`, TypeScript, and the 70-test financial suite pass.
+- [x] Workstream 03 is deployed to the live Arc Supabase project. The catalog,
+  RBAC, and FK-index hardening migrations were recorded as versions
+  `20260718192207`, `20260718192332`, and `20260718192523`. Live verification
+  confirmed all seven new tables, 17 evolved columns, RLS membership policies,
+  authenticated CRUD grants, five permissions, and the 13-permission design
+  studio coordinator role. Supabase security advisors report no findings on the
+  Workstream 03 tables; new foreign-key paths are fully indexed.
+- [ ] Workstream 03's dedicated QA-org walkthrough, manual residential regression,
+  and 400-lot scale acceptance remain to be executed with representative data.
+- [x] Workstream 04 repository implementation is complete: effective-dated vendor
+  price agreements and rebid awards, idempotent plan/option PO generation with a
+  derived budget and resolvable exception queue, thresholded VPOs and SQL variance
+  analysis, pay-on-PO completion-to-approved-bill flow, Purchasing desk, trade
+  portal, mobile VPO API, purchasing-manager RBAC, search, notifications, and cron.
+  `pnpm lint`, TypeScript, and the 77-test financial suite pass.
+- [x] Workstream 04 is deployed to the live Arc Supabase project. Its four feature
+  migrations and FK-index hardening migration were recorded as versions
+  `20260718210156`, `20260718210206`, `20260718210237`, `20260718210240`,
+  and `20260718210409`. Live verification confirmed all six tables, evolved
+  columns, RLS membership policies, RBAC catalog, restricted privileged RPCs,
+  variance RPC grants, and new-FK coverage. Supabase security advisors report no
+  Workstream 04 findings. Two legacy bid packages retain project+prospect context;
+  the new context constraints are `NOT VALID` so new/changed rows are enforced
+  without destructive production cleanup.
+- [ ] Workstream 04's QA-org financial/portal/QBO regression, representative-data
+  workflow walkthrough, and 400-lot scale acceptance remain.
+- [x] Workstream 05 repository implementation is complete: start-package hard
+  gates, resumable release orchestration, even-flow slots and release board,
+  superintendent assignment and My Houses desktop/mobile, trade look-aheads and
+  schedule-change digests, reporting, RBAC, search, notifications, and cron.
+  `pnpm lint`, TypeScript, production build, the 4-test starts suite, and the
+  77-test financial suite pass.
+- [x] Workstream 05 is deployed to the live Arc Supabase project. Its four feature
+  migrations and FK-index hardening migration were recorded as versions
+  `20260718214633`, `20260718214636`, `20260718214643`, `20260718214710`, and
+  `20260718214849`. Live verification confirmed all five tables,
+  `projects.superintendent_id`, RLS membership policies, explicit Data API
+  grants, RBAC catalog, and complete new-FK coverage. Supabase security and
+  relevant performance advisors report no Workstream 05 findings.
+- [ ] Workstream 05 QA-org workflow walkthrough and 400-lot scale acceptance
+  remain pending.
+- [x] Workstream 06 repository implementation is complete: reservations/spec
+  inventory, incentives and price sheets, server-priced purchase agreements on
+  contracts + e-sign, structural-lock execution handshake, Buyer-portal closing
+  presentation, closing checklist/settlement on the unified invoice and payment
+  rails, community/project workbenches, Sales desk, RBAC, search, events, and
+  notifications. `pnpm lint`, TypeScript, and the 81-test financial suite pass.
+- [x] Workstream 06 is deployed to the live Arc Supabase project. Its three
+  feature/RBAC migrations and FK-index hardening migration were recorded as
+  `20260718225507`, `20260718225517`, `20260718225551`, and `20260718230233`.
+  Live verification confirmed all four tables, RLS policies and grants, the
+  backlog RPC, purchase-agreement contract/e-sign support, RBAC catalog, and
+  complete new-FK coverage. Supabase security and relevant performance advisors
+  report no Workstream 06 findings.
+- [ ] Workstream 06 QA-org end-to-end, signing-email delivery, mixed-posture
+  portal visual regression, and 400-lot scale acceptance remain pending.
+- [x] Workstream 07 repository implementation is complete: 1-2-10 coverage and
+  closing enrollment, SLA-based service intake/dispatch, internal-tech and trade
+  visits across desk/mobile/buyer/sub portals, buyer sign-off, negative-credit
+  backcharges and recovery rules, defect/cost analytics and cost-dump guard,
+  RBAC, search, notifications, email, and cron. `pnpm lint`, TypeScript, and all
+  86 financial tests pass.
+- [x] Workstream 07 is deployed to the live Arc Supabase project. Its four
+  feature/RBAC migrations and FK-index hardening migration were recorded as
+  `20260719000440`, `20260719000706`, `20260719000726`, `20260719000734`, and
+  `20260719000912`. Live verification confirmed all eight new tables, evolved
+  request fields, RLS policies and explicit grants, restricted numbering and
+  analytics RPCs, RBAC catalog, executable analytics, and complete warranty FK
+  coverage. Security advisors report no warranty findings; relevant performance
+  notices are only expected unused indexes on the new tables.
+- [ ] Workstream 07 QA-org portal/email/mobile/visual walkthrough, seeded
+  analytics and 500-row scale acceptance remain pending. Outbound vendor-credit
+  sync also remains an explicit Workstream 08 prerequisite because the current
+  QBO adapter intentionally blocks outbound credits; Arc-native backcharge and
+  recovery behavior is complete.
+- [x] Workstream 08 Phases A–C and D1 are implemented: provider interface and QBO
+  adapter extraction, neutral orchestration/connection/sync-ledger services,
+  multi-connection entity mapping and admin UI, connection-aware import and sync,
+  RBAC/events, unconnected entity-scoped exports, fixture-backed safety tests, and
+  the additive/cutover migration chain. `pnpm lint`, TypeScript, and all 95
+  financial/accounting tests pass. Connection-scoped counterparty links prevent
+  vendor/customer collisions across multiple books.
+- [x] Workstream 08's backward-compatible database cutover is live: B1/B2/C1/C2,
+  D1, counterparty-link backfill, and security/FK-index hardening are applied.
+  Compatibility views expose all 14 connections and 1,728 sync rows to the old
+  application. Patagonia Development LLC remains active on its original QBO
+  connection and realm with zero refresh failures and no connection error.
+- [ ] Workstream 08 application deployment and Production Gates A/B/C remain,
+  including the mandatory 48-hour baseline and 14-day zero-divergence soak. The
+  remaining business-table `qbo_*` source census and destructive D2 application
+  intentionally remain blocked behind Gate C. B3 and D2 are held outside the
+  active migration directory under `supabase/pending-migrations/`, so a blanket
+  migration command cannot apply either gated cleanup prematurely.
+- [x] Workstream 09 repository implementation is complete: code-catalog onboarding
+  stages and 15-row readiness evidence; seven idempotent staged CSV importers with
+  mapping profiles, dry-run correction grid, AI suggest-only headers, and domain
+  RBAC; the 186-row NAHB hierarchy; current-state-only Open-WIP cutover; and the
+  resettable Cypress Landing production sample community.
+- [x] Workstream 09's additive database deployment is live as migrations
+  `20260719112607`, `20260719112644`, and `20260719112756`. Live verification
+  confirmed four RLS-enabled tables and policies, all intended permission grants,
+  and covering indexes. Security and performance advisors report no Workstream 09
+  security or unindexed-FK findings. Lint, TypeScript, 6 onboarding tests, and all
+  95 financial/accounting tests pass.
+- [ ] Workstream 09 signed-in QA-org acceptance remains: upload/map/fix/commit and
+  live-model walkthroughs, 5k-row timing, the synthetic 250-project/400-lot audit,
+  a full simulated onboarding through the first Arc-native start, and visual/dark-
+  mode review. No customer or production org was seeded for acceptance testing.
+
 **Execution order:** 08 and 01 start in parallel (08 is platform work everything
 financial rides on; do the interface extraction + multi-connection before 04/06 post
 money). Then 01 → 02 → {03, 04} → 05 → 06 → 07. 09 is drafted alongside 01 and executed

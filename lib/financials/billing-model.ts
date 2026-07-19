@@ -8,7 +8,7 @@ export type ProjectBillingModel =
   | "time_and_materials"
 
 export type FinancialLandingPage = "summary" | "review" | "receivables" | "budget" | "forecast"
-export type OwnerBillingBasis = "draws" | "progress" | "costs" | "costs_plus_fee" | "time_materials"
+export type OwnerBillingBasis = "draws" | "progress" | "closing" | "costs" | "costs_plus_fee" | "time_materials"
 export type FeePresentation = "embedded" | "separate_total" | "separate_by_code"
 
 export interface ProjectFinancialFeatureConfig {
@@ -25,7 +25,31 @@ export interface ProjectFinancialFeatureConfig {
   ownerBillingBasis: OwnerBillingBasis
 }
 
-type BillingSource = Pick<Project, "status" | "billing_contract" | "financial_settings"> | Contract | null | undefined
+type BillingContractSource = Partial<
+  Pick<
+    Contract,
+    | "contract_type"
+    | "fixed_fee_cents"
+    | "gmp_cents"
+    | "snapshot"
+    | "open_book"
+    | "requires_client_cost_approval"
+  >
+>
+
+type BillingSource =
+  | {
+      status?: Project["status"]
+      property_type?: Project["property_type"]
+      billing_contract?: BillingContractSource | null
+      financial_settings?: {
+        billing_model?: ProjectBillingModel
+        fixed_price_billing_basis?: "draws" | "progress" | null
+      } | null
+    }
+  | BillingContractSource
+  | null
+  | undefined
 
 export function isCostDrivenBillingModel(model: ProjectBillingModel) {
   return (
@@ -61,7 +85,7 @@ export function resolveContractFeePresentation(
   return normalizeFeePresentation(contract?.fee_presentation) ?? normalizeFeePresentation(contract?.snapshot?.fee_presentation) ?? "embedded"
 }
 
-function getContract(source: BillingSource, explicitContract?: Contract | null) {
+function getContract(source: BillingSource, explicitContract?: BillingContractSource | null): BillingContractSource | null {
   if (explicitContract) return explicitContract
   if (!source) return null
   if ("contract_type" in source) return source
@@ -69,7 +93,7 @@ function getContract(source: BillingSource, explicitContract?: Contract | null) 
   return null
 }
 
-export function resolveProjectBillingModel(source: BillingSource, explicitContract?: Contract | null): ProjectBillingModel {
+export function resolveProjectBillingModel(source: BillingSource, explicitContract?: BillingContractSource | null): ProjectBillingModel {
   if (source && "financial_settings" in source) {
     const explicitModel = source.financial_settings?.billing_model
     if (explicitModel === "cost_plus_fixed_fee") return "cost_plus_fixed_fee"
@@ -109,6 +133,12 @@ export function getProjectFinancialFeatureConfig(
   const isCostDriven = isCostDrivenBillingModel(billingModel)
 
   if (billingModel === "fixed_price") {
+    const isPurchaseAgreement = contract?.contract_type === "purchase_agreement"
+    const productionWithoutContract =
+      source != null &&
+      "property_type" in source &&
+      source.property_type === "production" &&
+      contract == null
     const progressBilling =
       source != null &&
       "financial_settings" in source &&
@@ -121,10 +151,10 @@ export function getProjectFinancialFeatureConfig(
       showExpenses: false,
       showGenerateFromCosts: false,
       showOpenBook: false,
-      showDraws: !progressBilling,
+      showDraws: !isPurchaseAgreement && !progressBilling && !productionWithoutContract,
       showGmpForecast: false,
       requireCostApproval: false,
-      ownerBillingBasis: progressBilling ? "progress" : "draws",
+      ownerBillingBasis: isPurchaseAgreement ? "closing" : progressBilling ? "progress" : "draws",
     }
   }
 

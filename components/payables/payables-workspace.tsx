@@ -56,7 +56,7 @@ import {
   syncProjectVendorBillToQBOAction,
   updateProjectVendorBillStatusAction,
 } from "@/app/(app)/projects/[id]/payables/actions"
-import { qboTxnUrl } from "@/lib/integrations/accounting/qbo-links"
+import { qboTxnUrl } from "@/lib/integrations/accounting/qbo/links"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import {
   getPayableSyncBlockReason,
@@ -649,14 +649,9 @@ export function PayablesWorkspace({
       return
     }
     startTransition(async () => {
-      const result = unwrapAction(await syncProjectVendorBillToQBOAction(projectId, selectedBill.id))
-      if (result.success) {
-        setOptimisticSyncedBillIds((prev) => new Set(prev).add(selectedBill.id))
-        toast.success("Synced to QuickBooks")
-      } else {
-        clearOptimisticSync(selectedBill.id)
-        toast.error(result.error ?? "QuickBooks sync failed")
-      }
+      unwrapAction(await syncProjectVendorBillToQBOAction(projectId, selectedBill.id))
+      setOptimisticSyncedBillIds((prev) => new Set(prev).add(selectedBill.id))
+      toast.success("Synced to QuickBooks")
       onChanged()
     })
   }

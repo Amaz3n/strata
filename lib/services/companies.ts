@@ -65,7 +65,17 @@ const emptyVendorFinancialSummary = (trailingDays: number): VendorFinancialSumma
   can_view_bills: false,
 })
 
-function mapCompany(row: any): Company {
+export type CompanyAccountingLink = {
+  connection_id: string
+  provider: string
+  external_id: string
+  external_name: string | null
+  last_synced_at: string | null
+  status: string
+  metadata: Record<string, unknown> | null
+}
+
+function mapCompany(row: any, accountingLink?: CompanyAccountingLink | null): Company {
   const metadata = row?.metadata ?? {}
   const contactCount = Array.isArray(row?.contact_company_links) && row.contact_company_links[0]?.count != null ? row.contact_company_links[0].count : undefined
 
@@ -86,10 +96,10 @@ function mapCompany(row: any): Company {
     default_payment_terms: row.default_payment_terms ?? metadata.default_payment_terms ?? undefined,
     internal_notes: row.internal_notes ?? metadata.internal_notes ?? undefined,
     notes: row.notes ?? metadata.notes ?? undefined,
-    qbo_vendor_id: row.qbo_vendor_id ?? metadata.qbo_vendor_id ?? undefined,
-    qbo_vendor_name: row.qbo_vendor_name ?? metadata.qbo_vendor_name ?? undefined,
-    qbo_vendor_synced_at: row.qbo_vendor_synced_at ?? metadata.qbo_vendor_synced_at ?? undefined,
-    qbo_vendor_sync_status: row.qbo_vendor_sync_status ?? metadata.qbo_vendor_sync_status ?? undefined,
+    qbo_vendor_id: accountingLink?.external_id || undefined,
+    qbo_vendor_name: accountingLink?.external_name ?? (accountingLink?.metadata?.display_name as string | undefined) ?? undefined,
+    qbo_vendor_synced_at: accountingLink?.last_synced_at ?? undefined,
+    qbo_vendor_sync_status: accountingLink?.status ?? undefined,
     tax_id_last4: row.tax_id_last4 ?? undefined,
     tax_entity_type: row.tax_entity_type ?? undefined,
     is_1099_eligible: row.is_1099_eligible ?? undefined,
@@ -100,6 +110,88 @@ function mapCompany(row: any): Company {
     contact_count: contactCount,
     project_count: row.project_count ?? undefined,
   }
+}
+
+export async function getCompanyAccountingLinks(supabase: SupabaseClient, orgId: string, companyIds: string[]) {
+  const ids = Array.from(new Set(companyIds.filter(Boolean)))
+  if (ids.length === 0) return new Map<string, CompanyAccountingLink>()
+  const { data, error } = await supabase
+    .from("accounting_counterparty_links")
+    .select("entity_id,connection_id,provider,external_id,external_name,last_synced_at,status,metadata")
+    .eq("org_id", orgId)
+    .eq("role", "vendor")
+    .eq("entity_type", "company")
+    .in("entity_id", ids)
+    .order("last_synced_at", { ascending: false, nullsFirst: false })
+  if (error) throw new Error(`Failed to load company accounting links: ${error.message}`)
+  const links = new Map<string, CompanyAccountingLink>()
+  for (const row of data ?? []) {
+    if (!links.has(row.entity_id)) links.set(row.entity_id, row as CompanyAccountingLink)
+  }
+  return links
+}
+
+async function mapCompaniesWithAccounting(supabase: SupabaseClient, orgId: string, rows: any[]) {
+  const links = await getCompanyAccountingLinks(supabase, orgId, rows.map((row) => row.id))
+  return rows.map((row) => mapCompany(row, links.get(row.id)))
+}
+
+export async function saveCompanyAccountingVendorLink(input: {
+  supabase: SupabaseClient
+  orgId: string
+  companyId: string
+  externalId: string
+  displayName: string
+  status?: "synced" | "needs_review" | "error"
+  connectionId?: string | null
+}) {
+  let connectionId = input.connectionId ?? null
+  if (!connectionId) {
+    const { data: connection } = await input.supabase
+      .from("accounting_connections")
+      .select("id")
+      .eq("org_id", input.orgId)
+      .eq("provider", "qbo")
+      .eq("status", "active")
+      .order("connected_at", { ascending: true })
+      .limit(1)
+      .maybeSingle()
+    connectionId = connection?.id ?? null
+  }
+  if (!connectionId) throw new Error("No active accounting connection is available for this vendor link")
+  const now = new Date().toISOString()
+  const { error } = await input.supabase.from("accounting_counterparty_links").upsert({
+    org_id: input.orgId,
+    connection_id: connectionId,
+    provider: "qbo",
+    role: "vendor",
+    entity_type: "company",
+    entity_id: input.companyId,
+    external_id: input.externalId,
+    external_name: input.displayName,
+    last_synced_at: now,
+    status: input.status ?? "synced",
+    error_message: null,
+    metadata: { display_name: input.displayName },
+  }, { onConflict: "org_id,connection_id,role,entity_type,entity_id" })
+  if (error) throw new Error(`Failed to save company accounting link: ${error.message}`)
+
+  // Keep the transitional ledger relationship in sync until the post-soak
+  // cleanup removes legacy readers. The connection-scoped table above is the
+  // source of truth and cannot be overwritten by another accounting book.
+  const { error: legacyError } = await input.supabase.from("accounting_sync_records").upsert({
+    org_id: input.orgId,
+    connection_id: connectionId,
+    provider: "qbo",
+    entity_type: "vendor",
+    entity_id: input.companyId,
+    external_id: input.externalId,
+    last_synced_at: now,
+    status: input.status ?? "synced",
+    error_message: null,
+    metadata: { display_name: input.displayName },
+  }, { onConflict: "org_id,entity_type,entity_id" })
+  if (legacyError) throw new Error(`Failed to save transitional company accounting link: ${legacyError.message}`)
 }
 
 function mapContact(row: any): Contact {
@@ -221,7 +313,6 @@ export async function listCompaniesWithClient(
       `
       id, org_id, name, company_type, phone, email, website, address,
       license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes,
-      qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status,
       tax_id_last4, tax_entity_type, is_1099_eligible, w9_file_id, w9_received_at,
       metadata, created_at, updated_at,
       contact_company_links(count)
@@ -246,7 +337,7 @@ export async function listCompaniesWithClient(
     throw new Error(`Failed to list companies: ${error.message}`)
   }
 
-  return (data ?? []).map(mapCompany)
+  return mapCompaniesWithAccounting(supabase, orgId, data ?? [])
 }
 
 export async function getCompany(companyId: string, orgId?: string): Promise<Company & { contacts: Contact[] }> {
@@ -263,7 +354,6 @@ export async function getCompany(companyId: string, orgId?: string): Promise<Com
       `
       id, org_id, name, company_type, phone, email, website, address,
       license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes,
-      qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status,
       tax_id_last4, tax_entity_type, is_1099_eligible, w9_file_id, w9_received_at,
       metadata, created_at, updated_at,
       contact_company_links (
@@ -312,8 +402,9 @@ export async function getCompany(companyId: string, orgId?: string): Promise<Com
     }
   }
 
+  const accountingLinks = await getCompanyAccountingLinks(supabase, resolvedOrgId, [companyId])
   return {
-    ...mapCompany(data),
+    ...mapCompany(data, accountingLinks.get(companyId)),
     contacts: Array.from(deduped.values()),
   }
 }
@@ -518,10 +609,6 @@ function buildCompanyInsert(input: CompanyInput, orgId: string) {
     default_payment_terms: input.default_payment_terms ?? null,
     internal_notes: input.internal_notes ?? null,
     notes: input.notes ?? null,
-    qbo_vendor_id: input.qbo_vendor_id ?? null,
-    qbo_vendor_name: input.qbo_vendor_name ?? null,
-    qbo_vendor_synced_at: input.qbo_vendor_synced_at ?? null,
-    qbo_vendor_sync_status: input.qbo_vendor_sync_status ?? (input.qbo_vendor_id ? "linked" : null),
     tax_id_last4: input.tax_id_last4 ?? null,
     tax_entity_type: input.tax_entity_type ?? null,
     is_1099_eligible: input.is_1099_eligible ?? null,
@@ -534,10 +621,6 @@ function buildCompanyInsert(input: CompanyInput, orgId: string) {
       default_payment_terms: input.default_payment_terms,
       internal_notes: input.internal_notes,
       notes: input.notes,
-      qbo_vendor_id: input.qbo_vendor_id,
-      qbo_vendor_name: input.qbo_vendor_name,
-      qbo_vendor_synced_at: input.qbo_vendor_synced_at,
-      qbo_vendor_sync_status: input.qbo_vendor_sync_status ?? (input.qbo_vendor_id ? "linked" : undefined),
     },
   }
 }
@@ -557,7 +640,7 @@ export async function createCompany({ input, orgId }: { input: CompanyInput; org
     .from("companies")
     .insert({ ...buildCompanyInsert(parsed, resolvedOrgId), ...classification })
     .select(
-      "id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status, tax_id_last4, tax_entity_type, is_1099_eligible, w9_file_id, w9_received_at, metadata, created_at, updated_at, contact_company_links(count)",
+      "id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, tax_id_last4, tax_entity_type, is_1099_eligible, w9_file_id, w9_received_at, metadata, created_at, updated_at, contact_company_links(count)",
     )
     .single()
 
@@ -604,7 +687,18 @@ export async function createCompany({ input, orgId }: { input: CompanyInput; org
     }
   }
 
-  return mapCompany(data)
+  if (parsed.qbo_vendor_id) {
+    await saveCompanyAccountingVendorLink({
+      supabase,
+      orgId: resolvedOrgId,
+      companyId: data.id as string,
+      externalId: parsed.qbo_vendor_id,
+      displayName: parsed.qbo_vendor_name ?? data.name,
+      status: parsed.qbo_vendor_sync_status === "error" ? "error" : parsed.qbo_vendor_sync_status === "needs_review" ? "needs_review" : "synced",
+    })
+  }
+  const mapped = await mapCompaniesWithAccounting(supabase, resolvedOrgId, [data])
+  return mapped[0]
 }
 
 export async function updateCompany({
@@ -622,7 +716,7 @@ export async function updateCompany({
 
   const { data: existing, error: existingError } = await supabase
     .from("companies")
-    .select("id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status, tax_id_last4, tax_entity_type, is_1099_eligible, w9_file_id, w9_received_at, metadata, created_at, updated_at")
+    .select("id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, tax_id_last4, tax_entity_type, is_1099_eligible, w9_file_id, w9_received_at, metadata, created_at, updated_at")
     .eq("org_id", resolvedOrgId)
     .eq("id", companyId)
     .maybeSingle()
@@ -641,10 +735,6 @@ export async function updateCompany({
     default_payment_terms: parsed.default_payment_terms ?? existing.metadata?.default_payment_terms,
     internal_notes: parsed.internal_notes ?? existing.metadata?.internal_notes,
     notes: parsed.notes ?? existing.metadata?.notes,
-    qbo_vendor_id: parsed.qbo_vendor_id ?? existing.metadata?.qbo_vendor_id,
-    qbo_vendor_name: parsed.qbo_vendor_name ?? existing.metadata?.qbo_vendor_name,
-    qbo_vendor_synced_at: parsed.qbo_vendor_synced_at ?? existing.metadata?.qbo_vendor_synced_at,
-    qbo_vendor_sync_status: parsed.qbo_vendor_sync_status ?? existing.metadata?.qbo_vendor_sync_status,
   }
 
   if (typeof parsed.prequalified === "boolean" && parsed.prequalified && !existing.metadata?.prequalified && !parsed.prequalified_at) {
@@ -678,10 +768,6 @@ export async function updateCompany({
       default_payment_terms: parsed.default_payment_terms ?? existing.default_payment_terms,
       internal_notes: parsed.internal_notes ?? existing.internal_notes,
       notes: parsed.notes ?? existing.notes,
-      qbo_vendor_id: parsed.qbo_vendor_id ?? existing.qbo_vendor_id,
-      qbo_vendor_name: parsed.qbo_vendor_name ?? existing.qbo_vendor_name,
-      qbo_vendor_synced_at: parsed.qbo_vendor_synced_at ?? existing.qbo_vendor_synced_at,
-      qbo_vendor_sync_status: parsed.qbo_vendor_sync_status ?? existing.qbo_vendor_sync_status,
       tax_id_last4: parsed.tax_id_last4 ?? existing.tax_id_last4,
       tax_entity_type: parsed.tax_entity_type ?? existing.tax_entity_type,
       is_1099_eligible: typeof parsed.is_1099_eligible === "boolean" ? parsed.is_1099_eligible : existing.is_1099_eligible,
@@ -690,7 +776,7 @@ export async function updateCompany({
     .eq("org_id", resolvedOrgId)
     .eq("id", companyId)
     .select(
-      "id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, qbo_vendor_id, qbo_vendor_name, qbo_vendor_synced_at, qbo_vendor_sync_status, tax_id_last4, tax_entity_type, is_1099_eligible, w9_file_id, w9_received_at, metadata, created_at, updated_at, contact_company_links(count)",
+      "id, org_id, name, company_type, phone, email, website, address, license_number, prequalified, prequalified_at, rating, default_payment_terms, internal_notes, notes, tax_id_last4, tax_entity_type, is_1099_eligible, w9_file_id, w9_received_at, metadata, created_at, updated_at, contact_company_links(count)",
     )
     .maybeSingle()
 
@@ -716,7 +802,18 @@ export async function updateCompany({
     after: data,
   })
 
-  return mapCompany(data)
+  if (parsed.qbo_vendor_id) {
+    await saveCompanyAccountingVendorLink({
+      supabase,
+      orgId: resolvedOrgId,
+      companyId,
+      externalId: parsed.qbo_vendor_id,
+      displayName: parsed.qbo_vendor_name ?? data.name,
+      status: parsed.qbo_vendor_sync_status === "error" ? "error" : parsed.qbo_vendor_sync_status === "needs_review" ? "needs_review" : "synced",
+    })
+  }
+  const mapped = await mapCompaniesWithAccounting(supabase, resolvedOrgId, [data])
+  return mapped[0]
 }
 
 export async function archiveCompany(companyId: string, orgId?: string) {

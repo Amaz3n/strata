@@ -3,13 +3,7 @@
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { listInvoices } from "@/lib/services/invoices"
-import {
-  forceSyncInvoiceToQBO,
-  syncBillPaymentToQBO,
-  syncPaymentToQBO,
-  syncProjectExpenseToQBO,
-  syncVendorBillToQBO,
-} from "@/lib/services/qbo-sync"
+import { processAccountingPush, type AccountingPushEntityType } from "@/lib/services/accounting-sync"
 
 export type QboSyncEntityType = "invoice" | "expense" | "bill" | "payment" | "bill_payment" | "webhook_event"
 
@@ -62,7 +56,7 @@ export async function listQboSyncQueueAction(params?: { projectId?: string | nul
   const projectId = params?.projectId ?? null
 
   const [{ data: connection }, { data: projectRows }] = await Promise.all([
-    supabase.from("qbo_connections").select("id, realm_id").eq("org_id", orgId).eq("status", "active").maybeSingle(),
+    supabase.from("accounting_connections").select("id, external_account_id").eq("org_id", orgId).eq("provider", "qbo").eq("status", "active").order("connected_at", { ascending: true }).limit(1).maybeSingle(),
     supabase.from("projects").select("id, name").eq("org_id", orgId),
   ])
   const connected = Boolean(connection)
@@ -89,15 +83,15 @@ export async function listQboSyncQueueAction(params?: { projectId?: string | nul
       .in("qbo_sync_status", ["pending", "error", "needs_review"])
       .order("bill_date", { ascending: false }),
     supabase
-      .from("qbo_sync_records")
-      .select("entity_id, entity_type, status, error_message, qbo_id, last_synced_at, created_at")
+      .from("accounting_sync_records")
+      .select("entity_id, entity_type, status, error_message, external_id, last_synced_at, created_at")
       .eq("org_id", orgId)
       .in("entity_type", ["payment", "bill_payment"])
       .in("status", ["pending", "error", "needs_review"]),
     supabase
       .from("qbo_webhook_events")
       .select("id, entity_name, entity_qbo_id, operation, process_error, attempts, received_at, processed_at")
-      .eq("realm_id", typeof connection?.realm_id === "string" ? connection.realm_id : "")
+      .eq("realm_id", typeof connection?.external_account_id === "string" ? connection.external_account_id : "")
       .eq("process_status", "error")
       .order("received_at", { ascending: false })
       .limit(25),
@@ -124,8 +118,8 @@ export async function listQboSyncQueueAction(params?: { projectId?: string | nul
     Object.entries(idsByType).map(async ([entityType, ids]) => {
       if (ids.length === 0) return
       const { data } = await supabase
-        .from("qbo_sync_records")
-        .select("entity_id, qbo_id, last_synced_at, created_at, error_message")
+        .from("accounting_sync_records")
+        .select("entity_id, external_id, last_synced_at, created_at, error_message")
         .eq("org_id", orgId)
         .eq("entity_type", entityType)
         .in("entity_id", ids)
@@ -134,7 +128,7 @@ export async function listQboSyncQueueAction(params?: { projectId?: string | nul
         const key = `${entityType}:${record.entity_id}`
         if (recordLookup.has(key)) continue
         recordLookup.set(key, {
-          qboId: record.qbo_id ?? null,
+          qboId: record.external_id ?? null,
           lastAttemptAt: (record.last_synced_at ?? record.created_at) as string | null,
           error: record.error_message ?? null,
         })
@@ -228,7 +222,7 @@ export async function listQboSyncQueueAction(params?: { projectId?: string | nul
         amountCents: Number(payment?.amount_cents ?? 0),
         status: mapStatus(record.status as string),
         error: record.error_message ?? null,
-        qboId: record.qbo_id ?? null,
+        qboId: record.external_id ?? null,
         lastAttemptAt: (record.last_synced_at ?? record.created_at) as string | null,
         date: (payment?.received_at ?? payment?.created_at) as string | null,
       })
@@ -257,29 +251,13 @@ export async function listQboSyncQueueAction(params?: { projectId?: string | nul
 /** Push a single item to QuickBooks immediately. Throws on failure so the UI can surface it. */
 export async function syncQboItemAction(entityType: QboSyncEntityType, id: string) {
   const { orgId } = await requireOrgContext()
-  switch (entityType) {
-    case "invoice":
-      await forceSyncInvoiceToQBO(id, orgId)
-      return
-    case "expense":
-      await syncProjectExpenseToQBO(id, orgId)
-      return
-    case "bill":
-      await syncVendorBillToQBO(id, orgId)
-      return
-    case "payment":
-      await syncPaymentToQBO(id, orgId)
-      return
-    case "bill_payment":
-      await syncBillPaymentToQBO(id, orgId)
-      return
-    case "webhook_event":
-      {
-        const result = await retryQboWebhookEventAction(id)
-        if (!result.success) throw new Error(result.error ?? "Unable to retry webhook event")
-      }
-      return
+  if (entityType === "webhook_event") {
+    const result = await retryQboWebhookEventAction(id)
+    if (!result.success) throw new Error(result.error ?? "Unable to retry webhook event")
+    return
   }
+  const mapped: AccountingPushEntityType = entityType === "expense" ? "project_expense" : entityType === "bill" ? "vendor_bill" : entityType
+  await processAccountingPush({ orgId, entityType: mapped, entityId: id })
 }
 
 /** Push every pending/failed item now. Returns a summary; never throws on individual failures. */
@@ -292,28 +270,12 @@ export async function syncAllQboPendingAction(params?: { projectId?: string | nu
   const errors: string[] = []
   for (const item of items) {
     try {
-      switch (item.entityType) {
-        case "invoice":
-          await forceSyncInvoiceToQBO(item.id, orgId)
-          break
-        case "expense":
-          await syncProjectExpenseToQBO(item.id, orgId)
-          break
-        case "bill":
-          await syncVendorBillToQBO(item.id, orgId)
-          break
-        case "payment":
-          await syncPaymentToQBO(item.id, orgId)
-          break
-        case "bill_payment":
-          await syncBillPaymentToQBO(item.id, orgId)
-          break
-        case "webhook_event":
-          {
-            const result = await retryQboWebhookEventAction(item.id)
-            if (!result.success) throw new Error(result.error ?? "Unable to retry webhook event")
-          }
-          break
+      if (item.entityType === "webhook_event") {
+        const result = await retryQboWebhookEventAction(item.id)
+        if (!result.success) throw new Error(result.error ?? "Unable to retry webhook event")
+      } else {
+        const mapped: AccountingPushEntityType = item.entityType === "expense" ? "project_expense" : item.entityType === "bill" ? "vendor_bill" : item.entityType
+        await processAccountingPush({ orgId, entityType: mapped, entityId: item.id })
       }
       synced += 1
     } catch (error) {
@@ -350,8 +312,8 @@ export async function listQboSyncHistoryAction(params?: { projectId?: string | n
   const limit = params?.limit ?? 50
 
   const { data: records } = await supabase
-    .from("qbo_sync_records")
-    .select("id, entity_type, entity_id, qbo_id, last_synced_at, sync_direction, status, error_message, created_at")
+    .from("accounting_sync_records")
+    .select("id, entity_type, entity_id, external_id, last_synced_at, sync_direction, status, error_message, created_at")
     .eq("org_id", orgId)
     .order("last_synced_at", { ascending: false })
     .limit(limit)
@@ -416,7 +378,7 @@ export async function listQboSyncHistoryAction(params?: { projectId?: string | n
         label,
         status: row.status ?? "synced",
         direction: row.sync_direction ?? "outbound",
-        qboId: row.qbo_id ?? null,
+        qboId: row.external_id ?? null,
         error: row.error_message ?? null,
         syncedAt: row.last_synced_at ?? row.created_at ?? null,
       }

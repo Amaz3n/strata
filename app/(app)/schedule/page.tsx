@@ -23,6 +23,9 @@ import type { Project, ScheduleItem } from "@/lib/types"
 import { listProjectsAction } from "../projects/actions"
 import { listScheduleItemsAction } from "./actions"
 import { GanttScrollArea } from "./gantt-scroll-area"
+import { DeskScopeFilters } from "@/components/production/desk-scope-filters"
+import { resolveProductionDeskScope } from "@/lib/services/production-desk-scope"
+import { listReleasedStartMarkers } from "@/lib/services/even-flow"
 // Share the project Gantt's marks (bars, milestones, today line, group headers,
 // sidebar rows); this file only adds percent-layout scaffolding on top.
 import "@/components/schedule/gantt.css"
@@ -95,6 +98,7 @@ interface ProjectRow {
   daysBehind: number
   phase: string | null
   hardDates: HardDate[]
+  actualStart: Date | null
 }
 
 function isOpen(item: ScheduleItem) {
@@ -140,7 +144,7 @@ function currentPhase(items: DatedItem[], today: Date): string | null {
   return [...weight.entries()].sort((a, b) => b[1] - a[1])[0][0]
 }
 
-function buildProjectRow(project: Project, items: DatedItem[], today: Date): ProjectRow | null {
+function buildProjectRow(project: Project, items: DatedItem[], today: Date, actualStart?: string): ProjectRow | null {
   let itemsStart: Date | null = null
   let itemsEnd: Date | null = null
   let weightTotal = 0
@@ -205,6 +209,7 @@ function buildProjectRow(project: Project, items: DatedItem[], today: Date): Pro
     daysBehind,
     phase: currentPhase(items, today),
     hardDates,
+    actualStart: parseDate(actualStart),
   }
 }
 
@@ -591,6 +596,11 @@ function ProjectGanttRow({
               <Flag className="h-2.5 w-2.5" fill="currentColor" />
             </div>
           ))}
+          {row.actualStart ? <div
+            className="absolute top-1/2 h-5 w-px -translate-y-1/2 bg-foreground"
+            style={{ left: dayPx(row.actualStart, axis) + axis.pxPerDay / 2 }}
+            title={`Actual start — ${format(row.actualStart, "MMM d")}`}
+          /> : null}
         </div>
       </summary>
 
@@ -669,17 +679,26 @@ function LegendSwatch({ color, label }: { color: string; label: string }) {
 export default async function SchedulePage({
   searchParams,
 }: {
-  searchParams: Promise<{ zoom?: string }>
+  searchParams: Promise<{ zoom?: string; community?: string; division?: string }>
 }) {
-  const { zoom: zoomParam } = await searchParams
+  const { zoom: zoomParam, community, division } = await searchParams
   const zoom: Zoom = zoomParam === "day" || zoomParam === "month" ? zoomParam : "week"
 
-  const [projects, allItems] = await Promise.all([listProjectsAction(), listScheduleItemsAction()])
+  const [allProjects, allItems, scope] = await Promise.all([
+    listProjectsAction(),
+    listScheduleItemsAction(),
+    resolveProductionDeskScope({ communityId: community, divisionId: division }),
+  ])
+  const allowedProjectIds = scope.projectIds === null ? null : new Set(scope.projectIds)
+  const projects = allowedProjectIds
+    ? allProjects.filter((project) => allowedProjectIds.has(project.id))
+    : allProjects
   const today = startOfDay(new Date())
 
   const ACTIVE_STATUSES = new Set(["planning", "bidding", "active", "on_hold"])
   const activeProjects = projects.filter((project) => ACTIVE_STATUSES.has(project.status))
   const projectById = new Map(activeProjects.map((project) => [project.id, project]))
+  const startMarkers = await listReleasedStartMarkers(activeProjects.map((project) => project.id)).catch(() => new Map<string, string>())
 
   const items: DatedItem[] = allItems
     .filter((item) => item.status !== "cancelled" && projectById.has(item.project_id))
@@ -697,13 +716,17 @@ export default async function SchedulePage({
   }
 
   const rows = activeProjects
-    .map((project) => buildProjectRow(project, itemsByProject.get(project.id) ?? [], today))
+    .map((project) => buildProjectRow(project, itemsByProject.get(project.id) ?? [], today, startMarkers.get(project.id)))
     .filter((row): row is ProjectRow => row !== null)
 
   const rowsByHealth: Record<Health, ProjectRow[]> = { behind: [], at_risk: [], on_track: [], done: [] }
   for (const row of rows) rowsByHealth[row.health].push(row)
   for (const health of GROUP_ORDER) {
-    rowsByHealth[health].sort((a, b) => a.spanStart.getTime() - b.spanStart.getTime())
+    rowsByHealth[health].sort((a, b) => {
+      const aStart = community ? a.actualStart ?? a.spanStart : a.spanStart
+      const bStart = community ? b.actualStart ?? b.spanStart : b.spanStart
+      return aStart.getTime() - bStart.getTime()
+    })
   }
 
   const counts: Record<Health, number> = {
@@ -725,6 +748,7 @@ export default async function SchedulePage({
   if (activeProjects.length === 0) {
     return (
       <PageLayout title="Schedule">
+        <DeskScopeFilters communities={scope.communities} divisions={scope.divisions} communityId={scope.communityId} divisionId={scope.divisionId} className="border-b px-4 py-2.5 sm:px-6" />
         <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
           <CalendarDays className="size-10 text-muted-foreground/50" />
           <h2 className="text-lg font-semibold">No active projects</h2>
@@ -770,10 +794,17 @@ export default async function SchedulePage({
       : null
 
   const initialScrollLeft = axis ? Math.max(0, dayPx(today, axis) - 80) : 0
+  function zoomHref(nextZoom: Zoom) {
+    const params = new URLSearchParams({ zoom: nextZoom })
+    if (scope.communityId) params.set("community", scope.communityId)
+    if (scope.divisionId) params.set("division", scope.divisionId)
+    return `/schedule?${params}`
+  }
 
   return (
     <PageLayout title="Schedule" fullBleed>
       <div className="desk-root flex h-[calc(100vh-56px)] flex-col overflow-hidden">
+        <DeskScopeFilters communities={scope.communities} divisions={scope.divisions} communityId={scope.communityId} divisionId={scope.divisionId} className="border-b px-4 py-2.5 sm:px-6" />
         {/* ── Context + zoom + legend ── */}
         <div className="desk-rise flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b px-4 py-2.5 sm:px-6">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
@@ -814,7 +845,7 @@ export default async function SchedulePage({
               {(["month", "week", "day"] as Zoom[]).map((z) => (
                 <Link
                   key={z}
-                  href={`/schedule?zoom=${z}`}
+                  href={zoomHref(z)}
                   scroll={false}
                   className={cn(
                     "px-2 py-0.5",
@@ -834,6 +865,9 @@ export default async function SchedulePage({
               <LegendSwatch color="var(--success)" label="Wrapping up" />
               <span className="inline-flex items-center gap-1.5 text-muted-foreground">
                 <span className="h-3 w-px bg-[var(--primary)]" /> today
+              </span>
+              <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+                <span className="h-3 w-px bg-foreground" /> actual start
               </span>
             </div>
           </div>

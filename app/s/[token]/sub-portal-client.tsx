@@ -3,7 +3,8 @@
 import { useState, useCallback, useTransition, type ReactNode } from "react"
 import { useIsMobile } from "@/components/ui/use-mobile"
 import { PortalPinGate } from "@/components/portal/portal-pin-gate"
-import { LayoutDashboard, FileText, HelpCircle, ShieldCheck, CheckSquare, ClipboardCheck, ClipboardList } from "lucide-react"
+import Link from "next/link"
+import { LayoutDashboard, FileText, HelpCircle, ShieldCheck, CheckSquare, ClipboardCheck, ClipboardList, ShoppingCart } from "lucide-react"
 import { ExternalPortalShell } from "@/components/portal/external-portal-shell"
 import {
   SubBottomNav,
@@ -18,6 +19,8 @@ import { SubSubmittalsTab } from "./sub-submittals-tab"
 import { SubPrequalificationTab } from "./sub-prequalification-tab"
 import { SubDailyLogsTab } from "./sub-daily-logs-tab"
 import type { Prequalification } from "@/lib/services/prequalification"
+import type { WarrantyServiceVisitDTO } from "@/lib/services/warranty"
+import { SubWarrantyVisits } from "./sub-warranty-visits"
 import type {
   ComplianceDocumentType,
   ComplianceStatusSummary,
@@ -36,12 +39,14 @@ interface SubPortalClientProps {
   canUploadComplianceDocs?: boolean
   canUploadSubtierWaivers?: boolean
   canWorkPunchItems?: boolean
+  canViewPurchaseOrders?: boolean
   pinRequired?: boolean
   complianceDocumentTypes?: ComplianceDocumentType[]
   workspace?: ExternalPortalWorkspaceContext | null
   inviteEmail?: string
   suggestedFullName?: string
   prequalification?: Prequalification | null
+  warrantyVisits?: Array<WarrantyServiceVisitDTO & { request?: Record<string, unknown> | null; project?: Record<string, unknown> | null }>
 }
 
 export function SubPortalClient({
@@ -55,12 +60,14 @@ export function SubPortalClient({
   canUploadComplianceDocs = true,
   canUploadSubtierWaivers = true,
   canWorkPunchItems = false,
+  canViewPurchaseOrders = false,
   pinRequired = false,
   complianceDocumentTypes = [],
   workspace = null,
   inviteEmail = "",
   suggestedFullName = "",
   prequalification = null,
+  warrantyVisits = [],
 }: SubPortalClientProps) {
   const [activeTab, setActiveTab] = useState<SubPortalTab>("dashboard")
   const [pinVerified, setPinVerified] = useState(!pinRequired)
@@ -94,6 +101,7 @@ export function SubPortalClient({
   const tabs: Array<{ id: SubPortalTab; label: string; icon: typeof LayoutDashboard; indicator?: ReactNode }> = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "documents", label: "Documents", icon: FileText },
+    ...(canViewPurchaseOrders ? [{ id: "purchase-orders" as const, label: "Purchase orders", icon: ShoppingCart }] : []),
     ...(canSubmitDailyLogs ? [{ id: "daily-logs" as const, label: "Daily logs", icon: ClipboardList }] : []),
     {
       id: "prequalification",
@@ -139,19 +147,25 @@ export function SubPortalClient({
   const renderTab = (tab: SubPortalTab) => {
     if (tab === "dashboard") {
       return (
-        <SubDashboard
-          data={data}
-          token={token}
-          canSubmitInvoices={canSubmitInvoices}
-          canSubmitTime={canSubmitTime}
-          canSubmitExpenses={canSubmitExpenses}
-          complianceStatus={complianceStatus}
-          canUploadSubtierWaivers={canUploadSubtierWaivers}
-        />
+        <>
+          <SubWarrantyVisits token={token} initialVisits={warrantyVisits} />
+          <SubDashboard
+            data={data}
+            token={token}
+            canSubmitInvoices={canSubmitInvoices}
+            canSubmitTime={canSubmitTime}
+            canSubmitExpenses={canSubmitExpenses}
+            complianceStatus={complianceStatus}
+            canUploadSubtierWaivers={canUploadSubtierWaivers}
+          />
+        </>
       )
     }
     if (tab === "documents") {
       return <SubDocumentsTab files={data.sharedFiles} canDownload={canDownloadFiles} portalToken={token} />
+    }
+    if (tab === "purchase-orders") {
+      return <div className="mx-auto max-w-xl p-4"><div className="border p-5"><ShoppingCart className="mb-3 size-5 text-muted-foreground" /><h2 className="font-semibold">Purchase orders</h2><p className="mt-1 text-sm text-muted-foreground">Review awarded work, approved variances, completion, billing, and payment status.</p><Link className="mt-4 inline-flex h-9 items-center border border-input px-3 text-sm font-medium" href={`/s/${token}/purchase-orders`}>Open purchase orders</Link></div></div>
     }
     if (tab === "daily-logs") return <SubDailyLogsTab token={token} />
     if (tab === "rfis") return <SubRfisTab rfis={data.rfis} token={token} />
@@ -204,6 +218,7 @@ export function SubPortalClient({
           pendingPunch={data.pendingPunchCount}
           showPunch={canWorkPunchItems}
           showDailyLogs={canSubmitDailyLogs}
+          showPurchaseOrders={canViewPurchaseOrders}
           complianceIssues={complianceIssues}
         />
       }

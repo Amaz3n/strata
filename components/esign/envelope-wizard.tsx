@@ -114,6 +114,7 @@ type RecipientSuggestion = {
 const sourceEntityMetadataIdKeyByType: Record<UnifiedSignableEntityType, string> = {
   estimate: "estimate_id",
   proposal: "proposal_id",
+  contract: "contract_id",
   change_order: "change_order_id",
   lien_waiver: "lien_waiver_id",
   selection: "selection_id",

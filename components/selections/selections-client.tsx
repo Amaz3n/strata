@@ -1,12 +1,14 @@
 "use client"
 
 import { useMemo, useState, useTransition, useEffect } from "react"
+import { useRouter } from "next/navigation"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
 import type { Project, Selection, SelectionCategory, SelectionOption } from "@/lib/types"
 import type { SelectionInput } from "@/lib/validation/selections"
 import { createSelectionAction } from "@/app/(app)/selections/actions"
+import { overrideGroupCutoffAction, revertGroupCutoffAction } from "@/app/(app)/design-studio/actions"
 import { EnvelopeWizard, type EnvelopeWizardSourceEntity } from "@/components/esign/envelope-wizard"
 import { SelectionForm } from "@/components/selections/selection-form"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
@@ -21,7 +23,11 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Plus, Calendar, List } from "@/components/icons"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Plus, Calendar, List, Lock } from "@/components/icons"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -46,8 +52,21 @@ function formatDate(date?: string | null) {
   return format(new Date(date), "MMM d, yyyy")
 }
 
+type BuilderSelection = Selection & {
+  effective_due_date?: string | null
+  locked?: boolean
+  group?: {
+    id: string
+    name: string
+    cutoff_date: string | null
+    cutoff_source: "schedule" | "manual_override"
+    override_reason: string | null
+    status: "open" | "locked"
+  } | null
+}
+
 interface SelectionsBuilderData {
-  selections: Selection[]
+  selections: BuilderSelection[]
   categories: SelectionCategory[]
   optionsByCategory: Record<string, SelectionOption[]>
 }
@@ -58,11 +77,13 @@ interface Props {
 }
 
 export function SelectionsBuilderClient({ data, projects }: Props) {
-  const [items, setItems] = useState<Selection[]>(data.selections)
+  const router = useRouter()
+  const [items, setItems] = useState<BuilderSelection[]>(data.selections)
   const [filterProjectId, setFilterProjectId] = useState<string>("all")
   const [sheetOpen, setSheetOpen] = useState(false)
   const [signatureWizardOpen, setSignatureWizardOpen] = useState(false)
   const [signatureTarget, setSignatureTarget] = useState<EnvelopeWizardSourceEntity | null>(null)
+  const [cutoffTarget, setCutoffTarget] = useState<{ projectId: string; groupId: string; name: string; date: string | null } | null>(null)
   const [isPending, startTransition] = useTransition()
 
   const filtered = useMemo(() => {
@@ -91,6 +112,24 @@ export function SelectionsBuilderClient({ data, projects }: Props) {
     })
     return map
   }, [data.optionsByCategory])
+  const groupedItems = useMemo(() => {
+    const groups = new Map<string, { id: string; name: string; items: BuilderSelection[]; deadline: string | null; source: string; reason: string | null; locked: boolean }>()
+    for (const selection of filtered) {
+      if (!selection.group_id) continue
+      const current = groups.get(selection.group_id) ?? {
+        id: selection.group_id,
+        name: selection.group?.name ?? "Selection group",
+        items: [],
+        deadline: selection.group?.cutoff_date ?? null,
+        source: selection.group?.cutoff_source ?? "schedule",
+        reason: selection.group?.override_reason ?? null,
+        locked: Boolean(selection.locked || selection.group?.status === "locked"),
+      }
+      current.items.push(selection)
+      groups.set(selection.group_id, current)
+    }
+    return Array.from(groups.values())
+  }, [filtered])
 
   async function handleCreate(values: SelectionInput) {
     startTransition(async () => {
@@ -137,6 +176,53 @@ export function SelectionsBuilderClient({ data, projects }: Props) {
     if (!open) {
       setSignatureTarget(null)
     }
+  }
+
+  function handleCutoffOverride(formData: FormData) {
+    if (!cutoffTarget) return
+    startTransition(async () => {
+      try {
+        unwrapAction(await overrideGroupCutoffAction({ projectId: cutoffTarget.projectId, groupId: cutoffTarget.groupId, cutoffDate: String(formData.get("cutoffDate") ?? ""), reason: String(formData.get("reason") ?? "") }))
+        setCutoffTarget(null)
+        toast.success("Selection cutoff overridden")
+        router.refresh()
+      } catch (error) {
+        toast.error("Could not override cutoff", { description: error instanceof Error ? error.message : undefined })
+      }
+    })
+  }
+
+  function handleCutoffRevert(projectId: string, groupId: string) {
+    startTransition(async () => {
+      try {
+        unwrapAction(await revertGroupCutoffAction({ projectId, groupId }))
+        toast.success("Cutoff restored from schedule")
+        router.refresh()
+      } catch (error) {
+        toast.error("Could not restore cutoff", { description: error instanceof Error ? error.message : undefined })
+      }
+    })
+  }
+
+  if (groupedItems.length > 0) {
+    return (
+      <>
+      <div className="min-h-0 space-y-4 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div><h1 className="text-xl font-semibold">Lot selections</h1><p className="text-sm text-muted-foreground">Schedule-derived deadlines and confirmed buyer choices.</p></div>
+          <div className="flex gap-2"><Select value={filterProjectId} onValueChange={setFilterProjectId}><SelectTrigger className="h-8 w-[220px] rounded-none"><SelectValue placeholder="Filter by project" /></SelectTrigger><SelectContent><SelectItem value="all">All projects</SelectItem>{projects.map((project) => <SelectItem key={project.id} value={project.id}>{project.name}</SelectItem>)}</SelectContent></Select><Button size="sm" className="h-8 rounded-none" onClick={() => setSheetOpen(true)}><Plus className="mr-1 h-4 w-4" />Selection</Button></div>
+        </div>
+        <SelectionForm open={sheetOpen} onOpenChange={setSheetOpen} projects={projects} categories={data.categories} defaultProjectId={filterProjectId !== "all" ? filterProjectId : projects[0]?.id} onSubmit={handleCreate} isSubmitting={isPending} />
+        {groupedItems.map((group) => {
+          const remaining = group.deadline ? Math.ceil((Date.parse(`${group.deadline}T00:00:00`) - Date.now()) / 86_400_000) : null
+          const projectId = group.items[0]?.project_id
+          return <section key={group.id} className="border"><div className="flex flex-wrap items-center justify-between gap-3 border-b bg-muted/30 px-3 py-2"><div className="flex items-center gap-2"><h2 className="text-sm font-semibold">{group.name}</h2><Badge variant={group.locked ? "destructive" : "secondary"} className="rounded-none">{group.locked ? "Locked" : "Open"}</Badge><Badge variant="outline" title={group.reason ?? undefined} className="rounded-none">{group.source === "manual_override" ? "Manual override" : "From schedule"}</Badge></div><div className="flex items-center gap-2 text-xs text-muted-foreground"><span>{group.deadline ? `Cutoff ${formatDate(group.deadline)}` : "Unresolved cutoff"}</span>{remaining != null && <span className="tabular-nums">{remaining >= 0 ? `${remaining} days remaining` : `${Math.abs(remaining)} days overdue`}</span>}{projectId && group.source === "manual_override" && <Button size="sm" variant="ghost" className="h-7 rounded-none" disabled={isPending} onClick={() => handleCutoffRevert(projectId, group.id)}>Revert</Button>}{projectId && <Button size="sm" variant="outline" className="h-7 rounded-none" onClick={() => setCutoffTarget({ projectId, groupId: group.id, name: group.name, date: group.deadline })}>Override</Button>}</div></div><Table><TableHeader><TableRow><TableHead>Category</TableHead><TableHead>Chosen option</TableHead><TableHead>Scope</TableHead><TableHead className="text-right">Price</TableHead><TableHead>Status</TableHead><TableHead>Confirmed</TableHead><TableHead className="w-[130px]" /></TableRow></TableHeader><TableBody>{group.items.map((selection) => { const category = categoriesById[selection.category_id]; const option = selection.selected_option_id ? optionsById[selection.selected_option_id] : undefined; return <TableRow key={selection.id}><TableCell className="font-medium">{category?.name ?? "Selection"}</TableCell><TableCell><div className="flex items-center gap-2">{option?.image_url ? <img src={option.image_url} alt="" className="h-8 w-8 border object-cover" /> : <div className="h-8 w-8 border bg-muted" />}<span>{option?.name ?? "Not selected"}</span></div></TableCell><TableCell><Badge variant="outline" className="rounded-none text-[10px]">{option?.option_scope === "structural" ? "Structural" : "Design"}</Badge></TableCell><TableCell className="text-right tabular-nums">{selection.price_cents_snapshot == null ? "—" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(selection.price_cents_snapshot / 100)}</TableCell><TableCell><Badge variant="secondary" className="rounded-none">{selection.status}</Badge></TableCell><TableCell>{selection.confirmed_at ? formatDate(selection.confirmed_at) : "—"}</TableCell><TableCell className="text-right">{group.locked ? <Button asChild size="sm" variant="outline" className="h-7 rounded-none"><a href={`/projects/${selection.project_id}/change-orders?selection=${selection.id}`}><Lock className="mr-1 h-3.5 w-3.5" />Change via CO</a></Button> : option ? <Button size="sm" variant="outline" className="h-7 rounded-none" onClick={() => handleOpenSignatureWizard({ selection, categoryName: category?.name, optionName: option.name })}>Request signature</Button> : null}</TableCell></TableRow> })}</TableBody></Table></section>
+        })}
+      </div>
+      <EnvelopeWizard open={signatureWizardOpen} onOpenChange={handleSignatureWizardOpenChange} sourceEntity={signatureTarget} sourceLabel="Selection" sheetTitle="Prepare selection approval for signature" sheetDescription="Attach the finalized selection PDF, place signer fields, and send for approval." />
+      <Dialog open={Boolean(cutoffTarget)} onOpenChange={(open) => { if (!open) setCutoffTarget(null) }}><DialogContent className="rounded-none"><form action={handleCutoffOverride}><DialogHeader><DialogTitle>Override {cutoffTarget?.name} cutoff</DialogTitle><DialogDescription>This replaces the schedule-derived date until reverted. A reason is required and audited.</DialogDescription></DialogHeader><div className="space-y-3 py-4"><Label htmlFor="cutoff-date">Cutoff date</Label><Input id="cutoff-date" name="cutoffDate" type="date" required defaultValue={cutoffTarget?.date ?? ""} className="rounded-none" /><Label htmlFor="cutoff-reason">Reason</Label><Input id="cutoff-reason" name="reason" required minLength={5} maxLength={500} className="rounded-none" /></div><DialogFooter><Button type="submit" disabled={isPending} className="rounded-none">Save override</Button></DialogFooter></form></DialogContent></Dialog>
+      </>
+    )
   }
 
   return (
@@ -387,7 +473,4 @@ function SelectionAttachments({ selection }: { selection: Selection }) {
     </div>
   )
 }
-
-
-
 

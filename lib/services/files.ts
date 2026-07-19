@@ -499,10 +499,14 @@ export async function getFile(fileId: string, orgId?: string): Promise<FileRecor
 /**
  * Create a new file record
  */
-export async function createFileRecord(input: FileInput, orgId?: string): Promise<FileRecord> {
+export async function createFileRecord(
+  input: FileInput,
+  orgId?: string,
+  options: { authorizationPermission?: string } = {},
+): Promise<FileRecord> {
   const parsed = fileInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("docs.upload", { supabase, orgId: resolvedOrgId, userId })
+  await requirePermission(options.authorizationPermission ?? "docs.upload", { supabase, orgId: resolvedOrgId, userId })
   const normalizedFolderPath = normalizeFolderPath(parsed.folder_path)
   const defaultFolderPath = parsed.project_id
     ? getDefaultFolderForCategory(parsed.category)

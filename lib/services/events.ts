@@ -250,6 +250,19 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
   const actorId = typeof (event.payload as any)?.actor_id === "string" ? ((event.payload as any).actor_id as string) : null
   const projectId = extractProjectIdFromEvent(event)
 
+  const permissionEvent = event.event_type === "vpo.requested"
+    ? "vpo.approve"
+    : event.event_type === "po_completion.reported"
+      ? "po_completion.verify"
+      : null
+  if (permissionEvent) {
+    const { data: roleRows } = await supabase.from("role_permissions").select("role_id").eq("permission_key", permissionEvent)
+    const roleIds = (roleRows ?? []).map((row: any) => row.role_id).filter(Boolean)
+    if (roleIds.length === 0) return []
+    const { data: memberships } = await supabase.from("memberships").select("user_id").eq("org_id", orgId).eq("status", "active").in("role_id", roleIds)
+    return uniqUserIds((memberships ?? []).map((row: any) => row.user_id)).filter((id) => id !== actorId)
+  }
+
   const projectScopedEvents = new Set<string>([
     "task_created",
     "task_updated",
@@ -879,6 +892,20 @@ function titleForEventType(eventType: string): string {
       return "New observation"
     case "inspection_completed":
       return "Inspection completed"
+    case "vpo.requested":
+      return "VPO awaiting approval"
+    case "vpo.approved":
+      return "VPO approved"
+    case "vpo.rejected":
+      return "VPO rejected"
+    case "po_completion.reported":
+      return "PO completion reported"
+    case "po_completion.verified":
+      return "PO completion verified"
+    case "po_completion.approved":
+      return "PO completion approved"
+    case "po_completion.rejected":
+      return "PO completion rejected"
     default:
       return eventType.replace(/_/g, " ")
   }

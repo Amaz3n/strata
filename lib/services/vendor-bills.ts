@@ -16,7 +16,7 @@ import { getComplianceRules } from "@/lib/services/compliance"
 import { getCompanyComplianceStatusWithClient } from "@/lib/services/compliance-documents"
 import { propagateApprovalToLedger, voidBillableCostsForVendorBill } from "@/lib/services/cost-plus"
 import { voidJobCostEntriesForVendorBill } from "@/lib/services/job-cost-actuals"
-import { enqueueBillPaymentSync, enqueueVendorBillSync } from "@/lib/services/qbo-sync"
+import { enqueueBillPaymentSync, enqueueVendorBillSync } from "@/lib/services/accounting-sync"
 import { APPROVAL_GATE_REASONS, loadApprovalGateSettings } from "@/lib/financials/approval-gates"
 import { isCostDrivenBillingModel } from "@/lib/financials/billing-model"
 import { payableOutstandingCents } from "@/lib/financials/payables-rules"
@@ -1348,6 +1348,122 @@ export async function createProjectVendorBill({
   })
 
   return mapVendorBill(data)
+}
+
+export interface ProjectVendorCreditInput {
+  projectId: string
+  companyId: string
+  commitmentId?: string | null
+  billNumber: string
+  billDate: string
+  description: string
+  lines: Array<{ description: string; amount_cents: number; cost_code_id?: string | null }>
+  metadata?: Record<string, unknown>
+}
+
+/**
+ * Creates a vendor credit on the same payable and bill-line rails as ordinary
+ * vendor bills. Credits are positive business amounts at the call site and
+ * negative accounting amounts here; no warranty-specific AP tables are used.
+ */
+export async function createProjectVendorCredit(input: ProjectVendorCreditInput, orgId?: string): Promise<VendorBillSummary> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({
+    permission: "bill.write", userId, orgId: resolvedOrgId, projectId: input.projectId,
+    supabase, logDecision: true, resourceType: "project", resourceId: input.projectId,
+  })
+  if (!input.lines.length || input.lines.some((line) => !Number.isInteger(line.amount_cents) || line.amount_cents >= 0)) {
+    throw new Error("Vendor credit lines must be negative")
+  }
+  const totalCents = input.lines.reduce((sum, line) => sum + line.amount_cents, 0)
+  const [{ data: company }, { data: commitment }, { data: duplicate }] = await Promise.all([
+    supabase.from("companies").select("id").eq("org_id", resolvedOrgId).eq("id", input.companyId).maybeSingle(),
+    input.commitmentId
+      ? supabase.from("commitments").select("id,project_id,company_id").eq("org_id", resolvedOrgId).eq("id", input.commitmentId).maybeSingle()
+      : Promise.resolve({ data: null }),
+    supabase.from("vendor_bills").select("id").eq("org_id", resolvedOrgId).eq("company_id", input.companyId).ilike("bill_number", input.billNumber).limit(1).maybeSingle(),
+  ])
+  if (!company) throw new Error("Arc vendor not found")
+  if (input.commitmentId && (!commitment || commitment.project_id !== input.projectId)) throw new Error("Commitment not found")
+  if (duplicate) throw new Error("A payable with this vendor and number already exists")
+  const { data, error } = await supabase.from("vendor_bills").insert({
+    org_id: resolvedOrgId, project_id: input.projectId, commitment_id: input.commitmentId ?? null,
+    company_id: input.companyId, bill_number: input.billNumber, total_cents: totalCents,
+    currency: "usd", status: "approved", bill_date: input.billDate,
+    metadata: { source: "vendor_credit", description: input.description, ...input.metadata },
+    approved_at: new Date().toISOString(), approved_by: userId,
+  }).select(vendorBillSelect).single()
+  if (error || !data) throw new Error(`Failed to create vendor credit: ${error?.message}`)
+  const { error: lineError } = await supabase.from("bill_lines").insert(input.lines.map((line, index) => ({
+    org_id: resolvedOrgId, bill_id: data.id, project_id: input.projectId,
+    cost_code_id: line.cost_code_id ?? null, description: line.description,
+    quantity: 1, unit: "LS", unit_cost_cents: line.amount_cents, sort_order: index,
+    metadata: { source: "vendor_credit", ...input.metadata },
+  })))
+  if (lineError) {
+    await supabase.from("vendor_bills").delete().eq("org_id", resolvedOrgId).eq("id", data.id)
+    throw new Error(`Failed to create vendor credit lines: ${lineError.message}`)
+  }
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "insert", entityType: "vendor_bill", entityId: data.id, after: data })
+  await recordEvent({ orgId: resolvedOrgId, eventType: "vendor_credit_created", entityType: "vendor_bill", entityId: data.id, payload: { project_id: input.projectId, commitment_id: input.commitmentId ?? null, total_cents: totalCents } })
+  return mapVendorBill(data)
+}
+
+/** Apply an Arc vendor credit to a regular bill and mirror recovery to warranty. */
+export async function applyVendorCreditToBill({
+  creditBillId,
+  billId,
+  amountCents,
+  idempotencyKey,
+  orgId,
+}: {
+  creditBillId: string
+  billId: string
+  amountCents: number
+  idempotencyKey: string
+  orgId?: string
+}): Promise<{ paymentId: string; appliedCents: number }> {
+  if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("Credit amount must be positive")
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const [{ data: credit }, { data: bill }] = await Promise.all([
+    supabase.from("vendor_bills").select("id,project_id,company_id,total_cents,metadata").eq("org_id", resolvedOrgId).eq("id", creditBillId).maybeSingle(),
+    supabase.from("vendor_bills").select("id,project_id,company_id,total_cents,paid_cents,status,metadata").eq("org_id", resolvedOrgId).eq("id", billId).maybeSingle(),
+  ])
+  if (!credit || (credit.metadata as Record<string, unknown> | null)?.source !== "vendor_credit") throw new Error("Vendor credit not found")
+  if (!bill || (bill.metadata as Record<string, unknown> | null)?.source === "vendor_credit") throw new Error("Target bill not found")
+  if (credit.company_id !== bill.company_id) throw new Error("A vendor credit can only be applied to the same vendor")
+  await requireAuthorization({ permission: "bill.write", userId, orgId: resolvedOrgId, projectId: bill.project_id, supabase, logDecision: true, resourceType: "vendor_bill", resourceId: billId })
+  const warrantyBackchargeId = (credit.metadata as Record<string, unknown> | null)?.warranty_backcharge_id
+  if (typeof warrantyBackchargeId === "string") {
+    const { data: backcharge } = await supabase.from("warranty_backcharges").select("status,amount_cents,recovered_cents").eq("org_id", resolvedOrgId).eq("id", warrantyBackchargeId).maybeSingle()
+    if (backcharge?.status === "disputed") throw new Error("Disputed warranty backcharges cannot be applied")
+    if (!backcharge || !["issued","recovered"].includes(backcharge.status)) throw new Error("Warranty backcharge is not recoverable")
+  }
+  const { data: replay } = await supabase.from("payments").select("id,amount_cents").eq("org_id", resolvedOrgId).eq("metadata->>vendor_credit_id", creditBillId).eq("metadata->>idempotency_key", idempotencyKey).maybeSingle()
+  if (replay) return { paymentId: replay.id, appliedCents: Number(replay.amount_cents) }
+  const { data: applications } = await supabase.from("payments").select("amount_cents").eq("org_id", resolvedOrgId).eq("metadata->>vendor_credit_id", creditBillId).eq("metadata->>vendor_credit_applied", "true")
+  const alreadyApplied = (applications ?? []).reduce((sum, payment) => sum + Number(payment.amount_cents ?? 0), 0)
+  const creditCapacity = Math.abs(Number(credit.total_cents ?? 0))
+  if (alreadyApplied + amountCents > creditCapacity) throw new Error("Credit application exceeds the remaining vendor credit")
+  const billRemaining = Math.max(0, Number(bill.total_cents ?? 0) - Number(bill.paid_cents ?? 0))
+  if (amountCents > billRemaining) throw new Error("Credit application exceeds the bill balance")
+  const { data: payment, error } = await supabase.from("payments").insert({
+    org_id: resolvedOrgId, project_id: bill.project_id, bill_id: billId,
+    amount_cents: amountCents, currency: "usd", method: "credit", provider: "manual",
+    status: "succeeded", net_cents: amountCents, received_at: new Date().toISOString(),
+    reference: `Vendor credit ${creditBillId}`,
+    metadata: { vendor_credit_applied: true, vendor_credit_id: creditBillId, idempotency_key: idempotencyKey },
+  }).select("id").single()
+  if (error || !payment) throw new Error(`Failed to apply vendor credit: ${error?.message}`)
+  const nextPaid = Number(bill.paid_cents ?? 0) + amountCents
+  await supabase.from("vendor_bills").update({ paid_cents: nextPaid, status: nextPaid >= Number(bill.total_cents ?? 0) ? "paid" : "partial", paid_at: nextPaid >= Number(bill.total_cents ?? 0) ? new Date().toISOString() : null }).eq("org_id", resolvedOrgId).eq("id", billId)
+  if (typeof warrantyBackchargeId === "string") {
+    const recoveredCents = alreadyApplied + amountCents
+    const { data: backcharge } = await supabase.from("warranty_backcharges").select("amount_cents").eq("org_id", resolvedOrgId).eq("id", warrantyBackchargeId).maybeSingle()
+    if (backcharge) await supabase.from("warranty_backcharges").update({ recovered_cents: recoveredCents, status: recoveredCents >= Number(backcharge.amount_cents) ? "recovered" : "issued", resolved_at: recoveredCents >= Number(backcharge.amount_cents) ? new Date().toISOString() : null }).eq("org_id", resolvedOrgId).eq("id", warrantyBackchargeId)
+  }
+  await recordEvent({ orgId: resolvedOrgId, eventType: "vendor_credit_applied", entityType: "vendor_bill", entityId: creditBillId, payload: { bill_id: billId, amount_cents: amountCents } })
+  return { paymentId: payment.id, appliedCents: amountCents }
 }
 
 function normalizeVendorName(value?: string | null) {

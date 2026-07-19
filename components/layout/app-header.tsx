@@ -105,6 +105,7 @@ const PATHNAME_FALLBACK_LABELS: Record<string, string> = {
   companies: "Directory",
   contacts: "Directory",
   projects: "Projects",
+  communities: "Communities",
   pipeline: "Pipeline",
   prospects: "Prospects",
   crm: "CRM",
@@ -116,6 +117,8 @@ const PATHNAME_FALLBACK_LABELS: Record<string, string> = {
   rfis: "RFIs",
   submittals: "Submittals",
   selections: "Selections",
+  "design-studio": "Design Studio",
+  purchasing: "Purchasing",
   decisions: "Decisions",
   "change-orders": "Change Orders",
   invoices: "Invoices",
@@ -155,7 +158,7 @@ export function AppHeader({ title, breadcrumbs, className, platformSessionContro
   // Eyebrow shows the project name when inside a project.
   // Prefer the layout-provided projectContext; fall back to breadcrumb heuristic.
   const projectEyebrow = projectContext
-    ? { label: projectContext.name, href: projectContext.href }
+    ? { label: projectContext.contextLabel ?? projectContext.name, href: projectContext.contextHref ?? projectContext.href }
     : breadcrumbItems.length > 1 && breadcrumbItems[0]?.href?.startsWith("/projects/")
       ? breadcrumbItems[0]
       : null
@@ -217,6 +220,11 @@ export function AppHeader({ title, breadcrumbs, className, platformSessionContro
               )}
             </BreadcrumbList>
           </Breadcrumb>
+          {projectContext?.contextLabel && projectContext.contextHref ? (
+            <Link href={projectContext.contextHref} className="ml-3 truncate text-xs text-muted-foreground hover:text-foreground">
+              {projectContext.contextLabel}
+            </Link>
+          ) : null}
         </div>
 
         {/* Center section - Search */}

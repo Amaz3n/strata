@@ -23,6 +23,9 @@ export type NotificationType =
   | "payment_recorded"
   | "vendor_bill_submitted"
   | "selection_created"
+  | "selection_cutoff_reminder"
+  | "selection_cutoff_missed"
+  | "selection_cutoff_changed"
   | "portal_message"
   | "file_created"
   | "file_archived"
@@ -78,8 +81,47 @@ export type NotificationType =
   | "safety_incident_alert"
   | "observation_created"
   | "inspection_completed"
+  | "vpo.requested"
+  | "vpo.approved"
+  | "vpo.rejected"
+  | "po_completion.reported"
+  | "po_completion.verified"
+  | "po_completion.approved"
+  | "po_completion.rejected"
+  | "variance_digest"
+  | "start_package_ready"
+  | "start_released"
+  | "start_release_failed"
+  | "start_gate_waived"
+  | "project_superintendent_assigned"
+  | "purchase_agreement_executed"
+  | "warranty_visit_assigned"
+  | "warranty_visit_confirmed"
+  | "warranty_visit_completed"
+  | "warranty_backcharge_disputed"
+  | "warranty_sla_breached"
 
 export const EMAIL_NOTIFICATION_TYPES = [
+  {
+    key: "warranty_visit_assigned",
+    label: "Warranty visit assigned",
+    description: "Email me when a warranty service visit is assigned to me.",
+  },
+  {
+    key: "warranty_sla_breached",
+    label: "Warranty SLA breached",
+    description: "Email me when a warranty request passes its resolution target.",
+  },
+  {
+    key: "purchase_agreement_executed",
+    label: "Purchase agreement executed",
+    description: "Email me when a buyer purchase agreement is fully executed.",
+  },
+  {
+    key: "selection_cutoff_reminder",
+    label: "Selection deadline reminder",
+    description: "Email me when selections are due in 14 or 7 days.",
+  },
   {
     key: "daily_log_mentioned",
     label: "Daily log mentions",
@@ -139,6 +181,16 @@ export const EMAIL_NOTIFICATION_TYPES = [
     key: "safety_incident_alert",
     label: "Serious safety incident",
     description: "Email me when a lost-time or fatality incident is reported.",
+  },
+  {
+    key: "start_release_failed",
+    label: "Start release failed",
+    description: "Email me when a start release fails and needs attention.",
+  },
+  {
+    key: "start_package_ready",
+    label: "Start package ready",
+    description: "Email me when a lot's start package has all gates cleared.",
   },
 ] as const satisfies ReadonlyArray<{
   key: NotificationType

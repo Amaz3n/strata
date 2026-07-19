@@ -125,7 +125,7 @@ export async function convertExecutedProspectAction({
     name: string
     start_date?: string | null
     end_date?: string | null
-    property_type?: "residential" | "commercial"
+    property_type?: "residential" | "commercial" | "production"
     project_type?: "new_construction" | "remodel" | "addition" | "renovation" | "repair"
     description?: string | null
   }
@@ -205,5 +205,4 @@ export async function getEstimateCreateDataAction() {
         templates: templates.map((t) => ({ id: t.id, name: t.name, description: t.description, lines: t.lines })),
       }
 }
-
 

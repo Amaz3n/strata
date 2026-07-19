@@ -10,6 +10,8 @@ export interface ProjectShellContext {
   name: string
   href: string
   posture: ProjectPosture
+  contextLabel?: string
+  contextHref?: string
 }
 
 interface PageTitleContextType {

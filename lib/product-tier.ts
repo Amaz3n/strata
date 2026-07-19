@@ -1,7 +1,7 @@
 export const PRODUCT_TIERS = ["residential", "commercial", "production"] as const
 
 export type ProductTier = (typeof PRODUCT_TIERS)[number]
-export type ProjectPosture = "residential" | "commercial"
+export type ProjectPosture = "residential" | "commercial" | "production"
 
 export const PRODUCT_TIER_LABELS: Record<ProductTier, string> = {
   residential: "Arc",
@@ -21,11 +21,27 @@ export function getProjectPosture(
   propertyType: string | null | undefined,
   orgTier: ProductTier,
 ): ProjectPosture {
+  if (propertyType === "production") return "production"
   if (propertyType === "commercial") return "commercial"
   if (propertyType === "residential") return "residential"
-  return orgTier === "commercial" ? "commercial" : "residential"
+  if (orgTier === "commercial") return "commercial"
+  if (orgTier === "production") return "production"
+  return "residential"
 }
 
 export function getDefaultProjectPropertyType(orgTier: ProductTier): ProjectPosture {
-  return orgTier === "commercial" ? "commercial" : "residential"
+  if (orgTier === "commercial") return "commercial"
+  if (orgTier === "production") return "production"
+  return "residential"
+}
+
+export function shouldShowProductionOrgNavigation(
+  orgTier: ProductTier,
+  hasProductionProjects: boolean,
+): boolean {
+  return orgTier === "production" || hasProductionProjects
+}
+
+export function isProductionProjectPosture(posture: ProjectPosture): boolean {
+  return posture === "production"
 }

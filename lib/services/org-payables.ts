@@ -2,6 +2,11 @@ import { payableOutstandingCents } from "@/lib/financials/payables-rules"
 import { requireOrgContext } from "@/lib/services/context"
 import { orgBillsInboundAddress } from "@/lib/services/payables-email-ingest"
 import { requireAnyPermission } from "@/lib/services/permissions"
+import {
+  applyProjectIdScope,
+  applyReportingExclusion,
+  getReportingExcludedProjectIds,
+} from "@/lib/services/reporting-scope"
 
 const DAY_MS = 86_400_000
 const FETCH_LIMIT = 500
@@ -92,13 +97,14 @@ function daysToDueFor(dueDate: string | null, today: Date): number | null {
   return Math.round((due.getTime() - today.getTime()) / DAY_MS)
 }
 
-export async function loadOrgPayablesDesk(): Promise<OrgPayablesDeskData> {
+export async function loadOrgPayablesDesk(projectIds: string[] | null = null): Promise<OrgPayablesDeskData> {
   const { supabase, orgId, userId } = await requireOrgContext()
   await requireAnyPermission(["bill.read", "payment.read"], { supabase, orgId, userId })
 
   const { data: org } = await supabase.from("orgs").select("slug").eq("id", orgId).maybeSingle()
 
-  const { data, error } = await supabase
+  const excludedProjectIds = projectIds === null ? [] : await getReportingExcludedProjectIds(supabase, orgId)
+  let billsQuery = supabase
     .from("vendor_bills")
     .select(`
       id, project_id, bill_number, status, bill_date, due_date, total_cents, paid_cents, retainage_cents, qbo_vendor_name, metadata, created_at,
@@ -109,6 +115,8 @@ export async function loadOrgPayablesDesk(): Promise<OrgPayablesDeskData> {
     .order("due_date", { ascending: true, nullsFirst: false })
     .order("created_at", { ascending: false })
     .limit(FETCH_LIMIT)
+  billsQuery = applyProjectIdScope(applyReportingExclusion(billsQuery, excludedProjectIds), projectIds)
+  const { data, error } = await billsQuery
 
   if (error) throw new Error(`Failed to load payables: ${error.message}`)
 

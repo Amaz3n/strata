@@ -1,9 +1,9 @@
 import { createHash } from "crypto"
 import { NextRequest, NextResponse } from "next/server"
 
-import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
+import { QBOClient } from "@/lib/integrations/accounting/qbo/client"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { logQBO } from "@/lib/services/qbo-logger"
+import { logQBO } from "@/lib/services/accounting-logger"
 import { withCronRun } from "@/lib/services/job-runs"
 
 const CRON_SECRET = process.env.CRON_SECRET
@@ -64,8 +64,9 @@ async function processQBOCdc(request: NextRequest) {
 
   const supabase = createServiceSupabaseClient()
   const { data: connections, error } = await supabase
-    .from("qbo_connections")
-    .select("id, org_id, realm_id, settings")
+    .from("accounting_connections")
+    .select("id, org_id, external_account_id, settings")
+    .eq("provider", "qbo")
     .eq("status", "active")
     .limit(BATCH_SIZE)
 
@@ -92,7 +93,7 @@ async function processQBOCdc(request: NextRequest) {
     const changedSince = new Date(cursor - CDC_OVERLAP_MINUTES * 60 * 1000).toISOString()
 
     try {
-      const client = await QBOClient.forOrg(orgId)
+      const client = await QBOClient.forConnection(connection.id)
       if (!client) continue
       const payload = await client.changeDataCapture(CDC_ENTITIES, changedSince)
       const rows = getChangedRows(payload)
@@ -101,12 +102,12 @@ async function processQBOCdc(request: NextRequest) {
       let maxInsertedUpdatedAt: string | null = null
 
       for (const row of rows) {
-        const eventId = `cdc:${connection.realm_id}:${row.entityName}:${row.id}:${row.lastUpdated}`
+        const eventId = `cdc:${connection.external_account_id}:${row.entityName}:${row.id}:${row.lastUpdated}`
         const payloadHash = createHash("sha256").update(eventId).digest("hex")
         const { error: insertError } = await supabase.from("qbo_webhook_events").upsert({
           event_id: eventId,
           payload_hash: payloadHash,
-          realm_id: connection.realm_id,
+          realm_id: connection.external_account_id,
           entity_name: row.entityName,
           entity_qbo_id: row.id,
           operation: "cdc",

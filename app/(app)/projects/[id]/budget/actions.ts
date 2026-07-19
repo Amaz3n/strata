@@ -16,6 +16,11 @@ import {
   createBudgetTransfer,
   setBudgetLineContingency,
 } from "@/lib/services/budget-transfers"
+import {
+  buildBudgetDraftFromTemplate,
+  createBudgetTemplateFromProjectBudget,
+  listBudgetTemplates,
+} from "@/lib/services/budget-templates"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -132,6 +137,30 @@ export async function proposeBudgetFromEstimateAction(
   costCodesEnabled: boolean,
 ) {
       return buildBudgetDraftFromEstimate({ projectId, estimateId, costCodesEnabled })
+}
+
+export async function listBudgetTemplatesAction() {
+  return listBudgetTemplates()
+}
+
+export async function proposeBudgetFromTemplateAction(
+  projectId: string,
+  templateId: string,
+  costCodesEnabled: boolean,
+) {
+  return buildBudgetDraftFromTemplate({ projectId, templateId, costCodesEnabled })
+}
+
+export async function saveProjectBudgetAsTemplateAction(projectId: string, input: unknown) {
+  return run(async () => {
+    const parsed = z.object({
+      name: z.string().trim().min(1).max(160),
+      description: z.string().trim().max(2000).optional().nullable(),
+    }).parse(input)
+    const template = await createBudgetTemplateFromProjectBudget(z.string().uuid().parse(projectId), parsed)
+    revalidatePath("/settings/templates")
+    return template
+  })
 }
 
 const applyBudgetSchema = z.object({

@@ -22,6 +22,9 @@ export const createBidPackageInputSchema = z
   .object({
     project_id: z.string().uuid().optional().nullable(),
     prospect_id: z.string().uuid().optional().nullable(),
+    community_id: z.string().uuid().optional().nullable(),
+    house_plan_id: z.string().uuid().optional().nullable(),
+    award_target: z.enum(["commitment", "price_agreement"]).optional(),
     title: z.string().min(1, "Title is required"),
     cost_code_id: z.string().uuid().optional().nullable(),
     budget_line_id: z.string().uuid().optional().nullable(),
@@ -34,11 +37,19 @@ export const createBidPackageInputSchema = z
     bond_required: z.boolean().optional(),
     status: bidPackageStatusEnum.optional(),
   })
-  .refine((data) => data.project_id || data.prospect_id, {
-    message: "A bid package must belong to a project or prospect",
+  .superRefine((data, context) => {
+    const contexts = Number(Boolean(data.project_id)) + Number(Boolean(data.prospect_id))
+      + Number(Boolean(data.community_id || data.house_plan_id))
+    if (contexts !== 1) context.addIssue({ code: z.ZodIssueCode.custom, message: "Choose one project, prospect, or community/plan context." })
+    if ((data.community_id || data.house_plan_id) && data.award_target && data.award_target !== "price_agreement") {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["award_target"], message: "Community/plan packages award to the price book." })
+    }
   })
 
 export const updateBidPackageInputSchema = z.object({
+  community_id: z.string().uuid().optional().nullable(),
+  house_plan_id: z.string().uuid().optional().nullable(),
+  award_target: z.enum(["commitment", "price_agreement"]).optional(),
   title: z.string().min(1).optional(),
   cost_code_id: z.string().uuid().optional().nullable(),
   budget_line_id: z.string().uuid().optional().nullable(),

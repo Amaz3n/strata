@@ -401,7 +401,14 @@ export function ProjectFinancialSetupFields({
           <h3 className="text-sm font-semibold">Contract terms</h3>
           <p className="text-xs text-muted-foreground">Stored on the active contract used by financial pages.</p>
         </div>
-        {value.billingModel === "fixed_price" ? (
+        {value.billingModel === "fixed_price" && posture === "production" ? (
+          <div className="border border-border/70 bg-muted/30 p-3">
+            <p className="text-sm font-medium">Buyer billing at closing</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Production projects use standard receivables until the purchase-agreement and closing workflow is configured.
+            </p>
+          </div>
+        ) : value.billingModel === "fixed_price" ? (
           <div className="space-y-2">
             <Label>Owner billing</Label>
             <div className="grid gap-2 sm:grid-cols-2">

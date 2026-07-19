@@ -7,6 +7,7 @@ begin;
 
 -- 1. Permission catalog
 insert into permissions (key, description) values
+  ('accounting.entity_map.manage', 'Manage accounting connection routing and dimensions'),
   ('audit.export', 'Export audit logs'),
   ('audit.read', 'Read audit logs'),
   ('authz.policy.manage', 'Manage authorization policies and overrides'),
@@ -16,6 +17,7 @@ insert into permissions (key, description) values
   ('bill.read', 'View vendor bills'),
   ('bill.write', 'Create and edit vendor bills'),
   ('billing.manage', 'Manage billing and subscriptions'),
+  ('financials.export', 'Export accounting journals, AP, and job-cost data'),
   ('budget.lock', 'Lock budget versions'),
   ('budget.approve', 'Approve and post budget transfers'),
   ('budget.read', 'View project budgets'),
@@ -28,13 +30,17 @@ insert into permissions (key, description) values
   ('commitment.approve', 'Approve commitments'),
   ('commitment.read', 'View commitments'),
   ('commitment.write', 'Create and edit commitments'),
+  ('community.read', 'View communities, phases, lots, and takedowns'),
+  ('community.write', 'Create and manage communities, phases, and lot takedowns'),
   ('daily_log.approve', 'Approve daily logs'),
   ('daily_log.read', 'View daily logs'),
   ('daily_log.write', 'Create and edit daily logs'),
+  ('design_studio.manage', 'Manage design studio appointments and coordinator desk'),
   ('decision.read', 'View decisions'),
   ('decision.write', 'Create and update decisions'),
   ('directory.read', 'View directory companies and contacts'),
   ('directory.write', 'Create and update directory companies and contacts'),
+  ('division.manage', 'Create and manage organization divisions and division scoping'),
   ('docs.delete', 'Delete or archive project documents'),
   ('docs.download', 'Download project documents'),
   ('docs.read', 'View project documents'),
@@ -53,6 +59,7 @@ insert into permissions (key, description) values
   ('invoice.read', 'View invoices'),
   ('invoice.send', 'Send invoices to recipients'),
   ('invoice.write', 'Create and edit invoices'),
+  ('lot.write', 'Create and edit lots and lot status'),
   ('members.manage', 'Manage org memberships'),
   ('meeting.write', 'Create, edit, and finalize project meeting minutes'),
   ('message.read', 'View internal project and workspace messages'),
@@ -64,6 +71,10 @@ insert into permissions (key, description) values
   ('org.settings.update', 'Update organization settings'),
   ('payment.read', 'View payment records'),
   ('payment.release', 'Release payments'),
+  ('plan.instantiate', 'Instantiate a released house plan version onto a lot project'),
+  ('plan.read', 'View house plans, versions, takeoffs, bundles, and availability'),
+  ('plan.release', 'Release immutable house plan versions'),
+  ('plan.write', 'Create and edit draft house plans, elevations, takeoffs, and bundles'),
   ('pipeline.read', 'View pipeline and CRM records'),
   ('pipeline.write', 'Create and update pipeline and CRM records'),
   ('platform.billing.manage', 'Manage billing across organizations from platform context'),
@@ -93,10 +104,17 @@ insert into permissions (key, description) values
   ('rfi.write', 'Create and edit RFIs'),
   ('safety.read', 'View safety incidents and investigation details'),
   ('safety.write', 'Record safety incidents, toolbox talks, and observations'),
+  ('sales.read', 'View sales pipeline, reservations, price sheets, incentives, and closings'),
+  ('sales.manage', 'Manage reservations, incentives, purchase agreements, and asking prices'),
+  ('closing.manage', 'Schedule, clear, and settle production-home closings'),
   ('schedule.baseline.manage', 'Manage schedule baselines'),
   ('schedule.edit', 'Edit project schedule'),
   ('schedule.publish', 'Publish schedule updates'),
   ('schedule.read', 'View project schedule'),
+  ('selections.catalog.manage', 'Manage option catalogs, packages, groups, and pricing'),
+  ('selections.cutoff.override', 'Override schedule-derived selection cutoffs'),
+  ('selections.read', 'View project selections'),
+  ('selections.write', 'Create, choose, and confirm project selections'),
   ('signature.read', 'View signature documents and envelopes'),
   ('signature.send', 'Prepare and send signature requests'),
   ('submittal.approve', 'Approve submittals'),
@@ -110,6 +128,10 @@ insert into permissions (key, description) values
   ('time.read', 'View project time entries'),
   ('time.write', 'Create and edit project time entries'),
   ('transmittal.write', 'Create and send project transmittals'),
+  ('start.read', 'View start packages, gates, and the release board'),
+  ('start.write', 'Edit start packages and attest gates'),
+  ('start.release', 'Give final start approval, waive gates, and release starts'),
+  ('start.slots', 'Edit community even-flow release slots'),
   ('warranty.read', 'View warranty items'),
   ('warranty.write', 'Create and update warranty items')
 on conflict (key) do update set description = excluded.description;
@@ -118,10 +140,16 @@ on conflict (key) do update set description = excluded.description;
 insert into roles (key, label, scope, description) values
   ('org_admin', 'Admin', 'org', 'Full company access, including settings, billing, team, all projects, approvals, and financial workflows.'),
   ('org_bookkeeper', 'Bookkeeper', 'org', 'Accounts payable/receivable. Enters bills and invoices and runs reports, but cannot approve payments or release funds (separation of duties).'),
+  ('org_design_studio_coordinator', 'Design Studio Coordinator', 'org', 'Manages option catalogs, buyer selections, cutoffs, appointments, and selection change orders.'),
   ('org_estimator', 'Estimator', 'org', 'Preconstruction. Owns bids, proposals, and the sales pipeline. No access to active-job financials.'),
+  ('org_land_manager', 'Land & Community Manager', 'org', 'Land pipeline and community operations. Manages communities, phases, lots, and takedowns without job-financial access.'),
   ('org_office_admin', 'Office Admin', 'org', 'Administrative control across projects, members, and business operations.'),
   ('org_owner', 'Org Owner', 'org', 'Organization owner with full tenant control'),
   ('org_project_lead', 'Project Lead', 'org', 'Execution-focused role for project delivery, field workflows, and day-to-day coordination.'),
+  ('org_purchasing_manager', 'Purchasing Manager', 'org', 'Owns price agreements, bid awards, generated purchase orders, VPO approvals, and completion-to-pay workflows.'),
+  ('org_sales_agent', 'Sales Agent', 'org', 'Community sales: inventory, pricing, reservations, and purchase agreements. No job-cost or payables access.'),
+  ('org_starts_coordinator', 'Starts Coordinator', 'org', 'Owns gate completeness, the even-flow release board, and start releases across communities.'),
+  ('org_superintendent', 'Superintendent', 'org', 'Field lead running assigned production houses, schedules, logs, photos, punch, inspections, and VPO requests.'),
   ('org_user', 'User', 'org', 'Internal team member. Access is scoped by project assignments and optional permission overrides.'),
   ('org_viewer', 'Viewer', 'org', 'Read-only visibility role for stakeholders and observers.'),
   ('platform_admin', 'Platform Admin', 'platform', 'Platform operations and support administrator'),
@@ -920,6 +948,30 @@ union all
   select id, 'safety.read' from roles where key in ('org_owner', 'org_admin', 'org_office_admin', 'org_project_lead', 'pm', 'field')
 union all
   select id, 'safety.write' from roles where key in ('org_owner', 'org_admin', 'org_office_admin', 'org_project_lead', 'pm', 'field')
+union all
+  select id, 'community.read' from roles where key in ('org_owner', 'org_admin', 'org_office_admin', 'org_project_lead', 'org_user', 'org_viewer', 'org_estimator', 'pm', 'field', 'org_land_manager')
+union all
+  select id, 'community.write' from roles where key in ('org_owner', 'org_admin', 'org_office_admin', 'org_land_manager')
+union all
+  select id, 'lot.write' from roles where key in ('org_owner', 'org_admin', 'org_office_admin', 'org_project_lead', 'pm', 'org_land_manager')
+union all
+  select id, 'division.manage' from roles where key in ('org_owner', 'org_admin')
+union all
+  select id, permission_key from roles
+  cross join unnest(array['org.member', 'org.read', 'project.read', 'report.read', 'directory.read', 'docs.read', 'docs.download']) as permission_key
+  where key = 'org_land_manager'
+union all
+  select id, permission_key from roles
+  cross join unnest(array['org.member', 'org.read', 'project.read', 'community.read', 'selections.read', 'selections.write', 'selections.catalog.manage', 'selections.cutoff.override', 'design_studio.manage', 'change_order.read', 'change_order.write', 'schedule.read', 'financials.margin.read']) as permission_key
+  where key = 'org_design_studio_coordinator'
+union all
+  select id, permission_key from roles
+  cross join unnest(array['selections.read', 'selections.write', 'selections.catalog.manage', 'selections.cutoff.override', 'design_studio.manage']) as permission_key
+  where key in ('org_owner', 'org_admin', 'org_office_admin')
+union all
+  select id, permission_key from roles
+  cross join unnest(array['selections.read', 'selections.write', 'design_studio.manage']) as permission_key
+  where key in ('org_project_lead', 'pm')
 on conflict (role_id, permission_key) do nothing;
 
 -- 4. Prune grants no longer declared, so this file stays authoritative for managed roles.
@@ -1347,11 +1399,179 @@ with desired (role_key, permission_key) as (values
   ('pm', 'safety.read'),
   ('pm', 'safety.write'),
   ('field', 'safety.read'),
-  ('field', 'safety.write')
+  ('field', 'safety.write'),
+  ('org_owner', 'community.read'),
+  ('org_owner', 'community.write'),
+  ('org_owner', 'lot.write'),
+  ('org_owner', 'division.manage'),
+  ('org_admin', 'community.read'),
+  ('org_admin', 'community.write'),
+  ('org_admin', 'lot.write'),
+  ('org_admin', 'division.manage'),
+  ('org_office_admin', 'community.read'),
+  ('org_office_admin', 'community.write'),
+  ('org_office_admin', 'lot.write'),
+  ('org_project_lead', 'community.read'),
+  ('org_project_lead', 'lot.write'),
+  ('org_user', 'community.read'),
+  ('org_viewer', 'community.read'),
+  ('org_estimator', 'community.read'),
+  ('pm', 'community.read'),
+  ('pm', 'lot.write'),
+  ('field', 'community.read'),
+  ('org_land_manager', 'org.member'),
+  ('org_land_manager', 'org.read'),
+  ('org_land_manager', 'project.read'),
+  ('org_land_manager', 'report.read'),
+  ('org_land_manager', 'community.read'),
+  ('org_land_manager', 'community.write'),
+  ('org_land_manager', 'lot.write'),
+  ('org_land_manager', 'directory.read'),
+  ('org_land_manager', 'docs.read'),
+  ('org_land_manager', 'docs.download'),
+  ('org_owner', 'plan.read'),
+  ('org_owner', 'plan.write'),
+  ('org_owner', 'plan.release'),
+  ('org_owner', 'plan.instantiate'),
+  ('org_admin', 'plan.read'),
+  ('org_admin', 'plan.write'),
+  ('org_admin', 'plan.release'),
+  ('org_admin', 'plan.instantiate'),
+  ('org_office_admin', 'plan.read'),
+  ('org_office_admin', 'plan.write'),
+  ('org_project_lead', 'plan.read'),
+  ('org_bookkeeper', 'plan.read'),
+  ('org_user', 'plan.read'),
+  ('org_viewer', 'plan.read'),
+  ('org_estimator', 'plan.read'),
+  ('org_estimator', 'plan.write'),
+  ('pm', 'plan.read'),
+  ('org_purchasing_manager', 'plan.read'),
+  ('org_purchasing_manager', 'plan.write'),
+  ('org_purchasing_manager', 'plan.release'),
+  ('org_starts_coordinator', 'plan.read'),
+  ('org_starts_coordinator', 'plan.instantiate'),
+  ('org_sales_agent', 'plan.read')
+  ,('org_design_studio_coordinator', 'org.member')
+  ,('org_design_studio_coordinator', 'org.read')
+  ,('org_design_studio_coordinator', 'project.read')
+  ,('org_design_studio_coordinator', 'community.read')
+  ,('org_design_studio_coordinator', 'selections.read')
+  ,('org_design_studio_coordinator', 'selections.write')
+  ,('org_design_studio_coordinator', 'selections.catalog.manage')
+  ,('org_design_studio_coordinator', 'selections.cutoff.override')
+  ,('org_design_studio_coordinator', 'design_studio.manage')
+  ,('org_design_studio_coordinator', 'change_order.read')
+  ,('org_design_studio_coordinator', 'change_order.write')
+  ,('org_design_studio_coordinator', 'schedule.read')
+  ,('org_design_studio_coordinator', 'financials.margin.read')
+  ,('org_owner', 'selections.read')
+  ,('org_owner', 'selections.write')
+  ,('org_owner', 'selections.catalog.manage')
+  ,('org_owner', 'selections.cutoff.override')
+  ,('org_owner', 'design_studio.manage')
+  ,('org_admin', 'selections.read')
+  ,('org_admin', 'selections.write')
+  ,('org_admin', 'selections.catalog.manage')
+  ,('org_admin', 'selections.cutoff.override')
+  ,('org_admin', 'design_studio.manage')
+  ,('org_office_admin', 'selections.read')
+  ,('org_office_admin', 'selections.write')
+  ,('org_office_admin', 'selections.catalog.manage')
+  ,('org_office_admin', 'selections.cutoff.override')
+  ,('org_office_admin', 'design_studio.manage')
+  ,('org_project_lead', 'selections.read')
+  ,('org_project_lead', 'selections.write')
+  ,('org_project_lead', 'design_studio.manage')
+  ,('pm', 'selections.read')
+  ,('pm', 'selections.write')
+  ,('pm', 'design_studio.manage')
+  ,('org_owner', 'start.read')
+  ,('org_owner', 'start.write')
+  ,('org_owner', 'start.release')
+  ,('org_owner', 'start.slots')
+  ,('org_admin', 'start.read')
+  ,('org_admin', 'start.write')
+  ,('org_admin', 'start.release')
+  ,('org_admin', 'start.slots')
+  ,('org_office_admin', 'start.read')
+  ,('org_office_admin', 'start.write')
+  ,('org_project_lead', 'start.read')
+  ,('org_project_lead', 'start.write')
+  ,('org_user', 'start.read')
+  ,('org_viewer', 'start.read')
+  ,('org_land_manager', 'start.read')
+  ,('org_purchasing_manager', 'start.read')
+  ,('pm', 'start.read')
+  ,('pm', 'start.write')
+  ,('field', 'start.read')
+  ,('org_starts_coordinator', 'org.member')
+  ,('org_starts_coordinator', 'org.read')
+  ,('org_starts_coordinator', 'project.read')
+  ,('org_starts_coordinator', 'project.manage')
+  ,('org_starts_coordinator', 'community.read')
+  ,('org_starts_coordinator', 'lot.write')
+  ,('org_starts_coordinator', 'plan.read')
+  ,('org_starts_coordinator', 'plan.instantiate')
+  ,('org_starts_coordinator', 'start.read')
+  ,('org_starts_coordinator', 'start.write')
+  ,('org_starts_coordinator', 'start.release')
+  ,('org_starts_coordinator', 'start.slots')
+  ,('org_starts_coordinator', 'budget.read')
+  ,('org_starts_coordinator', 'report.read')
+  ,('org_starts_coordinator', 'schedule.read')
+  ,('org_starts_coordinator', 'po.generate')
+  ,('org_superintendent', 'org.member')
+  ,('org_superintendent', 'org.read')
+  ,('org_superintendent', 'project.read')
+  ,('org_superintendent', 'community.read')
+  ,('org_superintendent', 'start.read')
+  ,('org_superintendent', 'schedule.read')
+  ,('org_superintendent', 'schedule.edit')
+  ,('org_superintendent', 'daily_log.read')
+  ,('org_superintendent', 'daily_log.write')
+  ,('org_superintendent', 'docs.read')
+  ,('org_superintendent', 'docs.download')
+  ,('org_superintendent', 'docs.upload')
+  ,('org_superintendent', 'drawing.read')
+  ,('org_superintendent', 'punch.read')
+  ,('org_superintendent', 'punch.write')
+  ,('org_superintendent', 'inspection.write')
+  ,('org_superintendent', 'vpo.request')
+  ,('org_owner', 'sales.read')
+  ,('org_owner', 'sales.manage')
+  ,('org_owner', 'closing.manage')
+  ,('org_admin', 'sales.read')
+  ,('org_admin', 'sales.manage')
+  ,('org_admin', 'closing.manage')
+  ,('org_office_admin', 'sales.read')
+  ,('org_office_admin', 'sales.manage')
+  ,('org_office_admin', 'closing.manage')
+  ,('org_project_lead', 'sales.read')
+  ,('org_viewer', 'sales.read')
+  ,('pm', 'sales.read')
+  ,('org_bookkeeper', 'closing.manage')
+  ,('org_sales_agent', 'org.member')
+  ,('org_sales_agent', 'org.read')
+  ,('org_sales_agent', 'project.read')
+  ,('org_sales_agent', 'community.read')
+  ,('org_sales_agent', 'sales.read')
+  ,('org_sales_agent', 'sales.manage')
+  ,('org_sales_agent', 'directory.read')
+  ,('org_sales_agent', 'docs.read')
+  ,('org_sales_agent', 'report.read')
+  ,('org_sales_agent', 'selections.read')
+  ,('org_owner', 'accounting.entity_map.manage')
+  ,('org_owner', 'financials.export')
+  ,('org_admin', 'accounting.entity_map.manage')
+  ,('org_admin', 'financials.export')
+  ,('org_bookkeeper', 'accounting.entity_map.manage')
+  ,('org_bookkeeper', 'financials.export')
+  ,('org_office_admin', 'financials.export')
 )
 delete from role_permissions rp using roles r
 where rp.role_id = r.id
-  and r.key in ('field', 'org_admin', 'org_bookkeeper', 'org_estimator', 'org_office_admin', 'org_owner', 'org_project_lead', 'org_user', 'org_viewer', 'platform_admin', 'platform_billing_ops', 'platform_security_auditor', 'platform_super_admin', 'platform_support_readonly', 'pm')
+  and r.key in ('field', 'org_admin', 'org_bookkeeper', 'org_design_studio_coordinator', 'org_estimator', 'org_land_manager', 'org_office_admin', 'org_owner', 'org_project_lead', 'org_purchasing_manager', 'org_sales_agent', 'org_starts_coordinator', 'org_superintendent', 'org_user', 'org_viewer', 'platform_admin', 'platform_billing_ops', 'platform_security_auditor', 'platform_super_admin', 'platform_support_readonly', 'pm')
   and not exists (select 1 from desired d where d.role_key = r.key and d.permission_key = rp.permission_key);
 
 commit;

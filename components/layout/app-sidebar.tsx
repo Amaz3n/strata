@@ -13,6 +13,7 @@ import {
   ClipboardCheck,
   Contact,
   CreditCard,
+  FileSpreadsheet,
   FileText,
   FolderOpen,
   Gavel,
@@ -69,6 +70,9 @@ interface AppSidebarProps {
   permissions?: string[]
   whatsNewUnreadCount?: number
   productTier?: ProductTier
+  hasDivisions?: boolean
+  showProductionNavigation?: boolean
+  showPurchasingNavigation?: boolean
 }
 
 type SidebarNavSubItem = ProjectNavSubItem
@@ -78,6 +82,7 @@ type SidebarNavGroup = ProjectNavGroup
 const settingsItems: SidebarNavItem[] = [
   { title: "Profile", url: "/settings?tab=profile", icon: UserIcon },
   { title: "Organization", url: "/settings?tab=organization", icon: Building2 },
+  { title: "Divisions", url: "/settings/divisions", icon: Building2 },
   { title: "Invoicing", url: "/settings?tab=invoicing", icon: Receipt },
   { title: "Billing", url: "/settings?tab=billing", icon: CreditCard },
   { title: "Notifications", url: "/settings?tab=notifications", icon: Bell },
@@ -85,9 +90,11 @@ const settingsItems: SidebarNavItem[] = [
   { title: "Integrations", url: "/settings?tab=integrations", icon: Link2 },
   { title: "Team", url: "/settings?tab=team", icon: Users },
   { title: "Cost Codes", url: "/settings?tab=cost-codes", icon: Tag },
+  { title: "Data Imports", url: "/settings/imports", icon: FileSpreadsheet, requiredAny: ["import.manage"] },
   { title: "Markup Rules", url: "/settings/markup-rules", icon: SlidersHorizontal },
   { title: "Billing Rates", url: "/settings/billing-rates", icon: Wallet },
   { title: "Templates", url: "/settings/templates", icon: FileText },
+  { title: "Warranty", url: "/settings/warranty", icon: ShieldCheck, requiredAny: ["warranty.manage"] },
   { title: "Vendor Compliance", url: "/settings?tab=compliance", icon: ShieldCheck },
   { title: "About", url: "/settings?tab=about", icon: Settings },
 ]
@@ -124,6 +131,8 @@ function buildWorkspaceGroups(
   readyToBillBadgeCount?: number,
   canAccessPlatform?: boolean,
   productTier: ProductTier = "residential",
+  showProductionNavigation = false,
+  showPurchasingNavigation = false,
 ): SidebarNavGroup[] {
   const workspaceItems: SidebarNavItem[] = [
     {
@@ -157,7 +166,70 @@ function buildWorkspaceGroups(
     },
   ]
 
+  if (showProductionNavigation) {
+    workspaceItems.splice(
+      3,
+      0,
+      {
+        title: "Communities",
+        url: "/communities",
+        icon: Building2,
+        isActive: pathname.startsWith("/communities"),
+        requiredAny: ["community.read"],
+      },
+      {
+        title: "Plans",
+        url: "/plans",
+        icon: Home,
+        isActive: pathname.startsWith("/plans"),
+        requiredAny: ["plan.read"],
+      },
+      {
+        title: "Design Studio",
+        url: "/design-studio",
+        icon: SlidersHorizontal,
+        isActive: pathname.startsWith("/design-studio"),
+        requiredAny: ["selections.read", "design_studio.manage"],
+      },
+      {
+        title: "Sales",
+        url: "/sales",
+        icon: Contact,
+        isActive: pathname.startsWith("/sales"),
+        requiredAny: ["sales.read"],
+      },
+      {
+        title: "Starts",
+        url: "/starts",
+        icon: CalendarDays,
+        isActive: pathname.startsWith("/starts"),
+        requiredAny: ["start.read"],
+      },
+      {
+        title: "My Houses",
+        url: "/my-houses",
+        icon: HardHat,
+        isActive: pathname.startsWith("/my-houses"),
+        requiredAny: ["start.read"],
+      },
+      {
+        title: "Warranty",
+        url: "/warranty",
+        icon: ShieldCheck,
+        isActive: pathname.startsWith("/warranty"),
+        requiredAny: ["warranty.read"],
+      },
+    )
+  }
+
   const officeItems: SidebarNavItem[] = [
+    ...(showPurchasingNavigation ? [{
+      title: "Purchasing",
+      url: "/purchasing",
+      icon: Receipt,
+      isActive: pathname.startsWith("/purchasing"),
+      requiredAny: ["price_book.read"],
+    }] : []),
     {
       title: "Billing",
       url: "/billing",
@@ -241,6 +313,9 @@ export function AppSidebar({
   permissions = [],
   whatsNewUnreadCount = 0,
   productTier = "residential",
+  hasDivisions = false,
+  showProductionNavigation = false,
+  showPurchasingNavigation = false,
 }: AppSidebarProps) {
   const pathname = useOptimisticPathname()
   const router = useRouter()
@@ -296,10 +371,10 @@ export function AppSidebar({
       )
     }
     return filterGroups(
-      buildWorkspaceGroups(pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, productTier),
+      buildWorkspaceGroups(pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, productTier, showProductionNavigation, showPurchasingNavigation),
       permissionSet,
     )
-  }, [isSettings, isProject, projectId, section, currentProject, pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, permissionSet, projectReviewBadgeCounts, productTier])
+  }, [isSettings, isProject, projectId, section, currentProject, pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, permissionSet, projectReviewBadgeCounts, productTier, showProductionNavigation, showPurchasingNavigation])
 
   const navMain = navGroups.map((group) => ({
     ...group,
@@ -308,6 +383,9 @@ export function AppSidebar({
       isActive: !item.disabled && (item.isActive || pathname === item.url),
     })),
   }))
+  const visibleSettingsItems = settingsItems.filter(
+    (item) => item.title !== "Divisions" || showProductionNavigation || hasDivisions,
+  )
 
   const orgData = {
     name: "Arc Construction",
@@ -375,7 +453,7 @@ export function AppSidebar({
           <SidebarGroup>
             <SidebarGroupLabel>Settings</SidebarGroupLabel>
             <SidebarMenu>
-              {settingsItems.map((item) => (
+              {visibleSettingsItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton
                     tooltip={item.title}

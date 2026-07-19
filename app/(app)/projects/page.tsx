@@ -7,16 +7,23 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { requireOrgContext } from "@/lib/services/context"
 
 import { unwrapAction } from "@/lib/action-result"
+import { resolveProductionDeskScope } from "@/lib/services/production-desk-scope"
 
 export const dynamic = 'force-dynamic'
 
-async function ProjectsData() {
+async function ProjectsData({ communityId, divisionId }: { communityId?: string; divisionId?: string }) {
   const { orgId, productTier } = await requireOrgContext()
-  const [projects, clientContacts, scheduleSummaries] = await Promise.all([
+  const [allProjects, clientContacts, allScheduleSummaries, scope] = await Promise.all([
     listProjectsAction(),
     listProjectClientContactsAction(),
     listProjectScheduleSummariesAction(),
+    resolveProductionDeskScope({ communityId, divisionId }),
   ])
+  const allowed = scope.projectIds === null ? null : new Set(scope.projectIds)
+  const projects = allowed ? allProjects.filter((project) => allowed.has(project.id)) : allProjects
+  const scheduleSummaries = Object.fromEntries(
+    Object.entries(allScheduleSummaries).filter(([projectId]) => !allowed || allowed.has(projectId)),
+  )
 
   return (
     <ProjectsClient
@@ -25,16 +32,21 @@ async function ProjectsData() {
       clientContacts={clientContacts}
       scheduleSummaries={scheduleSummaries}
       productTier={productTier}
+      communities={scope.communities}
+      divisions={scope.divisions}
+      communityId={scope.communityId}
+      divisionId={scope.divisionId}
     />
   )
 }
 
-export default function ProjectsPage() {
+export default async function ProjectsPage({ searchParams }: { searchParams: Promise<{ community?: string; division?: string }> }) {
+  const params = await searchParams
   return (
     <PageLayout title="Projects">
       <div className="-m-4 -mt-6 h-[calc(100vh-3.5rem)]">
         <Suspense fallback={<ProjectsSkeleton />}>
-          <ProjectsData />
+          <ProjectsData communityId={params.community} divisionId={params.division} />
         </Suspense>
       </div>
     </PageLayout>

@@ -10,11 +10,13 @@ import { getCompanyPrequalificationWarning } from "@/lib/services/prequalificati
 import { getComplianceRules } from "@/lib/services/compliance"
 
 export type CommitmentStatus = "draft" | "approved" | "complete" | "canceled"
+export type CommitmentType = "subcontract" | "purchase_order"
 
 export interface CommitmentSummary {
   id: string
   org_id: string
   project_id: string
+  commitment_type: CommitmentType
   project_name?: string
   company_id?: string
   company_name?: string
@@ -67,6 +69,7 @@ function mapCommitment(row: any): CommitmentSummary {
     id: row.id,
     org_id: row.org_id,
     project_id: row.project_id,
+    commitment_type: row.commitment_type === "purchase_order" ? "purchase_order" : "subcontract",
     project_name: row.project?.name ?? undefined,
     company_id: row.company_id ?? undefined,
     company_name: row.company?.name ?? undefined,
@@ -199,7 +202,7 @@ export async function listCompanyCommitments(companyId: string, orgId?: string):
     .from("commitments")
     .select(
       `
-      id, org_id, project_id, company_id, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, issued_at, start_date, end_date, created_at, updated_at,
+      id, org_id, project_id, company_id, commitment_type, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, issued_at, start_date, end_date, created_at, updated_at,
       project:projects(id, name),
       company:companies(id, name)
     `,
@@ -259,7 +262,7 @@ export async function listCompanyCommitments(companyId: string, orgId?: string):
   })
 }
 
-export async function listProjectCommitments(projectId: string, orgId?: string): Promise<CommitmentSummary[]> {
+export async function listProjectCommitments(projectId: string, orgId?: string, type?: CommitmentType): Promise<CommitmentSummary[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAuthorization({
     permission: "commitment.read",
@@ -272,11 +275,11 @@ export async function listProjectCommitments(projectId: string, orgId?: string):
     resourceId: projectId,
   })
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("commitments")
     .select(
       `
-      id, org_id, project_id, company_id, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, issued_at, start_date, end_date, created_at, updated_at,
+      id, org_id, project_id, company_id, commitment_type, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, issued_at, start_date, end_date, created_at, updated_at,
       project:projects(id, name),
       company:companies(id, name)
     `,
@@ -284,6 +287,9 @@ export async function listProjectCommitments(projectId: string, orgId?: string):
     .eq("org_id", resolvedOrgId)
     .eq("project_id", projectId)
     .order("created_at", { ascending: false })
+
+  if (type) query = query.eq("commitment_type", type)
+  const { data, error } = await query
 
   if (error) {
     throw new Error(`Failed to list commitments: ${error.message}`)
@@ -356,6 +362,7 @@ export async function createCommitment({ input, orgId }: { input: CommitmentInpu
       org_id: resolvedOrgId,
       project_id: parsed.project_id,
       company_id: parsed.company_id,
+      commitment_type: parsed.commitment_type,
       title: parsed.title,
       status: parsed.status ?? "draft",
       total_cents: parsed.total_cents,
@@ -369,7 +376,7 @@ export async function createCommitment({ input, orgId }: { input: CommitmentInpu
     })
     .select(
       `
-      id, org_id, project_id, company_id, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, issued_at, start_date, end_date, created_at, updated_at,
+      id, org_id, project_id, company_id, commitment_type, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, issued_at, start_date, end_date, created_at, updated_at,
       project:projects(id, name)
     `,
     )
@@ -421,7 +428,7 @@ export async function updateCommitment({
 
   const { data: existing, error: existingError } = await supabase
     .from("commitments")
-    .select("id, org_id, project_id, company_id, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, start_date, end_date, issued_at, metadata, created_at, updated_at")
+    .select("id, org_id, project_id, company_id, commitment_type, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, start_date, end_date, issued_at, metadata, created_at, updated_at")
     .eq("org_id", resolvedOrgId)
     .eq("id", commitmentId)
     .maybeSingle()
@@ -480,7 +487,7 @@ export async function updateCommitment({
     .eq("id", commitmentId)
     .select(
       `
-      id, org_id, project_id, company_id, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, issued_at, start_date, end_date, metadata, created_at, updated_at,
+      id, org_id, project_id, company_id, commitment_type, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, issued_at, start_date, end_date, metadata, created_at, updated_at,
       project:projects(id, name)
     `,
     )
@@ -518,7 +525,7 @@ export async function markCommitmentExecutedFromEnvelope(input: {
 
   const { data: existing, error: existingError } = await supabase
     .from("commitments")
-    .select("id, org_id, project_id, company_id, title, status, total_cents, executed_at, executed_file_id, source_document_id, signature_envelope_id, metadata")
+    .select("id, org_id, project_id, company_id, commitment_type, title, status, total_cents, executed_at, executed_file_id, source_document_id, signature_envelope_id, metadata")
     .eq("org_id", input.orgId)
     .eq("id", input.commitmentId)
     .maybeSingle()
@@ -554,7 +561,7 @@ export async function markCommitmentExecutedFromEnvelope(input: {
     .eq("id", input.commitmentId)
     .select(
       `
-      id, org_id, project_id, company_id, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, issued_at, start_date, end_date, created_at, updated_at,
+      id, org_id, project_id, company_id, commitment_type, title, status, total_cents, currency, contract_number, scope, terms, retainage_percent, executed_at, executed_file_id, source_document_id, signature_envelope_id, issued_at, start_date, end_date, created_at, updated_at,
       project:projects(id, name),
       company:companies(id, name)
     `,

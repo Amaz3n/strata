@@ -13,6 +13,7 @@ export const documentCreateInputSchema = z.object({
     .enum([
       "estimate",
       "proposal",
+      "contract",
       "change_order",
       "lien_waiver",
       "selection",
@@ -83,6 +84,7 @@ export const envelopeCreateInputSchema = z.object({
     .enum([
       "estimate",
       "proposal",
+      "contract",
       "change_order",
       "lien_waiver",
       "selection",

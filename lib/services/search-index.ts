@@ -59,6 +59,18 @@ const AUDIT_ENTITY_TYPE_TO_SEARCH: Record<string, SearchEntityType> = {
   certified_payroll_report: "certified_payroll_report",
   meeting_transcript: "meeting_transcript",
   project_location: "project_location",
+  community: "community",
+  lot: "lot",
+  house_plan: "house_plan",
+  budget_template: "budget_template",
+  selection_option: "selection_option",
+  design_studio_appointment: "design_studio_appointment",
+  price_agreement: "price_agreement",
+  commitment_change_order: "commitment_change_order",
+  start_package: "start_package",
+  closing: "closing",
+  warranty_request: "warranty_request",
+  warranty_backcharge: "warranty_backcharge",
   // Aliases → canonical search type
   vendor_bill: "payable",
   bill: "payable",
@@ -110,6 +122,12 @@ function coerceProjectName(projectRelation: unknown): string | undefined {
     return typeof name === "string" ? name : undefined
   }
   return undefined
+}
+
+function coerceRelationText(relation: unknown, fields: string[]) {
+  const value = Array.isArray(relation) ? relation[0] : relation
+  if (!value || typeof value !== "object") return undefined
+  return fields.map((field) => Reflect.get(value, field)).filter((part): part is string => typeof part === "string" && part.trim().length > 0).join(" ") || undefined
 }
 
 function formatSubtitlePart(field: string, value: unknown): string | null {
@@ -189,8 +207,15 @@ export async function reindexEntity(
   const baseSelectClause = buildEntitySelectClause(entityType, config, includeProject)
   // Bid packages can hang off a project OR a pipeline prospect; pull prospect_id
   // too so the href can route to the right workbench (see below).
-  const selectClause =
-    entityType === "bid_package" ? `${baseSelectClause},prospect_id` : baseSelectClause
+  const selectClause = entityType === "bid_package"
+    ? `${baseSelectClause},prospect_id`
+    : entityType === "price_agreement"
+      ? `${baseSelectClause},company:companies(name),cost_code:cost_codes(code,name)`
+      : entityType === "commitment_change_order"
+        ? `${baseSelectClause},reason:variance_reason_codes(label,code)`
+      : entityType === "start_package"
+        ? `${baseSelectClause},lot:lots(lot_number,block),community:communities(name)`
+      : baseSelectClause
 
   const { data: row, error } = await client
     .from(config.table)
@@ -217,10 +242,28 @@ export async function reindexEntity(
         : null
   const projectName = includeProject ? coerceProjectName(row.projects) : undefined
 
-  const title =
+  const baseTitle =
     typeof row[config.titleField] === "string" && (row[config.titleField] as string).trim().length > 0
       ? (row[config.titleField] as string)
       : `Untitled ${entityType}`
+  const priceCompany = entityType === "price_agreement" ? coerceRelationText(row.company, ["name"]) : undefined
+  const priceCostCode = entityType === "price_agreement" ? coerceRelationText(row.cost_code, ["code", "name"]) : undefined
+  const vpoReason = entityType === "commitment_change_order" ? coerceRelationText(row.reason, ["code", "label"]) : undefined
+  const startLot = entityType === "start_package" ? coerceRelationText(row.lot, ["block", "lot_number"]) : undefined
+  const startCommunity = entityType === "start_package" ? coerceRelationText(row.community, ["name"]) : undefined
+  const title = entityType === "house_plan" && typeof row.code === "string"
+    ? `${row.code} — ${baseTitle}`
+    : entityType === "price_agreement"
+      ? [priceCompany ?? "Vendor", priceCostCode ?? "Cost code", baseTitle].join(" — ")
+      : entityType === "start_package"
+        ? `${startCommunity ?? "Community"} — Lot ${startLot ?? "start package"}`
+      : entityType === "closing"
+        ? `Closing — ${projectName ?? "Home"}`
+      : entityType === "warranty_request"
+        ? `WR-${String(row.request_number ?? "—")} ${baseTitle}`
+      : entityType === "warranty_backcharge"
+        ? `WB-${String(row.backcharge_number ?? "—")} ${baseTitle}`
+      : baseTitle
 
   const subtitle = (config.subtitleFields ?? [])
     .map((field) => formatSubtitlePart(field, row[field]))
@@ -232,8 +275,9 @@ export async function reindexEntity(
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .join(" ")
 
-  const body = buildBody(row, [...(config.descriptionFields ?? []), ...config.searchableFields])
+  const body = [buildBody(row, [...(config.descriptionFields ?? []), ...config.searchableFields]), priceCompany, priceCostCode, vpoReason, startCommunity, startLot].filter(Boolean).join(" ")
   let href = config.hrefTemplate.replace("{id}", entityId).replace("{project_id}", projectId ?? "")
+  href = href.replace("{community_id}", typeof row.community_id === "string" ? row.community_id : "")
   if (entityType === "bid_package") {
     const prospectId = typeof row.prospect_id === "string" ? row.prospect_id : null
     href = projectId

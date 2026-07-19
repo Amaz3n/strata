@@ -19,6 +19,7 @@ import {
   MoreHorizontal,
   Plus,
   Settings,
+  SlidersHorizontal,
   Sparkles,
   Wallet,
   X,
@@ -49,6 +50,8 @@ interface MobileBottomNavProps {
   permissions?: string[]
   whatsNewUnreadCount?: number
   productTier?: ProductTier
+  showProductionNavigation?: boolean
+  showPurchasingNavigation?: boolean
 }
 
 type NavSubItem = ProjectNavSubItem
@@ -102,6 +105,8 @@ export function MobileBottomNav({
   permissions = [],
   whatsNewUnreadCount = 0,
   productTier = "residential",
+  showProductionNavigation = false,
+  showPurchasingNavigation = false,
 }: MobileBottomNavProps) {
   const pathname = useOptimisticPathname()
   const searchParams = useSearchParams()
@@ -211,6 +216,7 @@ export function MobileBottomNav({
         {
           label: "Office",
           items: [
+            ...(showPurchasingNavigation ? [{ title: "Purchasing", url: "/purchasing", icon: Wallet, requiredAny: ["price_book.read"] }] : []),
             {
               title: "Billing",
               url: "/billing",
@@ -255,9 +261,18 @@ export function MobileBottomNav({
       },
     ]
     const workspaceMenu: MenuSection[] = [
+      ...(showProductionNavigation ? [{
+        label: "Production",
+        items: [
+          { title: "Communities", url: "/communities", icon: Building2, isActive: pathname.startsWith("/communities"), requiredAny: ["community.read"] },
+          { title: "Plans", url: "/plans", icon: Home, isActive: pathname.startsWith("/plans"), requiredAny: ["plan.read"] },
+          { title: "Design Studio", url: "/design-studio", icon: SlidersHorizontal, isActive: pathname.startsWith("/design-studio"), requiredAny: ["selections.read", "design_studio.manage"] },
+        ],
+      }] : []),
       {
         label: "Office",
         items: [
+          ...(showPurchasingNavigation ? [{ title: "Purchasing", url: "/purchasing", icon: Wallet, isActive: pathname.startsWith("/purchasing"), requiredAny: ["price_book.read"] }] : []),
           {
             title: "Billing",
             url: "/billing",
@@ -291,7 +306,7 @@ export function MobileBottomNav({
       },
     ]
     return { primary: workspacePrimary, menuSections: workspaceMenu }
-  }, [pathname, projectId, isProject, section, currentProject, projectReviewBadgeCounts, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, productTier])
+  }, [pathname, projectId, isProject, section, currentProject, projectReviewBadgeCounts, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, productTier, showProductionNavigation, showPurchasingNavigation])
 
   const visiblePrimary = useMemo(
     () =>

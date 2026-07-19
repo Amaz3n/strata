@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react"
 import { format } from "date-fns"
 import { toast } from "sonner"
 
-import type { Contact, Contract, Project } from "@/lib/types"
+import type { Contact, Contract, Project, TeamMember } from "@/lib/types"
 import type { ProjectInput } from "@/lib/validation/projects"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -38,7 +38,7 @@ import {
   removeSampleProjectAction,
   setProjectModuleOverrideAction,
 } from "@/app/(app)/projects/[id]/actions"
-import type { QBOClassOption, QBOCustomerOption } from "@/lib/integrations/accounting/qbo-api"
+import type { QBOClassOption, QBOCustomerOption } from "@/lib/integrations/accounting/qbo/client"
 import {
   PROJECT_MODULES,
   isProjectModuleEnabled,
@@ -47,8 +47,13 @@ import {
 
 import { unwrapAction } from "@/lib/action-result"
 import { usePageTitle } from "@/components/layout/page-title-context"
-import { getProjectPosture } from "@/lib/product-tier"
+import { getProjectPosture, isProductionProjectPosture } from "@/lib/product-tier"
 import { terminology } from "@/lib/terminology"
+import { PlanInstantiationDevPanel } from "@/components/projects/plan-instantiation-dev-panel"
+import { listTeamMembersAction } from "@/app/(app)/team/actions"
+import { setProjectSuperintendentAction } from "@/app/(app)/starts/actions"
+import { getProjectQboLinkAction, saveProjectAccountingLinkAction } from "@/app/(app)/integrations/qbo-project-link-actions"
+import { listQboImportConnectionsAction } from "@/app/(app)/integrations/qbo-import-actions"
 
 const STATUS_OPTIONS: { label: string; value: Project["status"] }[] = [
   { label: "Active", value: "active" },
@@ -60,6 +65,7 @@ const STATUS_OPTIONS: { label: string; value: Project["status"] }[] = [
 const PROPERTY_TYPES: { label: string; value: NonNullable<Project["property_type"]> }[] = [
   { label: "Residential", value: "residential" },
   { label: "Commercial", value: "commercial" },
+  { label: "Production", value: "production" },
 ]
 
 const PROJECT_TYPES: { label: string; value: NonNullable<Project["project_type"]> }[] = [
@@ -110,6 +116,8 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
   const posture = getProjectPosture(propertyType, productTier)
   const terms = terminology(posture)
   const [projectType, setProjectType] = useState<Project["project_type"] | undefined>(project.project_type)
+  const [superintendentId, setSuperintendentId] = useState<string | null>(project.superintendent_id ?? null)
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([])
   const [clientId, setClientId] = useState<string | null | undefined>(project.client_id)
   const [qboClassId, setQboClassId] = useState<string | null>(project.qbo_class_id ?? null)
   const [qboClassName, setQboClassName] = useState<string | null>(project.qbo_class_name ?? null)
@@ -118,6 +126,9 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
   // Default QBO customer for this project — drives payable/expense cost attribution and pre-fills new invoices.
   const [qboCustomerId, setQboCustomerId] = useState<string | null>(project.qbo_customer_id ?? null)
   const [qboCustomerName, setQboCustomerName] = useState<string | null>(project.qbo_customer_name ?? null)
+  const [accountingMapId, setAccountingMapId] = useState<string | null>(null)
+  const [accountingConnectionId, setAccountingConnectionId] = useState<string | null>(null)
+  const [accountingConnections, setAccountingConnections] = useState<{ id: string; label: string; company: string | null }[]>([])
   // null = connection still being probed; true/false once known. Lets us show stored values with a
   // loading state instead of hiding QBO fields (and implying they're unset) during the probe.
   const [qboConnected, setQboConnected] = useState<boolean | null>(null)
@@ -156,6 +167,24 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
   // Reset financial setup and starting step whenever the sheet (re)opens.
   useEffect(() => {
     if (!open) return
+    let cancelled = false
+    getProjectQboLinkAction({ projectId: project.id }).then((link) => {
+      if (cancelled) return
+      setAccountingMapId(link.mapId)
+      setAccountingConnectionId(link.connectionId)
+      setQboCustomerId(link.qboCustomerId)
+      setQboCustomerName(link.qboCustomerName)
+      setQboClassId(link.target?.dimensions.class?.id ?? null)
+      setQboClassName(link.target?.dimensions.class?.name ?? null)
+    }).catch(() => {})
+    listQboImportConnectionsAction().then((rows) => {
+      if (!cancelled) setAccountingConnections(rows)
+    }).catch(() => { if (!cancelled) setAccountingConnections([]) })
+    return () => { cancelled = true }
+  }, [open, project.id])
+
+  useEffect(() => {
+    if (!open) return
     setFinancialSetup(financialSetupFromProject(project, contract))
     setModuleOverrides(project.module_overrides ?? {})
     setIsPublicWork(project.is_public_work ?? false)
@@ -163,6 +192,16 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
     setStep(initialStep)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, project.id, contract?.id, initialStep])
+
+  useEffect(() => {
+    if (!open || !isProductionProjectPosture(posture)) return
+    let cancelled = false
+    setSuperintendentId(project.superintendent_id ?? null)
+    listTeamMembersAction()
+      .then((members) => { if (!cancelled) setTeamMembers(members.filter((member) => member.status === "active")) })
+      .catch(() => { if (!cancelled) setTeamMembers([]) })
+    return () => { cancelled = true }
+  }, [open, posture, project.superintendent_id])
 
   useEffect(() => {
     if (!open) return
@@ -175,21 +214,23 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
 
   useEffect(() => {
     if (!open) return
-    setQboClassId(project.qbo_class_id ?? null)
-    setQboClassName(project.qbo_class_name ?? null)
-    setQboCustomerId(project.qbo_customer_id ?? null)
-    setQboCustomerName(project.qbo_customer_name ?? null)
     setCustomerQuery("")
     setCreateCustomerOpen(false)
     setNewCustomer({ name: "", email: "", line1: "", city: "", state: "", postalCode: "" })
-  }, [open, project.id, project.qbo_class_id, project.qbo_class_name, project.qbo_customer_id, project.qbo_customer_name])
+  }, [open, project.id])
 
   useEffect(() => {
     if (!open) return
     let cancelled = false
     setQboConnected(null)
     setQboClassesLoading(true)
-    listProjectQboClassesAction()
+    if (!accountingConnectionId) {
+      setQboConnected(false)
+      setQboClasses([])
+      setQboClassesLoading(false)
+      return
+    }
+    listProjectQboClassesAction(accountingConnectionId)
       .then((classes) => {
         if (!cancelled) setQboClasses(classes)
       })
@@ -200,7 +241,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
         if (!cancelled) setQboClassesLoading(false)
       })
     // Probe QBO connection (and seed initial customer results) so the customer picker only renders when connected.
-    searchProjectQboCustomersAction("")
+    searchProjectQboCustomersAction("", accountingConnectionId)
       .then((result) => {
         if (cancelled) return
         setQboConnected(Boolean(result.connected))
@@ -212,7 +253,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
     return () => {
       cancelled = true
     }
-  }, [open])
+  }, [open, accountingConnectionId])
 
   // Live QBO customer typeahead — QBO is the source of truth, so we query it directly while the picker is open.
   useEffect(() => {
@@ -220,7 +261,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
     let cancelled = false
     setCustomerSearchLoading(true)
     const handle = setTimeout(() => {
-      searchProjectQboCustomersAction(customerQuery)
+      searchProjectQboCustomersAction(customerQuery, accountingConnectionId)
         .then((result) => {
           if (!cancelled) setCustomerResults(result.customers ?? [])
         })
@@ -235,7 +276,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
       cancelled = true
       clearTimeout(handle)
     }
-  }, [open, qboConnected, customerPickerOpen, customerQuery])
+  }, [open, qboConnected, customerPickerOpen, customerQuery, accountingConnectionId])
 
   const selectQboCustomer = (customer: QBOCustomerOption) => {
     setQboCustomerId(customer.id)
@@ -250,6 +291,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
     setCreatingCustomer(true)
     try {
       const created = unwrapAction(await createProjectQboCustomerAction({
+        connectionId: accountingConnectionId,
         name,
         email: newCustomer.email.trim() || null,
         line1: newCustomer.line1.trim() || null,
@@ -290,10 +332,6 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
       project_type: projectType,
       client_id: clientId ?? null,
       location: address ? { formatted: address, address } : undefined,
-      qbo_class_id: qboClassId,
-      qbo_class_name: qboClassName,
-      qbo_customer_id: qboCustomerId,
-      qbo_customer_name: qboCustomerName,
       excluded_from_reporting: excludedFromReporting,
       is_public_work: isPublicWork,
       require_subtier_waivers: requireSubtierWaivers,
@@ -303,6 +341,27 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
     setSaving(true)
     try {
       await onSave(payload)
+      if (accountingConnectionId) {
+        const mappingInput = {
+          mapId: accountingMapId,
+          projectId: project.id,
+          connectionId: accountingConnectionId,
+          classId: qboClassId,
+          className: qboClassName,
+          customerId: qboCustomerId,
+          customerName: qboCustomerName,
+        }
+        try {
+          await saveProjectAccountingLinkAction(mappingInput)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          if (!message.includes("synced transaction") || !window.confirm(`${message}\n\nAn organization admin can acknowledge this and route future transactions to the new books. Continue?`)) throw error
+          await saveProjectAccountingLinkAction({ ...mappingInput, acknowledgeResync: true })
+        }
+      }
+      if (isProductionProjectPosture(posture) && superintendentId !== (project.superintendent_id ?? null)) {
+        unwrapAction(await setProjectSuperintendentAction(project.id, superintendentId))
+      }
       toast.success("Project updated")
       onOpenChange(false)
     } catch (error) {
@@ -509,11 +568,36 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                   </Popover>
                 </div>
               </div>
+              {isProductionProjectPosture(posture) ? <div className="space-y-2">
+                <Label>Superintendent</Label>
+                <Select value={superintendentId ?? "none"} onValueChange={(value) => setSuperintendentId(value === "none" ? null : value)}>
+                  <SelectTrigger className="w-full"><SelectValue placeholder="Assign superintendent" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Unassigned</SelectItem>
+                    {teamMembers.map((member) => <SelectItem key={member.user.id} value={member.user.id}>{member.user.full_name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">The accountable field lead. Assignment also grants project-scoped field access.</p>
+              </div> : null}
               <p className={cn("text-sm text-muted-foreground")}>
                 Dates drive schedule progress and budget timelines. Leave blank if not yet scheduled.
               </p>
               {/* Client — a single field. The contact drives portal invites & signatures; */}
               {/* the QuickBooks customer (the sync target) is shown beneath as an overridable detail. */}
+              {accountingConnections.length > 0 ? <div className="space-y-2">
+                <Label>Accounting file</Label>
+                <Select value={accountingConnectionId ?? ""} onValueChange={(connectionId) => {
+                  setAccountingConnectionId(connectionId)
+                  setQboClassId(null)
+                  setQboClassName(null)
+                  setQboCustomerId(null)
+                  setQboCustomerName(null)
+                }}>
+                  <SelectTrigger><SelectValue placeholder="Choose books" /></SelectTrigger>
+                  <SelectContent>{accountingConnections.map((connection) => <SelectItem key={connection.id} value={connection.id}>{connection.label}{connection.company ? ` · ${connection.company}` : ""}</SelectItem>)}</SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">Changing books creates a project override. Existing synced history stays in its original accounting file.</p>
+              </div> : null}
               <div className="space-y-2">
                 <Label>{terms.owner}</Label>
                 <Select
@@ -869,6 +953,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                     {financialMessages.blocking[0] ?? financialMessages.warnings[0]}
                   </p>
                 ) : null}
+                {isProductionProjectPosture(posture) && process.env.NODE_ENV !== "production" ? <PlanInstantiationDevPanel projectId={project.id} /> : null}
               </div>
             </div>
           </ScrollArea>

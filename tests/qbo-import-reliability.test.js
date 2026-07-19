@@ -14,13 +14,13 @@ const {
   qboPurchaseCreditCents,
   qboPurchaseIsCredit,
   qboVendorCreditCents,
-} = require("../lib/integrations/accounting/qbo-import-rules")
+} = require("../lib/integrations/accounting/qbo/import-rules")
 const {
   isVendorCredit,
   payableOutstandingCents,
   summarizePayables,
 } = require("../lib/financials/payables-rules")
-const { isQboMissingEntityFault } = require("../lib/integrations/accounting/qbo-error-rules")
+const { isQboMissingEntityFault } = require("../lib/integrations/accounting/qbo/error-rules")
 
 test("direct lookup classification recognizes QBO fault 610 as a deleted transaction", () => {
   assert.equal(isQboMissingEntityFault({ status: 400, faultCode: "610" }), true)
@@ -30,7 +30,7 @@ test("direct lookup classification recognizes QBO fault 610 as a deleted transac
 
 test("invoice void sync treats a missing QBO invoice as success and preserves its tombstone id", () => {
   const syncSource = require("node:fs").readFileSync(
-    require("node:path").join(__dirname, "../lib/services/qbo-sync.ts"),
+    require("node:path").join(__dirname, "../lib/integrations/accounting/qbo/adapter.ts"),
     "utf8",
   )
   const voidBranch = syncSource.slice(
@@ -178,7 +178,7 @@ test("journal-entry credits keep a nonnegative expense magnitude and post a nega
   )
 
   const importSource = require("node:fs").readFileSync(
-    require("node:path").join(__dirname, "../lib/services/qbo-import.ts"),
+    require("node:path").join(__dirname, "../lib/integrations/accounting/qbo/import.ts"),
     "utf8",
   )
   const journalEntryBlock = importSource.slice(
@@ -214,7 +214,7 @@ test("vendor credits never enter outstanding payables or payment balances", () =
 
 test("vendor-credit payables are blocked from outbound bill sync at both guard layers", () => {
   const syncSource = require("node:fs").readFileSync(
-    require("node:path").join(__dirname, "../lib/services/qbo-sync.ts"),
+    require("node:path").join(__dirname, "../lib/integrations/accounting/qbo/adapter.ts"),
     "utf8",
   )
 
@@ -224,7 +224,7 @@ test("vendor-credit payables are blocked from outbound bill sync at both guard l
 
 test("QBO purchase credits import as inbound-only expense credits with negative actuals", () => {
   const importSource = require("node:fs").readFileSync(
-    require("node:path").join(__dirname, "../lib/services/qbo-import.ts"),
+    require("node:path").join(__dirname, "../lib/integrations/accounting/qbo/import.ts"),
     "utf8",
   )
   const importExpenseCreditBlock = importSource.slice(
@@ -243,7 +243,7 @@ test("QBO purchase credits import as inbound-only expense credits with negative 
 
 test("outbound vendor bills preserve job costing without creating billable customer charges", () => {
   const syncSource = require("node:fs").readFileSync(
-    require("node:path").join(__dirname, "../lib/services/qbo-sync.ts"),
+    require("node:path").join(__dirname, "../lib/integrations/accounting/qbo/adapter.ts"),
     "utf8",
   )
   const vendorBillSync = syncSource.slice(

@@ -1,6 +1,16 @@
 # Workstream 03 — Option Catalog & Design Studio
 
-> **STATUS: NOT STARTED.**
+> **Implementation status (2026-07-18):** Repository implementation and live
+> database deployment are complete. The catalog, RBAC, and advisor-driven
+> FK-index hardening migrations are recorded in production as `20260718192207`,
+> `20260718192332`, and `20260718192523`. Live verification passed for all seven
+> new tables, 17 evolved columns, RLS policies, authenticated grants, and RBAC;
+> Supabase security advisors report no Workstream 03 findings and every new
+> foreign-key path is covered. Static checks pass (`pnpm lint`, `pnpm exec tsc
+> --noEmit`) and `pnpm test:financials` passes 70/70. QA-org end-to-end,
+> residential regression, and 400-lot scale acceptance remain outstanding.
+
+> **STATUS: IMPLEMENTED AND DEPLOYED — MANUAL/QA ACCEPTANCE PENDING.**
 
 > **Audience:** an LLM executing agent. Prereqs: `00-MASTER-production-expansion.md`
 > (fully — especially §3 "Selections are the seed", §5.8 "Enforcement is the product",

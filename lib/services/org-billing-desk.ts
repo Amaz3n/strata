@@ -1,5 +1,10 @@
 import { requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
+import {
+  applyProjectIdScope,
+  applyReportingExclusion,
+  getReportingExcludedProjectIds,
+} from "@/lib/services/reporting-scope"
 
 export interface ReadyToBillProject {
   projectId: string
@@ -109,18 +114,26 @@ function drawAmountCents(row: any, contractTotalCents: number): number {
   return 0
 }
 
-async function loadRetainageHeldCents(supabase: any, orgId: string) {
-  const { data, error } = await supabase
+async function loadRetainageHeldCents(
+  supabase: any,
+  orgId: string,
+  projectIds: string[] | null,
+  excludedProjectIds: string[],
+) {
+  let query = supabase
     .from("retainage")
     .select("amount_cents")
     .eq("org_id", orgId)
     .eq("status", "held")
+  query = applyReportingExclusion(query, excludedProjectIds)
+  query = applyProjectIdScope(query, projectIds)
+  const { data, error } = await query
 
   if (error) return 0
   return (data ?? []).reduce((sum: number, row: any) => sum + Number(row.amount_cents ?? 0), 0)
 }
 
-export async function loadOrgBillingDeskData(): Promise<OrgBillingDeskData> {
+export async function loadOrgBillingDeskData(projectIds: string[] | null = null): Promise<OrgBillingDeskData> {
   const { supabase, orgId, userId } = await requireOrgContext()
   await requireAuthorization({
     permission: "invoice.read",
@@ -132,34 +145,40 @@ export async function loadOrgBillingDeskData(): Promise<OrgBillingDeskData> {
   })
 
   const today = new Date().toISOString().split("T")[0]
+  const excludedProjectIds = projectIds === null ? [] : await getReportingExcludedProjectIds(supabase, orgId)
+  let costsQuery = supabase
+    .from("billable_costs")
+    .select("project_id, billable_cents, occurred_on")
+    .eq("org_id", orgId)
+    .eq("status", "open")
+    .eq("is_billable", true)
+    .order("occurred_on", { ascending: true })
+    .limit(2000)
+  let drawsQuery = supabase
+    .from("draw_schedules")
+    .select("project_id, amount_cents, percent_of_contract, due_date")
+    .eq("org_id", orgId)
+    .eq("status", "pending")
+    .lte("due_date", today)
+    .order("due_date", { ascending: true })
+    .limit(2000)
+  let invoicesQuery = supabase
+    .from("invoices")
+    .select("id, project_id, invoice_number, title, status, due_date, balance_due_cents, project:projects(id, name)")
+    .eq("org_id", orgId)
+    .in("status", ["sent", "partial", "overdue"])
+    .gt("balance_due_cents", 0)
+    .order("due_date", { ascending: true, nullsFirst: false })
+    .limit(100)
+  costsQuery = applyProjectIdScope(applyReportingExclusion(costsQuery, excludedProjectIds), projectIds)
+  drawsQuery = applyProjectIdScope(applyReportingExclusion(drawsQuery, excludedProjectIds), projectIds)
+  invoicesQuery = applyProjectIdScope(applyReportingExclusion(invoicesQuery, excludedProjectIds), projectIds)
 
   const [costsResult, drawsResult, invoicesResult, retainageHeldCents] = await Promise.all([
-    supabase
-      .from("billable_costs")
-      .select("project_id, billable_cents, occurred_on")
-      .eq("org_id", orgId)
-      .eq("status", "open")
-      .eq("is_billable", true)
-      .order("occurred_on", { ascending: true })
-      .limit(2000),
-    // Fixed-price "ready to bill" = scheduled draws that have come due but aren't invoiced.
-    supabase
-      .from("draw_schedules")
-      .select("project_id, amount_cents, percent_of_contract, due_date")
-      .eq("org_id", orgId)
-      .eq("status", "pending")
-      .lte("due_date", today)
-      .order("due_date", { ascending: true })
-      .limit(2000),
-    supabase
-      .from("invoices")
-      .select("id, project_id, invoice_number, title, status, due_date, balance_due_cents, project:projects(id, name)")
-      .eq("org_id", orgId)
-      .in("status", ["sent", "partial", "overdue"])
-      .gt("balance_due_cents", 0)
-      .order("due_date", { ascending: true, nullsFirst: false })
-      .limit(100),
-    loadRetainageHeldCents(supabase, orgId),
+    costsQuery,
+    drawsQuery,
+    invoicesQuery,
+    loadRetainageHeldCents(supabase, orgId, projectIds, excludedProjectIds),
   ])
 
   if (costsResult.error) throw new Error(`Failed to load ready-to-bill costs: ${costsResult.error.message}`)

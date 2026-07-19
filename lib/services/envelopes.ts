@@ -44,10 +44,11 @@ export async function ensureDraftEnvelopeForDocument(
     metadata?: Record<string, any>
   },
   orgId?: string,
+  authorizationPermission = "project.manage",
 ) {
   const parsed = envelopeCreateInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requirePermission(authorizationPermission, { supabase, orgId: resolvedOrgId, userId })
 
   const { data: document, error: documentError } = await supabase
     .from("documents")
@@ -147,9 +148,10 @@ export async function replaceEnvelopeRecipients(
     recipients: EnvelopeRecipientInput[]
   },
   orgId?: string,
+  authorizationPermission = "project.manage",
 ) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requirePermission(authorizationPermission, { supabase, orgId: resolvedOrgId, userId })
 
   const { data: envelope, error: envelopeError } = await supabase
     .from("envelopes")
@@ -225,10 +227,11 @@ export async function createEnvelopeSigningRequests(
     expires_at?: string
   },
   orgId?: string,
+  authorizationPermission = "project.manage",
 ) {
   const parsed = envelopeSigningRequestCreateInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requirePermission(authorizationPermission, { supabase, orgId: resolvedOrgId, userId })
 
   const { data: envelope, error: envelopeError } = await supabase
     .from("envelopes")

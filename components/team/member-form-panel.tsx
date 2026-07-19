@@ -43,6 +43,7 @@ import type {
   PermissionOption,
   TeamMember,
 } from "@/lib/types"
+import type { DivisionDTO } from "@/lib/services/divisions"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -216,6 +217,7 @@ interface MemberFormPanelProps {
   member?: TeamMember
   roleOptions?: OrgRoleOption[]
   permissionOptions?: PermissionOption[]
+  divisions?: DivisionDTO[]
   canManageMembers?: boolean
   canEditRoles?: boolean
   onCancel: () => void
@@ -228,6 +230,7 @@ export function MemberFormPanel({
   member,
   roleOptions = [],
   permissionOptions = [],
+  divisions = [],
   canManageMembers = false,
   canEditRoles = false,
   onCancel,
@@ -262,6 +265,8 @@ export function MemberFormPanel({
   const [fullName, setFullName] = useState(member?.user.full_name ?? "")
   const [role, setRole] = useState<OrgRole>(defaultRole as OrgRole)
   const [projectScope, setProjectScope] = useState<"all" | "assigned">(member?.project_scope ?? "all")
+  const [divisionScope, setDivisionScope] = useState<"all" | "assigned">(member?.division_scope ?? "all")
+  const [divisionIds, setDivisionIds] = useState<string[]>(member?.division_ids ?? [])
   const [overrides, setOverrides] = useState<MemberPermissionOverride[]>(initialOverrides)
   const [preset, setPreset] = useState<PermissionPreset>(detectPreset(initialOverrides))
   const [search, setSearch] = useState("")
@@ -331,10 +336,15 @@ export function MemberFormPanel({
   const ADMIN_ROLE_KEYS = new Set(["org_owner", "org_admin", "org_office_admin"])
   const scopeApplies = !ADMIN_ROLE_KEYS.has(role)
   const effectiveScope: "all" | "assigned" = scopeApplies ? projectScope : "all"
+  const effectiveDivisionScope: "all" | "assigned" = scopeApplies ? divisionScope : "all"
 
   const hasNameChange = isEdit && fullName.trim() !== (member?.user.full_name ?? "")
   const hasRoleChange = isEdit && role !== member?.role
   const hasScopeChange = isEdit && effectiveScope !== (member?.project_scope ?? "all")
+  const hasDivisionScopeChange =
+    isEdit &&
+    (effectiveDivisionScope !== (member?.division_scope ?? "all") ||
+      [...divisionIds].sort().join(",") !== [...(member?.division_ids ?? [])].sort().join(","))
   const hasPermissionChange =
     isEdit &&
     JSON.stringify(role === "org_user" ? overrides : []) !==
@@ -350,7 +360,7 @@ export function MemberFormPanel({
       laborIsBillableDefault !== (member?.labor_is_billable_default ?? true))
 
   const hasChanges = isEdit
-    ? (canEditProfile && hasNameChange) || (canEditRoleField && (hasRoleChange || hasScopeChange || hasPermissionChange)) || (canManageMembers && hasLaborChange)
+    ? (canEditProfile && hasNameChange) || (canEditRoleField && (hasRoleChange || hasScopeChange || hasDivisionScopeChange || hasPermissionChange)) || (canManageMembers && hasLaborChange)
     : Boolean(email.trim())
 
   const submit = () => {
@@ -365,6 +375,8 @@ export function MemberFormPanel({
             email,
             role,
             projectScope: effectiveScope,
+            divisionScope: effectiveDivisionScope,
+            divisionIds: effectiveDivisionScope === "assigned" ? divisionIds : [],
             permissionOverrides: role === "org_user" ? overrides : [],
           }))
           if (result?.tempPassword) {
@@ -392,10 +404,12 @@ export function MemberFormPanel({
         if (canEditProfile && hasNameChange) {
           unwrapAction(await updateMemberProfileAction(member.user.id, { full_name: fullName.trim() }))
         }
-        if (canEditRoleField && (hasRoleChange || hasScopeChange || hasPermissionChange)) {
+        if (canEditRoleField && (hasRoleChange || hasScopeChange || hasDivisionScopeChange || hasPermissionChange)) {
           unwrapAction(await updateMemberRoleAction(member.id, {
             role,
             projectScope: effectiveScope,
+            divisionScope: effectiveDivisionScope,
+            divisionIds: effectiveDivisionScope === "assigned" ? divisionIds : [],
             permissionOverrides: role === "org_user" ? overrides : [],
           }))
         }
@@ -646,6 +660,54 @@ export function MemberFormPanel({
                     )
                   })}
                 </div>
+              </section>
+            </>
+          ) : null}
+
+          {scopeApplies && divisions.length > 0 ? (
+            <>
+              <Separator />
+              <section className="space-y-4">
+                <SectionHeader
+                  title="Division access"
+                  description="Limit community and lot visibility to selected operating divisions."
+                />
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {([
+                    { value: "all" as const, label: "All divisions", description: "Sees every division and its communities." },
+                    { value: "assigned" as const, label: "Selected divisions", description: "Sees only the divisions selected below." },
+                  ]).map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      disabled={!canEditRoleField}
+                      onClick={() => canEditRoleField && setDivisionScope(option.value)}
+                      className={cn(
+                        "border p-4 text-left",
+                        divisionScope === option.value ? "border-primary bg-primary/5" : "border-border/70",
+                      )}
+                    >
+                      <p className="text-sm font-semibold">{option.label}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{option.description}</p>
+                    </button>
+                  ))}
+                </div>
+                {divisionScope === "assigned" ? (
+                  <div className="grid gap-2 border p-3 sm:grid-cols-2">
+                    {divisions.filter((division) => !division.archived).map((division) => (
+                      <label key={division.id} className="flex items-center gap-2 text-xs">
+                        <Checkbox
+                          checked={divisionIds.includes(division.id)}
+                          disabled={!canEditRoleField}
+                          onCheckedChange={(checked) => setDivisionIds((current) =>
+                            checked ? Array.from(new Set([...current, division.id])) : current.filter((id) => id !== division.id),
+                          )}
+                        />
+                        <span>{division.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                ) : null}
               </section>
             </>
           ) : null}

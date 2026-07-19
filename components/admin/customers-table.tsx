@@ -232,6 +232,7 @@ export function CustomersClient({
               <TableHead className="px-4 py-4 text-center">Status</TableHead>
               <TableHead className="px-4 py-4 text-center">Subscription</TableHead>
               <TableHead className="px-4 py-4 text-center">Posture</TableHead>
+              <TableHead className="px-4 py-4 text-center">Onboarding</TableHead>
               <TableHead className="px-4 py-4 text-center">Plan</TableHead>
               <TableHead className="px-4 py-4 text-center">Amount</TableHead>
               <TableHead className="px-4 py-4 text-center">Members</TableHead>
@@ -243,7 +244,7 @@ export function CustomersClient({
           <TableBody>
             {customers.length === 0 ? (
               <TableRow className="divide-x">
-                <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
+                <TableCell colSpan={11} className="py-10 text-center text-muted-foreground">
                   <div className="flex flex-col items-center gap-4">
                     <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                       <Users className="h-6 w-6" />
@@ -306,6 +307,11 @@ export function CustomersClient({
                     <Badge variant="outline">
                       {PRODUCT_TIER_LABELS[customer.productTier]}
                     </Badge>
+                  </TableCell>
+                  <TableCell className="px-4 py-4 text-center">
+                    {customer.productTier === "production" ? (
+                      <Button asChild size="sm" variant="ghost"><Link href={`/admin/customers/${customer.id}/onboarding`}>Open</Link></Button>
+                    ) : <span className="text-sm text-muted-foreground">—</span>}
                   </TableCell>
                   <TableCell className="px-4 py-4 text-center">
                     {customer.subscription ? (

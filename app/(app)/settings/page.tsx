@@ -2,7 +2,7 @@ import { Suspense } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
 export const dynamic = 'force-dynamic'
 import { SettingsWindow } from "@/components/settings/settings-window"
-import { getQBOConnection } from "@/lib/services/qbo-connection"
+import { getQBOConnection } from "@/lib/services/accounting-connections"
 import { getStripeConnectedAccount } from "@/lib/services/stripe-connected-accounts"
 import { TEAM_PERMISSION_OPTIONS, listAssignableOrgRoles, listTeamMembers } from "@/lib/services/team"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
@@ -10,6 +10,7 @@ import { getOrgBilling } from "@/lib/services/orgs"
 import { getOrgAccessState } from "@/lib/services/access"
 import { getComplianceRules, getDefaultComplianceRequirements } from "@/lib/services/compliance"
 import { getCurrentUserAction } from "@/app/actions/user"
+import { listDivisions } from "@/lib/services/divisions"
 
 interface SettingsPageProps {
   searchParams: Promise<{
@@ -27,14 +28,15 @@ async function SettingsData({ searchParams }: SettingsPageProps) {
   const isLocked = accessState.locked
   const initialTab = typeof resolvedSearchParams?.tab === "string" ? resolvedSearchParams.tab : undefined
 
-  const [qboConnection, stripeConnection, teamMembers, roleOptions, permissionOptions] = isLocked
-    ? [null, null, initialTab === "team" ? [] : undefined, initialTab === "team" ? [] : undefined, initialTab === "team" ? [] : undefined]
+  const [qboConnection, stripeConnection, teamMembers, roleOptions, permissionOptions, divisions] = isLocked
+    ? [null, null, initialTab === "team" ? [] : undefined, initialTab === "team" ? [] : undefined, initialTab === "team" ? [] : undefined, initialTab === "team" ? [] : undefined]
     : await Promise.all([
         getQBOConnection(),
         getStripeConnectedAccount(),
         initialTab === "team" ? listTeamMembers(undefined, { includeProjectCounts: false }) : Promise.resolve(undefined),
         initialTab === "team" ? listAssignableOrgRoles().catch(() => []) : Promise.resolve(undefined),
         initialTab === "team" ? Promise.resolve(TEAM_PERMISSION_OPTIONS) : Promise.resolve(undefined),
+        initialTab === "team" ? listDivisions().catch(() => []) : Promise.resolve(undefined),
       ])
   const permissions = permissionResult?.permissions ?? []
   const canManageMembers = permissions.includes("members.manage")
@@ -68,6 +70,7 @@ async function SettingsData({ searchParams }: SettingsPageProps) {
       teamMembers={teamMembers}
       roleOptions={roleOptions}
       permissionOptions={permissionOptions}
+      divisions={divisions}
       canManageMembers={canManageMembers}
       canEditRoles={canEditRoles}
       initialBilling={billing}

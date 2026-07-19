@@ -1,7 +1,7 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
-import { getQBOConnection } from "@/lib/services/qbo-connection"
-import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
+import { getQBOConnection } from "@/lib/services/accounting-connections"
+import { QBOClient } from "@/lib/integrations/accounting/qbo/client"
 
 interface QBOSettings {
   invoice_number_pattern?: "numeric" | "prefix" | "custom"
@@ -282,10 +282,13 @@ export async function rememberQBOInvoiceNumberCursor(orgId: string, invoiceNumbe
   if (!orgId || !invoiceNumber) return
   const supabase = createServiceSupabaseClient()
   const { data: connection } = await supabase
-    .from("qbo_connections")
+    .from("accounting_connections")
     .select("id, settings")
     .eq("org_id", orgId)
     .eq("status", "active")
+    .eq("provider", "qbo")
+    .order("connected_at", { ascending: true })
+    .limit(1)
     .maybeSingle()
 
   if (!connection) return
@@ -297,7 +300,7 @@ export async function rememberQBOInvoiceNumberCursor(orgId: string, invoiceNumbe
   }
 
   await supabase
-    .from("qbo_connections")
+    .from("accounting_connections")
     .update({
       settings: {
         ...settings,

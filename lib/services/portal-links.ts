@@ -32,9 +32,12 @@ const PORTAL_CAPABILITY_KEYS = [
   "can_submit_expenses",
   "can_submit_daily_logs",
   "can_upload_compliance_docs",
+  "can_upload_subtier_waivers",
   "can_view_warranty",
   "can_review_submittals",
   "can_view_punch_items",
+  "can_view_purchase_orders",
+  "can_report_po_completion",
 ] as const
 
 export type PortalCapabilityKey = (typeof PORTAL_CAPABILITY_KEYS)[number]

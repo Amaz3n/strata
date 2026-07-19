@@ -14,13 +14,13 @@ import {
   listQboImportRecordsAction,
 } from "@/app/(app)/integrations/qbo-import-actions"
 import { getProjectQboLinkAction } from "@/app/(app)/integrations/qbo-project-link-actions"
-import type { ProjectQboLink } from "@/lib/services/qbo-project-link"
+import type { ProjectQboLink } from "@/app/(app)/integrations/qbo-project-link-actions"
 import type {
   QboImportCustomerOption,
   QboImportEntityType,
   QboImportRecord,
   QboImportLine,
-} from "@/lib/services/qbo-import"
+} from "@/lib/integrations/accounting/qbo/import"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
@@ -50,6 +50,9 @@ type QboImportPanelProps = {
   active?: boolean
   /** Context project: defaults the project filter + the fallback header project for multi-line records. */
   projectId: string
+  connectionId: string
+  connections?: { id: string; label: string; company: string | null }[]
+  onConnectionChange?: (connectionId: string) => void
   projectName?: string | null
   onCancel?: () => void
 }
@@ -203,7 +206,7 @@ function sinceDateFor(value: string): string | null {
  * nothing files silently. Rows auto-fill from the QBO customer→project link; anything unmapped shows
  * an amber "assign" and blocks import until resolved.
  */
-export function QboImportPanel({ active = true, projectId, onCancel }: QboImportPanelProps) {
+export function QboImportPanel({ active = true, projectId, connectionId, connections = [], onConnectionChange, onCancel }: QboImportPanelProps) {
   const [records, setRecords] = useState<QboImportRecord[]>([])
   const [alreadyImportedCounts, setAlreadyImportedCounts] = useState<Partial<Record<QboImportEntityType, number>>>({})
   const [loadErrors, setLoadErrors] = useState<{ entityType: QboImportEntityType; message: string }[]>([])
@@ -240,7 +243,7 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
     const requestId = ++loadRequestId.current
     setLoading(true)
     try {
-      const listing = await listQboImportRecordsAction({ sinceDate: sinceDateFor(lookbackValue) })
+      const listing = await listQboImportRecordsAction({ connectionId, sinceDate: sinceDateFor(lookbackValue) })
       if (requestId !== loadRequestId.current) return
       setRecords(listing.records)
       setAlreadyImportedCounts(listing.alreadyImportedCounts ?? {})
@@ -265,7 +268,7 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
     } finally {
       if (requestId === loadRequestId.current) setLoading(false)
     }
-  }, [])
+  }, [connectionId])
 
   useEffect(() => {
     if (active) void load(lookback)
@@ -301,7 +304,7 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
         if (requestId === contextRequestId.current) setCostCodes(listing)
       })
       .catch(() => {})
-    listQboCustomersForImportAction()
+    listQboCustomersForImportAction(connectionId)
       .then((listing) => {
         if (requestId === contextRequestId.current) setQboCustomers(listing.customers)
       })
@@ -310,7 +313,7 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
     return () => {
       if (requestId === contextRequestId.current) contextRequestId.current += 1
     }
-  }, [active, projectId])
+  }, [active, connectionId, projectId])
 
   // Effective line→project for a record: the user's per-line override, else the line's suggested
   // (customer-linked) project. Only lines with a destination are included.
@@ -631,6 +634,7 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
     setLinkingKey(key)
     try {
       const result = await linkExistingQboImportRecordAction({
+        connectionId,
         qboId: record.qboId,
         entityType: entity,
         existingEntityId: record.possibleMatchId,
@@ -682,6 +686,7 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
     setImporting(true)
     try {
       const result = await importQboRecordsAction({
+        connectionId,
         items: selectedItems.map((item) => {
           const alloc = recordAllocations(item)
           const codes = recordCostCodes(item)
@@ -756,6 +761,14 @@ export function QboImportPanel({ active = true, projectId, onCancel }: QboImport
         <>
           {/* Toolbar */}
           <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2.5">
+            {connections.length > 1 ? (
+              <Select value={connectionId} onValueChange={onConnectionChange} disabled={loading || importing}>
+                <SelectTrigger className="h-9 w-48 text-xs"><SelectValue placeholder="Accounting file" /></SelectTrigger>
+                <SelectContent>{connections.map((connection) => (
+                  <SelectItem key={connection.id} value={connection.id}>{connection.label}{connection.company ? ` · ${connection.company}` : ""}</SelectItem>
+                ))}</SelectContent>
+              </Select>
+            ) : null}
             <div className="relative min-w-48 flex-1">
               <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input

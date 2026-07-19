@@ -33,7 +33,7 @@ import { useToast } from "@/hooks/use-toast"
 
 import { unwrapAction } from "@/lib/action-result"
 import { usePageTitle } from "@/components/layout/page-title-context"
-import { getDefaultProjectPropertyType } from "@/lib/product-tier"
+import { getDefaultProjectPropertyType, type ProjectPosture } from "@/lib/product-tier"
 import { terminology } from "@/lib/terminology"
 
 interface ConvertProspectSheetProps {
@@ -70,7 +70,7 @@ export function ConvertProspectSheet({
   const [name, setName] = useState("")
   const [startDate, setStartDate] = useState("")
   const [endDate, setEndDate] = useState("")
-  const [propertyType, setPropertyType] = useState<"residential" | "commercial">(defaultPropertyType)
+  const [propertyType, setPropertyType] = useState<ProjectPosture>(defaultPropertyType)
   const [projectType, setProjectType] = useState<"new_construction" | "remodel" | "addition" | "renovation" | "repair">("remodel")
   const [description, setDescription] = useState("")
 
@@ -102,7 +102,11 @@ export function ConvertProspectSheet({
     setName(prospect.name || "")
     setDescription(prospect.notes || "")
 
-    if (prospect.project_type === "commercial" || prospect.project_type === "residential") {
+    if (
+      prospect.project_type === "commercial" ||
+      prospect.project_type === "residential" ||
+      prospect.project_type === "production"
+    ) {
       setPropertyType(prospect.project_type)
     } else {
       setPropertyType(defaultPropertyType)
@@ -276,6 +280,7 @@ export function ConvertProspectSheet({
                         <SelectContent>
                           <SelectItem value="residential">Residential</SelectItem>
                           <SelectItem value="commercial">Commercial</SelectItem>
+                          <SelectItem value="production">Production</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>

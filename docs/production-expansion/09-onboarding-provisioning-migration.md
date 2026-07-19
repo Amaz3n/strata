@@ -9,11 +9,31 @@
 > read this: where this doc references their entities (POs, start packages), master §5
 > rules 4–5 are authoritative and the column specifics here are deliberately loose.
 
-## STATUS — NOT STARTED
+## STATUS — IMPLEMENTED AND DEPLOYED; QA-ORG/SCALE ACCEPTANCE PENDING
 
-No code, no migrations. This doc is the execution plan. It must not be executed until
-workstreams 01–08 are code-complete: importers can only target tables that exist.
-Drafted 2026-07-17 against the repo + live-schema state of that date.
+Updated 2026-07-19. Phases 1–5 are implemented in the repository and the Phase 6
+playbook/readiness gate is productized. The shared staged-import framework, seven
+importers, AI suggest-only mapping, production onboarding workbench, org-side import
+door, full NAHB seed, Open-WIP current-state cutover, and resettable Cypress Landing
+sample community are wired end to end.
+
+Live Arc Supabase deployment is complete:
+
+- [x] `20260719112607` — `onboarding_and_import_staging`
+- [x] `20260719112644` — `onboarding_permissions`
+- [x] `20260719112756` — `onboarding_fk_indexes` advisor hardening
+- [x] Live verification: four tables, RLS/policies, actor and workflow indexes, and
+  `import.manage` grants for owner/admin/office-admin/land/purchasing roles.
+- [x] Advisor verification: no Workstream 09 security or unindexed-foreign-key
+  findings remain. Newly created indexes report only the expected never-used-yet
+  informational notices.
+- [x] Automated verification: `pnpm lint`, 8 GB TypeScript no-emit check,
+  `pnpm test:onboarding` (6/6), and `pnpm test:financials` (95/95).
+- [ ] Pending acceptance: signed-in QA-org upload/map/fix/commit walkthroughs,
+  canned live-model header mapping, 5k-row grid/commit timing, synthetic
+  250-project/400-lot readiness audit, full simulated onboarding through the first
+  Arc-native start, and dark-mode/empty/loading/error visual review. No customer or
+  production org was seeded merely to manufacture acceptance evidence.
 
 ## Mission
 
@@ -863,7 +883,7 @@ for human approval before applying (prod database).
 
 ## 13. Phases & acceptance criteria
 
-**Phase 1 — Framework + staging + NAHB seed.** Migration 1–2 written; `imports.ts`
+**Phase 1 — Framework + staging + NAHB seed — IMPLEMENTED AND DEPLOYED.** Migration 1–2 written; `imports.ts`
 framework; shared parsers; review-grid shell; delete the empty
 `app/(app)/admin/provision/` directory; `lib/data/nahb-cost-codes.ts` + rewritten
 `seedNAHBCostCodes`; importer #1 (cost codes) end-to-end as the proving importer.
@@ -872,14 +892,14 @@ of the same file yields 100% `skipped_existing`; "update existing" updates only
 documented fields; NAHB seed is idempotent on an org with existing custom codes;
 `pnpm lint` clean.
 
-**Phase 2 — Onboarding checklist.** `onboarding.ts` service + stage catalog +
+**Phase 2 — Onboarding checklist — IMPLEMENTED.** `onboarding.ts` service + stage catalog +
 gates; the onboarding page; customers-table deep-link; provision-sheet sample-
 community toggle placeholder wiring (toggle ships in Phase 5 with the seed — no
 dead UI before then). *Accepts when:* a run walks stage 1→11 with server-enforced
 gates; skips record who/why; `markRunLive` refuses with an incomplete stage; events
 recorded.
 
-**Phase 3 — Catalog importers (#2 plans, #3 options, #4 price book) + AI mapping.**
+**Phase 3 — Catalog importers (#2 plans, #3 options, #4 price book) + AI mapping — IMPLEMENTED.**
 Requires WS02/03/04 services on disk. Includes `import-mapping.ts` + profiles +
 value normalization, and the price-book vendor fuzzy matcher. *Accepts when:* a
 50-plan/2k-takeoff-line pair of files and a 5k-row price book each commit within
@@ -888,13 +908,13 @@ a deliberately-mangled MarkSystems-style header set maps via AI suggestions with
 required-column confirmation; re-upload with same headers skips AI via profile;
 unmatched vendors resolve via create-missing bulk action.
 
-**Phase 4 — Entity importers (#5 communities/lots, #6 team) + org-side door.**
+**Phase 4 — Entity importers (#5 communities/lots, #6 team) + org-side door — IMPLEMENTED.**
 Requires WS01. *Accepts when:* a 3-community/450-lot file commits with derived
 phases/takedowns; `started` lots warn toward stage 10 and create no projects;
 team CSV maps personas per §10 and sends zero emails until the bulk send;
 `settings/imports` enforces `import.manage` + domain permissions.
 
-**Phase 5 — Open-WIP importer + sample community.** Requires WS02/04/05/06.
+**Phase 5 — Open-WIP importer + sample community — IMPLEMENTED.** Requires WS02/04/05/06.
 *Accepts when:* a 200-house workbook (A+B+C) commits house-atomically; a house with
 budget-sum mismatch errors at stage without touching the DB; imported POs carry
 remaining-value amounts and the `imported_open_wip` flag; schedules anchor at
@@ -903,7 +923,7 @@ buyer emails; NO invoices/bills/draws/history rows exist for imported houses
 (assert by query); `seedSampleCommunity` is idempotent, service-built,
 notification-silent, and delete leaves zero orphans.
 
-**Phase 6 — Playbook + scale audit.** §7 dry-run against the QA org; §8 engineering
+**Phase 6 — Playbook + scale audit — GATE IMPLEMENTED; QA EXERCISE PENDING.** §7 dry-run against the QA org; §8 engineering
 pass at synthetic volume (250 projects/400 lots) with findings filed per owning
 workstream; stage-11 gate wired to the audit checklist. *Accepts when:* the QA org
 completes a full simulated onboarding ending in an Arc-native start, and every §8

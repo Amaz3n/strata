@@ -12,6 +12,7 @@ import {
   LineChart,
   Lock,
   Plus,
+  Save,
   Sparkles,
   Trash2,
   Upload,
@@ -32,9 +33,12 @@ import {
   createProjectBudgetAction,
   lockBudgetBaselineAction,
   listBudgetEstimateSourcesAction,
+  listBudgetTemplatesAction,
   proposeBudgetFromEstimateAction,
+  proposeBudgetFromTemplateAction,
   replaceProjectBudgetLinesAction,
   runVarianceScanAction,
+  saveProjectBudgetAsTemplateAction,
   updateCostCodeProgressAction,
 } from "@/app/(app)/projects/[id]/budget/actions"
 import {
@@ -62,6 +66,8 @@ import {
 } from "@/app/(app)/documents/actions"
 
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { PoGenerationPanel } from "@/components/purchasing/po-generation-panel"
 import {
   Dialog,
   DialogContent,
@@ -429,6 +435,8 @@ export function BudgetTab({
   const [viewMode, setViewMode] = useState<"simple" | "detailed">("simple")
   const [onlyAttention, setOnlyAttention] = useState(false)
   const [estimateImportOpen, setEstimateImportOpen] = useState(false)
+  const [templateImportOpen, setTemplateImportOpen] = useState(false)
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false)
   const [csvImportOpen, setCsvImportOpen] = useState(false)
   const [cashFlowOpen, setCashFlowOpen] = useState(false)
 
@@ -1056,6 +1064,7 @@ export function BudgetTab({
   return (
     <div className="-mx-4 -mt-6 -mb-4 flex flex-col bg-card">
       {loadErrors.length > 0 && <FinancialLoadWarning errors={loadErrors} />}
+      <PoGenerationPanel projectId={projectId} />
       {activeAlerts.length > 0 && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-amber-500/30 bg-amber-500/[0.04] px-6 py-2.5 text-sm">
           <div className="flex items-center gap-2 font-medium text-amber-700 dark:text-amber-400">
@@ -1262,6 +1271,14 @@ export function BudgetTab({
                 <Sparkles className="h-4 w-4" />
                 Start from estimate
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setTemplateImportOpen(true)}>
+                <ListOrdered className="h-4 w-4" />
+                Start from template
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setSaveTemplateOpen(true)} disabled={unifiedRows.length === 0}>
+                <Save className="h-4 w-4" />
+                Save as template
+              </DropdownMenuItem>
               <DropdownMenuItem onClick={() => setCsvImportOpen(true)}>
                 <Upload className="h-4 w-4" />
                 Import CSV
@@ -1291,6 +1308,7 @@ export function BudgetTab({
               editable={editable}
               onCreate={openCreateBucket}
               onEstimateImport={() => setEstimateImportOpen(true)}
+              onTemplateImport={() => setTemplateImportOpen(true)}
               filtered={onlyAttention || budgetLineSearch.trim().length > 0}
             />
           </div>
@@ -1442,6 +1460,7 @@ export function BudgetTab({
                     editable={editable}
                     onCreate={openCreateBucket}
                     onEstimateImport={() => setEstimateImportOpen(true)}
+                    onTemplateImport={() => setTemplateImportOpen(true)}
                     filtered={onlyAttention || budgetLineSearch.trim().length > 0}
                   />
                 </TableCell>
@@ -1798,6 +1817,19 @@ export function BudgetTab({
         hasExistingBudget={lines.length > 0}
         costCodesEnabled={costCodesEnabled}
       />
+      <EstimateImportDialog
+        sourceKind="template"
+        open={templateImportOpen}
+        onOpenChange={setTemplateImportOpen}
+        projectId={projectId}
+        hasExistingBudget={lines.length > 0}
+        costCodesEnabled={costCodesEnabled}
+      />
+      <SaveBudgetTemplateDialog
+        open={saveTemplateOpen}
+        onOpenChange={setSaveTemplateOpen}
+        projectId={projectId}
+      />
       <CsvImportDialog
         open={csvImportOpen}
         onOpenChange={setCsvImportOpen}
@@ -1840,11 +1872,13 @@ function UnifiedBudgetEmptyState({
   editable,
   onCreate,
   onEstimateImport,
+  onTemplateImport,
   filtered = false,
 }: {
   editable: boolean
   onCreate: () => void
   onEstimateImport?: () => void
+  onTemplateImport?: () => void
   filtered?: boolean
 }) {
   // When the empty state is the result of a search/filter, keep it minimal.
@@ -1889,6 +1923,10 @@ function UnifiedBudgetEmptyState({
               <Sparkles className="h-4 w-4" />
               Start from estimate
             </Button>
+            <Button size="sm" variant="outline" onClick={onTemplateImport}>
+              <ListOrdered className="h-4 w-4" />
+              Start from template
+            </Button>
           </div>
         </div>
       )}
@@ -1899,7 +1937,7 @@ function UnifiedBudgetEmptyState({
 type EstimateSourceOption = {
   id: string
   label: string
-  status: string
+  status?: string
   total_cents: number
   line_count: number
 }
@@ -1918,12 +1956,14 @@ type ReviewLine = {
  * before saving. AI proposes; the human approves.
  */
 function EstimateImportDialog({
+  sourceKind = "estimate",
   open,
   onOpenChange,
   projectId,
   hasExistingBudget,
   costCodesEnabled,
 }: {
+  sourceKind?: "estimate" | "template"
   open: boolean
   onOpenChange: (open: boolean) => void
   projectId: string
@@ -1952,14 +1992,22 @@ function EstimateImportDialog({
     }
     let cancelled = false
     setLoadingSources(true)
-    listBudgetEstimateSourcesAction(projectId)
+    const load = sourceKind === "template"
+      ? listBudgetTemplatesAction().then((rows) => rows.map((row) => ({
+          id: row.id,
+          label: row.name,
+          total_cents: row.total_cents,
+          line_count: row.line_count,
+        })))
+      : listBudgetEstimateSourcesAction(projectId)
+    load
       .then((rows) => {
         if (cancelled) return
         setSources(rows)
         if (rows.length === 1) setSelectedId(rows[0].id)
       })
       .catch((error) => {
-        if (!cancelled) toast({ title: "Couldn't load estimates", description: (error as Error).message })
+        if (!cancelled) toast({ title: `Couldn't load ${sourceKind}s`, description: (error as Error).message })
       })
       .finally(() => {
         if (!cancelled) setLoadingSources(false)
@@ -1967,13 +2015,16 @@ function EstimateImportDialog({
     return () => {
       cancelled = true
     }
-  }, [open, projectId, toast])
+  }, [open, projectId, sourceKind, toast])
 
   const generate = (estimateId: string) => {
     if (!estimateId) return
     setGenerating(true)
     setReviewLines(null)
-    proposeBudgetFromEstimateAction(projectId, estimateId, costCodesEnabled)
+    const build = sourceKind === "template"
+      ? proposeBudgetFromTemplateAction(projectId, estimateId, costCodesEnabled)
+      : proposeBudgetFromEstimateAction(projectId, estimateId, costCodesEnabled)
+    build
       .then((draft) => {
         setUsedAi(draft.used_ai)
         setReviewLines(
@@ -2015,7 +2066,7 @@ function EstimateImportDialog({
     startApply(async () => {
       try {
         unwrapAction(await applyBudgetFromEstimateAction({ project_id: projectId, lines: payloadLines }))
-        toast({ title: "Budget created from estimate" })
+        toast({ title: `Budget created from ${sourceKind}` })
         onOpenChange(false)
         router.refresh()
       } catch (error) {
@@ -2028,10 +2079,11 @@ function EstimateImportDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[85vh] max-w-3xl flex-col overflow-hidden">
         <DialogHeader>
-          <DialogTitle>Start budget from estimate</DialogTitle>
+          <DialogTitle>Start budget from {sourceKind}</DialogTitle>
           <DialogDescription>
-            We&apos;ll turn an accepted estimate into budget lines using its cost basis (excluding
-            markup). Review and adjust before saving.
+            {sourceKind === "template"
+              ? "Choose a reusable template, then review and adjust every resolved line before saving."
+              : "We'll turn an accepted estimate into budget lines using its cost basis (excluding markup). Review and adjust before saving."}
           </DialogDescription>
         </DialogHeader>
 
@@ -2040,16 +2092,16 @@ function EstimateImportDialog({
             <p className="py-10 text-center text-sm text-muted-foreground">Loading estimates…</p>
           ) : sources.length === 0 ? (
             <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
-              No estimates with cost lines were found for this project.
+              No {sourceKind}s with cost lines were found{sourceKind === "estimate" ? " for this project" : ""}.
             </div>
           ) : (
             <>
               <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
                 <div className="flex-1 space-y-1.5">
-                  <Label>Estimate</Label>
+                  <Label>{sourceKind === "template" ? "Template" : "Estimate"}</Label>
                   <Select value={selectedId} onValueChange={setSelectedId}>
                     <SelectTrigger>
-                      <SelectValue placeholder="Select an estimate" />
+                      <SelectValue placeholder={`Select a ${sourceKind}`} />
                     </SelectTrigger>
                     <SelectContent>
                       {sources.map((source) => (
@@ -2160,6 +2212,74 @@ function EstimateImportDialog({
           <Button onClick={apply} disabled={!reviewLines || includedLines.length === 0 || isApplying}>
             {isApplying ? "Saving…" : `Create budget (${includedLines.length})`}
           </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function SaveBudgetTemplateDialog({
+  open,
+  onOpenChange,
+  projectId,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  projectId: string
+}) {
+  const { toast } = useToast()
+  const [pending, startTransition] = useTransition()
+  const [name, setName] = useState("")
+  const [description, setDescription] = useState("")
+
+  useEffect(() => {
+    if (!open) {
+      setName("")
+      setDescription("")
+    }
+  }, [open])
+
+  const save = () => {
+    if (!name.trim()) {
+      toast({ title: "Enter a template name" })
+      return
+    }
+    startTransition(async () => {
+      try {
+        unwrapAction(await saveProjectBudgetAsTemplateAction(projectId, {
+          name: name.trim(),
+          description: description.trim() || null,
+        }))
+        toast({ title: "Budget template saved" })
+        onOpenChange(false)
+      } catch (error) {
+        toast({ title: "Couldn't save the template", description: (error as Error).message })
+      }
+    })
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Save budget as template</DialogTitle>
+          <DialogDescription>
+            Copies the current budget lines into a reusable organization template. Future project changes do not alter it.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="budget-template-name">Template name</Label>
+            <Input id="budget-template-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Standard single-family budget" />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="budget-template-description">Description</Label>
+            <Textarea id="budget-template-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Optional notes for the team" />
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 border-t pt-3">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button onClick={save} disabled={pending}>{pending ? "Saving…" : "Save template"}</Button>
         </div>
       </DialogContent>
     </Dialog>
@@ -2681,6 +2801,8 @@ function BudgetBucketSheet({
     Array<{ id: string; title: string; status: string; approved_at: string | null; amount_cents: number }>
   >([])
   const [changeOrdersLoading, setChangeOrdersLoading] = useState(false)
+  const [commitmentType, setCommitmentType] = useState<"all" | "purchase_order" | "subcontract">("all")
+  const visibleCommitments = commitmentType === "all" ? commitments : commitments.filter((item) => item.commitment_type === commitmentType)
 
   const bucketCoKey = costCodesEnabled ? bucket?.costCodeId ?? null : bucket?.key ?? null
   const hasCoAdjustment = (bucket?.coAdjustmentCents ?? 0) !== 0
@@ -2896,6 +3018,7 @@ function BudgetBucketSheet({
                     Subcontracts and POs bought against this cost code.
                   </p>
                 </div>
+                <Select value={commitmentType} onValueChange={(value) => setCommitmentType(value as typeof commitmentType)}><SelectTrigger size="sm"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">All commitments</SelectItem><SelectItem value="purchase_order">Purchase orders</SelectItem><SelectItem value="subcontract">Subcontracts</SelectItem></SelectContent></Select>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button variant="outline" size="icon" className="h-8 w-8">
@@ -2916,12 +3039,13 @@ function BudgetBucketSheet({
                 <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
                   Loading commitments...
                 </div>
-              ) : commitments.length ? (
+              ) : visibleCommitments.length ? (
                 <div className="overflow-hidden rounded-lg border">
                   <Table>
                     <TableHeader>
                       <TableRow className="bg-muted/40">
                         <TableHead className="px-4">Commitment</TableHead>
+                        <TableHead className="hidden lg:table-cell px-4">Type</TableHead>
                         <TableHead className="hidden md:table-cell px-4">Company</TableHead>
                         <TableHead className="w-[120px] px-4 text-right">Contract</TableHead>
                         <TableHead className="w-[120px] px-4 text-right">Allocated</TableHead>
@@ -2929,7 +3053,7 @@ function BudgetBucketSheet({
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {commitments.map((c) => (
+                      {visibleCommitments.map((c) => (
                         <TableRow key={c.id} className="group h-[56px] hover:bg-muted/30">
                           <TableCell className="px-4">
                             <span className="block truncate text-sm font-medium">{c.title}</span>
@@ -2940,6 +3064,7 @@ function BudgetBucketSheet({
                               </span>
                             </div>
                           </TableCell>
+                          <TableCell className="hidden px-4 lg:table-cell"><Badge variant="outline" className="rounded-none capitalize">{c.commitment_type === "purchase_order" ? "PO" : "Subcontract"}</Badge></TableCell>
                           <TableCell className="hidden px-4 md:table-cell">
                             <span className="block truncate text-xs text-muted-foreground">
                               {c.company_name ?? "No company"}

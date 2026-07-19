@@ -49,6 +49,9 @@ const DEFAULTS: PortalPermissions = {
   can_submit_invoices: true,
   can_upload_compliance_docs: true,
   can_view_punch_items: false,
+  can_upload_subtier_waivers: true,
+  can_view_purchase_orders: false,
+  can_report_po_completion: false,
 }
 
 const PERMISSION_GROUPS = [
@@ -67,6 +70,7 @@ const PERMISSION_GROUPS = [
       { key: "can_view_warranty", label: "Warranty", icon: Flag },
       { key: "can_view_commitments", label: "Commitments", icon: ClipboardList },
       { key: "can_view_bills", label: "Bills", icon: Receipt },
+      { key: "can_view_purchase_orders", label: "Purchase orders", icon: ClipboardList },
     ],
   },
   {
@@ -84,6 +88,8 @@ const PERMISSION_GROUPS = [
       { key: "can_submit_expenses", label: "Submit expenses", icon: DollarSign },
       { key: "can_submit_daily_logs", label: "Submit daily logs", icon: ClipboardList },
       { key: "can_upload_compliance_docs", label: "Upload compliance", icon: Layers },
+      { key: "can_upload_subtier_waivers", label: "Upload sub-tier waivers", icon: FileText },
+      { key: "can_report_po_completion", label: "Report PO completion", icon: CheckSquare },
     ],
   },
 ] as const

@@ -1,6 +1,6 @@
 import { format } from "date-fns"
 
-import { qboTxnUrl } from "@/lib/integrations/accounting/qbo-links"
+import { qboTxnUrl } from "@/lib/integrations/accounting/qbo/links"
 
 /** A single cost-allocation split within an expense (mirrors vendor bill_lines). */
 export interface ProjectExpenseLine {

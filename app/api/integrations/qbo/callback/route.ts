@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { cookies } from "next/headers"
 
-import { exchangeCodeForTokens, fetchQBOCompanyInfo, verifyQBOOAuthState } from "@/lib/integrations/accounting/qbo-auth"
-import { upsertQBOConnection } from "@/lib/services/qbo-connection"
+import { exchangeCodeForTokens, fetchQBOCompanyInfo, verifyQBOOAuthState } from "@/lib/integrations/accounting/qbo/auth"
+import { upsertQBOConnection } from "@/lib/services/accounting-connections"
 import { requireOrgMembership } from "@/lib/auth/context"
-import { logQBO } from "@/lib/services/qbo-logger"
+import { logQBO } from "@/lib/services/accounting-logger"
 
 function clearOAuthCookies(response: NextResponse, request: NextRequest) {
   const secure = request.nextUrl.protocol === "https:"

@@ -1,0 +1,121 @@
+import type { CostType } from "@/lib/cost-types"
+
+export type NAHBCostCodeGroup = {
+  group: string
+  name: string
+  costType: CostType
+  codes: readonly (readonly [code: string, name: string, uom?: string])[]
+}
+
+// Residential construction taxonomy organized around the NAHB 1000–6990
+// chart-of-accounts convention. Builders can overlay their own codes without
+// changing or replacing this catalog.
+export const NAHB_COST_CODE_GROUPS: readonly NAHBCostCodeGroup[] = [
+  { group: "1000", name: "Preparation & Preliminaries", costType: "other", codes: [
+    ["1010", "Building permits", "ea"], ["1020", "Impact and connection fees", "ls"],
+    ["1030", "Architectural plans", "ls"], ["1040", "Engineering", "ls"],
+    ["1050", "Surveying and staking", "ls"], ["1060", "Soils and geotechnical", "ls"],
+    ["1070", "Energy and code compliance", "ls"], ["1080", "Temporary utilities", "ls"],
+    ["1090", "Temporary facilities", "ls"], ["1100", "Builder risk insurance", "ls"],
+    ["1110", "General liability allocation", "ls"], ["1120", "Warranty reserve", "ls"],
+    ["1130", "Project supervision", "day"], ["1140", "Project management", "day"],
+    ["1150", "Site security", "day"], ["1160", "Portable sanitation", "mo"],
+    ["1170", "Dumpsters and hauling", "ea"], ["1180", "Temporary fencing", "lf"],
+    ["1190", "Construction cleaning", "ls"], ["1200", "Final cleaning", "ls"],
+    ["1210", "Material testing", "ls"], ["1220", "Inspections", "ea"],
+    ["1230", "Plan reproduction", "ls"], ["1240", "Homeowner manuals", "ea"],
+    ["1250", "Construction signage", "ea"], ["1260", "Small tools and consumables", "ls"],
+    ["1270", "Equipment rental - general", "day"], ["1280", "Weather protection", "ls"],
+    ["1290", "Miscellaneous general conditions", "ls"], ["1300", "Contingency", "ls"],
+  ] },
+  { group: "2000", name: "Excavation & Foundation", costType: "subcontract", codes: [
+    ["2010", "Clearing and grubbing", "acre"], ["2020", "Demolition", "ls"],
+    ["2030", "Earthwork and rough grading", "cy"], ["2040", "Excavation", "cy"],
+    ["2050", "Fill and compaction", "cy"], ["2060", "Erosion control", "ls"],
+    ["2070", "Dewatering", "day"], ["2080", "Termite treatment", "sf"],
+    ["2090", "Footing excavation", "lf"], ["2100", "Footing concrete", "cy"],
+    ["2110", "Footing reinforcing", "lb"], ["2120", "Foundation wall concrete", "cy"],
+    ["2130", "Foundation masonry", "sf"], ["2140", "Foundation reinforcing", "lb"],
+    ["2150", "Foundation waterproofing", "sf"], ["2160", "Foundation drainage", "lf"],
+    ["2170", "Under-slab plumbing", "ls"], ["2180", "Under-slab electrical", "ls"],
+    ["2190", "Under-slab vapor barrier", "sf"], ["2200", "Slab preparation", "sf"],
+    ["2210", "Slab reinforcing", "sf"], ["2220", "Slab concrete", "sf"],
+    ["2230", "Slab finishing", "sf"], ["2240", "Crawlspace construction", "sf"],
+    ["2250", "Piles and deep foundations", "ea"], ["2260", "Retaining walls", "sf"],
+    ["2270", "Foundation backfill", "cy"], ["2280", "Fine grading", "sf"],
+    ["2290", "Foundation cleanup", "ls"], ["2300", "Foundation allowance", "ls"],
+  ] },
+  { group: "3000", name: "Rough Structure", costType: "subcontract", codes: [
+    ["3010", "Lumber package", "mbf"], ["3020", "Engineered lumber", "ls"],
+    ["3030", "Floor trusses", "sf"], ["3040", "Roof trusses", "sf"],
+    ["3050", "Floor framing labor", "sf"], ["3060", "Wall framing labor", "sf"],
+    ["3070", "Roof framing labor", "sf"], ["3080", "Sheathing material", "sf"],
+    ["3090", "Sheathing labor", "sf"], ["3100", "Structural steel", "lb"],
+    ["3110", "Columns and beams", "ea"], ["3120", "Connectors and hardware", "ls"],
+    ["3130", "Rough carpentry", "ls"], ["3140", "Interior stairs - rough", "ea"],
+    ["3150", "Exterior stairs - rough", "ea"], ["3160", "Deck framing", "sf"],
+    ["3170", "Porch framing", "sf"], ["3180", "Fire blocking", "lf"],
+    ["3190", "Framing punch", "ls"], ["3200", "Roofing dry-in", "sf"],
+    ["3210", "Housewrap and air barrier", "sf"], ["3220", "Flashing - rough", "lf"],
+    ["3230", "Rough plumbing labor", "ls"], ["3240", "Rough plumbing material", "ls"],
+    ["3250", "Rough HVAC labor", "ls"], ["3260", "Rough HVAC material", "ls"],
+    ["3270", "Rough electrical labor", "ls"], ["3280", "Rough electrical material", "ls"],
+    ["3290", "Low-voltage rough-in", "ls"], ["3300", "Structural allowance", "ls"],
+  ] },
+  { group: "4000", name: "Full Enclosure", costType: "subcontract", codes: [
+    ["4010", "Roofing material", "sq"], ["4020", "Roofing labor", "sq"],
+    ["4030", "Roof accessories", "ls"], ["4040", "Gutters and downspouts", "lf"],
+    ["4050", "Exterior wall cladding material", "sf"], ["4060", "Exterior wall cladding labor", "sf"],
+    ["4070", "Brick veneer material", "m"], ["4080", "Brick veneer labor", "m"],
+    ["4090", "Stone veneer material", "sf"], ["4100", "Stone veneer labor", "sf"],
+    ["4110", "Stucco material", "sf"], ["4120", "Stucco labor", "sf"],
+    ["4130", "Exterior trim", "lf"], ["4140", "Soffit and fascia", "lf"],
+    ["4150", "Windows", "ea"], ["4160", "Exterior doors", "ea"],
+    ["4170", "Garage doors", "ea"], ["4180", "Exterior door hardware", "ea"],
+    ["4190", "Weatherstripping and sealants", "lf"], ["4200", "Insulation - walls", "sf"],
+    ["4210", "Insulation - ceilings", "sf"], ["4220", "Spray foam insulation", "bf"],
+    ["4230", "Air sealing", "ls"], ["4240", "Fireplace and chimney", "ea"],
+    ["4250", "Exterior waterproofing", "sf"], ["4260", "Exterior railings", "lf"],
+    ["4270", "Shutters and decorative elements", "ea"], ["4280", "Exterior paint", "sf"],
+    ["4290", "Enclosure punch", "ls"], ["4300", "Enclosure allowance", "ls"],
+  ] },
+  { group: "5000", name: "Finishing Trades", costType: "subcontract", codes: [
+    ["5010", "Drywall material", "sf"], ["5020", "Drywall labor", "sf"],
+    ["5030", "Interior doors", "ea"], ["5040", "Interior trim material", "lf"],
+    ["5050", "Interior trim labor", "lf"], ["5060", "Cabinets", "lf"],
+    ["5070", "Countertops", "sf"], ["5080", "Closet systems", "lf"],
+    ["5090", "Interior stairs and rails", "lf"], ["5100", "Interior paint material", "sf"],
+    ["5110", "Interior paint labor", "sf"], ["5120", "Ceramic tile material", "sf"],
+    ["5130", "Ceramic tile labor", "sf"], ["5140", "Wood flooring material", "sf"],
+    ["5150", "Wood flooring labor", "sf"], ["5160", "Resilient flooring material", "sf"],
+    ["5170", "Resilient flooring labor", "sf"], ["5180", "Carpet material", "sy"],
+    ["5190", "Carpet labor", "sy"], ["5200", "Plumbing fixtures", "ea"],
+    ["5210", "Plumbing finish labor", "ls"], ["5220", "HVAC equipment", "ea"],
+    ["5230", "HVAC finish labor", "ls"], ["5240", "Electrical fixtures", "ea"],
+    ["5250", "Electrical finish labor", "ls"], ["5260", "Low-voltage trim", "ls"],
+    ["5270", "Appliances", "ls"], ["5280", "Bath accessories", "ea"],
+    ["5290", "Mirrors and glass", "sf"], ["5300", "Finish allowance", "ls"],
+  ] },
+  { group: "6000", name: "Completion & Extras", costType: "subcontract", codes: [
+    ["6010", "Driveway", "sf"], ["6020", "Sidewalks and flatwork", "sf"],
+    ["6030", "Patios", "sf"], ["6040", "Final grading", "sf"],
+    ["6050", "Topsoil", "cy"], ["6060", "Landscaping", "ls"],
+    ["6070", "Sod and seed", "sf"], ["6080", "Irrigation", "zone"],
+    ["6090", "Fencing", "lf"], ["6100", "Site walls", "lf"],
+    ["6110", "Mailbox", "ea"], ["6120", "Exterior lighting", "ea"],
+    ["6130", "Pool and spa", "ls"], ["6140", "Screen enclosure", "sf"],
+    ["6150", "Outdoor kitchen", "ls"], ["6160", "Final utility connections", "ls"],
+    ["6170", "Utility meters", "ea"], ["6180", "Final survey", "ea"],
+    ["6190", "Certificate of occupancy", "ea"], ["6200", "Blower-door and energy test", "ea"],
+    ["6210", "Final inspections", "ea"], ["6220", "Punch-list labor", "hr"],
+    ["6230", "Punch-list material", "ls"], ["6240", "Buyer orientation", "ea"],
+    ["6250", "Move-in protection", "ls"], ["6260", "Warranty startup", "ls"],
+    ["6270", "Model merchandising", "ls"], ["6280", "Sales-center allocation", "ls"],
+    ["6290", "Community amenity allocation", "ls"], ["6990", "Completion allowance", "ls"],
+  ] },
+] as const
+
+export const NAHB_COST_CODE_ROW_COUNT = NAHB_COST_CODE_GROUPS.reduce(
+  (total, group) => total + 1 + group.codes.length,
+  0,
+)

@@ -15,8 +15,8 @@ import {
   replaceProjectExpenseLines,
   type ProjectExpenseLineInput,
 } from "@/lib/services/cost-plus"
-import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
-import { syncProjectExpenseToQBO } from "@/lib/services/qbo-sync"
+import { QBOClient } from "@/lib/integrations/accounting/qbo/client"
+import { processAccountingPush } from "@/lib/services/accounting-sync"
 import { requireAuthorization } from "@/lib/services/authorization"
 
 import { unwrapAction, actionError, type ActionResult  } from "@/lib/action-result"
@@ -479,10 +479,13 @@ export async function listProjectExpensesPageAction(projectId: string, input: Ex
 export async function getExpenseAccountingContextAction(projectId?: string) {
       const { supabase, orgId } = await requireOrgContext()
       const { data: connection } = await supabase
-        .from("qbo_connections")
+        .from("accounting_connections")
         .select("settings")
         .eq("org_id", orgId)
         .eq("status", "active")
+        .eq("provider", "qbo")
+        .order("connected_at", { ascending: true })
+        .limit(1)
         .maybeSingle()
       const settings = (connection?.settings as Record<string, any> | null) ?? {}
       const projectSettings = projectId ? await getProjectFinancialSettings({ supabase, orgId, projectId }).catch(() => null) : null
@@ -823,10 +826,7 @@ export async function updateProjectExpenseAccountingAction(
 export async function syncProjectExpenseToQBOAction(projectId: string, expenseId: string) {
   return run(async () => {
       const { orgId } = await requireOrgContext()
-      const result = await syncProjectExpenseToQBO(expenseId, orgId)
-      if (!result.success) {
-        throw new Error(result.error ?? "Unable to sync expense to QuickBooks")
-      }
+      const result = await processAccountingPush({ orgId, entityType: "project_expense", entityId: expenseId })
       revalidate(projectId)
       return result
   })

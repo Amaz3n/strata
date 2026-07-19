@@ -16,6 +16,8 @@ import { ArrowUpRight, Download } from "@/components/icons"
 import { loadOrgBillingDeskData } from "@/lib/services/org-billing-desk"
 import { getOrgWipOverUnderReport, type WipOverUnderRow } from "@/lib/services/reports/wip-over-under"
 import { cn } from "@/lib/utils"
+import { DeskScopeFilters } from "@/components/production/desk-scope-filters"
+import { resolveProductionDeskScope } from "@/lib/services/production-desk-scope"
 
 export const dynamic = "force-dynamic"
 
@@ -182,8 +184,10 @@ function agingTone(days: number) {
   return "text-muted-foreground"
 }
 
-export default async function BillingPage() {
-  const [desk, report] = await Promise.all([loadOrgBillingDeskData(), getOrgWipOverUnderReport()])
+export default async function BillingPage({ searchParams }: { searchParams: Promise<{ community?: string; division?: string }> }) {
+  const params = await searchParams
+  const scope = await resolveProductionDeskScope({ communityId: params.community, divisionId: params.division })
+  const [desk, report] = await Promise.all([loadOrgBillingDeskData(scope.projectIds), getOrgWipOverUnderReport()])
   const { stats } = desk
 
   // Per-project side signals attached to the ready-to-bill action list.
@@ -207,6 +211,7 @@ export default async function BillingPage() {
   return (
     <PageLayout title="Billing" fullBleed>
       <div>
+        <DeskScopeFilters communities={scope.communities} divisions={scope.divisions} communityId={scope.communityId} divisionId={scope.divisionId} className="border-b px-4 py-2.5 sm:px-6" />
         {/* ── Instrument header: four figures, aging band below ────────── */}
         <section className="desk-rise border-b bg-card">
           <div className="mx-auto w-full max-w-7xl px-4 py-5 sm:px-6 lg:px-8">

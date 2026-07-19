@@ -8,13 +8,15 @@ interface ProjectContextSetterProps {
   id: string
   name: string
   posture: ProjectPosture
+  contextLabel?: string
+  contextHref?: string
 }
 
-export function ProjectContextSetter({ id, name, posture }: ProjectContextSetterProps) {
+export function ProjectContextSetter({ id, name, posture, contextLabel, contextHref }: ProjectContextSetterProps) {
   const { setProjectContext } = usePageTitle()
   useEffect(() => {
-    setProjectContext({ id, name, href: `/projects/${id}`, posture })
+    setProjectContext({ id, name, href: `/projects/${id}`, posture, contextLabel, contextHref })
     return () => setProjectContext(null)
-  }, [id, name, posture, setProjectContext])
+  }, [contextHref, contextLabel, id, name, posture, setProjectContext])
   return null
 }

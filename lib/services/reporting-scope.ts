@@ -44,3 +44,43 @@ export function applyProjectReportingScope<Q>(query: Q, excludedProjectIds: stri
     `(${excludedProjectIds.join(",")})`,
   )
 }
+
+export async function getCommunityProjectIds(
+  supabase: SupabaseClient,
+  orgId: string,
+  communityId: string,
+): Promise<string[]> {
+  const { data, error } = await supabase
+    .from("lots")
+    .select("project_id")
+    .eq("org_id", orgId)
+    .eq("community_id", communityId)
+    .not("project_id", "is", null)
+  if (error) throw new Error(`Unable to resolve community project scope: ${error.message}`)
+  return Array.from(new Set((data ?? []).map((row) => row.project_id as string).filter(Boolean)))
+}
+
+export async function getDivisionProjectIds(
+  supabase: SupabaseClient,
+  orgId: string,
+  divisionId: string,
+): Promise<string[]> {
+  const { data, error } = await supabase
+    .from("projects")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("division_id", divisionId)
+  if (error) throw new Error(`Unable to resolve division project scope: ${error.message}`)
+  return (data ?? []).map((row) => row.id as string)
+}
+
+/** null means no additional scope; an empty list intentionally matches nothing. */
+export function applyProjectIdScope<Q>(
+  query: Q,
+  projectIds: string[] | null,
+  column = "project_id",
+): Q {
+  if (projectIds === null) return query
+  const values = projectIds.length > 0 ? projectIds : ["00000000-0000-0000-0000-000000000000"]
+  return (query as { in: (column: string, values: string[]) => Q }).in(column, values)
+}

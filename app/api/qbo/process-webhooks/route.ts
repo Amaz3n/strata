@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server"
-import type { QBOClient, QBOPaymentSnapshot } from "@/lib/integrations/accounting/qbo-api"
-import { QBOClient as QBOClientFactory } from "@/lib/integrations/accounting/qbo-api"
+import type { QBOClient, QBOPaymentSnapshot } from "@/lib/integrations/accounting/qbo/client"
+import { QBOClient as QBOClientFactory } from "@/lib/integrations/accounting/qbo/client"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { logQBO } from "@/lib/services/qbo-logger"
+import { logQBO } from "@/lib/services/accounting-logger"
 import { withCronRun } from "@/lib/services/job-runs"
 import { rememberQBOInvoiceNumberCursor } from "@/lib/services/invoice-numbers"
-import { qboPurchaseIsCredit } from "@/lib/integrations/accounting/qbo-import-rules"
+import { qboPurchaseIsCredit } from "@/lib/integrations/accounting/qbo/import-rules"
 
 const CRON_SECRET = process.env.CRON_SECRET
 const BATCH_SIZE = 50
@@ -124,27 +124,12 @@ async function resolveLocalInvoiceIdByQboId(
   orgId: string,
   qboInvoiceId: string,
 ) {
-  const { data: invoiceRows } = await supabase
-    .from("invoices")
-    .select("id, status, qbo_sync_status, qbo_synced_at, updated_at")
-    .eq("org_id", orgId)
-    .eq("qbo_id", qboInvoiceId)
-    .order("qbo_synced_at", { ascending: false, nullsFirst: false })
-    .order("updated_at", { ascending: false })
-    .limit(10)
-
-  const invoiceMatch = (invoiceRows ?? []).find((row: any) => row.qbo_sync_status === "synced" && row.status !== "draft")
-    ?? (invoiceRows ?? []).find((row: any) => row.status !== "draft")
-    ?? invoiceRows?.[0]
-
-  if (invoiceMatch?.id) return invoiceMatch.id as string
-
   const { data: invoiceSyncRows } = await supabase
-    .from("qbo_sync_records")
+    .from("accounting_sync_records")
     .select("entity_id, status, last_synced_at")
     .eq("org_id", orgId)
     .eq("entity_type", "invoice")
-    .eq("qbo_id", qboInvoiceId)
+    .eq("external_id", qboInvoiceId)
     .order("last_synced_at", { ascending: false })
     .limit(10)
 
@@ -164,14 +149,15 @@ async function upsertInvoiceSyncRecord(params: {
 }) {
   const nowIso = new Date().toISOString()
 
-  await params.supabase.from("qbo_sync_records").upsert(
+  await params.supabase.from("accounting_sync_records").upsert(
     {
       org_id: params.orgId,
       connection_id: params.connectionId,
       entity_type: "invoice",
       entity_id: params.invoiceId,
-      qbo_id: params.qboInvoiceId,
-      qbo_sync_token: params.qboSyncToken ?? null,
+      provider: "qbo",
+      external_id: params.qboInvoiceId,
+      external_version: params.qboSyncToken ?? null,
       last_synced_at: nowIso,
       status: "synced",
       error_message: null,
@@ -266,14 +252,15 @@ async function reconcileInvoiceFromQbo(params: {
       .update({ qbo_sync_status: "needs_review" })
       .eq("org_id", params.orgId)
       .eq("id", invoiceId)
-    await params.supabase.from("qbo_sync_records").upsert(
+    await params.supabase.from("accounting_sync_records").upsert(
       {
         org_id: params.orgId,
         connection_id: params.connectionId,
         entity_type: "invoice",
         entity_id: invoiceId,
-        qbo_id: params.qboInvoiceId,
-        qbo_sync_token: qboInvoice.SyncToken ?? null,
+        provider: "qbo",
+        external_id: params.qboInvoiceId,
+        external_version: qboInvoice.SyncToken ?? null,
         last_synced_at: nowIso,
         status: "needs_review",
         error_message: reason,
@@ -334,23 +321,14 @@ async function resolveLocalExpenseIdByQboId(
   qboId: string,
 ) {
   const { data: sync } = await supabase
-    .from("qbo_sync_records")
+    .from("accounting_sync_records")
     .select("entity_id")
     .eq("org_id", orgId)
     .eq("entity_type", "project_expense")
-    .eq("qbo_id", qboId)
+    .eq("external_id", qboId)
     .maybeSingle()
 
-  if (sync?.entity_id) return sync.entity_id as string
-
-  const { data: expense } = await supabase
-    .from("project_expenses")
-    .select("id")
-    .eq("org_id", orgId)
-    .eq("qbo_id", qboId)
-    .maybeSingle()
-
-  return (expense?.id as string | undefined) ?? null
+  return (sync?.entity_id as string | undefined) ?? null
 }
 
 async function reconcileProjectExpenseFromQbo(params: {
@@ -460,14 +438,15 @@ async function reconcileProjectExpenseFromQbo(params: {
     return { reconciled: false as const, reason: error.message }
   }
 
-  await params.supabase.from("qbo_sync_records").upsert(
+  await params.supabase.from("accounting_sync_records").upsert(
     {
       org_id: params.orgId,
       connection_id: params.connectionId,
       entity_type: "project_expense",
       entity_id: expenseId,
-      qbo_id: params.qboId,
-      qbo_sync_token: qboTxn.SyncToken ?? null,
+      provider: "qbo",
+      external_id: params.qboId,
+      external_version: qboTxn.SyncToken ?? null,
       last_synced_at: nowIso,
       status: "synced",
       error_message: null,
@@ -484,23 +463,14 @@ async function resolveLocalVendorBillIdByQboId(
   qboId: string,
 ) {
   const { data: sync } = await supabase
-    .from("qbo_sync_records")
+    .from("accounting_sync_records")
     .select("entity_id")
     .eq("org_id", orgId)
     .eq("entity_type", "bill")
-    .eq("qbo_id", qboId)
+    .eq("external_id", qboId)
     .maybeSingle()
 
-  if (sync?.entity_id) return sync.entity_id as string
-
-  const { data: bill } = await supabase
-    .from("vendor_bills")
-    .select("id")
-    .eq("org_id", orgId)
-    .eq("qbo_id", qboId)
-    .maybeSingle()
-
-  return (bill?.id as string | undefined) ?? null
+  return (sync?.entity_id as string | undefined) ?? null
 }
 
 async function reconcileVendorBillFromQbo(params: {
@@ -586,14 +556,15 @@ async function reconcileVendorBillFromQbo(params: {
 
   if (error) return { reconciled: false as const, reason: error.message }
 
-  await params.supabase.from("qbo_sync_records").upsert(
+  await params.supabase.from("accounting_sync_records").upsert(
     {
       org_id: params.orgId,
       connection_id: params.connectionId,
       entity_type: "bill",
       entity_id: billId,
-      qbo_id: params.qboId,
-      qbo_sync_token: qboBill.SyncToken ?? null,
+      provider: "qbo",
+      external_id: params.qboId,
+      external_version: qboBill.SyncToken ?? null,
       last_synced_at: nowIso,
       status: "synced",
       error_message: null,
@@ -615,7 +586,7 @@ async function reconcileBillPaymentFromQbo(params: {
   const normalizedOp = String(params.operation ?? "").toLowerCase()
   if (normalizedOp === "delete") {
     await params.supabase
-      .from("qbo_sync_records")
+      .from("accounting_sync_records")
       .update({
         status: "conflict",
         error_message: "The linked QuickBooks bill payment was deleted.",
@@ -623,7 +594,7 @@ async function reconcileBillPaymentFromQbo(params: {
       })
       .eq("org_id", params.orgId)
       .eq("entity_type", "bill_payment")
-      .eq("qbo_id", params.qboBillPaymentId)
+      .eq("external_id", params.qboBillPaymentId)
     return { reconciled: true as const }
   }
 
@@ -644,11 +615,11 @@ async function reconcileBillPaymentFromQbo(params: {
   // placeholder entity_id here, which made the import sheet hide transactions that had never been
   // added to the payment ledger.
   const { data: syncRows } = await params.supabase
-    .from("qbo_sync_records")
+    .from("accounting_sync_records")
     .select("entity_id")
     .eq("org_id", params.orgId)
     .eq("entity_type", "bill_payment")
-    .eq("qbo_id", params.qboBillPaymentId)
+    .eq("external_id", params.qboBillPaymentId)
   const mappedPaymentIds = Array.from(
     new Set((syncRows ?? []).map((row) => row.entity_id).filter((id): id is string => Boolean(id))),
   )
@@ -666,11 +637,19 @@ async function reconcileBillPaymentFromQbo(params: {
 
   let updated = 0
   for (const qboBillId of linkedBillIds) {
+    const { data: billSync } = await params.supabase
+      .from("accounting_sync_records")
+      .select("entity_id")
+      .eq("org_id", params.orgId)
+      .eq("entity_type", "bill")
+      .eq("external_id", qboBillId)
+      .maybeSingle()
+    if (!billSync?.entity_id) continue
     const { data: bill } = await params.supabase
       .from("vendor_bills")
       .select("id, total_cents, paid_cents")
       .eq("org_id", params.orgId)
-      .eq("qbo_id", qboBillId)
+      .eq("id", billSync.entity_id)
       .maybeSingle()
     if (!bill?.id) continue
 
@@ -696,17 +675,17 @@ async function reconcileBillPaymentFromQbo(params: {
   }
 
   await params.supabase
-    .from("qbo_sync_records")
+    .from("accounting_sync_records")
     .update({
       connection_id: params.connectionId,
-      qbo_sync_token: billPayment.SyncToken ?? null,
+      external_version: billPayment.SyncToken ?? null,
       last_synced_at: new Date().toISOString(),
       status: "synced",
       error_message: null,
     })
     .eq("org_id", params.orgId)
     .eq("entity_type", "bill_payment")
-    .eq("qbo_id", params.qboBillPaymentId)
+    .eq("external_id", params.qboBillPaymentId)
 
   return updated > 0 ? { reconciled: true as const } : { reconciled: false as const, reason: "No local bill matched linked QBO bill" }
 }
@@ -747,7 +726,7 @@ async function processQBOWebhookEvents(request: NextRequest) {
 
   let reconciled = 0
   let processed = 0
-  const clientsByOrgId = new Map<string, QBOClient | null>()
+  const clientsByConnectionId = new Map<string, QBOClient | null>()
 
   for (const row of rows) {
     try {
@@ -773,9 +752,10 @@ async function processQBOWebhookEvents(request: NextRequest) {
       }
 
       const { data: connection } = await supabase
-        .from("qbo_connections")
+        .from("accounting_connections")
         .select("id, org_id")
-        .eq("realm_id", row.realm_id)
+        .eq("provider", "qbo")
+        .eq("external_account_id", row.realm_id)
         .eq("status", "active")
         .maybeSingle()
 
@@ -788,10 +768,10 @@ async function processQBOWebhookEvents(request: NextRequest) {
 
       const entityName = row.entity_name.toLowerCase()
       const orgId = typedConnection.org_id
-      let client = clientsByOrgId.get(orgId)
+      let client = clientsByConnectionId.get(typedConnection.id)
       if (client === undefined) {
-        client = await QBOClientFactory.forOrg(orgId)
-        clientsByOrgId.set(orgId, client)
+        client = await QBOClientFactory.forConnection(typedConnection.id)
+        clientsByConnectionId.set(typedConnection.id, client)
       }
 
       if (!client) {
@@ -823,11 +803,11 @@ async function processQBOWebhookEvents(request: NextRequest) {
 
         if (linkedInvoiceQboIds.length === 0) {
           const { data: paymentSync } = await supabase
-            .from("qbo_sync_records")
+            .from("accounting_sync_records")
             .select("entity_id")
             .eq("org_id", orgId)
             .eq("entity_type", "payment")
-            .eq("qbo_id", row.entity_qbo_id)
+            .eq("external_id", row.entity_qbo_id)
             .maybeSingle()
 
           if (paymentSync?.entity_id) {
@@ -865,7 +845,7 @@ async function processQBOWebhookEvents(request: NextRequest) {
         }
 
         await supabase
-          .from("qbo_sync_records")
+          .from("accounting_sync_records")
           .update({
             status: "synced",
             error_message: null,
@@ -873,7 +853,7 @@ async function processQBOWebhookEvents(request: NextRequest) {
           })
           .eq("org_id", orgId)
           .eq("entity_type", "payment")
-          .eq("qbo_id", row.entity_qbo_id)
+          .eq("external_id", row.entity_qbo_id)
 
         if (reconciledInvoices > 0) {
           reconciled += 1

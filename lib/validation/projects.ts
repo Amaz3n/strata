@@ -18,7 +18,7 @@ export const projectInputSchema = z.object({
   location: z.record(z.unknown()).optional(),
   client_id: z.string().uuid().optional().nullable(),
   description: z.string().optional(),
-  property_type: z.enum(["residential", "commercial"]).optional(),
+  property_type: z.enum(["residential", "commercial", "production"]).optional(),
   project_type: z.enum(["new_construction", "remodel", "addition", "renovation", "repair"]).optional(),
   total_value: z.number().optional(),
   retainage_percent: z.number().min(0).max(100).optional(),

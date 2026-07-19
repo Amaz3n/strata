@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache"
 
 import { requirePermissionGuard } from "@/lib/auth/guards"
-import { createCostCode, importCostCodes, listCostCodes, seedCSICostCodes, seedNAHBCostCodes, setCostCodeActive, updateCostCode } from "@/lib/services/cost-codes"
+import { createCostCode, listCostCodes, seedCSICostCodes, seedNAHBCostCodes, setCostCodeActive, updateCostCode } from "@/lib/services/cost-codes"
 import type { CostType } from "@/lib/cost-types"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
@@ -108,36 +108,3 @@ export async function seedCostCodesAction(standard: "nahb" | "csi" = "nahb") {
       revalidatePath("/settings/cost-codes")
   })
 }
-
-export async function importCostCodesAction(csv: string) {
-  return run(async () => {
-      await requirePermissionGuard("org.admin")
-      if (!csv || csv.trim().length === 0) {
-        throw new Error("CSV content is required")
-      }
-
-      const lines = csv
-        .trim()
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean)
-
-      const rows = lines.map((line, idx) => {
-        const [code, name, division, category] = line.split(",").map((v) => v.trim())
-        if (!code || !name) {
-          throw new Error(`Row ${idx + 1} must include code and name`)
-        }
-        return { code, name, division: division || undefined, category: category || undefined }
-      })
-
-      if (rows.length === 0) {
-        throw new Error("No rows found in CSV")
-      }
-
-      const result = await importCostCodes(rows)
-      revalidatePath("/settings")
-      revalidatePath("/settings/cost-codes")
-      return result
-  })
-}
-

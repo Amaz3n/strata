@@ -67,6 +67,22 @@
     {
       "path": "/api/jobs/invoice-schedules",
       "schedule": "40 13 * * *"
+    },
+    {
+      "path": "/api/jobs/selection-cutoff-sweep",
+      "schedule": "45 12 * * *"
+    },
+    {
+      "path": "/api/jobs/purchasing-maintenance",
+      "schedule": "50 12 * * *"
+    },
+    {
+      "path": "/api/jobs/starts-pipeline",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/jobs/warranty-sla-sweep",
+      "schedule": "5 * * * *"
     }
   ],
   "functions": {
@@ -119,6 +135,18 @@
       "maxDuration": 120
     },
     "app/api/jobs/task-reminders/route.ts": {
+      "maxDuration": 120
+    },
+    "app/api/jobs/selection-cutoff-sweep/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/jobs/purchasing-maintenance/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/jobs/starts-pipeline/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/jobs/warranty-sla-sweep/route.ts": {
       "maxDuration": 120
     }
   }

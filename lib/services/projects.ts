@@ -75,7 +75,12 @@ function mapProjectModuleOverrides(row: { project_module_overrides?: unknown }) 
   )
 }
 
-function mapProject(row: any): Project {
+type ProjectAccountingDimensions = {
+  class?: { id: string; name?: string | null }
+  customer?: { id: string; name?: string | null }
+}
+
+function mapProject(row: any, accountingDimensions?: ProjectAccountingDimensions | null): Project {
   const location = (row.location ?? {}) as Record<string, unknown>
   const address = typeof location.address === "string" ? location.address : (location.formatted as string | undefined)
 
@@ -93,16 +98,18 @@ function mapProject(row: any): Project {
     client_id: row.client_id ?? undefined,
     prospect_id: row.prospect_id ?? null,
     property_type: row.property_type ?? undefined,
+    division_id: row.division_id ?? null,
+    superintendent_id: row.superintendent_id ?? null,
     module_overrides: mapProjectModuleOverrides(row),
     project_type: row.project_type ?? undefined,
     description: row.description ?? undefined,
     retainage_percent: row.retainage_percent != null ? Number(row.retainage_percent) : undefined,
     total_value: row.total_value ?? undefined,
     total_contract_value_cents: row.total_contract_value_cents ?? undefined,
-    qbo_class_id: row.qbo_class_id ?? null,
-    qbo_class_name: row.qbo_class_name ?? null,
-    qbo_customer_id: row.qbo_customer_id ?? null,
-    qbo_customer_name: row.qbo_customer_name ?? null,
+    qbo_class_id: accountingDimensions?.class?.id ?? null,
+    qbo_class_name: accountingDimensions?.class?.name ?? null,
+    qbo_customer_id: accountingDimensions?.customer?.id ?? null,
+    qbo_customer_name: accountingDimensions?.customer?.name ?? null,
     excluded_from_reporting: row.excluded_from_reporting ?? false,
     is_public_work: row.is_public_work ?? false,
     require_subtier_waivers: row.require_subtier_waivers ?? false,
@@ -174,11 +181,81 @@ function mapProjectBillingContract(row: any): Contract {
 }
 
 const PROJECT_SELECT = `
-  id, org_id, name, status, start_date, end_date, location, client_id, prospect_id, property_type, project_type, description, total_value, retainage_percent, total_contract_value_cents, qbo_class_id, qbo_class_name, qbo_customer_id, qbo_customer_name, excluded_from_reporting, is_public_work, require_subtier_waivers, created_at, updated_at,
+  id, org_id, name, status, start_date, end_date, location, client_id, prospect_id, property_type, project_type, division_id, superintendent_id, description, total_value, retainage_percent, total_contract_value_cents, excluded_from_reporting, is_public_work, require_subtier_waivers, created_at, updated_at,
   project_financial_settings(id, org_id, project_id, billing_model, fixed_price_billing_basis, paid_costs_required, proof_required, client_cost_approval_required, open_book_required, cost_codes_enabled, setup_completed_at, metadata),
   project_module_overrides(module_key, enabled),
   contracts(id, org_id, project_id, proposal_id, number, title, status, contract_type, total_cents, currency, markup_percent, gmp_cents, contingency_cents, fixed_fee_cents, fee_presentation, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, rate_schedule_id, requires_client_cost_approval, open_book, retainage_percent, retainage_applies_to_fee, retainage_release_trigger, retainage_schedule, stored_materials_retainage_percent, terms, effective_date, signed_at, signature_data, parent_contract_id, snapshot, created_at, updated_at)
 `
+
+async function loadProjectAccountingDimensions(supabase: SupabaseClient, orgId: string, projectIds: string[]) {
+  const ids = Array.from(new Set(projectIds.filter(Boolean)))
+  if (ids.length === 0) return new Map<string, ProjectAccountingDimensions>()
+  const { data, error } = await supabase
+    .from("accounting_entity_map")
+    .select("project_id,dimensions")
+    .eq("org_id", orgId)
+    .in("project_id", ids)
+  if (error) throw new Error(`Failed to load project accounting mappings: ${error.message}`)
+  return new Map((data ?? []).map((row: any) => [row.project_id as string, (row.dimensions ?? {}) as ProjectAccountingDimensions]))
+}
+
+async function mapProjectsWithAccounting(supabase: SupabaseClient, orgId: string, rows: any[]) {
+  const dimensions = await loadProjectAccountingDimensions(supabase, orgId, rows.map((row) => row.id))
+  return rows.map((row) => mapProject(row, dimensions.get(row.id)))
+}
+
+async function saveProjectAccountingDimensions(params: {
+  supabase: SupabaseClient
+  orgId: string
+  userId: string
+  projectId: string
+  classId?: string | null
+  className?: string | null
+  customerId?: string | null
+  customerName?: string | null
+}) {
+  const requested = [params.classId, params.className, params.customerId, params.customerName].some((value) => value !== undefined)
+  if (!requested) return
+  const { data: existing } = await params.supabase
+    .from("accounting_entity_map")
+    .select("id,connection_id,dimensions")
+    .eq("org_id", params.orgId)
+    .eq("project_id", params.projectId)
+    .maybeSingle()
+  let connectionId = existing?.connection_id ?? null
+  if (!connectionId) {
+    const { data: defaultMap } = await params.supabase
+      .from("accounting_entity_map")
+      .select("connection_id")
+      .eq("org_id", params.orgId)
+      .is("project_id", null)
+      .is("community_id", null)
+      .is("division_id", null)
+      .maybeSingle()
+    connectionId = defaultMap?.connection_id ?? null
+  }
+  if (!connectionId) return
+  const dimensions = { ...((existing?.dimensions as ProjectAccountingDimensions | null) ?? {}) }
+  if (params.classId !== undefined || params.className !== undefined) {
+    if (params.classId) dimensions.class = { id: params.classId, name: params.className ?? null }
+    else delete dimensions.class
+  }
+  if (params.customerId !== undefined || params.customerName !== undefined) {
+    if (params.customerId) dimensions.customer = { id: params.customerId, name: params.customerName ?? null }
+    else delete dimensions.customer
+  }
+  const query = existing?.id
+    ? params.supabase.from("accounting_entity_map").update({ dimensions }).eq("id", existing.id)
+    : params.supabase.from("accounting_entity_map").insert({
+      org_id: params.orgId,
+      connection_id: connectionId,
+      project_id: params.projectId,
+      dimensions,
+      created_by: params.userId,
+    })
+  const { error } = await query
+  if (error) throw new Error(`Failed to save project accounting mapping: ${error.message}`)
+}
 
 export async function listProjects(orgId?: string, context?: OrgServiceContext): Promise<Project[]> {
   const { supabase, orgId: resolvedOrgId, userId } = context || await requireOrgContext(orgId)
@@ -215,10 +292,10 @@ export async function listProjects(orgId?: string, context?: OrgServiceContext):
     throw new Error(`Failed to list assigned projects: ${error.message}`)
   }
 
-  return (data ?? [])
+  const rows = (data ?? [])
     .map((row: any) => (Array.isArray(row.project) ? row.project[0] : row.project))
     .filter(Boolean)
-    .map(mapProject)
+  return mapProjectsWithAccounting(supabase, resolvedOrgId, rows)
 }
 
 export async function listProjectsWithClient(supabase: SupabaseClient, orgId: string): Promise<Project[]> {
@@ -232,7 +309,7 @@ export async function listProjectsWithClient(supabase: SupabaseClient, orgId: st
     throw new Error(`Failed to list projects: ${error.message}`)
   }
 
-  return (data ?? []).map(mapProject)
+  return mapProjectsWithAccounting(supabase, orgId, data ?? [])
 }
 
 export async function listProjectNavigationItemsWithClient(
@@ -281,12 +358,23 @@ export async function getProjectWithFinancials({
     return null
   }
 
-  return mapProject(data)
+  const mapped = await mapProjectsWithAccounting(supabase, resolvedOrgId, [data])
+  return mapped[0] ?? null
 }
 
-export async function createProject({ input, orgId, context }: { input: ProjectInput; orgId?: string; context?: OrgServiceContext }) {
+export async function createProject({
+  input,
+  orgId,
+  context,
+  authorizationPermission = "project.manage",
+}: {
+  input: ProjectInput
+  orgId?: string
+  context?: OrgServiceContext
+  authorizationPermission?: string
+}) {
   const { supabase, orgId: resolvedOrgId, userId, productTier } = context || await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requirePermission(authorizationPermission, { supabase, orgId: resolvedOrgId, userId })
 
   const propertyType = input.property_type ?? getDefaultProjectPropertyType(productTier)
   const retainagePercent =
@@ -310,10 +398,6 @@ export async function createProject({ input, orgId, context }: { input: ProjectI
     description: normalizedInput.description,
     retainage_percent: normalizedInput.retainage_percent,
     total_value: typeof normalizedInput.total_value === "number" ? Math.round(normalizedInput.total_value) : normalizedInput.total_value,
-    qbo_class_id: normalizedInput.qbo_class_id?.trim() || null,
-    qbo_class_name: normalizedInput.qbo_class_name?.trim() || null,
-    qbo_customer_id: normalizedInput.qbo_customer_id?.trim() || null,
-    qbo_customer_name: normalizedInput.qbo_customer_name?.trim() || null,
     created_by: userId,
     prospect_id: normalizedInput.prospect_id || null,
   }
@@ -354,7 +438,19 @@ export async function createProject({ input, orgId, context }: { input: ProjectI
     input: normalizedInput,
   })
 
-  return mapProject(data)
+  await saveProjectAccountingDimensions({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    projectId: data.id as string,
+    classId: normalizedInput.qbo_class_id?.trim() || null,
+    className: normalizedInput.qbo_class_name?.trim() || null,
+    customerId: normalizedInput.qbo_customer_id?.trim() || null,
+    customerName: normalizedInput.qbo_customer_name?.trim() || null,
+  })
+
+  const mapped = await mapProjectsWithAccounting(supabase, resolvedOrgId, [data])
+  return mapped[0]
 }
 
 export async function updateProject({
@@ -395,10 +491,6 @@ export async function updateProject({
     project_type: parsed.project_type ?? existing.data.project_type,
     description: parsed.description ?? existing.data.description,
     total_value: typeof parsed.total_value === "number" ? Math.round(parsed.total_value) : (parsed.total_value ?? existing.data.total_value),
-    qbo_class_id: projectNullableValue<string>(parsed, "qbo_class_id", existing.data.qbo_class_id),
-    qbo_class_name: projectNullableValue<string>(parsed, "qbo_class_name", existing.data.qbo_class_name),
-    qbo_customer_id: projectNullableValue<string>(parsed, "qbo_customer_id", existing.data.qbo_customer_id),
-    qbo_customer_name: projectNullableValue<string>(parsed, "qbo_customer_name", existing.data.qbo_customer_name),
     excluded_from_reporting: parsed.excluded_from_reporting ?? existing.data.excluded_from_reporting ?? false,
     is_public_work: parsed.is_public_work ?? existing.data.is_public_work ?? false,
     require_subtier_waivers: parsed.require_subtier_waivers ?? existing.data.require_subtier_waivers ?? false,
@@ -443,7 +535,19 @@ export async function updateProject({
     input: parsed,
   })
 
-  return mapProject(data)
+  await saveProjectAccountingDimensions({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    projectId,
+    classId: Object.prototype.hasOwnProperty.call(parsed, "qbo_class_id") ? parsed.qbo_class_id?.trim() || null : undefined,
+    className: Object.prototype.hasOwnProperty.call(parsed, "qbo_class_name") ? parsed.qbo_class_name?.trim() || null : undefined,
+    customerId: Object.prototype.hasOwnProperty.call(parsed, "qbo_customer_id") ? parsed.qbo_customer_id?.trim() || null : undefined,
+    customerName: Object.prototype.hasOwnProperty.call(parsed, "qbo_customer_name") ? parsed.qbo_customer_name?.trim() || null : undefined,
+  })
+
+  const mapped = await mapProjectsWithAccounting(supabase, resolvedOrgId, [data])
+  return mapped[0]
 }
 
 async function upsertProjectBillingContract({

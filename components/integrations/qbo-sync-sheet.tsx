@@ -22,6 +22,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Spinner } from "@/components/ui/spinner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { QboImportPanel } from "@/components/integrations/qbo-import-sheet"
+import { listQboImportConnectionsAction } from "@/app/(app)/integrations/qbo-import-actions"
 import { cn } from "@/lib/utils"
 
 type Props = {
@@ -29,6 +30,7 @@ type Props = {
   onOpenChange: (open: boolean) => void
   projectId?: string
   projectName?: string | null
+  connectionId?: string
   initialTab?: "sync" | "import" | "history"
   /** Optional: open an invoice's detail when its row is clicked. */
   onOpenInvoice?: (invoiceId: string) => void
@@ -56,7 +58,7 @@ function formatRelative(value?: string | null) {
   return formatDistanceToNow(date, { addSuffix: true })
 }
 
-export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initialTab = "sync", onOpenInvoice }: Props) {
+export function QboSyncSheet({ open, onOpenChange, projectId, projectName, connectionId, initialTab = "sync", onOpenInvoice }: Props) {
   const [items, setItems] = useState<QboSyncItem[]>([])
   const [connected, setConnected] = useState(true)
   const [loading, setLoading] = useState(false)
@@ -66,6 +68,8 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
   const [history, setHistory] = useState<QboSyncHistoryItem[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [showFailedOnly, setShowFailedOnly] = useState(false)
+  const [importConnections, setImportConnections] = useState<{ id: string; label: string; company: string | null }[]>([])
+  const [importConnectionId, setImportConnectionId] = useState(connectionId ?? "")
   const canImport = Boolean(projectId)
 
   const load = useCallback(async () => {
@@ -96,8 +100,12 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
     if (open) {
       void load()
       void loadHistory()
+      void listQboImportConnectionsAction().then((rows) => {
+        setImportConnections(rows)
+        setImportConnectionId((current) => connectionId ?? (current || rows[0]?.id || ""))
+      }).catch(() => setImportConnections([]))
     }
-  }, [open, load, loadHistory])
+  }, [open, load, loadHistory, connectionId])
 
   useEffect(() => {
     if (open) setActiveTab(canImport ? initialTab : initialTab === "import" ? "sync" : initialTab)
@@ -311,6 +319,9 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, initi
               <TabsContent value="import" className="m-0 flex min-h-0 flex-1 flex-col">
                 <QboImportPanel
                   active={open && activeTab === "import"}
+                  connectionId={importConnectionId}
+                  connections={importConnections}
+                  onConnectionChange={setImportConnectionId}
                   projectId={projectId}
                   projectName={projectName}
                   onCancel={() => onOpenChange(false)}

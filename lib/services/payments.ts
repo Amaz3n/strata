@@ -19,7 +19,7 @@ import { createStripePaymentIntent } from "@/lib/integrations/payments/stripe"
 import { calculatePaymentFeeQuote, type OnlinePaymentMethod, loadPaymentFeePolicy } from "@/lib/payments/fees"
 import { generateConditionalWaiverForPayment } from "@/lib/services/lien-waivers"
 import { releaseInvoiceLienWaiversIfPaid } from "@/lib/services/invoice-lien-waivers"
-import { enqueuePaymentSync } from "@/lib/services/qbo-sync"
+import { enqueuePaymentSync } from "@/lib/services/accounting-sync"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { requireReadyStripeConnectedAccount, requireReadyStripeConnectedAccountForOrg } from "@/lib/services/stripe-connected-accounts"
 

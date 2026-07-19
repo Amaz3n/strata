@@ -436,7 +436,7 @@ test("financial jobs and public payment links keep their authorization boundarie
 test("sent and synchronized invoices are immutable through the standard editor", () => {
   const source = fs.readFileSync(path.join(__dirname, "../lib/services/invoices.ts"), "utf8")
 
-  assert.match(source, /existing\.sent_at \|\| existing\.qbo_id/)
+  assert.match(source, /existing\.sent_at \|\| hasAccountingExternalId\(existingAccountingState\)/)
   assert.match(source, /Issued or accounting-synced invoices are immutable/)
   assert.match(source, /client_visible", true/)
   assert.match(source, /neq\("status", "void"\)/)

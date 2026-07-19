@@ -87,6 +87,8 @@ function mapPermissions(row: any): PortalPermissions {
     can_upload_compliance_docs: row.can_upload_compliance_docs ?? true,
     can_upload_subtier_waivers: row.can_upload_subtier_waivers ?? true,
     can_view_punch_items: row.can_view_punch_items ?? false,
+    can_view_purchase_orders: row.can_view_purchase_orders ?? false,
+    can_report_po_completion: row.can_report_po_completion ?? false,
     // Reviewer-specific permissions
     can_review_submittals: row.can_review_submittals ?? false,
   }
@@ -656,6 +658,21 @@ async function loadPortalFinancialSummary({
   }
 }
 
+async function loadProductionPortalFinancialSummary({ orgId, projectId }: { orgId: string; projectId: string }): Promise<PortalFinancialSummary> {
+  const supabase = createServiceSupabaseClient()
+  const [{ data: contract }, { data: changeOrders }, { data: invoices }, { data: closing }] = await Promise.all([
+    supabase.from("contracts").select("total_cents").eq("org_id", orgId).eq("project_id", projectId).eq("contract_type", "purchase_agreement").eq("status", "active").order("signed_at", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("change_orders").select("total_cents").eq("org_id", orgId).eq("project_id", projectId).eq("status", "approved").eq("client_visible", true),
+    supabase.from("invoices").select("id, metadata, payments(amount_cents, status)").eq("org_id", orgId).eq("project_id", projectId).contains("metadata", { invoice_kind: "earnest_deposit" }),
+    supabase.from("closings").select("scheduled_date").eq("org_id", orgId).eq("project_id", projectId).neq("status", "cancelled").maybeSingle(),
+  ])
+  const purchasePriceCents = Number(contract?.total_cents ?? 0)
+  const approvedChangeOrdersCents = (changeOrders ?? []).reduce((sum, row) => sum + Number(row.total_cents ?? 0), 0)
+  const depositsReceivedCents = (invoices ?? []).reduce((sum, invoice: any) => sum + (invoice.payments ?? []).filter((payment: any) => payment.status === "succeeded").reduce((paymentSum: number, payment: any) => paymentSum + Number(payment.amount_cents ?? 0), 0), 0)
+  const finalPrice = purchasePriceCents + approvedChangeOrdersCents
+  return { mode: "closing", contractTotal: finalPrice, totalPaid: depositsReceivedCents, balanceRemaining: finalPrice - depositsReceivedCents, purchasePriceCents, depositsReceivedCents, approvedChangeOrdersCents, balanceDueAtClosingCents: finalPrice - depositsReceivedCents, scheduledClosingDate: closing?.scheduled_date ?? null, draws: [] }
+}
+
 function mapPortalDailyLog(row: any): DailyLog {
   const weather = row.weather ?? {}
   const summary = row.summary ?? undefined
@@ -788,11 +805,11 @@ export async function loadClientPortalData({
 }): Promise<ClientPortalData> {
   const supabase = createServiceSupabaseClient()
 
-  const [orgRow, projectRow, pmRow, scheduleItems, dailyLogs, filesResult, financialSummary] = await Promise.all([
+  const [orgRow, projectRow, pmRow, scheduleItems, dailyLogs, filesResult, defaultFinancialSummary] = await Promise.all([
     supabase.from("orgs").select("id, name, logo_url").eq("id", orgId).single(),
     supabase
       .from("projects")
-      .select("id, org_id, name, status, start_date, end_date, location, created_at, updated_at")
+      .select("id, org_id, name, status, start_date, end_date, location, property_type, created_at, updated_at")
       .eq("id", projectId)
       .single(),
     supabase
@@ -819,6 +836,10 @@ export async function loadClientPortalData({
 
   if (orgRow.error || !orgRow.data) throw new Error("Org not found for portal")
   if (projectRow.error || !projectRow.data) throw new Error("Project not found for portal")
+  const isProductionBuyerPortal = projectRow.data.property_type === "production"
+  const financialSummary = isProductionBuyerPortal
+    ? await loadProductionPortalFinancialSummary({ orgId, projectId })
+    : defaultFinancialSummary
 
   const pmUser = pmRow.data?.app_users as any
   const projectManager = pmUser ? {
@@ -865,6 +886,7 @@ export async function loadClientPortalData({
       address: (projectRow.data.location as any)?.address,
       created_at: projectRow.data.created_at,
       updated_at: projectRow.data.updated_at,
+      property_type: projectRow.data.property_type,
     },
     projectManager,
     schedule: scheduleItems ?? [],
@@ -884,6 +906,9 @@ export async function loadClientPortalData({
       .slice(0, 50),
     punchItems,
     financialSummary,
+    portalPresentation: isProductionBuyerPortal
+      ? { terminology: "home", roadmapLabel: "Milestones", financialSummaryMode: "closing", showDrawSchedule: false }
+      : { terminology: "project", roadmapLabel: "Roadmap", financialSummaryMode: "draws", showDrawSchedule: true },
   }
 }
 
@@ -1341,6 +1366,8 @@ function permissionsToColumns(overrides?: Partial<PortalPermissions>) {
     can_upload_compliance_docs: overrides?.can_upload_compliance_docs ?? true,
     can_upload_subtier_waivers: overrides?.can_upload_subtier_waivers ?? true,
     can_view_punch_items: overrides?.can_view_punch_items ?? false,
+    can_view_purchase_orders: overrides?.can_view_purchase_orders ?? false,
+    can_report_po_completion: overrides?.can_report_po_completion ?? false,
     // Reviewer-specific permissions (least-privilege: opt-in only)
     can_review_submittals: overrides?.can_review_submittals ?? false,
   }

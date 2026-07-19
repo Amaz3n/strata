@@ -58,6 +58,8 @@ export async function updateMemberRoleAction(membershipId: string, input: unknow
       membershipId,
       role: parsed.role,
       projectScope: parsed.projectScope,
+      divisionScope: parsed.divisionScope,
+      divisionIds: parsed.divisionIds,
       permissionOverrides: parsed.permissionOverrides,
     })
     revalidatePath("/team")

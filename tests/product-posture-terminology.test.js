@@ -13,8 +13,10 @@ test("explicit project property type wins over org tier in a mixed org", () => {
 
 test("org tier supplies only the default when project posture is absent", () => {
   assert.equal(getProjectPosture(null, "commercial"), "commercial")
-  assert.equal(getProjectPosture(null, "production"), "residential")
+  assert.equal(getProjectPosture("production", "residential"), "production")
+  assert.equal(getProjectPosture(null, "production"), "production")
   assert.equal(getDefaultProjectPropertyType("commercial"), "commercial")
+  assert.equal(getDefaultProjectPropertyType("production"), "production")
   assert.equal(normalizeProductTier("unexpected"), "residential")
 })
 
@@ -26,6 +28,7 @@ test("terminology remains centralized for every posture", () => {
 
 test("module overrides beat posture defaults without gating the route", () => {
   assert.equal(isProjectModuleEnabled({ moduleKey: "safety", posture: "residential", postures: ["commercial"] }), false)
+  assert.equal(isProjectModuleEnabled({ moduleKey: "safety", posture: "production", postures: ["commercial"] }), false)
   assert.equal(isProjectModuleEnabled({ moduleKey: "safety", posture: "residential", postures: ["commercial"], overrides: { safety: true } }), true)
   assert.equal(isProjectModuleEnabled({ moduleKey: "safety", posture: "commercial", postures: ["commercial"], overrides: { safety: false } }), false)
 })

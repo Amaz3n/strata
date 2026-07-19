@@ -9,12 +9,23 @@
 > against the repo 2026-07-16/17; re-verify against live schema with Supabase
 > MCP `list_tables` before writing migrations.
 
-## STATUS — NOT STARTED
+## STATUS — IMPLEMENTED AND DEPLOYED; MANUAL QA PENDING
 
-No code, no migrations. Docs 01/02/03/07 exist as plans; none of their
-migrations are applied at time of writing. Coordinate: this doc's migrations
-reference `lots`, `communities`, `house_plan_versions` — they cannot apply
-before 01/02's do.
+Implemented 2026-07-18 across four additive migrations, data-driven start
+gates, the resumable start-release outbox pipeline, even-flow slots and release
+board, superintendent assignment and My Houses (desktop + mobile), trade
+look-aheads and coalesced schedule-change notices, reporting, RBAC, search,
+notifications, and cron wiring. Static verification passes (`pnpm lint`,
+`pnpm exec tsc --noEmit`, and `pnpm next build`); the starts suite passes 4/4
+and the financial regression suite passes 77/77.
+
+The five production migrations are recorded as `20260718214633`,
+`20260718214636`, `20260718214643`, `20260718214710`, and
+`20260718214849` (the fifth is advisor-driven FK-index hardening). Live
+verification confirmed all five tables, `projects.superintendent_id`, RLS
+policies, authenticated/service-role grants, four permissions, both new roles,
+and FK coverage. Supabase security and relevant performance advisors report no
+Workstream 05 findings. QA-org walkthroughs and scale acceptance remain.
 
 ## Mission
 
@@ -1013,6 +1024,7 @@ event-logged; per-company daily dedupe via outbox `dedupe_key`.
 | 2 | `<ts>_start_packages.sql` | start_packages, start_package_gates, start_release_steps |
 | 3 | `<ts>_community_release_slots.sql` | slots table |
 | 4 | `<ts>_superintendent_and_start_rbac.sql` | projects.superintendent_id + permissions/roles |
+| 5 | `<ts>_workstream_05_fk_indexes.sql` | advisor-driven FK coverage |
 
 All additive; RLS + indexes + updated_at triggers per table in-file.
 Prerequisite tables (`lots`, `communities`, `house_plan_versions`, WS04's PO

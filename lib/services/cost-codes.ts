@@ -7,6 +7,7 @@ import {
   CSI_MASTERFORMAT_DIVISIONS,
   CSI_MASTERFORMAT_ROW_COUNT,
 } from "@/lib/data/csi-masterformat"
+import { NAHB_COST_CODE_GROUPS, NAHB_COST_CODE_ROW_COUNT } from "@/lib/data/nahb-cost-codes"
 
 const costCodeSchema = z.object({
   code: z.string().min(1),
@@ -184,69 +185,66 @@ export async function listCostCodes(orgId?: string, includeInactive = false) {
 
 export async function seedNAHBCostCodes(orgId?: string) {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
-
-  const nahbCodes = [
-    { division: "01", code: "01-000", name: "General Requirements", category: "general" },
-    { division: "01", code: "01-100", name: "Permits & Fees", category: "general" },
-    { division: "01", code: "01-200", name: "Insurance", category: "general" },
-    { division: "02", code: "02-000", name: "Site Work", category: "sitework" },
-    { division: "02", code: "02-100", name: "Clearing & Grading", category: "sitework" },
-    { division: "02", code: "02-200", name: "Excavation", category: "sitework" },
-    { division: "02", code: "02-300", name: "Fill & Backfill", category: "sitework" },
-    { division: "03", code: "03-000", name: "Concrete", category: "concrete" },
-    { division: "03", code: "03-100", name: "Footings", category: "concrete" },
-    { division: "03", code: "03-200", name: "Foundation Walls", category: "concrete" },
-    { division: "03", code: "03-300", name: "Slabs", category: "concrete" },
-    { division: "03", code: "03-400", name: "Flatwork", category: "concrete" },
-    { division: "04", code: "04-000", name: "Masonry", category: "masonry" },
-    { division: "05", code: "05-000", name: "Metals/Steel", category: "metals" },
-    { division: "06", code: "06-000", name: "Wood & Plastics", category: "framing" },
-    { division: "06", code: "06-100", name: "Rough Framing - Labor", category: "framing" },
-    { division: "06", code: "06-200", name: "Rough Framing - Material", category: "framing" },
-    { division: "06", code: "06-300", name: "Finish Carpentry", category: "framing" },
-    { division: "07", code: "07-000", name: "Thermal & Moisture", category: "envelope" },
-    { division: "07", code: "07-100", name: "Insulation", category: "envelope" },
-    { division: "07", code: "07-200", name: "Roofing", category: "envelope" },
-    { division: "07", code: "07-300", name: "Siding", category: "envelope" },
-    { division: "08", code: "08-000", name: "Doors & Windows", category: "openings" },
-    { division: "09", code: "09-000", name: "Finishes", category: "finishes" },
-    { division: "09", code: "09-100", name: "Drywall", category: "finishes" },
-    { division: "09", code: "09-200", name: "Paint", category: "finishes" },
-    { division: "09", code: "09-300", name: "Flooring", category: "finishes" },
-    { division: "09", code: "09-400", name: "Tile", category: "finishes" },
-    { division: "10", code: "10-000", name: "Specialties", category: "specialties" },
-    { division: "11", code: "11-000", name: "Equipment", category: "equipment" },
-    { division: "11", code: "11-100", name: "Appliances", category: "equipment" },
-    { division: "12", code: "12-000", name: "Furnishings", category: "furnishings" },
-    { division: "12", code: "12-100", name: "Cabinets", category: "furnishings" },
-    { division: "12", code: "12-200", name: "Countertops", category: "furnishings" },
-    { division: "15", code: "15-000", name: "Mechanical", category: "mechanical" },
-    { division: "15", code: "15-100", name: "Plumbing - Rough", category: "mechanical" },
-    { division: "15", code: "15-200", name: "Plumbing - Finish", category: "mechanical" },
-    { division: "15", code: "15-300", name: "HVAC", category: "mechanical" },
-    { division: "16", code: "16-000", name: "Electrical", category: "electrical" },
-    { division: "16", code: "16-100", name: "Electrical - Rough", category: "electrical" },
-    { division: "16", code: "16-200", name: "Electrical - Finish", category: "electrical" },
-    { division: "16", code: "16-300", name: "Low Voltage", category: "electrical" },
-  ]
-
-  const toInsert = nahbCodes.map((c) => ({
+  const groupRows = NAHB_COST_CODE_GROUPS.map((group) => ({
     org_id: resolvedOrgId,
-    ...c,
+    code: group.group,
+    name: group.name,
+    division: group.group.slice(0, 1),
+    category: "nahb-group",
     standard: "nahb" as const,
+    cost_type: group.costType,
     is_active: true,
   }))
 
-  const { error } = await supabase.from("cost_codes").upsert(toInsert, {
+  const { error: groupError } = await supabase.from("cost_codes").upsert(groupRows, {
     onConflict: "org_id,code",
     ignoreDuplicates: true,
   })
 
-  if (error) {
-    throw new Error(`Failed to seed NAHB codes: ${error.message}`)
+  if (groupError) {
+    throw new Error(`Failed to seed NAHB groups: ${groupError.message}`)
   }
 
-  return { inserted: toInsert.length }
+  const { data: storedGroups, error: storedGroupsError } = await supabase
+    .from("cost_codes")
+    .select("id, code")
+    .eq("org_id", resolvedOrgId)
+    .in("code", groupRows.map((row) => row.code))
+
+  if (storedGroupsError) {
+    throw new Error(`Failed to load NAHB groups: ${storedGroupsError.message}`)
+  }
+
+  const groupIds = new Map((storedGroups ?? []).map((row) => [String(row.code), String(row.id)]))
+  const missingGroup = NAHB_COST_CODE_GROUPS.find((group) => !groupIds.has(group.group))
+  if (missingGroup) {
+    throw new Error(`NAHB group ${missingGroup.group} conflicts with an existing cost code`)
+  }
+
+  const codeRows = NAHB_COST_CODE_GROUPS.flatMap((group) =>
+    group.codes.map(([code, name, unit]) => ({
+      org_id: resolvedOrgId,
+      parent_id: groupIds.get(group.group),
+      code,
+      name,
+      division: group.group.slice(0, 1),
+      category: "nahb-code",
+      standard: "nahb" as const,
+      cost_type: group.costType,
+      unit: unit ?? null,
+      is_active: true,
+    })),
+  )
+
+  const { error: codeError } = await supabase.from("cost_codes").upsert(codeRows, {
+    onConflict: "org_id,code",
+    ignoreDuplicates: true,
+  })
+  if (codeError) {
+    throw new Error(`Failed to seed NAHB codes: ${codeError.message}`)
+  }
+
+  return { inserted: NAHB_COST_CODE_ROW_COUNT }
 }
 
 export async function seedCSICostCodes(orgId?: string) {
@@ -317,33 +315,5 @@ export async function seedCSICostCodes(orgId?: string) {
   }
 
   return { inserted: CSI_MASTERFORMAT_ROW_COUNT }
-}
-
-export async function importCostCodes(
-  rows: Array<{ code: string; name: string; division?: string; category?: string }>,
-  orgId?: string,
-) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
-
-  const toInsert = rows.map((row) => ({
-    org_id: resolvedOrgId,
-    code: row.code,
-    name: row.name,
-    division: row.division,
-    category: row.category,
-    standard: "custom" as const,
-    is_active: true,
-  }))
-
-  const { data, error } = await supabase
-    .from("cost_codes")
-    .upsert(toInsert, { onConflict: "org_id,code" })
-    .select("id")
-
-  if (error) {
-    throw new Error(`Failed to import cost codes: ${error.message}`)
-  }
-
-  return { imported: data?.length ?? 0 }
 }
 

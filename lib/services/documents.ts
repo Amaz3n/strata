@@ -29,6 +29,7 @@ export async function createDocument(
     source_entity_type?:
       | "estimate"
       | "proposal"
+      | "contract"
       | "change_order"
       | "lien_waiver"
       | "selection"
@@ -40,10 +41,11 @@ export async function createDocument(
     metadata?: Record<string, any>
   },
   orgId?: string,
+  options: { authorizationPermission?: string } = {},
 ) {
   const parsed = documentCreateInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requirePermission(options.authorizationPermission ?? "project.manage", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: document, error } = await supabase
     .from("documents")

@@ -529,7 +529,7 @@ export async function convertExecutedProspectToProject({
     name: string
     start_date?: string | null
     end_date?: string | null
-    property_type?: "residential" | "commercial"
+    property_type?: "residential" | "commercial" | "production"
     project_type?: "new_construction" | "remodel" | "addition" | "renovation" | "repair"
     description?: string | null
   }
@@ -711,7 +711,7 @@ export async function convertExecutedProspectToProject({
         end_date: projectInput.end_date || null,
         location: prospect.jobsite_location || undefined,
         client_id: primaryPromotedContactId || undefined,
-        property_type: projectInput.property_type || (prospect.project_type === "commercial" ? "commercial" : "residential"),
+        property_type: projectInput.property_type,
         project_type: projectInput.project_type || (prospect.project_type === "new_construction" || prospect.project_type === "remodel" || prospect.project_type === "addition" || prospect.project_type === "renovation" || prospect.project_type === "repair" ? prospect.project_type : "remodel"),
         description: projectInput.description || prospect.notes || undefined,
         total_value: Math.round(contractTotalCents / 100),
@@ -969,4 +969,3 @@ export async function convertExecutedProspectToProject({
     throw error
   }
 }
-

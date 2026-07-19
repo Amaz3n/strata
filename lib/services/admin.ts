@@ -225,7 +225,7 @@ export async function getCustomers({
         .in("org_id", orgIds)
         .order("created_at", { ascending: false }),
       supabase
-        .from("qbo_connections")
+        .from("accounting_connections")
         .select("org_id, status")
         .in("org_id", orgIds)
         .is("disconnected_at", null),

@@ -16,6 +16,8 @@ export interface AuthorizationDecision {
   projectId?: string
   permissions: string[]
   scopesEvaluated: string[]
+  divisionScope?: "all" | "assigned"
+  divisionIds?: string[]
 }
 
 export interface AuthorizeInput {
@@ -113,7 +115,7 @@ async function fetchOrgPermissions({
 }) {
   const { data, error } = await supabase
     .from("memberships")
-    .select("id, project_scope, role:roles!inner(permissions:role_permissions(permission_key))")
+    .select("id, project_scope, division_scope, role:roles!inner(permissions:role_permissions(permission_key))")
     .eq("org_id", orgId)
     .eq("user_id", userId)
     .eq("status", "active")
@@ -122,13 +124,22 @@ async function fetchOrgPermissions({
     throw new Error(`Unable to load org permissions: ${error.message}`)
   }
 
-  const rows = (data ?? []) as (PermissionRow & { id?: string; project_scope?: string })[]
+  const rows = (data ?? []) as (PermissionRow & {
+    id?: string
+    project_scope?: string
+    division_scope?: string
+  })[]
   const permissions = unique(rows.flatMap((row) => normalizePermissionRow(row)))
   const membershipIds = rows.map((row) => row.id).filter((id): id is string => Boolean(id))
   const overrides = await fetchMembershipPermissionOverrides({ supabase, membershipIds })
   // 'assigned' on any active membership row restricts this user to explicit
   // project_members rows even when their org role grants project.read/manage.
   const assignedOnly = rows.some((row) => row.project_scope === "assigned")
+  const divisionAssignedOnly =
+    !permissions.includes("org.admin") && rows.some((row) => row.division_scope === "assigned")
+  const divisionIds = divisionAssignedOnly
+    ? await fetchMembershipDivisionIds({ supabase, membershipIds })
+    : []
 
   return {
     permissions,
@@ -136,7 +147,29 @@ async function fetchOrgPermissions({
     denies: overrides.denies,
     hasMembership: rows.length > 0,
     assignedOnly,
+    divisionAssignedOnly,
+    divisionIds,
   }
+}
+
+async function fetchMembershipDivisionIds({
+  supabase,
+  membershipIds,
+}: {
+  supabase: SupabaseClient
+  membershipIds: string[]
+}) {
+  if (membershipIds.length === 0) return []
+  const { data, error } = await supabase
+    .from("membership_divisions")
+    .select("division_id")
+    .in("membership_id", membershipIds)
+  if (error) {
+    const message = String(error.message ?? "")
+    if (message.includes("membership_divisions")) return []
+    throw new Error(`Unable to load division scope: ${error.message}`)
+  }
+  return unique((data ?? []).map((row) => row.division_id as string).filter(Boolean))
 }
 
 async function fetchMembershipPermissionOverrides({
@@ -224,6 +257,18 @@ const fetchPlatformPermissionsCached = cache((userId: string) =>
 const fetchProjectOrgIdCached = cache((projectId: string) =>
   fetchProjectOrgId({ supabase: createServiceSupabaseClient(), projectId }),
 )
+
+export async function getDivisionAccessForUser({
+  orgId,
+  userId,
+}: {
+  orgId: string
+  userId: string
+}): Promise<{ assignedOnly: boolean; divisionIds: string[] }> {
+  if (isPlatformAdminId(userId, undefined)) return { assignedOnly: false, divisionIds: [] }
+  const result = await fetchOrgPermissionsCached(orgId, userId)
+  return { assignedOnly: result.divisionAssignedOnly, divisionIds: result.divisionIds }
+}
 
 async function fetchPlatformPermissions({ supabase, userId }: { supabase: SupabaseClient; userId: string }) {
   const nowIso = new Date().toISOString()
@@ -349,6 +394,8 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
   let hasOrgMembership = false
   let hasProjectMembership = false
   let orgAssignedOnly = false
+  let divisionAssignedOnly = false
+  let divisionIds: string[] = []
 
   if (input.projectId) {
     const projectResult = await fetchProjectPermissionsCached(input.projectId, input.userId)
@@ -364,6 +411,8 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     scopesEvaluated.push("org")
     hasOrgMembership = orgResult.hasMembership
     orgAssignedOnly = orgResult.assignedOnly
+    divisionAssignedOnly = orgResult.divisionAssignedOnly
+    divisionIds = orgResult.divisionIds
     orgPermissionSet.push(...orgResult.permissions, ...orgResult.grants)
     permissionSet.push(...orgResult.permissions)
     permissionSet.push(...orgResult.grants)
@@ -385,6 +434,8 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     orgPermissionSet.push("*", ...allPermissions)
     deniedPermissions.length = 0
     hasOrgMembership = true
+    divisionAssignedOnly = false
+    divisionIds = []
     if (input.projectId) {
       hasProjectMembership = true
     }
@@ -411,6 +462,8 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
     projectId: input.projectId,
     permissions,
     scopesEvaluated,
+    divisionScope: divisionAssignedOnly ? "assigned" : "all",
+    divisionIds,
   }
 
   if (input.logDecision) {

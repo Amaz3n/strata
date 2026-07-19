@@ -44,6 +44,18 @@ export type SearchEntityType =
   | 'certified_payroll_report'
   | 'meeting_transcript'
   | 'project_location'
+  | 'community'
+  | 'lot'
+  | 'house_plan'
+  | 'budget_template'
+  | 'selection_option'
+  | 'design_studio_appointment'
+  | 'price_agreement'
+  | 'commitment_change_order'
+  | 'start_package'
+  | 'closing'
+  | 'warranty_request'
+  | 'warranty_backcharge'
 
 export type SearchEntityConfig = {
   table: string
@@ -58,6 +70,102 @@ export type SearchEntityConfig = {
 
 // Entity search configurations
 export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
+  warranty_request: {
+    table: 'warranty_requests',
+    titleField: 'title',
+    subtitleFields: ['request_number', 'status', 'severity', 'coverage_status'],
+    descriptionFields: ['description', 'resolution_note'],
+    searchableFields: ['title', 'description', 'category', 'resolution_note'],
+    hrefTemplate: '/warranty?request={id}',
+  },
+  warranty_backcharge: {
+    table: 'warranty_backcharges',
+    titleField: 'reason',
+    subtitleFields: ['backcharge_number', 'status', 'amount_cents'],
+    descriptionFields: ['reason', 'notes', 'dispute_note'],
+    searchableFields: ['reason', 'notes', 'dispute_note'],
+    hrefTemplate: '/warranty?tab=backcharges&backcharge={id}',
+  },
+  closing: {
+    table: 'closings',
+    titleField: 'status',
+    subtitleFields: ['status', 'scheduled_date', 'actual_date'],
+    descriptionFields: ['notes', 'cancel_reason'],
+    searchableFields: ['status', 'notes', 'cancel_reason'],
+    hrefTemplate: '/projects/{project_id}/closing',
+    joins: ['LEFT JOIN projects p ON closings.project_id = p.id'],
+  },
+  start_package: {
+    table: 'start_packages',
+    titleField: 'status',
+    subtitleFields: ['status', 'target_week', 'scheduled_start_date'],
+    descriptionFields: ['notes'],
+    searchableFields: ['status', 'notes'],
+    hrefTemplate: '/starts/pipeline/{id}',
+  },
+  commitment_change_order: {
+    table: 'commitment_change_orders',
+    titleField: 'title',
+    subtitleFields: ['status', 'origin', 'total_cents'],
+    descriptionFields: ['description'],
+    searchableFields: ['title', 'description', 'status', 'origin'],
+    hrefTemplate: '/projects/{project_id}/financials/budget?vpo={id}',
+  },
+  price_agreement: {
+    table: 'vendor_price_agreements',
+    titleField: 'scope_of_work',
+    subtitleFields: ['status', 'effective_from', 'effective_to'],
+    descriptionFields: ['notes'],
+    searchableFields: ['scope_of_work', 'notes', 'status', 'uom'],
+    hrefTemplate: '/purchasing?tab=price-book&agreement={id}',
+  },
+  selection_option: {
+    table: 'selection_options',
+    titleField: 'name',
+    subtitleFields: ['sku', 'vendor', 'category_id'],
+    descriptionFields: ['description'],
+    searchableFields: ['name', 'description', 'sku', 'vendor'],
+    hrefTemplate: '/design-studio?option={id}',
+  },
+  design_studio_appointment: {
+    table: 'design_studio_appointments',
+    titleField: 'scheduled_at',
+    subtitleFields: ['status', 'location', 'contact_id'],
+    descriptionFields: ['notes'],
+    searchableFields: ['location', 'notes', 'status'],
+    hrefTemplate: '/design-studio?tab=appointments&appointment={id}',
+  },
+  house_plan: {
+    table: 'house_plans',
+    titleField: 'name',
+    subtitleFields: ['code', 'series', 'status'],
+    descriptionFields: ['description'],
+    searchableFields: ['code', 'name', 'series', 'description', 'status'],
+    hrefTemplate: '/plans/{id}',
+  },
+  budget_template: {
+    table: 'budget_templates',
+    titleField: 'name',
+    subtitleFields: ['property_type', 'is_active'],
+    descriptionFields: ['description'],
+    searchableFields: ['name', 'description', 'property_type'],
+    hrefTemplate: '/settings/templates?budgetTemplate={id}',
+  },
+  community: {
+    table: 'communities',
+    titleField: 'name',
+    subtitleFields: ['status', 'city', 'state'],
+    descriptionFields: ['description'],
+    searchableFields: ['name', 'code', 'city', 'state', 'description'],
+    hrefTemplate: '/communities/{id}',
+  },
+  lot: {
+    table: 'lots',
+    titleField: 'lot_number',
+    subtitleFields: ['block', 'status', 'address', 'community_id'],
+    searchableFields: ['lot_number', 'block', 'address', 'status'],
+    hrefTemplate: '/communities/{community_id}?lot={id}',
+  },
   project_location: {
     table: 'project_locations',
     titleField: 'full_path',
@@ -369,6 +477,12 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
 // Entity types that carry a project_id column. Org-level entities
 // (contact, company, prospect) and project itself are excluded.
 export const PROJECT_SCOPED_ENTITY_TYPES = new Set<SearchEntityType>([
+  "warranty_request",
+  "warranty_backcharge",
+  "closing",
+  "start_package",
+  "commitment_change_order",
+  "design_studio_appointment",
   "task",
   "file",
   "invoice",

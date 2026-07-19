@@ -124,9 +124,21 @@ Strata is a comprehensive construction management platform built on Supabase (Po
 - **`project_vendors`** - Project-specific vendor relationships
 
 #### Selection Management
-- **`selection_categories`** - Selection categories (fixtures, finishes, etc.)
-- **`selection_options`** - Available selection choices
-- **`project_selections`** - Client selections for projects
+- **`selection_categories`** - Org/community categories with archived and override lineage
+- **`selection_options`** - Structural/design choices with price, sourcing, availability, and community override lineage
+- **`selection_packages`** / **`selection_package_items`** - Buyer bundles with one option per covered category
+- **`selection_catalog_prices`** - House-plan/community price, cost, and availability overrides
+- **`selection_groups`** / **`selection_group_categories`** - Schedule-anchored decision groups and their category membership
+- **`project_selection_groups`** - Per-lot cutoff instances, manual overrides, lock state, and reminder idempotency metadata
+- **`project_selections`** - Project choices with group/package links, confirmed price/cost snapshots, and post-cutoff CO provenance
+- **`design_studio_appointments`** - Buyer appointments, coordinator assignment, status, and covered selection groups
+
+Catalog-mode selection deadlines derive from stable schedule-template item keys.
+Schedule date changes enqueue `selection_cutoff_recompute`; the nightly
+`selection-cutoff-sweep` sends T−14/T−7 buyer reminders once and locks overdue
+groups. Existing residential rows without `group_id` retain their legacy
+`due_date` behavior. `selection_categories.is_template` is retained only for
+backward compatibility and is retired for catalog mode.
 
 #### Billing & Subscriptions
 - **`plans`** - Subscription plans
@@ -417,5 +429,4 @@ RFIs     Submittals  Dailies  Photos    Closeout
 ---
 
 This document provides a comprehensive overview of the Strata database architecture. For specific implementation details, refer to the individual table schemas and migration files.
-
 

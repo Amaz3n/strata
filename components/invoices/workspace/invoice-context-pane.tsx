@@ -4,7 +4,7 @@ import { format } from "date-fns"
 import { ExternalLink } from "lucide-react"
 
 import type { Invoice, InvoiceView, Payment } from "@/lib/types"
-import { qboTxnUrl } from "@/lib/integrations/accounting/qbo-links"
+import { qboTxnUrl } from "@/lib/integrations/accounting/qbo/links"
 import { cn } from "@/lib/utils"
 
 import { balanceCentsOf } from "./receivables-filters"

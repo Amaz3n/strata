@@ -58,7 +58,7 @@ export function PortalPublicClient({
     () =>
       [
         { id: "home", label: "Home", icon: Home },
-        { id: "roadmap", label: "Roadmap", icon: Map },
+        { id: "roadmap", label: data.portalPresentation?.roadmapLabel ?? "Roadmap", icon: Map },
         { id: "timeline", label: "Photos", icon: Camera },
         { id: "documents", label: "Documents", icon: FileText },
         hasInvoices ? { id: "invoices", label: "Invoices", icon: ReceiptText } : null,
@@ -70,7 +70,7 @@ export function PortalPublicClient({
         },
         { id: "about", label: "About", icon: Info },
       ].filter(Boolean) as Array<{ id: any; label: string; icon: typeof Home; indicator?: ReactNode }>,
-    [hasInvoices, hasPendingActions],
+    [data.portalPresentation?.roadmapLabel, hasInvoices, hasPendingActions],
   )
 
   const renderTab = (tab: string) => {

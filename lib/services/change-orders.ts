@@ -15,6 +15,7 @@ import {
   deriveOwnerUnitPriceCents,
 } from "@/lib/financials/change-order-math"
 import { applyApprovedChangeOrderToSov } from "@/lib/services/prime-sov"
+import { applySelectionChangeFromChangeOrder } from "@/lib/services/selections"
 import { formatDocNumber, type DocumentNumberingSettings } from "@/lib/document-number"
 
 export type ChangeOrderLifecycle = "draft" | "pricing" | "proposed" | "approved" | "rejected" | "void"
@@ -1313,6 +1314,7 @@ export async function approveChangeOrderFromEnvelopeExecution(input: {
       changeOrderId: existing.id,
       actorId: null,
     })
+    await applySelectionChangeFromChangeOrder(existing.id, existing.org_id)
   }
 
   await recordEvent({
@@ -1467,6 +1469,7 @@ export async function approveChangeOrderFromPortalSignature(input: {
       changeOrderId: existing.id,
       actorId: null,
     })
+    await applySelectionChangeFromChangeOrder(existing.id, existing.org_id)
   }
 
   await recordEvent({
@@ -1716,6 +1719,7 @@ export async function approveChangeOrder({
     changeOrderId: data.id,
     actorId: userId,
   })
+  await applySelectionChangeFromChangeOrder(data.id, resolvedOrgId)
 
   await recordEvent({
     orgId: resolvedOrgId,

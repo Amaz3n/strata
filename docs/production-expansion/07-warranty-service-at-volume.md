@@ -1,6 +1,7 @@
 # Workstream 07 — Warranty & Service at Volume
 
-> **STATUS: NOT STARTED.**
+> **STATUS: REPOSITORY + LIVE DATABASE IMPLEMENTATION COMPLETE (2026-07-18).**
+> Manual QA and the accounting-provider limitation below remain open.
 >
 > Prereqs (docs 01, 02, 03, 08 are WRITTEN in this folder — read what you consume):
 > `00-MASTER-production-expansion.md` (read FIRST, fully — especially §5.5
@@ -686,11 +687,50 @@ human watching — local env is PRODUCTION):
    (per-project, ordered by created_at) before its unique index.
 3. `<ts>_warranty_backcharges.sql` (§5.3).
 4. `<ts>_warranty_rbac_catalog_seed.sql` — permissions + role.
+5. `<ts>_workstream_07_fk_indexes.sql` — covering indexes found by the live
+   foreign-key audit.
 
 No data migration beyond the number backfill: existing `warranty_requests` rows get
 defaults (`severity='routine_30'`, `coverage_status='unclassified'`) and keep
 working in the existing UI untouched between phases. Coverage enrollment for
 already-closed homes is manual (desk action) — never fabricate effective dates.
+
+### Implementation progress — 2026-07-18
+
+- [x] Coverage programs/terms, per-home coverage snapshots, closing-outbox
+  enrollment, computed classification/override rules, project and buyer-portal
+  coverage views, and settings UI are implemented.
+- [x] Extended intake, photo links, SLAs and hourly breach sweep, internal-tech and
+  trade visit workflows, sub-portal confirm/complete, office verification,
+  buyer sign-off, direct external emails, in-app notifications, and audit/events
+  are implemented.
+- [x] The Warranty desk, server-paginated queue/filtering, weekly dispatch board,
+  backcharge queue/issuance, analytics, project surface, buyer/sub portals, and
+  mobile technician endpoints are implemented.
+- [x] Warranty backcharges create negative Arc vendor credits, enforce dispute and
+  same-company application rules, recover idempotently, and expose ranked
+  originating commitments. The no-AP-history exception requires an explicit
+  confirmation.
+- [x] Defect and cost benchmark RPCs, cost-dump guard, purchasing-facing company
+  signal, RBAC/search/navigation/catalog registration, and all three cron
+  registries are implemented.
+- [x] Five additive migrations were deployed to the live Arc Supabase project as
+  versions `20260719000440`, `20260719000706`, `20260719000726`,
+  `20260719000734`, and `20260719000912`. Live verification confirmed RLS and
+  explicit Data API grants, restricted RPC execution, RBAC catalog, executable
+  analytics, and complete warranty foreign-key index coverage. Security advisors
+  report no warranty findings; performance advisors only report expected unused
+  indexes on the newly deployed, as-yet-unexercised tables.
+- [x] `pnpm lint`, `pnpm exec tsc --noEmit`, and all 86 financial tests pass,
+  including the new coverage/SLA/backcharge domain tests.
+- [ ] Run the Phase 2 end-to-end email/portal workflow, dark/empty/error visual
+  checks, mobile photo round-trip, seeded analytics fixture, and 500-row queue
+  scale acceptance in the internal QA org.
+- [ ] Workstream 08 must add provider-neutral outbound vendor-credit support. The
+  repository's current QBO guard intentionally blocks outbound vendor credits, so
+  Arc backcharges work in payables and inbound QBO credits round-trip, but the
+  original “QBO-syncable with zero code changes” acceptance claim is not true for
+  outbound credits.
 
 ## 13. Phases + acceptance criteria
 

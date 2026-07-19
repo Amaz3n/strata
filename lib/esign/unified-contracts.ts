@@ -7,6 +7,7 @@ export const UNIFIED_ESIGN_SIGNING_ROUTE_TEMPLATE = "/d/[token]" as const
 export const unifiedSignableEntityTypeSchema = z.enum([
   "estimate",
   "proposal",
+  "contract",
   "change_order",
   "lien_waiver",
   "selection",

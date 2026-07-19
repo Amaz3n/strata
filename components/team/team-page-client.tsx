@@ -8,6 +8,7 @@ import { MemberFormPanel } from "@/components/team/member-form-panel"
 import { Button } from "@/components/ui/button"
 import { UserPlus } from "@/components/icons"
 import type { OrgRoleOption, PermissionOption, TeamMember } from "@/lib/types"
+import type { DivisionDTO } from "@/lib/services/divisions"
 
 interface TeamPageClientProps {
   members: TeamMember[]
@@ -15,6 +16,7 @@ interface TeamPageClientProps {
   canEditRoles: boolean
   roleOptions: OrgRoleOption[]
   permissionOptions: PermissionOption[]
+  divisions: DivisionDTO[]
 }
 
 type FormView = { mode: "invite" } | { mode: "edit"; member: TeamMember } | null
@@ -25,6 +27,7 @@ export function TeamPageClient({
   canEditRoles,
   roleOptions,
   permissionOptions,
+  divisions,
 }: TeamPageClientProps) {
   const [view, setView] = useState<FormView>(null)
 
@@ -63,6 +66,7 @@ export function TeamPageClient({
               member={view.mode === "edit" ? view.member : undefined}
               roleOptions={roleOptions}
               permissionOptions={permissionOptions}
+              divisions={divisions}
               canManageMembers={canManageMembers}
               canEditRoles={canEditRoles}
               onCancel={() => setView(null)}

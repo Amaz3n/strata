@@ -1,6 +1,27 @@
 # Workstream 06 — Sales, Purchase Agreements & Closings
 
-## STATUS — NOT STARTED
+## STATUS — IMPLEMENTED AND DEPLOYED; MANUAL QA PENDING
+
+Implemented 2026-07-18 across four additive migrations, the reservation/spec
+inventory and incentive service, server-priced purchase agreements on the
+existing contracts + e-sign rails, production Buyer-portal presentation,
+closing gates and settlement through the unified invoice/payment engines, the
+community Sales workbench, project Closing tab, org Sales desk, RBAC, search,
+events, and notification allowlisting. Static verification passes (`pnpm
+lint`, an 8 GB TypeScript no-emit check), and the financial regression suite
+passes 81/81 including the new purchase-agreement composition, incentive,
+deposit, and closing-invoice tests.
+
+Supabase MCP recorded production migrations `20260718225507`,
+`20260718225517`, `20260718225551`, and advisor-driven FK hardening
+`20260718230233`. Live verification confirmed all four tables, RLS membership
+policies, explicit authenticated/service grants, the purchase-agreement
+contract/e-sign constraint widening, the backlog RPC, three permissions, the
+assignable sales-agent grants, and complete new-FK coverage. Supabase security
+advisors report no Workstream 06 findings; relevant performance advisors are
+clean apart from expected unused-index notices on brand-new empty tables.
+Representative-data QA, email delivery, mixed-posture portal visual regression,
+and 400-lot scale acceptance remain pending.
 
 > Prereqs: 00 master (read fully — §4 naming collisions, §5.6 purchase-agreement
 > decision, §7 repo rules), 01 (communities/phases/lots/takedowns + posture wiring +
@@ -858,9 +879,11 @@ already exist), no crons (lazy expiry).
 | 1 | `..._lot_reservations_incentives.sql` | `lot_reservations`, `incentives`, `lots.asking_price_override_cents`; RLS + indexes + triggers |
 | 2 | `..._closings.sql` | `closings`, `closing_checklist_items`; RLS + indexes + triggers |
 | 3 | `..._sales_permissions.sql` | permissions, grants, `org_sales_agent` (+ catalog-seed fold-in) |
+| 4 | `..._workstream_06_fk_indexes.sql` | advisor-driven covering indexes for new foreign keys |
 
-All additive; zero DDL on `contracts`/`invoices`/`payments`. Write files, then
-STOP for human approval before assuming tables exist (local env = production).
+All additive. The only `contracts` DDL widens its existing `contract_type`
+check to admit `purchase_agreement`; invoices and payments are untouched. The
+migrations are deployed to the linked production Supabase project.
 
 ## Phases
 

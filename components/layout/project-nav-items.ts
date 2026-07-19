@@ -28,6 +28,7 @@ export type ProjectSection =
   | "inspections"
   | "safety"
   | "decisions"
+  | "selections"
   | "financials"
   | "financials-review"
   | "financials-tm-tickets"
@@ -41,6 +42,7 @@ export type ProjectSection =
   | "change-orders"
   | "reports"
   | "closeout"
+  | "closing"
   | "warranty"
   | "cost-inbox"
 
@@ -102,6 +104,7 @@ export const BUILD_SECTIONS = new Set<ProjectSection>([
   "inspections",
   "safety",
   "decisions",
+  "selections",
 ])
 
 export const PLAN_SECTIONS = new Set<ProjectSection>(["documents", "drawings", "specs", "bids", "signatures"])
@@ -160,6 +163,7 @@ export function getProjectSection(pathname: string): ProjectSection {
     case "inspections":
     case "safety":
     case "decisions":
+    case "selections":
     case "budget":
     case "commitments":
     case "payables":
@@ -167,6 +171,7 @@ export function getProjectSection(pathname: string): ProjectSection {
     case "expenses":
     case "reports":
     case "closeout":
+    case "closing":
     case "warranty":
     case "cost-inbox":
       return segment
@@ -410,6 +415,14 @@ export function buildProjectNavGroups({
       requiredAny: ["project.read", "safety.write"],
     },
     {
+      title: "Selections",
+      moduleKey: "selections",
+      postures: ["production"],
+      url: url("/selections"),
+      isActive: section === "selections",
+      requiredAny: ["selections.read", "selections.write"],
+    },
+    {
       title: "Decisions",
       moduleKey: "decisions",
       url: url("/decisions"),
@@ -419,6 +432,14 @@ export function buildProjectNavGroups({
   ].filter(Boolean) as ProjectNavSubItem[]
   const financialSubs = buildFinancialSubs(projectId, section, project, reviewBadgeCount)
   const closeSubs: ProjectNavSubItem[] = [
+    {
+      title: "Closing",
+      moduleKey: "closing",
+      postures: ["production"],
+      url: url("/closing"),
+      isActive: section === "closing",
+      requiredAny: ["sales.read", "closing.manage"],
+    },
     {
       title: "Closeout",
       moduleKey: "closeout",

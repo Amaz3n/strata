@@ -146,6 +146,8 @@ export interface TeamMember {
   role: OrgRole
   role_label?: string
   project_scope?: "all" | "assigned"
+  division_scope?: "all" | "assigned"
+  division_ids?: string[]
   permission_overrides?: MemberPermissionOverride[]
   status: "active" | "invited" | "suspended"
   labor_cost_rate_cents?: number
@@ -192,6 +194,8 @@ export interface Project {
   prospect_id?: string | null
   total_value?: number
   property_type?: ProjectPropertyType
+  division_id?: string | null
+  superintendent_id?: string | null
   module_overrides?: Record<string, boolean>
   project_type?: ProjectWorkType
   description?: string
@@ -248,7 +252,7 @@ export interface ProjectFinancialSettings {
 }
 
 export type ProjectStatus = "planning" | "bidding" | "active" | "on_hold" | "completed" | "cancelled"
-export type ProjectPropertyType = "residential" | "commercial"
+export type ProjectPropertyType = "residential" | "commercial" | "production"
 export type ProjectWorkType = "new_construction" | "remodel" | "addition" | "renovation" | "repair"
 export type ProjectVendorRole = "subcontractor" | "supplier" | "consultant" | "architect" | "engineer" | "client"
 
@@ -276,7 +280,7 @@ export interface Contract {
   number?: string
   title: string
   status: "draft" | "active" | "amended" | "completed" | "terminated" | "superseded"
-  contract_type?: "fixed" | "fixed_price" | "cost_plus" | "time_materials" | "unit_price"
+  contract_type?: "fixed" | "fixed_price" | "cost_plus" | "time_materials" | "unit_price" | "purchase_agreement"
   total_cents?: number
   currency: string
   markup_percent?: number
@@ -701,7 +705,10 @@ export interface ScheduleTemplate {
   description?: string
   project_type?: string
   property_type?: string
-  items: Partial<ScheduleItem>[]
+  items: Array<Partial<ScheduleItem> & {
+    start_offset_days?: number
+    duration_days?: number
+  }>
   is_public: boolean
   created_by?: string
   created_at: string
@@ -755,6 +762,8 @@ export interface PortalPermissions {
   can_upload_compliance_docs?: boolean  // Can upload compliance documents
   can_upload_subtier_waivers?: boolean  // Can upload supplier and sub-subcontractor waivers
   can_view_punch_items?: boolean     // Can see + work punch items assigned to their company
+  can_view_purchase_orders?: boolean
+  can_report_po_completion?: boolean
   // Reviewer-specific permissions
   can_review_submittals?: boolean    // Can decide submittal review steps routed to them
 }
@@ -804,6 +813,8 @@ export const REVIEWER_DEFAULT_PERMISSIONS: Partial<PortalPermissions> = {
   can_upload_compliance_docs: false,
   can_upload_subtier_waivers: false,
   can_view_punch_items: false,
+  can_view_purchase_orders: false,
+  can_report_po_completion: false,
 }
 
 export interface PortalAccessToken {
@@ -1383,6 +1394,12 @@ export interface Selection {
   selected_at?: string | null
   confirmed_at?: string | null
   notes?: string | null
+  group_id?: string | null
+  package_id?: string | null
+  price_cents_snapshot?: number | null
+  cost_cents_snapshot?: number | null
+  locked_at?: string | null
+  source_change_order_id?: string | null
 }
 
 export interface SelectionCategory {
@@ -1391,6 +1408,10 @@ export interface SelectionCategory {
   name: string
   description?: string | null
   sort_order?: number | null
+  community_id?: string | null
+  parent_category_id?: string | null
+  image_url?: string | null
+  is_archived?: boolean
 }
 
 export interface SelectionOption {
@@ -1409,6 +1430,12 @@ export interface SelectionOption {
   sort_order?: number | null
   is_default?: boolean | null
   is_available?: boolean | null
+  option_scope?: "structural" | "design_studio"
+  community_id?: string | null
+  parent_option_id?: string | null
+  cost_cents?: number | null
+  cost_code_id?: string | null
+  is_archived?: boolean
 }
 
 export interface PunchItem {
@@ -1619,9 +1646,15 @@ export interface SubmittalItem {
 }
 
 export interface PortalFinancialSummary {
+  mode?: "draws" | "closing"
   contractTotal: number
   totalPaid: number
   balanceRemaining: number
+  purchasePriceCents?: number
+  depositsReceivedCents?: number
+  approvedChangeOrdersCents?: number
+  balanceDueAtClosingCents?: number
+  scheduledClosingDate?: string | null
   nextDraw?: {
     id: string
     draw_number: number
@@ -1662,6 +1695,12 @@ export interface ClientPortalData {
   sharedFiles: FileMetadata[]
   punchItems: PunchItem[]
   financialSummary?: PortalFinancialSummary
+  portalPresentation?: {
+    terminology: "project" | "home"
+    roadmapLabel: "Roadmap" | "Milestones"
+    financialSummaryMode: "draws" | "closing"
+    showDrawSchedule: boolean
+  }
 }
 
 export interface SubPortalCommitment {
@@ -1908,12 +1947,36 @@ export interface WarrantyRequest {
   requested_by?: string | null
   requested_by_name?: string | null
   assigned_company_id?: string | null
+  assigned_company_name?: string | null
+  assigned_user_id?: string | null
+  assigned_user_name?: string | null
   scheduled_date?: string | null
   resolution_note?: string | null
   dispatched_at?: string | null
   created_at: string
   updated_at?: string | null
   closed_at?: string | null
+  request_number?: number
+  severity?: "emergency" | "routine_30" | "routine_60"
+  category?: string | null
+  cost_code_id?: string | null
+  coverage_term_key?: string | null
+  coverage_status?: "unclassified" | "in_warranty" | "out_of_warranty" | "goodwill"
+  coverage_override_reason?: string | null
+  first_response_due_at?: string | null
+  resolution_due_at?: string | null
+  first_responded_at?: string | null
+  source?: "office" | "buyer_portal" | "mobile"
+  cost_dump_flag?: boolean
+  structural_claim?: boolean
+  structural_claim_number?: string | null
+  structural_claim_submitted_at?: string | null
+  metadata?: Record<string, unknown>
+  project_name?: string | null
+  community_id?: string | null
+  community_name?: string | null
+  next_visit_window_start?: string | null
+  next_visit_window_end?: string | null
 }
 
 export interface DashboardStats {

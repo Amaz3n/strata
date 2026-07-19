@@ -276,7 +276,7 @@ export function BidPackageWorkbench({
     setDetailSubmission((prev) => (prev ? { ...prev, is_awarded: prev.id === submission.id } : prev))
     reloadActivity()
     toast.success("Bid awarded — commitment created")
-    if (projectId) {
+    if (projectId && result.commitmentId) {
       setPostAward({ id: result.commitmentId, title: `${current.title} — Award` })
     }
   }

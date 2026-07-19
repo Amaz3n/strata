@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from "next/server"
 import { createHash } from "crypto"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { enqueuePaymentSync } from "@/lib/services/qbo-sync"
-import { extractIntuitEntityEvents, verifyIntuitWebhookSignature } from "@/lib/integrations/accounting/qbo-webhook"
-import { logQBO } from "@/lib/services/qbo-logger"
+import { enqueuePaymentSync } from "@/lib/services/accounting-sync"
+import { extractIntuitEntityEvents, verifyIntuitWebhookSignature } from "@/lib/integrations/accounting/qbo/webhook"
+import { logQBO } from "@/lib/services/accounting-logger"
 
 const WEBHOOK_SECRET = process.env.QBO_WEBHOOK_SECRET
 const WEBHOOK_VERIFIER_TOKEN = process.env.QBO_WEBHOOK_VERIFIER_TOKEN

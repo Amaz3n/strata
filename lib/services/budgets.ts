@@ -55,16 +55,24 @@ async function requireBudgetAuth({
   })
 }
 
-export async function createBudget(input: z.infer<typeof createBudgetSchema>, orgId?: string) {
+export async function createBudget(
+  input: z.infer<typeof createBudgetSchema>,
+  orgId?: string,
+  authorizationPermission: "budget.write" | "plan.instantiate" = "budget.write",
+) {
   const parsed = createBudgetSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireBudgetAuth({
-    permission: "budget.write",
-    userId,
-    orgId: resolvedOrgId,
-    projectId: parsed.project_id,
-    supabase,
-  })
+  if (authorizationPermission === "plan.instantiate") {
+    await requirePermission("plan.instantiate", { supabase, orgId: resolvedOrgId, userId })
+  } else {
+    await requireBudgetAuth({
+      permission: "budget.write",
+      userId,
+      orgId: resolvedOrgId,
+      projectId: parsed.project_id,
+      supabase,
+    })
+  }
 
   const { data: latestBudget, error: latestError } = await supabase
     .from("budgets")

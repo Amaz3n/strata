@@ -20,8 +20,8 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { qboHomepageUrl } from "@/lib/integrations/accounting/qbo-links"
-import type { QBOConnection } from "@/lib/services/qbo-connection"
+import { qboHomepageUrl } from "@/lib/integrations/accounting/qbo/links"
+import type { QBOConnection } from "@/lib/services/accounting-connections"
 import { cn } from "@/lib/utils"
 
 import { unwrapAction } from "@/lib/action-result"
@@ -261,7 +261,7 @@ export function QBOConnectionCard({ connection, onConnectionChange }: Props) {
               </p>
               {connection && (
                 <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
-                  <span>Company: {connection.company_name ?? "QuickBooks Online"}</span>
+                  <span>Company: {connection.external_account_name ?? "QuickBooks Online"}</span>
                   <span>Last sync: {connection.last_sync_at ? new Date(connection.last_sync_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "Never"}</span>
                   {expiresInLabel && <span>Access refresh: {expiresInLabel}</span>}
                 </div>

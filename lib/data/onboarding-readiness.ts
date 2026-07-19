@@ -1,0 +1,17 @@
+export const ONBOARDING_READINESS_ITEMS = [
+  ["projects", "Projects list + workspace switcher"],
+  ["portfolio_schedule", "Portfolio schedule desk"],
+  ["receivables", "Receivables and billing desks"],
+  ["payables", "Payables desk and review queue"],
+  ["dashboard", "Dashboard rollups"],
+  ["communities_lots", "Communities and lots"],
+  ["production_desks", "Purchasing, starts, sales, and warranty desks"],
+  ["search", "Global search and bulk indexing"],
+  ["notifications", "Notification and email silence"],
+  ["navigation_badges", "Navigation badges"],
+  ["my_work", "My Work and My Houses"],
+  ["portal_tokens", "Portal token volume"],
+  ["events_outbox", "Events, audit, and outbox throughput"],
+  ["reports", "Org-wide reports"],
+  ["mobile_api", "Mobile API pagination"],
+] as const

@@ -1,4 +1,4 @@
-import type { SupabaseClient } from "@supabase/supabase-js"
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type {
   ScheduleItem,
@@ -10,31 +10,42 @@ import type {
   DrawSchedule,
   ChangeOrder,
   ProjectScheduleSummary,
-} from "@/lib/types"
-import type { 
-  ScheduleItemInput, 
-  ScheduleAssignmentInput, 
+} from "@/lib/types";
+import type {
+  ScheduleItemInput,
+  ScheduleAssignmentInput,
   ScheduleBaselineInput,
   ScheduleTemplateInput,
   ScheduleBulkUpdate,
-  ScheduleDependencyInput 
-} from "@/lib/validation/schedule"
-import { 
+  ScheduleDependencyInput,
+} from "@/lib/validation/schedule";
+import {
   scheduleItemUpdateSchema,
   scheduleAssignmentInputSchema,
   scheduleDependencyInputSchema,
-} from "@/lib/validation/schedule"
-import { recordEvent } from "@/lib/services/events"
-import { recordAudit } from "@/lib/services/audit"
-import { requireOrgContext } from "@/lib/services/context"
-import { requirePermission, requireProjectPermission } from "@/lib/services/permissions"
-import { wouldCreateDependencyCycle } from "@/lib/utils/schedule-calc"
+  scheduleTemplateInputSchema,
+} from "@/lib/validation/schedule";
+import { recordEvent } from "@/lib/services/events";
+import { recordAudit } from "@/lib/services/audit";
+import { requireOrgContext } from "@/lib/services/context";
+import {
+  requirePermission,
+  requireProjectPermission,
+} from "@/lib/services/permissions";
+import { wouldCreateDependencyCycle } from "@/lib/utils/schedule-calc";
+import { enqueueOutboxJob } from "@/lib/services/outbox";
+import { normalizeScheduleTemplateItems, selectionTaskKey } from "@/lib/selections/cutoff-math";
+import { getProjectPosture } from "@/lib/product-tier";
+import { enqueueTradeScheduleChange } from "@/lib/services/trade-lookahead";
 
 // ============================================================================
 // SCHEDULE ITEMS
 // ============================================================================
 
-function mapScheduleItem(row: any, dependencyMap: Record<string, string[]>): ScheduleItem {
+function mapScheduleItem(
+  row: any,
+  dependencyMap: Record<string, string[]>,
+): ScheduleItem {
   return {
     id: row.id,
     org_id: row.org_id,
@@ -66,40 +77,75 @@ function mapScheduleItem(row: any, dependencyMap: Record<string, string[]>): Sch
     cost_code_id: row.cost_code_id ?? undefined,
     budget_cents: row.budget_cents ?? undefined,
     actual_cost_cents: row.actual_cost_cents ?? undefined,
-  }
+  };
 }
 
-async function loadDependencies(supabase: SupabaseClient, orgId: string, projectId?: string) {
+async function enqueueProductionScheduleChange(input: {
+  supabase: SupabaseClient;
+  orgId: string;
+  actorId: string;
+  productTier: import("@/lib/product-tier").ProductTier;
+  projectId: string;
+  scheduleItemId: string;
+  oldStart: string | null;
+  newStart: string | null;
+}) {
+  if (input.oldStart === input.newStart || !input.newStart) return;
+  const fourWeeksOut = new Date();
+  fourWeeksOut.setUTCDate(fourWeeksOut.getUTCDate() + 28);
+  if (input.newStart > fourWeeksOut.toISOString().slice(0, 10)) return;
+  const [{ data: project }, { data: assignment }] = await Promise.all([
+    input.supabase.from("projects").select("property_type").eq("org_id", input.orgId).eq("id", input.projectId).maybeSingle(),
+    input.supabase.from("schedule_assignments").select("company_id").eq("org_id", input.orgId).eq("schedule_item_id", input.scheduleItemId).not("company_id", "is", null).limit(1).maybeSingle(),
+  ]);
+  if (!project || getProjectPosture(project.property_type, input.productTier) !== "production" || !assignment?.company_id) return;
+  await enqueueTradeScheduleChange({
+    orgId: input.orgId, actorId: input.actorId, companyId: assignment.company_id,
+    projectId: input.projectId, scheduleItemId: input.scheduleItemId,
+    oldStart: input.oldStart, newStart: input.newStart,
+  });
+}
+
+async function loadDependencies(
+  supabase: SupabaseClient,
+  orgId: string,
+  projectId?: string,
+) {
   let query = supabase
     .from("schedule_dependencies")
     .select("item_id, depends_on_item_id, dependency_type, lag_days")
-    .eq("org_id", orgId)
+    .eq("org_id", orgId);
 
   if (projectId) {
-    query = query.eq("project_id", projectId)
+    query = query.eq("project_id", projectId);
   }
 
-  const { data, error } = await query
+  const { data, error } = await query;
 
   if (error) {
-    throw new Error(`Failed to load schedule dependencies: ${error.message}`)
+    throw new Error(`Failed to load schedule dependencies: ${error.message}`);
   }
 
   return (data ?? []).reduce<Record<string, string[]>>((acc, dep) => {
-    if (!acc[dep.item_id]) acc[dep.item_id] = []
-    acc[dep.item_id].push(dep.depends_on_item_id)
-    return acc
-  }, {})
+    if (!acc[dep.item_id]) acc[dep.item_id] = [];
+    acc[dep.item_id].push(dep.depends_on_item_id);
+    return acc;
+  }, {});
 }
 
-async function loadDependencyDetails(supabase: SupabaseClient, orgId: string): Promise<ScheduleDependency[]> {
+async function loadDependencyDetails(
+  supabase: SupabaseClient,
+  orgId: string,
+): Promise<ScheduleDependency[]> {
   const { data, error } = await supabase
     .from("schedule_dependencies")
-    .select("id, org_id, project_id, item_id, depends_on_item_id, dependency_type, lag_days")
-    .eq("org_id", orgId)
+    .select(
+      "id, org_id, project_id, item_id, depends_on_item_id, dependency_type, lag_days",
+    )
+    .eq("org_id", orgId);
 
   if (error) {
-    throw new Error(`Failed to load dependency details: ${error.message}`)
+    throw new Error(`Failed to load dependency details: ${error.message}`);
   }
 
   return (data ?? []).map((dep) => ({
@@ -110,36 +156,51 @@ async function loadDependencyDetails(supabase: SupabaseClient, orgId: string): P
     depends_on_item_id: dep.depends_on_item_id,
     dependency_type: dep.dependency_type ?? "FS",
     lag_days: dep.lag_days ?? 0,
-  }))
+  }));
 }
 
-export async function listScheduleItems(orgId?: string): Promise<ScheduleItem[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("schedule.read", { supabase, orgId: resolvedOrgId, userId })
-  return listScheduleItemsWithClient(supabase, resolvedOrgId)
+export async function listScheduleItems(
+  orgId?: string,
+): Promise<ScheduleItem[]> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("schedule.read", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
+  return listScheduleItemsWithClient(supabase, resolvedOrgId);
 }
 
-export async function listScheduleItemsWithClient(supabase: SupabaseClient, orgId: string): Promise<ScheduleItem[]> {
-  const dependencyMap = await loadDependencies(supabase, orgId)
+export async function listScheduleItemsWithClient(
+  supabase: SupabaseClient,
+  orgId: string,
+): Promise<ScheduleItem[]> {
+  const dependencyMap = await loadDependencies(supabase, orgId);
 
   const { data, error } = await supabase
     .from("schedule_items")
-    .select(`
+    .select(
+      `
       id, org_id, project_id, name, item_type, status, start_date, end_date,
       progress, assigned_to, metadata, created_at, updated_at,
       phase, trade, location, planned_hours, actual_hours,
       constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
       cost_code_id, budget_cents, actual_cost_cents
-    `)
+    `,
+    )
     .eq("org_id", orgId)
     .order("sort_order", { ascending: true })
-    .order("start_date", { ascending: true, nullsFirst: false })
+    .order("start_date", { ascending: true, nullsFirst: false });
 
   if (error) {
-    throw new Error(`Failed to list schedule items: ${error.message}`)
+    throw new Error(`Failed to list schedule items: ${error.message}`);
   }
 
-  return (data ?? []).map((row) => mapScheduleItem(row, dependencyMap))
+  return (data ?? []).map((row) => mapScheduleItem(row, dependencyMap));
 }
 
 export async function listProjectScheduleItemsWithClient(
@@ -147,27 +208,29 @@ export async function listProjectScheduleItemsWithClient(
   orgId: string,
   projectId: string,
 ): Promise<ScheduleItem[]> {
-  const dependencyMap = await loadDependencies(supabase, orgId, projectId)
+  const dependencyMap = await loadDependencies(supabase, orgId, projectId);
 
   const { data, error } = await supabase
     .from("schedule_items")
-    .select(`
+    .select(
+      `
       id, org_id, project_id, name, item_type, status, start_date, end_date,
       progress, assigned_to, metadata, created_at, updated_at,
       phase, trade, location, planned_hours, actual_hours,
       constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
       cost_code_id, budget_cents, actual_cost_cents
-    `)
+    `,
+    )
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .order("sort_order", { ascending: true })
-    .order("start_date", { ascending: true, nullsFirst: false })
+    .order("start_date", { ascending: true, nullsFirst: false });
 
   if (error) {
-    throw new Error(`Failed to list project schedule items: ${error.message}`)
+    throw new Error(`Failed to list project schedule items: ${error.message}`);
   }
 
-  return (data ?? []).map((row) => mapScheduleItem(row, dependencyMap))
+  return (data ?? []).map((row) => mapScheduleItem(row, dependencyMap));
 }
 
 // Duration-weighted completion rollup per project, computed from a single lightweight
@@ -176,9 +239,17 @@ export async function listProjectScheduleItemsWithClient(
 export async function getProjectScheduleSummaries(
   orgId?: string,
 ): Promise<Record<string, ProjectScheduleSummary>> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("schedule.read", { supabase, orgId: resolvedOrgId, userId })
-  return getProjectScheduleSummariesWithClient(supabase, resolvedOrgId)
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("schedule.read", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
+  return getProjectScheduleSummariesWithClient(supabase, resolvedOrgId);
 }
 
 export async function getProjectScheduleSummariesWithClient(
@@ -188,120 +259,187 @@ export async function getProjectScheduleSummariesWithClient(
   const { data, error } = await supabase
     .from("schedule_items")
     .select("project_id, status, start_date, end_date, progress")
-    .eq("org_id", orgId)
+    .eq("org_id", orgId);
 
   if (error) {
-    throw new Error(`Failed to load schedule summaries: ${error.message}`)
+    throw new Error(`Failed to load schedule summaries: ${error.message}`);
   }
 
-  type Acc = { weighted: number; weight: number; summary: ProjectScheduleSummary }
-  const byProject = new Map<string, Acc>()
-  const DAY_MS = 24 * 60 * 60 * 1000
+  type Acc = {
+    weighted: number;
+    weight: number;
+    summary: ProjectScheduleSummary;
+  };
+  const byProject = new Map<string, Acc>();
+  const DAY_MS = 24 * 60 * 60 * 1000;
 
   for (const row of data ?? []) {
-    const projectId = row.project_id as string | null
-    if (!projectId) continue
-    const status = (row.status as string) ?? "planned"
-    if (status === "cancelled") continue
+    const projectId = row.project_id as string | null;
+    if (!projectId) continue;
+    const status = (row.status as string) ?? "planned";
+    if (status === "cancelled") continue;
 
-    let acc = byProject.get(projectId)
+    let acc = byProject.get(projectId);
     if (!acc) {
-      acc = { weighted: 0, weight: 0, summary: { percent: 0, total: 0, completed: 0, in_progress: 0, upcoming: 0 } }
-      byProject.set(projectId, acc)
+      acc = {
+        weighted: 0,
+        weight: 0,
+        summary: {
+          percent: 0,
+          total: 0,
+          completed: 0,
+          in_progress: 0,
+          upcoming: 0,
+        },
+      };
+      byProject.set(projectId, acc);
     }
 
-    acc.summary.total += 1
-    if (status === "completed") acc.summary.completed += 1
-    else if (status === "in_progress" || status === "at_risk" || status === "blocked") acc.summary.in_progress += 1
-    else if (status === "planned") acc.summary.upcoming += 1
+    acc.summary.total += 1;
+    if (status === "completed") acc.summary.completed += 1;
+    else if (
+      status === "in_progress" ||
+      status === "at_risk" ||
+      status === "blocked"
+    )
+      acc.summary.in_progress += 1;
+    else if (status === "planned") acc.summary.upcoming += 1;
 
-    const value = status === "completed" ? 100 : Math.min(100, Math.max(0, Number(row.progress) || 0))
+    const value =
+      status === "completed"
+        ? 100
+        : Math.min(100, Math.max(0, Number(row.progress) || 0));
 
-    let durationDays = 1
+    let durationDays = 1;
     if (row.start_date && row.end_date) {
-      const span = (new Date(row.end_date as string).getTime() - new Date(row.start_date as string).getTime()) / DAY_MS
-      if (Number.isFinite(span) && span > 0) durationDays = span
+      const span =
+        (new Date(row.end_date as string).getTime() -
+          new Date(row.start_date as string).getTime()) /
+        DAY_MS;
+      if (Number.isFinite(span) && span > 0) durationDays = span;
     }
 
-    acc.weighted += durationDays * value
-    acc.weight += durationDays * 100
+    acc.weighted += durationDays * value;
+    acc.weight += durationDays * 100;
   }
 
-  const result: Record<string, ProjectScheduleSummary> = {}
+  const result: Record<string, ProjectScheduleSummary> = {};
   for (const [projectId, acc] of byProject) {
-    acc.summary.percent = acc.weight > 0 ? Math.round((acc.weighted / acc.weight) * 100) : 0
-    result[projectId] = acc.summary
+    acc.summary.percent =
+      acc.weight > 0 ? Math.round((acc.weighted / acc.weight) * 100) : 0;
+    result[projectId] = acc.summary;
   }
-  return result
+  return result;
 }
 
-export async function listScheduleItemsByProject(projectId: string, orgId?: string): Promise<ScheduleItem[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireProjectPermission(userId, projectId, "schedule.read")
-  const dependencyMap = await loadDependencies(supabase, resolvedOrgId)
+export async function listScheduleItemsByProject(
+  projectId: string,
+  orgId?: string,
+): Promise<ScheduleItem[]> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requireProjectPermission(userId, projectId, "schedule.read");
+  const dependencyMap = await loadDependencies(supabase, resolvedOrgId);
 
   const { data, error } = await supabase
     .from("schedule_items")
-    .select(`
+    .select(
+      `
       id, org_id, project_id, name, item_type, status, start_date, end_date,
       progress, assigned_to, metadata, created_at, updated_at,
       phase, trade, location, planned_hours, actual_hours,
       constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
       cost_code_id, budget_cents, actual_cost_cents
-    `)
+    `,
+    )
     .eq("org_id", resolvedOrgId)
     .eq("project_id", projectId)
     .order("sort_order", { ascending: true })
-    .order("start_date", { ascending: true, nullsFirst: false })
+    .order("start_date", { ascending: true, nullsFirst: false });
 
   if (error) {
-    throw new Error(`Failed to list schedule items by project: ${error.message}`)
+    throw new Error(
+      `Failed to list schedule items by project: ${error.message}`,
+    );
   }
 
-  return (data ?? []).map((row) => mapScheduleItem(row, dependencyMap))
+  return (data ?? []).map((row) => mapScheduleItem(row, dependencyMap));
 }
 
-export async function getScheduleItemWithDetails(itemId: string, orgId?: string): Promise<ScheduleItem & { 
-  assignments: ScheduleAssignment[]
-  dependency_details: ScheduleDependency[]
-}> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+export async function getScheduleItemWithDetails(
+  itemId: string,
+  orgId?: string,
+): Promise<
+  ScheduleItem & {
+    assignments: ScheduleAssignment[];
+    dependency_details: ScheduleDependency[];
+  }
+> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
 
   const { data, error } = await supabase
     .from("schedule_items")
-    .select(`
+    .select(
+      `
       id, org_id, project_id, name, item_type, status, start_date, end_date,
       progress, assigned_to, metadata, created_at, updated_at,
       phase, trade, location, planned_hours, actual_hours,
       constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
       cost_code_id, budget_cents, actual_cost_cents
-    `)
+    `,
+    )
     .eq("org_id", resolvedOrgId)
     .eq("id", itemId)
-    .single()
+    .single();
 
   if (error || !data) {
-    throw new Error("Schedule item not found")
+    throw new Error("Schedule item not found");
   }
 
-  await requireProjectPermission(userId, data.project_id, "schedule.read")
+  await requireProjectPermission(userId, data.project_id, "schedule.read");
 
   const [dependencyMap, assignments, dependencyDetails] = await Promise.all([
     loadDependencies(supabase, resolvedOrgId),
     listAssignmentsByItem(itemId, resolvedOrgId),
-    loadDependencyDetails(supabase, resolvedOrgId).then(deps => deps.filter(d => d.item_id === itemId)),
-  ])
+    loadDependencyDetails(supabase, resolvedOrgId).then((deps) =>
+      deps.filter((d) => d.item_id === itemId),
+    ),
+  ]);
 
   return {
     ...mapScheduleItem(data, dependencyMap),
     assignments,
     dependency_details: dependencyDetails,
-  }
+  };
 }
 
-export async function createScheduleItem({ input, orgId }: { input: ScheduleItemInput; orgId?: string }) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireProjectPermission(userId, input.project_id, "schedule.edit")
+export async function createScheduleItem(
+  { input, orgId }: { input: ScheduleItemInput; orgId?: string },
+  authorizationPermission:
+    | "schedule.edit"
+    | "plan.instantiate" = "schedule.edit",
+) {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  if (authorizationPermission === "plan.instantiate") {
+    await requirePermission("plan.instantiate", {
+      supabase,
+      orgId: resolvedOrgId,
+      userId,
+    });
+  } else {
+    await requireProjectPermission(userId, input.project_id, "schedule.edit");
+  }
 
   const { data, error } = await supabase
     .from("schedule_items")
@@ -329,22 +467,37 @@ export async function createScheduleItem({ input, orgId }: { input: ScheduleItem
       color: input.color || null,
       sort_order: input.sort_order ?? 0,
     })
-    .select(`
+    .select(
+      `
       id, org_id, project_id, name, item_type, status, start_date, end_date,
       progress, assigned_to, metadata, created_at, updated_at,
       phase, trade, location, planned_hours, actual_hours,
       constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
       cost_code_id, budget_cents, actual_cost_cents
-    `)
-    .single()
+    `,
+    )
+    .single();
 
   if (error || !data) {
-    throw new Error(`Failed to create schedule item: ${error?.message}`)
+    throw new Error(`Failed to create schedule item: ${error?.message}`);
   }
 
   // Create dependencies if provided
   if (input.dependencies?.length) {
-    await Promise.all(input.dependencies.map((dependsOnItemId) => createDependency({ item_id: data.id, depends_on_item_id: dependsOnItemId, dependency_type: "FS", lag_days: 0 }, input.project_id, resolvedOrgId)))
+    await Promise.all(
+      input.dependencies.map((dependsOnItemId) =>
+        createDependency(
+          {
+            item_id: data.id,
+            depends_on_item_id: dependsOnItemId,
+            dependency_type: "FS",
+            lag_days: 0,
+          },
+          input.project_id,
+          resolvedOrgId,
+        ),
+      ),
+    );
   }
 
   await recordEvent({
@@ -352,8 +505,12 @@ export async function createScheduleItem({ input, orgId }: { input: ScheduleItem
     eventType: "schedule_item_created",
     entityType: "schedule_item",
     entityId: data.id as string,
-    payload: { name: input.name, project_id: input.project_id, item_type: input.item_type },
-  })
+    payload: {
+      name: input.name,
+      project_id: input.project_id,
+      item_type: input.item_type,
+    },
+  });
 
   await recordAudit({
     orgId: resolvedOrgId,
@@ -362,10 +519,12 @@ export async function createScheduleItem({ input, orgId }: { input: ScheduleItem
     entityType: "schedule_item",
     entityId: data.id as string,
     after: data,
-  })
+  });
 
-  const dependencyMap = input.dependencies ? { [data.id]: input.dependencies } : {}
-  return mapScheduleItem(data, dependencyMap)
+  const dependencyMap = input.dependencies
+    ? { [data.id]: input.dependencies }
+    : {};
+  return mapScheduleItem(data, dependencyMap);
 }
 
 export async function updateScheduleItem({
@@ -373,56 +532,78 @@ export async function updateScheduleItem({
   input,
   orgId,
 }: {
-  itemId: string
-  input: Partial<ScheduleItemInput>
-  orgId?: string
+  itemId: string;
+  input: Partial<ScheduleItemInput>;
+  orgId?: string;
 }) {
-  const parsed = scheduleItemUpdateSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const parsed = scheduleItemUpdateSchema.parse(input);
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    productTier,
+  } = await requireOrgContext(orgId);
 
   const existing = await supabase
     .from("schedule_items")
-    .select(`
+    .select(
+      `
       id, org_id, project_id, name, item_type, status, start_date, end_date,
       progress, assigned_to, metadata, created_at, updated_at,
       phase, trade, location, planned_hours, actual_hours,
       constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
       cost_code_id, budget_cents, actual_cost_cents
-    `)
+    `,
+    )
     .eq("org_id", resolvedOrgId)
     .eq("id", itemId)
-    .single()
+    .single();
 
   if (existing.error || !existing.data) {
-    throw new Error("Schedule item not found or not accessible")
+    throw new Error("Schedule item not found or not accessible");
   }
 
-  await requireProjectPermission(userId, existing.data.project_id, "schedule.edit")
+  await requireProjectPermission(
+    userId,
+    existing.data.project_id,
+    "schedule.edit",
+  );
 
-  const updateData: Record<string, any> = {}
-  
+  const updateData: Record<string, any> = {};
+
   // Basic fields
-  if (parsed.name !== undefined) updateData.name = parsed.name
-  if (parsed.item_type !== undefined) updateData.item_type = parsed.item_type
-  if (parsed.status !== undefined) updateData.status = parsed.status
-  if (parsed.start_date !== undefined) updateData.start_date = parsed.start_date || null
-  if (parsed.end_date !== undefined) updateData.end_date = parsed.end_date || null
-  if (parsed.progress !== undefined) updateData.progress = parsed.progress
-  if (parsed.assigned_to !== undefined) updateData.assigned_to = parsed.assigned_to || null
-  if (parsed.metadata !== undefined) updateData.metadata = parsed.metadata
-  
+  if (parsed.name !== undefined) updateData.name = parsed.name;
+  if (parsed.item_type !== undefined) updateData.item_type = parsed.item_type;
+  if (parsed.status !== undefined) updateData.status = parsed.status;
+  if (parsed.start_date !== undefined)
+    updateData.start_date = parsed.start_date || null;
+  if (parsed.end_date !== undefined)
+    updateData.end_date = parsed.end_date || null;
+  if (parsed.progress !== undefined) updateData.progress = parsed.progress;
+  if (parsed.assigned_to !== undefined)
+    updateData.assigned_to = parsed.assigned_to || null;
+  if (parsed.metadata !== undefined) updateData.metadata = parsed.metadata;
+
   // Enhanced fields
-  if (parsed.phase !== undefined) updateData.phase = parsed.phase || null
-  if (parsed.trade !== undefined) updateData.trade = parsed.trade || null
-  if (parsed.location !== undefined) updateData.location = parsed.location || null
-  if (parsed.planned_hours !== undefined) updateData.planned_hours = parsed.planned_hours
-  if (parsed.actual_hours !== undefined) updateData.actual_hours = parsed.actual_hours
-  if (parsed.constraint_type !== undefined) updateData.constraint_type = parsed.constraint_type
-  if (parsed.constraint_date !== undefined) updateData.constraint_date = parsed.constraint_date || null
-  if (parsed.is_critical_path !== undefined) updateData.is_critical_path = parsed.is_critical_path
-  if (parsed.float_days !== undefined) updateData.float_days = parsed.float_days
-  if (parsed.color !== undefined) updateData.color = parsed.color || null
-  if (parsed.sort_order !== undefined) updateData.sort_order = parsed.sort_order
+  if (parsed.phase !== undefined) updateData.phase = parsed.phase || null;
+  if (parsed.trade !== undefined) updateData.trade = parsed.trade || null;
+  if (parsed.location !== undefined)
+    updateData.location = parsed.location || null;
+  if (parsed.planned_hours !== undefined)
+    updateData.planned_hours = parsed.planned_hours;
+  if (parsed.actual_hours !== undefined)
+    updateData.actual_hours = parsed.actual_hours;
+  if (parsed.constraint_type !== undefined)
+    updateData.constraint_type = parsed.constraint_type;
+  if (parsed.constraint_date !== undefined)
+    updateData.constraint_date = parsed.constraint_date || null;
+  if (parsed.is_critical_path !== undefined)
+    updateData.is_critical_path = parsed.is_critical_path;
+  if (parsed.float_days !== undefined)
+    updateData.float_days = parsed.float_days;
+  if (parsed.color !== undefined) updateData.color = parsed.color || null;
+  if (parsed.sort_order !== undefined)
+    updateData.sort_order = parsed.sort_order;
 
   const { data, error } =
     Object.keys(updateData).length === 0
@@ -432,26 +613,41 @@ export async function updateScheduleItem({
           .update(updateData)
           .eq("org_id", resolvedOrgId)
           .eq("id", itemId)
-          .select(`
+          .select(
+            `
             id, org_id, project_id, name, item_type, status, start_date, end_date,
             progress, assigned_to, metadata, created_at, updated_at,
             phase, trade, location, planned_hours, actual_hours,
             constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
             cost_code_id, budget_cents, actual_cost_cents
-          `)
-          .single()
+          `,
+          )
+          .single();
 
   if (error || !data) {
-    throw new Error(`Failed to update schedule item: ${error?.message}`)
+    throw new Error(`Failed to update schedule item: ${error?.message}`);
   }
 
   // Update dependencies if provided
   if (parsed.dependencies !== undefined) {
-    await supabase.from("schedule_dependencies").delete().eq("org_id", resolvedOrgId).eq("item_id", itemId)
+    await supabase
+      .from("schedule_dependencies")
+      .delete()
+      .eq("org_id", resolvedOrgId)
+      .eq("item_id", itemId);
 
     if (parsed.dependencies.length) {
       for (const dependsOnItemId of parsed.dependencies) {
-        await createDependency({ item_id: data.id, depends_on_item_id: dependsOnItemId, dependency_type: "FS", lag_days: 0 }, data.project_id, resolvedOrgId)
+        await createDependency(
+          {
+            item_id: data.id,
+            depends_on_item_id: dependsOnItemId,
+            dependency_type: "FS",
+            lag_days: 0,
+          },
+          data.project_id,
+          resolvedOrgId,
+        );
       }
     }
   }
@@ -462,21 +658,25 @@ export async function updateScheduleItem({
     entityType: "schedule_item",
     entityId: data.id as string,
     payload: { name: data.name, status: data.status },
-  })
+  });
 
   // Record risk events if applicable
-  const end = data.end_date ?? data.start_date
-  const isLate = end ? new Date(end) < new Date() : false
-  const riskyStatus = ["at_risk", "blocked"].includes(String(data.status))
+  const end = data.end_date ?? data.start_date;
+  const isLate = end ? new Date(end) < new Date() : false;
+  const riskyStatus = ["at_risk", "blocked"].includes(String(data.status));
   if (isLate || riskyStatus) {
     await recordEvent({
       orgId: resolvedOrgId,
       eventType: "schedule_risk",
       entityType: "schedule_item",
       entityId: data.id as string,
-      payload: { name: data.name, status: data.status, project_id: data.project_id },
+      payload: {
+        name: data.name,
+        status: data.status,
+        project_id: data.project_id,
+      },
       channel: "activity",
-    })
+    });
   }
 
   await recordAudit({
@@ -487,16 +687,31 @@ export async function updateScheduleItem({
     entityId: data.id as string,
     before: existing.data,
     after: data,
-  })
+  });
+
+  if (parsed.start_date !== undefined || parsed.end_date !== undefined) {
+    await Promise.all([
+      enqueueOutboxJob({
+        orgId: resolvedOrgId,
+        jobType: "selection_cutoff_recompute",
+        payload: { project_id: data.project_id },
+        dedupeByPayloadKeys: ["project_id"],
+      }),
+      enqueueProductionScheduleChange({
+        supabase, orgId: resolvedOrgId, actorId: userId, productTier,
+        projectId: data.project_id, scheduleItemId: data.id,
+        oldStart: existing.data.start_date, newStart: data.start_date,
+      }),
+    ]);
+  }
 
   const dependencyMap =
-    parsed.dependencies !== undefined 
-      ? { [data.id]: parsed.dependencies } 
-      : await loadDependencies(supabase, resolvedOrgId)
+    parsed.dependencies !== undefined
+      ? { [data.id]: parsed.dependencies }
+      : await loadDependencies(supabase, resolvedOrgId);
 
-  return mapScheduleItem(data, dependencyMap)
+  return mapScheduleItem(data, dependencyMap);
 }
-
 
 // Set a single assignment (user/contact/company) for a schedule item.
 // Clears existing assignments for the item first.
@@ -506,74 +721,105 @@ export async function setScheduleItemAssignee({
   assignee,
   orgId,
 }: {
-  itemId: string
-  projectId: string
+  itemId: string;
+  projectId: string;
   assignee:
     | { type: "user"; id: string; role?: string }
     | { type: "contact"; id: string; role?: string }
     | { type: "company"; id: string; role?: string }
-    | null
-  orgId?: string
+    | null;
+  orgId?: string;
 }) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireProjectPermission(userId, projectId, "schedule.edit")
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requireProjectPermission(userId, projectId, "schedule.edit");
 
   // Clear existing assignments for this item
-  await supabase.from("schedule_assignments").delete().eq("org_id", resolvedOrgId).eq("schedule_item_id", itemId)
+  await supabase
+    .from("schedule_assignments")
+    .delete()
+    .eq("org_id", resolvedOrgId)
+    .eq("schedule_item_id", itemId);
 
   if (!assignee) {
     // Also clear assigned_to on schedule item
-    await supabase.from("schedule_items").update({ assigned_to: null }).eq("id", itemId).eq("org_id", resolvedOrgId)
-    return null
+    await supabase
+      .from("schedule_items")
+      .update({ assigned_to: null })
+      .eq("id", itemId)
+      .eq("org_id", resolvedOrgId);
+    return null;
   }
 
   const assignmentInput: ScheduleAssignmentInput = {
     schedule_item_id: itemId,
     role: assignee.role ?? "assigned",
     actual_hours: 0,
-  }
+  };
 
   if (assignee.type === "user") {
-    assignmentInput.user_id = assignee.id
-    await supabase.from("schedule_items").update({ assigned_to: assignee.id }).eq("id", itemId).eq("org_id", resolvedOrgId)
+    assignmentInput.user_id = assignee.id;
+    await supabase
+      .from("schedule_items")
+      .update({ assigned_to: assignee.id })
+      .eq("id", itemId)
+      .eq("org_id", resolvedOrgId);
   } else {
     // Ensure assigned_to is cleared for contact/company
-    await supabase.from("schedule_items").update({ assigned_to: null }).eq("id", itemId).eq("org_id", resolvedOrgId)
+    await supabase
+      .from("schedule_items")
+      .update({ assigned_to: null })
+      .eq("id", itemId)
+      .eq("org_id", resolvedOrgId);
     if (assignee.type === "contact") {
-      assignmentInput.contact_id = assignee.id
+      assignmentInput.contact_id = assignee.id;
     }
     if (assignee.type === "company") {
-      assignmentInput.company_id = assignee.id
+      assignmentInput.company_id = assignee.id;
     }
   }
 
-  return createAssignment(assignmentInput, projectId, resolvedOrgId)
+  return createAssignment(assignmentInput, projectId, resolvedOrgId);
 }
 
-export async function deleteScheduleItem(itemId: string, orgId?: string): Promise<void> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+export async function deleteScheduleItem(
+  itemId: string,
+  orgId?: string,
+): Promise<void> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
 
   const existing = await supabase
     .from("schedule_items")
     .select("id, name, project_id")
     .eq("org_id", resolvedOrgId)
     .eq("id", itemId)
-    .single()
+    .single();
 
   if (existing.error || !existing.data) {
-    throw new Error("Schedule item not found")
+    throw new Error("Schedule item not found");
   }
 
-  await requireProjectPermission(userId, existing.data.project_id, "schedule.edit")
+  await requireProjectPermission(
+    userId,
+    existing.data.project_id,
+    "schedule.edit",
+  );
 
   const { error } = await supabase
     .from("schedule_items")
     .delete()
     .eq("org_id", resolvedOrgId)
-    .eq("id", itemId)
+    .eq("id", itemId);
 
   if (error) {
-    throw new Error(`Failed to delete schedule item: ${error.message}`)
+    throw new Error(`Failed to delete schedule item: ${error.message}`);
   }
 
   await recordAudit({
@@ -583,23 +829,46 @@ export async function deleteScheduleItem(itemId: string, orgId?: string): Promis
     entityType: "schedule_item",
     entityId: itemId,
     before: existing.data,
-  })
+  });
 }
 
-export async function bulkUpdateScheduleItems(updates: ScheduleBulkUpdate, orgId?: string): Promise<ScheduleItem[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("schedule.edit", { supabase, orgId: resolvedOrgId, userId })
+export async function bulkUpdateScheduleItems(
+  updates: ScheduleBulkUpdate,
+  orgId?: string,
+): Promise<ScheduleItem[]> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    productTier,
+  } = await requireOrgContext(orgId);
+  await requirePermission("schedule.edit", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
 
-  const results: ScheduleItem[] = []
-  const dependencyMap = await loadDependencies(supabase, resolvedOrgId)
+  const results: ScheduleItem[] = [];
+  const cutoffProjects = new Set<string>();
+  const dependencyMap = await loadDependencies(supabase, resolvedOrgId);
+  const itemIds = updates.items.map((item) => item.id);
+  const { data: beforeRows, error: beforeError } = itemIds.length
+    ? await supabase.from("schedule_items").select("id,project_id,start_date")
+        .eq("org_id", resolvedOrgId).in("id", itemIds)
+    : { data: [], error: null };
+  if (beforeError) throw new Error(`Failed to load schedule items: ${beforeError.message}`);
+  const beforeById = new Map((beforeRows ?? []).map((row) => [row.id, row]));
+  const scheduleChanges: Array<Promise<void>> = [];
 
   for (const item of updates.items) {
-    const updateData: Record<string, any> = {}
-    if (item.start_date !== undefined) updateData.start_date = item.start_date || null
-    if (item.end_date !== undefined) updateData.end_date = item.end_date || null
-    if (item.sort_order !== undefined) updateData.sort_order = item.sort_order
-    if (item.progress !== undefined) updateData.progress = item.progress
-    if (item.status !== undefined) updateData.status = item.status
+    const updateData: Record<string, any> = {};
+    if (item.start_date !== undefined)
+      updateData.start_date = item.start_date || null;
+    if (item.end_date !== undefined)
+      updateData.end_date = item.end_date || null;
+    if (item.sort_order !== undefined) updateData.sort_order = item.sort_order;
+    if (item.progress !== undefined) updateData.progress = item.progress;
+    if (item.status !== undefined) updateData.status = item.status;
 
     if (Object.keys(updateData).length > 0) {
       const { data, error } = await supabase
@@ -607,41 +876,89 @@ export async function bulkUpdateScheduleItems(updates: ScheduleBulkUpdate, orgId
         .update(updateData)
         .eq("org_id", resolvedOrgId)
         .eq("id", item.id)
-        .select(`
+        .select(
+          `
           id, org_id, project_id, name, item_type, status, start_date, end_date,
           progress, assigned_to, metadata, created_at, updated_at,
           phase, trade, location, planned_hours, actual_hours,
           constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
           cost_code_id, budget_cents, actual_cost_cents
-        `)
-        .single()
+        `,
+        )
+        .single();
 
       if (!error && data) {
-        results.push(mapScheduleItem(data, dependencyMap))
+        results.push(mapScheduleItem(data, dependencyMap));
+        if (item.start_date !== undefined || item.end_date !== undefined) {
+          cutoffProjects.add(data.project_id);
+          const before = beforeById.get(item.id);
+          scheduleChanges.push(enqueueProductionScheduleChange({
+            supabase, orgId: resolvedOrgId, actorId: userId, productTier,
+            projectId: data.project_id, scheduleItemId: data.id,
+            oldStart: before?.start_date ?? null, newStart: data.start_date,
+          }));
+        }
       }
     }
   }
 
-  return results
+  await Promise.all([
+    ...scheduleChanges,
+    ...Array.from(cutoffProjects).map((projectId) =>
+      enqueueOutboxJob({
+        orgId: resolvedOrgId,
+        jobType: "selection_cutoff_recompute",
+        payload: { project_id: projectId },
+        dedupeByPayloadKeys: ["project_id"],
+      })),
+  ]);
+
+  return results;
 }
 
 // ============================================================================
 // DEPENDENCIES
 // ============================================================================
 
-export async function createDependency(input: ScheduleDependencyInput, projectId: string, orgId?: string): Promise<ScheduleDependency> {
-  const parsed = scheduleDependencyInputSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireProjectPermission(userId, projectId, "schedule.edit")
+export async function createDependency(
+  input: ScheduleDependencyInput,
+  projectId: string,
+  orgId?: string,
+): Promise<ScheduleDependency> {
+  const parsed = scheduleDependencyInputSchema.parse(input);
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requireProjectPermission(userId, projectId, "schedule.edit");
 
-  if (parsed.item_id === parsed.depends_on_item_id) throw new Error("A schedule item cannot depend on itself")
-  const [{ data: endpoints }, { data: existingDependencies }] = await Promise.all([
-    supabase.from("schedule_items").select("id").eq("org_id", resolvedOrgId).eq("project_id", projectId).in("id", [parsed.item_id, parsed.depends_on_item_id]),
-    supabase.from("schedule_dependencies").select("item_id, depends_on_item_id").eq("org_id", resolvedOrgId).eq("project_id", projectId),
-  ])
-  if ((endpoints ?? []).length !== 2) throw new Error("Both schedule items must belong to this project")
-  if (wouldCreateDependencyCycle(existingDependencies ?? [], parsed.depends_on_item_id, parsed.item_id)) {
-    throw new Error("This dependency would create a schedule cycle")
+  if (parsed.item_id === parsed.depends_on_item_id)
+    throw new Error("A schedule item cannot depend on itself");
+  const [{ data: endpoints }, { data: existingDependencies }] =
+    await Promise.all([
+      supabase
+        .from("schedule_items")
+        .select("id")
+        .eq("org_id", resolvedOrgId)
+        .eq("project_id", projectId)
+        .in("id", [parsed.item_id, parsed.depends_on_item_id]),
+      supabase
+        .from("schedule_dependencies")
+        .select("item_id, depends_on_item_id")
+        .eq("org_id", resolvedOrgId)
+        .eq("project_id", projectId),
+    ]);
+  if ((endpoints ?? []).length !== 2)
+    throw new Error("Both schedule items must belong to this project");
+  if (
+    wouldCreateDependencyCycle(
+      existingDependencies ?? [],
+      parsed.depends_on_item_id,
+      parsed.item_id,
+    )
+  ) {
+    throw new Error("This dependency would create a schedule cycle");
   }
 
   const { data, error } = await supabase
@@ -654,11 +971,13 @@ export async function createDependency(input: ScheduleDependencyInput, projectId
       dependency_type: parsed.dependency_type,
       lag_days: parsed.lag_days,
     })
-    .select("id, org_id, project_id, item_id, depends_on_item_id, dependency_type, lag_days")
-    .single()
+    .select(
+      "id, org_id, project_id, item_id, depends_on_item_id, dependency_type, lag_days",
+    )
+    .single();
 
   if (error || !data) {
-    throw new Error(`Failed to create dependency: ${error?.message}`)
+    throw new Error(`Failed to create dependency: ${error?.message}`);
   }
 
   return {
@@ -669,7 +988,7 @@ export async function createDependency(input: ScheduleDependencyInput, projectId
     depends_on_item_id: data.depends_on_item_id,
     dependency_type: data.dependency_type ?? "FS",
     lag_days: data.lag_days ?? 0,
-  }
+  };
 }
 
 export async function updateDependency(
@@ -678,48 +997,81 @@ export async function updateDependency(
   projectId: string,
   orgId?: string,
 ): Promise<ScheduleDependency> {
-  const parsed = scheduleDependencyInputSchema.pick({ dependency_type: true, lag_days: true }).parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireProjectPermission(userId, projectId, "schedule.edit")
+  const parsed = scheduleDependencyInputSchema
+    .pick({ dependency_type: true, lag_days: true })
+    .parse(input);
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requireProjectPermission(userId, projectId, "schedule.edit");
   const { data, error } = await supabase
     .from("schedule_dependencies")
     .update(parsed)
     .eq("org_id", resolvedOrgId)
     .eq("project_id", projectId)
     .eq("id", dependencyId)
-    .select("id, org_id, project_id, item_id, depends_on_item_id, dependency_type, lag_days")
-    .single()
-  if (error || !data) throw new Error(`Failed to update dependency: ${error?.message}`)
-  return { ...data, dependency_type: data.dependency_type ?? "FS", lag_days: data.lag_days ?? 0 }
+    .select(
+      "id, org_id, project_id, item_id, depends_on_item_id, dependency_type, lag_days",
+    )
+    .single();
+  if (error || !data)
+    throw new Error(`Failed to update dependency: ${error?.message}`);
+  return {
+    ...data,
+    dependency_type: data.dependency_type ?? "FS",
+    lag_days: data.lag_days ?? 0,
+  };
 }
 
-export async function deleteDependency(dependencyId: string, orgId?: string): Promise<void> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("schedule.edit", { supabase, orgId: resolvedOrgId, userId })
+export async function deleteDependency(
+  dependencyId: string,
+  orgId?: string,
+): Promise<void> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("schedule.edit", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
 
   const { error } = await supabase
     .from("schedule_dependencies")
     .delete()
     .eq("org_id", resolvedOrgId)
-    .eq("id", dependencyId)
+    .eq("id", dependencyId);
 
   if (error) {
-    throw new Error(`Failed to delete dependency: ${error.message}`)
+    throw new Error(`Failed to delete dependency: ${error.message}`);
   }
 }
 
-export async function listDependenciesByProject(projectId: string, orgId?: string): Promise<ScheduleDependency[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireProjectPermission(userId, projectId, "schedule.read")
+export async function listDependenciesByProject(
+  projectId: string,
+  orgId?: string,
+): Promise<ScheduleDependency[]> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requireProjectPermission(userId, projectId, "schedule.read");
 
   const { data, error } = await supabase
     .from("schedule_dependencies")
-    .select("id, org_id, project_id, item_id, depends_on_item_id, dependency_type, lag_days")
+    .select(
+      "id, org_id, project_id, item_id, depends_on_item_id, dependency_type, lag_days",
+    )
     .eq("org_id", resolvedOrgId)
-    .eq("project_id", projectId)
+    .eq("project_id", projectId);
 
   if (error) {
-    throw new Error(`Failed to list dependencies: ${error.message}`)
+    throw new Error(`Failed to list dependencies: ${error.message}`);
   }
 
   return (data ?? []).map((dep) => ({
@@ -730,31 +1082,44 @@ export async function listDependenciesByProject(projectId: string, orgId?: strin
     depends_on_item_id: dep.depends_on_item_id,
     dependency_type: dep.dependency_type ?? "FS",
     lag_days: dep.lag_days ?? 0,
-  }))
+  }));
 }
 
 // ============================================================================
 // ASSIGNMENTS
 // ============================================================================
 
-export async function listAssignmentsByItem(itemId: string, orgId?: string): Promise<ScheduleAssignment[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("schedule.read", { supabase, orgId: resolvedOrgId, userId })
+export async function listAssignmentsByItem(
+  itemId: string,
+  orgId?: string,
+): Promise<ScheduleAssignment[]> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("schedule.read", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
 
   const { data, error } = await supabase
     .from("schedule_assignments")
-    .select(`
+    .select(
+      `
       id, org_id, project_id, schedule_item_id, user_id, contact_id, company_id,
       role, planned_hours, actual_hours, hourly_rate_cents, notes, confirmed_at, created_at, updated_at,
       user:app_users(id, full_name, avatar_url),
       contact:contacts(id, full_name, email),
       company:companies(id, name, company_type)
-    `)
+    `,
+    )
     .eq("org_id", resolvedOrgId)
-    .eq("schedule_item_id", itemId)
+    .eq("schedule_item_id", itemId);
 
   if (error) {
-    throw new Error(`Failed to list assignments: ${error.message}`)
+    throw new Error(`Failed to list assignments: ${error.message}`);
   }
 
   return (data ?? []).map((row: any) => ({
@@ -776,27 +1141,36 @@ export async function listAssignmentsByItem(itemId: string, orgId?: string): Pro
     user: row.user ?? undefined,
     contact: row.contact ?? undefined,
     company: row.company ?? undefined,
-  }))
+  }));
 }
 
-export async function listAssignmentsByProject(projectId: string, orgId?: string): Promise<ScheduleAssignment[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireProjectPermission(userId, projectId, "schedule.read")
+export async function listAssignmentsByProject(
+  projectId: string,
+  orgId?: string,
+): Promise<ScheduleAssignment[]> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requireProjectPermission(userId, projectId, "schedule.read");
 
   const { data, error } = await supabase
     .from("schedule_assignments")
-    .select(`
+    .select(
+      `
       id, org_id, project_id, schedule_item_id, user_id, contact_id, company_id,
       role, planned_hours, actual_hours, hourly_rate_cents, notes, confirmed_at, created_at, updated_at,
       user:app_users(id, full_name, avatar_url),
       contact:contacts(id, full_name, email),
       company:companies(id, name, company_type)
-    `)
+    `,
+    )
     .eq("org_id", resolvedOrgId)
-    .eq("project_id", projectId)
+    .eq("project_id", projectId);
 
   if (error) {
-    throw new Error(`Failed to list assignments: ${error.message}`)
+    throw new Error(`Failed to list assignments: ${error.message}`);
   }
 
   return (data ?? []).map((row: any) => ({
@@ -818,13 +1192,21 @@ export async function listAssignmentsByProject(projectId: string, orgId?: string
     user: row.user ?? undefined,
     contact: row.contact ?? undefined,
     company: row.company ?? undefined,
-  }))
+  }));
 }
 
-export async function createAssignment(input: ScheduleAssignmentInput, projectId: string, orgId?: string): Promise<ScheduleAssignment> {
-  const parsed = scheduleAssignmentInputSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireProjectPermission(userId, projectId, "schedule.edit")
+export async function createAssignment(
+  input: ScheduleAssignmentInput,
+  projectId: string,
+  orgId?: string,
+): Promise<ScheduleAssignment> {
+  const parsed = scheduleAssignmentInputSchema.parse(input);
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requireProjectPermission(userId, projectId, "schedule.edit");
 
   const { data, error } = await supabase
     .from("schedule_assignments")
@@ -841,20 +1223,22 @@ export async function createAssignment(input: ScheduleAssignmentInput, projectId
       hourly_rate_cents: parsed.hourly_rate_cents ?? null,
       notes: parsed.notes || null,
     })
-    .select(`
+    .select(
+      `
       id, org_id, project_id, schedule_item_id, user_id, contact_id, company_id,
       role, planned_hours, actual_hours, hourly_rate_cents, notes, confirmed_at, created_at, updated_at,
       user:app_users(id, full_name, avatar_url),
       contact:contacts(id, full_name, email),
       company:companies(id, name, company_type)
-    `)
-    .single()
+    `,
+    )
+    .single();
 
   if (error || !data) {
-    throw new Error(`Failed to create assignment: ${error?.message}`)
+    throw new Error(`Failed to create assignment: ${error?.message}`);
   }
 
-  const row = data as any
+  const row = data as any;
   return {
     id: row.id,
     org_id: row.org_id,
@@ -874,21 +1258,32 @@ export async function createAssignment(input: ScheduleAssignmentInput, projectId
     user: row.user ?? undefined,
     contact: row.contact ?? undefined,
     company: row.company ?? undefined,
-  }
+  };
 }
 
-export async function deleteAssignment(assignmentId: string, orgId?: string): Promise<void> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("schedule.edit", { supabase, orgId: resolvedOrgId, userId })
+export async function deleteAssignment(
+  assignmentId: string,
+  orgId?: string,
+): Promise<void> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("schedule.edit", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
 
   const { error } = await supabase
     .from("schedule_assignments")
     .delete()
     .eq("org_id", resolvedOrgId)
-    .eq("id", assignmentId)
+    .eq("id", assignmentId);
 
   if (error) {
-    throw new Error(`Failed to delete assignment: ${error.message}`)
+    throw new Error(`Failed to delete assignment: ${error.message}`);
   }
 }
 
@@ -896,19 +1291,28 @@ export async function deleteAssignment(assignmentId: string, orgId?: string): Pr
 // BASELINES
 // ============================================================================
 
-export async function listBaselinesByProject(projectId: string, orgId?: string): Promise<ScheduleBaseline[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireProjectPermission(userId, projectId, "schedule.read")
+export async function listBaselinesByProject(
+  projectId: string,
+  orgId?: string,
+): Promise<ScheduleBaseline[]> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requireProjectPermission(userId, projectId, "schedule.read");
 
   const { data, error } = await supabase
     .from("schedule_baselines")
-    .select("id, org_id, project_id, name, description, snapshot_at, items, is_active, created_by, created_at")
+    .select(
+      "id, org_id, project_id, name, description, snapshot_at, items, is_active, created_by, created_at",
+    )
     .eq("org_id", resolvedOrgId)
     .eq("project_id", projectId)
-    .order("created_at", { ascending: false })
+    .order("created_at", { ascending: false });
 
   if (error) {
-    throw new Error(`Failed to list baselines: ${error.message}`)
+    throw new Error(`Failed to list baselines: ${error.message}`);
   }
 
   return (data ?? []).map((row) => ({
@@ -922,15 +1326,30 @@ export async function listBaselinesByProject(projectId: string, orgId?: string):
     is_active: row.is_active ?? false,
     created_by: row.created_by ?? undefined,
     created_at: row.created_at,
-  }))
+  }));
 }
 
-export async function createBaseline(input: ScheduleBaselineInput, orgId?: string): Promise<ScheduleBaseline> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireProjectPermission(userId, input.project_id, "schedule.baseline.manage")
+export async function createBaseline(
+  input: ScheduleBaselineInput,
+  orgId?: string,
+): Promise<ScheduleBaseline> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requireProjectPermission(
+    userId,
+    input.project_id,
+    "schedule.baseline.manage",
+  );
 
   // Get current schedule items to snapshot
-  const items = await listProjectScheduleItemsWithClient(supabase, resolvedOrgId, input.project_id)
+  const items = await listProjectScheduleItemsWithClient(
+    supabase,
+    resolvedOrgId,
+    input.project_id,
+  );
 
   // If this will be active, deactivate other baselines first
   if (input.is_active) {
@@ -938,7 +1357,7 @@ export async function createBaseline(input: ScheduleBaselineInput, orgId?: strin
       .from("schedule_baselines")
       .update({ is_active: false })
       .eq("org_id", resolvedOrgId)
-      .eq("project_id", input.project_id)
+      .eq("project_id", input.project_id);
   }
 
   const { data, error } = await supabase
@@ -952,11 +1371,13 @@ export async function createBaseline(input: ScheduleBaselineInput, orgId?: strin
       is_active: input.is_active ?? false,
       created_by: userId,
     })
-    .select("id, org_id, project_id, name, description, snapshot_at, items, is_active, created_by, created_at")
-    .single()
+    .select(
+      "id, org_id, project_id, name, description, snapshot_at, items, is_active, created_by, created_at",
+    )
+    .single();
 
   if (error || !data) {
-    throw new Error(`Failed to create baseline: ${error?.message}`)
+    throw new Error(`Failed to create baseline: ${error?.message}`);
   }
 
   return {
@@ -970,44 +1391,63 @@ export async function createBaseline(input: ScheduleBaselineInput, orgId?: strin
     is_active: data.is_active ?? false,
     created_by: data.created_by ?? undefined,
     created_at: data.created_at,
-  }
+  };
 }
 
-export async function setActiveBaseline(baselineId: string, projectId: string, orgId?: string): Promise<void> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireProjectPermission(userId, projectId, "schedule.baseline.manage")
+export async function setActiveBaseline(
+  baselineId: string,
+  projectId: string,
+  orgId?: string,
+): Promise<void> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requireProjectPermission(userId, projectId, "schedule.baseline.manage");
 
   // Deactivate all baselines for this project
   await supabase
     .from("schedule_baselines")
     .update({ is_active: false })
     .eq("org_id", resolvedOrgId)
-    .eq("project_id", projectId)
+    .eq("project_id", projectId);
 
   // Activate the selected baseline
   const { error } = await supabase
     .from("schedule_baselines")
     .update({ is_active: true })
     .eq("org_id", resolvedOrgId)
-    .eq("id", baselineId)
+    .eq("id", baselineId);
 
   if (error) {
-    throw new Error(`Failed to set active baseline: ${error.message}`)
+    throw new Error(`Failed to set active baseline: ${error.message}`);
   }
 }
 
-export async function deleteBaseline(baselineId: string, orgId?: string): Promise<void> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("schedule.baseline.manage", { supabase, orgId: resolvedOrgId, userId })
+export async function deleteBaseline(
+  baselineId: string,
+  orgId?: string,
+): Promise<void> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("schedule.baseline.manage", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
 
   const { error } = await supabase
     .from("schedule_baselines")
     .delete()
     .eq("org_id", resolvedOrgId)
-    .eq("id", baselineId)
+    .eq("id", baselineId);
 
   if (error) {
-    throw new Error(`Failed to delete baseline: ${error.message}`)
+    throw new Error(`Failed to delete baseline: ${error.message}`);
   }
 }
 
@@ -1015,18 +1455,30 @@ export async function deleteBaseline(baselineId: string, orgId?: string): Promis
 // TEMPLATES
 // ============================================================================
 
-export async function listTemplates(orgId?: string): Promise<ScheduleTemplate[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("schedule.read", { supabase, orgId: resolvedOrgId, userId })
+export async function listTemplates(
+  orgId?: string,
+): Promise<ScheduleTemplate[]> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("schedule.read", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
 
   const { data, error } = await supabase
     .from("schedule_templates")
-    .select("id, org_id, name, description, project_type, property_type, items, is_public, created_by, created_at, updated_at")
+    .select(
+      "id, org_id, name, description, project_type, property_type, items, is_public, created_by, created_at, updated_at",
+    )
     .or(`org_id.eq.${resolvedOrgId},is_public.eq.true`)
-    .order("name", { ascending: true })
+    .order("name", { ascending: true });
 
   if (error) {
-    throw new Error(`Failed to list templates: ${error.message}`)
+    throw new Error(`Failed to list templates: ${error.message}`);
   }
 
   return (data ?? []).map((row) => ({
@@ -1041,12 +1493,23 @@ export async function listTemplates(orgId?: string): Promise<ScheduleTemplate[]>
     created_by: row.created_by ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at,
-  }))
+  }));
 }
 
-export async function createTemplate(input: ScheduleTemplateInput, orgId?: string): Promise<ScheduleTemplate> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("schedule.edit", { supabase, orgId: resolvedOrgId, userId })
+export async function createTemplate(
+  input: ScheduleTemplateInput,
+  orgId?: string,
+): Promise<ScheduleTemplate> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("schedule.edit", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
 
   const { data, error } = await supabase
     .from("schedule_templates")
@@ -1056,15 +1519,17 @@ export async function createTemplate(input: ScheduleTemplateInput, orgId?: strin
       description: input.description || null,
       project_type: input.project_type || null,
       property_type: input.property_type || null,
-      items: input.items ?? [],
+      items: normalizeScheduleTemplateItems(input.items ?? []),
       is_public: input.is_public ?? false,
       created_by: userId,
     })
-    .select("id, org_id, name, description, project_type, property_type, items, is_public, created_by, created_at, updated_at")
-    .single()
+    .select(
+      "id, org_id, name, description, project_type, property_type, items, is_public, created_by, created_at, updated_at",
+    )
+    .single();
 
   if (error || !data) {
-    throw new Error(`Failed to create template: ${error?.message}`)
+    throw new Error(`Failed to create template: ${error?.message}`);
   }
 
   return {
@@ -1079,59 +1544,201 @@ export async function createTemplate(input: ScheduleTemplateInput, orgId?: strin
     created_by: data.created_by ?? undefined,
     created_at: data.created_at,
     updated_at: data.updated_at,
-  }
+  };
 }
 
-export async function applyTemplate(templateId: string, projectId: string, orgId?: string): Promise<ScheduleItem[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireProjectPermission(userId, projectId, "schedule.edit")
+export async function updateTemplate(
+  templateId: string,
+  input: ScheduleTemplateInput,
+  orgId?: string,
+): Promise<ScheduleTemplate> {
+  const parsed = scheduleTemplateInputSchema.parse(input);
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("schedule.edit", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
+  const { data, error } = await supabase
+    .from("schedule_templates")
+    .update({
+      name: parsed.name,
+      description: parsed.description ?? null,
+      project_type: parsed.project_type ?? null,
+      property_type: parsed.property_type ?? null,
+      items: normalizeScheduleTemplateItems(parsed.items),
+      is_public: parsed.is_public,
+    })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", templateId)
+    .select(
+      "id, org_id, name, description, project_type, property_type, items, is_public, created_by, created_at, updated_at",
+    )
+    .single();
+  if (error || !data)
+    throw new Error(
+      `Failed to update template: ${error?.message ?? "not found"}`,
+    );
+  return {
+    id: data.id,
+    org_id: data.org_id,
+    name: data.name,
+    description: data.description ?? undefined,
+    project_type: data.project_type ?? undefined,
+    property_type: data.property_type ?? undefined,
+    items: data.items ?? [],
+    is_public: data.is_public ?? false,
+    created_by: data.created_by ?? undefined,
+    created_at: data.created_at,
+    updated_at: data.updated_at,
+  };
+}
+
+export async function applyTemplate(
+  templateId: string,
+  projectId: string,
+  orgId?: string,
+): Promise<ScheduleItem[]> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requireProjectPermission(userId, projectId, "schedule.edit");
 
   const { data: template, error } = await supabase
     .from("schedule_templates")
     .select("items")
+    .eq("org_id", resolvedOrgId)
     .eq("id", templateId)
-    .single()
+    .maybeSingle();
 
   if (error || !template) {
-    throw new Error("Template not found")
+    throw new Error("Template not found");
   }
 
-  const templateItems = template.items as Partial<ScheduleItem>[]
-  const createdItems: ScheduleItem[] = []
-
-  for (const item of templateItems) {
-    const created = await createScheduleItem({
-      input: {
-        project_id: projectId,
-        name: item.name ?? "Untitled",
-        item_type: item.item_type ?? "task",
-        status: "planned",
-        phase: item.phase,
-        trade: item.trade,
-        planned_hours: item.planned_hours ?? 0,
-        color: item.color,
-        sort_order: item.sort_order ?? 0,
-      } as any,
-      orgId: resolvedOrgId,
-    })
-    createdItems.push(created)
-  }
-
-  return createdItems
+  return applyScheduleTemplateSnapshot(
+    projectId,
+    template.items,
+    null,
+    resolvedOrgId,
+  );
 }
 
-export async function deleteTemplate(templateId: string, orgId?: string): Promise<void> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("schedule.edit", { supabase, orgId: resolvedOrgId, userId })
+export type ScheduleTemplateSnapshotItem = Partial<ScheduleItem> & {
+  key?: string;
+  start_offset_days?: number;
+  duration_days?: number;
+};
+
+function addCalendarDays(isoDate: string, days: number): string {
+  const date = new Date(`${isoDate}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime()))
+    throw new Error("Invalid schedule start date");
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+export async function applyScheduleTemplateSnapshot(
+  projectId: string,
+  rawItems: unknown,
+  startDate: string | null,
+  orgId?: string,
+  authorizationPermission:
+    | "schedule.edit"
+    | "plan.instantiate" = "schedule.edit",
+): Promise<ScheduleItem[]> {
+  if (authorizationPermission === "plan.instantiate") {
+    const context = await requireOrgContext(orgId);
+    await requirePermission("plan.instantiate", context);
+  }
+  const templateItems: ScheduleTemplateSnapshotItem[] = Array.isArray(rawItems)
+    ? rawItems.filter(
+        (item): item is ScheduleTemplateSnapshotItem =>
+          typeof item === "object" && item !== null,
+      )
+    : [];
+  const createdItems: ScheduleItem[] = [];
+
+  for (const item of templateItems) {
+    const offset =
+      typeof item.start_offset_days === "number"
+        ? Math.trunc(item.start_offset_days)
+        : null;
+    const duration =
+      typeof item.duration_days === "number"
+        ? Math.max(1, Math.trunc(item.duration_days))
+        : null;
+    const itemStartDate =
+      startDate && offset !== null
+        ? addCalendarDays(startDate, offset)
+        : undefined;
+    const itemEndDate =
+      itemStartDate && duration !== null
+        ? addCalendarDays(itemStartDate, duration - 1)
+        : undefined;
+    const created = await createScheduleItem(
+      {
+        input: {
+          project_id: projectId,
+          name: item.name ?? "Untitled",
+          item_type: item.item_type ?? "task",
+          status: "planned",
+          progress: 0,
+          phase: item.phase,
+          trade: item.trade,
+          planned_hours: item.planned_hours ?? 0,
+          color: item.color,
+          sort_order: item.sort_order ?? 0,
+          start_date: itemStartDate,
+          end_date: itemEndDate,
+          constraint_type: "asap",
+          is_critical_path: false,
+          float_days: 0,
+          metadata: {
+            ...(item.metadata ?? {}),
+            template_item_key: item.key ? selectionTaskKey(item.key) : selectionTaskKey(item.name ?? "Untitled"),
+            template_start_offset_days: offset,
+            template_duration_days: duration,
+          },
+        },
+        orgId,
+      },
+      authorizationPermission,
+    );
+    createdItems.push(created);
+  }
+
+  return createdItems;
+}
+
+export async function deleteTemplate(
+  templateId: string,
+  orgId?: string,
+): Promise<void> {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("schedule.edit", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
 
   const { error } = await supabase
     .from("schedule_templates")
     .delete()
     .eq("org_id", resolvedOrgId)
-    .eq("id", templateId)
+    .eq("id", templateId);
 
   if (error) {
-    throw new Error(`Failed to delete template: ${error.message}`)
+    throw new Error(`Failed to delete template: ${error.message}`);
   }
 }
 
@@ -1150,7 +1757,7 @@ function mapScheduleItemChangeOrder(row: any): ScheduleItemChangeOrder {
     applied_at: row.applied_at ?? undefined,
     created_at: row.created_at,
     change_order: row.change_order ?? undefined,
-  }
+  };
 }
 
 /**
@@ -1158,26 +1765,36 @@ function mapScheduleItemChangeOrder(row: any): ScheduleItemChangeOrder {
  */
 export async function getScheduleChangeOrderImpacts(
   scheduleItemId: string,
-  orgId?: string
+  orgId?: string,
 ): Promise<ScheduleItemChangeOrder[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("schedule.read", { supabase, orgId: resolvedOrgId, userId })
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("schedule.read", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
 
   const { data, error } = await supabase
     .from("schedule_item_change_orders")
-    .select(`
+    .select(
+      `
       id, org_id, schedule_item_id, change_order_id, days_adjusted, notes, applied_at, created_at,
       change_order:change_orders(id, co_number, title, status, amount_cents, days_impact)
-    `)
+    `,
+    )
     .eq("org_id", resolvedOrgId)
     .eq("schedule_item_id", scheduleItemId)
-    .order("created_at", { ascending: false })
+    .order("created_at", { ascending: false });
 
   if (error) {
-    throw new Error(`Failed to get change order impacts: ${error.message}`)
+    throw new Error(`Failed to get change order impacts: ${error.message}`);
   }
 
-  return (data ?? []).map(mapScheduleItemChangeOrder)
+  return (data ?? []).map(mapScheduleItemChangeOrder);
 }
 
 /**
@@ -1185,37 +1802,45 @@ export async function getScheduleChangeOrderImpacts(
  */
 export async function getScheduleChangeOrderImpactsByProject(
   projectId: string,
-  orgId?: string
+  orgId?: string,
 ): Promise<ScheduleItemChangeOrder[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireProjectPermission(userId, projectId, "schedule.read")
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requireProjectPermission(userId, projectId, "schedule.read");
 
   // Get all schedule items for this project
   const { data: scheduleItems } = await supabase
     .from("schedule_items")
     .select("id")
     .eq("org_id", resolvedOrgId)
-    .eq("project_id", projectId)
+    .eq("project_id", projectId);
 
-  if (!scheduleItems?.length) return []
+  if (!scheduleItems?.length) return [];
 
-  const itemIds = scheduleItems.map((item) => item.id)
+  const itemIds = scheduleItems.map((item) => item.id);
 
   const { data, error } = await supabase
     .from("schedule_item_change_orders")
-    .select(`
+    .select(
+      `
       id, org_id, schedule_item_id, change_order_id, days_adjusted, notes, applied_at, created_at,
       change_order:change_orders(id, co_number, title, status, amount_cents, days_impact)
-    `)
+    `,
+    )
     .eq("org_id", resolvedOrgId)
     .in("schedule_item_id", itemIds)
-    .order("created_at", { ascending: false })
+    .order("created_at", { ascending: false });
 
   if (error) {
-    throw new Error(`Failed to get change order impacts by project: ${error.message}`)
+    throw new Error(
+      `Failed to get change order impacts by project: ${error.message}`,
+    );
   }
 
-  return (data ?? []).map(mapScheduleItemChangeOrder)
+  return (data ?? []).map(mapScheduleItemChangeOrder);
 }
 
 /**
@@ -1229,14 +1854,18 @@ export async function applyChangeOrderToSchedule({
   applyNow = false,
   orgId,
 }: {
-  changeOrderId: string
-  scheduleItemId: string
-  daysAdjusted: number
-  notes?: string
-  applyNow?: boolean
-  orgId?: string
+  changeOrderId: string;
+  scheduleItemId: string;
+  daysAdjusted: number;
+  notes?: string;
+  applyNow?: boolean;
+  orgId?: string;
 }): Promise<ScheduleItemChangeOrder> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
 
   // Verify the schedule item exists
   const { data: scheduleItem, error: itemError } = await supabase
@@ -1244,13 +1873,17 @@ export async function applyChangeOrderToSchedule({
     .select("id, name, project_id")
     .eq("org_id", resolvedOrgId)
     .eq("id", scheduleItemId)
-    .single()
+    .single();
 
   if (itemError || !scheduleItem) {
-    throw new Error("Schedule item not found")
+    throw new Error("Schedule item not found");
   }
 
-  await requireProjectPermission(userId, scheduleItem.project_id, "schedule.edit")
+  await requireProjectPermission(
+    userId,
+    scheduleItem.project_id,
+    "schedule.edit",
+  );
 
   // Verify the change order exists
   const { data: changeOrder, error: coError } = await supabase
@@ -1258,10 +1891,10 @@ export async function applyChangeOrderToSchedule({
     .select("id, co_number, title, status")
     .eq("org_id", resolvedOrgId)
     .eq("id", changeOrderId)
-    .single()
+    .single();
 
   if (coError || !changeOrder) {
-    throw new Error("Change order not found")
+    throw new Error("Change order not found");
   }
 
   // Insert the link
@@ -1276,20 +1909,24 @@ export async function applyChangeOrderToSchedule({
         notes: notes || null,
         applied_at: applyNow ? new Date().toISOString() : null,
       },
-      { onConflict: "schedule_item_id,change_order_id" }
+      { onConflict: "schedule_item_id,change_order_id" },
     )
-    .select(`
+    .select(
+      `
       id, org_id, schedule_item_id, change_order_id, days_adjusted, notes, applied_at, created_at
-    `)
-    .single()
+    `,
+    )
+    .single();
 
   if (error || !data) {
-    throw new Error(`Failed to apply change order to schedule: ${error?.message}`)
+    throw new Error(
+      `Failed to apply change order to schedule: ${error?.message}`,
+    );
   }
 
   // If applying now, also adjust the schedule item dates
   if (applyNow && daysAdjusted !== 0) {
-    await adjustScheduleItemDates(scheduleItemId, daysAdjusted, resolvedOrgId)
+    await adjustScheduleItemDates(scheduleItemId, daysAdjusted, resolvedOrgId);
   }
 
   await recordEvent({
@@ -1303,7 +1940,7 @@ export async function applyChangeOrderToSchedule({
       days_adjusted: daysAdjusted,
       applied: applyNow,
     },
-  })
+  });
 
   await recordAudit({
     orgId: resolvedOrgId,
@@ -1312,9 +1949,9 @@ export async function applyChangeOrderToSchedule({
     entityType: "schedule_item_change_order",
     entityId: data.id,
     after: data,
-  })
+  });
 
-  return mapScheduleItemChangeOrder({ ...data, change_order: changeOrder })
+  return mapScheduleItemChangeOrder({ ...data, change_order: changeOrder });
 }
 
 /**
@@ -1322,30 +1959,38 @@ export async function applyChangeOrderToSchedule({
  */
 export async function removeChangeOrderFromSchedule(
   scheduleItemChangeOrderId: string,
-  orgId?: string
+  orgId?: string,
 ): Promise<void> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("schedule.edit", { supabase, orgId: resolvedOrgId, userId })
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("schedule.edit", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
 
   const { data: existing, error: fetchError } = await supabase
     .from("schedule_item_change_orders")
     .select("*")
     .eq("org_id", resolvedOrgId)
     .eq("id", scheduleItemChangeOrderId)
-    .single()
+    .single();
 
   if (fetchError || !existing) {
-    throw new Error("Schedule change order link not found")
+    throw new Error("Schedule change order link not found");
   }
 
   const { error } = await supabase
     .from("schedule_item_change_orders")
     .delete()
     .eq("org_id", resolvedOrgId)
-    .eq("id", scheduleItemChangeOrderId)
+    .eq("id", scheduleItemChangeOrderId);
 
   if (error) {
-    throw new Error(`Failed to remove change order link: ${error.message}`)
+    throw new Error(`Failed to remove change order link: ${error.message}`);
   }
 
   await recordAudit({
@@ -1355,7 +2000,7 @@ export async function removeChangeOrderFromSchedule(
     entityType: "schedule_item_change_order",
     entityId: scheduleItemChangeOrderId,
     before: existing,
-  })
+  });
 }
 
 /**
@@ -1364,31 +2009,31 @@ export async function removeChangeOrderFromSchedule(
 async function adjustScheduleItemDates(
   scheduleItemId: string,
   daysToAdd: number,
-  orgId: string
+  orgId: string,
 ): Promise<void> {
-  const { supabase } = await requireOrgContext(orgId)
+  const { supabase } = await requireOrgContext(orgId);
 
   const { data: item } = await supabase
     .from("schedule_items")
     .select("start_date, end_date")
     .eq("org_id", orgId)
     .eq("id", scheduleItemId)
-    .single()
+    .single();
 
-  if (!item) return
+  if (!item) return;
 
-  const updateData: Record<string, string> = {}
+  const updateData: Record<string, string> = {};
 
   if (item.start_date) {
-    const newStart = new Date(item.start_date)
-    newStart.setDate(newStart.getDate() + daysToAdd)
-    updateData.start_date = newStart.toISOString().split("T")[0]
+    const newStart = new Date(item.start_date);
+    newStart.setDate(newStart.getDate() + daysToAdd);
+    updateData.start_date = newStart.toISOString().split("T")[0];
   }
 
   if (item.end_date) {
-    const newEnd = new Date(item.end_date)
-    newEnd.setDate(newEnd.getDate() + daysToAdd)
-    updateData.end_date = newEnd.toISOString().split("T")[0]
+    const newEnd = new Date(item.end_date);
+    newEnd.setDate(newEnd.getDate() + daysToAdd);
+    updateData.end_date = newEnd.toISOString().split("T")[0];
   }
 
   if (Object.keys(updateData).length > 0) {
@@ -1396,7 +2041,7 @@ async function adjustScheduleItemDates(
       .from("schedule_items")
       .update(updateData)
       .eq("org_id", orgId)
-      .eq("id", scheduleItemId)
+      .eq("id", scheduleItemId);
   }
 }
 
@@ -1405,34 +2050,42 @@ async function adjustScheduleItemDates(
  */
 export async function getTotalScheduleImpact(
   scheduleItemId: string,
-  orgId?: string
+  orgId?: string,
 ): Promise<{ total_days: number; pending_days: number; applied_days: number }> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("schedule.read", { supabase, orgId: resolvedOrgId, userId })
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("schedule.read", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
 
   const { data, error } = await supabase
     .from("schedule_item_change_orders")
     .select("days_adjusted, applied_at")
     .eq("org_id", resolvedOrgId)
-    .eq("schedule_item_id", scheduleItemId)
+    .eq("schedule_item_id", scheduleItemId);
 
   if (error) {
-    throw new Error(`Failed to get total schedule impact: ${error.message}`)
+    throw new Error(`Failed to get total schedule impact: ${error.message}`);
   }
 
-  const impacts = data ?? []
+  const impacts = data ?? [];
   const pending_days = impacts
     .filter((i) => !i.applied_at)
-    .reduce((sum, i) => sum + (i.days_adjusted ?? 0), 0)
+    .reduce((sum, i) => sum + (i.days_adjusted ?? 0), 0);
   const applied_days = impacts
     .filter((i) => i.applied_at)
-    .reduce((sum, i) => sum + (i.days_adjusted ?? 0), 0)
+    .reduce((sum, i) => sum + (i.days_adjusted ?? 0), 0);
 
   return {
     total_days: pending_days + applied_days,
     pending_days,
     applied_days,
-  }
+  };
 }
 
 // ============================================================================
@@ -1444,31 +2097,37 @@ export async function getTotalScheduleImpact(
  */
 export async function getDrawMilestones(
   projectId: string,
-  orgId?: string
+  orgId?: string,
 ): Promise<ScheduleItem[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireProjectPermission(userId, projectId, "schedule.read")
-  const dependencyMap = await loadDependencies(supabase, resolvedOrgId)
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requireProjectPermission(userId, projectId, "schedule.read");
+  const dependencyMap = await loadDependencies(supabase, resolvedOrgId);
 
   const { data, error } = await supabase
     .from("schedule_items")
-    .select(`
+    .select(
+      `
       id, org_id, project_id, name, item_type, status, start_date, end_date,
       progress, assigned_to, metadata, created_at, updated_at,
       phase, trade, location, planned_hours, actual_hours,
       constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
       cost_code_id, budget_cents, actual_cost_cents
-    `)
+    `,
+    )
     .eq("org_id", resolvedOrgId)
     .eq("project_id", projectId)
     .eq("item_type", "milestone")
-    .order("start_date", { ascending: true })
+    .order("start_date", { ascending: true });
 
   if (error) {
-    throw new Error(`Failed to get draw milestones: ${error.message}`)
+    throw new Error(`Failed to get draw milestones: ${error.message}`);
   }
 
-  return (data ?? []).map((row) => mapScheduleItem(row, dependencyMap))
+  return (data ?? []).map((row) => mapScheduleItem(row, dependencyMap));
 }
 
 /**
@@ -1479,11 +2138,15 @@ export async function linkMilestoneToDraw({
   drawScheduleId,
   orgId,
 }: {
-  milestoneId: string
-  drawScheduleId: string
-  orgId?: string
+  milestoneId: string;
+  drawScheduleId: string;
+  orgId?: string;
 }): Promise<void> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
 
   // Verify the milestone exists and is a milestone type
   const { data: milestone, error: milestoneError } = await supabase
@@ -1491,14 +2154,14 @@ export async function linkMilestoneToDraw({
     .select("id, name, item_type")
     .eq("org_id", resolvedOrgId)
     .eq("id", milestoneId)
-    .single()
+    .single();
 
   if (milestoneError || !milestone) {
-    throw new Error("Milestone not found")
+    throw new Error("Milestone not found");
   }
 
   if (milestone.item_type !== "milestone") {
-    throw new Error("Only milestone items can be linked to draws")
+    throw new Error("Only milestone items can be linked to draws");
   }
 
   // Update the draw schedule with the milestone reference
@@ -1506,10 +2169,10 @@ export async function linkMilestoneToDraw({
     .from("draw_schedules")
     .update({ milestone_id: milestoneId })
     .eq("org_id", resolvedOrgId)
-    .eq("id", drawScheduleId)
+    .eq("id", drawScheduleId);
 
   if (error) {
-    throw new Error(`Failed to link milestone to draw: ${error.message}`)
+    throw new Error(`Failed to link milestone to draw: ${error.message}`);
   }
 
   await recordEvent({
@@ -1518,7 +2181,7 @@ export async function linkMilestoneToDraw({
     entityType: "draw_schedule",
     entityId: drawScheduleId,
     payload: { milestone_id: milestoneId, milestone_name: milestone.name },
-  })
+  });
 
   await recordAudit({
     orgId: resolvedOrgId,
@@ -1527,7 +2190,7 @@ export async function linkMilestoneToDraw({
     entityType: "draw_schedule",
     entityId: drawScheduleId,
     after: { milestone_id: milestoneId },
-  })
+  });
 }
 
 /**
@@ -1535,18 +2198,22 @@ export async function linkMilestoneToDraw({
  */
 export async function unlinkMilestoneFromDraw(
   drawScheduleId: string,
-  orgId?: string
+  orgId?: string,
 ): Promise<void> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
 
   const { error } = await supabase
     .from("draw_schedules")
     .update({ milestone_id: null })
     .eq("org_id", resolvedOrgId)
-    .eq("id", drawScheduleId)
+    .eq("id", drawScheduleId);
 
   if (error) {
-    throw new Error(`Failed to unlink milestone from draw: ${error.message}`)
+    throw new Error(`Failed to unlink milestone from draw: ${error.message}`);
   }
 
   await recordAudit({
@@ -1556,7 +2223,7 @@ export async function unlinkMilestoneFromDraw(
     entityType: "draw_schedule",
     entityId: drawScheduleId,
     after: { milestone_id: null },
-  })
+  });
 }
 
 /**
@@ -1564,22 +2231,24 @@ export async function unlinkMilestoneFromDraw(
  */
 export async function getDrawsByMilestone(
   milestoneId: string,
-  orgId?: string
+  orgId?: string,
 ): Promise<DrawSchedule[]> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId);
 
   const { data, error } = await supabase
     .from("draw_schedules")
-    .select(`
+    .select(
+      `
       id, org_id, project_id, draw_number, description, amount_cents,
       scheduled_date, status, milestone_id, created_at, updated_at
-    `)
+    `,
+    )
     .eq("org_id", resolvedOrgId)
     .eq("milestone_id", milestoneId)
-    .order("draw_number", { ascending: true })
+    .order("draw_number", { ascending: true });
 
   if (error) {
-    throw new Error(`Failed to get draws by milestone: ${error.message}`)
+    throw new Error(`Failed to get draws by milestone: ${error.message}`);
   }
 
   return (data ?? []).map((row) => ({
@@ -1595,7 +2264,7 @@ export async function getDrawsByMilestone(
     milestone_id: row.milestone_id ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at,
-  })) as DrawSchedule[]
+  })) as DrawSchedule[];
 }
 
 // ============================================================================
@@ -1612,22 +2281,31 @@ export async function updateScheduleItemCosts({
   actualCostCents,
   orgId,
 }: {
-  itemId: string
-  costCodeId?: string | null
-  budgetCents?: number | null
-  actualCostCents?: number | null
-  orgId?: string
+  itemId: string;
+  costCodeId?: string | null;
+  budgetCents?: number | null;
+  actualCostCents?: number | null;
+  orgId?: string;
 }): Promise<ScheduleItem> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("schedule.edit", { supabase, orgId: resolvedOrgId, userId })
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requirePermission("schedule.edit", {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  });
 
-  const updateData: Record<string, any> = {}
-  if (costCodeId !== undefined) updateData.cost_code_id = costCodeId
-  if (budgetCents !== undefined) updateData.budget_cents = budgetCents
-  if (actualCostCents !== undefined) updateData.actual_cost_cents = actualCostCents
+  const updateData: Record<string, any> = {};
+  if (costCodeId !== undefined) updateData.cost_code_id = costCodeId;
+  if (budgetCents !== undefined) updateData.budget_cents = budgetCents;
+  if (actualCostCents !== undefined)
+    updateData.actual_cost_cents = actualCostCents;
 
   if (Object.keys(updateData).length === 0) {
-    throw new Error("No cost fields to update")
+    throw new Error("No cost fields to update");
   }
 
   const { data, error } = await supabase
@@ -1635,17 +2313,19 @@ export async function updateScheduleItemCosts({
     .update(updateData)
     .eq("org_id", resolvedOrgId)
     .eq("id", itemId)
-    .select(`
+    .select(
+      `
       id, org_id, project_id, name, item_type, status, start_date, end_date,
       progress, assigned_to, metadata, created_at, updated_at,
       phase, trade, location, planned_hours, actual_hours,
       constraint_type, constraint_date, is_critical_path, float_days, color, sort_order,
       cost_code_id, budget_cents, actual_cost_cents
-    `)
-    .single()
+    `,
+    )
+    .single();
 
   if (error || !data) {
-    throw new Error(`Failed to update schedule item costs: ${error?.message}`)
+    throw new Error(`Failed to update schedule item costs: ${error?.message}`);
   }
 
   await recordAudit({
@@ -1655,10 +2335,10 @@ export async function updateScheduleItemCosts({
     entityType: "schedule_item",
     entityId: itemId,
     after: updateData,
-  })
+  });
 
-  const dependencyMap = await loadDependencies(supabase, resolvedOrgId)
-  return mapScheduleItem(data, dependencyMap)
+  const dependencyMap = await loadDependencies(supabase, resolvedOrgId);
+  return mapScheduleItem(data, dependencyMap);
 }
 
 /**
@@ -1666,55 +2346,61 @@ export async function updateScheduleItemCosts({
  */
 export async function getScheduleBudgetSummary(
   projectId: string,
-  orgId?: string
+  orgId?: string,
 ): Promise<{
-  total_budget_cents: number
-  total_actual_cents: number
-  variance_cents: number
+  total_budget_cents: number;
+  total_actual_cents: number;
+  variance_cents: number;
   by_cost_code: Array<{
-    cost_code_id: string | null
-    cost_code_name?: string
-    cost_code_number?: string
-    budget_cents: number
-    actual_cents: number
-    item_count: number
-  }>
+    cost_code_id: string | null;
+    cost_code_name?: string;
+    cost_code_number?: string;
+    budget_cents: number;
+    actual_cents: number;
+    item_count: number;
+  }>;
 }> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireProjectPermission(userId, projectId, "schedule.read")
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
+  await requireProjectPermission(userId, projectId, "schedule.read");
 
   const { data: items, error } = await supabase
     .from("schedule_items")
-    .select(`
+    .select(
+      `
       id, cost_code_id, budget_cents, actual_cost_cents,
       cost_code:cost_codes(id, name, code)
-    `)
+    `,
+    )
     .eq("org_id", resolvedOrgId)
-    .eq("project_id", projectId)
+    .eq("project_id", projectId);
 
   if (error) {
-    throw new Error(`Failed to get schedule budget summary: ${error.message}`)
+    throw new Error(`Failed to get schedule budget summary: ${error.message}`);
   }
 
   // Aggregate by cost code
   const byCostCode = new Map<
     string | null,
     {
-      cost_code_id: string | null
-      cost_code_name?: string
-      cost_code_number?: string
-      budget_cents: number
-      actual_cents: number
-      item_count: number
+      cost_code_id: string | null;
+      cost_code_name?: string;
+      cost_code_number?: string;
+      budget_cents: number;
+      actual_cents: number;
+      item_count: number;
     }
-  >()
+  >();
 
-  let total_budget_cents = 0
-  let total_actual_cents = 0
+  let total_budget_cents = 0;
+  let total_actual_cents = 0;
 
   for (const item of items ?? []) {
-    const costCodeId = item.cost_code_id ?? null
-    const costCode = item.cost_code as any
+    const costCodeId = item.cost_code_id ?? null;
+    const costCode = item.cost_code as any;
 
     if (!byCostCode.has(costCodeId)) {
       byCostCode.set(costCodeId, {
@@ -1724,16 +2410,16 @@ export async function getScheduleBudgetSummary(
         budget_cents: 0,
         actual_cents: 0,
         item_count: 0,
-      })
+      });
     }
 
-    const entry = byCostCode.get(costCodeId)!
-    entry.budget_cents += item.budget_cents ?? 0
-    entry.actual_cents += item.actual_cost_cents ?? 0
-    entry.item_count += 1
+    const entry = byCostCode.get(costCodeId)!;
+    entry.budget_cents += item.budget_cents ?? 0;
+    entry.actual_cents += item.actual_cost_cents ?? 0;
+    entry.item_count += 1;
 
-    total_budget_cents += item.budget_cents ?? 0
-    total_actual_cents += item.actual_cost_cents ?? 0
+    total_budget_cents += item.budget_cents ?? 0;
+    total_actual_cents += item.actual_cost_cents ?? 0;
   }
 
   return {
@@ -1742,10 +2428,10 @@ export async function getScheduleBudgetSummary(
     variance_cents: total_budget_cents - total_actual_cents,
     by_cost_code: Array.from(byCostCode.values()).sort((a, b) => {
       // Sort by cost code number, with null at the end
-      if (!a.cost_code_number && !b.cost_code_number) return 0
-      if (!a.cost_code_number) return 1
-      if (!b.cost_code_number) return -1
-      return a.cost_code_number.localeCompare(b.cost_code_number)
+      if (!a.cost_code_number && !b.cost_code_number) return 0;
+      if (!a.cost_code_number) return 1;
+      if (!b.cost_code_number) return -1;
+      return a.cost_code_number.localeCompare(b.cost_code_number);
     }),
-  }
+  };
 }

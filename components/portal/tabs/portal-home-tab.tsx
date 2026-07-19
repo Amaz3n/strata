@@ -290,12 +290,12 @@ export function PortalHomeTab({ data, token, canPayInvoices = false }: PortalHom
               <p className="text-3xl font-bold tracking-tight text-foreground">
                 {formatCurrency(data.financialSummary.contractTotal)}
               </p>
-              <p className="text-sm text-muted-foreground mt-0.5">contract total</p>
+              <p className="text-sm text-muted-foreground mt-0.5">{data.financialSummary.mode === "closing" ? "purchase price with approved changes" : "contract total"}</p>
             </div>
             {/* Paid progress */}
             <div className="space-y-1.5">
               <div className="flex justify-between text-xs">
-                <span className="text-muted-foreground">Paid</span>
+                <span className="text-muted-foreground">{data.financialSummary.mode === "closing" ? "Deposits received" : "Paid"}</span>
                 <span className="font-medium text-foreground">
                   {formatCurrency(data.financialSummary.totalPaid)}
                 </span>
@@ -309,7 +309,7 @@ export function PortalHomeTab({ data, token, canPayInvoices = false }: PortalHom
                 />
               </div>
               <div className="flex justify-between text-xs">
-                <span className="text-muted-foreground">Remaining</span>
+                <span className="text-muted-foreground">{data.financialSummary.mode === "closing" ? "Balance due at closing" : "Remaining"}</span>
                 <span className="font-medium text-foreground">
                   {formatCurrency(data.financialSummary.balanceRemaining)}
                 </span>
@@ -332,6 +332,12 @@ export function PortalHomeTab({ data, token, canPayInvoices = false }: PortalHom
                     </Link>
                   </Button>
                 )}
+              </div>
+            )}
+            {data.financialSummary.mode === "closing" && data.financialSummary.scheduledClosingDate && (
+              <div className="border-t border-border pt-3">
+                <p className="text-xs text-muted-foreground">Estimated closing</p>
+                <p className="text-sm font-semibold mt-0.5">{format(new Date(data.financialSummary.scheduledClosingDate), "MMM d, yyyy")}</p>
               </div>
             )}
           </motion.div>

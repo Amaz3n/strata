@@ -292,7 +292,7 @@ function advanceRunDate(schedule: { frequency: InvoiceScheduleFrequency; day_of_
 
 async function nextLocalInvoiceNumber(serviceClient: ReturnType<typeof createServiceSupabaseClient>, orgId: string) {
   const [{ data: connection }, { data: recent }] = await Promise.all([
-    serviceClient.from("qbo_connections").select("settings").eq("org_id", orgId).eq("status", "active").maybeSingle(),
+    serviceClient.from("accounting_connections").select("settings").eq("org_id", orgId).eq("provider", "qbo").eq("status", "active").order("connected_at", { ascending: true }).limit(1).maybeSingle(),
     serviceClient
       .from("invoices")
       .select("invoice_number")

@@ -33,6 +33,9 @@ export interface BidPackage {
   org_id: string
   project_id?: string | null
   prospect_id?: string | null
+  community_id?: string | null
+  house_plan_id?: string | null
+  award_target: "commitment" | "price_agreement"
   title: string
   cost_code_id?: string | null
   budget_line_id?: string | null
@@ -179,7 +182,8 @@ export interface BidSubmissionBenchmark {
 
 export interface BidAwardResult {
   awardId: string
-  commitmentId: string
+  commitmentId?: string
+  agreementIds?: string[]
 }
 
 export interface BidActivityItem {
@@ -191,7 +195,7 @@ export interface BidActivityItem {
   created_at: string
 }
 
-const BID_PACKAGE_COLUMNS = `id, org_id, project_id, prospect_id, title, cost_code_id, budget_line_id, trade, scope, instructions, due_at, due_tz, mode, bond_required, status, created_by, created_at, updated_at`
+const BID_PACKAGE_COLUMNS = `id, org_id, project_id, prospect_id, community_id, house_plan_id, award_target, title, cost_code_id, budget_line_id, trade, scope, instructions, due_at, due_tz, mode, bond_required, status, created_by, created_at, updated_at`
 
 function mapBidPackage(row: any): BidPackage {
   return {
@@ -199,6 +203,9 @@ function mapBidPackage(row: any): BidPackage {
     org_id: row.org_id,
     project_id: row.project_id ?? null,
     prospect_id: row.prospect_id ?? null,
+    community_id: row.community_id ?? null,
+    house_plan_id: row.house_plan_id ?? null,
+    award_target: row.award_target === "price_agreement" ? "price_agreement" : "commitment",
     title: row.title,
     cost_code_id: row.cost_code_id ?? null,
     budget_line_id: row.budget_line_id ?? null,
@@ -465,7 +472,7 @@ function getBidEmailRecipient(invite: BidInvite) {
   return invite.invite_email || invite.contact?.email || invite.company?.email || null
 }
 
-async function resolveBidPackageJobName(supabase: any, orgId: string, bidPackage: { project_id?: string | null; prospect_id?: string | null }) {
+async function resolveBidPackageJobName(supabase: any, orgId: string, bidPackage: { project_id?: string | null; prospect_id?: string | null; community_id?: string | null; house_plan_id?: string | null }) {
   if (bidPackage.project_id) {
     const { data: project } = await supabase
       .from("projects")
@@ -484,6 +491,18 @@ async function resolveBidPackageJobName(supabase: any, orgId: string, bidPackage
       .eq("id", bidPackage.prospect_id)
       .maybeSingle()
     return prospect?.name as string | undefined
+  }
+
+  if (bidPackage.community_id || bidPackage.house_plan_id) {
+    const [communityResult, planResult] = await Promise.all([
+      bidPackage.community_id
+        ? supabase.from("communities").select("name").eq("org_id", orgId).eq("id", bidPackage.community_id).maybeSingle()
+        : Promise.resolve({ data: null }),
+      bidPackage.house_plan_id
+        ? supabase.from("house_plans").select("name").eq("org_id", orgId).eq("id", bidPackage.house_plan_id).maybeSingle()
+        : Promise.resolve({ data: null }),
+    ])
+    return [communityResult.data?.name, planResult.data?.name].filter(Boolean).join(" — ") || "Price book"
   }
 
   return undefined
@@ -1220,7 +1239,7 @@ export async function getBidPackage(bidPackageId: string, orgId?: string): Promi
  * project or a pipeline prospect) — used by the org-wide Bid Day desk. */
 export interface OrgBidPackage extends BidPackage {
   job_name: string | null
-  job_kind: "project" | "prospect" | null
+  job_kind: "project" | "prospect" | "community_plan" | null
 }
 
 /**
@@ -1253,28 +1272,52 @@ export async function listOrgBidPackages(orgId?: string): Promise<OrgBidPackage[
 
   const projectIds = [...new Set(packages.map((pkg) => pkg.project_id).filter((id): id is string => Boolean(id)))]
   const prospectIds = [...new Set(packages.map((pkg) => pkg.prospect_id).filter((id): id is string => Boolean(id)))]
+  const communityIds = [...new Set(packages.map((pkg) => pkg.community_id).filter((id): id is string => Boolean(id)))]
+  const planIds = [...new Set(packages.map((pkg) => pkg.house_plan_id).filter((id): id is string => Boolean(id)))]
 
-  const [projectRows, prospectRows] = await Promise.all([
+  const [projectRows, prospectRows, communityRows, planRows] = await Promise.all([
     projectIds.length > 0
       ? supabase.from("projects").select("id, name").eq("org_id", resolvedOrgId).in("id", projectIds)
       : Promise.resolve({ data: [] as { id: string; name: string }[] }),
     prospectIds.length > 0
       ? supabase.from("prospects").select("id, name").eq("org_id", resolvedOrgId).in("id", prospectIds)
       : Promise.resolve({ data: [] as { id: string; name: string }[] }),
+    communityIds.length > 0
+      ? supabase.from("communities").select("id, name").eq("org_id", resolvedOrgId).in("id", communityIds)
+      : Promise.resolve({ data: [] as { id: string; name: string }[] }),
+    planIds.length > 0
+      ? supabase.from("house_plans").select("id, name").eq("org_id", resolvedOrgId).in("id", planIds)
+      : Promise.resolve({ data: [] as { id: string; name: string }[] }),
   ])
 
   const projectNameById = new Map((projectRows.data ?? []).map((row: any) => [row.id as string, row.name as string]))
   const prospectNameById = new Map((prospectRows.data ?? []).map((row: any) => [row.id as string, row.name as string]))
+  const communityNameById = new Map((communityRows.data ?? []).map((row: any) => [row.id as string, row.name as string]))
+  const planNameById = new Map((planRows.data ?? []).map((row: any) => [row.id as string, row.name as string]))
 
   return packages.map((pkg) => {
-    const job_kind: OrgBidPackage["job_kind"] = pkg.project_id ? "project" : pkg.prospect_id ? "prospect" : null
+    const job_kind: OrgBidPackage["job_kind"] = pkg.project_id ? "project" : pkg.prospect_id ? "prospect" : (pkg.community_id || pkg.house_plan_id) ? "community_plan" : null
     const job_name = pkg.project_id
       ? projectNameById.get(pkg.project_id) ?? null
       : pkg.prospect_id
         ? prospectNameById.get(pkg.prospect_id) ?? null
-        : null
+        : (pkg.community_id || pkg.house_plan_id)
+          ? [pkg.community_id ? communityNameById.get(pkg.community_id) : null, pkg.house_plan_id ? planNameById.get(pkg.house_plan_id) : null].filter(Boolean).join(" — ") || "Price book"
+          : null
     return { ...pkg, job_name, job_kind }
   })
+}
+
+export async function listCommunityBidPackages(communityId: string, orgId?: string): Promise<BidPackage[]> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["bid.read", "price_book.read"], { supabase, orgId: resolvedOrgId, userId })
+  const { data: community } = await supabase.from("communities").select("id").eq("org_id", resolvedOrgId).eq("id", communityId).maybeSingle()
+  if (!community) throw new Error("Community not found")
+  const { data, error } = await supabase.from("bid_packages").select(`
+    ${BID_PACKAGE_COLUMNS}, cost_code:cost_codes(code, name), bid_invites!bid_invites_org_package_fk(count)
+  `).eq("org_id", resolvedOrgId).eq("community_id", communityId).order("due_at", { ascending: false }).limit(200)
+  if (error) throw new Error(`Failed to list community bid packages: ${error.message}`)
+  return decorateBidPackageSummaries(supabase, resolvedOrgId, (data ?? []).map(mapBidPackage))
 }
 
 export async function listBidScopeItems(bidPackageId: string, orgId?: string): Promise<BidScopeItem[]> {
@@ -1308,7 +1351,7 @@ export async function saveBidScopeItems({
 }): Promise<BidScopeItem[]> {
   const parsed = saveBidScopeItemsInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
   const pkg = await ensureBidPackageInOrg(parsed.bid_package_id, resolvedOrgId, supabase)
 
   const { data: pkgStatusRow } = await supabase
@@ -1398,12 +1441,20 @@ export async function createBidPackage({
 }): Promise<BidPackage> {
   const parsed = createBidPackageInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
   if (parsed.project_id) {
     await ensureProjectInOrg(parsed.project_id, resolvedOrgId, supabase)
   }
   if (parsed.prospect_id) {
     await ensureProspectInOrg(parsed.prospect_id, resolvedOrgId, supabase)
+  }
+  if (parsed.community_id) {
+    const { data } = await supabase.from("communities").select("id").eq("org_id", resolvedOrgId).eq("id", parsed.community_id).maybeSingle()
+    if (!data) throw new Error("Community not found")
+  }
+  if (parsed.house_plan_id) {
+    const { data } = await supabase.from("house_plans").select("id").eq("org_id", resolvedOrgId).eq("id", parsed.house_plan_id).maybeSingle()
+    if (!data) throw new Error("House plan not found")
   }
   if (parsed.cost_code_id) {
     await ensureCostCodeInOrg(parsed.cost_code_id, resolvedOrgId, supabase)
@@ -1426,6 +1477,9 @@ export async function createBidPackage({
       org_id: resolvedOrgId,
       project_id: parsed.project_id ?? null,
       prospect_id: parsed.prospect_id ?? null,
+      community_id: parsed.community_id ?? null,
+      house_plan_id: parsed.house_plan_id ?? null,
+      award_target: parsed.project_id || parsed.prospect_id ? "commitment" : "price_agreement",
       title: parsed.title,
       cost_code_id: resolvedCostCodeId,
       budget_line_id: parsed.budget_line_id ?? null,
@@ -1454,7 +1508,7 @@ export async function createBidPackage({
     eventType: "bid_package_created",
     entityType: "bid_package",
     entityId: data.id as string,
-    payload: { title: data.title, project_id: parsed.project_id ?? null, prospect_id: parsed.prospect_id ?? null },
+    payload: { title: data.title, project_id: parsed.project_id ?? null, prospect_id: parsed.prospect_id ?? null, community_id: parsed.community_id ?? null, house_plan_id: parsed.house_plan_id ?? null },
   })
 
   await recordAudit({
@@ -1480,11 +1534,11 @@ export async function updateBidPackage({
 }): Promise<BidPackage> {
   const parsed = updateBidPackageInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing, error: existingError } = await supabase
     .from("bid_packages")
-    .select("id, org_id, project_id, prospect_id, status, due_at, title, cost_code_id, budget_line_id")
+    .select("id, org_id, project_id, prospect_id, community_id, house_plan_id, award_target, status, due_at, title, cost_code_id, budget_line_id")
     .eq("org_id", resolvedOrgId)
     .eq("id", bidPackageId)
     .maybeSingle()
@@ -1515,6 +1569,9 @@ export async function updateBidPackage({
     updated_at: new Date().toISOString(),
   }
   if (parsed.title !== undefined) updates.title = parsed.title
+  if (parsed.community_id !== undefined) updates.community_id = parsed.community_id
+  if (parsed.house_plan_id !== undefined) updates.house_plan_id = parsed.house_plan_id
+  if (parsed.award_target !== undefined) updates.award_target = parsed.award_target
   if (resolvedUpdateCostCodeId !== undefined) updates.cost_code_id = resolvedUpdateCostCodeId
   if (parsed.budget_line_id !== undefined) updates.budget_line_id = parsed.budget_line_id
   if (parsed.trade !== undefined) updates.trade = parsed.trade
@@ -1775,7 +1832,7 @@ async function updateBidInviteAccessState({
   orgId?: string
 }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
 
   const { data: invite, error: inviteError } = await supabase
     .from("bid_invites")
@@ -3063,7 +3120,7 @@ export async function awardBidSubmission({
 }): Promise<BidAwardResult> {
   const parsed = awardBidSubmissionInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  await requireAnyPermission(["project.manage", "bid.write"], { supabase, orgId: resolvedOrgId, userId })
 
   const { data: submission, error: submissionError } = await supabase
     .from("bid_submissions")
@@ -3097,7 +3154,7 @@ export async function awardBidSubmission({
 
   const { data: bidPackage, error: bidPackageError } = await supabase
     .from("bid_packages")
-    .select("id, project_id, prospect_id, title, status, cost_code_id, budget_line_id")
+    .select("id, project_id, prospect_id, community_id, house_plan_id, award_target, title, status, cost_code_id, budget_line_id")
     .eq("org_id", resolvedOrgId)
     .eq("id", invite.bid_package_id)
     .maybeSingle()
@@ -3108,6 +3165,31 @@ export async function awardBidSubmission({
 
   if (bidPackage.status === "cancelled") {
     throw new Error("Cannot award a cancelled bid package")
+  }
+
+  if (bidPackage.award_target === "price_agreement") {
+    const service = createServiceSupabaseClient()
+    const { data: result, error: awardError } = await service.rpc("run_bid_award_price_agreements", {
+      p_org_id: resolvedOrgId,
+      p_bid_submission_id: submission.id,
+      p_awarded_by: userId,
+      p_notes: parsed.notes ?? null,
+      p_accepted_alternate_ids: parsed.accepted_alternate_ids ?? [],
+    })
+    if (awardError || !result?.award_id) throw new Error(`Failed to award bid to the price book: ${awardError?.message}`)
+    const agreementIds = Array.isArray(result.agreement_ids)
+      ? result.agreement_ids.filter((id: unknown): id is string => typeof id === "string")
+      : []
+    await recordEvent({
+      orgId: resolvedOrgId, actorId: userId, eventType: "bid_package.awarded_to_price_book",
+      entityType: "bid_package", entityId: bidPackage.id,
+      payload: { bid_package_id: bidPackage.id, bid_submission_id: submission.id, agreement_ids: agreementIds },
+    })
+    await recordAudit({
+      orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "bid_package",
+      entityId: bidPackage.id, before: bidPackage, after: { ...bidPackage, status: "awarded", award_id: result.award_id },
+    })
+    return { awardId: result.award_id, agreementIds }
   }
 
   let awardProjectId = bidPackage.project_id as string | null

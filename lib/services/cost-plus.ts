@@ -45,7 +45,7 @@ import {
 } from "@/lib/services/billing-rate-schedules"
 import { sendEmail, getOrgSenderEmail, renderStandardEmailLayout } from "@/lib/services/mailer"
 import { getNextInvoiceNumber } from "@/lib/services/invoice-numbers"
-import { enqueueProjectExpenseSync } from "@/lib/services/qbo-sync"
+import { enqueueProjectExpenseSync } from "@/lib/services/accounting-sync"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { getProjectGmpControlSummary } from "@/lib/services/gmp-control"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"

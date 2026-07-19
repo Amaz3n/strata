@@ -16,7 +16,7 @@ import {
   voidInvoice,
 } from "@/lib/services/invoices"
 import { listProjects } from "@/lib/services/projects"
-import { forceSyncInvoiceToQBO } from "@/lib/services/qbo-sync"
+import { processAccountingPush } from "@/lib/services/accounting-sync"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireAuthorization } from "@/lib/services/authorization"
@@ -30,7 +30,7 @@ import { uploadFilesObject } from "@/lib/storage/files-storage"
 import { createFileRecord } from "@/lib/services/files"
 import { createInitialVersion } from "@/lib/services/file-versions"
 import { attachFile } from "@/lib/services/file-links"
-import { QBOClient } from "@/lib/integrations/accounting/qbo-api"
+import { QBOClient } from "@/lib/integrations/accounting/qbo/client"
 import { recordEvent } from "@/lib/services/events"
 import { getInvoicePaymentActivity } from "@/lib/services/payments"
 import {
@@ -233,8 +233,8 @@ async function loadInvoiceDetail(invoiceId: string) {
   const views = await listInvoiceViews(invoiceId, invoice.org_id)
   const supabase = createServiceSupabaseClient()
   const { data: syncHistory } = await supabase
-    .from("qbo_sync_records")
-    .select("id, status, last_synced_at, error_message, qbo_id")
+    .from("accounting_sync_records")
+    .select("id, status, last_synced_at, error_message, external_id")
     .eq("org_id", invoice.org_id)
     .eq("entity_type", "invoice")
     .eq("entity_id", invoiceId)
@@ -254,7 +254,7 @@ async function loadInvoiceDetail(invoiceId: string) {
     invoice: { ...invoice, token },
     link: token ? `${appUrl}/i/${token}` : undefined,
     views,
-    syncHistory: syncHistory ?? [],
+    syncHistory: (syncHistory ?? []).map((record) => ({ ...record, qbo_id: record.external_id })),
     payments: paymentActivity.payments,
     reversals: paymentActivity.reversals,
     lienWaivers,
@@ -322,10 +322,7 @@ export async function manualResyncInvoiceAction(invoiceId: string) {
   return run(async () => {
     if (!invoiceId) throw new Error("Invoice id is required")
     const { orgId } = await requireOrgContext()
-    const result = await forceSyncInvoiceToQBO(invoiceId, orgId)
-    if (!result.success) {
-      throw new Error(result.error ?? "Unable to sync invoice")
-    }
+    await processAccountingPush({ orgId, entityType: "invoice", entityId: invoiceId })
     revalidatePath("/invoices")
   })
 }
@@ -493,10 +490,13 @@ async function loadInvoiceComposerContext(projectId?: string | null) {
   const settings = (orgSettingsRow?.settings as Record<string, any> | null) ?? {}
 
   const { data: qboConnection } = await supabase
-    .from("qbo_connections")
+    .from("accounting_connections")
     .select("status, settings, last_error, refresh_failure_count")
     .eq("org_id", orgId)
     .eq("status", "active")
+    .eq("provider", "qbo")
+    .order("connected_at", { ascending: true })
+    .limit(1)
     .maybeSingle()
 
   let qboConnected = Boolean(qboConnection)

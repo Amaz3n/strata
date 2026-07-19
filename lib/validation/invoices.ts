@@ -59,6 +59,7 @@ export const invoiceInputSchema = z.object({
   source_pay_application_id: z.string().uuid().optional(),
   qbo_income_account_id: z.string().min(1).optional().nullable(),
   qbo_income_account_name: z.string().max(255).optional().nullable(),
+  metadata: z.record(z.unknown()).optional(),
 })
 
 export type InvoiceLineInput = z.infer<typeof invoiceLineInputSchema>
