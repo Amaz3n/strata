@@ -192,7 +192,9 @@ export async function fetchQBOCompanyInfo(accessToken: string, realmId: string) 
 }
 
 export async function detectInvoiceNumberPattern(accessToken: string, realmId: string) {
-  const query = `SELECT DocNumber FROM Invoice ORDERBY MetaData.CreateTime DESC MAXRESULTS 1`
+  // Scan a window of recent invoices and take the numeric max — the most recently
+  // *created* invoice is not necessarily the highest-numbered one.
+  const query = `SELECT DocNumber FROM Invoice ORDERBY MetaData.CreateTime DESC MAXRESULTS 50`
   const response = await fetch(`${qboApiBaseUrl}/v3/company/${realmId}/query?query=${encodeURIComponent(query)}`, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -209,7 +211,12 @@ export async function detectInvoiceNumberPattern(accessToken: string, realmId: s
   }
 
   const payload = (await response.json().catch(() => ({}))) as any
-  const docNumber = payload?.QueryResponse?.Invoice?.[0]?.DocNumber as string | undefined
+  const rows = (payload?.QueryResponse?.Invoice ?? []) as Array<{ DocNumber?: string }>
+  const docNumber =
+    rows
+      .map((row) => (typeof row.DocNumber === "string" ? row.DocNumber.trim() : ""))
+      .filter(Boolean)
+      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: "base" }))[0] ?? undefined
 
   if (!docNumber) {
     return {

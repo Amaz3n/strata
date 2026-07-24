@@ -30,7 +30,8 @@ import { uploadFilesObject } from "@/lib/storage/files-storage"
 import { createFileRecord } from "@/lib/services/files"
 import { createInitialVersion } from "@/lib/services/file-versions"
 import { attachFile } from "@/lib/services/file-links"
-import { QBOClient } from "@/lib/integrations/accounting/qbo/client"
+import { resolveAccountingTarget } from "@/lib/services/accounting-target"
+import { getProvider } from "@/lib/integrations/accounting/registry"
 import { recordEvent } from "@/lib/services/events"
 import { getInvoicePaymentActivity } from "@/lib/services/payments"
 import {
@@ -95,7 +96,7 @@ export async function createInvoiceAction(input: unknown) {
   })
 }
 
-export async function createQBOIncomeAccountAction(name: string) {
+export async function createQBOIncomeAccountAction(name: string, projectId?: string | null) {
   return run(async () => {
     const normalized = String(name ?? "").trim()
     if (normalized.length < 2) {
@@ -106,12 +107,10 @@ export async function createQBOIncomeAccountAction(name: string) {
     }
 
     const { orgId } = await requireOrgContext()
-    const client = await QBOClient.forOrg(orgId)
-    if (!client) {
-      throw new Error("No active QuickBooks connection")
-    }
-
-    return client.createIncomeAccount(normalized)
+    const target = await resolveAccountingTarget({ orgId, projectId })
+    const provider = target ? getProvider(target.connection.provider) : null
+    if (!target || !provider?.createAccount) throw new Error("The mapped accounting provider cannot create income accounts")
+    return provider.createAccount({ connectionId: target.connection.id, kind: "income", name: normalized })
   })
 }
 
@@ -470,34 +469,21 @@ async function loadInvoiceComposerContext(projectId?: string | null) {
 
   // The project's default QBO customer (set in project settings) — used to pre-select the composer's
   // "bill to" picker so invoices and payables attribute to the same customer by default.
-  let defaultQboCustomer: { id: string; name: string } | null = null
-  if (projectId) {
-    const { data: projectRow } = await supabase
-      .from("projects")
-      .select("qbo_customer_id, qbo_customer_name")
-      .eq("org_id", orgId)
-      .eq("id", projectId)
-      .maybeSingle()
-    if (projectRow?.qbo_customer_id) {
-      defaultQboCustomer = {
-        id: String(projectRow.qbo_customer_id),
-        name: String(projectRow.qbo_customer_name ?? ""),
-      }
-    }
-  }
+  const accountingTarget = await resolveAccountingTarget({ orgId, projectId })
+  const defaultQboCustomer = accountingTarget?.dimensions.customer?.id
+    ? { id: accountingTarget.dimensions.customer.id, name: accountingTarget.dimensions.customer.name ?? "" }
+    : null
 
   const { data: orgSettingsRow } = await supabase.from("org_settings").select("settings").eq("org_id", orgId).maybeSingle()
   const settings = (orgSettingsRow?.settings as Record<string, any> | null) ?? {}
 
-  const { data: qboConnection } = await supabase
+  const { data: qboConnection } = accountingTarget ? await supabase
     .from("accounting_connections")
     .select("status, settings, last_error, refresh_failure_count")
     .eq("org_id", orgId)
-    .eq("status", "active")
-    .eq("provider", "qbo")
-    .order("connected_at", { ascending: true })
-    .limit(1)
+    .eq("id", accountingTarget.connection.id)
     .maybeSingle()
+    : { data: null }
 
   let qboConnected = Boolean(qboConnection)
   const qboDefaultIncomeAccountId =
@@ -507,17 +493,11 @@ async function loadInvoiceComposerContext(projectId?: string | null) {
   let qboAccountLoadWarning: string | null = null
   if (qboConnected) {
     try {
-      const qboClient = await QBOClient.forOrg(orgId)
-      if (!qboClient) {
-        qboConnected = false
-      } else {
-        qboIncomeAccounts = await qboClient.listIncomeAccounts()
-        if (qboIncomeAccounts.length === 0 && qboDefaultIncomeAccountId) {
-          const fallbackAccount = await qboClient.getIncomeAccountById(qboDefaultIncomeAccountId).catch(() => null)
-          if (fallbackAccount) {
-            qboIncomeAccounts = [fallbackAccount]
-          }
-        }
+      const provider = accountingTarget ? getProvider(accountingTarget.connection.provider) : null
+      if (!provider || !accountingTarget) qboConnected = false
+      else {
+        qboIncomeAccounts = (await provider.listAccounts({ connectionId: accountingTarget.connection.id, kind: "income" }))
+          .map((account) => ({ ...account, name: account.name ?? account.id, fullyQualifiedName: account.fullyQualifiedName ?? undefined }))
         if (qboIncomeAccounts.length === 0) {
           qboAccountLoadWarning = "QuickBooks returned no income accounts. Check your chart of accounts and default income account."
         }
@@ -561,17 +541,18 @@ async function loadInvoiceComposerContext(projectId?: string | null) {
  * the source of truth — we query it live by DisplayName prefix so there's no second customer base to
  * keep in sync. Returns [] when QBO isn't connected (the composer falls back to Arc contacts / manual).
  */
-export async function searchQboCustomersAction(term: string) {
+export async function searchQboCustomersAction(term: string, projectId?: string | null) {
   return run(async () => {
     const { orgId } = await requireOrgContext()
-    const qboClient = await QBOClient.forOrg(orgId).catch(() => null)
-    if (!qboClient) return { connected: false, customers: [] as Awaited<ReturnType<QBOClient["searchCustomers"]>> }
+    const target = await resolveAccountingTarget({ orgId, projectId }).catch(() => null)
+    const provider = target ? getProvider(target.connection.provider) : null
+    if (!target || !provider?.searchCounterparties) return { connected: false, customers: [] }
     try {
-      const customers = await qboClient.searchCustomers(term)
+      const customers = await provider.searchCounterparties({ connectionId: target.connection.id, role: "customer", term })
       return { connected: true, customers }
     } catch (error) {
-      console.warn("QBO customer search failed", error)
-      return { connected: true, customers: [] as Awaited<ReturnType<QBOClient["searchCustomers"]>> }
+      console.warn("Accounting customer search failed", error)
+      return { connected: true, customers: [] }
     }
   })
 }
@@ -587,21 +568,23 @@ export async function createQboCustomerAction(input: {
   city?: string | null
   state?: string | null
   postalCode?: string | null
+  projectId?: string | null
 }) {
   return run(async () => {
     const { orgId } = await requireOrgContext()
     const name = input.name?.trim()
     if (!name) throw new Error("Customer name is required")
-    const qboClient = await QBOClient.forOrg(orgId)
-    if (!qboClient) throw new Error("QuickBooks is not connected")
-    return qboClient.createCustomerOption({
-      name,
+    const target = await resolveAccountingTarget({ orgId, projectId: input.projectId })
+    const provider = target ? getProvider(target.connection.provider) : null
+    if (!target || !provider?.createCounterparty) throw new Error("The mapped accounting provider cannot create customers")
+    return provider.createCounterparty({ connectionId: target.connection.id, role: "customer", counterparty: {
+      displayName: name,
       email: input.email ?? null,
       line1: input.line1 ?? null,
       city: input.city ?? null,
       state: input.state ?? null,
       postalCode: input.postalCode ?? null,
-    })
+    } })
   })
 }
 
@@ -825,12 +808,22 @@ async function generateInvoicePdf(
     .eq("org_id", orgId)
     .eq("id", invoice.id)
 
-  if (invoice.qbo_id) {
+  const accountingTarget = await resolveAccountingTarget({ orgId, projectId: invoice.project_id })
+  const { data: syncRecord } = accountingTarget ? await supabase.from("accounting_sync_records")
+    .select("external_id")
+    .eq("org_id", orgId)
+    .eq("connection_id", accountingTarget.connection.id)
+    .eq("entity_type", "invoice")
+    .eq("entity_id", invoice.id)
+    .eq("status", "synced")
+    .maybeSingle() : { data: null }
+  if (accountingTarget && syncRecord?.external_id) {
     try {
-      const qboClient = await QBOClient.forOrg(orgId)
-      if (qboClient) {
-        const attachment = await qboClient.uploadAttachmentForInvoice({
-          invoiceId: invoice.qbo_id,
+      const provider = getProvider(accountingTarget.connection.provider)
+      if (provider.capabilities.supportsAttachments && provider.uploadInvoiceAttachment) {
+        const attachment = await provider.uploadInvoiceAttachment({
+          connectionId: accountingTarget.connection.id,
+          externalInvoiceId: syncRecord.external_id,
           fileName,
           contentType: "application/pdf",
           content: pdfBuffer,
@@ -846,17 +839,17 @@ async function generateInvoicePdf(
               latest_pdf_invoice_updated_at: invoice.updated_at ?? null,
               latest_pdf_generated_at: new Date().toISOString(),
               latest_pdf_template_version: INVOICE_PDF_TEMPLATE_VERSION,
-              qbo_pdf_attachment_id: attachment.id,
-              qbo_pdf_attached_at: new Date().toISOString(),
-              qbo_pdf_synced_file_id: fileRecord.id,
-              qbo_pdf_synced_invoice_id: invoice.qbo_id,
+              accounting_pdf_attachment_id: attachment.id,
+              accounting_pdf_attached_at: new Date().toISOString(),
+              accounting_pdf_synced_file_id: fileRecord.id,
+              accounting_pdf_external_invoice_id: syncRecord.external_id,
             },
           })
           .eq("org_id", orgId)
           .eq("id", invoice.id)
       }
     } catch (error) {
-      console.warn("Failed to attach invoice PDF to QuickBooks", error)
+      console.warn("Failed to attach invoice PDF to accounting provider", error)
     }
   }
 

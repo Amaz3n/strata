@@ -2,6 +2,7 @@ import { notFound } from "next/navigation"
 import type { ReactNode } from "react"
 
 import { CommunityStatusBadge } from "@/components/communities/community-status-badge"
+import { CommunityContextSync } from "@/components/communities/community-context-sync"
 import { CommunityTabs } from "@/components/communities/community-tabs"
 import { LotMixBar } from "@/components/communities/lot-mix-bar"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -15,6 +16,7 @@ export default async function CommunityLayout({ children, params }: { children: 
   const totalLots = LOT_STATUSES.reduce((sum, status) => sum + community.lotCounts[status], 0)
   return (
     <PageLayout title={community.name} breadcrumbs={[{ label: "Communities", href: "/communities" }, { label: community.name }]} fullBleed>
+      <CommunityContextSync communityId={id} />
       <div className="flex min-h-full flex-col">
         <div className="flex flex-wrap items-center justify-between gap-x-6 border-b px-4">
           <CommunityTabs communityId={id} />

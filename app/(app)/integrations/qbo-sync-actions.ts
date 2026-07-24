@@ -55,11 +55,14 @@ export async function listQboSyncQueueAction(params?: { projectId?: string | nul
   const supabase = createServiceSupabaseClient()
   const projectId = params?.projectId ?? null
 
-  const [{ data: connection }, { data: projectRows }] = await Promise.all([
-    supabase.from("accounting_connections").select("id, external_account_id").eq("org_id", orgId).eq("provider", "qbo").eq("status", "active").order("connected_at", { ascending: true }).limit(1).maybeSingle(),
+  const [{ data: connections }, { data: projectRows }] = await Promise.all([
+    supabase.from("accounting_connections").select("id, external_account_id").eq("org_id", orgId).eq("status", "active").order("connected_at", { ascending: true }),
     supabase.from("projects").select("id, name").eq("org_id", orgId),
   ])
-  const connected = Boolean(connection)
+  const realmIds = (connections ?? [])
+    .map((row) => row.external_account_id)
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+  const connected = (connections ?? []).length > 0
   const projectName = new Map<string, string>(
     ((projectRows ?? []) as any[]).map((row) => [row.id as string, row.name as string]),
   )
@@ -91,7 +94,7 @@ export async function listQboSyncQueueAction(params?: { projectId?: string | nul
     supabase
       .from("qbo_webhook_events")
       .select("id, entity_name, entity_qbo_id, operation, process_error, attempts, received_at, processed_at")
-      .eq("realm_id", typeof connection?.external_account_id === "string" ? connection.external_account_id : "")
+      .in("realm_id", realmIds.length > 0 ? realmIds : [""])
       .eq("process_status", "error")
       .order("received_at", { ascending: false })
       .limit(25),

@@ -24,8 +24,8 @@ export async function saveProjectAccountingLinkAction(input: {
     projectId: input.projectId,
     connectionId: input.connectionId,
     dimensions: {
-      ...(input.classId ? { class: { id: input.classId, name: input.className ?? null } } : {}),
-      ...(input.customerId ? { customer: { id: input.customerId, name: input.customerName ?? null } } : {}),
+      ...(input.classId ? { class: { id: input.classId, name: input.className ?? input.classId } } : {}),
+      ...(input.customerId ? { customer: { id: input.customerId, name: input.customerName ?? input.customerId } } : {}),
     },
     acknowledgeResync: input.acknowledgeResync,
   })

@@ -1,6 +1,7 @@
 "use server"
 
 import { revalidatePath } from "next/cache"
+import { invoiceIsFromAccountingProvider } from "@/lib/services/accounting-sync-state"
 
 import {
   approveChangeOrder,
@@ -312,7 +313,7 @@ export async function listLinkableInvoicesForChangeOrderAction(
       status: invoice.status,
       total_cents: invoice.total_cents ?? invoice.totals?.total_cents ?? 0,
       issue_date: invoice.issue_date ?? null,
-      from_qbo: Boolean(invoice.qbo_id) || (invoice.metadata as any)?.source_type === "qbo",
+      from_qbo: invoiceIsFromAccountingProvider(invoice),
     }))
 }
 

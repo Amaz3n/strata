@@ -1,7 +1,7 @@
 import type { PortalAccessToken } from "@/lib/types"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
-import { requireAuthorization } from "@/lib/services/authorization"
+import { getDivisionScopedProjectIds, requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { postJobCostActualsForVendorBill } from "@/lib/services/job-cost-actuals"
@@ -156,6 +156,8 @@ export async function approvePoCompletion(completionId: string, orgId?: string) 
 export async function listPoCompletions({ status, projectId, communityId, page = 1, pageSize = 50, orgId }: { status?: PoCompletionStatus; projectId?: string; communityId?: string; page?: number; pageSize?: number; orgId?: string } = {}) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAuthorization({ permission: "price_book.read", userId, orgId: resolvedOrgId, supabase, logDecision: true })
+  const authorizedProjectIds = await getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase })
+  if (authorizedProjectIds?.length === 0) return { items: [], count: 0, page, pageSize: Math.min(Math.max(pageSize, 1), 100) }
   let projectIds: string[] | null = null
   if (communityId) {
     const { data: lots } = await supabase.from("lots").select("project_id").eq("org_id", resolvedOrgId).eq("community_id", communityId).not("project_id", "is", null)
@@ -167,6 +169,7 @@ export async function listPoCompletions({ status, projectId, communityId, page =
   if (status) query = query.eq("status", status)
   if (projectId) query = query.eq("project_id", projectId)
   if (projectIds) query = query.in("project_id", projectIds)
+  if (authorizedProjectIds) query = query.in("project_id", authorizedProjectIds)
   const { data, error, count } = await query.range((page - 1) * size, page * size - 1)
   if (error) throw new Error(`Failed to list PO completions: ${error.message}`)
   return { items: data ?? [], count: count ?? 0, page, pageSize: size }

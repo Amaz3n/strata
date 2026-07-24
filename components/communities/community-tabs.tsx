@@ -13,6 +13,8 @@ export function CommunityTabs({ communityId }: { communityId: string }) {
     ["Land", `${base}/land`],
     ["Starts", `${base}/starts`],
     ["Sales", `${base}/sales`],
+    ["Plans & Pricing", `${base}/plans`],
+    ["P&L", `${base}/pnl`],
     ["Settings", `${base}/settings`],
   ] as const
 

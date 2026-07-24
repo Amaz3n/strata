@@ -1169,7 +1169,7 @@ export async function getPlatformUsers(): Promise<PlatformUsersResult> {
       full_name,
       email,
       created_at,
-      memberships (
+      memberships:memberships!memberships_user_id_fkey (
         org_id,
         status,
         last_active_at,

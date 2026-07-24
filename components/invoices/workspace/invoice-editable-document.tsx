@@ -800,7 +800,7 @@ export function InvoiceEditableDocument({
     let cancelled = false
     setCustomerSearchLoading(true)
     const handle = setTimeout(() => {
-      searchQboCustomersAction(customerQuery)
+      searchQboCustomersAction(customerQuery, projectId)
         .then((result) => {
           if (!cancelled) setCustomerResults(unwrapAction(result).customers ?? [])
         })
@@ -815,7 +815,7 @@ export function InvoiceEditableDocument({
       cancelled = true
       clearTimeout(handle)
     }
-  }, [qboConnected, customerPickerOpen, customerQuery])
+  }, [qboConnected, customerPickerOpen, customerQuery, projectId])
 
   // Keep customer selection consistent when the details block is cleared.
   useEffect(() => {
@@ -995,7 +995,7 @@ export function InvoiceEditableDocument({
     if (!name || creatingQboCustomer) return
     setCreatingQboCustomer(true)
     try {
-      const created = unwrapAction(await createQboCustomerAction({ name }))
+      const created = unwrapAction(await createQboCustomerAction({ name, projectId }))
       selectQboCustomer(created)
       setCustomerQuery("")
       toast.success(`Created "${created.name}" in QuickBooks`)
@@ -1007,7 +1007,7 @@ export function InvoiceEditableDocument({
   }
 
   const handleCreateQboIncomeAccount = useCallback(async (name: string): Promise<QBOIncomeAccountOption> => {
-    const created = unwrapAction(await createQBOIncomeAccountAction(name))
+    const created = unwrapAction(await createQBOIncomeAccountAction(name, projectId))
     const normalized: QBOIncomeAccountOption = { id: created.id, name: created.name, fullyQualifiedName: created.fullyQualifiedName }
     setQboIncomeAccounts((prev) => {
       const next = [...prev]
@@ -1019,7 +1019,7 @@ export function InvoiceEditableDocument({
       return [...next, normalized].sort((a, b) => formatQboAccountLabel(a).localeCompare(formatQboAccountLabel(b)))
     })
     return normalized
-  }, [])
+  }, [projectId])
 
   const validateForSend = (): boolean => {
     setSubmitAttempted(true)

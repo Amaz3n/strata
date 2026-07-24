@@ -1,15 +1,15 @@
 {
   "crons": [
     {
-      "path": "/api/qbo/process-outbox",
+      "path": "/api/accounting/process-outbox",
       "schedule": "*/10 * * * *"
     },
     {
-      "path": "/api/qbo/process-cdc",
+      "path": "/api/accounting/process-changes",
       "schedule": "*/15 * * * *"
     },
     {
-      "path": "/api/qbo/process-webhooks",
+      "path": "/api/accounting/process-inbound",
       "schedule": "5-59/15 * * * *"
     },
     {
@@ -104,13 +104,13 @@
     "app/api/jobs/meeting-audio-cleanup/route.ts": {
       "maxDuration": 120
     },
-    "app/api/qbo/process-outbox/route.ts": {
+    "app/api/accounting/process-outbox/route.ts": {
       "maxDuration": 120
     },
-    "app/api/qbo/process-webhooks/route.ts": {
+    "app/api/accounting/process-inbound/route.ts": {
       "maxDuration": 120
     },
-    "app/api/qbo/process-cdc/route.ts": {
+    "app/api/accounting/process-changes/route.ts": {
       "maxDuration": 120
     },
     "app/api/jobs/rbac-evidence/route.ts": {

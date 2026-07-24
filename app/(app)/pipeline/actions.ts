@@ -20,6 +20,7 @@ import {
   prospectFiltersSchema,
 } from "@/lib/validation/prospects"
 import { trackInCrm } from "@/lib/services/crm"
+import { createProspectLotHoldSchema } from "@/lib/validation/community-sales"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -103,6 +104,25 @@ export async function updateProspectContactAction(contactId: string, input: unkn
       const contact = await updateProspectContact({ contactId, input: parsed })
       revalidatePipelinePaths()
       return contact
+  })
+}
+
+export async function listSellableLotsAction(communityId: string) {
+  return run(async () => {
+    const { listSellableLots } = await import("@/lib/services/community-sales")
+    return listSellableLots(communityId)
+  })
+}
+
+export async function createProspectLotHoldAction(input: unknown) {
+  return run(async () => {
+    const parsed = createProspectLotHoldSchema.parse(input)
+    const { createLotHoldFromProspect } = await import("@/lib/services/community-sales")
+    const reservation = await createLotHoldFromProspect(parsed)
+    revalidatePipelinePaths(parsed.prospectId)
+    revalidatePath("/sales")
+    revalidatePath(`/communities/${reservation.communityId}/sales`)
+    return reservation
   })
 }
 

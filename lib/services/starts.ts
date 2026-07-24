@@ -10,6 +10,10 @@ import { recordEvent } from "@/lib/services/events"
 import { NotificationService } from "@/lib/services/notifications"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { requirePermission } from "@/lib/services/permissions"
+import {
+  getDivisionAccessForUser,
+  getDivisionScopedProjectIds,
+} from "@/lib/services/authorization"
 import { createProject } from "@/lib/services/projects"
 import { triggerStartsPipeline } from "@/lib/services/starts-pipeline-trigger"
 import {
@@ -131,17 +135,26 @@ function mapGate(row: Relation): StartGateDTO {
   }
 }
 
-async function loadPurchasingEnabled(supabase: SupabaseClient, orgId: string, communityId: string) {
-  const { count, error } = await supabase.from("vendor_price_agreements")
-    .select("id", { count: "exact", head: true }).eq("org_id", orgId).eq("status", "active")
-    .or(`community_id.eq.${communityId},community_id.is.null`)
+async function loadPurchasingEnabledByCommunity(supabase: SupabaseClient, orgId: string, communityIds: string[]) {
+  const unique = Array.from(new Set(communityIds))
+  if (!unique.length) return new Map<string, boolean>()
+  const { data, error } = await supabase.from("vendor_price_agreements").select("community_id")
+    .eq("org_id", orgId).eq("status", "active")
+    .or(`community_id.in.(${unique.join(",")}),community_id.is.null`).limit(10_000)
   if (error) throw new Error(`Failed to check purchasing readiness: ${error.message}`)
-  return (count ?? 0) > 0
+  const scoped = new Set((data ?? []).flatMap((row) => row.community_id ? [row.community_id as string] : []))
+  const orgWide = (data ?? []).some((row) => row.community_id === null)
+  return new Map(unique.map((id) => [id, orgWide || scoped.has(id)]))
+}
+
+async function loadPurchasingEnabled(supabase: SupabaseClient, orgId: string, communityId: string) {
+  const map = await loadPurchasingEnabledByCommunity(supabase, orgId, [communityId])
+  return map.get(communityId) ?? false
 }
 
 export async function seedDefaultGateDefinitions(orgId?: string) {
   const context = await requireOrgContext(orgId)
-  await requirePermission("start.read", context)
+  await requirePermission("start.write", context)
   const { error } = await context.supabase.from("start_gate_definitions").upsert(
     DEFAULT_GATE_DEFINITIONS.map((gate) => ({ org_id: context.orgId, ...gate })),
     { onConflict: "org_id,key", ignoreDuplicates: true },
@@ -567,33 +580,38 @@ export async function setProjectSuperintendent(projectId: string, userId: string
 }
 
 export async function listStartPackages(
-  filters: { id?: string; communityId?: string; status?: StartPackageStatus[]; targetWeek?: string; page?: number; pageSize?: number } = {},
+  filters: { id?: string; communityId?: string; divisionId?: string; status?: StartPackageStatus[]; targetWeek?: string; page?: number; pageSize?: number } = {},
   orgId?: string,
 ): Promise<{ packages: StartPackageListItemDTO[]; total: number }> {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.read", context)
+  const authorizedProjectIds = await getDivisionScopedProjectIds(context)
+  if (authorizedProjectIds?.length === 0) return { packages: [], total: 0 }
   const page = Math.max(1, filters.page ?? 1)
   const pageSize = Math.min(200, Math.max(1, filters.pageSize ?? 50))
   let query = context.supabase.from("start_packages").select(`
     *, lot:lots!inner(lot_number,block,house_plan_id,house_plan_elevation_id,
       plan:house_plans(code,name),elevation:house_plan_elevations(code)),
-    community:communities!inner(name), project:projects(superintendent_id,superintendent:app_users!projects_superintendent_id_fkey(full_name)),
+    community:communities!inner(name), project:projects!inner(division_id,superintendent_id,superintendent:app_users!projects_superintendent_id_fkey(full_name)),
     gates:start_package_gates(status,definition:start_gate_definitions(key,applies_when))
   `, { count: "exact" }).eq("org_id", context.orgId)
   if (filters.id) query = query.eq("id", filters.id)
   if (filters.communityId) query = query.eq("community_id", filters.communityId)
+  if (filters.divisionId) query = query.eq("project.division_id", filters.divisionId)
+  if (authorizedProjectIds) query = query.in("project_id", authorizedProjectIds)
   if (filters.status?.length) query = query.in("status", filters.status)
   if (filters.targetWeek) query = query.eq("target_week", filters.targetWeek)
   const { data, error, count } = await query.order("target_week", { ascending: true, nullsFirst: false }).order("created_at").range((page - 1) * pageSize, page * pageSize - 1)
   if (error) throw new Error(`Failed to load start packages: ${error.message}`)
-  const packages = await Promise.all((data ?? []).map(async (row) => {
+  const purchasingByCommunity = await loadPurchasingEnabledByCommunity(context.supabase, context.orgId, (data ?? []).map((row) => row.community_id))
+  const packages = (data ?? []).map((row) => {
     const lot = relation(row.lot)
     const community = relation(row.community)
     const project = relation(row.project)
     const superintendent = relation(project?.superintendent)
     const plan = relation(lot?.plan)
     const elevation = relation(lot?.elevation)
-    const purchasingEnabled = await loadPurchasingEnabled(context.supabase, context.orgId, row.community_id)
+    const purchasingEnabled = purchasingByCommunity.get(row.community_id) ?? false
     const readiness = startPackageReadiness((row.gates ?? []).map((gate: Relation) => {
       const definition = relation(gate.definition)
       return { key: String(definition?.key), appliesWhen: definition?.applies_when as GateAppliesWhen, status: gate.status as GateStatus }
@@ -606,7 +624,7 @@ export async function listStartPackages(
       preconAgeDays: daysSince(row.created_at), isFinanced: row.is_financed, releasedAt: row.released_at,
       superintendentId: text(project?.superintendent_id), superintendentName: text(superintendent?.full_name),
     }
-  }))
+  })
   return { packages, total: count ?? 0 }
 }
 
@@ -631,18 +649,58 @@ export async function getStartPackage(id: string, orgId?: string): Promise<Start
 export async function getStartAttentionCount(orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.read", context)
-  const { count } = await context.supabase.from("start_packages").select("id", { count: "exact", head: true }).eq("org_id", context.orgId).eq("status", "attention")
+  const authorizedProjectIds = await getDivisionScopedProjectIds(context)
+  if (authorizedProjectIds?.length === 0) return 0
+  let query = context.supabase.from("start_packages").select("id", { count: "exact", head: true }).eq("org_id", context.orgId).eq("status", "attention")
+  if (authorizedProjectIds) query = query.in("project_id", authorizedProjectIds)
+  const { count } = await query
   return count ?? 0
 }
 
-export async function listStartPackageCandidates(orgId?: string) {
+export async function listSuperintendentCandidates(orgId?: string): Promise<Array<{ id: string; name: string }>> {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("start.read", context)
+  const { data, error } = await context.supabase.from("memberships")
+    .select("user_id,user:app_users!memberships_user_id_fkey(id,full_name,email)")
+    .eq("org_id", context.orgId).eq("status", "active").limit(300)
+  if (error) throw new Error(`Failed to load superintendent candidates: ${error.message}`)
+  return (data ?? [])
+    .flatMap((row) => {
+      const user = relation(row.user)
+      return user ? [{ id: String(row.user_id), name: text(user.full_name) ?? text(user.email) ?? "Member" }] : []
+    })
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
+
+export async function listStartPackageCandidates(
+  filters: { communityId?: string; divisionId?: string } = {},
+  orgId?: string,
+) {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.write", context)
-  const { data, error } = await context.supabase.from("lots").select(`
+  const divisionAccess = await getDivisionAccessForUser({
+    orgId: context.orgId,
+    userId: context.userId,
+  })
+  if (
+    filters.divisionId &&
+    divisionAccess.assignedOnly &&
+    !divisionAccess.divisionIds.includes(filters.divisionId)
+  ) {
+    return []
+  }
+  let query = context.supabase.from("lots").select(`
     id,lot_number,block,status,community_id,community:communities!inner(name),
     plan:house_plans(code,name),elevation:house_plan_elevations(code),
     packages:start_packages!start_packages_lot_id_fkey(id,status)
-  `).eq("org_id", context.orgId).in("status", ["developed", "assigned"]).order("lot_number").limit(500)
+  `).eq("org_id", context.orgId).in("status", ["developed", "assigned"])
+  if (filters.communityId) query = query.eq("community_id", filters.communityId)
+  if (filters.divisionId) query = query.eq("division_id", filters.divisionId)
+  else if (divisionAccess.assignedOnly) {
+    if (divisionAccess.divisionIds.length === 0) return []
+    query = query.in("division_id", divisionAccess.divisionIds)
+  }
+  const { data, error } = await query.order("lot_number").limit(500)
   if (error) throw new Error(`Failed to load start-package lots: ${error.message}`)
   return (data ?? []).filter((lot) => !(lot.packages ?? []).some((pkg: { status: string }) => pkg.status !== "cancelled")).map((lot) => {
     const community = relation(lot.community)

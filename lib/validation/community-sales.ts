@@ -9,6 +9,14 @@ export const createLotHoldSchema = z.object({
   notes: z.string().max(2000).optional().nullable(),
 })
 
+export const createProspectLotHoldSchema = z.object({
+  prospectId: z.string().uuid(),
+  lotId: z.string().uuid(),
+  expiresAt: z.string().datetime({ offset: true }),
+  notes: z.string().max(2000).optional().nullable(),
+})
+export type CreateProspectLotHoldInput = z.infer<typeof createProspectLotHoldSchema>
+
 export const convertReservationSchema = z.object({
   reservationId: z.string().uuid(),
   depositCents: z.number().int().min(0),

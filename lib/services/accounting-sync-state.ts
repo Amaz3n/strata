@@ -80,3 +80,12 @@ export async function getAccountingSyncState(
 export function hasAccountingExternalId(state: AccountingSyncState | null | undefined) {
   return Boolean(state?.externalId)
 }
+
+/** True when an invoice originated from (or is linked into) the accounting provider. */
+export function invoiceIsFromAccountingProvider(invoice: {
+  qbo_id?: string | null
+  metadata?: Record<string, unknown> | null
+}): boolean {
+  if (invoice.qbo_id) return true
+  return (invoice.metadata as { source_type?: string } | null)?.source_type === "qbo"
+}

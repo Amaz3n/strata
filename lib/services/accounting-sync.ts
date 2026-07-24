@@ -7,13 +7,7 @@ import { accountingPushBlockReason } from "@/lib/services/accounting-rules"
 
 export type AccountingPushEntityType = "invoice" | "payment" | "project_expense" | "vendor_bill" | "bill_payment"
 
-export const LEGACY_ACCOUNTING_JOB_TYPES = [
-  "qbo_sync_invoice", "qbo_sync_payment", "qbo_sync_project_expense", "qbo_sync_vendor_bill", "qbo_sync_bill_payment",
-] as const
-export const ACCOUNTING_JOB_TYPES = [
-  "accounting_push_invoice", "accounting_push_payment", "accounting_push_project_expense", "accounting_push_vendor_bill", "accounting_push_bill_payment",
-  ...LEGACY_ACCOUNTING_JOB_TYPES,
-] as const
+export { ACCOUNTING_JOB_TYPES, LEGACY_ACCOUNTING_JOB_TYPES } from "@/lib/services/accounting-job-types"
 
 const ENTITY_CONFIG: Record<AccountingPushEntityType, { payloadKey: string; jobType: string; paymentSetting: boolean }> = {
   invoice: { payloadKey: "invoice_id", jobType: "accounting_push_invoice", paymentSetting: false },
@@ -48,13 +42,14 @@ export async function enqueueAccountingPush(input: { orgId: string; entityType: 
   if (!target) return { queued: false as const, reason: "unconnected" as const }
 
   const ledgerType = input.entityType === "vendor_bill" ? "bill" : input.entityType
-  const { data: existing } = await supabase
+  const { data: existingRows } = await supabase
     .from("accounting_sync_records")
     .select("pushable,connection_id")
     .eq("org_id", input.orgId)
     .eq("entity_type", ledgerType)
     .eq("entity_id", input.entityId)
-    .maybeSingle()
+  const existing = existingRows?.find((row) => row.connection_id === target.connection.id)
+    ?? existingRows?.find((row) => row.connection_id !== target.connection.id)
   const config = ENTITY_CONFIG[input.entityType]
   const enabled = config.paymentSetting
     ? target.connection.settings.sync_payments !== false
@@ -68,7 +63,7 @@ export async function enqueueAccountingPush(input: { orgId: string; entityType: 
     enabled,
   })
   if (blockReason === "connection_mismatch") {
-    await supabase.from("accounting_sync_records").update({ status: "needs_review", error_message: "Resolved accounting connection differs from the connection that owns this transaction." }).eq("org_id", input.orgId).eq("entity_type", ledgerType).eq("entity_id", input.entityId)
+    await supabase.from("accounting_sync_records").update({ status: "needs_review", error_message: "Resolved accounting connection differs from the connection that owns this transaction." }).eq("org_id", input.orgId).eq("connection_id", existing?.connection_id ?? "").eq("entity_type", ledgerType).eq("entity_id", input.entityId)
     return { queued: false as const, reason: "connection_mismatch" as const }
   }
   if (blockReason) return { queued: false as const, reason: blockReason }
@@ -80,19 +75,19 @@ export async function enqueueAccountingPush(input: { orgId: string; entityType: 
     dedupeByPayloadKeys: [config.payloadKey],
   })
   if (queued.reason === "error") {
-    await markAccountingSyncError(input.orgId, ledgerType, input.entityId, target.connection.id, "Unable to enqueue accounting sync job.")
+    await markAccountingSyncError(input.orgId, ledgerType, input.entityId, target.connection.id, target.connection.provider, "Unable to enqueue accounting sync job.")
     return { queued: false as const, reason: "error" as const }
   }
   return { queued: true as const, reason: queued.reason }
 }
 
-export async function markAccountingSyncError(orgId: string, entityType: string, entityId: string, connectionId: string, message: string) {
+export async function markAccountingSyncError(orgId: string, entityType: string, entityId: string, connectionId: string, provider: string, message: string) {
   const supabase = createServiceSupabaseClient()
   const { error } = await supabase.from("accounting_sync_records").upsert({
-    org_id: orgId, connection_id: connectionId, provider: "qbo", entity_type: entityType,
+    org_id: orgId, connection_id: connectionId, provider, entity_type: entityType,
     entity_id: entityId, external_id: "", status: "error", error_message: message.slice(0, 4000),
     last_synced_at: new Date().toISOString(),
-  }, { onConflict: "org_id,entity_type,entity_id" })
+  }, { onConflict: "org_id,connection_id,entity_type,entity_id" })
   if (error) throw new Error(`Unable to record accounting sync failure: ${error.message}`)
 }
 
@@ -102,11 +97,23 @@ export async function processAccountingPush(input: { orgId: string; entityType: 
   if (!target) throw new Error("No accounting connection is mapped to this transaction")
   if (!target.healthy) throw new Error(`Accounting connection ${target.connection.label} is ${target.connection.status}`)
   const provider = getProvider(target.connection.provider)
-  if (input.entityType === "invoice") return provider.pushInvoice({ orgId: input.orgId, invoiceId: input.entityId })
-  if (input.entityType === "payment") return provider.pushPayment({ orgId: input.orgId, paymentId: input.entityId })
-  if (input.entityType === "project_expense") return provider.pushExpense({ orgId: input.orgId, expenseId: input.entityId })
-  if (input.entityType === "vendor_bill") return provider.pushVendorBill({ orgId: input.orgId, billId: input.entityId })
-  return provider.pushBillPayment({ orgId: input.orgId, paymentId: input.entityId })
+  const connectionId = target.connection.id
+  if (input.entityType === "invoice") return provider.pushInvoice({ orgId: input.orgId, connectionId, invoiceId: input.entityId })
+  if (input.entityType === "payment") return provider.pushPayment({ orgId: input.orgId, connectionId, paymentId: input.entityId })
+  if (input.entityType === "project_expense") return provider.pushExpense({ orgId: input.orgId, connectionId, expenseId: input.entityId })
+  if (input.entityType === "vendor_bill") {
+    const supabase = createServiceSupabaseClient()
+    const { data: payable } = await supabase.from("vendor_bills").select("metadata").eq("org_id", input.orgId).eq("id", input.entityId).maybeSingle()
+    const isVendorCredit = (payable?.metadata as { source?: string } | null)?.source === "vendor_credit"
+    if (isVendorCredit) {
+      if (!provider.capabilities.supportsVendorCredits || !provider.pushVendorCredit) {
+        throw new Error(`${target.connection.label} does not support vendor credits`)
+      }
+      return provider.pushVendorCredit({ orgId: input.orgId, connectionId, creditId: input.entityId })
+    }
+    return provider.pushVendorBill({ orgId: input.orgId, connectionId, billId: input.entityId })
+  }
+  return provider.pushBillPayment({ orgId: input.orgId, connectionId, paymentId: input.entityId })
 }
 
 export async function retryFailedAccountingSyncJobs(orgId: string) {
@@ -129,4 +136,3 @@ export const enqueuePaymentSync = (paymentId: string, orgId: string) => enqueueA
 export const enqueueProjectExpenseSync = (expenseId: string, orgId: string) => enqueueAccountingPush({ orgId, entityType: "project_expense", entityId: expenseId })
 export const enqueueVendorBillSync = (billId: string, orgId: string) => enqueueAccountingPush({ orgId, entityType: "vendor_bill", entityId: billId })
 export const enqueueBillPaymentSync = (paymentId: string, orgId: string) => enqueueAccountingPush({ orgId, entityType: "bill_payment", entityId: paymentId })
-export const retryFailedQBOSyncJobs = retryFailedAccountingSyncJobs

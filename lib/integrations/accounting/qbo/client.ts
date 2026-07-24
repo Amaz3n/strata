@@ -1,4 +1,5 @@
 import { getQBOAccessToken, getQBOAccessTokenForConnection } from "@/lib/services/accounting-connections"
+import { logQBO } from "@/lib/services/accounting-logger"
 import { qboCompanyBaseUrl, qboEnvironmentLabel } from "@/lib/integrations/accounting/qbo/config"
 import { escapeQboQueryLiteral } from "@/lib/integrations/accounting/qbo/query"
 import { mapQboAccountRows, pickPreferredQboIncomeAccounts } from "@/lib/integrations/accounting/qbo/account-utils"
@@ -63,7 +64,40 @@ function getQBOAuthHint(status: number, payload: unknown): string | null {
 }
 
 function getIntuitTid(response: Response): string | null {
-  return response.headers.get("intuit_tid") ?? response.headers.get("intuit_tid".replace("_", "-"))
+  return response.headers.get("intuit_tid") ?? response.headers.get("intuit-tid")
+}
+
+const REQUEST_MAX_ATTEMPTS = 4
+const RETRY_BASE_DELAY_MS = 1500
+const RETRY_MAX_DELAY_MS = 30_000
+
+// One in-flight Intuit token refresh per connection within this process. Intuit rotates the
+// refresh token on every refresh, so N concurrent 401s each forcing their own refresh can
+// invalidate each other's tokens and burn the failure counter until the connection expires.
+const refreshInFlight = new Map<string, Promise<{ token: string; realmId: string } | null>>()
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function retryDelayMs(response: Response, attempt: number): number {
+  const retryAfter = Number(response.headers.get("retry-after"))
+  if (Number.isFinite(retryAfter) && retryAfter > 0) return Math.min(retryAfter * 1000, 60_000)
+  const backoff = Math.min(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), RETRY_MAX_DELAY_MS)
+  return Math.round(backoff * (0.5 + Math.random() * 0.5))
+}
+
+/** Numeric-aware max, so "INV-100" beats "INV-99" and "2026-014" beats "2026-9". */
+export function pickHighestDocNumber(docNumbers: Array<string | undefined | null>): string | null {
+  let highest: string | null = null
+  for (const raw of docNumbers) {
+    const value = typeof raw === "string" ? raw.trim() : ""
+    if (!value) continue
+    if (highest === null || value.localeCompare(highest, undefined, { numeric: true, sensitivity: "base" }) > 0) {
+      highest = value
+    }
+  }
+  return highest
 }
 
 interface QueryInvoiceResponse {
@@ -259,36 +293,54 @@ export class QBOClient {
     })
   }
 
-  private async request<T>(method: "GET" | "POST", endpoint: string, body?: any): Promise<T> {
-    let response = await this.fetchEndpoint(method, endpoint, {
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    })
-
-    if (response.status === 401 && (this.connectionId || this.orgId)) {
-      const refreshed = this.connectionId
-        ? await getQBOAccessTokenForConnection(this.connectionId, { forceRefresh: true })
-        : await getQBOAccessToken(this.orgId ?? "", { forceRefresh: true })
-      if (refreshed?.token) {
-        this.token = refreshed.token
-        this.realmId = refreshed.realmId
-        response = await this.fetchEndpoint(method, endpoint, {
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: body ? JSON.stringify(body) : undefined,
-        })
-      }
+  private async refreshTokenSingleFlight(): Promise<boolean> {
+    const key = this.connectionId ? `conn:${this.connectionId}` : `org:${this.orgId}`
+    let pending = refreshInFlight.get(key)
+    if (!pending) {
+      pending = (this.connectionId
+        ? getQBOAccessTokenForConnection(this.connectionId, { forceRefresh: true })
+        : getQBOAccessToken(this.orgId ?? "", { forceRefresh: true })
+      ).finally(() => refreshInFlight.delete(key))
+      refreshInFlight.set(key, pending)
     }
+    const refreshed = await pending
+    if (!refreshed?.token) return false
+    this.token = refreshed.token
+    this.realmId = refreshed.realmId
+    return true
+  }
 
-    if (!response.ok) {
+  private async request<T>(method: "GET" | "POST", endpoint: string, body?: any): Promise<T> {
+    let refreshedOnce = false
+    let attempt = 0
+    for (;;) {
+      attempt += 1
+      const response = await this.fetchEndpoint(method, endpoint, {
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      })
+
+      if (response.ok) return response.json()
+
+      if (response.status === 401 && !refreshedOnce && (this.connectionId || this.orgId)) {
+        refreshedOnce = true
+        if (await this.refreshTokenSingleFlight()) continue
+      }
+
+      // 429 means the request was throttled before processing, so any method is safe to
+      // retry. 5xx is retried only for reads — QBO gives no idempotency guarantee on
+      // writes, and the outbox retry path owns write retries with duplicate protection.
+      const retryable = response.status === 429 || (method === "GET" && response.status >= 500)
+      if (retryable && attempt < REQUEST_MAX_ATTEMPTS) {
+        await sleep(retryDelayMs(response, attempt))
+        continue
+      }
+
       const errorPayload = await response.json().catch(() => ({}))
       throw new QBOError(response.status, errorPayload, getIntuitTid(response))
     }
-
-    return response.json()
   }
 
   private toQboStringLiteral(value: string): string {
@@ -296,9 +348,11 @@ export class QBOClient {
   }
 
   async getLastInvoiceNumber(): Promise<string> {
-    const query = `SELECT DocNumber FROM Invoice ORDERBY MetaData.CreateTime DESC MAXRESULTS 1`
+    // The most recently *created* invoice is not necessarily the highest-numbered one
+    // (backdated or imported invoices), so scan a window and take the numeric max.
+    const query = `SELECT DocNumber FROM Invoice ORDERBY MetaData.CreateTime DESC MAXRESULTS 100`
     const result = await this.request<QueryInvoiceResponse>("GET", `query?query=${encodeURIComponent(query)}`)
-    return result.QueryResponse.Invoice?.[0]?.DocNumber ?? "0"
+    return pickHighestDocNumber((result.QueryResponse.Invoice ?? []).map((row) => row.DocNumber)) ?? "0"
   }
 
   async checkDocNumberExists(docNumber: string): Promise<boolean> {
@@ -367,7 +421,7 @@ export class QBOClient {
       startPosition += page.length
     }
     if (all.length >= hardCap) {
-      throw new Error(`QuickBooks returned at least ${hardCap} active customers/projects; narrow the project search.`)
+      logQBO("warn", "customer_list_truncated", { realmId: this.realmId, cap: hardCap })
     }
     return all
   }
@@ -762,6 +816,17 @@ export class QBOClient {
     return result.Bill
   }
 
+  async createVendorCredit(credit: any): Promise<any> {
+    const result = await this.request<{ VendorCredit: any }>("POST", "vendorcredit", credit)
+    return result.VendorCredit
+  }
+
+  async updateVendorCredit(credit: any): Promise<any> {
+    if (!credit.Id || !credit.SyncToken) throw new Error("VendorCredit Id and SyncToken required for update")
+    const result = await this.request<{ VendorCredit: any }>("POST", "vendorcredit", credit)
+    return result.VendorCredit
+  }
+
   async createBillPayment(billPayment: any): Promise<any> {
     const result = await this.request<{ BillPayment: any }>("POST", "billpayment", billPayment)
     return result.BillPayment
@@ -952,7 +1017,7 @@ export class QBOClient {
       startPosition += page.length
     }
     if (all.length >= hardCap) {
-      throw new Error(`QuickBooks returned at least ${hardCap} ${entity} records in this date range; choose a narrower period.`)
+      logQBO("warn", "import_list_truncated", { realmId: this.realmId, entity, cap: hardCap })
     }
     return all.sort(
       (a, b) =>

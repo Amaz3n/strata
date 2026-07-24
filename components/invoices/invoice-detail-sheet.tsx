@@ -17,7 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator"
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
-import { QBOSyncBadge } from "@/components/invoices/qbo-sync-badge"
+import { AccountingSyncBadge } from "@/components/accounting/accounting-sync-badge"
 import { EntityAttachments, type AttachedFile } from "@/components/files"
 import {
   listAttachmentsAction,
@@ -532,10 +532,10 @@ export function InvoiceDetailSheet({
                   </div>
                   <div className="flex items-center gap-2">
                     {invoice?.qbo_sync_status && (
-                      <QBOSyncBadge
+                      <AccountingSyncBadge
                         status={invoice.qbo_sync_status}
                         syncedAt={invoice.qbo_synced_at ?? undefined}
-                        qboId={invoice.qbo_id ?? undefined}
+                        externalId={invoice.qbo_id ?? undefined}
                       />
                     )}
                     {isClientDeposit && (

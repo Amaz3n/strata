@@ -26,7 +26,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ArcInvoiceDocument, toArcInvoiceData, toArcInvoiceLines } from "@/components/invoices/arc-invoice-document"
-import { QBOSyncBadge } from "@/components/invoices/qbo-sync-badge"
+import { AccountingSyncBadge } from "@/components/accounting/accounting-sync-badge"
 import {
   createInvoiceLienWaiverAction,
   generateInvoicePdfAction,
@@ -265,7 +265,7 @@ export function InvoiceReadView({
         <div className="flex shrink-0 items-center gap-2">
           {invoiceStatusBadge(invoice)}
           {invoice.qbo_sync_status ? (
-            <QBOSyncBadge status={invoice.qbo_sync_status} syncedAt={invoice.qbo_synced_at ?? undefined} qboId={invoice.qbo_id ?? undefined} />
+            <AccountingSyncBadge status={invoice.qbo_sync_status} syncedAt={invoice.qbo_synced_at ?? undefined} externalId={invoice.qbo_id ?? undefined} />
           ) : null}
           {canRecordPayment ? (
             <Button size="sm" variant="secondary" className="h-8 text-xs" onClick={openPaymentDialog}>

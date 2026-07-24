@@ -1,6 +1,7 @@
 "use server"
 
 import { cache } from "react"
+import { invoiceIsFromAccountingProvider } from "@/lib/services/accounting-sync-state"
 import { revalidatePath } from "next/cache"
 import { recordEvent } from "@/lib/services/events"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -1128,7 +1129,7 @@ export async function listLinkableInvoicesForDrawAction(projectId: string, drawI
           linked_draw_cents: linkedDrawCentsByInvoiceId.get(invoice.id) ?? 0,
           remaining_draw_cents: Math.max((invoice.total_cents ?? invoice.totals?.total_cents ?? 0) - (linkedDrawCentsByInvoiceId.get(invoice.id) ?? 0), 0),
           issue_date: invoice.issue_date ?? null,
-          from_qbo: Boolean(invoice.qbo_id) || (invoice.metadata as any)?.source_type === "qbo",
+          from_qbo: invoiceIsFromAccountingProvider(invoice),
         }))
 }
 

@@ -270,6 +270,28 @@ export async function getDivisionAccessForUser({
   return { assignedOnly: result.divisionAssignedOnly, divisionIds: result.divisionIds }
 }
 
+export async function getDivisionScopedProjectIds({
+  orgId,
+  userId,
+  supabase = createServiceSupabaseClient(),
+}: {
+  orgId: string
+  userId: string
+  supabase?: SupabaseClient
+}): Promise<string[] | null> {
+  const access = await getDivisionAccessForUser({ orgId, userId })
+  if (!access.assignedOnly) return null
+  if (access.divisionIds.length === 0) return []
+  const { data, error } = await supabase
+    .from("projects")
+    .select("id")
+    .eq("org_id", orgId)
+    .in("division_id", access.divisionIds)
+    .limit(1000)
+  if (error) throw new Error(`Unable to resolve division project scope: ${error.message}`)
+  return (data ?? []).map((row) => row.id as string)
+}
+
 async function fetchPlatformPermissions({ supabase, userId }: { supabase: SupabaseClient; userId: string }) {
   const nowIso = new Date().toISOString()
 

@@ -1,13 +1,15 @@
 import { Suspense } from "react"
+import { redirect } from "next/navigation"
 import { Skeleton } from "@/components/ui/skeleton"
 import { PageLayout } from "@/components/layout/page-layout"
-import { PipelineWorkspaceClient } from "@/components/pipeline/pipeline-workspace-client"
-import type { FunnelStage } from "@/components/pipeline/pipeline-funnel-bar"
+import { PipelineWorkspaceClient } from "@/components/prospects/prospect-workspace-client"
+import type { FunnelStage } from "@/components/prospects/prospect-funnel-bar"
 import type { AttentionCounts } from "@/components/pipeline/pipeline-attention-strip"
 import type { ProspectTableFilter } from "@/components/prospects/prospects-client"
 import { listProspects } from "@/lib/services/prospects"
 import { listTeamMembers } from "@/lib/services/team"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
+import { getOrgProductTier } from "@/lib/services/context"
 import { prospectStatusEnum, type ProspectStatus } from "@/lib/validation/prospects"
 
 export const dynamic = "force-dynamic"
@@ -15,10 +17,11 @@ export const dynamic = "force-dynamic"
 interface PipelinePageProps {
   searchParams: Promise<{
     status?: string
+    community?: string
   }>
 }
 
-const FUNNEL_STAGES: ProspectStatus[] = ["new", "contacted", "qualified", "pricing", "estimate_sent"]
+const RESIDENTIAL_FUNNEL: ProspectStatus[] = ["new", "contacted", "qualified", "pricing", "estimate_sent"]
 
 const STALLED_AFTER_DAYS = 14
 const NEW_INQUIRY_WINDOW_DAYS = 14
@@ -30,6 +33,7 @@ const ACTIVE_PROSPECT_STATUSES = new Set<ProspectStatus>([
   "estimate_sent",
   "changes_requested",
   "client_approved",
+  "executed",
 ])
 
 function resolveInitialFilter(status?: string): ProspectTableFilter {
@@ -44,7 +48,6 @@ function resolveInitialFilter(status?: string): ProspectTableFilter {
 async function PipelineData({ searchParams }: PipelinePageProps) {
   const resolvedSearchParams = await searchParams
   const initialFilter = resolveInitialFilter(resolvedSearchParams?.status)
-
   const [prospects, teamMembers, permissionResult] = await Promise.all([
     listProspects(),
     listTeamMembers(),
@@ -75,7 +78,7 @@ async function PipelineData({ searchParams }: PipelinePageProps) {
     .filter((prospect) => prospect.next_follow_up_at && prospect.next_follow_up_at <= endOfToday)
   const followUpDueIds = followUpDueProspects.map((p) => p.id)
 
-  const funnelStages: FunnelStage[] = FUNNEL_STAGES.map((key) => {
+  const funnelStages: FunnelStage[] = RESIDENTIAL_FUNNEL.map((key) => {
     const stageProspects = prospects.filter((p) => p.status === key)
     return {
       key,
@@ -96,6 +99,7 @@ async function PipelineData({ searchParams }: PipelinePageProps) {
 
   return (
     <PipelineWorkspaceClient
+      mode="residential"
       initialFilter={initialFilter}
       funnelStages={funnelStages}
       attentionCounts={attentionCounts}
@@ -104,13 +108,23 @@ async function PipelineData({ searchParams }: PipelinePageProps) {
       newInquiries={newInquiries}
       prospects={prospects}
       teamMembers={teamMembers}
+      communities={[]}
+      reservationsByProspect={{}}
       canCreate={canCreate}
       canEdit={canEdit}
     />
   )
 }
 
-export default function PipelinePage(props: PipelinePageProps) {
+export default async function PipelinePage(props: PipelinePageProps) {
+  const [productTier, params] = await Promise.all([getOrgProductTier(), props.searchParams])
+  if (productTier === "production") {
+    const next = new URLSearchParams()
+    next.set("tab", "leads")
+    if (params.status) next.set("status", params.status)
+    if (params.community) next.set("community", params.community)
+    redirect(`/sales?${next}`)
+  }
   return (
     <PageLayout title="Pipeline">
       <Suspense

@@ -35,6 +35,7 @@ type VpoRow = { id: string; title: string; projectId: string; vendor: string; re
 type CompletionRow = { id: string; project: string; po: string; status: string; amountCents: number | null; reportedAt: string }
 
 interface PurchasingClientProps {
+  initialTab?: string
   health: { active: number; expiring: number; ambiguousOverlaps: number; leadDays: number }
   agreements: PriceAgreement[]
   agreementCount: number
@@ -109,7 +110,7 @@ export function PurchasingClient(props: PurchasingClientProps) {
       <Stat label="Variance vs budget" value={`${(props.variance.summary.varianceRate * 100).toFixed(2)}%`} detail="Benchmark 1–2%" warning={props.variance.summary.varianceRate > 0.02} />
     </div>
 
-    <Tabs defaultValue="price-book" className="min-h-0 flex-1 gap-0">
+    <Tabs defaultValue={props.initialTab ?? "price-book"} className="min-h-0 flex-1 gap-0">
       <div className="overflow-x-auto border-b px-4 py-2">
         <TabsList className="h-8 rounded-none bg-transparent p-0">
           {[["price-book","Price book"],["bids","Bid packages"],["exceptions","Exceptions"],["vpos","VPOs"],["variance","Variance analysis"],["completions","Completions"]].map(([value,label]) => <TabsTrigger key={value} value={value} className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:shadow-none">{label}</TabsTrigger>)}

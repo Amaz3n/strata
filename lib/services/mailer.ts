@@ -326,18 +326,20 @@ export async function sendReminderSMS(payload: ReminderSMSPayload): Promise<stri
   return undefined
 }
 
+export interface ComplianceAutopilotEmailItem {
+  documentName: string
+  reminderKind: "missing" | "expiring" | "expired"
+  expiryDate?: string | null
+}
+
 export interface ComplianceAutopilotEmailPayload {
   to: string
   recipientName?: string | null
   companyName: string
-  documentName: string
-  reminderKind: "missing" | "expiring" | "expired"
-  expiryDate?: string | null
-  daysUntilExpiry?: number | null
+  items: ComplianceAutopilotEmailItem[]
   orgName?: string | null
   orgLogoUrl?: string | null
   orgSlug?: string | null
-  uploadUrl?: string | null
 }
 
 function escapeMessage(value: string): string {
@@ -349,64 +351,100 @@ function escapeMessage(value: string): string {
     .replace(/'/g, "&#039;")
 }
 
+function formatComplianceDate(value?: string | null): string | null {
+  if (!value) return null
+  return new Date(value).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  })
+}
+
+function complianceItemStatus(item: ComplianceAutopilotEmailItem): string {
+  const date = formatComplianceDate(item.expiryDate)
+  if (item.reminderKind === "missing") return "Not on file"
+  if (item.reminderKind === "expired") return date ? `Expired ${date}` : "Expired"
+  return date ? `Expires ${date}` : "Expiring soon"
+}
+
+function complianceEmailTitle(items: ComplianceAutopilotEmailItem[]): string {
+  const noun = items.length === 1 ? "document" : "documents"
+  const kinds = new Set(items.map((item) => item.reminderKind))
+  if (kinds.size > 1) return `Compliance ${noun} need attention`
+  const [kind] = kinds
+  if (kind === "expired") return `Compliance ${noun} expired`
+  if (kind === "expiring") return `Compliance ${noun} expiring`
+  return `Compliance ${noun} needed`
+}
+
+export function buildComplianceAutopilotSubject(items: ComplianceAutopilotEmailItem[]): string {
+  const kinds = new Set(items.map((item) => item.reminderKind))
+
+  if (items.length === 1) {
+    const [item] = items
+    if (item.reminderKind === "missing") return `Compliance request: ${item.documentName} needed`
+    if (item.reminderKind === "expired") return `Compliance expired: ${item.documentName}`
+    return `Compliance reminder: ${item.documentName} expires soon`
+  }
+
+  if (kinds.size === 1) {
+    const [kind] = kinds
+    if (kind === "missing") return `Compliance request: ${items.length} documents needed`
+    if (kind === "expired") return `Compliance expired: ${items.length} documents`
+    return `Compliance reminder: ${items.length} documents expire soon`
+  }
+
+  return `Compliance update: ${items.length} documents need attention`
+}
+
 export async function sendComplianceAutopilotEmail(
   payload: ComplianceAutopilotEmailPayload,
-): Promise<string | undefined> {
-  const expiryDate = payload.expiryDate
-    ? new Date(payload.expiryDate).toLocaleDateString("en-US", {
-        month: "short",
-        day: "numeric",
-        year: "numeric",
-      })
-    : null
-  const documentName = escapeMessage(payload.documentName)
+): Promise<boolean> {
+  if (payload.items.length === 0) return false
+
   const companyName = escapeMessage(payload.companyName)
   const greeting = payload.recipientName
     ? `<p style="margin:0 0 14px 0;">Hi ${escapeMessage(payload.recipientName)},</p>`
     : ""
 
-  const message =
-    payload.reminderKind === "missing"
-      ? `${documentName} is missing for ${companyName}.`
-      : payload.reminderKind === "expired"
-        ? `${documentName} for ${companyName} has expired${expiryDate ? ` as of ${escapeMessage(expiryDate)}` : ""}.`
-        : `${documentName} for ${companyName} expires${expiryDate ? ` on ${escapeMessage(expiryDate)}` : ""}.`
+  const intro =
+    payload.items.length === 1
+      ? `The following document is outstanding for ${companyName}.`
+      : `The following ${payload.items.length} documents are outstanding for ${companyName}.`
 
-  const subject =
-    payload.reminderKind === "missing"
-      ? `Compliance request: ${payload.documentName} needed`
-      : payload.reminderKind === "expired"
-        ? `Compliance expired: ${payload.documentName}`
-        : `Compliance reminder: ${payload.documentName} expires soon`
+  const rows = payload.items
+    .map(
+      (item) => `
+        <tr>
+          <td style="padding:10px 0; border-bottom:1px solid #ebebeb; color:#111111; font-size:14px;">${escapeMessage(item.documentName)}</td>
+          <td style="padding:10px 0; border-bottom:1px solid #ebebeb; color:#6b6b6b; font-size:13px; text-align:right; white-space:nowrap;">${escapeMessage(complianceItemStatus(item))}</td>
+        </tr>`,
+    )
+    .join("")
+
+  const subject = buildComplianceAutopilotSubject(payload.items)
 
   const html = renderStandardEmailLayout({
-    title:
-      payload.reminderKind === "missing"
-        ? "Compliance document needed"
-        : payload.reminderKind === "expired"
-          ? "Compliance document expired"
-          : "Compliance document expiring",
+    title: complianceEmailTitle(payload.items),
     messageHtml: `
       ${greeting}
-      <p style="margin:0 0 14px 0;">${message}</p>
-      <p style="margin:0;">Please upload an updated document or send it to the project team so work and payments do not get held up.</p>
+      <p style="margin:0 0 14px 0;">${intro}</p>
+      <table border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse; margin:0 0 18px 0;">
+        ${rows}
+      </table>
+      <p style="margin:0;">Please upload updated documents or send them to the project team so work and payments do not get held up.</p>
     `,
-    buttonText: payload.uploadUrl ? "Upload document" : undefined,
-    buttonUrl: payload.uploadUrl ?? undefined,
     orgName: payload.orgName,
     orgLogoUrl: payload.orgLogoUrl,
   })
 
-  const sent = await sendEmail({
+  return sendEmail({
     to: [payload.to],
     subject,
     html,
     from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
   })
-
-  return sent
-    ? `compliance-${payload.reminderKind}-${payload.documentName}-${Date.now()}`
-    : undefined
 }
 
 export interface BidInviteEmailPayload {

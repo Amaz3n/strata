@@ -31,21 +31,35 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { AddProspectDialog } from "@/components/pipeline/add-prospect-dialog"
-import { ProspectDetailSheet } from "@/components/pipeline/prospect-detail-sheet"
+import { AddProspectDialog } from "@/components/prospects/add-prospect-dialog"
+import { CreateLotHoldDialog } from "@/components/sales/create-lot-hold-dialog"
+import { ProspectDetailSheet } from "@/components/prospects/prospect-detail-sheet"
 import {
   PipelineAttentionStrip,
   type AttentionCounts,
   type AttentionFilter,
 } from "@/components/pipeline/pipeline-attention-strip"
+import {
+  PRODUCTION_HIDDEN_STATUSES,
+  type PipelineCommunityOption,
+  type PipelineMode,
+  type ProspectReservationInfo,
+} from "@/components/prospects/prospect-presentation"
 import { deleteProspectAction } from "@/app/(app)/pipeline/actions"
 import { useToast } from "@/hooks/use-toast"
 import { formatMoneyCents } from "@/lib/utils"
-import { ChevronLeft, ChevronRight, Edit, Filter, MoreHorizontal, Plus, Search, Trash2, Users, X } from "@/components/icons"
+import { ChevronLeft, ChevronRight, Edit, Filter, Home, MoreHorizontal, Plus, Search, Trash2, Users, X } from "@/components/icons"
 
 import { unwrapAction } from "@/lib/action-result"
 
-export type ProspectTableFilter = "active" | "all" | ProspectStatus | "stalled" | "followup_due"
+export type ProspectTableFilter =
+  | "active"
+  | "all"
+  | ProspectStatus
+  | "stalled"
+  | "followup_due"
+  | "reserved"
+  | "converted"
 
 /** Statuses considered open/in-flight. Closed states (won, lost) are excluded from the default view. */
 const ACTIVE_STATUSES = new Set<ProspectStatus>([
@@ -105,6 +119,8 @@ const filterLabels: Record<ProspectTableFilter, string> = {
   all: "All prospects",
   stalled: "Stalled",
   followup_due: "Follow-ups due",
+  reserved: "Reserved",
+  converted: "Under agreement",
 }
 
 // Order shown in the Status section of the Filter dropdown.
@@ -125,11 +141,43 @@ const STATUS_FILTER_OPTIONS: ProspectTableFilter[] = [
   "lost",
 ]
 
+// Production funnel: nurture stages hand off to a lot reservation, not an estimate.
+const PRODUCTION_STATUS_FILTER_OPTIONS: ProspectTableFilter[] = [
+  "active",
+  "all",
+  "followup_due",
+  "stalled",
+  "new",
+  "contacted",
+  "qualified",
+  "reserved",
+  "converted",
+  "won",
+  "lost",
+]
+
+const reservationChipStyles: Record<ProspectReservationInfo["status"], string> = {
+  hold: "bg-amber-500/15 text-amber-600 border-amber-500/30",
+  reserved: "bg-amber-500/15 text-amber-600 border-amber-500/30",
+  converted: "bg-emerald-500/15 text-emerald-600 border-emerald-500/30",
+}
+
+const reservationChipLabels: Record<ProspectReservationInfo["status"], string> = {
+  hold: "Hold",
+  reserved: "Reserved",
+  converted: "Under agreement",
+}
+
 interface ProspectsClientProps {
+  mode?: PipelineMode
   prospects: Prospect[]
   teamMembers: TeamMember[]
+  communities?: PipelineCommunityOption[]
+  reservationsByProspect?: Record<string, ProspectReservationInfo>
+  initialCommunityId?: string | null
   canCreate?: boolean
   canEdit?: boolean
+  canManageSales?: boolean
   attentionCounts: AttentionCounts
   /** Controlled status/derived filter, driven by the funnel above and the badges/filter here. */
   activeFilter: ProspectTableFilter
@@ -152,10 +200,15 @@ function primaryContactLine(prospect: Prospect) {
 }
 
 export function ProspectsClient({
+  mode = "residential",
   prospects,
   teamMembers,
+  communities = [],
+  reservationsByProspect = {},
+  initialCommunityId = null,
   canCreate = false,
   canEdit = false,
+  canManageSales = false,
   attentionCounts,
   activeFilter,
   onSelectFilter,
@@ -175,11 +228,16 @@ export function ProspectsClient({
   const [isPending, startTransition] = useTransition()
   const [search, setSearch] = useState("")
   const [ownerFilter, setOwnerFilter] = useState("all")
+  const [communityFilter, setCommunityFilter] = useState(initialCommunityId ?? "all")
   const [page, setPage] = useState(1)
   const [editProspect, setEditProspect] = useState<Prospect | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Prospect | null>(null)
+  const [holdProspect, setHoldProspect] = useState<Prospect | null>(null)
   const [detailId, setDetailId] = useState<string | undefined>()
   const [detailOpen, setDetailOpen] = useState(false)
+
+  const isProduction = mode === "production"
+  const statusFilterOptions = isProduction ? PRODUCTION_STATUS_FILTER_OPTIONS : STATUS_FILTER_OPTIONS
 
   useEffect(() => {
     if (urlProspectId) {
@@ -206,6 +264,7 @@ export function ProspectsClient({
   const filtered = useMemo(() => {
     const term = search.toLowerCase()
     return prospects.filter((prospect) => {
+      const reservation = reservationsByProspect[prospect.id]
       const matchesFilter =
         activeFilter === "all"
           ? true
@@ -215,32 +274,44 @@ export function ProspectsClient({
               ? stalledIds.has(prospect.id)
               : activeFilter === "followup_due"
                 ? followUpDueIds.has(prospect.id)
-                : prospect.status === activeFilter
+                : activeFilter === "reserved"
+                  ? reservation?.status === "hold" || reservation?.status === "reserved"
+                  : activeFilter === "converted"
+                    ? reservation?.status === "converted"
+                    : prospect.status === activeFilter
       const matchesOwner =
         ownerFilter === "all"
           ? true
           : ownerFilter === "unassigned"
             ? !prospect.owner_user_id
             : prospect.owner_user_id === ownerFilter
+      const matchesCommunity =
+        communityFilter === "all"
+          ? true
+          : communityFilter === "none"
+            ? !prospect.community_id
+            : prospect.community_id === communityFilter
       const haystack = [
         prospect.name,
         prospect.source ?? "",
         prospect.project_type ?? "",
+        prospect.community_name ?? "",
         primaryName(prospect),
         primaryContactLine(prospect),
       ]
         .join(" ")
         .toLowerCase()
-      return matchesFilter && matchesOwner && (!term || haystack.includes(term))
+      return matchesFilter && matchesOwner && matchesCommunity && (!term || haystack.includes(term))
     })
-  }, [activeFilter, followUpDueIds, ownerFilter, prospects, search, stalledIds])
+  }, [activeFilter, communityFilter, followUpDueIds, ownerFilter, prospects, reservationsByProspect, search, stalledIds])
 
   // Reset to the first page whenever the result set changes underneath us.
   useEffect(() => {
     setPage(1)
-  }, [activeFilter, ownerFilter, search])
+  }, [activeFilter, communityFilter, ownerFilter, search])
 
-  const activeFilterCount = (activeFilter !== "active" ? 1 : 0) + (ownerFilter !== "all" ? 1 : 0)
+  const activeFilterCount =
+    (activeFilter !== "active" ? 1 : 0) + (ownerFilter !== "all" ? 1 : 0) + (communityFilter !== "all" ? 1 : 0)
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const currentPage = Math.min(page, pageCount)
@@ -269,7 +340,17 @@ export function ProspectsClient({
         onOpenChange={(open) => !open && setEditProspect(null)}
         teamMembers={teamMembers}
         prospect={editProspect}
+        mode={mode}
+        communities={communities}
       />
+      {isProduction ? (
+        <CreateLotHoldDialog
+          prospect={holdProspect}
+          communities={communities}
+          open={Boolean(holdProspect)}
+          onOpenChange={(open) => !open && setHoldProspect(null)}
+        />
+      ) : null}
       <ProspectDetailSheet
         prospectId={detailId}
         open={detailOpen}
@@ -344,12 +425,27 @@ export function ProspectsClient({
                 value={activeFilter}
                 onValueChange={(value) => onSelectFilter(value as ProspectTableFilter)}
               >
-                {STATUS_FILTER_OPTIONS.map((option) => (
+                {statusFilterOptions.map((option) => (
                   <DropdownMenuRadioItem key={option} value={option}>
                     {filterLabels[option]}
                   </DropdownMenuRadioItem>
                 ))}
               </DropdownMenuRadioGroup>
+              {isProduction && communities.length > 0 ? (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel>Community</DropdownMenuLabel>
+                  <DropdownMenuRadioGroup value={communityFilter} onValueChange={setCommunityFilter}>
+                    <DropdownMenuRadioItem value="all">All communities</DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="none">No community</DropdownMenuRadioItem>
+                    {communities.map((community) => (
+                      <DropdownMenuRadioItem key={community.id} value={community.id}>
+                        {community.name}
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                </>
+              ) : null}
               <DropdownMenuSeparator />
               <DropdownMenuLabel>Assigned to</DropdownMenuLabel>
               <DropdownMenuRadioGroup value={ownerFilter} onValueChange={setOwnerFilter}>
@@ -368,6 +464,7 @@ export function ProspectsClient({
                     onClick={() => {
                       onClearFilter()
                       setOwnerFilter("all")
+                      setCommunityFilter("all")
                     }}
                   >
                     <X className="mr-2 h-4 w-4" />
@@ -394,6 +491,7 @@ export function ProspectsClient({
             <TableRow>
               <TableHead className="px-4 py-3.5">Prospect</TableHead>
               <TableHead className="px-4 py-3.5">Primary contact</TableHead>
+              {isProduction ? <TableHead className="px-4 py-3.5">Community</TableHead> : null}
               <TableHead className="px-4 py-3.5">Status</TableHead>
               <TableHead className="px-4 py-3.5">Assigned to</TableHead>
               <TableHead className="px-4 py-3.5 text-right">Value</TableHead>
@@ -402,7 +500,9 @@ export function ProspectsClient({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {paged.map((prospect) => (
+            {paged.map((prospect) => {
+              const reservation = reservationsByProspect[prospect.id]
+              return (
               <TableRow key={prospect.id} className="group">
                 <TableCell className="px-4 py-3.5">
                   <button
@@ -416,14 +516,30 @@ export function ProspectsClient({
                   <div className="font-medium text-foreground">{primaryName(prospect)}</div>
                   <div>{primaryContactLine(prospect)}</div>
                 </TableCell>
+                {isProduction ? (
+                  <TableCell className="px-4 py-3.5 text-sm text-muted-foreground">
+                    {reservation?.communityName ?? prospect.community_name ?? "—"}
+                  </TableCell>
+                ) : null}
                 <TableCell className="px-4 py-3.5">
-                  <Badge variant="secondary" className={`border ${statusStyles[prospect.status]}`}>
-                    {statusLabels[prospect.status]}
-                  </Badge>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {isProduction && reservation ? (
+                      <Badge variant="secondary" className={`border ${reservationChipStyles[reservation.status]}`}>
+                        {reservationChipLabels[reservation.status]}
+                        {reservation.lotLabel ? ` · Lot ${reservation.lotLabel}` : ""}
+                      </Badge>
+                    ) : (
+                      <Badge variant="secondary" className={`border ${statusStyles[prospect.status]}`}>
+                        {statusLabels[prospect.status]}
+                      </Badge>
+                    )}
+                  </div>
                 </TableCell>
                 <TableCell className="px-4 py-3.5 text-muted-foreground">{getOwnerName(prospect.owner_user_id)}</TableCell>
                 <TableCell className="px-4 py-3.5 text-right text-sm tabular-nums">
-                  {prospect.estimate_value_cents ? (
+                  {isProduction && reservation && reservation.askingPriceCents > 0 ? (
+                    <span className="font-medium">{formatMoneyCents(reservation.askingPriceCents)}</span>
+                  ) : prospect.estimate_value_cents ? (
                     <span className="font-medium">{formatMoneyCents(prospect.estimate_value_cents)}</span>
                   ) : prospect.budget_range && formatBudgetRange(prospect.budget_range) ? (
                     <span className="text-xs text-muted-foreground italic font-normal">
@@ -453,6 +569,12 @@ export function ProspectsClient({
                         <Edit className="mr-2 h-4 w-4" />
                         Edit
                       </DropdownMenuItem>
+                      {isProduction && canManageSales && !reservation && prospect.status !== "won" && prospect.status !== "lost" ? (
+                        <DropdownMenuItem onClick={() => setHoldProspect(prospect)}>
+                          <Home className="mr-2 h-4 w-4" />
+                          Hold a lot…
+                        </DropdownMenuItem>
+                      ) : null}
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         disabled={!canEdit}
@@ -466,10 +588,11 @@ export function ProspectsClient({
                   </DropdownMenu>
                 </TableCell>
               </TableRow>
-            ))}
+              )
+            })}
             {filtered.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7} className="py-12 text-center text-muted-foreground">
+                <TableCell colSpan={isProduction ? 8 : 7} className="py-12 text-center text-muted-foreground">
                   <div className="flex flex-col items-center gap-4">
                     <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted">
                       <Users className="h-6 w-6" />

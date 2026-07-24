@@ -1,20 +1,20 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
-import { getQBOConnection } from "@/lib/services/accounting-connections"
-import { QBOClient } from "@/lib/integrations/accounting/qbo/client"
+import { resolveAccountingTarget } from "@/lib/services/accounting-target"
+import { getProvider } from "@/lib/integrations/accounting/registry"
 
-interface QBOSettings {
+interface AccountingNumberSettings {
   invoice_number_pattern?: "numeric" | "prefix" | "custom"
   invoice_number_prefix?: string | null
 }
 
 export interface NextInvoiceNumber {
   number: string
-  source: "qbo" | "local"
+  source: "accounting" | "local"
   reservation_id?: string
 }
 
-function extractInvoiceSequenceValue(current: string, settings?: QBOSettings | null): number {
+function extractInvoiceSequenceValue(current: string, settings?: AccountingNumberSettings | null): number {
   const normalized = String(current ?? "").trim()
   if (!normalized) return 0
 
@@ -37,14 +37,14 @@ function extractInvoiceSequenceValue(current: string, settings?: QBOSettings | n
   return 0
 }
 
-export function compareInvoiceNumbers(a: string, b: string, settings?: QBOSettings | null): number {
+export function compareInvoiceNumbers(a: string, b: string, settings?: AccountingNumberSettings | null): number {
   const aSeq = extractInvoiceSequenceValue(a, settings)
   const bSeq = extractInvoiceSequenceValue(b, settings)
   if (aSeq !== bSeq) return aSeq - bSeq
   return String(a ?? "").localeCompare(String(b ?? ""))
 }
 
-function pickLatestInvoiceNumber(candidates: Array<string | null | undefined>, settings?: QBOSettings | null) {
+function pickLatestInvoiceNumber(candidates: Array<string | null | undefined>, settings?: AccountingNumberSettings | null) {
   return candidates
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .reduce<string | null>((latest, candidate) => {
@@ -59,7 +59,8 @@ export async function getNextInvoiceNumber(orgId?: string): Promise<NextInvoiceN
 
   await cleanupExpiredReservations(resolvedOrgId)
 
-  const connection = await getQBOConnection(resolvedOrgId)
+  const target = await resolveAccountingTarget({ orgId: resolvedOrgId })
+  const connection = target?.connection ?? null
   const { data: existingUserReservation } = await serviceSupabase
     .from("qbo_invoice_reservations")
     .select("id, reserved_number")
@@ -73,17 +74,17 @@ export async function getNextInvoiceNumber(orgId?: string): Promise<NextInvoiceN
   if (existingUserReservation?.id && existingUserReservation.reserved_number) {
     return {
       number: existingUserReservation.reserved_number,
-      source: connection && connection.settings?.invoice_number_sync !== false ? "qbo" : "local",
+      source: connection && connection.settings?.invoice_number_sync !== false ? "accounting" : "local",
       reservation_id: existingUserReservation.id,
     }
   }
 
   if (connection && connection.settings?.invoice_number_sync !== false) {
-    const client = await QBOClient.forOrg(resolvedOrgId)
-    if (client) {
+    const provider = target ? getProvider(target.connection.provider) : null
+    if (provider?.capabilities.supportsInvoiceNumberReservation && provider.getLastInvoiceNumber) {
       try {
         const [qboLastNumber, lastInvoice, latestReservation] = await Promise.all([
-          client.getLastInvoiceNumber().catch(() => null),
+          provider.getLastInvoiceNumber({ connectionId: target!.connection.id }).catch(() => null),
           supabase
             .from("invoices")
             .select("invoice_number")
@@ -127,7 +128,7 @@ export async function getNextInvoiceNumber(orgId?: string): Promise<NextInvoiceN
           if (!error && data?.id) {
             return {
               number: nextNumber,
-              source: "qbo",
+              source: "accounting",
               reservation_id: data.id,
             }
           }
@@ -144,9 +145,9 @@ export async function getNextInvoiceNumber(orgId?: string): Promise<NextInvoiceN
 
           cursor = nextNumber
         }
-        throw new Error("Unable to reserve a unique QuickBooks invoice number.")
+        throw new Error("Unable to reserve a unique accounting invoice number.")
       } catch (err) {
-        console.warn("Failed to reserve QBO invoice number, falling back to local sequence", err)
+        console.warn("Failed to reserve accounting invoice number, falling back to local sequence", err)
       }
     }
   }
@@ -217,7 +218,7 @@ export async function markReservationUsed(reservationId: string, invoiceId: stri
 
 export function incrementInvoiceNumber(
   current: string,
-  settings?: QBOSettings | null,
+  settings?: AccountingNumberSettings | null,
 ): string {
   const pattern = settings?.invoice_number_pattern
   const prefix = settings?.invoice_number_prefix ?? ""
@@ -278,22 +279,20 @@ export async function cleanupExpiredReservations(orgId?: string) {
   await query
 }
 
-export async function rememberQBOInvoiceNumberCursor(orgId: string, invoiceNumber: string) {
-  if (!orgId || !invoiceNumber) return
+export async function rememberAccountingInvoiceNumberCursor(connectionId: string, orgId: string, invoiceNumber: string) {
+  if (!connectionId || !orgId || !invoiceNumber) return
   const supabase = createServiceSupabaseClient()
   const { data: connection } = await supabase
     .from("accounting_connections")
     .select("id, settings")
+    .eq("id", connectionId)
     .eq("org_id", orgId)
     .eq("status", "active")
-    .eq("provider", "qbo")
-    .order("connected_at", { ascending: true })
-    .limit(1)
     .maybeSingle()
 
   if (!connection) return
 
-  const settings = (connection.settings as QBOSettings & { last_known_invoice_number?: string | null }) ?? {}
+  const settings = (connection.settings as AccountingNumberSettings & { last_known_invoice_number?: string | null }) ?? {}
   const current = settings.last_known_invoice_number
   if (current && compareInvoiceNumbers(invoiceNumber, current, settings) < 0) {
     return
@@ -307,6 +306,7 @@ export async function rememberQBOInvoiceNumberCursor(orgId: string, invoiceNumbe
         last_known_invoice_number: invoiceNumber,
       },
     })
+    .eq("org_id", orgId)
     .eq("id", connection.id)
     .eq("status", "active")
 }

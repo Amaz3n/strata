@@ -4,11 +4,16 @@ import { useEffect, useMemo, useState } from "react"
 
 import type { TeamMember } from "@/lib/types"
 import type { Prospect } from "@/lib/services/prospects"
-import type { ProspectStatus } from "@/lib/validation/prospects"
-import { AddProspectDialog } from "@/components/pipeline/add-prospect-dialog"
-import { ProspectDetailSheet } from "@/components/pipeline/prospect-detail-sheet"
-import { FUNNEL_STAGE_META, type FunnelStage } from "@/components/pipeline/pipeline-funnel-bar"
+import { AddProspectDialog } from "@/components/prospects/add-prospect-dialog"
+import { ProspectDetailSheet } from "@/components/prospects/prospect-detail-sheet"
+import { ALL_FUNNEL_STAGE_META, type FunnelStage, type PipelineStageKey } from "@/components/prospects/prospect-funnel-bar"
 import type { AttentionCounts, AttentionFilter } from "@/components/pipeline/pipeline-attention-strip"
+import type {
+  PipelineCommunityOption,
+  PipelineMode,
+  ProspectReservationInfo,
+} from "@/components/prospects/prospect-presentation"
+import { isDerivedStage } from "@/components/prospects/prospect-presentation"
 import { useMobileAction } from "@/components/layout/mobile-action-context"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -16,18 +21,21 @@ import { Input } from "@/components/ui/input"
 import { cn, formatMoneyCents } from "@/lib/utils"
 import { ChevronRight, Receipt, Search, Send, Timer, UserPlus, X } from "@/components/icons"
 
-const STAGE_META_BY_KEY = new Map(FUNNEL_STAGE_META.map((meta) => [meta.key, meta]))
+const STAGE_META_BY_KEY = new Map(ALL_FUNNEL_STAGE_META.map((meta) => [meta.key, meta]))
 
 interface PipelineMobileWorkspaceProps {
+  mode: PipelineMode
   funnelStages: FunnelStage[]
   attentionCounts: AttentionCounts
   newInquiries: Prospect[]
   prospects: Prospect[]
   teamMembers: TeamMember[]
+  communities: PipelineCommunityOption[]
+  reservationsByProspect: Record<string, ProspectReservationInfo>
   canCreate?: boolean
 }
 
-const statusLabels: Record<ProspectStatus, string> = {
+const statusLabels: Record<PipelineStageKey, string> = {
   new: "New",
   contacted: "Contacted",
   qualified: "Qualified",
@@ -38,6 +46,8 @@ const statusLabels: Record<ProspectStatus, string> = {
   executed: "Executed",
   won: "Won",
   lost: "Lost",
+  reserved: "Reserved",
+  converted: "Under agreement",
 }
 
 function contactLine(prospect: Prospect) {
@@ -46,15 +56,18 @@ function contactLine(prospect: Prospect) {
 }
 
 export function PipelineMobileWorkspace({
+  mode,
   funnelStages,
   attentionCounts,
   newInquiries,
   prospects,
   teamMembers,
+  communities,
+  reservationsByProspect,
   canCreate = false,
 }: PipelineMobileWorkspaceProps) {
   const [search, setSearch] = useState("")
-  const [activeStatus, setActiveStatus] = useState<ProspectStatus | null>(null)
+  const [activeStatus, setActiveStatus] = useState<PipelineStageKey | null>(null)
   const [detailId, setDetailId] = useState<string | undefined>()
   const [detailOpen, setDetailOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
@@ -70,33 +83,44 @@ export function PipelineMobileWorkspace({
   const attentionChips = useMemo(
     () =>
       (
-        [
-          { key: "changes_requested", label: "Changes", count: attentionCounts.changes_requested, tone: "text-orange-600 border-orange-500/40 bg-orange-500/10" },
-          { key: "estimate_sent", label: "Awaiting client", count: attentionCounts.estimate_sent, tone: "text-blue-600 border-blue-500/40 bg-blue-500/10" },
-          { key: "executed", label: "Ready to convert", count: attentionCounts.executed, tone: "text-emerald-600 border-emerald-500/40 bg-emerald-500/10" },
-        ] satisfies Array<{ key: AttentionFilter; label: string; count: number; tone: string }>
+        mode === "production"
+          ? []
+          : (
+              [
+                { key: "changes_requested", label: "Changes", count: attentionCounts.changes_requested, tone: "text-orange-600 border-orange-500/40 bg-orange-500/10" },
+                { key: "estimate_sent", label: "Awaiting client", count: attentionCounts.estimate_sent, tone: "text-blue-600 border-blue-500/40 bg-blue-500/10" },
+                { key: "executed", label: "Ready to convert", count: attentionCounts.executed, tone: "text-emerald-600 border-emerald-500/40 bg-emerald-500/10" },
+              ] satisfies Array<{ key: AttentionFilter; label: string; count: number; tone: string }>
+            )
       ).filter((chip) => chip.count > 0),
-    [attentionCounts],
+    [attentionCounts, mode],
   )
 
   const filtered = useMemo(() => {
     const term = search.toLowerCase()
     return prospects.filter((prospect) => {
+      const reservation = reservationsByProspect[prospect.id]
       // With no stage selected, focus on active prospects and keep closed ones out of the default list.
       const matchesStatus = activeStatus
-        ? prospect.status === activeStatus
+        ? isDerivedStage(activeStatus)
+          ? activeStatus === "reserved"
+            ? reservation?.status === "hold" || reservation?.status === "reserved"
+            : reservation?.status === "converted"
+          : prospect.status === activeStatus
         : prospect.status !== "won" && prospect.status !== "lost"
-      const haystack = [prospect.name, contactLine(prospect), prospect.source ?? ""].join(" ").toLowerCase()
+      const haystack = [prospect.name, contactLine(prospect), prospect.source ?? "", prospect.community_name ?? ""]
+        .join(" ")
+        .toLowerCase()
       return matchesStatus && (!term || haystack.includes(term))
     })
-  }, [activeStatus, prospects, search])
+  }, [activeStatus, prospects, reservationsByProspect, search])
 
   const openProspect = (id: string) => {
     setDetailId(id)
     setDetailOpen(true)
   }
 
-  const toggleStatus = (status: ProspectStatus) => setActiveStatus((current) => (current === status ? null : status))
+  const toggleStatus = (status: PipelineStageKey) => setActiveStatus((current) => (current === status ? null : status))
 
   return (
     <>
@@ -142,7 +166,7 @@ export function PipelineMobileWorkspace({
               <button
                 key={chip.key}
                 type="button"
-                onClick={() => toggleStatus(chip.key as ProspectStatus)}
+                onClick={() => toggleStatus(chip.key as PipelineStageKey)}
                 className={cn(
                   "inline-flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium",
                   chip.tone,
@@ -202,7 +226,12 @@ export function PipelineMobileWorkspace({
         ) : (
           <div className="divide-y border-y bg-card">
             {filtered.map((prospect) => (
-              <ProspectRow key={prospect.id} prospect={prospect} onClick={() => openProspect(prospect.id)} />
+              <ProspectRow
+                key={prospect.id}
+                prospect={prospect}
+                reservation={reservationsByProspect[prospect.id]}
+                onClick={() => openProspect(prospect.id)}
+              />
             ))}
           </div>
         )}
@@ -228,6 +257,8 @@ export function PipelineMobileWorkspace({
         }}
         teamMembers={teamMembers}
         prospect={editProspect}
+        mode={mode}
+        communities={communities}
       />
     </>
   )
@@ -237,19 +268,35 @@ function SectionHeader({ label }: { label: string }) {
   return <div className="px-4 pb-1.5 pt-5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</div>
 }
 
-function ProspectRow({ prospect, onClick }: { prospect: Prospect; onClick: () => void }) {
+function ProspectRow({
+  prospect,
+  reservation,
+  onClick,
+}: {
+  prospect: Prospect
+  reservation?: ProspectReservationInfo
+  onClick: () => void
+}) {
   return (
     <button type="button" onClick={onClick} className="flex w-full items-center gap-3 bg-card px-4 py-3 text-left active:bg-muted/50">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="truncate text-sm font-semibold">{prospect.name}</span>
           <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px]">
-            {statusLabels[prospect.status]}
+            {reservation ? statusLabels[reservation.status === "converted" ? "converted" : "reserved"] : statusLabels[prospect.status]}
           </Badge>
         </div>
-        <p className="mt-0.5 truncate text-xs text-muted-foreground">{contactLine(prospect)}</p>
+        <p className="mt-0.5 truncate text-xs text-muted-foreground">
+          {reservation?.lotLabel
+            ? `${reservation.communityName ?? "Community"} · Lot ${reservation.lotLabel}`
+            : contactLine(prospect)}
+        </p>
       </div>
-      {prospect.estimate_value_cents ? (
+      {reservation && reservation.askingPriceCents > 0 ? (
+        <span className="shrink-0 text-xs font-medium tabular-nums text-muted-foreground">
+          {formatMoneyCents(reservation.askingPriceCents)}
+        </span>
+      ) : prospect.estimate_value_cents ? (
         <span className="shrink-0 text-xs font-medium tabular-nums text-muted-foreground">
           {formatMoneyCents(prospect.estimate_value_cents)}
         </span>

@@ -49,7 +49,10 @@ import {
 } from "./actions"
 import { projectInputSchema } from "@/lib/validation/projects"
 import type { ProjectInput } from "@/lib/validation/projects"
-import type { QBOClassOption, QBOCustomerOption } from "@/lib/integrations/accounting/qbo/client"
+import type { AccountingDimensionValue } from "@/lib/integrations/accounting/provider"
+
+type QBOClassOption = AccountingDimensionValue
+type QBOCustomerOption = AccountingDimensionValue
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 import { GooglePlacesAutocomplete } from "@/components/ui/google-places-autocomplete"
@@ -343,11 +346,11 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries, pr
       })
       setCreateFinancialSetup(emptyFinancialSetup("fixed_price", defaultPropertyType))
       setCreateDateRange(undefined)
-      toast.success("Project created", { description: created.name })
+      toast.success(`${orgTerms.project} created`, { description: created.name })
       setCreateSheetOpen(false)
     } catch (error) {
       console.error(error)
-      toast.error("Failed to create project")
+      toast.error(`Failed to create ${orgTerms.project.toLowerCase()}`)
     } finally {
       setIsCreating(false)
     }
@@ -360,12 +363,12 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries, pr
       const payload = normalizeProjectInput({ ...values, ...financialSetupToProjectInput(editFinancialSetup) })
       const updated = unwrapAction(await updateProjectAction(editingProject.id, payload))
       setProjectsState((prev) => prev.map((p) => (p.id === updated.id ? updated : p)))
-      toast.success("Project updated", { description: updated.name })
+      toast.success(`${orgTerms.project} updated`, { description: updated.name })
       setEditSheetOpen(false)
       setEditingProject(null)
     } catch (error) {
       console.error(error)
-      toast.error("Failed to update project")
+      toast.error(`Failed to update ${orgTerms.project.toLowerCase()}`)
     } finally {
       setIsUpdating(false)
     }
@@ -377,12 +380,12 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries, pr
     try {
       unwrapAction(await deleteProjectAction(deletingProject.id))
       setProjectsState((prev) => prev.filter((p) => p.id !== deletingProject.id))
-      toast.success("Project deleted")
+      toast.success(`${orgTerms.project} deleted`)
       setDeleteDialogOpen(false)
       setDeletingProject(null)
     } catch (error) {
       console.error(error)
-      toast.error("Failed to delete project")
+      toast.error(`Failed to delete ${orgTerms.project.toLowerCase()}`)
     } finally {
       setIsDeleting(false)
     }
@@ -434,7 +437,7 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries, pr
             <div className="relative w-64">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <Input
-                placeholder="Search projects..."
+                placeholder={`Search ${orgTerms.projects.toLowerCase()}...`}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="h-8 pl-8 text-sm"
@@ -482,7 +485,7 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries, pr
           <div className="flex items-center gap-3">
             <Button size="sm" className="h-8" onClick={() => setCreateSheetOpen(true)}>
               <Plus className="mr-1.5 h-3.5 w-3.5" />
-              New project
+              New {orgTerms.project.toLowerCase()}
             </Button>
           </div>
         </div>
@@ -496,17 +499,17 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries, pr
               <FolderOpen className="h-7 w-7 text-muted-foreground" />
             </div>
             <h3 className="font-semibold text-base">
-              {searchQuery || statusFilter !== "all" ? "No projects found" : "No projects yet"}
+              {searchQuery || statusFilter !== "all" ? `No ${orgTerms.projects.toLowerCase()} found` : `No ${orgTerms.projects.toLowerCase()} yet`}
             </h3>
             <p className="text-sm text-muted-foreground mt-1 text-center max-w-sm">
               {searchQuery || statusFilter !== "all"
-                ? "No projects match your filters. Try adjusting your search."
-                : "Create your first project to get started."}
+                ? `No ${orgTerms.projects.toLowerCase()} match your filters. Try adjusting your search.`
+                : `Create your first ${orgTerms.project.toLowerCase()} to get started.`}
             </p>
             {!searchQuery && statusFilter === "all" && (
               <Button className="mt-3" size="sm" onClick={() => setCreateSheetOpen(true)}>
                 <Plus className="mr-1.5 h-3.5 w-3.5" />
-                New project
+                New {orgTerms.project.toLowerCase()}
               </Button>
             )}
           </div>
@@ -540,7 +543,7 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries, pr
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <SortHeader label="Project" column="name" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="pl-6 w-[22%]" />
+                    <SortHeader label={orgTerms.project} column="name" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="pl-6 w-[22%]" />
                     <SortHeader label={orgTerms.owner} column="client" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="w-[16%]" />
                     <TableHead>Address</TableHead>
                     <SortHeader label="Status" column="status" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} className="w-[11%]" />
@@ -669,7 +672,7 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries, pr
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete project?</AlertDialogTitle>
+            <AlertDialogTitle>Delete {orgTerms.project.toLowerCase()}?</AlertDialogTitle>
             <AlertDialogDescription>
               Are you sure you want to delete{" "}
               <span className="font-medium text-foreground">&ldquo;{deletingProject?.name}&rdquo;</span>?
@@ -683,7 +686,7 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries, pr
               disabled={isDeleting}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              {isDeleting ? "Deleting..." : "Delete project"}
+              {isDeleting ? "Deleting..." : `Delete ${orgTerms.project.toLowerCase()}`}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -918,11 +921,11 @@ function ProjectFormSheet({
         <div className="flex-1 overflow-y-auto px-4">
           <div className="pt-6 pb-4">
             <SheetTitle className="text-lg font-semibold leading-none tracking-tight">
-              {isEdit ? "Edit project" : "New project"}
+              {isEdit ? `Edit ${terms.project.toLowerCase()}` : `New ${terms.project.toLowerCase()}`}
             </SheetTitle>
             <SheetDescription className="text-sm text-muted-foreground">
               {step === "details"
-                ? "Step 1 of 2 · Project details"
+                ? `Step 1 of 2 · ${terms.project} details`
                 : "Step 2 of 2 · Financial setup"}
             </SheetDescription>
             <div className="mt-3 flex gap-1.5">
@@ -939,7 +942,7 @@ function ProjectFormSheet({
                 name="name"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Project name</FormLabel>
+                    <FormLabel>{terms.project} name</FormLabel>
                     <FormControl>
                       <Input placeholder="Oakwood Residence" {...field} />
                     </FormControl>

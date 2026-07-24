@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
-import { requireAuthorization } from "@/lib/services/authorization"
+import { getDivisionScopedProjectIds, requireAuthorization } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { createPrimeCoFromCommitmentCos, fetchChangeOrder, recomputeChangeOrderCost } from "@/lib/services/change-orders"
@@ -410,6 +410,8 @@ export async function listVarianceOrders({
 } = {}) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAuthorization({ permission: "price_book.read", userId, orgId: resolvedOrgId, supabase, logDecision: true })
+  const authorizedProjectIds = await getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase })
+  if (authorizedProjectIds?.length === 0) return { items: [], count: 0, page, pageSize }
   const from = Math.max(page - 1, 0) * Math.min(Math.max(pageSize, 1), 100)
   let projectIds: string[] | null = null
   if (communityId) {
@@ -433,6 +435,7 @@ export async function listVarianceOrders({
   if (origin) query = query.eq("origin", origin)
   if (projectId) query = query.eq("project_id", projectId)
   if (projectIds) query = query.in("project_id", projectIds)
+  if (authorizedProjectIds) query = query.in("project_id", authorizedProjectIds)
   const { data, error, count } = await query.range(from, from + Math.min(Math.max(pageSize, 1), 100) - 1)
   if (error) throw new Error(`Failed to list variance orders: ${error.message}`)
   return { items: await hydrate(data ?? [], supabase, resolvedOrgId), count: count ?? 0, page, pageSize }

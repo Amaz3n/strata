@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "build": "next build",
-    "dev": "NODE_OPTIONS='--max-old-space-size=6144' next dev --turbo",
+    "dev": "next dev --turbo",
+    "dev:webpack": "next dev --webpack",
     "db:schema:check": "bash ./scripts/check-schema-sync.sh",
     "lint": "eslint .",
     "test:financials": "node --test tests/financials-regression.test.js tests/qbo-import-reliability.test.js tests/accounting-abstraction.test.js tests/accounting-qbo-adapter.test.js tests/pay-app-math.test.js tests/change-order-math.test.js tests/budget-transfer-math.test.js tests/plan-pricing.test.js tests/option-catalog-design-studio.test.js tests/price-resolution.test.js tests/po-generation-math.test.js tests/vpo-approval-thresholds.test.js tests/purchase-agreement-pricing.test.js tests/warranty-service.test.js",

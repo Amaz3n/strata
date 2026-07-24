@@ -6,6 +6,7 @@ import { AnimatePresence, motion } from "framer-motion"
 import { OptimisticLink, useOptimisticPathname } from "@/lib/navigation/optimistic-pathname"
 import {
   ArrowLeft,
+  BarChart3,
   Bell,
   Bug,
   Building2,
@@ -20,12 +21,15 @@ import {
   HardHat,
   Home,
   Link2,
+  Layers,
+  MapPin,
   Receipt,
   Settings,
   Shield,
   ShieldCheck,
   SlidersHorizontal,
   Tag,
+  Target,
   User as UserIcon,
   Users,
   Wallet,
@@ -34,6 +38,7 @@ import type { LucideIcon } from "@/components/icons"
 import { NavMain } from "./nav-main"
 import { NavUser } from "./nav-user"
 import { OrgSwitcher } from "./org-switcher"
+import { DivisionContextSwitcher } from "./division-context-switcher"
 import { SidebarProjectSwitcher } from "./sidebar-project-switcher"
 import {
   Sidebar,
@@ -50,6 +55,7 @@ import {
 } from "@/components/ui/sidebar"
 import type { User } from "@/lib/types"
 import type { ProductTier } from "@/lib/product-tier"
+import { terminology } from "@/lib/terminology"
 import { useSidebarProjects } from "./use-sidebar-projects"
 import {
   buildProjectNavGroups,
@@ -71,8 +77,11 @@ interface AppSidebarProps {
   whatsNewUnreadCount?: number
   productTier?: ProductTier
   hasDivisions?: boolean
+  divisions?: Array<{ id: string; name: string }>
+  divisionId?: string
   showProductionNavigation?: boolean
   showPurchasingNavigation?: boolean
+  showPipelineNavigation?: boolean
 }
 
 type SidebarNavSubItem = ProjectNavSubItem
@@ -133,7 +142,9 @@ function buildWorkspaceGroups(
   productTier: ProductTier = "residential",
   showProductionNavigation = false,
   showPurchasingNavigation = false,
+  showPipelineNavigation = true,
 ): SidebarNavGroup[] {
+  const orgTerms = terminology(productTier)
   const workspaceItems: SidebarNavItem[] = [
     {
       title: "Home",
@@ -150,37 +161,37 @@ function buildWorkspaceGroups(
       requiredAny: ["org.member"],
     },
     {
-      title: "Projects",
+      title: orgTerms.projects,
       url: "/projects",
       icon: FolderOpen,
       isActive: pathname === "/projects" || pathname.startsWith("/projects?"),
       requiredAny: ["org.member", "project.read"],
     },
-    {
+    showPipelineNavigation ? {
       title: "Pipeline",
       url: "/pipeline",
       icon: Contact,
       isActive: pathname.startsWith("/pipeline"),
       badge: pipelineBadgeCount && pipelineBadgeCount > 0 ? pipelineBadgeCount : undefined,
       requiredAny: ["pipeline.read", "pipeline.write"],
-    },
-  ]
+    } : null,
+  ].filter(Boolean) as SidebarNavItem[]
 
   if (showProductionNavigation) {
     workspaceItems.splice(
-      3,
+      workspaceItems.length,
       0,
       {
         title: "Communities",
         url: "/communities",
-        icon: Building2,
+        icon: MapPin,
         isActive: pathname.startsWith("/communities"),
         requiredAny: ["community.read"],
       },
       {
         title: "Plans",
         url: "/plans",
-        icon: Home,
+        icon: Layers,
         isActive: pathname.startsWith("/plans"),
         requiredAny: ["plan.read"],
       },
@@ -194,7 +205,7 @@ function buildWorkspaceGroups(
       {
         title: "Sales",
         url: "/sales",
-        icon: Contact,
+        icon: Target,
         isActive: pathname.startsWith("/sales"),
         requiredAny: ["sales.read"],
       },
@@ -245,26 +256,33 @@ function buildWorkspaceGroups(
       isActive: pathname.startsWith("/payables"),
       requiredAny: ["bill.read", "payment.read"],
     },
-    {
+    ...(productTier === "production" ? [] : [{
       title: "Bids",
       url: "/bids",
       icon: Gavel,
       isActive: pathname.startsWith("/bids"),
       requiredAny: ["bid.read", "bid.write"],
-    },
-    {
+    }]),
+    ...(productTier === "production" ? [] : [{
       title: "Schedule",
       url: "/schedule",
       icon: CalendarDays,
       isActive: pathname.startsWith("/schedule"),
       requiredAny: ["schedule.read"],
-    },
+    }]),
     {
       title: "Directory",
       url: "/directory",
       icon: Building2,
       isActive: pathname.startsWith("/directory"),
       requiredAny: ["directory.read", "directory.write"],
+    },
+    {
+      title: "Reports",
+      url: "/reports",
+      icon: BarChart3,
+      isActive: pathname.startsWith("/reports"),
+      requiredAny: ["report.read"],
     },
   ]
 
@@ -314,8 +332,11 @@ export function AppSidebar({
   whatsNewUnreadCount = 0,
   productTier = "residential",
   hasDivisions = false,
+  divisions = [],
+  divisionId,
   showProductionNavigation = false,
   showPurchasingNavigation = false,
+  showPipelineNavigation = true,
 }: AppSidebarProps) {
   const pathname = useOptimisticPathname()
   const router = useRouter()
@@ -371,10 +392,10 @@ export function AppSidebar({
       )
     }
     return filterGroups(
-      buildWorkspaceGroups(pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, productTier, showProductionNavigation, showPurchasingNavigation),
+      buildWorkspaceGroups(pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, productTier, showProductionNavigation, showPurchasingNavigation, showPipelineNavigation),
       permissionSet,
     )
-  }, [isSettings, isProject, projectId, section, currentProject, pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, permissionSet, projectReviewBadgeCounts, productTier, showProductionNavigation, showPurchasingNavigation])
+  }, [isSettings, isProject, projectId, section, currentProject, pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, permissionSet, projectReviewBadgeCounts, productTier, showProductionNavigation, showPurchasingNavigation, showPipelineNavigation])
 
   const navMain = navGroups.map((group) => ({
     ...group,
@@ -444,7 +465,8 @@ export function AppSidebar({
       </SidebarHeader>
       <SidebarSeparator className="mx-0" />
       {!isSettings && !isProject && (
-        <div className="px-2 py-2">
+        <div className="space-y-2 px-2 py-2">
+          {hasDivisions ? <DivisionContextSwitcher divisions={divisions} divisionId={divisionId} /> : null}
           <SidebarProjectSwitcher projectId={projectId ?? undefined} />
         </div>
       )}

@@ -3,6 +3,7 @@ import { DesignStudioClient } from "@/components/design-studio/design-studio-cli
 import { listCommunities } from "@/lib/services/communities"
 import { getCoordinatorDesk, listCatalog, listSelectionGroups } from "@/lib/services/option-catalog"
 import { listProjects } from "@/lib/services/projects"
+import { getAmbientDeskContext } from "@/lib/services/desk-context"
 
 export const dynamic = "force-dynamic"
 
@@ -12,12 +13,13 @@ interface PageProps {
 
 export default async function DesignStudioPage({ searchParams }: PageProps) {
   const { community } = await searchParams
-  const communityId = community || undefined
+  const ambient = await getAmbientDeskContext()
+  const communityId = community || ambient.communityId
   const [catalog, groups, desk, communities, projects] = await Promise.all([
     listCatalog({ communityId }),
     listSelectionGroups({ communityId }),
-    getCoordinatorDesk({ communityId }),
-    listCommunities(),
+    getCoordinatorDesk({ communityId, divisionId: ambient.divisionId }),
+    listCommunities(ambient.divisionId ? { divisionId: ambient.divisionId } : {}),
     listProjects(),
   ])
 

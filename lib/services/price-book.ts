@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 
 import { resolvePriceForLinePure, type PriceAgreementCandidate, type PriceResolutionInput } from "@/lib/financials/price-resolution"
 import { recordAudit } from "@/lib/services/audit"
-import { requireAuthorization } from "@/lib/services/authorization"
+import { getDivisionAccessForUser, requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { getPurchasingSettings } from "@/lib/services/purchasing-settings"
@@ -83,10 +83,13 @@ async function authorize(permission: "price_book.read" | "price_book.write", org
 
 export async function listPriceAgreements(filters: Partial<PriceAgreementFilters> = {}) {
   const parsed = priceAgreementFiltersSchema.parse(filters)
-  const { supabase, orgId } = await authorize("price_book.read")
+  const { supabase, orgId, userId } = await authorize("price_book.read")
   const from = (parsed.page - 1) * parsed.pageSize
   let query = supabase.from("vendor_price_agreements").select(SELECT, { count: "exact" })
     .eq("org_id", orgId).order("effective_from", { ascending: false })
+  const accessFilter = await agreementAccessFilter(supabase, orgId, userId)
+  if (accessFilter) query = query.or(accessFilter)
+  if (parsed.divisionId) query = query.or(await agreementDivisionFilter(supabase, orgId, parsed.divisionId))
   if (parsed.companyId) query = query.eq("company_id", parsed.companyId)
   if (parsed.costCodeId) query = query.eq("cost_code_id", parsed.costCodeId)
   if (parsed.communityId) query = query.eq("community_id", parsed.communityId)
@@ -102,14 +105,19 @@ export async function listPriceAgreements(filters: Partial<PriceAgreementFilters
 }
 
 export async function getPriceAgreementHistory(agreementId: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await authorize("price_book.read", orgId)
-  const { data: target, error: targetError } = await supabase.from("vendor_price_agreements")
+  const { supabase, orgId: resolvedOrgId, userId } = await authorize("price_book.read", orgId)
+  const accessFilter = await agreementAccessFilter(supabase, resolvedOrgId, userId)
+  let targetQuery = supabase.from("vendor_price_agreements")
     .select("id, company_id, cost_code_id, division_id, community_id, house_plan_id, house_plan_version_id")
-    .eq("org_id", resolvedOrgId).eq("id", agreementId).maybeSingle()
+    .eq("org_id", resolvedOrgId).eq("id", agreementId)
+  if (accessFilter) targetQuery = targetQuery.or(accessFilter)
+  const { data: target, error: targetError } = await targetQuery.maybeSingle()
   if (targetError || !target) throw new Error("Price agreement not found")
-  const { data, error } = await supabase.from("vendor_price_agreements").select(SELECT)
+  let historyQuery = supabase.from("vendor_price_agreements").select(SELECT)
     .eq("org_id", resolvedOrgId).eq("company_id", target.company_id).eq("cost_code_id", target.cost_code_id)
     .order("effective_from", { ascending: true })
+  if (accessFilter) historyQuery = historyQuery.or(accessFilter)
+  const { data, error } = await historyQuery
   if (error) throw new Error(`Failed to load agreement history: ${error.message}`)
   return (data ?? []).filter((row) =>
     row.division_id === target.division_id && row.community_id === target.community_id
@@ -173,16 +181,27 @@ export function setAgreementEnd(agreementId: string, effectiveTo: string, orgId?
   return setAgreementState(agreementId, { effective_to: effectiveTo }, "price_agreement.ended", orgId)
 }
 
-export async function getPriceBookHealth(orgId?: string) {
+export async function getPriceBookHealth(filters: { divisionId?: string } = {}, orgId?: string) {
   const settings = await getPurchasingSettings(orgId)
-  const { supabase, orgId: resolvedOrgId } = await authorize("price_book.read", orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await authorize("price_book.read", orgId)
   const today = new Date().toISOString().slice(0, 10)
   const expiring = new Date(Date.now() + settings.expiring_agreement_lead_days * 86_400_000).toISOString().slice(0, 10)
-  const [{ count: active }, { count: expiringCount }, { data: rows, error }] = await Promise.all([
-    supabase.from("vendor_price_agreements").select("id", { count: "exact", head: true }).eq("org_id", resolvedOrgId).eq("status", "active"),
-    supabase.from("vendor_price_agreements").select("id", { count: "exact", head: true }).eq("org_id", resolvedOrgId).eq("status", "active").gte("effective_to", today).lte("effective_to", expiring),
-    supabase.from("vendor_price_agreements").select("company_id,cost_code_id,division_id,community_id,house_plan_id,house_plan_version_id,effective_from").eq("org_id", resolvedOrgId).eq("status", "active").limit(5000),
-  ])
+  const accessFilter = await agreementAccessFilter(supabase, resolvedOrgId, userId)
+  const divisionFilter = filters.divisionId ? await agreementDivisionFilter(supabase, resolvedOrgId, filters.divisionId) : null
+  let activeQuery = supabase.from("vendor_price_agreements").select("id", { count: "exact", head: true }).eq("org_id", resolvedOrgId).eq("status", "active")
+  let expiringQuery = supabase.from("vendor_price_agreements").select("id", { count: "exact", head: true }).eq("org_id", resolvedOrgId).eq("status", "active").gte("effective_to", today).lte("effective_to", expiring)
+  let rowsQuery = supabase.from("vendor_price_agreements").select("company_id,cost_code_id,division_id,community_id,house_plan_id,house_plan_version_id,effective_from").eq("org_id", resolvedOrgId).eq("status", "active").limit(5000)
+  if (accessFilter) {
+    activeQuery = activeQuery.or(accessFilter)
+    expiringQuery = expiringQuery.or(accessFilter)
+    rowsQuery = rowsQuery.or(accessFilter)
+  }
+  if (divisionFilter) {
+    activeQuery = activeQuery.or(divisionFilter)
+    expiringQuery = expiringQuery.or(divisionFilter)
+    rowsQuery = rowsQuery.or(divisionFilter)
+  }
+  const [{ count: active }, { count: expiringCount }, { data: rows, error }] = await Promise.all([activeQuery, expiringQuery, rowsQuery])
   if (error) throw new Error(`Failed to load price-book health: ${error.message}`)
   const signatures = new Map<string, number>()
   for (const row of rows ?? []) {
@@ -190,6 +209,41 @@ export async function getPriceBookHealth(orgId?: string) {
     signatures.set(key, (signatures.get(key) ?? 0) + 1)
   }
   return { active: active ?? 0, expiring: expiringCount ?? 0, ambiguousOverlaps: Array.from(signatures.values()).filter((count) => count > 1).length, leadDays: settings.expiring_agreement_lead_days }
+}
+
+async function agreementAccessFilter(
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"],
+  orgId: string,
+  userId: string,
+): Promise<string | null> {
+  const access = await getDivisionAccessForUser({ orgId, userId })
+  if (!access.assignedOnly) return null
+  if (!access.divisionIds.length) return "id.eq.00000000-0000-0000-0000-000000000000"
+  const { data, error } = await supabase.from("communities").select("id").eq("org_id", orgId).in("division_id", access.divisionIds)
+  if (error) throw new Error(`Failed to scope price agreements: ${error.message}`)
+  const communityIds = (data ?? []).map((row) => row.id)
+  const parts = [
+    `division_id.in.(${access.divisionIds.join(",")})`,
+    communityIds.length ? `community_id.in.(${communityIds.join(",")})` : null,
+    "and(division_id.is.null,community_id.is.null)",
+  ].filter(Boolean)
+  return parts.join(",")
+}
+
+async function agreementDivisionFilter(
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"],
+  orgId: string,
+  divisionId: string,
+): Promise<string> {
+  const { data, error } = await supabase.from("communities").select("id").eq("org_id", orgId).eq("division_id", divisionId)
+  if (error) throw new Error(`Failed to scope price agreements to division: ${error.message}`)
+  const communityIds = (data ?? []).map((row) => row.id)
+  const parts = [
+    `division_id.eq.${divisionId}`,
+    communityIds.length ? `community_id.in.(${communityIds.join(",")})` : null,
+    "and(division_id.is.null,community_id.is.null)",
+  ].filter(Boolean)
+  return parts.join(",")
 }
 
 /** Shell-only posture check. Visibility is still permission-filtered by the nav. */

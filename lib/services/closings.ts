@@ -5,6 +5,10 @@ import {
   type SettlementDeposit,
 } from "@/lib/financials/purchase-agreement-pricing"
 import { recordAudit } from "@/lib/services/audit"
+import {
+  getDivisionAccessForUser,
+  getDivisionScopedProjectIds,
+} from "@/lib/services/authorization"
 import { hasExecutedPurchaseAgreement } from "@/lib/services/community-sales"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
@@ -77,6 +81,12 @@ export async function buildSettlement(closingId: string, orgId?: string) {
 export async function getClosing(projectId: string, orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.read", context)
+  const authorizedProjectIds = await getDivisionScopedProjectIds({
+    orgId: context.orgId,
+    userId: context.userId,
+    supabase: context.supabase,
+  })
+  if (authorizedProjectIds !== null && !authorizedProjectIds.includes(projectId)) return null
   const { data: closing, error } = await context.supabase.from("closings").select("*, project:projects(name, client:contacts(full_name, email)), lot:lots(lot_number, status), community:communities(name)").eq("org_id", context.orgId).eq("project_id", projectId).neq("status", "cancelled").maybeSingle()
   if (error) throw new Error(`Failed to load closing: ${error.message}`)
   if (!closing) return null
@@ -91,12 +101,44 @@ export async function getClosing(projectId: string, orgId?: string) {
 export async function listClosings(opts: { communityId?: string; divisionId?: string; status?: string; from?: string; to?: string; limit?: number } = {}, orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.read", context)
+  const authorizedProjectIds = await getDivisionScopedProjectIds({
+    orgId: context.orgId,
+    userId: context.userId,
+    supabase: context.supabase,
+  })
+  let scopedProjectIds = authorizedProjectIds
+  if (opts.divisionId) {
+    let projectQuery = context.supabase
+      .from("projects")
+      .select("id")
+      .eq("org_id", context.orgId)
+      .eq("division_id", opts.divisionId)
+      .limit(1000)
+    if (authorizedProjectIds !== null) {
+      projectQuery = projectQuery.in(
+        "id",
+        authorizedProjectIds.length
+          ? authorizedProjectIds
+          : ["00000000-0000-0000-0000-000000000000"],
+      )
+    }
+    const { data: projects, error: projectError } = await projectQuery
+    if (projectError) throw new Error(`Failed to scope closings: ${projectError.message}`)
+    scopedProjectIds = (projects ?? []).map((project) => project.id)
+  }
   let query = context.supabase.from("closings").select("*, project:projects(name, division_id, client:contacts(full_name, email)), lot:lots(lot_number), community:communities(name)", { count: "exact" }).eq("org_id", context.orgId)
+  if (scopedProjectIds !== null) {
+    query = query.in(
+      "project_id",
+      scopedProjectIds.length
+        ? scopedProjectIds
+        : ["00000000-0000-0000-0000-000000000000"],
+    )
+  }
   if (opts.communityId) query = query.eq("community_id", opts.communityId)
   if (opts.status) query = query.eq("status", opts.status)
   if (opts.from) query = query.gte("scheduled_date", opts.from)
   if (opts.to) query = query.lte("scheduled_date", opts.to)
-  if (opts.divisionId) query = query.eq("project.division_id", opts.divisionId)
   const { data, error, count } = await query.order("scheduled_date", { ascending: true, nullsFirst: false }).limit(Math.min(opts.limit ?? 250, 500))
   if (error) throw new Error(`Failed to list closings: ${error.message}`)
   return { closings: data ?? [], total: count ?? 0 }
@@ -199,10 +241,39 @@ export async function cancelClosing(input: { closingId: string; reason: string }
   await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "closing_cancelled", entityType: "closing", entityId: data.id, payload: { reason: input.reason } })
 }
 
-export async function getBacklogReport(opts: { divisionId?: string } = {}, orgId?: string) {
+export interface BacklogReportRow {
+  community_id: string
+  community_name: string
+  division_id: string | null
+  lead_units: number
+  spec_units: number
+  hold_units: number
+  reserved_units: number
+  backlog_units: number
+  backlog_value_cents: number
+  scheduled_30d_units: number
+  closed_units_ytd: number
+  closed_value_ytd_cents: number
+  avg_days_agreement_to_close: number | null
+  cancellation_count: number
+  cancellation_rate: number
+  incentive_spend_cents: number
+  incentive_percent_of_price: number
+}
+
+export async function getBacklogReport(opts: { divisionId?: string } = {}, orgId?: string): Promise<BacklogReportRow[]> {
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.read", context)
+  const access = await getDivisionAccessForUser({
+    orgId: context.orgId,
+    userId: context.userId,
+  })
+  if (opts.divisionId && access.assignedOnly && !access.divisionIds.includes(opts.divisionId)) {
+    return []
+  }
   const { data, error } = await context.supabase.rpc("get_sales_backlog_report", { p_org_id: context.orgId, p_division_id: opts.divisionId ?? null })
   if (error) throw new Error(`Failed to load backlog report: ${error.message}`)
-  return data ?? []
+  return access.assignedOnly
+    ? (data ?? []).filter((row: BacklogReportRow) => row.division_id && access.divisionIds.includes(row.division_id))
+    : data ?? []
 }

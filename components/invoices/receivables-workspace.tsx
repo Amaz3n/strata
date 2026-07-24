@@ -20,7 +20,7 @@ import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
 import { WorkspaceShell } from "@/components/financials/workspace/workspace-shell"
 import { WorkspaceListPanel } from "@/components/financials/workspace/workspace-list-panel"
 import { MakeRecurringDialog } from "@/components/invoices/invoice-schedules"
-import { QBOSyncBadge } from "@/components/invoices/qbo-sync-badge"
+import { AccountingSyncBadge } from "@/components/accounting/accounting-sync-badge"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -457,7 +457,7 @@ export function ReceivablesWorkspace({
             <span className={dueDateClassName(invoice)}>{dueStateLabel(invoice)}</span>
           </div>
           {invoiceNeedsAttention(invoice) ? (
-            <QBOSyncBadge status={invoice.qbo_sync_status} qboId={invoice.qbo_id ?? undefined} compact />
+            <AccountingSyncBadge status={invoice.qbo_sync_status} externalId={invoice.qbo_id ?? undefined} compact />
           ) : null}
         </>
       )}

@@ -6,14 +6,21 @@ import type { ProspectStatus } from "@/lib/validation/prospects"
 import { ChevronRight } from "@/components/icons"
 import { cn, formatMoneyCents } from "@/lib/utils"
 
+/**
+ * Funnel stages are prospect statuses plus the production-only derived stages:
+ * `reserved` (live lot hold/reservation) and `converted` (executed purchase agreement),
+ * which come from lot_reservations rather than prospect status.
+ */
+export type PipelineStageKey = ProspectStatus | "reserved" | "converted"
+
 export interface FunnelStage {
-  key: ProspectStatus
+  key: PipelineStageKey
   count: number
   valueCents: number
 }
 
 export interface FunnelStageMeta {
-  key: ProspectStatus
+  key: PipelineStageKey
   label: string
   gradient: string
   border: string
@@ -77,20 +84,53 @@ export const FUNNEL_STAGE_META: FunnelStageMeta[] = [
   },
 ]
 
+/** Production lead funnel: nurture stages end in a lot reservation, not an estimate. */
+export const PRODUCTION_FUNNEL_STAGE_META: FunnelStageMeta[] = [
+  ...FUNNEL_STAGE_META.filter((meta) => ["new", "contacted", "qualified"].includes(meta.key)),
+  {
+    key: "reserved",
+    label: "Reserved",
+    gradient: "from-amber-500/10 to-amber-600/5 dark:from-amber-500/20 dark:to-amber-600/10",
+    border: "border-amber-500/30",
+    text: "text-amber-600 dark:text-amber-400",
+    bar: "bg-amber-500",
+    activeRing: "ring-amber-500/50",
+    bearsValue: true,
+  },
+  {
+    key: "converted",
+    label: "Under agreement",
+    gradient: "from-emerald-500/10 to-teal-600/5 dark:from-emerald-500/20 dark:to-teal-600/10",
+    border: "border-emerald-500/30",
+    text: "text-emerald-600 dark:text-emerald-400",
+    bar: "bg-emerald-500",
+    activeRing: "ring-emerald-500/50",
+    bearsValue: true,
+  },
+]
+
+export const ALL_FUNNEL_STAGE_META: FunnelStageMeta[] = [
+  ...FUNNEL_STAGE_META,
+  ...PRODUCTION_FUNNEL_STAGE_META.filter((meta) => ["reserved", "converted"].includes(meta.key)),
+]
+
 interface PipelineFunnelBarProps {
   stages: FunnelStage[]
-  activeStatus?: ProspectStatus | null
-  onSelect: (status: ProspectStatus) => void
+  /** Stage set to render. Defaults to the residential estimate funnel. */
+  meta?: FunnelStageMeta[]
+  activeStatus?: PipelineStageKey | null
+  onSelect: (status: PipelineStageKey) => void
 }
 
-export function PipelineFunnelBar({ stages, activeStatus, onSelect }: PipelineFunnelBarProps) {
+export function PipelineFunnelBar({ stages, meta = FUNNEL_STAGE_META, activeStatus, onSelect }: PipelineFunnelBarProps) {
   const byKey = new Map(stages.map((s) => [s.key, s]))
   const total = stages.reduce((sum, s) => sum + s.count, 0)
   const maxCount = stages.reduce((max, s) => Math.max(max, s.count), 0)
+  const stageMeta = meta
 
   return (
     <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:gap-0">
-      {FUNNEL_STAGE_META.map((meta, index) => {
+      {stageMeta.map((meta, index) => {
         const stage = byKey.get(meta.key)
         const count = stage?.count ?? 0
         const valueCents = stage?.valueCents ?? 0
@@ -134,7 +174,7 @@ export function PipelineFunnelBar({ stages, activeStatus, onSelect }: PipelineFu
               </div>
             </button>
 
-            {index < FUNNEL_STAGE_META.length - 1 ? (
+            {index < stageMeta.length - 1 ? (
               <div className="hidden w-6 shrink-0 items-center justify-center sm:flex">
                 <ChevronRight className="h-4 w-4 text-muted-foreground/40" />
               </div>

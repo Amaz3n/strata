@@ -2,11 +2,12 @@ import { logQBO } from "@/lib/services/accounting-logger"
 
 export const QBO_DELETED_REVIEW_MESSAGE = "Deleted in QuickBooks — resync manually to recreate."
 
-type QBOUpdatableEntityType = "purchase" | "bill" | "invoice"
+type QBOUpdatableEntityType = "purchase" | "bill" | "invoice" | "vendor_credit"
 type QBOEntityReader = {
   getPurchaseById(id: string): Promise<{ Id?: string; SyncToken?: string } | null>
   getBillById(id: string): Promise<{ Id?: string; SyncToken?: string } | null>
   getInvoiceById(id: string): Promise<{ Id?: string; SyncToken?: string } | null>
+  getVendorCreditById(id: string): Promise<{ Id?: string; SyncToken?: string } | null>
 }
 
 export function isStaleObjectError(error: unknown) {
@@ -18,6 +19,7 @@ export function isStaleObjectError(error: unknown) {
 function fetchQBOEntityById(client: QBOEntityReader, entityType: QBOUpdatableEntityType, externalId: string) {
   if (entityType === "purchase") return client.getPurchaseById(externalId)
   if (entityType === "bill") return client.getBillById(externalId)
+  if (entityType === "vendor_credit") return client.getVendorCreditById(externalId)
   return client.getInvoiceById(externalId)
 }
 

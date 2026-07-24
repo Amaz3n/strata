@@ -1,5 +1,8 @@
 import { recordEvent } from "@/lib/services/events"
-import { sendComplianceAutopilotEmail } from "@/lib/services/mailer"
+import {
+  buildComplianceAutopilotSubject,
+  sendComplianceAutopilotEmail,
+} from "@/lib/services/mailer"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { expireProjectOwnComplianceDocuments } from "@/lib/services/project-own-compliance"
 import { expirePrequalificationsWithClient } from "@/lib/services/prequalification"
@@ -58,11 +61,26 @@ interface ContactRow {
   email?: string | null
 }
 
+interface PendingGroup {
+  companyName: string
+  recipientEmail: string
+  recipientName: string | null
+  items: Array<{
+    deliveryId: string
+    documentName: string
+    reminderKind: ReminderKind
+    expiryDate: string | null
+  }>
+}
+
 export interface ComplianceAutopilotMetrics {
   orgs: number
   requirements: number
   remindersCreated: number
+  /** Reminder rows sent. One email can cover several. */
   sent: number
+  /** Emails actually sent — one per vendor per run. */
+  emails: number
   skipped: number
   failed: number
   digests: number
@@ -243,6 +261,7 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
     requirements: 0,
     remindersCreated: 0,
     sent: 0,
+    emails: 0,
     skipped: 0,
     failed: 0,
     digests: 0,
@@ -377,6 +396,7 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
         expiring: 0,
         expired: 0,
       }
+      const pendingByCompany = new Map<string, PendingGroup>()
 
       for (const requirement of requirementRows) {
         const key = `${requirement.company_id}:${requirement.document_type_id}`
@@ -409,15 +429,32 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
           continue
         }
 
+        const group = pendingByCompany.get(requirement.company_id) ?? {
+          companyName: requirement.companies.name,
+          recipientEmail: recipient.email,
+          recipientName: recipient.name,
+          items: [],
+        }
+        group.items.push({
+          deliveryId,
+          documentName: requirement.compliance_document_types.name,
+          reminderKind: reminder.kind,
+          expiryDate: reminder.expiryDate ?? null,
+        })
+        pendingByCompany.set(requirement.company_id, group)
+      }
+
+      // One email per vendor covering everything outstanding, not one per document.
+      for (const group of pendingByCompany.values()) {
+        const deliveryIds = group.items.map((item) => item.deliveryId)
+        const subject = buildComplianceAutopilotSubject(group.items)
+
         try {
-          const messageId = await sendComplianceAutopilotEmail({
-            to: recipient.email,
-            recipientName: recipient.name,
-            companyName: requirement.companies.name,
-            documentName: requirement.compliance_document_types.name,
-            reminderKind: reminder.kind,
-            expiryDate: reminder.expiryDate,
-            daysUntilExpiry: reminder.days,
+          const sent = await sendComplianceAutopilotEmail({
+            to: group.recipientEmail,
+            recipientName: group.recipientName,
+            companyName: group.companyName,
+            items: group.items,
             orgName: org.name,
             orgLogoUrl: org.logo_url,
             orgSlug: org.slug,
@@ -426,31 +463,28 @@ export async function runComplianceAutopilot(): Promise<ComplianceAutopilotMetri
           await supabase
             .from("compliance_autopilot_deliveries")
             .update({
-              status: messageId ? "sent" : "skipped",
-              sent_at: messageId ? new Date().toISOString() : null,
-              delivered_at: null,
+              status: sent ? "sent" : "skipped",
+              sent_at: sent ? new Date().toISOString() : null,
+              subject,
               error_message: null,
-              payload: {
-                provider_message_id: messageId ?? null,
-                company_name: requirement.companies.name,
-                document_name: requirement.compliance_document_types.name,
-                expiry_date: reminder.expiryDate ?? null,
-                days_until_expiry: reminder.days ?? null,
-              },
             })
-            .eq("id", deliveryId)
+            .in("id", deliveryIds)
 
-          if (messageId) metrics.sent += 1
-          else metrics.skipped += 1
+          if (sent) {
+            metrics.sent += group.items.length
+            metrics.emails += 1
+          } else {
+            metrics.skipped += group.items.length
+          }
         } catch (error) {
-          metrics.failed += 1
+          metrics.failed += group.items.length
           await supabase
             .from("compliance_autopilot_deliveries")
             .update({
               status: "failed",
               error_message: error instanceof Error ? error.message : "Unknown error",
             })
-            .eq("id", deliveryId)
+            .in("id", deliveryIds)
         }
       }
 

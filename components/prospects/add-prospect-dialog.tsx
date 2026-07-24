@@ -30,12 +30,18 @@ import { Loader2, User, Phone, Mail, Briefcase, Building2, MapPin, FileText } fr
 
 import { unwrapAction } from "@/lib/action-result"
 
+import type { PipelineCommunityOption, PipelineMode } from "@/components/prospects/prospect-presentation"
+import { PRODUCTION_HIDDEN_STATUSES } from "@/components/prospects/prospect-presentation"
+
 interface AddProspectDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   teamMembers: TeamMember[]
   /** When provided, the sheet edits this prospect instead of creating a new one. */
   prospect?: Prospect | null
+  /** Production orgs capture which community the lead is interested in and skip estimate stages. */
+  mode?: PipelineMode
+  communities?: PipelineCommunityOption[]
 }
 
 const US_STATES = [
@@ -104,8 +110,16 @@ const statusLabels: Record<string, string> = {
   lost: "Lost",
 }
 
-export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }: AddProspectDialogProps) {
+export function AddProspectDialog({
+  open,
+  onOpenChange,
+  teamMembers,
+  prospect,
+  mode = "residential",
+  communities = [],
+}: AddProspectDialogProps) {
   const isEdit = Boolean(prospect)
+  const isProduction = mode === "production"
   const [isPending, startTransition] = useTransition()
   const { toast } = useToast()
   const router = useRouter()
@@ -115,6 +129,7 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
   const [source, setSource] = useState("")
   const [ownerId, setOwnerId] = useState<string | undefined>()
   const [status, setStatus] = useState<string>("new")
+  const [communityId, setCommunityId] = useState<string | undefined>()
 
   const [contactName, setContactName] = useState("")
   const [phone, setPhone] = useState("")
@@ -136,6 +151,7 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
     setSource("")
     setOwnerId(user?.id ?? undefined)
     setStatus("new")
+    setCommunityId(undefined)
     setContactName("")
     setPhone("")
     setEmail("")
@@ -158,6 +174,7 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
       setSource(prospect.source ?? "")
       setOwnerId(prospect.owner_user_id ?? undefined)
       setStatus(prospect.status ?? "new")
+      setCommunityId(prospect.community_id ?? undefined)
       setContactName(contact?.full_name ?? "")
       setPhone(contact?.phone ?? "")
       setEmail(contact?.email ?? "")
@@ -217,6 +234,7 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
             timeline_preference: timeline ?? null,
             jobsite_location: jobsite ?? null,
             status: status,
+            community_id: communityId ?? null,
           }))
 
           const existingContact = prospect.primary_contact ?? prospect.contacts?.[0]
@@ -242,6 +260,7 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
           timeline_preference: timeline,
           jobsite_location: jobsite,
           status: status,
+          community_id: communityId ?? null,
           primary_contact: { ...contactPayload, is_primary: true },
         }))
         router.refresh()
@@ -308,11 +327,13 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
                       <SelectValue placeholder="Select stage" />
                     </SelectTrigger>
                     <SelectContent>
-                      {Object.entries(statusLabels).map(([key, label]) => (
-                        <SelectItem key={key} value={key}>
-                          {label}
-                        </SelectItem>
-                      ))}
+                      {Object.entries(statusLabels)
+                        .filter(([key]) => !isProduction || !PRODUCTION_HIDDEN_STATUSES.includes(key))
+                        .map(([key, label]) => (
+                          <SelectItem key={key} value={key}>
+                            {label}
+                          </SelectItem>
+                        ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -337,6 +358,27 @@ export function AddProspectDialog({ open, onOpenChange, teamMembers, prospect }:
                     </SelectContent>
                   </Select>
                 </div>
+                {isProduction && communities.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="prospect-community">Community</Label>
+                    <Select
+                      value={communityId ?? "none"}
+                      onValueChange={(v) => setCommunityId(v === "none" ? undefined : v)}
+                    >
+                      <SelectTrigger id="prospect-community" className="!h-10 w-full">
+                        <SelectValue placeholder="Interested community" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">Not set</SelectItem>
+                        {communities.map((community) => (
+                          <SelectItem key={community.id} value={community.id}>
+                            {community.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : null}
                 <div className="space-y-1.5">
                   <Label>Owner</Label>
                   <Select value={ownerId ?? "none"} onValueChange={(v) => setOwnerId(v === "none" ? undefined : v)}>

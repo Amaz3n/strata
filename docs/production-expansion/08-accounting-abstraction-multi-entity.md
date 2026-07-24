@@ -1,7 +1,7 @@
 # 08 — Accounting Abstraction & Multi-Entity Connections
 
-> **STATUS: PHASES A–C + D1 IMPLEMENTED; ADDITIVE DATABASE CUTOVER LIVE;
-> APPLICATION DEPLOY AND SOAK-GATED CLEANUP PENDING (2026-07-19)**
+> **STATUS: P0/P1 HARDENING AND NEUTRAL BACKFILL APPLIED; APPLICATION DEPLOY
+> AND SOAK-GATED DESTRUCTIVE CLEANUP PENDING (2026-07-23)**
 >
 > Platform workstream. Highest architectural risk in the production-expansion suite:
 > real customer money flows through the QBO sync every day, and this doc rewires the
@@ -11,7 +11,22 @@
 > QBO sharp-edges notes in the repo `CLAUDE.md`. This doc is self-contained for a
 > fresh executor, but those files are binding context.
 
-### Progress and deployment boundary (2026-07-19)
+### Progress and deployment boundary (2026-07-22)
+
+The repository now closes the pre-adapter P0/P1 findings: connection-scoped
+transaction identities and import claims, organization ownership checks for
+caller-supplied connections, generalized route-reassignment guards, fair CDC
+scheduling, provider-owned connection lifecycle hooks, capability-driven mapping
+and per-connection settings UI, neutral coding dual-writes for active expense and
+payable workflows, and provider-neutral outbound vendor credits. Application
+financial workflows no longer instantiate a QuickBooks client directly; only the
+QBO adapter/auth/import/reconciliation boundary does.
+
+The backward-compatible hardening and neutral backfill migrations are applied as
+`20260724010343`, `20260724010430`, and `20260724010554`. They preserve the
+legacy views, columns, and uniqueness required by the currently deployed app.
+Patagonia Development LLC retained the same active connection id and realm,
+zero refresh failures, and a successful OAuth token rotation during rollout.
 
 The backward-compatible database cutover is live. The application code has not
 been deployed. Compatibility views keep the currently deployed QBO code working;
@@ -50,11 +65,14 @@ the destructive B3/D2 files remain outside the active migration directory.
   push/import/CDC/webhook QA, next-day B3 cleanup, and soak.
 - [ ] **Phase C production gate:** two-connection sandbox proof and 14 consecutive
   days of zero legacy/map divergence.
-- [ ] **Phase D application cleanup:** after Gate C, finish the source census that
-  repoints remaining transaction/UI reads from denormalized business-table
-  `qbo_*` columns to `accounting_sync_records`/`accounting_coding`, rerun the Gate
-  D grep and manual QA, then—and only then—apply D2. The currently authored D2
-  file is not production-safe while these reads remain.
+- [x] **Phase D critical-path application cutover:** application provider calls
+  use the provider registry; current expense/payable writes populate
+  `accounting_coding`; connection-specific relationships use neutral maps and
+  ledgers. Legacy `qbo_*` DTO/display aliases remain during the production soak.
+- [ ] **Phase D destructive cleanup:** after Gate C, remove the compatibility
+  aliases and remaining legacy presentation reads, rerun the Gate D grep and
+  manual QA, then—and only then—apply D2. This is a deployment acceptance gate,
+  not a prerequisite for implementing another adapter against the neutral seam.
 
 Live verification: all 14 legacy connection rows and all 1,728 sync rows are
 visible through both neutral tables and compatibility views. Patagonia
@@ -62,8 +80,9 @@ Development LLC's connection id and realm are unchanged, status is active,
 refresh failures are zero, and `last_error` is null. Read-only gate queries are
 saved in `docs/production-expansion/08-accounting-soak-queries.sql`.
 
-Local verification: `pnpm lint`, TypeScript with `--noEmit`, the optimized Next.js
-production build, and `pnpm test:financials` all pass (95/95 tests).
+Local verification for the current repository pass is recorded at handoff; the
+production build is intentionally not run from a workstation connected to the
+production Supabase project.
 
 ## 1. Mission
 

@@ -18,7 +18,8 @@ import type { AttachedFile } from "@/components/files"
 import { PayableDocumentPane } from "@/components/payables/payable-document-pane"
 import { WorkspaceShell } from "@/components/financials/workspace/workspace-shell"
 import { WorkspaceListPanel, type WorkspaceQueue } from "@/components/financials/workspace/workspace-list-panel"
-import { formatMoneyFromCents, qboBadge } from "@/components/financials/workspace/workspace-helpers"
+import { AccountingSyncBadge } from "@/components/accounting/accounting-sync-badge"
+import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
 import {
   getExpenseAccountingContextAction,
   listExpenseProjectsAction,
@@ -484,7 +485,9 @@ export function ExpenseWorkspace({
           <Badge variant="outline" className={`text-[10px] font-bold uppercase tracking-tight ${statusStyles[selectedExpense.status] ?? ""}`}>
             {statusLabels[selectedExpense.status] ?? selectedExpense.status}
           </Badge>
-          {qboConnected ? qboBadge(selectedExpense.qbo_sync_status, selectedExpense.qbo_sync_error) : null}
+          {qboConnected ? (
+            <AccountingSyncBadge status={selectedExpense.qbo_sync_status ?? "not_synced"} error={selectedExpense.qbo_sync_error} />
+          ) : null}
         </div>
       </div>
 
@@ -508,7 +511,7 @@ export function ExpenseWorkspace({
             <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3 text-xs">
               <div className="flex items-center gap-2">
                 <span className="microlabel">Sync status</span>
-                {qboBadge(selectedExpense.qbo_sync_status, selectedExpense.qbo_sync_error)}
+                <AccountingSyncBadge status={selectedExpense.qbo_sync_status ?? "not_synced"} error={selectedExpense.qbo_sync_error} />
                 {qboDeepLink(selectedExpense) ? (
                   <a href={qboDeepLink(selectedExpense)!} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
                     Open in QuickBooks <ExternalLink className="h-3 w-3" />

@@ -13,6 +13,10 @@ import {
   ProjectOverviewWeek,
 } from "@/components/projects/overview"
 import { Skeleton } from "@/components/ui/skeleton"
+import { ProductionHouseOverview } from "@/components/projects/production-house-overview"
+import { getProductionHouseOverview } from "@/lib/services/production-house-overview"
+import { getOrgProductTier } from "@/lib/services/context"
+import { getProjectPosture } from "@/lib/product-tier"
 
 interface ProjectDetailPageProps {
   params: Promise<{ id: string }>
@@ -75,6 +79,11 @@ function OverviewSkeleton() {
 async function ProjectData({ id }: { id: string }) {
   const project = await getProjectAction(id)
   if (!project) notFound()
+  const tier = await getOrgProductTier()
+  if (getProjectPosture(project.property_type, tier) === "production") {
+    const overview = await getProductionHouseOverview(id)
+    return <ProductionHouseOverview data={overview} />
+  }
 
   const [overview, contacts, companies, team, projectVendors] = await Promise.all([
     getProjectOverviewAction(id),

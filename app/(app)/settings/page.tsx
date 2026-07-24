@@ -2,7 +2,6 @@ import { Suspense } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
 export const dynamic = 'force-dynamic'
 import { SettingsWindow } from "@/components/settings/settings-window"
-import { getQBOConnection } from "@/lib/services/accounting-connections"
 import { getStripeConnectedAccount } from "@/lib/services/stripe-connected-accounts"
 import { TEAM_PERMISSION_OPTIONS, listAssignableOrgRoles, listTeamMembers } from "@/lib/services/team"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
@@ -28,10 +27,9 @@ async function SettingsData({ searchParams }: SettingsPageProps) {
   const isLocked = accessState.locked
   const initialTab = typeof resolvedSearchParams?.tab === "string" ? resolvedSearchParams.tab : undefined
 
-  const [qboConnection, stripeConnection, teamMembers, roleOptions, permissionOptions, divisions] = isLocked
-    ? [null, null, initialTab === "team" ? [] : undefined, initialTab === "team" ? [] : undefined, initialTab === "team" ? [] : undefined, initialTab === "team" ? [] : undefined]
+  const [stripeConnection, teamMembers, roleOptions, permissionOptions, divisions] = isLocked
+    ? [null, initialTab === "team" ? [] : undefined, initialTab === "team" ? [] : undefined, initialTab === "team" ? [] : undefined, initialTab === "team" ? [] : undefined]
     : await Promise.all([
-        getQBOConnection(),
         getStripeConnectedAccount(),
         initialTab === "team" ? listTeamMembers(undefined, { includeProjectCounts: false }) : Promise.resolve(undefined),
         initialTab === "team" ? listAssignableOrgRoles().catch(() => []) : Promise.resolve(undefined),
@@ -65,7 +63,6 @@ async function SettingsData({ searchParams }: SettingsPageProps) {
     <SettingsWindow
       user={currentUser}
       initialTab={initialTab}
-      initialQboConnection={qboConnection}
       initialStripeConnection={stripeConnection}
       teamMembers={teamMembers}
       roleOptions={roleOptions}

@@ -5,6 +5,7 @@ const test = require("node:test")
 
 const {
   decideAuthorization,
+  intersectProjectReadScopes,
   wouldStrandOrgWithoutAdmin,
 } = require("../lib/services/authorization-policy")
 
@@ -190,4 +191,15 @@ test("changing a non-admin never strands the org", () => {
     wouldStrandOrgWithoutAdmin({ adminMembershipIds: ["m1"], membershipId: "m2", staysAdmin: false }),
     false,
   )
+})
+
+test("division-scoped reads never widen membership authorization", () => {
+  assert.deepEqual(
+    intersectProjectReadScopes(["home-a", "home-b"], ["home-b", "home-c"]),
+    ["home-b"],
+  )
+  assert.deepEqual(intersectProjectReadScopes([], ["home-a"]), [])
+  assert.deepEqual(intersectProjectReadScopes(["home-a"], null), ["home-a"])
+  assert.deepEqual(intersectProjectReadScopes(null, ["home-b"]), ["home-b"])
+  assert.equal(intersectProjectReadScopes(null, null), null)
 })

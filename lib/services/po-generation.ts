@@ -7,7 +7,11 @@ import {
   type PoGenerationResolvedLine,
 } from "@/lib/financials/po-generation-math"
 import { recordAudit } from "@/lib/services/audit"
-import { requireAuthorization } from "@/lib/services/authorization"
+import {
+  getDivisionAccessForUser,
+  getDivisionScopedProjectIds,
+  requireAuthorization,
+} from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { poExceptionResolutionSchema, poGenerationInputSchema, type PoExceptionResolution } from "@/lib/validation/po-generation"
@@ -278,10 +282,13 @@ export async function listGenerationRuns(projectId: string, orgId?: string) {
 }
 
 export async function listPoExceptions({ status = "open", projectId, page = 1, pageSize = 50, orgId }: { status?: string; projectId?: string; page?: number; pageSize?: number; orgId?: string } = {}) {
-  const { supabase, orgId: resolvedOrgId } = await authorizeGeneration("price_book.read", projectId, orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await authorizeGeneration("price_book.read", projectId, orgId)
+  const scopedProjectIds = await getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase })
+  if (scopedProjectIds?.length === 0) return { items: [], count: 0, page, pageSize: Math.min(Math.max(pageSize, 1), 100) }
   const size = Math.min(Math.max(pageSize, 1), 100)
   let query = supabase.from("po_generation_exceptions").select("*, project:projects(name), cost_code:cost_codes(code,name)", { count: "exact" }).eq("org_id", resolvedOrgId).eq("status", status).order("created_at")
   if (projectId) query = query.eq("project_id", projectId)
+  if (scopedProjectIds) query = query.in("project_id", scopedProjectIds)
   const { data, error, count } = await query.range((page - 1) * size, page * size - 1)
   if (error) throw new Error(`Failed to list PO exceptions: ${error.message}`)
   return { items: data ?? [], count: count ?? 0, page, pageSize: size }
@@ -326,9 +333,26 @@ export async function hasOpenPoExceptions(projectId: string, orgId?: string) {
 }
 
 export async function isPurchasingEnabled(orgId?: string, communityId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await authorizeGeneration("price_book.read", undefined, orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await authorizeGeneration("price_book.read", undefined, orgId)
+  const access = await getDivisionAccessForUser({ orgId: resolvedOrgId, userId })
   let query = supabase.from("vendor_price_agreements").select("id").eq("org_id", resolvedOrgId).eq("status", "active").limit(1)
-  if (communityId) query = query.or(`community_id.eq.${communityId},community_id.is.null`)
+  if (communityId) {
+    if (access.assignedOnly) {
+      const { data: community } = await supabase.from("communities").select("division_id").eq("org_id", resolvedOrgId).eq("id", communityId).maybeSingle()
+      if (!community?.division_id || !access.divisionIds.includes(community.division_id)) return false
+    }
+    query = query.or(`community_id.eq.${communityId},community_id.is.null`)
+  } else if (access.assignedOnly) {
+    if (access.divisionIds.length === 0) return false
+    const { data: communities, error: communityError } = await supabase.from("communities").select("id").eq("org_id", resolvedOrgId).in("division_id", access.divisionIds)
+    if (communityError) throw new Error(`Failed to scope purchasing readiness: ${communityError.message}`)
+    const communityIds = (communities ?? []).map((community) => community.id)
+    query = query.or([
+      `division_id.in.(${access.divisionIds.join(",")})`,
+      communityIds.length ? `community_id.in.(${communityIds.join(",")})` : null,
+      "and(division_id.is.null,community_id.is.null)",
+    ].filter(Boolean).join(","))
+  }
   const { data, error } = await query
   if (error) throw new Error(`Failed to check purchasing readiness: ${error.message}`)
   return (data ?? []).length > 0

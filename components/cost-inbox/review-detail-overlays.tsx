@@ -116,7 +116,7 @@ export function ReviewDetailOverlays({
       try {
         const [bundle, accounting, projectRows] = await Promise.all([
           fetchPayablesTabDataAction(projectId),
-          getPayablesAccountingContextAction(),
+          getPayablesAccountingContextAction(projectId),
           listProjectsAction(),
         ])
         setPayables(bundle)

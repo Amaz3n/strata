@@ -147,23 +147,25 @@ export async function saveCompanyAccountingVendorLink(input: {
 }) {
   let connectionId = input.connectionId ?? null
   if (!connectionId) {
-    const { data: connection } = await input.supabase
-      .from("accounting_connections")
-      .select("id")
+    const { data: mapping } = await input.supabase
+      .from("accounting_entity_map")
+      .select("connection_id")
       .eq("org_id", input.orgId)
-      .eq("provider", "qbo")
-      .eq("status", "active")
-      .order("connected_at", { ascending: true })
-      .limit(1)
+      .is("project_id", null)
+      .is("community_id", null)
+      .is("division_id", null)
       .maybeSingle()
-    connectionId = connection?.id ?? null
+    connectionId = mapping?.connection_id ?? null
   }
   if (!connectionId) throw new Error("No active accounting connection is available for this vendor link")
+  const { data: connection } = await input.supabase.from("accounting_connections")
+    .select("provider").eq("org_id", input.orgId).eq("id", connectionId).eq("status", "active").maybeSingle()
+  if (!connection) throw new Error("Accounting connection not found for this organization")
   const now = new Date().toISOString()
   const { error } = await input.supabase.from("accounting_counterparty_links").upsert({
     org_id: input.orgId,
     connection_id: connectionId,
-    provider: "qbo",
+    provider: connection.provider,
     role: "vendor",
     entity_type: "company",
     entity_id: input.companyId,
@@ -176,22 +178,6 @@ export async function saveCompanyAccountingVendorLink(input: {
   }, { onConflict: "org_id,connection_id,role,entity_type,entity_id" })
   if (error) throw new Error(`Failed to save company accounting link: ${error.message}`)
 
-  // Keep the transitional ledger relationship in sync until the post-soak
-  // cleanup removes legacy readers. The connection-scoped table above is the
-  // source of truth and cannot be overwritten by another accounting book.
-  const { error: legacyError } = await input.supabase.from("accounting_sync_records").upsert({
-    org_id: input.orgId,
-    connection_id: connectionId,
-    provider: "qbo",
-    entity_type: "vendor",
-    entity_id: input.companyId,
-    external_id: input.externalId,
-    last_synced_at: now,
-    status: input.status ?? "synced",
-    error_message: null,
-    metadata: { display_name: input.displayName },
-  }, { onConflict: "org_id,entity_type,entity_id" })
-  if (legacyError) throw new Error(`Failed to save transitional company accounting link: ${legacyError.message}`)
 }
 
 function mapContact(row: any): Contact {

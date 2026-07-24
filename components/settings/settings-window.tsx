@@ -25,11 +25,10 @@ import { StripeConnectionCard } from "@/components/integrations/stripe-connectio
 import { Spinner } from "@/components/ui/spinner"
 import { AlertTriangle, ArrowRight, Bell, Building2, Check, Clock, CreditCard, Link2, Receipt, Settings, Shield, SlidersHorizontal, Sparkles, Tag, User as UserIcon, Users, Zap } from "@/components/icons"
 import { Info } from "lucide-react"
-import { getQBOConnectionAction, getStripeConnectedAccountAction } from "@/app/(app)/settings/integrations/actions"
+import { getStripeConnectedAccountAction } from "@/app/(app)/settings/integrations/actions"
 import { listCostCodesAction } from "@/app/(app)/settings/cost-codes/actions"
 import { createBillingPortalSessionAction, createCheckoutSessionAction, getBillingPageDataAction, getOrganizationSettingsAction, getTeamSettingsDataAction, updateOrganizationLogoAction, updateOrganizationSettingsAction, updateUserAvatarAction } from "@/app/(app)/settings/actions"
 import { useIsMobile } from "@/hooks/use-mobile"
-import type { QBOConnection } from "@/lib/services/accounting-connections"
 import type { StripeConnectedAccount } from "@/lib/services/stripe-connected-accounts"
 import type { ComplianceRequirementTemplateItem, ComplianceRules, CostCode, OrgRoleOption, PermissionOption, TeamMember, User } from "@/lib/types"
 import { TeamTable } from "@/components/team/team-table"
@@ -243,7 +242,6 @@ type OrganizationSettingsData = {
 interface SettingsWindowProps {
   user: User | null
   initialTab?: string
-  initialQboConnection?: QBOConnection | null
   initialStripeConnection?: StripeConnectedAccount | null
   teamMembers?: TeamMember[]
   roleOptions?: OrgRoleOption[]
@@ -271,7 +269,6 @@ function getInitials(user: User | null) {
 export function SettingsWindow({
   user,
   initialTab = "profile",
-  initialQboConnection = null,
   initialStripeConnection = null,
   teamMembers: initialTeamMembers,
   roleOptions: initialRoleOptions,
@@ -295,9 +292,8 @@ export function SettingsWindow({
   const settingsReturnTo = searchParams.get("returnTo")
   const defaultTab = sections.some((section) => section.value === initialTab) ? initialTab : "profile"
   const [tab, setTab] = useState<string>(defaultTab)
-  const [, setQboConnection] = useState<QBOConnection | null>(initialQboConnection)
   const [stripeConnection, setStripeConnection] = useState<StripeConnectedAccount | null>(initialStripeConnection)
-  const [hasFetchedIntegrations, setHasFetchedIntegrations] = useState<boolean>(Boolean(initialQboConnection) || Boolean(initialStripeConnection))
+  const [hasFetchedIntegrations, setHasFetchedIntegrations] = useState<boolean>(Boolean(initialStripeConnection))
   const [loadingIntegrations, setLoadingIntegrations] = useState(false)
   const [billing, setBilling] = useState<BillingDetails>(initialBilling)
   const [hasFetchedBilling, setHasFetchedBilling] = useState<boolean>(Boolean(initialBilling))
@@ -403,10 +399,9 @@ export function SettingsWindow({
   }, [user?.avatar_url])
 
   useEffect(() => {
-    setQboConnection(initialQboConnection ?? null)
     setStripeConnection(initialStripeConnection ?? null)
-    setHasFetchedIntegrations(Boolean(initialQboConnection) || Boolean(initialStripeConnection))
-  }, [initialQboConnection, initialStripeConnection])
+    setHasFetchedIntegrations(Boolean(initialStripeConnection))
+  }, [initialStripeConnection])
 
   useEffect(() => {
     setBilling(initialBilling ?? null)
@@ -474,10 +469,9 @@ export function SettingsWindow({
 
     let isMounted = true
     setLoadingIntegrations(true)
-    Promise.all([getQBOConnectionAction(), getStripeConnectedAccountAction()])
-      .then(([qbo, stripe]) => {
+    getStripeConnectedAccountAction()
+      .then((stripe) => {
         if (!isMounted) return
-        setQboConnection(qbo)
         setStripeConnection(stripe)
         setHasFetchedIntegrations(true)
       })

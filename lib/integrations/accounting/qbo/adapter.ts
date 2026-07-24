@@ -1,16 +1,40 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { QBOClient, QBOError } from "@/lib/integrations/accounting/qbo/client"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
-import { incrementInvoiceNumber, rememberQBOInvoiceNumberCursor } from "@/lib/services/invoice-numbers"
+import { incrementInvoiceNumber, rememberAccountingInvoiceNumberCursor } from "@/lib/services/invoice-numbers"
 import { recordEvent } from "@/lib/services/events"
 import { logQBO } from "@/lib/services/accounting-logger"
 import { downloadFilesObject } from "@/lib/storage/files-storage"
 import type { AccountingProvider, PushResult } from "@/lib/integrations/accounting/provider"
-import { disconnectAccountingConnection, getQBOAccessTokenForConnection } from "@/lib/services/accounting-connections"
+import { getQBOAccessTokenForConnection, refreshQBOConnectionsDueForKeepalive } from "@/lib/services/accounting-connections"
 import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 import { createOrUpdateQBOEntity, isStaleObjectError, QBO_DELETED_REVIEW_MESSAGE, resolveQBOSyncTarget } from "@/lib/integrations/accounting/qbo/sync-safety"
+import { createQBOOAuthState, decryptToken, getQBOAuthUrl, revokeQBOToken } from "@/lib/integrations/accounting/qbo/auth"
+import { drainQboInboundEvents, ingestQboCdcChanges, receiveQboWebhook } from "@/lib/integrations/accounting/qbo/reconcile"
+import { accountingDimension, accountingReference, type AccountingCoding } from "@/lib/services/accounting-coding"
 
 export { createOrUpdateQBOEntity, resolveQBOSyncTarget } from "@/lib/integrations/accounting/qbo/sync-safety"
+
+async function disconnectQboProviderConnection(input: { orgId: string; connectionId: string }) {
+  const supabase = createServiceSupabaseClient()
+  const { data: connection, error } = await supabase
+    .from("accounting_connections")
+    .select("refresh_token")
+    .eq("org_id", input.orgId)
+    .eq("id", input.connectionId)
+    .eq("provider", "qbo")
+    .maybeSingle()
+  if (error || !connection?.refresh_token) return
+  try {
+    await revokeQBOToken(decryptToken(connection.refresh_token))
+  } catch (revokeError) {
+    logQBO("warn", "token_revoke_failed_on_disconnect", {
+      orgId: input.orgId,
+      connectionId: input.connectionId,
+      error: revokeError instanceof Error ? revokeError.message : String(revokeError),
+    })
+  }
+}
 
 interface InvoiceLineRow {
   description: string
@@ -18,6 +42,7 @@ interface InvoiceLineRow {
   unit?: string | null
   unit_price_cents: number
   metadata?: Record<string, any> | null
+  accounting_coding?: AccountingCoding | null
 }
 
 interface InvoiceForSync {
@@ -33,6 +58,7 @@ interface InvoiceForSync {
   status?: string | null
   qbo_id?: string | null
   metadata?: Record<string, any> | null
+  accounting_coding?: AccountingCoding | null
   lines: InvoiceLineRow[]
   project?: { qbo_class_id?: string | null; qbo_class_name?: string | null } | null
 }
@@ -63,6 +89,7 @@ interface ProjectExpenseForSync {
   qbo_id?: string | null
   receipt_file_id?: string | null
   metadata?: Record<string, any> | null
+  accounting_coding?: AccountingCoding | null
   project?: { name?: string | null; qbo_class_id?: string | null; qbo_class_name?: string | null } | null
   vendor_company?: { name?: string | null } | null
 }
@@ -80,6 +107,7 @@ interface VendorBillForSync {
   currency?: string | null
   file_id?: string | null
   metadata?: Record<string, any> | null
+  accounting_coding?: AccountingCoding | null
   qbo_id?: string | null
   qbo_expense_account_id?: string | null
   qbo_expense_account_name?: string | null
@@ -149,11 +177,15 @@ async function isSyncPushBlocked(
   orgId: string,
   entityType: SyncRecordEntityType,
   entityId: string,
+  connectionId?: string | null,
 ): Promise<boolean> {
+  const resolvedConnectionId = await resolveHealthConnectionId(orgId, connectionId)
+  if (!resolvedConnectionId) return false
   const { data } = await supabase
     .from("accounting_sync_records")
     .select("pushable")
     .eq("org_id", orgId)
+    .eq("connection_id", resolvedConnectionId)
     .eq("entity_type", entityType)
     .eq("entity_id", entityId)
     .maybeSingle()
@@ -197,13 +229,6 @@ async function resolveQboVendorForConnection(input: {
     }, { onConflict: "org_id,connection_id,role,entity_type,entity_id" })
     if (linkError) throw new Error(`Unable to persist vendor accounting link: ${linkError.message}`)
 
-    // Transitional dual-write for code that still consumes relationship rows
-    // from the transaction ledger during the compatibility window.
-    await input.supabase.from("accounting_sync_records").upsert({
-      org_id: input.orgId, connection_id: input.connectionId, provider: "qbo", entity_type: "vendor",
-      entity_id: input.companyId, external_id: vendor.Id, external_version: vendor.SyncToken ?? null,
-      status: "synced", last_synced_at: now, metadata: { display_name: vendor.DisplayName ?? input.displayName },
-    }, { onConflict: "org_id,entity_type,entity_id" })
   }
   return vendor
 }
@@ -218,7 +243,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
     return { success: false, error: "No active QBO connection" }
   }
 
-  if (await isSyncPushBlocked(supabase, orgId, "invoice", invoiceId)) {
+  if (await isSyncPushBlocked(supabase, orgId, "invoice", invoiceId, options?.connectionId)) {
     await supabase.from("invoices").update({ qbo_sync_status: "skipped" }).eq("id", invoiceId).eq("org_id", orgId)
     return { success: true, skipped: true }
   }
@@ -448,7 +473,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
       })
       .eq("id", invoiceId)
 
-    await rememberQBOInvoiceNumberCursor(orgId, result.DocNumber ?? typedInvoice.invoice_number)
+    await rememberAccountingInvoiceNumberCursor(options?.connectionId ?? "", orgId, result.DocNumber ?? typedInvoice.invoice_number)
     await syncInvoicePdfAttachmentToQBO({
       client,
       supabase,
@@ -492,7 +517,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
           })
           .eq("id", invoiceId)
 
-        await rememberQBOInvoiceNumberCursor(orgId, retryResult.DocNumber ?? typedInvoice.invoice_number)
+        await rememberAccountingInvoiceNumberCursor(options?.connectionId ?? "", orgId, retryResult.DocNumber ?? typedInvoice.invoice_number)
         await syncInvoicePdfAttachmentToQBO({
           client,
           supabase,
@@ -572,7 +597,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
           })
           .eq("id", invoiceId)
 
-        await rememberQBOInvoiceNumberCursor(orgId, retryResult.DocNumber ?? nextNumber)
+        await rememberAccountingInvoiceNumberCursor(options?.connectionId ?? "", orgId, retryResult.DocNumber ?? nextNumber)
         await syncInvoicePdfAttachmentToQBO({
           client,
           supabase,
@@ -663,7 +688,7 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string, options
     return { success: false, error: "No active QBO connection" }
   }
 
-  if (await isSyncPushBlocked(supabase, orgId, "payment", paymentId)) {
+  if (await isSyncPushBlocked(supabase, orgId, "payment", paymentId, options?.connectionId)) {
     return { success: true, skipped: true }
   }
 
@@ -696,14 +721,19 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string, options
       const message = "Invoice not synced to QBO"
       await markSyncRecordError(orgId, "payment", paymentId, message, options?.connectionId)
       if (payment.invoice_id) {
-        await enqueueInvoiceSync(payment.invoice_id as string, orgId)
+        await enqueueOutboxJob({
+          orgId,
+          jobType: "accounting_push_invoice",
+          payload: { invoice_id: payment.invoice_id },
+          dedupeByPayloadKeys: ["invoice_id"],
+        })
       }
       return { success: false, error: message }
     }
 
     const claimed = await claimSyncCreate({
       orgId,
-      connectionId: null,
+      connectionId: options?.connectionId ?? null,
       entityType: "payment",
       entityId: paymentId,
     })
@@ -790,7 +820,7 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string, 
     return { success: false, error: "No active QBO connection" }
   }
 
-  if (await isSyncPushBlocked(supabase, orgId, "project_expense", expenseId)) {
+  if (await isSyncPushBlocked(supabase, orgId, "project_expense", expenseId, options?.connectionId)) {
     await supabase.from("project_expenses").update({ qbo_sync_status: "skipped" }).eq("id", expenseId).eq("org_id", orgId)
     return { success: true, skipped: true }
   }
@@ -800,6 +830,7 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string, 
     .select(
       `
       id, org_id, project_id, vendor_company_id, vendor_name_text, expense_date, description, amount_cents, tax_cents, payment_method, is_billable, receipt_file_id,
+      accounting_coding,
       qbo_transaction_type, qbo_expense_account_id, qbo_expense_account_name, qbo_payment_account_id, qbo_payment_account_name,
       qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name, qbo_class_id, qbo_class_name, qbo_id, metadata,
       project:projects(name, qbo_class_id, qbo_class_name),
@@ -814,7 +845,26 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string, 
     return { success: false, error: error?.message ?? "Expense not found" }
   }
 
-  const typedExpense = expense as ProjectExpenseForSync
+  const rawExpense = expense as ProjectExpenseForSync
+  const expenseAccount = accountingReference(rawExpense.accounting_coding, "expense_account")
+  const paymentAccount = accountingReference(rawExpense.accounting_coding, "payment_account")
+  const apAccount = accountingReference(rawExpense.accounting_coding, "ap_account")
+  const counterparty = accountingReference(rawExpense.accounting_coding, "counterparty")
+  const classDimension = accountingDimension(rawExpense.accounting_coding, "class")
+  const typedExpense: ProjectExpenseForSync = {
+    ...rawExpense,
+    qbo_transaction_type: (rawExpense.accounting_coding?.transaction_type as "purchase" | "bill" | null | undefined) ?? rawExpense.qbo_transaction_type,
+    qbo_expense_account_id: expenseAccount?.id ?? rawExpense.qbo_expense_account_id,
+    qbo_expense_account_name: expenseAccount?.name ?? rawExpense.qbo_expense_account_name,
+    qbo_payment_account_id: paymentAccount?.id ?? rawExpense.qbo_payment_account_id,
+    qbo_payment_account_name: paymentAccount?.name ?? rawExpense.qbo_payment_account_name,
+    qbo_ap_account_id: apAccount?.id ?? rawExpense.qbo_ap_account_id,
+    qbo_ap_account_name: apAccount?.name ?? rawExpense.qbo_ap_account_name,
+    qbo_vendor_id: counterparty?.id ?? rawExpense.qbo_vendor_id,
+    qbo_vendor_name: counterparty?.name ?? rawExpense.qbo_vendor_name,
+    qbo_class_id: classDimension?.id ?? rawExpense.qbo_class_id,
+    qbo_class_name: classDimension?.name ?? rawExpense.qbo_class_name,
+  }
   if (!typedExpense.qbo_expense_account_id) {
     await markProjectExpenseNeedsReview(orgId, expenseId, "Choose a QuickBooks account before syncing.")
     return { success: false, error: "Missing QuickBooks expense account" }
@@ -1013,9 +1063,6 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string, 
 
 export async function syncVendorBillToQBO(billId: string, orgId: string, options?: { connectionId?: string }) {
   const supabase = createServiceSupabaseClient()
-  if (await isSyncPushBlocked(supabase, orgId, "vendor_credit", billId)) {
-    return { success: true, skipped: true }
-  }
   const client = options?.connectionId ? await QBOClient.forConnection(options.connectionId) : await QBOClient.forOrg(orgId)
 
   if (!client) {
@@ -1024,16 +1071,11 @@ export async function syncVendorBillToQBO(billId: string, orgId: string, options
     return { success: false, error: "No active QBO connection" }
   }
 
-  if (await isSyncPushBlocked(supabase, orgId, "bill", billId)) {
-    await supabase.from("vendor_bills").update({ qbo_sync_status: "skipped" }).eq("id", billId).eq("org_id", orgId)
-    return { success: true, skipped: true }
-  }
-
   const { data: bill, error } = await supabase
     .from("vendor_bills")
     .select(
       `
-      id, org_id, project_id, commitment_id, company_id, bill_number, bill_date, due_date, total_cents, currency, file_id, metadata,
+      id, org_id, project_id, commitment_id, company_id, bill_number, bill_date, due_date, total_cents, currency, file_id, metadata, accounting_coding,
       qbo_id, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name, qbo_class_id, qbo_class_name,
       project:projects(name, qbo_class_id, qbo_class_name),
       company:companies!vendor_bills_company_id_fkey(id, name, qbo_vendor_id, qbo_vendor_name),
@@ -1049,8 +1091,26 @@ export async function syncVendorBillToQBO(billId: string, orgId: string, options
     return { success: false, error: error?.message ?? "Vendor bill not found" }
   }
 
-  const typedBill = bill as VendorBillForSync
-  if ((typedBill.metadata as Record<string, any> | null)?.source === "vendor_credit") {
+  const rawBill = bill as VendorBillForSync
+  const billExpenseAccount = accountingReference(rawBill.accounting_coding, "expense_account")
+  const billApAccount = accountingReference(rawBill.accounting_coding, "ap_account")
+  const billCounterparty = accountingReference(rawBill.accounting_coding, "counterparty")
+  const billClass = accountingDimension(rawBill.accounting_coding, "class")
+  const typedBill: VendorBillForSync = {
+    ...rawBill,
+    qbo_expense_account_id: billExpenseAccount?.id ?? rawBill.qbo_expense_account_id,
+    qbo_expense_account_name: billExpenseAccount?.name ?? rawBill.qbo_expense_account_name,
+    qbo_ap_account_id: billApAccount?.id ?? rawBill.qbo_ap_account_id,
+    qbo_ap_account_name: billApAccount?.name ?? rawBill.qbo_ap_account_name,
+    qbo_vendor_id: billCounterparty?.id ?? rawBill.qbo_vendor_id,
+    qbo_vendor_name: billCounterparty?.name ?? rawBill.qbo_vendor_name,
+    qbo_class_id: billClass?.id ?? rawBill.qbo_class_id,
+    qbo_class_name: billClass?.name ?? rawBill.qbo_class_name,
+  }
+  const isVendorCredit = (typedBill.metadata as Record<string, any> | null)?.source === "vendor_credit"
+  const syncEntityType = isVendorCredit ? "vendor_credit" : "bill"
+  if (await isSyncPushBlocked(supabase, orgId, syncEntityType, billId, options?.connectionId)) {
+    await supabase.from("vendor_bills").update({ qbo_sync_status: "skipped" }).eq("id", billId).eq("org_id", orgId)
     return { success: true, skipped: true }
   }
   if (!vendorBillHasQboExpenseCoding(typedBill)) {
@@ -1116,7 +1176,7 @@ export async function syncVendorBillToQBO(billId: string, orgId: string, options
     )
 
     const qboLines = sourceLines.map((line) => {
-      const amount = ((line.unit_cost_cents ?? 0) * (line.quantity ?? 1)) / 100
+      const amount = Math.abs(((line.unit_cost_cents ?? 0) * (line.quantity ?? 1)) / 100)
       const metadata = (line.metadata as Record<string, any> | null) ?? {}
       const lineProjectId = line.project_id ?? typedBill.project_id
       const billableToCustomer =
@@ -1156,7 +1216,7 @@ export async function syncVendorBillToQBO(billId: string, orgId: string, options
                 name: lineCustomer.DisplayName,
               }
             : undefined,
-          BillableStatus: billableToCustomer ? "Billable" : "NotBillable",
+          BillableStatus: !isVendorCredit && billableToCustomer ? "Billable" : "NotBillable",
           ClassRef: classRef,
         },
       }
@@ -1166,13 +1226,14 @@ export async function syncVendorBillToQBO(billId: string, orgId: string, options
       .from("accounting_sync_records")
       .select("qbo_id:external_id, qbo_sync_token:external_version")
       .eq("org_id", orgId)
-      .eq("entity_type", "bill")
+      .eq("connection_id", options?.connectionId ?? "")
+      .eq("entity_type", syncEntityType)
       .eq("entity_id", billId)
       .maybeSingle()
     const qboBill = {
       DocNumber: typedBill.bill_number ?? undefined,
       TxnDate: typedBill.bill_date ?? new Date().toISOString().slice(0, 10),
-      DueDate: typedBill.due_date ?? undefined,
+      ...(!isVendorCredit ? { DueDate: typedBill.due_date ?? undefined } : {}),
       VendorRef: { value: vendor.Id!, name: vendor.DisplayName },
       APAccountRef: typedBill.qbo_ap_account_id
         ? { value: typedBill.qbo_ap_account_id, name: typedBill.qbo_ap_account_name ?? undefined }
@@ -1183,12 +1244,12 @@ export async function syncVendorBillToQBO(billId: string, orgId: string, options
 
     const result = await createOrUpdateQBOEntity({
       client,
-      entityType: "bill",
+      entityType: isVendorCredit ? "vendor_credit" : "bill",
       qboId: existingSync?.qbo_id ?? typedBill.qbo_id,
       cachedSyncToken: existingSync?.qbo_sync_token,
       payload: qboBill,
-      create: (p) => client.createBill(p as any),
-      update: (p) => client.updateBill(p as any),
+      create: (p) => isVendorCredit ? client.createVendorCredit(p as any) : client.createBill(p as any),
+      update: (p) => isVendorCredit ? client.updateVendorCredit(p as any) : client.updateBill(p as any),
       logContext: { orgId, billId },
     })
 
@@ -1198,7 +1259,7 @@ export async function syncVendorBillToQBO(billId: string, orgId: string, options
       entityId: billId,
       qboId: result.Id!,
       syncToken: result.SyncToken,
-      entityType: "bill",
+      entityType: syncEntityType,
     })
 
     await supabase
@@ -1227,15 +1288,17 @@ export async function syncVendorBillToQBO(billId: string, orgId: string, options
         .eq("id", billCompany.id)
     }
 
-    await syncVendorBillAttachmentToQBO({
-      client,
-      supabase,
-      orgId,
-      billId,
-      qboBillId: result.Id!,
-      fileId: typedBill.file_id ?? null,
-      metadata: typedBill.metadata ?? {},
-    })
+    if (!isVendorCredit) {
+      await syncVendorBillAttachmentToQBO({
+        client,
+        supabase,
+        orgId,
+        billId,
+        qboBillId: result.Id!,
+        fileId: typedBill.file_id ?? null,
+        metadata: typedBill.metadata ?? {},
+      })
+    }
 
     await markConnectionHealthy(orgId, options?.connectionId)
     logQBO("info", "vendor_bill_sync_success", { orgId, billId, qboId: result.Id })
@@ -1247,7 +1310,8 @@ export async function syncVendorBillToQBO(billId: string, orgId: string, options
       .update({ qbo_sync_status: "error", qbo_sync_error: message.slice(0, 4000) })
       .eq("org_id", orgId)
       .eq("id", billId)
-    await markSyncRecordError(orgId, "bill", billId, message, options?.connectionId)
+    const entityType = (typedBill.metadata as Record<string, any> | null)?.source === "vendor_credit" ? "vendor_credit" : "bill"
+    await markSyncRecordError(orgId, entityType, billId, message, options?.connectionId)
     await markConnectionErrorIfConnectionLevel(orgId, error, message, options?.connectionId)
     logQBO("error", "vendor_bill_sync_failed", {
       orgId,
@@ -1271,7 +1335,7 @@ export async function syncBillPaymentToQBO(paymentId: string, orgId: string, opt
     return { success: false, error: "No active QBO connection" }
   }
 
-  if (await isSyncPushBlocked(supabase, orgId, "bill_payment", paymentId)) {
+  if (await isSyncPushBlocked(supabase, orgId, "bill_payment", paymentId, options?.connectionId)) {
     return { success: true, skipped: true }
   }
 
@@ -1372,297 +1436,6 @@ export async function syncBillPaymentToQBO(paymentId: string, orgId: string, opt
   }
 }
 
-export async function enqueueInvoiceSync(invoiceId: string, orgId: string) {
-  const supabase = createServiceSupabaseClient()
-
-  if (await isSyncPushBlocked(supabase, orgId, "invoice", invoiceId)) {
-    await supabase.from("invoices").update({ qbo_sync_status: "skipped" }).eq("id", invoiceId).eq("org_id", orgId)
-    return
-  }
-
-  const { data: connection } = await supabase
-    .from("accounting_connections")
-    .select("settings")
-    .eq("org_id", orgId)
-    .eq("status", "active")
-    .maybeSingle()
-
-  if (!connection?.settings?.auto_sync) {
-    await supabase.from("invoices").update({ qbo_sync_status: "skipped" }).eq("id", invoiceId)
-    return
-  }
-
-  const queued = await enqueueOutboxJob({
-    orgId,
-    jobType: "qbo_sync_invoice",
-    payload: { invoice_id: invoiceId },
-    dedupeByPayloadKeys: ["invoice_id"],
-  })
-  if (queued.reason === "error") {
-    await supabase
-      .from("invoices")
-      .update({ qbo_sync_status: "error" })
-      .eq("id", invoiceId)
-      .eq("org_id", orgId)
-    await markSyncRecordError(orgId, "invoice", invoiceId, "Unable to enqueue QuickBooks sync job.")
-    return
-  }
-
-  await supabase.from("invoices").update({ qbo_sync_status: "pending" }).eq("id", invoiceId).eq("org_id", orgId)
-}
-
-export async function enqueuePaymentSync(paymentId: string, orgId: string) {
-  const supabase = createServiceSupabaseClient()
-
-  if (await isSyncPushBlocked(supabase, orgId, "payment", paymentId)) return
-
-  const { data: connection } = await supabase
-    .from("accounting_connections")
-    .select("settings")
-    .eq("org_id", orgId)
-    .eq("status", "active")
-    .maybeSingle()
-
-  if (!connection?.settings?.sync_payments) {
-    return
-  }
-
-  const queued = await enqueueOutboxJob({
-    orgId,
-    jobType: "qbo_sync_payment",
-    payload: { payment_id: paymentId },
-    dedupeByPayloadKeys: ["payment_id"],
-  })
-  if (queued.reason === "error") {
-    await markSyncRecordError(orgId, "payment", paymentId, "Unable to enqueue QuickBooks payment sync job.")
-  }
-}
-
-export async function enqueueProjectExpenseSync(expenseId: string, orgId: string) {
-  const supabase = createServiceSupabaseClient()
-
-  if (await isSyncPushBlocked(supabase, orgId, "project_expense", expenseId)) {
-    await supabase.from("project_expenses").update({ qbo_sync_status: "skipped" }).eq("id", expenseId).eq("org_id", orgId)
-    return
-  }
-
-  const { data: connection } = await supabase
-    .from("accounting_connections")
-    .select("settings")
-    .eq("org_id", orgId)
-    .eq("status", "active")
-    .maybeSingle()
-
-  if (!connection?.settings?.auto_sync) {
-    await supabase.from("project_expenses").update({ qbo_sync_status: "skipped" }).eq("id", expenseId).eq("org_id", orgId)
-    return
-  }
-
-  const { data: expense } = await supabase
-    .from("project_expenses")
-    .select("qbo_transaction_type, payment_method, qbo_expense_account_id, qbo_payment_account_id")
-    .eq("id", expenseId)
-    .eq("org_id", orgId)
-    .maybeSingle()
-
-  if (!expense?.qbo_expense_account_id) {
-    await markProjectExpenseNeedsReview(orgId, expenseId, "Choose a QuickBooks account before syncing.")
-    return
-  }
-
-  const transactionType = resolveProjectExpenseQBOTransactionType(expense as ProjectExpenseForSync)
-  if (transactionType === "purchase" && !expense.qbo_payment_account_id) {
-    await markProjectExpenseNeedsReview(orgId, expenseId, "Choose the QuickBooks bank or credit card account used for this paid expense.")
-    return
-  }
-
-  const queued = await enqueueOutboxJob({
-    orgId,
-    jobType: "qbo_sync_project_expense",
-    payload: { expense_id: expenseId },
-    dedupeByPayloadKeys: ["expense_id"],
-  })
-  if (queued.reason === "error") {
-    await supabase
-      .from("project_expenses")
-      .update({ qbo_sync_status: "error", qbo_sync_error: "Unable to enqueue QuickBooks expense sync job." })
-      .eq("id", expenseId)
-      .eq("org_id", orgId)
-    return
-  }
-
-  await supabase.from("project_expenses").update({ qbo_sync_status: "pending", qbo_sync_error: null }).eq("id", expenseId).eq("org_id", orgId)
-}
-
-export async function enqueueVendorBillSync(billId: string, orgId: string) {
-  const supabase = createServiceSupabaseClient()
-
-  if (await isSyncPushBlocked(supabase, orgId, "bill", billId)) {
-    await supabase.from("vendor_bills").update({ qbo_sync_status: "skipped" }).eq("id", billId).eq("org_id", orgId)
-    return
-  }
-
-  const { data: connection } = await supabase
-    .from("accounting_connections")
-    .select("settings")
-    .eq("org_id", orgId)
-    .eq("status", "active")
-    .maybeSingle()
-
-  if (!connection?.settings?.auto_sync) {
-    await supabase.from("vendor_bills").update({ qbo_sync_status: "skipped" }).eq("id", billId).eq("org_id", orgId)
-    return
-  }
-
-  const { data: bill } = await supabase
-    .from("vendor_bills")
-    .select("qbo_expense_account_id, bill_lines(metadata)")
-    .eq("id", billId)
-    .eq("org_id", orgId)
-    .maybeSingle()
-
-  if (!bill || !vendorBillHasQboExpenseCoding(bill as VendorBillForSync)) {
-    await supabase
-      .from("vendor_bills")
-      .update({
-        qbo_sync_status: "needs_review",
-        qbo_sync_error: "Choose a QuickBooks expense/category account before syncing this payable.",
-      })
-      .eq("id", billId)
-      .eq("org_id", orgId)
-    return
-  }
-
-  const queued = await enqueueOutboxJob({
-    orgId,
-    jobType: "qbo_sync_vendor_bill",
-    payload: { bill_id: billId },
-    dedupeByPayloadKeys: ["bill_id"],
-  })
-  if (queued.reason === "error") {
-    await supabase
-      .from("vendor_bills")
-      .update({ qbo_sync_status: "error", qbo_sync_error: "Unable to enqueue QuickBooks payable sync job." })
-      .eq("id", billId)
-      .eq("org_id", orgId)
-    return
-  }
-
-  await supabase.from("vendor_bills").update({ qbo_sync_status: "pending", qbo_sync_error: null }).eq("id", billId).eq("org_id", orgId)
-}
-
-export async function enqueueBillPaymentSync(paymentId: string, orgId: string) {
-  const supabase = createServiceSupabaseClient()
-
-  if (await isSyncPushBlocked(supabase, orgId, "bill_payment", paymentId)) return
-
-  const { data: connection } = await supabase
-    .from("accounting_connections")
-    .select("settings")
-    .eq("org_id", orgId)
-    .eq("status", "active")
-    .maybeSingle()
-
-  if (!connection?.settings?.sync_payments) return
-
-  const queued = await enqueueOutboxJob({
-    orgId,
-    jobType: "qbo_sync_bill_payment",
-    payload: { payment_id: paymentId },
-    dedupeByPayloadKeys: ["payment_id"],
-  })
-  if (queued.reason === "error") {
-    await markSyncRecordError(orgId, "bill_payment", paymentId, "Unable to enqueue QuickBooks bill payment sync job.")
-  }
-}
-
-export async function retryFailedQBOSyncJobs(orgId: string) {
-  const supabase = createServiceSupabaseClient()
-  let retriedInvoices = 0
-  let retriedPayments = 0
-  let retriedExpenses = 0
-  let retriedVendorBills = 0
-
-  const { data: failedInvoices } = await supabase
-    .from("invoices")
-    .select("id")
-    .eq("org_id", orgId)
-    .eq("qbo_sync_status", "error")
-    .limit(50)
-
-  for (const row of failedInvoices ?? []) {
-    await enqueueInvoiceSync(row.id, orgId)
-    retriedInvoices += 1
-  }
-
-  const { data: failedPayments } = await supabase
-    .from("accounting_sync_records")
-    .select("entity_id")
-    .eq("org_id", orgId)
-    .eq("entity_type", "payment")
-    .eq("status", "error")
-    .limit(50)
-
-  for (const row of failedPayments ?? []) {
-    if (!row.entity_id) continue
-    await enqueuePaymentSync(row.entity_id, orgId)
-    retriedPayments += 1
-  }
-
-  const { data: failedExpenses } = await supabase
-    .from("project_expenses")
-    .select("id")
-    .eq("org_id", orgId)
-    .in("qbo_sync_status", ["error", "needs_review"])
-    .not("qbo_expense_account_id", "is", null)
-    .limit(50)
-
-  for (const row of failedExpenses ?? []) {
-    await enqueueProjectExpenseSync(row.id, orgId)
-    retriedExpenses += 1
-  }
-
-  const { data: failedVendorBills } = await supabase
-    .from("vendor_bills")
-    .select("id")
-    .eq("org_id", orgId)
-    .in("qbo_sync_status", ["error", "needs_review"])
-    .not("qbo_expense_account_id", "is", null)
-    .limit(50)
-
-  for (const row of failedVendorBills ?? []) {
-    await enqueueVendorBillSync(row.id, orgId)
-    retriedVendorBills += 1
-  }
-
-  const { count: failedOutboxCount } = await supabase
-    .from("outbox")
-    .select("id", { count: "exact", head: true })
-    .eq("org_id", orgId)
-    .in("job_type", ["qbo_sync_invoice", "qbo_sync_payment", "qbo_sync_project_expense", "qbo_sync_vendor_bill", "qbo_sync_bill_payment"])
-    .eq("status", "failed")
-
-  if ((failedOutboxCount ?? 0) > 0) {
-    await supabase
-      .from("outbox")
-      .update({
-        status: "pending",
-        run_at: new Date().toISOString(),
-      })
-      .eq("org_id", orgId)
-      .in("job_type", ["qbo_sync_invoice", "qbo_sync_payment", "qbo_sync_project_expense", "qbo_sync_vendor_bill", "qbo_sync_bill_payment"])
-      .eq("status", "failed")
-  }
-
-  return {
-    retried_invoices: retriedInvoices,
-    retried_payments: retriedPayments,
-    retried_expenses: retriedExpenses,
-    retried_vendor_bills: retriedVendorBills,
-    reopened_outbox_jobs: failedOutboxCount ?? 0,
-  }
-}
-
 async function upsertSyncRecord(input: {
   orgId: string
   connectionId?: string | null
@@ -1695,7 +1468,7 @@ async function upsertSyncRecord(input: {
         status: "synced",
         error_message: null,
       },
-      { onConflict: "org_id,entity_type,entity_id" },
+      { onConflict: "org_id,connection_id,entity_type,entity_id" },
     )
 }
 
@@ -1745,6 +1518,7 @@ async function markSyncRecordError(orgId: string, entityType: string, entityId: 
     .from("accounting_sync_records")
     .select("id, qbo_id:external_id")
     .eq("org_id", orgId)
+    .eq("connection_id", resolvedConnectionId)
     .eq("entity_type", entityType)
     .eq("entity_id", entityId)
     .maybeSingle()
@@ -1776,11 +1550,14 @@ async function markSyncRecordError(orgId: string, entityType: string, entityId: 
 
 async function markSyncRecordNeedsReview(orgId: string, entityType: string, entityId: string, message: string, connectionId?: string | null) {
   await markSyncRecordError(orgId, entityType, entityId, message, connectionId)
+  const resolvedConnectionId = await resolveHealthConnectionId(orgId, connectionId)
+  if (!resolvedConnectionId) return
   const supabase = createServiceSupabaseClient()
   await supabase
     .from("accounting_sync_records")
     .update({ status: "needs_review", error_message: message.slice(0, 4000) })
     .eq("org_id", orgId)
+    .eq("connection_id", resolvedConnectionId)
     .eq("entity_type", entityType)
     .eq("entity_id", entityId)
 }
@@ -2252,25 +2029,12 @@ function isDuplicateDocNumber(error: QBOError) {
   return detail.includes("docnumber") || detail.includes("duplicate") || detail.includes("already exists")
 }
 
-function requirePushResult(result: { success: boolean; qbo_id?: string; error?: string }): PushResult {
+function requirePushResult(result: { success: boolean; qbo_id?: string; error?: string; skipped?: boolean }): PushResult {
+  // A successful skip (e.g. voiding an invoice that never reached QBO) is not a failure;
+  // throwing here would turn it into a retrying outbox job.
+  if (result.success && result.skipped) return { externalId: result.qbo_id ?? null, skipped: true }
   if (!result.success || !result.qbo_id) throw new Error(result.error ?? "QuickBooks sync failed")
   return { externalId: result.qbo_id }
-}
-
-async function projectTargetForEntity(orgId: string, table: "invoices" | "project_expenses" | "vendor_bills", entityId: string) {
-  const supabase = createServiceSupabaseClient()
-  const { data } = await supabase.from(table).select("project_id").eq("org_id", orgId).eq("id", entityId).maybeSingle()
-  return resolveAccountingTarget({ orgId, projectId: data?.project_id ?? null })
-}
-
-async function paymentTarget(orgId: string, paymentId: string, billPayment: boolean) {
-  const supabase = createServiceSupabaseClient()
-  const { data } = await supabase.from("payments")
-    .select("invoice:invoices(project_id),bill:vendor_bills(project_id)")
-    .eq("org_id", orgId).eq("id", paymentId).maybeSingle()
-  const invoice = Array.isArray(data?.invoice) ? data.invoice[0] : data?.invoice
-  const bill = Array.isArray(data?.bill) ? data.bill[0] : data?.bill
-  return resolveAccountingTarget({ orgId, projectId: billPayment ? bill?.project_id ?? null : invoice?.project_id ?? null })
 }
 
 async function requireQboClient(connectionId: string) {
@@ -2300,31 +2064,29 @@ export const qboProvider: AccountingProvider = {
     const auth = await getQBOAccessTokenForConnection(connectionId)
     return auth ? { ok: true } : { ok: false, error: "Unable to load or refresh QuickBooks credentials" }
   },
-  disconnect: disconnectAccountingConnection,
+  async refreshConnection(connectionId) {
+    const auth = await getQBOAccessTokenForConnection(connectionId, { forceRefresh: true })
+    return auth ? { ok: true } : { ok: false, error: "QuickBooks token refresh failed" }
+  },
+  keepAliveConnections: refreshQBOConnectionsDueForKeepalive,
+  disconnect: disconnectQboProviderConnection,
   async pushInvoice(input) {
-    const target = await projectTargetForEntity(input.orgId, "invoices", input.invoiceId)
-    if (!target) throw new Error("No accounting target is mapped to this invoice")
-    return requirePushResult(await syncInvoiceToQBO(input.invoiceId, input.orgId, { allowRecreateDeleted: input.allowRecreateDeleted, connectionId: target.connection.id }))
+    return requirePushResult(await syncInvoiceToQBO(input.invoiceId, input.orgId, { allowRecreateDeleted: input.allowRecreateDeleted, connectionId: input.connectionId }))
   },
   async pushPayment(input) {
-    const target = await paymentTarget(input.orgId, input.paymentId, false)
-    if (!target) throw new Error("No accounting target is mapped to this payment")
-    return requirePushResult(await syncPaymentToQBO(input.paymentId, input.orgId, { connectionId: target.connection.id }))
+    return requirePushResult(await syncPaymentToQBO(input.paymentId, input.orgId, { connectionId: input.connectionId }))
   },
   async pushExpense(input) {
-    const target = await projectTargetForEntity(input.orgId, "project_expenses", input.expenseId)
-    if (!target) throw new Error("No accounting target is mapped to this expense")
-    return requirePushResult(await syncProjectExpenseToQBO(input.expenseId, input.orgId, { connectionId: target.connection.id }))
+    return requirePushResult(await syncProjectExpenseToQBO(input.expenseId, input.orgId, { connectionId: input.connectionId }))
   },
   async pushVendorBill(input) {
-    const target = await projectTargetForEntity(input.orgId, "vendor_bills", input.billId)
-    if (!target) throw new Error("No accounting target is mapped to this bill")
-    return requirePushResult(await syncVendorBillToQBO(input.billId, input.orgId, { connectionId: target.connection.id }))
+    return requirePushResult(await syncVendorBillToQBO(input.billId, input.orgId, { connectionId: input.connectionId }))
+  },
+  async pushVendorCredit(input) {
+    return requirePushResult(await syncVendorBillToQBO(input.creditId, input.orgId, { connectionId: input.connectionId }))
   },
   async pushBillPayment(input) {
-    const target = await paymentTarget(input.orgId, input.paymentId, true)
-    if (!target) throw new Error("No accounting target is mapped to this bill payment")
-    return requirePushResult(await syncBillPaymentToQBO(input.paymentId, input.orgId, { connectionId: target.connection.id }))
+    return requirePushResult(await syncBillPaymentToQBO(input.paymentId, input.orgId, { connectionId: input.connectionId }))
   },
   async listDimensionValues(input) {
     const client = await requireQboClient(input.connectionId)
@@ -2338,7 +2100,64 @@ export const qboProvider: AccountingProvider = {
       : input.kind === "expense" ? await client.listExpenseAccounts()
       : input.kind === "payment" ? await client.listPaymentAccounts()
       : await client.listAccountsPayableAccounts()
-    return rows.map((item) => ({ id: item.id, name: item.name }))
+    return rows.map((item) => ({ id: item.id, name: item.name, fullyQualifiedName: item.fullyQualifiedName ?? undefined, accountType: (item as { accountType?: string }).accountType }))
+  },
+  async searchCounterparties(input) {
+    const client = await requireQboClient(input.connectionId)
+    const rows = input.role === "customer"
+      ? await client.searchCustomers(input.term)
+      : (await client.listVendors()).filter((vendor) => {
+          const needle = input.term.trim().toLowerCase()
+          return !needle || vendor.name.toLowerCase().includes(needle)
+        }).slice(0, 25)
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      fullyQualifiedName: (row as { fullyQualifiedName?: string | null }).fullyQualifiedName ?? undefined,
+      email: (row as { email?: string | null }).email ?? null,
+    }))
+  },
+  async createCounterparty(input) {
+    const client = await requireQboClient(input.connectionId)
+    const details = input.counterparty
+    const row = input.role === "customer"
+      ? await client.createCustomerOption({
+          name: details.displayName,
+          email: details.email,
+          line1: details.line1,
+          city: details.city,
+          state: details.state,
+          postalCode: details.postalCode,
+        })
+      : await client.createVendorOption({
+          name: details.displayName,
+          email: details.email,
+          line1: details.line1,
+          city: details.city,
+          state: details.state,
+          postalCode: details.postalCode,
+        })
+    return { id: row.id, name: row.name }
+  },
+  async createAccount(input) {
+    if (input.kind !== "income") throw new Error("QuickBooks only supports income-account creation from Arc")
+    const client = await requireQboClient(input.connectionId)
+    const row = await client.createIncomeAccount(input.name)
+    return { id: row.id, name: row.name, fullyQualifiedName: row.fullyQualifiedName ?? undefined }
+  },
+  async getLastInvoiceNumber(input) {
+    const client = await requireQboClient(input.connectionId)
+    return client.getLastInvoiceNumber()
+  },
+  async uploadInvoiceAttachment(input) {
+    const client = await requireQboClient(input.connectionId)
+    return client.uploadAttachmentForInvoice({
+      invoiceId: input.externalInvoiceId,
+      fileName: input.fileName,
+      contentType: input.contentType,
+      content: input.content,
+      note: input.note,
+    })
   },
   async resolveCounterparty(input) {
     const client = await requireQboClient(input.connectionId)
@@ -2348,4 +2167,11 @@ export const qboProvider: AccountingProvider = {
     if (!row.Id) throw new Error(`QuickBooks ${input.role} did not return an id`)
     return { id: row.Id, name: row.DisplayName }
   },
+  async getConnectUrl(input) {
+    const state = createQBOOAuthState(input.orgId)
+    return { url: getQBOAuthUrl(state), state }
+  },
+  receiveWebhook: receiveQboWebhook,
+  ingestChanges: ingestQboCdcChanges,
+  drainInboundEvents: drainQboInboundEvents,
 }

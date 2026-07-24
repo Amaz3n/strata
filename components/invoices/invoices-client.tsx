@@ -31,7 +31,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
-import { QBOSyncBadge } from "@/components/invoices/qbo-sync-badge"
+import { AccountingSyncBadge } from "@/components/accounting/accounting-sync-badge"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -1161,10 +1161,10 @@ export function InvoicesClient({
                         <Badge variant="secondary" className={`capitalize border ${statusStyles[displayStatusKey(invoice)]}`}>
                           {statusLabels[displayStatusKey(invoice)]}
                         </Badge>
-                        <QBOSyncBadge
+                        <AccountingSyncBadge
                           status={invoice.qbo_sync_status}
                           syncedAt={invoice.qbo_synced_at ?? undefined}
-                          qboId={invoice.qbo_id ?? undefined}
+                          externalId={invoice.qbo_id ?? undefined}
                           compact
                         />
                       </div>

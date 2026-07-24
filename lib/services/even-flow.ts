@@ -2,6 +2,10 @@ import "server-only"
 
 import { addWeeks, calendarDaysBetween, median, mondayOfIsoWeek, percentile, releaseSlotVariance } from "@/lib/starts/even-flow-math"
 import { recordAudit } from "@/lib/services/audit"
+import {
+  getDivisionAccessForUser,
+  getDivisionScopedProjectIds,
+} from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { requirePermission } from "@/lib/services/permissions"
@@ -95,10 +99,21 @@ export async function getReleaseBoard(
 ): Promise<ReleaseBoardCommunityDTO[]> {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.read", context)
+  const divisionAccess = await getDivisionAccessForUser({
+    orgId: context.orgId,
+    userId: context.userId,
+  })
+  if (opts.divisionId && divisionAccess.assignedOnly && !divisionAccess.divisionIds.includes(opts.divisionId)) {
+    return []
+  }
   let communitiesQuery = context.supabase.from("communities").select("id,name,settings")
     .eq("org_id", context.orgId).eq("status", "active").is("archived_at", null).order("name").limit(50)
   if (opts.communityId) communitiesQuery = communitiesQuery.eq("id", opts.communityId)
   if (opts.divisionId) communitiesQuery = communitiesQuery.eq("division_id", opts.divisionId)
+  else if (divisionAccess.assignedOnly) {
+    if (divisionAccess.divisionIds.length === 0) return []
+    communitiesQuery = communitiesQuery.in("division_id", divisionAccess.divisionIds)
+  }
   const { data: communities, error } = await communitiesQuery
   if (error) throw new Error(`Failed to load communities: ${error.message}`)
   await Promise.all((communities ?? []).map((community) => ensureSlotsWithClient(createServiceSupabaseClient(), context.orgId, community)))
@@ -150,17 +165,29 @@ export interface CycleTimeRow {
 }
 
 export async function getCycleTimeReport(
-  opts: { groupBy: "plan" | "community" | "superintendent"; from?: string; to?: string; communityId?: string },
+  opts: { groupBy: "plan" | "community" | "superintendent"; from?: string; to?: string; communityId?: string; divisionId?: string },
   orgId?: string,
 ): Promise<CycleTimeRow[]> {
   const context = await requireOrgContext(orgId)
   await requirePermission("report.read", context)
+  const divisionAccess = await getDivisionAccessForUser({
+    orgId: context.orgId,
+    userId: context.userId,
+  })
+  if (opts.divisionId && divisionAccess.assignedOnly && !divisionAccess.divisionIds.includes(opts.divisionId)) {
+    return []
+  }
   let query = context.supabase.from("start_packages").select(`
     actual_start_date,community_id,project_id,
-    lot:lots(house_plan_id,plan:house_plans(id,name,code)),community:communities(name),
+    lot:lots(house_plan_id,plan:house_plans(id,name,code)),community:communities!inner(name,division_id),
     project:projects(end_date,status,superintendent_id,superintendent:app_users!projects_superintendent_id_fkey(full_name))
   `).eq("org_id", context.orgId).eq("status", "released").not("actual_start_date", "is", null).limit(10_000)
   if (opts.communityId) query = query.eq("community_id", opts.communityId)
+  if (opts.divisionId) query = query.eq("community.division_id", opts.divisionId)
+  else if (divisionAccess.assignedOnly) {
+    if (divisionAccess.divisionIds.length === 0) return []
+    query = query.in("community.division_id", divisionAccess.divisionIds)
+  }
   if (opts.from) query = query.gte("actual_start_date", opts.from)
   if (opts.to) query = query.lte("actual_start_date", opts.to)
   const { data, error } = await query
@@ -184,16 +211,37 @@ export async function getCycleTimeReport(
 }
 
 export async function getEvenFlowAdherence(
-  opts: { communityId?: string; from: string; to: string },
+  opts: { communityId?: string; divisionId?: string; from: string; to: string },
   orgId?: string,
 ) {
   const context = await requireOrgContext(orgId)
   await requirePermission("report.read", context)
+  const divisionAccess = await getDivisionAccessForUser({
+    orgId: context.orgId,
+    userId: context.userId,
+  })
+  if (opts.divisionId && divisionAccess.assignedOnly && !divisionAccess.divisionIds.includes(opts.divisionId)) {
+    return []
+  }
   let slotsQuery = context.supabase.from("community_release_slots").select("community_id,week_start,target_starts")
     .eq("org_id", context.orgId).gte("week_start", opts.from).lte("week_start", opts.to)
   let startsQuery = context.supabase.from("start_packages").select("community_id,target_week")
     .eq("org_id", context.orgId).eq("status", "released").gte("target_week", opts.from).lte("target_week", opts.to)
   if (opts.communityId) { slotsQuery = slotsQuery.eq("community_id", opts.communityId); startsQuery = startsQuery.eq("community_id", opts.communityId) }
+  const scopedDivisionIds = opts.divisionId
+    ? [opts.divisionId]
+    : divisionAccess.assignedOnly
+      ? divisionAccess.divisionIds
+      : null
+  if (scopedDivisionIds) {
+    if (scopedDivisionIds.length === 0) return []
+    const { data: communities, error } = await context.supabase.from("communities").select("id").eq("org_id", context.orgId).in("division_id", scopedDivisionIds)
+    if (error) throw new Error(`Failed to scope even-flow report: ${error.message}`)
+    const ids = (communities ?? []).map((community) => community.id)
+    if (!ids.length) return []
+    slotsQuery = slotsQuery.in("community_id", ids)
+    startsQuery = startsQuery.in("community_id", ids)
+  }
   const [slots, starts] = await Promise.all([slotsQuery, startsQuery])
   if (slots.error || starts.error) throw new Error("Failed to load even-flow adherence")
   return (slots.data ?? []).map((slot) => ({
@@ -206,8 +254,19 @@ export async function getEvenFlowAdherence(
 export async function getWipCounts(opts: { divisionId?: string } = {}, orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("report.read", context)
+  const divisionAccess = await getDivisionAccessForUser({
+    orgId: context.orgId,
+    userId: context.userId,
+  })
+  if (opts.divisionId && divisionAccess.assignedOnly && !divisionAccess.divisionIds.includes(opts.divisionId)) {
+    return []
+  }
   let communitiesQuery = context.supabase.from("communities").select("id,name").eq("org_id", context.orgId).eq("status", "active").limit(50)
   if (opts.divisionId) communitiesQuery = communitiesQuery.eq("division_id", opts.divisionId)
+  else if (divisionAccess.assignedOnly) {
+    if (divisionAccess.divisionIds.length === 0) return []
+    communitiesQuery = communitiesQuery.in("division_id", divisionAccess.divisionIds)
+  }
   const { data: communities, error } = await communitiesQuery
   if (error) throw new Error(`Failed to load WIP communities: ${error.message}`)
   const ids = (communities ?? []).map((community) => community.id)
@@ -226,9 +285,18 @@ export async function listReleasedStartMarkers(projectIds: string[], orgId?: str
   if (!projectIds.length) return new Map<string, string>()
   const context = await requireOrgContext(orgId)
   await requirePermission("schedule.read", context)
+  const authorizedProjectIds = await getDivisionScopedProjectIds({
+    orgId: context.orgId,
+    userId: context.userId,
+    supabase: context.supabase,
+  })
+  const scopedProjectIds = authorizedProjectIds === null
+    ? projectIds
+    : projectIds.filter((projectId) => authorizedProjectIds.includes(projectId))
+  if (scopedProjectIds.length === 0) return new Map<string, string>()
   const { data, error } = await context.supabase.from("start_packages")
     .select("project_id,actual_start_date").eq("org_id", context.orgId).eq("status", "released")
-    .in("project_id", projectIds.slice(0, 500)).not("actual_start_date", "is", null).limit(500)
+    .in("project_id", scopedProjectIds.slice(0, 500)).not("actual_start_date", "is", null).limit(500)
   if (error) throw new Error(`Failed to load portfolio start markers: ${error.message}`)
   return new Map((data ?? []).flatMap((row) => row.project_id && row.actual_start_date ? [[row.project_id, row.actual_start_date] as const] : []))
 }
@@ -236,9 +304,16 @@ export async function listReleasedStartMarkers(projectIds: string[], orgId?: str
 export async function getLateTaskHeatmap(opts: { communityId?: string; superintendentId?: string } = {}, orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("report.read", context)
+  const authorizedProjectIds = await getDivisionScopedProjectIds({
+    orgId: context.orgId,
+    userId: context.userId,
+    supabase: context.supabase,
+  })
+  if (authorizedProjectIds !== null && authorizedProjectIds.length === 0) return []
   let projectsQuery = context.supabase.from("projects").select("id")
     .eq("org_id", context.orgId).eq("property_type", "production").eq("status", "active").limit(500)
   if (opts.superintendentId) projectsQuery = projectsQuery.eq("superintendent_id", opts.superintendentId)
+  if (authorizedProjectIds !== null) projectsQuery = projectsQuery.in("id", authorizedProjectIds)
   const { data: projects } = await projectsQuery
   let projectIds = (projects ?? []).map((project) => project.id)
   if (opts.communityId && projectIds.length) {

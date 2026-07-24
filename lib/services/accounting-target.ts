@@ -11,6 +11,8 @@ import type {
   AccountingTarget,
 } from "@/lib/integrations/accounting/provider"
 import { selectAccountingMap } from "@/lib/services/accounting-rules"
+import { requireAccountingConnectionForOrg } from "@/lib/services/accounting-connections"
+import { getProvider } from "@/lib/integrations/accounting/registry"
 
 type EntityMapRow = {
   id: string
@@ -118,6 +120,52 @@ export async function countSyncedTransactionsForProject(projectId: string, conne
   return count ?? 0
 }
 
+async function countSyncedTransactionsForScope(input: {
+  orgId: string
+  connectionId: string
+  projectId?: string | null
+  divisionId?: string | null
+  communityId?: string | null
+}) {
+  const supabase = createServiceSupabaseClient()
+  if (!input.projectId && !input.divisionId && !input.communityId) {
+    const { count, error } = await supabase.from("accounting_sync_records")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", input.orgId)
+      .eq("connection_id", input.connectionId)
+      .neq("external_id", "")
+    if (error) throw new Error(`Unable to inspect synced transactions: ${error.message}`)
+    return count ?? 0
+  }
+
+  let projectIds: string[] = []
+  if (input.projectId) projectIds = [input.projectId]
+  else if (input.divisionId) {
+    const { data } = await supabase.from("projects").select("id").eq("org_id", input.orgId).eq("division_id", input.divisionId)
+    projectIds = (data ?? []).map((row) => row.id)
+  } else if (input.communityId) {
+    const { data } = await supabase.from("lots").select("project_id").eq("org_id", input.orgId).eq("community_id", input.communityId).not("project_id", "is", null)
+    projectIds = (data ?? []).flatMap((row) => row.project_id ? [row.project_id] : [])
+  }
+  if (projectIds.length === 0) return 0
+  const [{ data: invoices }, { data: expenses }, { data: bills }, { data: payments }] = await Promise.all([
+    supabase.from("invoices").select("id").eq("org_id", input.orgId).in("project_id", projectIds),
+    supabase.from("project_expenses").select("id").eq("org_id", input.orgId).in("project_id", projectIds),
+    supabase.from("vendor_bills").select("id").eq("org_id", input.orgId).in("project_id", projectIds),
+    supabase.from("payments").select("id").eq("org_id", input.orgId).in("project_id", projectIds),
+  ])
+  const entityIds = [...(invoices ?? []), ...(expenses ?? []), ...(bills ?? []), ...(payments ?? [])].map((row) => row.id)
+  if (entityIds.length === 0) return 0
+  const { count, error } = await supabase.from("accounting_sync_records")
+    .select("id", { count: "exact", head: true })
+    .eq("org_id", input.orgId)
+    .eq("connection_id", input.connectionId)
+    .in("entity_id", entityIds)
+    .neq("external_id", "")
+  if (error) throw new Error(`Unable to inspect synced transactions: ${error.message}`)
+  return count ?? 0
+}
+
 export async function upsertAccountingEntityMap(input: {
   id?: string
   connectionId: string
@@ -130,14 +178,32 @@ export async function upsertAccountingEntityMap(input: {
   const context = await requireOrgContext()
   await requirePermission("accounting.entity_map.manage", context)
   const supabase = createServiceSupabaseClient()
+  const connection = await requireAccountingConnectionForOrg(input.connectionId, context.orgId, { activeOnly: true })
+  const supportedDimensions = new Set(getProvider(connection.provider).capabilities.dimensions)
+  const unsupportedDimension = Object.keys(input.dimensions).find((key) => !supportedDimensions.has(key as AccountingDimensionKind))
+  if (unsupportedDimension) throw new Error(`${connection.label} does not support the ${unsupportedDimension} accounting dimension`)
+
+  const scopeChecks = [
+    input.projectId ? supabase.from("projects").select("id").eq("org_id", context.orgId).eq("id", input.projectId).maybeSingle() : null,
+    input.divisionId ? supabase.from("divisions").select("id").eq("org_id", context.orgId).eq("id", input.divisionId).maybeSingle() : null,
+    input.communityId ? supabase.from("communities").select("id").eq("org_id", context.orgId).eq("id", input.communityId).maybeSingle() : null,
+  ].filter((query): query is Exclude<typeof query, null> => query !== null)
+  const scopeResults = await Promise.all(scopeChecks)
+  if (scopeResults.some((result) => result.error || !result.data)) throw new Error("Accounting mapping scope not found for this organization")
 
   const { data: current } = input.id
     ? await supabase.from("accounting_entity_map").select("*").eq("org_id", context.orgId).eq("id", input.id).maybeSingle()
     : { data: null }
-  if (current?.project_id && current.connection_id !== input.connectionId) {
-    const count = await countSyncedTransactionsForProject(current.project_id, current.connection_id, context.orgId)
+  if (current && current.connection_id !== input.connectionId) {
+    const count = await countSyncedTransactionsForScope({
+      orgId: context.orgId,
+      connectionId: current.connection_id,
+      projectId: current.project_id,
+      divisionId: current.division_id,
+      communityId: current.community_id,
+    })
     if (count > 0 && !input.acknowledgeResync) {
-      throw new Error(`This project has ${count} synced transaction${count === 1 ? "" : "s"}; its accounting connection cannot be changed without acknowledgement.`)
+      throw new Error(`This routing scope has ${count} synced transaction${count === 1 ? "" : "s"}; its accounting connection cannot be changed without acknowledgement.`)
     }
     if (count > 0) await requirePermission("org.admin", context)
   }

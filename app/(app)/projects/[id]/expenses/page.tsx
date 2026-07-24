@@ -8,6 +8,8 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { ExpensesClient } from "@/components/expenses/expenses-client"
 
 import { unwrapAction } from "@/lib/action-result"
+import { getOrgProductTier } from "@/lib/services/context"
+import { getProjectPosture } from "@/lib/product-tier"
 
 interface Props {
   params: Promise<{ id: string }>
@@ -51,7 +53,10 @@ async function ProjectExpensesData({ id }: { id: string }) {
   const project = await getProjectAction(id)
   if (!project) notFound()
 
-  const data = await listProjectExpensesPageAction(id).catch(() => ({ items: [] as any[], page: 1, pageSize: 50, total: 0, pageCount: 1 }))
+  const [data, tier] = await Promise.all([
+    listProjectExpensesPageAction(id).catch(() => ({ items: [] as any[], page: 1, pageSize: 50, total: 0, pageCount: 1 })),
+    getOrgProductTier(),
+  ])
 
   return (
     <PageLayout
@@ -61,7 +66,7 @@ async function ProjectExpensesData({ id }: { id: string }) {
         { label: "Expenses" },
       ]}
     >
-      <ExpensesClient projectId={project.id} initialPage={data} />
+      <ExpensesClient projectId={project.id} initialPage={data} allowCreate={getProjectPosture(project.property_type, tier) !== "production"} />
     </PageLayout>
   )
 }

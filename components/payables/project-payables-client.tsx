@@ -81,7 +81,7 @@ export function ProjectPayablesClient({
   const getExpenseAccountName = (accountId?: string) => qboExpenseAccounts.find((account) => account.id === accountId)?.name
   useEffect(() => {
     let cancelled = false
-    getPayablesAccountingContextAction()
+    getPayablesAccountingContextAction(projectId)
       .then((context) => {
         if (cancelled) return
         setAccountingEnabled(Boolean(context.enabled))

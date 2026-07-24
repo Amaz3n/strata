@@ -318,6 +318,7 @@ export function buildProjectNavGroups({
     {
       title: "Bids",
       moduleKey: "bids",
+      postures: ["residential", "commercial"],
       url: url("/bids"),
       isActive: section === "bids",
       requiredAny: ["bid.read", "bid.write"],
@@ -357,6 +358,7 @@ export function buildProjectNavGroups({
       : {
           title: "Time",
           moduleKey: "time",
+          postures: ["residential", "commercial"],
           url: url("/time"),
           isActive: section === "time",
           requiredAny: ["time.read", "time.write"],
@@ -371,6 +373,7 @@ export function buildProjectNavGroups({
     {
       title: "RFIs",
       moduleKey: "rfis",
+      postures: ["residential", "commercial"],
       url: url("/rfis"),
       isActive: section === "rfis",
       requiredAny: ["rfi.read"],
@@ -378,6 +381,7 @@ export function buildProjectNavGroups({
     {
       title: "Submittals",
       moduleKey: "submittals",
+      postures: ["residential", "commercial"],
       url: url("/submittals"),
       isActive: section === "submittals",
       requiredAny: ["submittal.read"],
@@ -401,7 +405,7 @@ export function buildProjectNavGroups({
     {
       title: "Inspections",
       moduleKey: "inspections",
-      postures: ["commercial"],
+      postures: ["commercial", "production"],
       url: url("/inspections"),
       isActive: section === "inspections",
       requiredAny: ["project.read", "inspection.write"],
@@ -425,6 +429,7 @@ export function buildProjectNavGroups({
     {
       title: "Decisions",
       moduleKey: "decisions",
+      postures: ["residential", "commercial"],
       url: url("/decisions"),
       isActive: section === "decisions",
       requiredAny: ["decision.read", "decision.write"],

@@ -6,3 +6,11 @@ const providers: Record<AccountingProviderKey, AccountingProvider> = { qbo: qboP
 export function getProvider(key: AccountingProviderKey): AccountingProvider {
   return providers[key]
 }
+
+export function listProviders(): AccountingProvider[] {
+  return Object.values(providers)
+}
+
+export function isAccountingProviderKey(value: string): value is AccountingProviderKey {
+  return value in providers
+}

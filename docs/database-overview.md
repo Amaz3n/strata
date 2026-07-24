@@ -178,8 +178,10 @@ backward compatibility and is retired for catalog mode.
 - **`change_requests`** - Feature requests/support tickets
 
 #### QuickBooks Integration
-- **`qbo_connections`** - QuickBooks Online connections
-- **`qbo_sync_records`** - Sync status tracking
+- **`accounting_connections`** - Accounting provider connections (QBO today; tokens, settings, per-legal-entity labels)
+- **`accounting_sync_records`** - Sync status ledger (external id/version per entity, per connection)
+- **`accounting_entity_map`** - Routes org/division/community/project scopes to a connection + dimensions
+- **`accounting_counterparty_links`** - Connection-scoped vendor/customer links
 - **`qbo_invoice_reservations`** - Invoice number reservations
 
 ## Permissions & Security
@@ -334,8 +336,8 @@ All tables have RLS enabled with policies that ensure:
 - **Schema**: Automatic GraphQL schema generation from PostgreSQL schema
 - **Authentication**: JWT-based via Supabase Auth
 
-### QuickBooks Online Integration
-- **Tables**: `qbo_connections`, `qbo_sync_records`, `qbo_invoice_reservations`
+### Accounting Integration (QuickBooks Online)
+- **Tables**: `accounting_connections`, `accounting_sync_records`, `accounting_entity_map`, `accounting_counterparty_links`; QBO-specific: `qbo_invoice_reservations`, `qbo_webhook_events`, `qbo_import_cost_code_mappings`, `qbo_classes`
 - **Features**:
   - Bidirectional sync of invoices and payments
   - Customer synchronization

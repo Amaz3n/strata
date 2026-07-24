@@ -2,10 +2,12 @@ import { randomUUID } from "crypto"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
-import { decryptToken, detectInvoiceNumberPattern, encryptToken, getQBOClientId, refreshAccessToken, revokeQBOToken } from "@/lib/integrations/accounting/qbo/auth"
+import { decryptToken, detectInvoiceNumberPattern, encryptToken, getQBOClientId, refreshAccessToken } from "@/lib/integrations/accounting/qbo/auth"
 import { recordEvent } from "@/lib/services/events"
+import { recordAudit } from "@/lib/services/audit"
 import { logQBO } from "@/lib/services/accounting-logger"
-import { hasExplicitQboSandboxSetting, isQboSandbox, qboApiBaseUrl, qboEnvironmentLabel } from "@/lib/integrations/accounting/qbo/config"
+import { ACCOUNTING_JOB_TYPES } from "@/lib/services/accounting-job-types"
+import type { AccountingProviderKey } from "@/lib/integrations/accounting/provider"
 
 export type QBOConnectionStatus = "active" | "expired" | "disconnected" | "error"
 const ACCESS_TOKEN_REFRESH_WINDOW_MS = 10 * 60 * 1000
@@ -29,11 +31,11 @@ export interface QBOConnectionSettings {
   auto_sync: boolean
   sync_payments: boolean
   customer_sync_mode: "create_new" | "match_existing"
-  default_income_account_id?: string
-  default_expense_account_id?: string
-  default_payment_account_id?: string
-  default_credit_card_account_id?: string
-  default_ap_account_id?: string
+  default_income_account_id?: string | null
+  default_expense_account_id?: string | null
+  default_payment_account_id?: string | null
+  default_credit_card_account_id?: string | null
+  default_ap_account_id?: string | null
   project_mapping_mode?: "customer" | "sub_customer"
   invoice_number_sync?: boolean
   invoice_number_pattern?: "numeric" | "prefix" | "custom"
@@ -58,7 +60,7 @@ export interface QBOConnection {
 export interface AccountingConnectionDTO {
   id: string
   org_id: string
-  provider: "qbo"
+  provider: AccountingProviderKey
   label: string
   external_account_id: string
   external_account_name: string | null
@@ -70,6 +72,22 @@ export interface AccountingConnectionDTO {
   refresh_token_expires_at: string | null
   settings: QBOConnectionSettings
 }
+
+export type AccountingConnectionSettingsUpdate = Partial<
+  Pick<
+    QBOConnectionSettings,
+    | "auto_sync"
+    | "sync_payments"
+    | "customer_sync_mode"
+    | "default_income_account_id"
+    | "default_expense_account_id"
+    | "default_payment_account_id"
+    | "default_credit_card_account_id"
+    | "default_ap_account_id"
+    | "project_mapping_mode"
+    | "invoice_number_sync"
+  >
+>
 
 function computeRefreshTokenExpiresAt(expiresInSeconds?: number): string | null {
   if (!expiresInSeconds || !Number.isFinite(expiresInSeconds) || expiresInSeconds <= 0) {
@@ -136,11 +154,6 @@ async function refreshConnectionTokens(
         refresh_failure_count: 0,
         status: "active",
         last_error: null,
-        credentials: {
-          access_token: encryptedAccessToken,
-          refresh_token: encryptedRefreshToken,
-          ...(configuredClientId ? { client_id: configuredClientId } : {}),
-        },
         // Stamp/backfill the owning client_id now that this app successfully refreshed.
         ...(configuredClientId ? { client_id: configuredClientId } : {}),
       })
@@ -232,6 +245,74 @@ export async function listAccountingConnections(orgId?: string): Promise<Account
   return (data ?? []) as AccountingConnectionDTO[]
 }
 
+export async function getAccountingConnectionForOrg(
+  connectionId: string,
+  orgId?: string,
+  options: { activeOnly?: boolean; provider?: AccountingProviderKey } = {},
+): Promise<AccountingConnectionDTO | null> {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  let query = supabase
+    .from("accounting_connections")
+    .select("id,org_id,provider,label,external_account_id,external_account_name,status,connected_at,last_sync_at,last_error,token_expires_at,refresh_token_expires_at,settings")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", connectionId)
+  if (options.activeOnly) query = query.eq("status", "active")
+  if (options.provider) query = query.eq("provider", options.provider)
+  const { data, error } = await query.maybeSingle()
+  if (error) throw new Error(`Unable to load accounting connection: ${error.message}`)
+  return (data as AccountingConnectionDTO | null) ?? null
+}
+
+export async function requireAccountingConnectionForOrg(
+  connectionId: string,
+  orgId?: string,
+  options: { activeOnly?: boolean; provider?: AccountingProviderKey } = {},
+): Promise<AccountingConnectionDTO> {
+  const connection = await getAccountingConnectionForOrg(connectionId, orgId, options)
+  if (!connection) throw new Error("Accounting connection not found for this organization")
+  return connection
+}
+
+export async function updateAccountingConnectionSettings(
+  connectionId: string,
+  updates: AccountingConnectionSettingsUpdate,
+  orgId?: string,
+) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const connection = await requireAccountingConnectionForOrg(connectionId, resolvedOrgId)
+  const before = connection.settings ?? {}
+  const next = { ...before, ...updates }
+  const { data, error } = await supabase
+    .from("accounting_connections")
+    .update({ settings: next })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", connectionId)
+    .select("id,settings")
+    .single()
+  if (error) throw new Error(`Unable to update accounting settings: ${error.message}`)
+  await Promise.all([
+    recordAudit({
+      orgId: resolvedOrgId,
+      actorId: userId,
+      action: "update",
+      entityType: "accounting_connection",
+      entityId: connectionId,
+      before: { settings: before },
+      after: { settings: data.settings },
+    }),
+    recordEvent({
+      orgId: resolvedOrgId,
+      actorId: userId,
+      eventType: "accounting_connection_settings_updated",
+      entityType: "accounting_connection",
+      entityId: connectionId,
+      payload: { provider: connection.provider, keys: Object.keys(updates).sort() },
+      channel: "integration",
+    }),
+  ])
+  return data
+}
+
 export async function updateAccountingConnectionLabel(connectionId: string, label: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
   const normalized = label.trim()
@@ -245,15 +326,6 @@ export async function updateAccountingConnectionLabel(connectionId: string, labe
     .single()
   if (error) throw new Error(`Unable to update connection label: ${error.message}`)
   return data
-}
-
-export function getQBOEnvironmentInfo() {
-  return {
-    environment: qboEnvironmentLabel,
-    isSandbox: isQboSandbox,
-    apiBaseUrl: qboApiBaseUrl,
-    hasExplicitSandboxSetting: hasExplicitQboSandboxSetting,
-  }
 }
 
 export async function getQBOAccessToken(
@@ -304,15 +376,11 @@ export async function disconnectAccountingConnection(connectionId: string, orgId
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const { data: connection } = await supabase
     .from("accounting_connections")
-    .select("id,provider,refresh_token,external_account_id,label")
+    .select("id,provider,external_account_id,label")
     .eq("org_id", resolvedOrgId)
     .eq("id", connectionId)
     .maybeSingle()
   if (!connection) throw new Error("Accounting connection not found")
-  if (connection.provider === "qbo" && connection.refresh_token) {
-    try { await revokeQBOToken(decryptToken(connection.refresh_token)) }
-    catch (error) { logQBO("warn", "token_revoke_failed_on_disconnect", { orgId: resolvedOrgId, connectionId, error: String(error).slice(0, 500) }) }
-  }
   const { error } = await supabase.from("accounting_connections")
     .update({ status: "disconnected", disconnected_at: new Date().toISOString() })
     .eq("org_id", resolvedOrgId).eq("id", connectionId)
@@ -321,147 +389,6 @@ export async function disconnectAccountingConnection(connectionId: string, orgId
     recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "accounting_disconnected", entityType: "accounting_connection", entityId: connectionId, payload: { provider: connection.provider, label: connection.label }, channel: "integration" }),
     recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "qbo_disconnected", entityType: "integration", entityId: resolvedOrgId, payload: { connection_id: connectionId }, channel: "integration" }),
   ])
-}
-
-export async function disconnectQBO(orgId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
-
-  const { data: connection } = await supabase
-    .from("accounting_connections")
-    .select("id")
-    .eq("org_id", resolvedOrgId)
-    .eq("provider", "qbo")
-    .eq("status", "active")
-    .order("connected_at", { ascending: true })
-    .limit(1)
-    .maybeSingle()
-
-  if (connection?.id) return disconnectAccountingConnection(connection.id, resolvedOrgId)
-}
-
-export async function updateQBOSettings(settings: Partial<QBOConnectionSettings>, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
-
-  const { data: current } = await supabase
-    .from("accounting_connections")
-    .select("id,settings")
-    .eq("org_id", resolvedOrgId)
-    .eq("status", "active")
-    .eq("provider", "qbo")
-    .order("connected_at", { ascending: true })
-    .limit(1)
-    .maybeSingle()
-
-  if (!current) throw new Error("No active QBO connection")
-
-  const nextSettings = { ...(current.settings as QBOConnectionSettings), ...settings }
-
-  const { error } = await supabase
-    .from("accounting_connections")
-    .update({
-      settings: nextSettings,
-    })
-    .eq("org_id", resolvedOrgId)
-    .eq("status", "active")
-    .eq("provider", "qbo")
-    .eq("id", (current as { id?: string }).id ?? "")
-
-  if (error) throw new Error(`Failed to update QBO settings: ${error.message}`)
-}
-
-export async function refreshQBOTokenNow(orgId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
-  const service = createServiceSupabaseClient()
-
-  const { data: connection, error } = await supabase
-    .from("accounting_connections")
-    .select("id, org_id, external_account_id, access_token, refresh_token, token_expires_at, refresh_token_expires_at, refresh_failure_count, client_id")
-    .eq("org_id", resolvedOrgId)
-    .eq("provider", "qbo")
-    .eq("status", "active")
-    .order("connected_at", { ascending: true })
-    .limit(1)
-    .maybeSingle()
-
-  if (error || !connection) {
-    throw new Error("No active QBO connection")
-  }
-
-  const refreshed = await refreshConnectionTokens(service, connection as QBOConnectionTokenRow, {
-    force: true,
-    orgIdForLogs: resolvedOrgId,
-    source: "manual",
-  })
-
-  if (refreshed) {
-    logQBO("info", "token_refresh_manual_success", { orgId: resolvedOrgId, connectionId: connection.id })
-    return { success: true }
-  }
-
-  throw new Error("Manual token refresh failed")
-}
-
-export async function getQBODiagnostics(orgId?: string) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
-
-  const [connectionResult, pendingOutboxResult, failedOutboxResult, failedInvoicesResult] = await Promise.all([
-    supabase
-      .from("accounting_connections")
-      .select("id, status, token_expires_at, refresh_token_expires_at, refresh_failure_count, last_sync_at, last_error, external_account_name")
-      .eq("org_id", resolvedOrgId)
-      .eq("provider", "qbo")
-      .eq("status", "active")
-      .order("connected_at", { ascending: true })
-      .limit(1)
-      .maybeSingle(),
-    supabase
-      .from("outbox")
-      .select("id", { count: "exact", head: true })
-      .eq("org_id", resolvedOrgId)
-      .in("job_type", ["qbo_sync_invoice", "qbo_sync_payment", "qbo_sync_project_expense", "qbo_sync_vendor_bill", "qbo_sync_bill_payment"])
-      .in("status", ["pending", "processing"]),
-    supabase
-      .from("outbox")
-      .select("id, job_type, last_error, updated_at", { count: "exact" })
-      .eq("org_id", resolvedOrgId)
-      .in("job_type", ["qbo_sync_invoice", "qbo_sync_payment", "qbo_sync_project_expense", "qbo_sync_vendor_bill", "qbo_sync_bill_payment"])
-      .eq("status", "failed")
-      .order("updated_at", { ascending: false })
-      .limit(5),
-    supabase
-      .from("accounting_sync_records")
-      .select("id", { count: "exact", head: true })
-      .eq("org_id", resolvedOrgId)
-      .eq("entity_type", "invoice")
-      .eq("status", "error"),
-  ])
-
-  return {
-    connection: connectionResult.data
-      ? {
-          id: connectionResult.data.id,
-          status: connectionResult.data.status,
-          external_account_name: connectionResult.data.external_account_name,
-          token_expires_at: connectionResult.data.token_expires_at,
-          refresh_token_expires_at: connectionResult.data.refresh_token_expires_at,
-          refresh_failure_count: connectionResult.data.refresh_failure_count,
-          last_sync_at: connectionResult.data.last_sync_at,
-          last_error: connectionResult.data.last_error,
-        }
-      : null,
-    outbox: {
-      pending_or_processing: pendingOutboxResult.count ?? 0,
-      failed: failedOutboxResult.count ?? 0,
-      recent_failures: (failedOutboxResult.data ?? []).map((row) => ({
-        job_type: row.job_type,
-        last_error: row.last_error,
-        updated_at: row.updated_at,
-      })),
-    },
-    invoices: {
-      failed_sync_count: failedInvoicesResult.count ?? 0,
-    },
-  }
 }
 
 export async function upsertQBOConnection(input: {
@@ -506,11 +433,6 @@ export async function upsertQBOConnection(input: {
       refresh_token_expires_at: computeRefreshTokenExpiresAt(input.refreshTokenExpiresInSeconds),
       refresh_failure_count: 0,
       external_account_name: input.companyName,
-      credentials: {
-        access_token: encryptToken(input.accessToken),
-        refresh_token: encryptToken(input.refreshToken),
-        client_id: getQBOClientId(),
-      },
       connected_by: input.connectedBy ?? null,
       status: "active",
       settings: {

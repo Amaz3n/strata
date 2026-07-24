@@ -1,6 +1,21 @@
 -- Workstream 08 rollout gates. READ ONLY. Save one result snapshot before each
 -- application deploy and compare it with the 24h/48h and 14-day snapshots.
 
+-- HARDENING MIGRATION PREFLIGHT. Both queries must return zero rows before
+-- 20260724010343_accounting_abstraction_hardening.sql is applied.
+select provider, external_account_id, count(*) as active_owners,
+       array_agg(id order by id) as connection_ids,
+       array_agg(org_id order by org_id) as org_ids
+from public.accounting_connections
+where status = 'active'
+group by provider, external_account_id
+having count(*) > 1;
+
+select org_id, connection_id, entity_type, entity_id, count(*) as duplicate_rows
+from public.accounting_sync_records
+group by org_id, connection_id, entity_type, entity_id
+having count(*) > 1;
+
 -- Zero-downtime compatibility: both pairs must stay equal until B3.
 select
   (select count(*) from public.accounting_connections) as neutral_connections,

@@ -1,5 +1,6 @@
 import { composePurchaseAgreementPricing, type PurchaseAgreementPricedItem, type PurchaseAgreementPricing } from "@/lib/financials/purchase-agreement-pricing"
 import { recordAudit } from "@/lib/services/audit"
+import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { createInvoice } from "@/lib/services/invoices"
 import { resolveOptionPricing } from "@/lib/services/option-catalog"
@@ -30,6 +31,43 @@ import {
 } from "@/lib/validation/community-sales"
 
 const LIVE_RESERVATION_STATUSES = ["hold", "reserved", "converted"]
+
+type OrgContext = Awaited<ReturnType<typeof requireOrgContext>>
+
+async function getSalesDivisionAccess(context: OrgContext) {
+  return getDivisionAccessForUser({
+    orgId: context.orgId,
+    userId: context.userId,
+  })
+}
+
+async function assertCommunityInSalesScope(context: OrgContext, communityId: string) {
+  const access = await getSalesDivisionAccess(context)
+  if (!access.assignedOnly) return
+  const { data } = await context.supabase
+    .from("communities")
+    .select("division_id")
+    .eq("org_id", context.orgId)
+    .eq("id", communityId)
+    .maybeSingle()
+  if (!data?.division_id || !access.divisionIds.includes(data.division_id)) {
+    throw new Error("Community not found")
+  }
+}
+
+async function getSalesCommunityIds(context: OrgContext) {
+  const access = await getSalesDivisionAccess(context)
+  if (!access.assignedOnly) return null
+  if (access.divisionIds.length === 0) return []
+  const { data, error } = await context.supabase
+    .from("communities")
+    .select("id")
+    .eq("org_id", context.orgId)
+    .in("division_id", access.divisionIds)
+    .limit(500)
+  if (error) throw new Error(`Failed to resolve sales scope: ${error.message}`)
+  return (data ?? []).map((community) => community.id as string)
+}
 
 function invoiceUnitCostFromCents(amountCents: number) {
   return Math.abs(amountCents) > 100_000 ? amountCents : amountCents / 100
@@ -79,6 +117,9 @@ function reservationDto(row: any) {
 export async function expireStaleHolds(orgId?: string, communityId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.read", context)
+  if (communityId) await assertCommunityInSalesScope(context, communityId)
+  const allowedCommunityIds = communityId ? null : await getSalesCommunityIds(context)
+  if (allowedCommunityIds?.length === 0) return 0
   let query = context.supabase
     .from("lot_reservations")
     .update({ status: "expired", released_at: new Date().toISOString(), release_reason: "Hold expired" })
@@ -87,6 +128,7 @@ export async function expireStaleHolds(orgId?: string, communityId?: string) {
     .lt("expires_at", new Date().toISOString())
     .select("id")
   if (communityId) query = query.eq("community_id", communityId)
+  else if (allowedCommunityIds) query = query.in("community_id", allowedCommunityIds)
   const { data, error } = await query
   if (error) throw new Error(`Failed to expire stale holds: ${error.message}`)
   return data?.length ?? 0
@@ -100,6 +142,11 @@ export async function listSpecInventory(opts: {
 } = {}) {
   const context = await requireOrgContext()
   await requirePermission("sales.read", context)
+  const divisionAccess = await getSalesDivisionAccess(context)
+  if (opts.divisionId && divisionAccess.assignedOnly && !divisionAccess.divisionIds.includes(opts.divisionId)) {
+    return []
+  }
+  if (opts.communityId) await assertCommunityInSalesScope(context, opts.communityId)
   await expireStaleHolds(context.orgId, opts.communityId)
   let query = context.supabase
     .from("lots")
@@ -108,6 +155,10 @@ export async function listSpecInventory(opts: {
     .not("project_id", "is", null)
   if (opts.communityId) query = query.eq("community_id", opts.communityId)
   if (opts.divisionId) query = query.eq("division_id", opts.divisionId)
+  else if (divisionAccess.assignedOnly) {
+    if (divisionAccess.divisionIds.length === 0) return []
+    query = query.in("division_id", divisionAccess.divisionIds)
+  }
   if (opts.status) query = query.eq("status", opts.status)
   const { data: lots, error } = await query.order("created_at", { ascending: false }).limit(Math.min(opts.limit ?? 100, 250))
   if (error) throw new Error(`Failed to load spec inventory: ${error.message}`)
@@ -151,6 +202,7 @@ export async function listSpecInventory(opts: {
 export async function getCommunitySalesPipeline(communityId: string, orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.read", context)
+  await assertCommunityInSalesScope(context, communityId)
   await expireStaleHolds(context.orgId, communityId)
   const [{ data: reservations, error: reservationError }, { data: closings, error: closingError }, specs] = await Promise.all([
     context.supabase.from("lot_reservations").select("*, lot:lots(lot_number, project_id), buyer:contacts!lot_reservations_buyer_contact_id_fkey(full_name)").eq("org_id", context.orgId).eq("community_id", communityId).in("status", LIVE_RESERVATION_STATUSES).order("created_at", { ascending: false }),
@@ -163,6 +215,121 @@ export async function getCommunitySalesPipeline(communityId: string, orgId?: str
   const reserved = mapped.filter((row) => row.status === "reserved")
   const agreements = mapped.filter((row) => row.status === "converted")
   return { specs, holds, reserved, agreements, closings: closings ?? [], counts: { specs: specs.length, holds: holds.length, reserved: reserved.length, agreements: agreements.length, closings: closings?.length ?? 0 } }
+}
+
+/** Sellable lots for the hold flow: owned/developed/assigned/started, no live reservation, not sold. */
+export async function listSellableLots(communityId: string, orgId?: string) {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.read", context)
+  await assertCommunityInSalesScope(context, communityId)
+  await expireStaleHolds(context.orgId, communityId)
+  const { data: lots, error } = await context.supabase
+    .from("lots")
+    .select("id, lot_number, status, premium_cents, project_id, plan:house_plans(name)")
+    .eq("org_id", context.orgId)
+    .eq("community_id", communityId)
+    .in("status", ["owned", "developed", "assigned", "started"])
+    .order("lot_number")
+    .limit(500)
+  if (error) throw new Error(`Failed to list lots: ${error.message}`)
+  const lotIds = (lots ?? []).map((lot: any) => lot.id)
+  const projectIds = (lots ?? []).map((lot: any) => lot.project_id).filter(Boolean)
+  const [{ data: reservations }, { data: agreements }] = await Promise.all([
+    lotIds.length ? context.supabase.from("lot_reservations").select("lot_id").eq("org_id", context.orgId).in("lot_id", lotIds).in("status", LIVE_RESERVATION_STATUSES) : Promise.resolve({ data: [] }),
+    projectIds.length ? context.supabase.from("contracts").select("project_id").eq("org_id", context.orgId).in("project_id", projectIds).eq("contract_type", "purchase_agreement").eq("status", "active") : Promise.resolve({ data: [] }),
+  ])
+  const reserved = new Set((reservations ?? []).map((row: any) => row.lot_id))
+  const sold = new Set((agreements ?? []).map((row: any) => row.project_id))
+  return (lots ?? [])
+    .filter((lot: any) => !reserved.has(lot.id) && !(lot.project_id && sold.has(lot.project_id)))
+    .map((lot: any) => ({
+      id: lot.id as string,
+      lotNumber: lot.lot_number as string,
+      status: lot.status as string,
+      premiumCents: Number(lot.premium_cents ?? 0),
+      isSpec: Boolean(lot.project_id),
+      planLabel: ((Array.isArray(lot.plan) ? lot.plan[0]?.name : lot.plan?.name) ?? null) as string | null,
+    }))
+}
+
+/**
+ * Pipeline-side view of reservations attached to prospects. Powers the production
+ * funnel's Reserved/Converted stages and per-row lot chips on the Pipeline page.
+ */
+export async function listProspectReservations(orgId?: string) {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.read", context)
+  const allowedCommunityIds = await getSalesCommunityIds(context)
+  if (allowedCommunityIds?.length === 0) return []
+  await expireStaleHolds(context.orgId)
+  let query = context.supabase
+    .from("lot_reservations")
+    .select("id, prospect_id, status, asking_price_cents, expires_at, community_id, lot:lots(lot_number, project_id), community:communities(name)")
+    .eq("org_id", context.orgId)
+    .not("prospect_id", "is", null)
+    .in("status", LIVE_RESERVATION_STATUSES)
+    .order("created_at", { ascending: false })
+    .limit(1000)
+  if (allowedCommunityIds) query = query.in("community_id", allowedCommunityIds)
+  const { data, error } = await query
+  if (error) throw new Error(`Failed to list prospect reservations: ${error.message}`)
+  return (data ?? []).map((row: any) => ({
+    id: row.id as string,
+    prospectId: row.prospect_id as string,
+    status: row.status as "hold" | "reserved" | "converted",
+    askingPriceCents: Number(row.asking_price_cents ?? 0),
+    expiresAt: (row.expires_at ?? null) as string | null,
+    communityId: row.community_id as string,
+    communityName: ((Array.isArray(row.community) ? row.community[0]?.name : row.community?.name) ?? null) as string | null,
+    lotLabel: ((Array.isArray(row.lot) ? row.lot[0]?.lot_number : row.lot?.lot_number) ?? null) as string | null,
+    projectId: ((Array.isArray(row.lot) ? row.lot[0]?.project_id : row.lot?.project_id) ?? null) as string | null,
+  }))
+}
+
+/**
+ * The Pipeline → Sales baton pass: hold a lot for a prospect. Promotes the prospect's
+ * primary contact into the directory (conversions.ts pattern) so the reservation has a
+ * real buyer contact, stamps the prospect's community, then rides createLotHold.
+ */
+export async function createLotHoldFromProspect(input: { prospectId: string; lotId: string; expiresAt: string; notes?: string | null }, orgId?: string) {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.manage", context)
+  const { data: prospect, error } = await context.supabase
+    .from("prospects")
+    .select("id, name, status, community_id")
+    .eq("org_id", context.orgId)
+    .eq("id", input.prospectId)
+    .maybeSingle()
+  if (error || !prospect) throw new Error("Prospect not found")
+  if (["won", "lost"].includes(prospect.status)) throw new Error("This prospect is already closed")
+  const { data: prospectContacts } = await context.supabase
+    .from("prospect_contacts")
+    .select("id, full_name, email, phone, role, is_primary, promoted_contact_id")
+    .eq("org_id", context.orgId)
+    .eq("prospect_id", prospect.id)
+    .order("is_primary", { ascending: false })
+    .order("created_at", { ascending: true })
+  const primary = (prospectContacts ?? [])[0]
+  if (!primary) throw new Error("Add a contact to this prospect before holding a lot")
+  let buyerContactId = primary.promoted_contact_id as string | null
+  if (!buyerContactId && primary.email) {
+    const { data: existing } = await context.supabase.from("contacts").select("id").eq("org_id", context.orgId).eq("email", primary.email).maybeSingle()
+    buyerContactId = existing?.id ?? null
+  }
+  if (!buyerContactId) {
+    const { createContact } = await import("@/lib/services/contacts")
+    const contact = await createContact({
+      input: { full_name: primary.full_name, email: primary.email || undefined, phone: primary.phone || undefined, role: primary.role || undefined, contact_type: "client" },
+      orgId: context.orgId,
+    })
+    buyerContactId = contact.id
+  }
+  await context.supabase.from("prospect_contacts").update({ promoted_contact_id: buyerContactId, updated_at: new Date().toISOString() }).eq("org_id", context.orgId).eq("id", primary.id)
+  const reservation = await createLotHold({ lotId: input.lotId, buyerContactId, prospectId: prospect.id, expiresAt: input.expiresAt, notes: input.notes ?? undefined }, context.orgId)
+  if (prospect.community_id !== reservation.communityId) {
+    await context.supabase.from("prospects").update({ community_id: reservation.communityId, updated_at: new Date().toISOString() }).eq("org_id", context.orgId).eq("id", prospect.id)
+  }
+  return reservation
 }
 
 export async function createLotHold(input: unknown, orgId?: string) {
@@ -238,6 +405,7 @@ export async function releaseReservation(input: unknown, orgId?: string) {
 export async function getCommunityPriceSheet(communityId: string, opts: { onDate?: string } = {}, orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.read", context)
+  await assertCommunityInSalesScope(context, communityId)
   const onDate = opts.onDate ?? new Date().toISOString().slice(0, 10)
   const [{ data: availability, error }, { data: lots }, incentives] = await Promise.all([
     context.supabase.from("community_plan_availability").select("base_price_cents, elevation_id, plan:house_plans(id, name, code, beds, baths, heated_sqft), elevation:house_plan_elevations(name, code)").eq("org_id", context.orgId).eq("community_id", communityId).eq("is_available", true).or(`effective_start.is.null,effective_start.lte.${onDate}`).or(`effective_end.is.null,effective_end.gte.${onDate}`),
@@ -254,8 +422,15 @@ export async function getCommunityPriceSheet(communityId: string, opts: { onDate
 export async function listIncentives(opts: { communityId?: string; status?: string } = {}, orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("sales.read", context)
+  if (opts.communityId) await assertCommunityInSalesScope(context, opts.communityId)
+  const allowedCommunityIds = opts.communityId ? null : await getSalesCommunityIds(context)
   let query = context.supabase.from("incentives").select("*").eq("org_id", context.orgId)
   if (opts.communityId) query = query.or(`community_id.is.null,community_id.eq.${opts.communityId}`)
+  else if (allowedCommunityIds) {
+    query = allowedCommunityIds.length > 0
+      ? query.or(`community_id.is.null,community_id.in.(${allowedCommunityIds.join(",")})`)
+      : query.is("community_id", null)
+  }
   if (opts.status) query = query.eq("status", opts.status)
   const { data, error } = await query.order("created_at", { ascending: false })
   if (error) throw new Error(`Failed to load incentives: ${error.message}`)
@@ -409,7 +584,15 @@ export async function executePurchaseAgreementFromEnvelopeExecution(input: { org
   const now = new Date().toISOString()
   await supabase.from("contracts").update({ status: "active", signed_at: now, signature_data: { envelope_id: input.envelopeId, executed_file_id: input.executedFileId ?? null } }).eq("org_id", input.orgId).eq("id", contract.id)
   const { data: projectLot } = await supabase.from("lots").select("id, community_id, status").eq("org_id", input.orgId).eq("project_id", contract.project_id).maybeSingle()
-  if (projectLot) await supabase.from("lot_reservations").update({ status: "converted", converted_at: now, contract_id: contract.id }).eq("org_id", input.orgId).eq("lot_id", projectLot.id).eq("status", "reserved")
+  let convertedProspectId: string | null = null
+  if (projectLot) {
+    const { data: convertedReservations } = await supabase.from("lot_reservations").update({ status: "converted", converted_at: now, contract_id: contract.id }).eq("org_id", input.orgId).eq("lot_id", projectLot.id).eq("status", "reserved").select("prospect_id")
+    convertedProspectId = (convertedReservations ?? []).find((row) => row.prospect_id)?.prospect_id ?? null
+  }
+  // Close the lead-pipeline loop: an executed agreement IS the win.
+  if (convertedProspectId) {
+    await supabase.from("prospects").update({ status: "won", won_at: now, lost_at: null, lost_reason: null, updated_at: now }).eq("org_id", input.orgId).eq("id", convertedProspectId).neq("status", "won")
+  }
   await supabase.from("project_selections").update({ locked_at: now }).eq("org_id", input.orgId).eq("project_id", contract.project_id).is("locked_at", null)
   if (projectLot) {
     const { data: existingClosing } = await supabase.from("closings").select("id").eq("org_id", input.orgId).eq("project_id", contract.project_id).neq("status", "cancelled").maybeSingle()
@@ -427,8 +610,12 @@ export async function voidPurchaseAgreement(input: unknown, orgId?: string) {
   await requirePermission("sales.manage", context)
   const { data: contract } = await context.supabase.from("contracts").select("id, project_id, status, snapshot").eq("org_id", context.orgId).eq("id", parsed.contractId).eq("contract_type", "purchase_agreement").maybeSingle()
   if (!contract || !["draft", "active"].includes(contract.status)) throw new Error("Active purchase agreement not found")
-  const { data: reservation } = await context.supabase.from("lot_reservations").select("id").eq("org_id", context.orgId).eq("contract_id", contract.id).maybeSingle()
+  const { data: reservation } = await context.supabase.from("lot_reservations").select("id, prospect_id").eq("org_id", context.orgId).eq("contract_id", contract.id).maybeSingle()
   if (reservation) await releaseReservation({ reservationId: reservation.id, reason: parsed.reason, depositDisposition: parsed.depositDisposition }, context.orgId)
+  // A voided agreement un-wins the lead: back to qualified so the funnel stays truthful.
+  if (reservation?.prospect_id) {
+    await context.supabase.from("prospects").update({ status: "qualified", won_at: null, updated_at: new Date().toISOString() }).eq("org_id", context.orgId).eq("id", reservation.prospect_id).eq("status", "won")
+  }
   await Promise.all([
     context.supabase.from("contracts").update({ status: "void", snapshot: { ...(contract.snapshot ?? {}), cancellation_reason: parsed.reason, cancelled_at: new Date().toISOString() } }).eq("org_id", context.orgId).eq("id", contract.id),
     context.supabase.from("closings").update({ status: "cancelled", cancel_reason: parsed.reason }).eq("org_id", context.orgId).eq("project_id", contract.project_id).neq("status", "closed"),

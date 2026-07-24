@@ -27,6 +27,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { listRfiResponses } from "@/lib/services/rfis"
 import type { Rfi, RfiResponse } from "@/lib/types"
 import { getBidInvitePrequalificationWarnings } from "@/lib/services/prequalification"
+import { getDivisionAccessForUser, getDivisionScopedProjectIds } from "@/lib/services/authorization"
 
 export interface BidPackage {
   id: string
@@ -1248,9 +1249,29 @@ export interface OrgBidPackage extends BidPackage {
  * Ordered by due date (nulls last) and capped — this powers the read-only
  * org Bid Day desk, so it never mutates anything.
  */
-export async function listOrgBidPackages(orgId?: string): Promise<OrgBidPackage[]> {
+export async function listOrgBidPackages(orgId?: string, divisionId?: string): Promise<OrgBidPackage[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
+  const [authorizedProjectIds, divisionAccess] = await Promise.all([
+    getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase }),
+    getDivisionAccessForUser({ orgId: resolvedOrgId, userId }),
+  ])
+  const divisionIds = divisionId
+    ? (!divisionAccess.assignedOnly || divisionAccess.divisionIds.includes(divisionId) ? [divisionId] : [])
+    : divisionAccess.assignedOnly
+      ? divisionAccess.divisionIds
+      : null
+  const { data: scopedCommunities } = divisionIds
+    ? await supabase.from("communities").select("id").eq("org_id", resolvedOrgId).in("division_id", divisionIds.length ? divisionIds : ["00000000-0000-0000-0000-000000000000"])
+    : { data: null }
+  const { data: scopedProjects } = divisionIds
+    ? await supabase.from("projects").select("id").eq("org_id", resolvedOrgId).in("division_id", divisionIds.length ? divisionIds : ["00000000-0000-0000-0000-000000000000"])
+    : { data: null }
+  const allowedCommunities = scopedCommunities ? new Set(scopedCommunities.map((row) => row.id)) : null
+  const lensProjectIds = scopedProjects ? new Set(scopedProjects.map((row) => row.id)) : null
+  const allowedProjects = authorizedProjectIds
+    ? new Set(authorizedProjectIds.filter((id) => !lensProjectIds || lensProjectIds.has(id)))
+    : lensProjectIds
 
   const { data, error } = await supabase
     .from("bid_packages")
@@ -1268,7 +1289,12 @@ export async function listOrgBidPackages(orgId?: string): Promise<OrgBidPackage[
     throw new Error(`Failed to list bid packages: ${error.message}`)
   }
 
-  const packages = await decorateBidPackageSummaries(supabase, resolvedOrgId, (data ?? []).map(mapBidPackage))
+  const scopedPackages = (data ?? []).map(mapBidPackage).filter((pkg) => {
+    if (pkg.project_id && allowedProjects && !allowedProjects.has(pkg.project_id)) return false
+    if (pkg.community_id && allowedCommunities && !allowedCommunities.has(pkg.community_id)) return false
+    return true
+  })
+  const packages = await decorateBidPackageSummaries(supabase, resolvedOrgId, scopedPackages)
 
   const projectIds = [...new Set(packages.map((pkg) => pkg.project_id).filter((id): id is string => Boolean(id)))]
   const prospectIds = [...new Set(packages.map((pkg) => pkg.prospect_id).filter((id): id is string => Boolean(id)))]

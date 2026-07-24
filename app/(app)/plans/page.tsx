@@ -7,14 +7,16 @@ import { listDivisions } from "@/lib/services/divisions"
 import { listHousePlans } from "@/lib/services/house-plans"
 import { listCommunities } from "@/lib/services/communities"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
+import { getAmbientDeskContext } from "@/lib/services/desk-context"
 
 export const dynamic = "force-dynamic"
 
 async function PlanLibraryData() {
+  const ambient = await getAmbientDeskContext()
   const [plans, divisions, communities, permissions] = await Promise.all([
-    listHousePlans(),
+    listHousePlans({ divisionId: ambient.divisionId, communityId: ambient.communityId }),
     listDivisions().catch(() => []),
-    listCommunities().catch(() => []),
+    listCommunities(ambient.divisionId ? { divisionId: ambient.divisionId } : {}).catch(() => []),
     getCurrentUserPermissions(),
   ])
   const canWrite = permissions.permissions.includes("*") || permissions.permissions.includes("org.admin") || permissions.permissions.includes("plan.write")

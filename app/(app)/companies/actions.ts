@@ -2,9 +2,10 @@
 
 import { revalidatePath } from "next/cache"
 
-import { archiveCompany, createCompany, getCompany, getCompanyProjects, listCompanies, restoreCompany, updateCompany } from "@/lib/services/companies"
+import { archiveCompany, createCompany, getCompany, getCompanyProjects, listCompanies, restoreCompany, saveCompanyAccountingVendorLink, updateCompany } from "@/lib/services/companies"
 import { requireOrgContext } from "@/lib/services/context"
-import { QBOClient } from "@/lib/integrations/accounting/qbo/client"
+import { resolveAccountingTarget } from "@/lib/services/accounting-target"
+import { getProvider } from "@/lib/integrations/accounting/registry"
 import {
   getCompanyComplianceStatus,
   getCompanyRequirements,
@@ -108,27 +109,24 @@ export async function getCompanyAction(companyId: string) {
 
 export async function getCompanyQboVendorContextAction() {
       const { orgId } = await requireOrgContext()
-      const client = await QBOClient.forOrg(orgId)
-      if (!client) {
+      const target = await resolveAccountingTarget({ orgId })
+      const provider = target ? getProvider(target.connection.provider) : null
+      if (!target || !provider?.searchCounterparties) {
         return { enabled: false, vendors: [] }
       }
       return {
         enabled: true,
-        vendors: await client.listVendors().catch(() => []),
+        vendors: await provider.searchCounterparties({ connectionId: target.connection.id, role: "vendor", term: "" }).catch(() => []),
       }
 }
 
 export async function linkCompanyQboVendorAction(companyId: string, vendor: { id: string; name: string }) {
   return run(async () => {
-      const company = await updateCompany({
-        companyId,
-        input: {
-          qbo_vendor_id: vendor.id,
-          qbo_vendor_name: vendor.name,
-          qbo_vendor_synced_at: new Date().toISOString(),
-          qbo_vendor_sync_status: "linked",
-        },
-      })
+      const { supabase, orgId } = await requireOrgContext()
+      const target = await resolveAccountingTarget({ orgId })
+      if (!target) throw new Error("No organization accounting connection is mapped")
+      await saveCompanyAccountingVendorLink({ supabase, orgId, companyId, connectionId: target.connection.id, externalId: vendor.id, displayName: vendor.name })
+      const company = await getCompany(companyId)
       revalidatePath("/companies")
       revalidatePath(`/companies/${companyId}`)
       revalidatePath("/directory")
@@ -138,28 +136,21 @@ export async function linkCompanyQboVendorAction(companyId: string, vendor: { id
 
 export async function createQboVendorForCompanyAction(companyId: string) {
   return run(async () => {
-      const { orgId } = await requireOrgContext()
-      const [company, client] = await Promise.all([getCompany(companyId), QBOClient.forOrg(orgId)])
-      if (!client) {
-        throw new Error("QuickBooks is not connected")
-      }
-      const vendor = await client.createVendorOption({
-        name: company.name,
+      const { supabase, orgId } = await requireOrgContext()
+      const [company, target] = await Promise.all([getCompany(companyId), resolveAccountingTarget({ orgId })])
+      if (!target) throw new Error("No organization accounting connection is mapped")
+      const provider = getProvider(target.connection.provider)
+      if (!provider.createCounterparty) throw new Error(`${target.connection.label} cannot create vendors from Arc`)
+      const vendor = await provider.createCounterparty({ connectionId: target.connection.id, role: "vendor", counterparty: {
+        displayName: company.name,
         email: company.email,
         line1: company.address?.street1 ?? company.address?.formatted,
         city: company.address?.city,
         state: company.address?.state,
         postalCode: company.address?.postal_code,
-      })
-      const updated = await updateCompany({
-        companyId,
-        input: {
-          qbo_vendor_id: vendor.id,
-          qbo_vendor_name: vendor.name,
-          qbo_vendor_synced_at: new Date().toISOString(),
-          qbo_vendor_sync_status: "created",
-        },
-      })
+      } })
+      await saveCompanyAccountingVendorLink({ supabase, orgId, companyId, connectionId: target.connection.id, externalId: vendor.id, displayName: vendor.name ?? company.name })
+      const updated = await getCompany(companyId)
       revalidatePath("/companies")
       revalidatePath(`/companies/${companyId}`)
       revalidatePath("/directory")

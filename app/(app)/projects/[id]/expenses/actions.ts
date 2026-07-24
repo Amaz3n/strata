@@ -15,9 +15,11 @@ import {
   replaceProjectExpenseLines,
   type ProjectExpenseLineInput,
 } from "@/lib/services/cost-plus"
-import { QBOClient } from "@/lib/integrations/accounting/qbo/client"
+import { resolveAccountingTarget } from "@/lib/services/accounting-target"
+import { getProvider } from "@/lib/integrations/accounting/registry"
 import { processAccountingPush } from "@/lib/services/accounting-sync"
 import { requireAuthorization } from "@/lib/services/authorization"
+import { buildAccountingCoding } from "@/lib/services/accounting-coding"
 
 import { unwrapAction, actionError, type ActionResult  } from "@/lib/action-result"
 
@@ -202,13 +204,12 @@ export async function createMyExpenseAction(projectId: string, formData: FormDat
       const vendorName = payload.vendorName?.trim() || null
 
       if (payload.createQboVendor && vendorName) {
-        const client = await QBOClient.forOrg(orgId)
-        if (!client) {
-          throw new Error("Connect QuickBooks before adding a new QBO vendor")
-        }
-        const vendor = await client.getOrCreateVendor(vendorName)
-        qboVendorId = vendor.Id ? String(vendor.Id) : null
-        qboVendorName = vendor.DisplayName
+        const target = await resolveAccountingTarget({ orgId, projectId })
+        const provider = target ? getProvider(target.connection.provider) : null
+        if (!target || !provider?.createCounterparty) throw new Error("The mapped accounting provider cannot create vendors")
+        const vendor = await provider.createCounterparty({ connectionId: target.connection.id, role: "vendor", counterparty: { displayName: vendorName } })
+        qboVendorId = vendor.id
+        qboVendorName = vendor.name
       }
 
       const receiptFileId = await uploadCostPlusFile({
@@ -478,16 +479,8 @@ export async function listProjectExpensesPageAction(projectId: string, input: Ex
 
 export async function getExpenseAccountingContextAction(projectId?: string) {
       const { supabase, orgId } = await requireOrgContext()
-      const { data: connection } = await supabase
-        .from("accounting_connections")
-        .select("settings")
-        .eq("org_id", orgId)
-        .eq("status", "active")
-        .eq("provider", "qbo")
-        .order("connected_at", { ascending: true })
-        .limit(1)
-        .maybeSingle()
-      const settings = (connection?.settings as Record<string, any> | null) ?? {}
+      const target = await resolveAccountingTarget({ orgId, projectId })
+      const settings = (target?.connection.settings as Record<string, any> | null) ?? {}
       const projectSettings = projectId ? await getProjectFinancialSettings({ supabase, orgId, projectId }).catch(() => null) : null
       const costCodesEnabled = projectSettings?.cost_codes_enabled ?? true
       const { data: costCodes } = costCodesEnabled
@@ -502,8 +495,8 @@ export async function getExpenseAccountingContextAction(projectId?: string) {
       const budgetLines = !costCodesEnabled && projectId
         ? await loadProjectBudgetLines(supabase, orgId, projectId)
         : []
-      const client = await QBOClient.forOrg(orgId)
-      if (!client) {
+      const provider = target ? getProvider(target.connection.provider) : null
+      if (!target || !provider) {
         return {
           qboConnected: false,
           expenseAccounts: [],
@@ -520,10 +513,10 @@ export async function getExpenseAccountingContextAction(projectId?: string) {
 
       try {
         const [expenseAccounts, paymentAccounts, apAccounts, vendors] = await Promise.all([
-          client.listExpenseAccounts(),
-          client.listPaymentAccounts(),
-          client.listAccountsPayableAccounts(),
-          client.listVendors(),
+          provider.listAccounts({ connectionId: target.connection.id, kind: "expense" }),
+          provider.listAccounts({ connectionId: target.connection.id, kind: "payment" }),
+          provider.listAccounts({ connectionId: target.connection.id, kind: "ap" }),
+          provider.searchCounterparties?.({ connectionId: target.connection.id, role: "vendor", term: "" }) ?? Promise.resolve([]),
         ])
 
         return {
@@ -707,6 +700,17 @@ export async function updateProjectExpenseWorkspaceAction(
 
       const { details, accounting } = input
       const updateData: Record<string, any> = {
+        accounting_coding: buildAccountingCoding({
+          transactionType: accounting.qboTransactionType,
+          expenseAccountId: accounting.qboExpenseAccountId,
+          expenseAccountName: accounting.qboExpenseAccountName,
+          paymentAccountId: accounting.qboPaymentAccountId,
+          paymentAccountName: accounting.qboPaymentAccountName,
+          apAccountId: accounting.qboApAccountId,
+          apAccountName: accounting.qboApAccountName,
+          counterpartyId: accounting.qboVendorId,
+          counterpartyName: accounting.qboVendorName,
+        }),
         qbo_transaction_type: accounting.qboTransactionType ?? null,
         qbo_expense_account_id: accounting.qboExpenseAccountId || null,
         qbo_expense_account_name: accounting.qboExpenseAccountName || null,
@@ -799,6 +803,17 @@ export async function updateProjectExpenseAccountingAction(
         normalized.qbo_vendor_id !== existing.qbo_vendor_id
 
       const updateData: Record<string, any> = { ...normalized }
+      updateData.accounting_coding = buildAccountingCoding({
+        transactionType: input.qboTransactionType,
+        expenseAccountId: input.qboExpenseAccountId,
+        expenseAccountName: input.qboExpenseAccountName,
+        paymentAccountId: input.qboPaymentAccountId,
+        paymentAccountName: input.qboPaymentAccountName,
+        apAccountId: input.qboApAccountId,
+        apAccountName: input.qboApAccountName,
+        counterpartyId: input.qboVendorId,
+        counterpartyName: input.qboVendorName,
+      })
       if (changed && existing.qbo_sync_status === "synced") {
         updateData.qbo_sync_status = "pending"
       }

@@ -67,7 +67,8 @@ import {
 import type { BudgetLineOption, Company, ComplianceRules, ComplianceStatusSummary, CostCode } from "@/lib/types"
 import { filterPayables, payableQueueCounts, type PayableQueue } from "./payables-filters"
 import { PayableDocumentPane } from "./payable-document-pane"
-import { billBadge, dueDateClassName, getDueState, qboBadge, qboVendorLinkBadge, vendorLabel } from "./payables-ui"
+import { AccountingSyncBadge } from "@/components/accounting/accounting-sync-badge"
+import { billBadge, dueDateClassName, getDueState, vendorLabel, vendorLinkBadge } from "./payables-ui"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -765,7 +766,7 @@ export function PayablesWorkspace({
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {billBadge(selectedBill.status)}
-            {qboBadge(effectiveSyncStatus, selectedBill.qbo_sync_error)}
+            <AccountingSyncBadge status={effectiveSyncStatus ?? "not_synced"} error={selectedBill.qbo_sync_error} />
           </div>
         </div>
 
@@ -827,7 +828,7 @@ export function PayablesWorkspace({
               <div className="border-t pt-3 flex flex-wrap items-center justify-between gap-3 text-xs">
                 <div className="flex items-center gap-2">
                   <span className="microlabel">Sync status</span>
-                  {qboBadge(effectiveSyncStatus, selectedBill.qbo_sync_error)}
+                  <AccountingSyncBadge status={effectiveSyncStatus ?? "not_synced"} error={selectedBill.qbo_sync_error} externalId={selectedBill.qbo_id} />
                   {selectedBill.qbo_id ? (
                     <a href={qboTransactionUrl(selectedBill)!} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
                       Open in QuickBooks <ExternalLink className="h-3 w-3" />
@@ -892,7 +893,7 @@ export function PayablesWorkspace({
                 <Label className="microlabel">Vendor</Label>
                 <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2">
                   <span className="truncate text-base font-semibold">{selectedBill.company_name ?? vendorLabel(selectedBill)}</span>
-                  {accountingEnabled ? qboVendorLinkBadge(selectedBill) : null}
+                  {accountingEnabled ? vendorLinkBadge(selectedBill) : null}
                 </div>
                 {accountingEnabled ? (
                   <p className="mt-1 text-xs text-muted-foreground">

@@ -11,6 +11,7 @@ import { requireAuthorization } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { normalizeProductTier } from "@/lib/product-tier"
+import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 
 export type InvoiceScheduleFrequency = "weekly" | "monthly" | "quarterly"
 
@@ -290,9 +291,9 @@ function advanceRunDate(schedule: { frequency: InvoiceScheduleFrequency; day_of_
   return new Date(base.getFullYear(), base.getMonth(), clampedDay)
 }
 
-async function nextLocalInvoiceNumber(serviceClient: ReturnType<typeof createServiceSupabaseClient>, orgId: string) {
-  const [{ data: connection }, { data: recent }] = await Promise.all([
-    serviceClient.from("accounting_connections").select("settings").eq("org_id", orgId).eq("provider", "qbo").eq("status", "active").order("connected_at", { ascending: true }).limit(1).maybeSingle(),
+async function nextLocalInvoiceNumber(serviceClient: ReturnType<typeof createServiceSupabaseClient>, orgId: string, projectId: string | null) {
+  const [target, { data: recent }] = await Promise.all([
+    resolveAccountingTarget({ orgId, projectId }),
     serviceClient
       .from("invoices")
       .select("invoice_number")
@@ -300,7 +301,7 @@ async function nextLocalInvoiceNumber(serviceClient: ReturnType<typeof createSer
       .order("created_at", { ascending: false })
       .limit(25),
   ])
-  const settings = (connection?.settings ?? null) as { invoice_number_pattern?: any; invoice_number_prefix?: string | null } | null
+  const settings = (target?.connection.settings ?? null) as { invoice_number_pattern?: any; invoice_number_prefix?: string | null } | null
   const latest = (recent ?? [])
     .map((row) => String(row.invoice_number ?? ""))
     .filter(Boolean)
@@ -338,7 +339,7 @@ export async function runDueInvoiceSchedules(today = new Date()): Promise<Schedu
   for (const row of due ?? []) {
     try {
       const template = (row.template ?? {}) as Record<string, any>
-      const invoiceNumber = await nextLocalInvoiceNumber(serviceClient, row.org_id)
+      const invoiceNumber = await nextLocalInvoiceNumber(serviceClient, row.org_id, row.project_id)
       const termsDays = Number(template.payment_terms_days ?? 15)
       const recipient = row.auto_send && row.recipient_email ? [String(row.recipient_email)] : undefined
 

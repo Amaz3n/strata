@@ -6,8 +6,27 @@ import {
 import { ControlTowerStats } from "@/components/control-tower/control-tower-stats";
 import { ControlTowerLookahead } from "@/components/control-tower/control-tower-lookahead";
 import { ControlTowerWatch } from "@/components/control-tower/control-tower-watch";
+import { ProductionHome } from "@/components/home/production-home";
+import { getOrgProductTier } from "@/lib/services/context";
+import { getAmbientDeskContext } from "@/lib/services/desk-context";
+import { getProductionHomeData } from "@/lib/services/production-home";
+import { orgHasActiveNonProductionProjects } from "@/lib/services/production-desk-scope";
 
 export default async function HomePage() {
+  const tier = await getOrgProductTier();
+  if (tier === "production") {
+    const ambient = await getAmbientDeskContext();
+    const [data, showCustomProjects] = await Promise.all([
+      getProductionHomeData({ divisionId: ambient.divisionId, communityId: ambient.communityId }),
+      orgHasActiveNonProductionProjects(),
+    ]);
+    return (
+      <>
+        <PageLayout title="Production tempo" fullBleed />
+        <ProductionHome data={data} showCustomProjects={showCustomProjects} />
+      </>
+    );
+  }
   const [data, watchlistProjects] = await Promise.all([
     getControlTowerData(),
     getWatchlist(),

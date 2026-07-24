@@ -8,6 +8,7 @@ import { requireOrgContext } from "@/lib/services/context"
 
 import { unwrapAction } from "@/lib/action-result"
 import { resolveProductionDeskScope } from "@/lib/services/production-desk-scope"
+import { terminology } from "@/lib/terminology"
 
 export const dynamic = 'force-dynamic'
 
@@ -41,9 +42,9 @@ async function ProjectsData({ communityId, divisionId }: { communityId?: string;
 }
 
 export default async function ProjectsPage({ searchParams }: { searchParams: Promise<{ community?: string; division?: string }> }) {
-  const params = await searchParams
+  const [params, context] = await Promise.all([searchParams, requireOrgContext()])
   return (
-    <PageLayout title="Projects">
+    <PageLayout title={terminology(context.productTier).projects}>
       <div className="-m-4 -mt-6 h-[calc(100vh-3.5rem)]">
         <Suspense fallback={<ProjectsSkeleton />}>
           <ProjectsData communityId={params.community} divisionId={params.division} />

@@ -49,6 +49,7 @@ export const priceAgreementFiltersSchema = z.object({
   companyId: optionalUuid,
   costCodeId: optionalUuid,
   communityId: optionalUuid,
+  divisionId: optionalUuid,
   housePlanId: optionalUuid,
   status: z.enum(["draft", "active", "expired", "superseded", "void"]).optional(),
   expiringWithinDays: z.number().int().min(1).max(365).optional(),

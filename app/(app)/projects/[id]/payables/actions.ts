@@ -14,7 +14,8 @@ import { createCompany, getCompany } from "@/lib/services/companies"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { AuthorizationError } from "@/lib/services/authorization"
-import { QBOClient } from "@/lib/integrations/accounting/qbo/client"
+import { resolveAccountingTarget } from "@/lib/services/accounting-target"
+import { getProvider } from "@/lib/integrations/accounting/registry"
 import { processAccountingPush } from "@/lib/services/accounting-sync"
 import { extractPayableInvoiceFromFile, type ExtractedPayableInvoice } from "@/lib/services/receipt-extraction"
 
@@ -191,11 +192,10 @@ export async function listProjectCommitmentsForPayablesAction(projectId: string)
       return listProjectCommitments(projectId)
 }
 
-export async function getPayablesAccountingContextAction() {
+export async function getPayablesAccountingContextAction(projectId?: string) {
       const { orgId } = await requireOrgContext()
-      const supabase = createServiceSupabaseClient()
-      const client = await QBOClient.forOrg(orgId)
-      if (!client) {
+      const target = await resolveAccountingTarget({ orgId, projectId })
+      if (!target) {
         return {
           enabled: false,
           expenseAccounts: [],
@@ -205,14 +205,14 @@ export async function getPayablesAccountingContextAction() {
         }
       }
 
-      const [{ data: connection }, expenseAccounts, apAccounts, vendors] = await Promise.all([
-        supabase.from("accounting_connections").select("settings").eq("org_id", orgId).eq("provider", "qbo").eq("status", "active").order("connected_at", { ascending: true }).limit(1).maybeSingle(),
-        client.listExpenseAccounts().catch(() => []),
-        client.listAccountsPayableAccounts().catch(() => []),
-        client.listVendors().catch(() => []),
+      const provider = getProvider(target.connection.provider)
+      const [expenseAccounts, apAccounts, vendors] = await Promise.all([
+        provider.listAccounts({ connectionId: target.connection.id, kind: "expense" }).catch(() => []),
+        provider.listAccounts({ connectionId: target.connection.id, kind: "ap" }).catch(() => []),
+        provider.searchCounterparties?.({ connectionId: target.connection.id, role: "vendor", term: "" }).catch(() => []) ?? Promise.resolve([]),
       ])
 
-      const settings = (connection?.settings as Record<string, any> | null) ?? {}
+      const settings = (target.connection.settings as Record<string, any> | null) ?? {}
       return {
         enabled: true,
         expenseAccounts,

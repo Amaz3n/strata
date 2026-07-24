@@ -39,6 +39,7 @@ export const createProspectInputSchema = z.object({
   name: z.string().trim().min(2, "Prospect name is required"),
   status: prospectStatusEnum.default("new"),
   owner_user_id: z.string().uuid().optional().nullable(),
+  community_id: z.string().uuid().optional().nullable(),
   source: z.string().trim().optional().nullable(),
   jobsite_location: prospectJobsiteLocationSchema,
   project_type: z.string().trim().optional().nullable(),
@@ -54,6 +55,7 @@ export const updateProspectInputSchema = z.object({
   name: z.string().trim().min(2).optional(),
   status: prospectStatusEnum.optional(),
   owner_user_id: z.string().uuid().optional().nullable(),
+  community_id: z.string().uuid().optional().nullable(),
   source: z.string().trim().optional().nullable(),
   jobsite_location: prospectJobsiteLocationSchema,
   project_type: z.string().trim().optional().nullable(),
@@ -76,6 +78,7 @@ export const prospectFiltersSchema = z
   .object({
     status: prospectStatusEnum.optional(),
     owner_user_id: z.string().uuid().optional(),
+    community_id: z.string().uuid().optional(),
     search: z.string().trim().optional(),
   })
   .optional()

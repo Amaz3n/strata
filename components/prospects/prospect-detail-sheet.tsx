@@ -63,7 +63,7 @@ import {
 } from "@/components/icons"
 import { cn, formatPhone, formatLocalDate } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
-import { ConvertProspectSheet } from "./convert-prospect-sheet"
+import { ConvertProspectSheet } from "@/components/prospects/convert-prospect-sheet"
 import { EstimateCreateSheet, type EstimateSheetInitial, type EstimateTemplateOption } from "@/components/estimates/estimate-create-sheet"
 import { EstimateActivitySheet } from "@/components/estimates/estimate-activity-sheet"
 

@@ -6,8 +6,9 @@ import { createProject, listProjects, updateProject, archiveProject, deleteProje
 import { getProjectScheduleSummaries, listScheduleItemsByProject } from "@/lib/services/schedule"
 import { projectInputSchema, projectUpdateSchema } from "@/lib/validation/projects"
 import { requireOrgContext } from "@/lib/services/context"
-import { QBOClient, type QBOClassOption } from "@/lib/integrations/accounting/qbo/client"
 import { resolveAccountingTarget } from "@/lib/services/accounting-target"
+import { requireAccountingConnectionForOrg } from "@/lib/services/accounting-connections"
+import { getProvider } from "@/lib/integrations/accounting/registry"
 import type { Contact, ProjectScheduleSummary, ScheduleItem } from "@/lib/types"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
@@ -50,25 +51,34 @@ export async function listProjectClientContactsAction(): Promise<Contact[]> {
       return (data ?? []) as Contact[]
 }
 
-export async function listProjectQboClassesAction(connectionId?: string | null): Promise<QBOClassOption[]> {
+async function projectAccountingProvider(orgId: string, connectionId?: string | null) {
+  if (connectionId) {
+    const connection = await requireAccountingConnectionForOrg(connectionId, orgId, { activeOnly: true })
+    return { connectionId: connection.id, provider: getProvider(connection.provider) }
+  }
+  const target = await resolveAccountingTarget({ orgId })
+  return target ? { connectionId: target.connection.id, provider: getProvider(target.connection.provider) } : null
+}
+
+export async function listProjectQboClassesAction(connectionId?: string | null) {
       const { orgId } = await requireOrgContext()
-      const client = connectionId ? await QBOClient.forConnection(connectionId) : await QBOClient.forOrg(orgId)
-      if (!client) return []
-      return client.listClasses().catch(() => [])
+      const accounting = await projectAccountingProvider(orgId, connectionId)
+      if (!accounting || !accounting.provider.capabilities.dimensions.includes("class")) return []
+      return accounting.provider.listDimensionValues({ connectionId: accounting.connectionId, kind: "class" }).catch(() => [])
 }
 
 // Typeahead for the project settings "QuickBooks customer" picker. QBO is the source of truth, so we
 // query it live by DisplayName. Returns connected=false when QBO isn't linked.
 export async function searchProjectQboCustomersAction(term: string, connectionId?: string | null) {
       const { orgId } = await requireOrgContext()
-      const client = await (connectionId ? QBOClient.forConnection(connectionId) : QBOClient.forOrg(orgId)).catch(() => null)
-      if (!client) return { connected: false, customers: [] as Awaited<ReturnType<QBOClient["searchCustomers"]>> }
+      const accounting = await projectAccountingProvider(orgId, connectionId).catch(() => null)
+      if (!accounting?.provider.searchCounterparties) return { connected: false, customers: [] }
       try {
-        const customers = await client.searchCustomers(term)
+        const customers = await accounting.provider.searchCounterparties({ connectionId: accounting.connectionId, role: "customer", term })
         return { connected: true, customers }
       } catch (error) {
-        console.warn("QBO customer search failed", error)
-        return { connected: true, customers: [] as Awaited<ReturnType<QBOClient["searchCustomers"]>> }
+        console.warn("Accounting customer search failed", error)
+        return { connected: true, customers: [] }
       }
 }
 
@@ -118,16 +128,16 @@ export async function createProjectQboCustomerAction(input: {
       const { orgId } = await requireOrgContext()
       const name = input.name?.trim()
       if (!name) throw new Error("Customer name is required")
-      const client = input.connectionId ? await QBOClient.forConnection(input.connectionId) : await QBOClient.forOrg(orgId)
-      if (!client) throw new Error("QuickBooks is not connected")
-      return client.createCustomerOption({
-        name,
+      const accounting = await projectAccountingProvider(orgId, input.connectionId)
+      if (!accounting?.provider.createCounterparty) throw new Error("The mapped accounting provider cannot create customers")
+      return accounting.provider.createCounterparty({ connectionId: accounting.connectionId, role: "customer", counterparty: {
+        displayName: name,
         email: input.email ?? null,
         line1: input.line1 ?? null,
         city: input.city ?? null,
         state: input.state ?? null,
         postalCode: input.postalCode ?? null,
-      })
+      } })
   })
 }
 

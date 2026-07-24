@@ -23,8 +23,11 @@ import { getPlatformSessionState } from "@/lib/services/platform-session"
 import { getReleaseNotesSummary } from "@/lib/services/release-notes"
 import { getNavigationBadgeCounts } from "@/lib/services/navigation-badges"
 import { getOrgProductTier } from "@/lib/services/context"
-import { orgHasDivisions } from "@/lib/services/divisions"
-import { orgHasProductionProjects } from "@/lib/services/production-desk-scope"
+import { getAmbientDeskContext } from "@/lib/services/desk-context"
+import {
+  orgHasActiveNonProductionProjects,
+  orgHasProductionProjects,
+} from "@/lib/services/production-desk-scope"
 import { shouldShowProductionOrgNavigation } from "@/lib/product-tier"
 import { orgHasPriceAgreements } from "@/lib/services/price-book"
 
@@ -36,7 +39,7 @@ export default async function AppLayout({
   children: React.ReactNode
 }) {
   // Fetch user data once at the layout level for the persistent shell
-  const [currentUser, crmStats, access, platformAccess, permissionResult, platformSessionState, releaseNotesSummary, navigationBadgeCounts, productTier, hasDivisions, hasProductionProjects, hasPriceAgreements] = await Promise.all([
+  const [currentUser, crmStats, access, platformAccess, permissionResult, platformSessionState, releaseNotesSummary, navigationBadgeCounts, productTier, ambientContext, hasProductionProjects, hasPriceAgreements, hasActiveNonProductionProjects] = await Promise.all([
     getCurrentUserAction(),
     getCrmDashboardStats().catch(() => null),
     getOrgAccessState().catch((): OrgAccessState => ({ status: "unknown", locked: false })),
@@ -53,9 +56,10 @@ export default async function AppLayout({
       projectReviewBadgeCounts: {} as Record<string, number>,
     })),
     getOrgProductTier().catch(() => "residential" as const),
-    orgHasDivisions().catch(() => false),
+    getAmbientDeskContext().catch(() => ({ divisions: [], divisionId: undefined, communityId: undefined })),
     orgHasProductionProjects().catch(() => false),
     orgHasPriceAgreements().catch(() => false),
+    orgHasActiveNonProductionProjects().catch(() => false),
   ])
 
   const pipelineBadgeCount = crmStats ? crmStats.followUpsOverdue + crmStats.followUpsDueToday : 0
@@ -89,9 +93,12 @@ export default async function AppLayout({
           permissions={permissionResult.permissions}
           whatsNewUnreadCount={releaseNotesSummary.unreadCount}
           productTier={productTier}
-          hasDivisions={hasDivisions}
+          hasDivisions={ambientContext.divisions.length > 0}
+          divisions={ambientContext.divisions}
+          divisionId={ambientContext.divisionId}
           showProductionNavigation={showProductionNavigation}
           showPurchasingNavigation={showPurchasingNavigation}
+          showPipelineNavigation={productTier !== "production" || hasActiveNonProductionProjects}
         />
         <MobileActionProvider>
           <SidebarInset className="h-svh max-h-svh min-w-0 min-h-0 overflow-hidden">

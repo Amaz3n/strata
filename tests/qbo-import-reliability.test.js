@@ -212,14 +212,20 @@ test("vendor credits never enter outstanding payables or payment balances", () =
   })
 })
 
-test("vendor-credit payables are blocked from outbound bill sync at both guard layers", () => {
+test("vendor-credit payables use the provider-neutral outbound credit path", () => {
   const syncSource = require("node:fs").readFileSync(
     require("node:path").join(__dirname, "../lib/integrations/accounting/qbo/adapter.ts"),
     "utf8",
   )
+  const orchestrationSource = require("node:fs").readFileSync(
+    require("node:path").join(__dirname, "../lib/services/accounting-sync.ts"),
+    "utf8",
+  )
 
-  assert.match(syncSource, /isSyncPushBlocked\(supabase, orgId, "vendor_credit", billId\)/)
-  assert.match(syncSource, /metadata[\s\S]*source === "vendor_credit"/)
+  assert.match(syncSource, /syncEntityType = isVendorCredit \? "vendor_credit" : "bill"/)
+  assert.match(syncSource, /client\.createVendorCredit/)
+  assert.match(syncSource, /client\.updateVendorCredit/)
+  assert.match(orchestrationSource, /provider\.pushVendorCredit/)
 })
 
 test("QBO purchase credits import as inbound-only expense credits with negative actuals", () => {
@@ -254,7 +260,7 @@ test("outbound vendor bills preserve job costing without creating billable custo
   assert.match(vendorBillSync, /CustomerRef:/)
   assert.match(vendorBillSync, /isCostDrivenBillingModel/)
   assert.match(vendorBillSync, /metadata\.billable_to_customer === true/)
-  assert.match(vendorBillSync, /BillableStatus: billableToCustomer \? "Billable" : "NotBillable"/)
+  assert.match(vendorBillSync, /BillableStatus: !isVendorCredit && billableToCustomer \? "Billable" : "NotBillable"/)
 })
 
 test("QBO-imported payables can split by line project while whole-payable reassign stays guarded", () => {

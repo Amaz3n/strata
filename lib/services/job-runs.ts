@@ -14,9 +14,9 @@ export interface CronJobDefinition {
 }
 
 export const CRON_JOBS: CronJobDefinition[] = [
-  { name: "qbo-process-outbox", path: "/api/qbo/process-outbox", schedule: "*/10 * * * *", scheduleLabel: "Every 10 min", expectedIntervalMinutes: 10 },
-  { name: "qbo-process-cdc", path: "/api/qbo/process-cdc", schedule: "*/15 * * * *", scheduleLabel: "Every 15 min", expectedIntervalMinutes: 15 },
-  { name: "qbo-process-webhooks", path: "/api/qbo/process-webhooks", schedule: "5-59/15 * * * *", scheduleLabel: "Every 15 min", expectedIntervalMinutes: 15 },
+  { name: "accounting-process-outbox", path: "/api/accounting/process-outbox", schedule: "*/10 * * * *", scheduleLabel: "Every 10 min", expectedIntervalMinutes: 10 },
+  { name: "accounting-process-changes", path: "/api/accounting/process-changes", schedule: "*/15 * * * *", scheduleLabel: "Every 15 min", expectedIntervalMinutes: 15 },
+  { name: "accounting-process-inbound", path: "/api/accounting/process-inbound", schedule: "5-59/15 * * * *", scheduleLabel: "Every 15 min", expectedIntervalMinutes: 15 },
   { name: "process-outbox", path: "/api/jobs/process-outbox", schedule: "0 * * * *", scheduleLabel: "Hourly", expectedIntervalMinutes: 60 },
   { name: "drawings-pipeline", path: "/api/jobs/drawings-pipeline", schedule: "*/5 * * * *", scheduleLabel: "Every 5 min", expectedIntervalMinutes: 5 },
   { name: "specs-pipeline", path: "/api/jobs/specs-pipeline", schedule: "*/5 * * * *", scheduleLabel: "Every 5 min", expectedIntervalMinutes: 5 },

@@ -2,10 +2,17 @@ import type { CostType } from "@/lib/cost-types"
 import {
   diffPlanTakeoffs,
   resolveTakeoffLineAmount,
+  type PlanPricingSource,
   type PlanTakeoffPricingLine,
   type TakeoffDiff,
 } from "@/lib/financials/plan-pricing"
+import {
+  resolvePriceForLinePure,
+  type PriceAgreementCandidate,
+} from "@/lib/financials/price-resolution"
+import type { LotStatus } from "@/lib/land/lot-lifecycle"
 import { recordAudit } from "@/lib/services/audit"
+import { authorize, getDivisionAccessForUser } from "@/lib/services/authorization"
 import { getBudgetTemplate } from "@/lib/services/budget-templates"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
@@ -80,6 +87,8 @@ export type HousePlanDto = {
   active_lot_count: number
   community_count: number
   community_ids: string[]
+  base_price_min_cents: number | null
+  base_price_max_cents: number | null
   created_at: string | null
   updated_at: string | null
   elevations?: HousePlanElevationDto[]
@@ -184,7 +193,7 @@ async function loadPlanAggregates(context: Awaited<ReturnType<typeof requireOrgC
     context.supabase.from("house_plan_elevations").select("id, house_plan_id, code, name, swing_applicable, heated_sqft_delta, is_active, cover_file_id, sort_order").eq("org_id", context.orgId).in("house_plan_id", planIds).order("sort_order"),
     context.supabase.from("house_plan_versions").select(versionSelect).eq("org_id", context.orgId).in("house_plan_id", planIds).order("version_number", { ascending: false }),
     context.supabase.from("lots").select("house_plan_id, house_plan_version_id, status").eq("org_id", context.orgId).in("house_plan_id", planIds),
-    context.supabase.from("community_plan_availability").select("house_plan_id, community_id").eq("org_id", context.orgId).in("house_plan_id", planIds).eq("is_available", true),
+    context.supabase.from("community_plan_availability").select("house_plan_id, community_id, base_price_cents").eq("org_id", context.orgId).in("house_plan_id", planIds).eq("is_available", true),
   ])
   for (const result of [elevationsResult, versionsResult, lotsResult, availabilityResult]) {
     if (result.error) throw new Error(`Failed to load plan aggregates: ${result.error.message}`)
@@ -201,7 +210,9 @@ function mapPlan(row: PlanRow, aggregates: Awaited<ReturnType<typeof loadPlanAgg
   const elevations = aggregates.elevations.filter((item) => item.house_plan_id === row.id)
   const versions = aggregates.versions.filter((item) => item.house_plan_id === row.id)
   const activeLots = aggregates.lots.filter((item) => item.house_plan_id === row.id && !["closed","cancelled"].includes(item.status))
-  const communities = new Set(aggregates.availability.filter((item) => item.house_plan_id === row.id).map((item) => item.community_id))
+  const availabilityRows = aggregates.availability.filter((item) => item.house_plan_id === row.id)
+  const communities = new Set(availabilityRows.map((item) => item.community_id))
+  const prices = availabilityRows.map((item) => Number(item.base_price_cents)).filter((value) => value > 0)
   return {
     ...row,
     heated_sqft: row.heated_sqft == null ? null : Number(row.heated_sqft),
@@ -215,6 +226,8 @@ function mapPlan(row: PlanRow, aggregates: Awaited<ReturnType<typeof loadPlanAgg
     active_lot_count: activeLots.length,
     community_count: communities.size,
     community_ids: Array.from(communities),
+    base_price_min_cents: prices.length > 0 ? Math.min(...prices) : null,
+    base_price_max_cents: prices.length > 0 ? Math.max(...prices) : null,
   }
 }
 
@@ -224,9 +237,29 @@ export async function listHousePlans(
 ): Promise<HousePlanDto[]> {
   const context = await requireOrgContext(orgId)
   await requirePermission("plan.read", context)
+  const divisionAccess = await getDivisionAccessForUser({
+    orgId: context.orgId,
+    userId: context.userId,
+  })
+  if (
+    filters.divisionId &&
+    divisionAccess.assignedOnly &&
+    !divisionAccess.divisionIds.includes(filters.divisionId)
+  ) {
+    return []
+  }
+  const scopedDivisionIds = filters.divisionId
+    ? [filters.divisionId]
+    : divisionAccess.assignedOnly
+      ? divisionAccess.divisionIds
+      : null
   let query = context.supabase.from("house_plans").select(planSelect).eq("org_id", context.orgId).order("code").limit(100)
   if (filters.status) query = query.eq("status", filters.status)
-  if (filters.divisionId) query = query.eq("division_id", filters.divisionId)
+  if (scopedDivisionIds) {
+    query = scopedDivisionIds.length > 0
+      ? query.or(`division_id.is.null,division_id.in.(${scopedDivisionIds.join(",")})`)
+      : query.is("division_id", null)
+  }
   if (filters.communityId) {
     const { data, error } = await context.supabase.from("community_plan_availability").select("house_plan_id").eq("org_id", context.orgId).eq("community_id", filters.communityId).eq("is_available", true)
     if (error) throw new Error(`Failed to filter community plans: ${error.message}`)
@@ -285,6 +318,17 @@ export async function getHousePlan(id: string, orgId?: string): Promise<HousePla
   await requirePermission("plan.read", context)
   const { data, error } = await context.supabase.from("house_plans").select(planSelect).eq("org_id", context.orgId).eq("id", id).maybeSingle()
   if (error || !data) throw new Error("House plan not found")
+  const divisionAccess = await getDivisionAccessForUser({
+    orgId: context.orgId,
+    userId: context.userId,
+  })
+  if (
+    divisionAccess.assignedOnly &&
+    data.division_id &&
+    !divisionAccess.divisionIds.includes(data.division_id)
+  ) {
+    throw new Error("House plan not found")
+  }
   const aggregates = await loadPlanAggregates(context, [id])
   const plan = mapPlan(data as PlanRow, aggregates)
   const versions = await loadVersionDetails(context, aggregates.versions)
@@ -583,6 +627,225 @@ export async function listCommunityAvailability(filters: { communityId?: string;
   const { data, error } = await query
   if (error) throw new Error(`Failed to list community plan availability: ${error.message}`)
   return (data ?? []).map((row) => ({ ...row, base_price_cents: Number(row.base_price_cents) }))
+}
+
+export type PlanLotUsageDto = {
+  id: string
+  lot_number: string
+  block: string | null
+  address: string | null
+  status: LotStatus
+  swing: string | null
+  community_id: string
+  community_name: string
+  elevation_id: string | null
+  version_id: string | null
+  project_id: string | null
+  project_name: string | null
+}
+
+export async function listPlanLots(planId: string, orgId?: string): Promise<PlanLotUsageDto[]> {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("plan.read", context)
+  const { data, error } = await context.supabase
+    .from("lots")
+    .select("id, lot_number, block, address, status, swing, community_id, house_plan_version_id, house_plan_elevation_id, project_id, community:communities(name), project:projects(name)")
+    .eq("org_id", context.orgId)
+    .eq("house_plan_id", planId)
+    .order("lot_number")
+    .limit(500)
+  if (error) throw new Error(`Failed to list plan lots: ${error.message}`)
+  return (data ?? []).map((row) => {
+    const community = one(row.community as { name: string } | Array<{ name: string }> | null)
+    const project = one(row.project as { name: string } | Array<{ name: string }> | null)
+    return {
+      id: row.id,
+      lot_number: row.lot_number,
+      block: row.block,
+      address: row.address,
+      status: row.status,
+      swing: row.swing,
+      community_id: row.community_id,
+      community_name: community?.name ?? "Unknown community",
+      elevation_id: row.house_plan_elevation_id,
+      version_id: row.house_plan_version_id,
+      project_id: row.project_id,
+      project_name: project?.name ?? null,
+    }
+  })
+}
+
+export type ResolvedTakeoffLinePricing = {
+  line_id: string
+  resolved_unit_cost_cents: number
+  amount_cents: number
+  source: PlanPricingSource
+  vendor_name: string | null
+}
+
+export type PlanVersionPricingDto = {
+  version_id: string
+  lines: ResolvedTakeoffLinePricing[]
+  resolved_total_cents: number
+  unpriced_line_count: number
+  agreement_line_count: number
+}
+
+export type PlanCommunityCostDto = {
+  version_id: string
+  community_id: string
+  elevation_id: string | null
+  cost_cents: number
+}
+
+export type PlanPricingDto = {
+  available: boolean
+  as_of: string
+  versions: PlanVersionPricingDto[]
+  community_costs: PlanCommunityCostDto[]
+}
+
+type AgreementRow = PriceAgreementCandidate & { company: { name: string } | Array<{ name: string }> | null }
+
+function resolveLine(
+  line: TakeoffLineDto,
+  candidates: AgreementRow[],
+  defaults: Map<string, number | null>,
+  scope: { housePlanId: string; versionId: string; communityId: string | null; divisionId: string | null },
+  asOf: string,
+): ResolvedTakeoffLinePricing {
+  const result = resolvePriceForLinePure(
+    {
+      costCodeId: line.cost_code_id,
+      costType: line.cost_type,
+      uom: line.uom,
+      quantity: line.quantity,
+      housePlanId: scope.housePlanId,
+      housePlanVersionId: scope.versionId,
+      communityId: scope.communityId,
+      divisionId: scope.divisionId,
+      asOfDate: asOf,
+    },
+    candidates,
+  )
+  if (result.resolved) {
+    const agreement = candidates.find((candidate) => candidate.id === result.resolved.agreementId)
+    const vendorName = agreement ? one(agreement.company)?.name ?? null : null
+    if (result.resolved.pricingKind === "lump_sum") {
+      return {
+        line_id: line.id,
+        resolved_unit_cost_cents: result.resolved.lumpSumCents ?? 0,
+        amount_cents: result.resolved.lumpSumCents ?? 0,
+        source: "price_agreement",
+        vendor_name: vendorName,
+      }
+    }
+    const unit = result.resolved.unitCostCents ?? 0
+    return {
+      line_id: line.id,
+      resolved_unit_cost_cents: unit,
+      amount_cents: resolveTakeoffLineAmount(line.quantity, unit),
+      source: "price_agreement",
+      vendor_name: vendorName,
+    }
+  }
+  if (line.unit_cost_cents != null) {
+    return {
+      line_id: line.id,
+      resolved_unit_cost_cents: line.unit_cost_cents,
+      amount_cents: resolveTakeoffLineAmount(line.quantity, line.unit_cost_cents),
+      source: "takeoff_manual",
+      vendor_name: null,
+    }
+  }
+  const fallback = defaults.get(line.cost_code_id)
+  if (fallback != null) {
+    return {
+      line_id: line.id,
+      resolved_unit_cost_cents: fallback,
+      amount_cents: resolveTakeoffLineAmount(line.quantity, fallback),
+      source: "cost_code_default",
+      vendor_name: null,
+    }
+  }
+  return { line_id: line.id, resolved_unit_cost_cents: 0, amount_cents: 0, source: "unpriced", vendor_name: null }
+}
+
+export async function getPlanPricing(planId: string, orgId?: string): Promise<PlanPricingDto> {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("plan.read", context)
+  const asOf = new Date().toISOString().slice(0, 10)
+  const decision = await authorize({ permission: "price_book.read", userId: context.userId, orgId: context.orgId, supabase: context.supabase })
+  const plan = await getHousePlan(planId, context.orgId)
+  const versions = (plan.versions ?? []).filter((version) => version.status !== "superseded")
+  const costCodeIds = Array.from(new Set(versions.flatMap((version) => (version.takeoff_lines ?? []).map((line) => line.cost_code_id))))
+  if (costCodeIds.length === 0) return { available: decision.allowed, as_of: asOf, versions: [], community_costs: [] }
+  const [agreementsResult, defaultsResult, availabilityResult] = await Promise.all([
+    decision.allowed
+      ? context.supabase.from("vendor_price_agreements").select("*, company:companies(name)").eq("org_id", context.orgId).eq("status", "active").in("cost_code_id", costCodeIds)
+      : Promise.resolve({ data: [], error: null }),
+    context.supabase.from("cost_codes").select("id, default_unit_cost_cents").eq("org_id", context.orgId).in("id", costCodeIds),
+    context.supabase.from("community_plan_availability").select("community_id, community:communities(division_id)").eq("org_id", context.orgId).eq("house_plan_id", planId).eq("is_available", true),
+  ])
+  for (const result of [agreementsResult, defaultsResult, availabilityResult]) {
+    if (result.error) throw new Error(`Failed to load plan pricing inputs: ${result.error.message}`)
+  }
+  const candidates = (agreementsResult.data ?? []) as AgreementRow[]
+  const defaults = new Map<string, number | null>(
+    (defaultsResult.data ?? []).map((row) => [row.id, row.default_unit_cost_cents == null ? null : Number(row.default_unit_cost_cents)]),
+  )
+  const communityDivisions = new Map<string, string | null>()
+  for (const row of availabilityResult.data ?? []) {
+    const community = one(row.community as { division_id: string | null } | Array<{ division_id: string | null }> | null)
+    communityDivisions.set(row.community_id, community?.division_id ?? null)
+  }
+  const versionPricing = versions.map((version) => {
+    const lines = (version.takeoff_lines ?? []).map((line) =>
+      resolveLine(line, candidates, defaults, { housePlanId: planId, versionId: version.id, communityId: null, divisionId: null }, asOf),
+    )
+    return {
+      version_id: version.id,
+      lines,
+      resolved_total_cents: lines.reduce((sum, line) => sum + line.amount_cents, 0),
+      unpriced_line_count: lines.filter((line) => line.source === "unpriced").length,
+      agreement_line_count: lines.filter((line) => line.source === "price_agreement").length,
+    }
+  })
+  const communityCosts: PlanCommunityCostDto[] = []
+  for (const version of versions) {
+    const takeoffLines = version.takeoff_lines ?? []
+    if (takeoffLines.length === 0) continue
+    for (const [communityId, divisionId] of communityDivisions) {
+      const scope = { housePlanId: planId, versionId: version.id, communityId, divisionId }
+      const resolvedByLine = new Map(
+        takeoffLines.map((line) => [line.id, resolveLine(line, candidates, defaults, scope, asOf).amount_cents]),
+      )
+      const baseCost = takeoffLines.filter((line) => line.elevation_id === null).reduce((sum, line) => sum + (resolvedByLine.get(line.id) ?? 0), 0)
+      communityCosts.push({ version_id: version.id, community_id: communityId, elevation_id: null, cost_cents: baseCost })
+      for (const elevation of plan.elevations ?? []) {
+        const deltaCost = takeoffLines.filter((line) => line.elevation_id === elevation.id).reduce((sum, line) => sum + (resolvedByLine.get(line.id) ?? 0), 0)
+        communityCosts.push({ version_id: version.id, community_id: communityId, elevation_id: elevation.id, cost_cents: baseCost + deltaCost })
+      }
+    }
+  }
+  return { available: decision.allowed, as_of: asOf, versions: versionPricing, community_costs: communityCosts }
+}
+
+export type SelectionTemplateCategoryDto = { id: string; name: string }
+
+export async function listSelectionTemplateCategories(orgId?: string): Promise<SelectionTemplateCategoryDto[]> {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("plan.read", context)
+  const { data, error } = await context.supabase
+    .from("selection_categories")
+    .select("id, name")
+    .eq("org_id", context.orgId)
+    .eq("is_template", true)
+    .eq("is_archived", false)
+    .order("sort_order")
+    .limit(500)
+  if (error) throw new Error(`Failed to list selection template categories: ${error.message}`)
+  return data ?? []
 }
 
 export async function getPlanVersionDrift(planId: string, orgId?: string): Promise<PlanVersionDriftDto[]> {

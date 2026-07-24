@@ -7,6 +7,7 @@ import { Building2, Plus, Search } from "@/components/icons"
 import { toast } from "sonner"
 
 import { createCommunityAction } from "@/app/(app)/communities/actions"
+import { setDivisionContextAction } from "@/app/(app)/desk-context-actions"
 import { CommunityStatusBadge } from "@/components/communities/community-status-badge"
 import { LotMixBar } from "@/components/communities/lot-mix-bar"
 import { Button } from "@/components/ui/button"
@@ -80,6 +81,18 @@ export function CommunityList({
     if (nextStatus && nextStatus !== "all") params.set("status", nextStatus)
     const nextDivision = key === "division" ? value : divisionId
     if (nextDivision && nextDivision !== "all") params.set("division", nextDivision)
+    if (key === "division") {
+      startTransition(async () => {
+        try {
+          unwrapAction(await setDivisionContextAction(value === "all" ? null : value))
+          router.push(params.size ? `/communities?${params}` : "/communities")
+          router.refresh()
+        } catch (error) {
+          toast.error("Unable to change division", { description: (error as Error).message })
+        }
+      })
+      return
+    }
     router.push(params.size ? `/communities?${params}` : "/communities")
   }
 

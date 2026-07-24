@@ -2,6 +2,8 @@ import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
+import { getDivisionScopedProjectIds } from "@/lib/services/authorization"
+import { intersectProjectReadScopes } from "@/lib/services/authorization-policy"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { allocatePackageTotal, chooseResolvedPrice } from "@/lib/selections/catalog-math"
 
@@ -643,20 +645,28 @@ export async function upsertAppointment(raw: AppointmentInput): Promise<Appointm
   return { ...data, status: data.status as AppointmentDto["status"] }
 }
 
-export async function getCoordinatorDesk(opts: { communityId?: string } = {}) {
+export async function getCoordinatorDesk(opts: { communityId?: string; divisionId?: string } = {}) {
   const context = await requireOrgContext()
   await requirePermission("design_studio.manage", context)
   const today = new Date().toISOString().slice(0, 10)
   const riskDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const authorizedProjectIds = await getDivisionScopedProjectIds(context)
+  const { data: divisionProjects, error: divisionError } = opts.divisionId
+    ? await context.supabase.from("projects").select("id").eq("org_id", context.orgId).eq("division_id", opts.divisionId).limit(1000)
+    : { data: null, error: null }
+  if (divisionError) throw new Error(`Failed to scope the coordinator desk: ${divisionError.message}`)
+  const divisionProjectIds = divisionProjects ? divisionProjects.map((project) => project.id as string) : null
+  const baseProjectIds = intersectProjectReadScopes(authorizedProjectIds, divisionProjectIds)
   const { data: scopedLots, error: scopedLotsError } = opts.communityId
     ? await context.supabase.from("lots").select("project_id").eq("org_id", context.orgId).eq("community_id", opts.communityId).not("project_id", "is", null).limit(1000)
     : { data: null, error: null }
   if (scopedLotsError) throw new Error(`Failed to scope the coordinator desk: ${scopedLotsError.message}`)
-  const scopedProjectIds = opts.communityId
+  const communityProjectIds = opts.communityId
     ? Array.from(new Set((scopedLots ?? []).map((lot) => lot.project_id).filter((value): value is string => Boolean(value))))
     : null
+  const scopedProjectIds = intersectProjectReadScopes(baseProjectIds, communityProjectIds)
   if (scopedProjectIds && scopedProjectIds.length === 0) {
-    return { upcomingAppointments: await listAppointments({ communityId: opts.communityId, from: new Date().toISOString(), limit: 50 }), overdueSelections: [], cutoffRisk: [] }
+    return { upcomingAppointments: [], overdueSelections: [], cutoffRisk: [] }
   }
   let overdueQuery = context.supabase
     .from("project_selection_groups")
@@ -684,12 +694,15 @@ export async function getCoordinatorDesk(opts: { communityId?: string } = {}) {
     riskQuery = riskQuery.in("project_id", scopedProjectIds)
     unresolvedQuery = unresolvedQuery.in("project_id", scopedProjectIds)
   }
-  const [appointments, overdueResult, riskResult, unresolvedResult] = await Promise.all([
+  const [appointmentRows, overdueResult, riskResult, unresolvedResult] = await Promise.all([
     listAppointments({ communityId: opts.communityId, from: new Date().toISOString(), limit: 50 }),
     overdueQuery,
     riskQuery,
     unresolvedQuery,
   ])
+  const appointments = scopedProjectIds
+    ? appointmentRows.filter((appointment) => scopedProjectIds.includes(appointment.project_id))
+    : appointmentRows
   if (overdueResult.error) throw new Error(`Failed to load overdue selections: ${overdueResult.error.message}`)
   if (riskResult.error) throw new Error(`Failed to load cutoff risk: ${riskResult.error.message}`)
   if (unresolvedResult.error) throw new Error(`Failed to load unresolved cutoffs: ${unresolvedResult.error.message}`)

@@ -18,6 +18,7 @@ import {
   upsertProjectFinancialSettingsFromProjectInput,
 } from "@/lib/services/project-financial-setup"
 import { getDefaultProjectPropertyType, getProjectPosture } from "@/lib/product-tier"
+import { getDivisionScopedProjectIds } from "@/lib/services/authorization"
 
 function contractTypeForBillingModel(model?: ProjectBillingModel | null): "fixed" | "cost_plus" | "time_materials" {
   if (model === "time_and_materials") return "time_materials"
@@ -259,6 +260,8 @@ async function saveProjectAccountingDimensions(params: {
 
 export async function listProjects(orgId?: string, context?: OrgServiceContext): Promise<Project[]> {
   const { supabase, orgId: resolvedOrgId, userId } = context || await requireOrgContext(orgId)
+  const divisionProjectIds = await getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase })
+  if (divisionProjectIds?.length === 0) return []
 
   // Members scoped to "assigned" only see projects they explicitly belong to,
   // regardless of an org-level project.read/manage grant.
@@ -276,7 +279,7 @@ export async function listProjects(orgId?: string, context?: OrgServiceContext):
       (await hasPermission("project.manage", { supabase, orgId: resolvedOrgId, userId })))
 
   if (canSeeAllProjects) {
-    return listProjectsWithClient(supabase, resolvedOrgId)
+    return listProjectsWithClient(supabase, resolvedOrgId, divisionProjectIds)
   }
 
   const { data, error } = await supabase
@@ -294,16 +297,18 @@ export async function listProjects(orgId?: string, context?: OrgServiceContext):
 
   const rows = (data ?? [])
     .map((row: any) => (Array.isArray(row.project) ? row.project[0] : row.project))
-    .filter(Boolean)
+    .filter((row) => Boolean(row) && (!divisionProjectIds || divisionProjectIds.includes(row.id)))
   return mapProjectsWithAccounting(supabase, resolvedOrgId, rows)
 }
 
-export async function listProjectsWithClient(supabase: SupabaseClient, orgId: string): Promise<Project[]> {
-  const { data, error } = await supabase
+export async function listProjectsWithClient(supabase: SupabaseClient, orgId: string, projectIds: string[] | null = null): Promise<Project[]> {
+  let query = supabase
     .from("projects")
     .select(PROJECT_SELECT)
     .eq("org_id", orgId)
     .order("created_at", { ascending: false })
+  if (projectIds) query = query.in("id", projectIds)
+  const { data, error } = await query
 
   if (error) {
     throw new Error(`Failed to list projects: ${error.message}`)

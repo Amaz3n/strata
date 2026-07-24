@@ -1,6 +1,6 @@
 import { listCommunities } from "@/lib/services/communities"
 import { requireOrgContext } from "@/lib/services/context"
-import { listDivisions } from "@/lib/services/divisions"
+import { getAmbientDeskContext } from "@/lib/services/desk-context"
 import {
   getCommunityProjectIds,
   getDivisionProjectIds,
@@ -33,26 +33,39 @@ export async function orgHasProductionProjects(orgId?: string): Promise<boolean>
   return (data ?? []).length > 0
 }
 
+export async function orgHasActiveNonProductionProjects(orgId?: string): Promise<boolean> {
+  const context = await requireOrgContext(orgId)
+  const { data, error } = await context.supabase
+    .from("projects")
+    .select("id")
+    .eq("org_id", context.orgId)
+    .eq("status", "active")
+    .or("property_type.is.null,property_type.neq.production")
+    .limit(1)
+  if (error) throw new Error(`Failed to inspect mixed-posture projects: ${error.message}`)
+  return (data ?? []).length > 0
+}
+
 export async function resolveProductionDeskScope(input: {
   communityId?: string
   divisionId?: string
 }): Promise<ProductionDeskScope> {
   const context = await requireOrgContext()
-  const [communityRows, divisionRows] = await Promise.all([
-    listCommunities({}, context.orgId),
-    listDivisions(context.orgId),
-  ])
+  const ambient = await getAmbientDeskContext()
+  const requestedCommunityId = input.communityId ?? ambient.communityId
+  const requestedDivisionId = input.divisionId ?? ambient.divisionId
+  const communityRows = await listCommunities({}, context.orgId)
   const communities = communityRows.map(({ id, name }) => ({ id, name }))
-  const divisions = divisionRows.filter((division) => !division.archived).map(({ id, name }) => ({ id, name }))
-  const communityId = communities.some((option) => option.id === input.communityId)
-    ? input.communityId
+  const divisions = ambient.divisions.map(({ id, name }) => ({ id, name }))
+  const communityId = communities.some((option) => option.id === requestedCommunityId)
+    ? requestedCommunityId
     : undefined
-  const divisionId = divisions.some((option) => option.id === input.divisionId)
-    ? input.divisionId
+  const divisionId = divisions.some((option) => option.id === requestedDivisionId)
+    ? requestedDivisionId
     : undefined
 
   if (!communityId && !divisionId) {
-    const invalidRequestedScope = Boolean(input.communityId || input.divisionId)
+    const invalidRequestedScope = Boolean(requestedCommunityId || requestedDivisionId)
     return { communities, divisions, communityId, divisionId, projectIds: invalidRequestedScope ? [] : null }
   }
 

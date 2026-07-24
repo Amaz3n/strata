@@ -40,6 +40,7 @@ import {
   type ReceiptExtractionResult,
 } from "@/app/(app)/projects/[id]/expenses/actions"
 import { getFileAction, getFileDownloadUrlAction } from "@/app/(app)/documents/actions"
+import { AccountingSyncBadge } from "@/components/accounting/accounting-sync-badge"
 import { ExpenseForm } from "@/components/expenses/expense-form"
 import { CodingCombobox } from "@/components/financials/workspace/coding-combobox"
 import { useWorkspaceParam } from "@/components/financials/workspace/use-workspace-param"
@@ -67,6 +68,7 @@ import { unwrapAction } from "@/lib/action-result"
 interface ExpensesClientProps {
   projectId: string
   initialPage: ExpensePage
+  allowCreate?: boolean
 }
 
 type ExpenseAccountingContext = Awaited<ReturnType<typeof getExpenseAccountingContextAction>>
@@ -79,22 +81,6 @@ type ExpensePage = {
   pageSize: number
   total: number
   pageCount: number
-}
-
-const qboStatusStyles: Record<string, string> = {
-  pending: "border-warning/30 bg-warning/10 text-warning",
-  synced: "border-success/30 bg-success/10 text-success",
-  error: "border-destructive/30 bg-destructive/10 text-destructive",
-  needs_review: "border-warning/30 bg-warning/10 text-warning",
-  skipped: "border-muted bg-muted text-muted-foreground",
-}
-
-const qboStatusLabels: Record<string, string> = {
-  pending: "Pending Sync",
-  synced: "Synced to QuickBooks",
-  error: "Sync Error",
-  needs_review: "Requires Review",
-  skipped: "Sync Disabled",
 }
 
 function initialsFor(value: string) {
@@ -255,20 +241,6 @@ function CostCodeCombobox({
   )
 }
 
-function ExpenseQBOStatus({ expense, compact = false }: { expense: ProjectExpense; compact?: boolean }) {
-  if (!expense.qbo_sync_status) return null
-  const label = qboStatusLabels[expense.qbo_sync_status] ?? expense.qbo_sync_status
-  return (
-    <Badge
-      variant="outline"
-      title={expense.qbo_sync_error ?? expense.qbo_expense_account_name ?? undefined}
-      className={`mt-1 w-fit border text-[10px] font-normal ${compact ? "ml-1 mt-0 px-1.5 py-0" : "px-1.5 py-0"} ${qboStatusStyles[expense.qbo_sync_status] ?? ""}`}
-    >
-      {label}
-    </Badge>
-  )
-}
-
 function ExpenseStatusIcon({ status }: { status: string }) {
   const label = statusLabels[status] ?? status
   if (status === "approved" || status === "invoiced") {
@@ -316,7 +288,7 @@ interface DuplicatePrompt {
   message: string
 }
 
-export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) {
+export function ExpensesClient({ projectId, initialPage, allowCreate = true }: ExpensesClientProps) {
   const isMobile = useIsMobile()
   const [items, setItems] = useState<ProjectExpense[]>(initialPage.items)
   const [pagination, setPagination] = useState({
@@ -957,10 +929,14 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
               <RefreshCcw className="mr-2 h-4 w-4" />
               QuickBooks
             </Button>
-            <Button onClick={openBlankExpense} className="w-full sm:w-auto">
-              <Plus className="mr-2 h-4 w-4" />
-              New expense
-            </Button>
+            {allowCreate ? (
+              <Button onClick={openBlankExpense} className="w-full sm:w-auto">
+                <Plus className="mr-2 h-4 w-4" />
+                New expense
+              </Button>
+            ) : (
+              <Button asChild className="w-full sm:w-auto"><Link href={`/purchasing?tab=vpos&project=${projectId}`}>Open VPO desk</Link></Button>
+            )}
           </div>
         </div>
 
@@ -1021,7 +997,9 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
                           onSelect={(accountId) => void saveExpenseAccount(expense, accountId)}
                         />
                       </div>
-                      <ExpenseQBOStatus expense={expense} />
+                      <div className="mt-1">
+                        <AccountingSyncBadge status={expense.qbo_sync_status} error={expense.qbo_sync_error} />
+                      </div>
                     </div>
                     <div onClick={(event) => event.stopPropagation()}>{rowActions(expense)}</div>
                   </div>
@@ -1037,10 +1015,7 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
                       <p className="font-medium">No expenses yet</p>
                       <p className="text-sm">Snap a receipt to log a job-site purchase.</p>
                     </div>
-                    <Button onClick={openBlankExpense}>
-                      <Plus className="mr-2 h-4 w-4" />
-                      New expense
-                    </Button>
+                    {allowCreate ? <Button onClick={openBlankExpense}><Plus className="mr-2 h-4 w-4" />New expense</Button> : <Button asChild><Link href={`/purchasing?tab=vpos&project=${projectId}`}>Open VPO desk</Link></Button>}
                   </div>
                 </div>
               )}
@@ -1182,10 +1157,7 @@ export function ExpensesClient({ projectId, initialPage }: ExpensesClientProps) 
                           <p className="text-sm text-muted-foreground mt-0.5">Snap a receipt to log a job-site purchase.</p>
                         </div>
                         <div className="mt-2">
-                          <Button variant="default" size="sm" onClick={openBlankExpense}>
-                            <Plus className="mr-2 h-4 w-4" />
-                            New expense
-                          </Button>
+                          {allowCreate ? <Button variant="default" size="sm" onClick={openBlankExpense}><Plus className="mr-2 h-4 w-4" />New expense</Button> : <Button asChild variant="default" size="sm"><Link href={`/purchasing?tab=vpos&project=${projectId}`}>Open VPO desk</Link></Button>}
                         </div>
                       </div>
                     </TableCell>

@@ -106,3 +106,17 @@ export function wouldStrandOrgWithoutAdmin(input: LastAdminGuardInput): boolean 
   const otherAdmins = [...admins].filter((id) => id !== input.membershipId)
   return otherAdmins.length === 0
 }
+
+/**
+ * Intersect membership-authorized projects with an optional desk lens.
+ * `null` means unrestricted; an empty array deliberately denies every row.
+ */
+export function intersectProjectReadScopes(
+  membershipScope: string[] | null,
+  deskScope: string[] | null,
+): string[] | null {
+  if (membershipScope === null) return deskScope
+  if (deskScope === null) return membershipScope
+  const visible = new Set(deskScope)
+  return membershipScope.filter((projectId) => visible.has(projectId))
+}

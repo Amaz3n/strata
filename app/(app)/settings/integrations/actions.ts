@@ -2,8 +2,9 @@
 
 import { cookies } from "next/headers"
 
-import { createQBOOAuthState, getQBOAuthUrl } from "@/lib/integrations/accounting/qbo/auth"
-import { disconnectAccountingConnection, disconnectQBO, getQBOConnection, getQBODiagnostics, getQBOEnvironmentInfo, listAccountingConnections, refreshAccountingConnectionToken, refreshQBOTokenNow, updateAccountingConnectionLabel, updateQBOSettings } from "@/lib/services/accounting-connections"
+import { getProvider, isAccountingProviderKey } from "@/lib/integrations/accounting/registry"
+import type { AccountingAccountKind, AccountingDimensionKind } from "@/lib/integrations/accounting/provider"
+import { disconnectAccountingConnection, listAccountingConnections, requireAccountingConnectionForOrg, updateAccountingConnectionLabel, updateAccountingConnectionSettings } from "@/lib/services/accounting-connections"
 import {
   createStripeConnectedAccountDashboardLoginLink,
   createStripeConnectedAccountOnboardingLink,
@@ -12,9 +13,8 @@ import {
 } from "@/lib/services/stripe-connected-accounts"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
-import { retryFailedQBOSyncJobs } from "@/lib/services/accounting-sync"
-import { QBOClient } from "@/lib/integrations/accounting/qbo/client"
-import { accountingConnectionLabelSchema, accountingEntityMapSchema } from "@/lib/validation/accounting"
+import { retryFailedAccountingSyncJobs } from "@/lib/services/accounting-sync"
+import { accountingConnectionLabelSchema, accountingConnectionSettingsSchema, accountingEntityMapSchema } from "@/lib/validation/accounting"
 import { upsertAccountingEntityMap } from "@/lib/services/accounting-target"
 import { createAccountingExport, type AccountingExportKind } from "@/lib/services/accounting-export"
 
@@ -33,7 +33,9 @@ export async function connectQBOAction() {
       const { supabase, orgId, userId } = await requireOrgContext()
       await requirePermission("org.admin", { supabase, orgId, userId })
 
-      const state = createQBOOAuthState(orgId)
+      const provider = getProvider("qbo")
+      if (!provider.getConnectUrl) throw new Error("This accounting provider does not support interactive connection")
+      const { url, state } = await provider.getConnectUrl({ orgId })
       const cookieStore = await cookies()
       const secure = typeof process.env.VERCEL !== "undefined" || process.env.NODE_ENV === "production"
       if (typeof cookieStore.set === "function") {
@@ -48,42 +50,23 @@ export async function connectQBOAction() {
         })
       }
 
-      return { authUrl: getQBOAuthUrl(state), state }
+      return { authUrl: url, state }
   })
-}
-
-export async function disconnectQBOAction() {
-  return run(async () => {
-      const { supabase, orgId, userId } = await requireOrgContext()
-      await requirePermission("org.admin", { supabase, orgId, userId })
-      await disconnectQBO(orgId)
-      return { success: true }
-  })
-}
-
-export async function updateQBOSettingsAction(settings: Record<string, any>) {
-  return run(async () => {
-      const { supabase, orgId, userId } = await requireOrgContext()
-      await requirePermission("org.admin", { supabase, orgId, userId })
-      await updateQBOSettings(settings, orgId)
-      return { success: true }
-  })
-}
-
-export async function getQBOConnectionAction() {
-      return getQBOConnection()
 }
 
 export async function listAccountingConnectionsAction() {
   const { supabase, orgId, userId } = await requireOrgContext()
   await requirePermission("org.admin", { supabase, orgId, userId })
-  return listAccountingConnections(orgId)
+  const rows = await listAccountingConnections(orgId)
+  return rows.map((row) => ({ ...row, capabilities: getProvider(row.provider).capabilities }))
 }
 
 export async function disconnectAccountingConnectionAction(connectionId: string) {
   return run(async () => {
     const { supabase, orgId, userId } = await requireOrgContext()
     await requirePermission("org.admin", { supabase, orgId, userId })
+    const connection = await requireAccountingConnectionForOrg(connectionId, orgId)
+    await getProvider(connection.provider).disconnect({ orgId, connectionId })
     await disconnectAccountingConnection(connectionId, orgId)
     return { disconnected: true }
   })
@@ -102,7 +85,39 @@ export async function refreshAccountingConnectionAction(connectionId: string) {
   return run(async () => {
     const { supabase, orgId, userId } = await requireOrgContext()
     await requirePermission("org.admin", { supabase, orgId, userId })
-    return refreshAccountingConnectionToken(connectionId, orgId)
+    const connection = await requireAccountingConnectionForOrg(connectionId, orgId, { activeOnly: true })
+    const provider = getProvider(connection.provider)
+    const result = provider.refreshConnection
+      ? await provider.refreshConnection(connectionId)
+      : await provider.ensureHealthy(connectionId)
+    if (!result.ok) throw new Error(result.error ?? "Accounting connection refresh failed")
+    return { refreshed: true }
+  })
+}
+
+export async function getAccountingConnectionConfigurationAction(connectionId: string) {
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requirePermission("org.admin", { supabase, orgId, userId })
+  const connection = await requireAccountingConnectionForOrg(connectionId, orgId)
+  const provider = getProvider(connection.provider)
+  const accountKinds: AccountingAccountKind[] = ["income", "expense", "payment", "ap"]
+  const entries = await Promise.all(
+    accountKinds.map(async (kind) => [kind, await provider.listAccounts({ connectionId, kind }).catch(() => [])] as const),
+  )
+  return {
+    settings: connection.settings,
+    capabilities: provider.capabilities,
+    accounts: Object.fromEntries(entries) as Record<AccountingAccountKind, Awaited<ReturnType<typeof provider.listAccounts>>>,
+  }
+}
+
+export async function updateAccountingConnectionSettingsAction(input: unknown) {
+  return run(async () => {
+    const parsed = accountingConnectionSettingsSchema.parse(input)
+    const { supabase, orgId, userId } = await requireOrgContext()
+    await requirePermission("org.admin", { supabase, orgId, userId })
+    await requireAccountingConnectionForOrg(parsed.connectionId, orgId)
+    return updateAccountingConnectionSettings(parsed.connectionId, parsed.settings, orgId)
   })
 }
 
@@ -131,22 +146,27 @@ export async function upsertAccountingEntityMapAction(input: unknown) {
   return run(async () => upsertAccountingEntityMap(accountingEntityMapSchema.parse(input)))
 }
 
-export async function listAccountingDimensionValuesAction(connectionId: string, kind: "class" | "customer") {
+export async function listAccountingDimensionValuesAction(connectionId: string, kind: AccountingDimensionKind) {
   const { supabase, orgId, userId } = await requireOrgContext()
   await requirePermission("accounting.entity_map.manage", { supabase, orgId, userId })
-  const client = await QBOClient.forConnection(connectionId)
-  if (!client) return []
-  return kind === "class"
-    ? (await client.listClasses()).map((row) => ({ id: row.id, name: row.name }))
-    : (await client.listCustomers()).map((row) => ({ id: row.id, name: row.name }))
+  const { data: connection } = await supabase
+    .from("accounting_connections")
+    .select("provider")
+    .eq("org_id", orgId)
+    .eq("id", connectionId)
+    .maybeSingle()
+  if (!connection || !isAccountingProviderKey(connection.provider)) return []
+  try {
+    const provider = getProvider(connection.provider)
+    if (!provider.capabilities.dimensions.includes(kind)) return []
+    return await provider.listDimensionValues({ connectionId, kind })
+  } catch {
+    return []
+  }
 }
 
 export async function createAccountingExportAction(input: { kind: AccountingExportKind; startDate: string; endDate: string; entityMapId?: string | null }) {
   return run(() => createAccountingExport(input))
-}
-
-export async function getQBOEnvironmentAction() {
-      return getQBOEnvironmentInfo()
 }
 
 export async function getStripeConnectedAccountAction() {
@@ -177,55 +197,4 @@ export async function createStripeDashboardLoginLinkAction() {
       const link = await createStripeConnectedAccountDashboardLoginLink(orgId)
       return { url: link.url }
   })
-}
-
-export async function getQBODiagnosticsAction() {
-      const { supabase, orgId, userId } = await requireOrgContext()
-      await requirePermission("org.admin", { supabase, orgId, userId })
-      return getQBODiagnostics(orgId)
-}
-
-export async function refreshQBOTokenAction() {
-  return run(async () => {
-      const { supabase, orgId, userId } = await requireOrgContext()
-      await requirePermission("org.admin", { supabase, orgId, userId })
-      return refreshQBOTokenNow(orgId)
-  })
-}
-
-export async function retryFailedQBOJobsAction() {
-  return run(async () => {
-      const { supabase, orgId, userId } = await requireOrgContext()
-      await requirePermission("org.admin", { supabase, orgId, userId })
-      return retryFailedQBOSyncJobs(orgId)
-  })
-}
-
-export async function getQBOAccountingSetupAction() {
-      const { orgId } = await requireOrgContext()
-      const client = await QBOClient.forOrg(orgId)
-      if (!client) {
-        return {
-          connected: false,
-          incomeAccounts: [],
-          expenseAccounts: [],
-          paymentAccounts: [],
-          apAccounts: [],
-        }
-      }
-
-      const [incomeAccounts, expenseAccounts, paymentAccounts, apAccounts] = await Promise.all([
-        client.listIncomeAccounts(),
-        client.listExpenseAccounts(),
-        client.listPaymentAccounts(),
-        client.listAccountsPayableAccounts(),
-      ])
-
-      return {
-        connected: true,
-        incomeAccounts,
-        expenseAccounts,
-        paymentAccounts,
-        apAccounts,
-      }
 }

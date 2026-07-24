@@ -21,6 +21,7 @@ import { APPROVAL_GATE_REASONS, loadApprovalGateSettings } from "@/lib/financial
 import { isCostDrivenBillingModel } from "@/lib/financials/billing-model"
 import { payableOutstandingCents } from "@/lib/financials/payables-rules"
 import { listMissingSubtierWaiversForBill } from "@/lib/services/lien-waivers"
+import { accountingReference, buildAccountingCoding } from "@/lib/services/accounting-coding"
 
 export type VendorBillStatus = "pending" | "approved" | "partial" | "paid"
 
@@ -103,7 +104,7 @@ export interface VendorBillSummary {
 }
 
 const vendorBillSelect = `
-  id, org_id, project_id, commitment_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
+  id, org_id, project_id, commitment_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, accounting_coding, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
   project:projects(id, name),
   company:companies!vendor_bills_company_id_fkey(id, name, qbo_vendor_id, qbo_vendor_name),
   commitment:commitments(id, title, total_cents, company:companies(id, name, qbo_vendor_id, qbo_vendor_name))
@@ -210,6 +211,9 @@ export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: strin
   const metadata = row?.metadata ?? {}
   const payableType: PayableKind = metadata.source === "vendor_credit" ? "vendor_credit" : "bill"
   const company = row?.company ?? row?.commitment?.company ?? {}
+  const expenseAccount = accountingReference(row?.accounting_coding, "expense_account")
+  const apAccount = accountingReference(row?.accounting_coding, "ap_account")
+  const counterparty = accountingReference(row?.accounting_coding, "counterparty")
   const lines = Array.isArray(billLines) ? billLines : []
   const actualLines = lines.map((line) => ({
     id: line.id ?? undefined,
@@ -311,12 +315,12 @@ export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: strin
     qbo_synced_at: row.qbo_synced_at ?? undefined,
     qbo_sync_status: row.qbo_sync_status ?? undefined,
     qbo_sync_error: row.qbo_sync_error ?? undefined,
-    qbo_expense_account_id: row.qbo_expense_account_id ?? metadata.qbo_expense_account_id ?? lineExpenseAccountId ?? undefined,
-    qbo_expense_account_name: row.qbo_expense_account_name ?? metadata.qbo_expense_account_name ?? lineExpenseAccountName ?? undefined,
-    qbo_ap_account_id: row.qbo_ap_account_id ?? metadata.qbo_ap_account_id ?? lineApAccountId ?? undefined,
-    qbo_ap_account_name: row.qbo_ap_account_name ?? metadata.qbo_ap_account_name ?? lineApAccountName ?? undefined,
-    qbo_vendor_id: company.qbo_vendor_id ?? row.qbo_vendor_id ?? metadata.qbo_vendor_id ?? undefined,
-    qbo_vendor_name: company.qbo_vendor_name ?? row.qbo_vendor_name ?? metadata.qbo_vendor_name ?? undefined,
+    qbo_expense_account_id: expenseAccount?.id ?? row.qbo_expense_account_id ?? metadata.qbo_expense_account_id ?? lineExpenseAccountId ?? undefined,
+    qbo_expense_account_name: expenseAccount?.name ?? row.qbo_expense_account_name ?? metadata.qbo_expense_account_name ?? lineExpenseAccountName ?? undefined,
+    qbo_ap_account_id: apAccount?.id ?? row.qbo_ap_account_id ?? metadata.qbo_ap_account_id ?? lineApAccountId ?? undefined,
+    qbo_ap_account_name: apAccount?.name ?? row.qbo_ap_account_name ?? metadata.qbo_ap_account_name ?? lineApAccountName ?? undefined,
+    qbo_vendor_id: counterparty?.id ?? company.qbo_vendor_id ?? row.qbo_vendor_id ?? metadata.qbo_vendor_id ?? undefined,
+    qbo_vendor_name: counterparty?.name ?? company.qbo_vendor_name ?? row.qbo_vendor_name ?? metadata.qbo_vendor_name ?? undefined,
     company_qbo_vendor_id: company.qbo_vendor_id ?? undefined,
     company_qbo_vendor_name: company.qbo_vendor_name ?? undefined,
     actual_lines: actualLines,
@@ -478,7 +482,7 @@ export async function listVendorBillsForCompany(companyId: string, orgId?: strin
     .from("vendor_bills")
     .select(
       `
-      id, org_id, project_id, commitment_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
+      id, org_id, project_id, commitment_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, accounting_coding, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
       project:projects(id, name),
       company:companies!vendor_bills_company_id_fkey(id, name, qbo_vendor_id, qbo_vendor_name),
       commitment:commitments(id, title, total_cents, company:companies(id, name, qbo_vendor_id, qbo_vendor_name))
@@ -528,7 +532,7 @@ export async function listVendorBillsForProject(projectId: string, orgId?: strin
     .from("vendor_bills")
     .select(
       `
-      id, org_id, project_id, commitment_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
+      id, org_id, project_id, commitment_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, accounting_coding, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
       project:projects(id, name),
       company:companies!vendor_bills_company_id_fkey(id, name, qbo_vendor_id, qbo_vendor_name),
       commitment:commitments(id, title, total_cents, company:companies(id, name, qbo_vendor_id, qbo_vendor_name))
@@ -640,7 +644,7 @@ export async function updateVendorBillStatus({
 
   const { data: existing, error: existingError } = await supabase
     .from("vendor_bills")
-    .select("id, org_id, project_id, commitment_id, company_id, bill_number, bill_date, due_date, status, total_cents, currency, file_id, metadata, updated_at, approved_at, approved_by, paid_at, paid_cents, retainage_percent, retainage_cents, lien_waiver_status, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name")
+    .select("id, org_id, project_id, commitment_id, company_id, bill_number, bill_date, due_date, status, total_cents, currency, file_id, metadata, accounting_coding, updated_at, approved_at, approved_by, paid_at, paid_cents, retainage_percent, retainage_cents, lien_waiver_status, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name")
     .eq("org_id", resolvedOrgId)
     .eq("id", billId)
     .maybeSingle()
@@ -848,6 +852,18 @@ export async function updateVendorBillStatus({
       qboCodingChanged = true
     }
   }
+
+  const existingExpenseAccount = accountingReference(existing.accounting_coding, "expense_account")
+  const existingApAccount = accountingReference(existing.accounting_coding, "ap_account")
+  const existingCounterparty = accountingReference(existing.accounting_coding, "counterparty")
+  updateData.accounting_coding = buildAccountingCoding({
+    expenseAccountId: updateData.qbo_expense_account_id ?? existingExpenseAccount?.id ?? existing.qbo_expense_account_id,
+    expenseAccountName: updateData.qbo_expense_account_name ?? existingExpenseAccount?.name ?? existing.qbo_expense_account_name,
+    apAccountId: updateData.qbo_ap_account_id ?? existingApAccount?.id ?? existing.qbo_ap_account_id,
+    apAccountName: updateData.qbo_ap_account_name ?? existingApAccount?.name ?? existing.qbo_ap_account_name,
+    counterpartyId: updateData.qbo_vendor_id ?? existingCounterparty?.id ?? existing.qbo_vendor_id,
+    counterpartyName: updateData.qbo_vendor_name ?? existingCounterparty?.name ?? existing.qbo_vendor_name,
+  })
 
   if (parsed.status === "approved" && !existing.approved_at) {
     updateData.approved_at = new Date().toISOString()
@@ -1125,7 +1141,7 @@ export async function updateVendorBillStatus({
   const billLinkedToQbo = Boolean(data.qbo_id)
   const shouldEnqueueForStatus = ["approved", "partial", "paid"].includes(String(finalStatus))
   const shouldEnqueueForRecode = billLinkedToQbo && qboCodingChanged
-  if (!isVendorCredit && (shouldEnqueueForStatus || shouldEnqueueForRecode)) {
+  if (shouldEnqueueForStatus || shouldEnqueueForRecode) {
     await enqueueVendorBillSync(billId, resolvedOrgId)
   }
   if (recordedPaymentId) {
@@ -1296,6 +1312,10 @@ export async function createProjectVendorBill({
         internal_upload: true,
         over_budget: isOverBudget,
       },
+      accounting_coding: buildAccountingCoding({
+        counterpartyId: parsed.qbo_vendor_id,
+        counterpartyName: parsed.qbo_vendor_name || parsed.vendor_name,
+      }),
       qbo_vendor_id: parsed.qbo_vendor_id || null,
       qbo_vendor_name: parsed.qbo_vendor_name || parsed.vendor_name || null,
     })
@@ -1406,6 +1426,7 @@ export async function createProjectVendorCredit(input: ProjectVendorCreditInput,
   }
   await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "insert", entityType: "vendor_bill", entityId: data.id, after: data })
   await recordEvent({ orgId: resolvedOrgId, eventType: "vendor_credit_created", entityType: "vendor_bill", entityId: data.id, payload: { project_id: input.projectId, commitment_id: input.commitmentId ?? null, total_cents: totalCents } })
+  await enqueueVendorBillSync(data.id, resolvedOrgId)
   return mapVendorBill(data)
 }
 

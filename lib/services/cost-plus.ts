@@ -25,6 +25,7 @@ import {
 } from "@/lib/services/billing-periods"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
+import { buildAccountingCoding } from "@/lib/services/accounting-coding"
 import {
   getProjectFeeBillingSummary,
   prepareProjectFeeBillingForOwnerInvoice,
@@ -1841,6 +1842,17 @@ export async function createProjectExpense(input: ProjectExpenseInput, orgId?: s
     receipt_file_id: parsed.receiptFileId ?? null,
     is_billable: parsed.isBillable,
     markup_percent_override: parsed.markupPercentOverride ?? null,
+    accounting_coding: buildAccountingCoding({
+      transactionType: parsed.qboTransactionType,
+      expenseAccountId: parsed.qboExpenseAccountId,
+      expenseAccountName: parsed.qboExpenseAccountName,
+      paymentAccountId: parsed.qboPaymentAccountId,
+      paymentAccountName: parsed.qboPaymentAccountName,
+      apAccountId: parsed.qboApAccountId,
+      apAccountName: parsed.qboApAccountName,
+      counterpartyId: parsed.qboVendorId,
+      counterpartyName: parsed.qboVendorName,
+    }),
     qbo_transaction_type: parsed.qboTransactionType ?? null,
     qbo_expense_account_id: parsed.qboExpenseAccountId ?? null,
     qbo_expense_account_name: parsed.qboExpenseAccountName ?? null,

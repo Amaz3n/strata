@@ -51,7 +51,7 @@ function lotLabel(lot: Record<string, unknown> | null) {
 }
 
 export async function listMyHouses(
-  opts: { userId?: string; page?: number; pageSize?: number } = {},
+  opts: { userId?: string; divisionId?: string; page?: number; pageSize?: number } = {},
   orgId?: string,
 ): Promise<{ houses: MyHouseDTO[]; total: number }> {
   const context = await requireOrgContext(orgId)
@@ -59,12 +59,14 @@ export async function listMyHouses(
   const userId = opts.userId ?? context.userId
   const page = Math.max(1, opts.page ?? 1)
   const pageSize = Math.min(100, Math.max(1, opts.pageSize ?? 25))
-  const { data: projects, error, count } = await context.supabase.from("projects").select(`
+  let projectQuery = context.supabase.from("projects").select(`
     id,start_date,metadata,
     lot:lots!lots_project_id_fkey(id,lot_number,block,community_id,house_plan_id,house_plan_elevation_id,
       community:communities(name),plan:house_plans(code),elevation:house_plan_elevations(code))
   `, { count: "exact" }).eq("org_id", context.orgId).eq("superintendent_id", userId)
-    .eq("property_type", "production").eq("status", "active").order("start_date", { ascending: true, nullsFirst: false })
+    .eq("property_type", "production").eq("status", "active")
+  if (opts.divisionId) projectQuery = projectQuery.eq("division_id", opts.divisionId)
+  const { data: projects, error, count } = await projectQuery.order("start_date", { ascending: true, nullsFirst: false })
     .range((page - 1) * pageSize, page * pageSize - 1)
   if (error) throw new Error(`Failed to load assigned houses: ${error.message}`)
   const projectIds = (projects ?? []).map((project) => project.id)
@@ -110,15 +112,17 @@ export async function listMyHouses(
 }
 
 export async function listMyHouseWork(
-  opts: { window: "today" | "week" | "twoweek"; userId?: string },
+  opts: { window: "today" | "week" | "twoweek"; userId?: string; divisionId?: string },
   orgId?: string,
 ): Promise<MyHouseTaskGroupDTO[]> {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.read", context)
   const userId = opts.userId ?? context.userId
-  const { data: projects, error: projectError } = await context.supabase.from("projects").select(`
+  let projectQuery = context.supabase.from("projects").select(`
     id,lot:lots!lots_project_id_fkey(lot_number,block,community:communities(name))
-  `).eq("org_id", context.orgId).eq("superintendent_id", userId).eq("property_type", "production").eq("status", "active").limit(100)
+  `).eq("org_id", context.orgId).eq("superintendent_id", userId).eq("property_type", "production").eq("status", "active")
+  if (opts.divisionId) projectQuery = projectQuery.eq("division_id", opts.divisionId)
+  const { data: projects, error: projectError } = await projectQuery.limit(100)
   if (projectError) throw new Error(`Failed to load assigned houses: ${projectError.message}`)
   const projectIds = (projects ?? []).map((project) => project.id)
   if (!projectIds.length) return []

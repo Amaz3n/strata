@@ -2,6 +2,8 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { createServiceSupabaseClient as createBaseServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext as requireBaseOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
+import { getDivisionAccessForUser, getDivisionScopedProjectIds } from "@/lib/services/authorization"
+import { intersectProjectReadScopes } from "@/lib/services/authorization-policy"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { insertWithProjectNumberRetry } from "@/lib/services/project-sequence"
@@ -52,6 +54,16 @@ function createServiceSupabaseClient(): SupabaseClient {
 async function requireOrgContext(orgId?: string) {
   const context = await requireBaseOrgContext(orgId)
   return { ...context, supabase: context.supabase as unknown as SupabaseClient }
+}
+
+async function canReadProjectInDivisionScope(
+  supabase: SupabaseClient,
+  orgId: string,
+  userId: string,
+  projectId: string,
+) {
+  const authorizedProjectIds = await getDivisionScopedProjectIds({ orgId, userId, supabase })
+  return authorizedProjectIds === null || authorizedProjectIds.includes(projectId)
 }
 
 const WARRANTY_SELECT = `
@@ -294,6 +306,8 @@ async function loadCoverage(supabase: SupabaseClient, orgId: string, projectId: 
 export async function getProjectWarrantyCoverage(projectId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
+  const authorizedProjectIds = await getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase })
+  if (authorizedProjectIds && !authorizedProjectIds.includes(projectId)) return null
   return loadCoverage(supabase, resolvedOrgId, projectId)
 }
 
@@ -388,6 +402,7 @@ async function createRequestWithClient(input: WarrantyRequestInput, context: { s
 export async function listWarrantyRequests(projectId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
+  if (!await canReadProjectInDivisionScope(supabase, resolvedOrgId, userId, projectId)) return []
   const { data, error } = await supabase.from("warranty_requests").select(WARRANTY_SELECT).eq("org_id", resolvedOrgId).eq("project_id", projectId).order("created_at", { ascending: false })
   if (error) throw new Error(`Failed to load warranty requests: ${error.message}`)
   return (data ?? []).map((row) => mapWarranty(row as unknown as Record<string, unknown>))
@@ -451,9 +466,13 @@ export async function updateWarrantyRequest({ requestId, input, orgId }: { reque
   return updated
 }
 
-export async function listWarrantyRequestsForOrg(params: { orgId?: string; status?: string[]; severity?: string[]; communityId?: string; assignedUserId?: string; companyId?: string; coverageStatus?: string[]; slaState?: "breached" | "due_soon"; search?: string; page?: number; pageSize?: number } = {}) {
+export async function listWarrantyRequestsForOrg(params: { orgId?: string; status?: string[]; severity?: string[]; communityId?: string; divisionId?: string; assignedUserId?: string; companyId?: string; coverageStatus?: string[]; slaState?: "breached" | "due_soon"; search?: string; page?: number; pageSize?: number } = {}) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(params.orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
+  const authorizedProjectIds = await getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase })
+  const divisionProjectIds = params.divisionId ? await projectIdsForDivision(supabase, resolvedOrgId, params.divisionId) : null
+  const scopedProjectIds = intersectProjectReadScopes(authorizedProjectIds, divisionProjectIds)
+  if (scopedProjectIds?.length === 0) return { rows: [], total: 0 }
   const page = Math.max(1, params.page ?? 1), pageSize = Math.min(200, Math.max(1, params.pageSize ?? 50))
   const lotRelation = params.communityId
     ? "lot:lots!lots_project_id_fkey!inner(community_id,community:communities(name))"
@@ -464,6 +483,7 @@ export async function listWarrantyRequestsForOrg(params: { orgId?: string; statu
   if (params.assignedUserId) query = query.eq("assigned_user_id", params.assignedUserId)
   if (params.companyId) query = query.eq("assigned_company_id", params.companyId)
   if (params.communityId) query = query.eq("lot.community_id", params.communityId)
+  if (scopedProjectIds) query = query.in("project_id", scopedProjectIds)
   if (params.coverageStatus?.length) query = query.in("coverage_status", params.coverageStatus)
   if (params.slaState === "breached") query = query.lt("resolution_due_at", new Date().toISOString()).in("status", ["open","in_progress"])
   if (params.slaState === "due_soon") query = query.gte("resolution_due_at", new Date().toISOString()).lte("resolution_due_at", new Date(Date.now() + 3 * 86_400_000).toISOString()).in("status", ["open","in_progress"])
@@ -542,15 +562,22 @@ async function sendWarrantyVisitDispatchEmail(input: { orgId: string; request: W
 export async function listWarrantyVisitsForProject(projectId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
+  if (!await canReadProjectInDivisionScope(supabase, resolvedOrgId, userId, projectId)) return []
   const { data, error } = await supabase.from("warranty_service_visits").select(VISIT_SELECT).eq("org_id", resolvedOrgId).eq("project_id", projectId).order("window_start", { ascending: false })
   if (error) throw new Error(`Failed to load warranty visits: ${error.message}`)
   return (data ?? []).map((row) => mapVisit(row as unknown as Record<string, unknown>))
 }
 
-export async function listWarrantyVisitsForDispatch(params: { from: string; to: string; orgId?: string }) {
+export async function listWarrantyVisitsForDispatch(params: { from: string; to: string; divisionId?: string; orgId?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(params.orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
-  const { data, error } = await supabase.from("warranty_service_visits").select(`${VISIT_SELECT},request:warranty_requests(title,severity),project:projects(name,location)`).eq("org_id", resolvedOrgId).gte("window_start", params.from).lt("window_start", params.to).neq("status", "canceled").order("window_start")
+  const authorizedProjectIds = await getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase })
+  const divisionProjectIds = params.divisionId ? await projectIdsForDivision(supabase, resolvedOrgId, params.divisionId) : null
+  const scopedProjectIds = intersectProjectReadScopes(authorizedProjectIds, divisionProjectIds)
+  if (scopedProjectIds?.length === 0) return []
+  let query = supabase.from("warranty_service_visits").select(`${VISIT_SELECT},request:warranty_requests(title,severity),project:projects(name,location)`).eq("org_id", resolvedOrgId).gte("window_start", params.from).lt("window_start", params.to).neq("status", "canceled")
+  if (scopedProjectIds) query = query.in("project_id", scopedProjectIds)
+  const { data, error } = await query.order("window_start")
   if (error) throw new Error(`Failed to load dispatch board: ${error.message}`)
   return (data ?? []).map((row) => ({ ...mapVisit(row as unknown as Record<string, unknown>), request: relationOne((row as unknown as Record<string, unknown>).request), project: relationOne((row as unknown as Record<string, unknown>).project) }))
 }
@@ -709,13 +736,18 @@ async function loadBackcharge(supabase: SupabaseClient, orgId: string, backcharg
   return { dto: mapBackcharge(data as unknown as Record<string, unknown>), row: data as unknown as Record<string, unknown> }
 }
 
-export async function listWarrantyBackcharges(params: { status?: string[]; projectId?: string; page?: number; pageSize?: number; orgId?: string } = {}) {
+export async function listWarrantyBackcharges(params: { status?: string[]; projectId?: string; divisionId?: string; page?: number; pageSize?: number; orgId?: string } = {}) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(params.orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
+  const authorizedProjectIds = await getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase })
+  const divisionProjectIds = params.divisionId ? await projectIdsForDivision(supabase, resolvedOrgId, params.divisionId) : null
+  const scopedProjectIds = intersectProjectReadScopes(authorizedProjectIds, divisionProjectIds)
+  if (scopedProjectIds?.length === 0) return { rows: [], total: 0 }
   const page = Math.max(1, params.page ?? 1), pageSize = Math.min(200, Math.max(1, params.pageSize ?? 50))
   let query = supabase.from("warranty_backcharges").select(BACKCHARGE_SELECT, { count: "exact" }).eq("org_id", resolvedOrgId)
   if (params.status?.length) query = query.in("status", params.status)
   if (params.projectId) query = query.eq("project_id", params.projectId)
+  if (scopedProjectIds) query = query.in("project_id", scopedProjectIds)
   const { data, error, count } = await query.order("created_at", { ascending: false }).range((page - 1) * pageSize, page * pageSize - 1)
   if (error) throw new Error(`Failed to load warranty backcharges: ${error.message}`)
   return { rows: (data ?? []).map((row) => mapBackcharge(row as unknown as Record<string, unknown>)), total: count ?? 0 }
@@ -826,6 +858,7 @@ export async function resolveWarrantyBackcharge({ backchargeId, resolution, reco
 export async function findOriginatingCommitments({ projectId, costCodeId, companyId }: { projectId: string; costCodeId?: string; companyId?: string }, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
+  if (!await canReadProjectInDivisionScope(supabase, resolvedOrgId, userId, projectId)) return []
   const { data, error } = await supabase.from("commitments").select("id,title,contract_number,company_id,total_cents,status,company:companies(name),lines:commitment_lines(cost_code_id)").eq("org_id", resolvedOrgId).eq("project_id", projectId).order("created_at", { ascending: false }).limit(200)
   if (error) throw new Error(`Failed to load originating commitments: ${error.message}`)
   return (data ?? []).map((row) => {
@@ -834,28 +867,81 @@ export async function findOriginatingCommitments({ projectId, costCodeId, compan
   }).sort((a, b) => a.rank - b.rank || a.title.localeCompare(b.title))
 }
 
-export async function getWarrantyDefectAnalysis(params: { orgId?: string; groupBy: "plan" | "plan_version" | "company" | "cost_code" | "community"; from?: string; to?: string }) {
+export async function getWarrantyDefectAnalysis(params: { orgId?: string; divisionId?: string; groupBy: "plan" | "plan_version" | "company" | "cost_code" | "community"; from?: string; to?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(params.orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
-  const { data, error } = await supabase.rpc("warranty_defect_analysis", { p_org_id: resolvedOrgId, p_group_by: params.groupBy, p_from: params.from ?? null, p_to: params.to ?? null })
+  const authorizedProjectIds = await getDivisionScopedProjectIds({
+    orgId: resolvedOrgId,
+    userId,
+    supabase,
+  })
+  const divisionProjectIds = params.divisionId
+    ? await projectIdsForDivision(supabase, resolvedOrgId, params.divisionId)
+    : null
+  const scopedProjectIds = intersectProjectReadScopes(authorizedProjectIds, divisionProjectIds)
+  if (scopedProjectIds?.length === 0) return []
+  const { data, error } = await supabase.rpc("warranty_defect_analysis_scoped", {
+    p_org_id: resolvedOrgId,
+    p_group_by: params.groupBy,
+    p_project_ids: scopedProjectIds,
+    p_from: params.from ?? null,
+    p_to: params.to ?? null,
+  })
   if (error) throw new Error(`Failed to load warranty defect analysis: ${error.message}`)
   return data ?? []
 }
 
-export async function getWarrantyCostSummary(params: { orgId?: string; communityId?: string } = {}) {
+export async function getWarrantyCostSummary(params: { orgId?: string; communityId?: string; divisionId?: string } = {}) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(params.orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
   const { data, error } = await supabase.rpc("warranty_cost_summary", { p_org_id: resolvedOrgId, p_community_id: params.communityId ?? null })
   if (error) throw new Error(`Failed to load warranty cost summary: ${error.message}`)
-  return data ?? []
+  const communityIds = await allowedWarrantyCommunityIds(supabase, resolvedOrgId, userId, params.divisionId)
+  return communityIds === null ? data ?? [] : (data ?? []).filter((row: any) => communityIds.includes(String(row.community_id)))
+}
+
+async function projectIdsForDivision(supabase: SupabaseClient, orgId: string, divisionId: string) {
+  const { data, error } = await supabase.from("projects").select("id").eq("org_id", orgId).eq("division_id", divisionId).limit(1000)
+  if (error) throw new Error(`Failed to scope warranty projects: ${error.message}`)
+  return (data ?? []).map((row) => row.id as string)
+}
+
+async function allowedWarrantyCommunityIds(
+  supabase: SupabaseClient,
+  orgId: string,
+  userId: string,
+  divisionId?: string,
+): Promise<string[] | null> {
+  const access = await getDivisionAccessForUser({ orgId, userId })
+  if (!divisionId && !access.assignedOnly) return null
+  let divisionIds = divisionId ? [divisionId] : access.divisionIds
+  if (access.assignedOnly) divisionIds = divisionIds.filter((id) => access.divisionIds.includes(id))
+  if (!divisionIds.length) return []
+  const { data, error } = await supabase.from("communities").select("id").eq("org_id", orgId).in("division_id", divisionIds)
+  if (error) throw new Error(`Failed to scope warranty analytics: ${error.message}`)
+  return (data ?? []).map((row) => row.id as string)
 }
 
 export async function getCompanyWarrantySignal(companyId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
+  const authorizedProjectIds = await getDivisionScopedProjectIds({
+    orgId: resolvedOrgId,
+    userId,
+    supabase,
+  })
+  if (authorizedProjectIds?.length === 0) {
+    return { request_count: 0, backcharge_cents: 0, recovered_cents: 0, open_backcharges: 0 }
+  }
+  let requestsQuery = supabase.from("warranty_requests").select("id", { count: "exact", head: true }).eq("org_id", resolvedOrgId).eq("assigned_company_id", companyId)
+  let chargesQuery = supabase.from("warranty_backcharges").select("amount_cents,recovered_cents,status").eq("org_id", resolvedOrgId).eq("company_id", companyId)
+  if (authorizedProjectIds) {
+    requestsQuery = requestsQuery.in("project_id", authorizedProjectIds)
+    chargesQuery = chargesQuery.in("project_id", authorizedProjectIds)
+  }
   const [{ count: requestCount }, { data: charges }] = await Promise.all([
-    supabase.from("warranty_requests").select("id", { count: "exact", head: true }).eq("org_id", resolvedOrgId).eq("assigned_company_id", companyId),
-    supabase.from("warranty_backcharges").select("amount_cents,recovered_cents,status").eq("org_id", resolvedOrgId).eq("company_id", companyId),
+    requestsQuery,
+    chargesQuery,
   ])
   return { request_count: requestCount ?? 0, backcharge_cents: (charges ?? []).reduce((sum, charge) => sum + Number(charge.amount_cents ?? 0), 0), recovered_cents: (charges ?? []).reduce((sum, charge) => sum + Number(charge.recovered_cents ?? 0), 0), open_backcharges: (charges ?? []).filter((charge) => ["issued","disputed"].includes(charge.status)).length }
 }
@@ -883,8 +969,16 @@ export async function sweepWarrantySlaBreaches() {
 export async function listWarrantyTechVisits(params: { date: string; userId?: string }, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
+  const authorizedProjectIds = await getDivisionScopedProjectIds({
+    orgId: resolvedOrgId,
+    userId,
+    supabase,
+  })
+  if (authorizedProjectIds?.length === 0) return []
   const targetUserId = params.userId ?? userId, start = `${params.date}T00:00:00.000Z`, end = new Date(new Date(start).getTime() + 86_400_000).toISOString()
-  const { data, error } = await supabase.from("warranty_service_visits").select(`${VISIT_SELECT},request:warranty_requests(title,description,severity,requested_by,requested_by_contact:contacts(full_name,email,phone)),project:projects(name,location)`).eq("org_id", resolvedOrgId).eq("assigned_user_id", targetUserId).gte("window_start", start).lt("window_start", end).neq("status", "canceled").order("window_start")
+  let query = supabase.from("warranty_service_visits").select(`${VISIT_SELECT},request:warranty_requests(title,description,severity,requested_by,requested_by_contact:contacts(full_name,email,phone)),project:projects(name,location)`).eq("org_id", resolvedOrgId).eq("assigned_user_id", targetUserId).gte("window_start", start).lt("window_start", end).neq("status", "canceled")
+  if (authorizedProjectIds) query = query.in("project_id", authorizedProjectIds)
+  const { data, error } = await query.order("window_start")
   if (error) throw new Error(`Failed to load technician visits: ${error.message}`)
   return (data ?? []).map((row) => ({ ...mapVisit(row as unknown as Record<string, unknown>), request: relationOne((row as unknown as Record<string, unknown>).request), project: relationOne((row as unknown as Record<string, unknown>).project) }))
 }
@@ -894,5 +988,9 @@ export async function getWarrantyVisitDetail(visitId: string, orgId?: string) {
   await requirePermission("warranty.read", { supabase, orgId: resolvedOrgId, userId })
   const { data, error } = await supabase.from("warranty_service_visits").select(`${VISIT_SELECT},request:warranty_requests(title,description,severity,requested_by,requested_by_contact:contacts(full_name,email,phone),photos:warranty_request_photos(id,file_id,caption)),project:projects(name,location)`).eq("org_id", resolvedOrgId).eq("id", visitId).maybeSingle()
   if (error || !data) throw new Error("Warranty visit not found")
-  return { ...mapVisit(data as unknown as Record<string, unknown>), request: relationOne((data as unknown as Record<string, unknown>).request), project: relationOne((data as unknown as Record<string, unknown>).project) }
+  const visitRow = data as unknown as Record<string, unknown>
+  if (!await canReadProjectInDivisionScope(supabase, resolvedOrgId, userId, String(visitRow.project_id))) {
+    throw new Error("Warranty visit not found")
+  }
+  return { ...mapVisit(visitRow), request: relationOne(visitRow.request), project: relationOne(visitRow.project) }
 }

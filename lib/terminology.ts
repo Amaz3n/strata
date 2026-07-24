@@ -7,6 +7,8 @@ const TERMS = {
     ownerPortal: "Client portal",
     fee: "Builder's fee",
     primeContract: "Contract",
+    project: "Project",
+    projects: "Projects",
   },
   commercial: {
     owner: "Owner",
@@ -14,6 +16,8 @@ const TERMS = {
     ownerPortal: "Owner portal",
     fee: "Fee",
     primeContract: "Prime contract",
+    project: "Project",
+    projects: "Projects",
   },
   production: {
     owner: "Buyer",
@@ -21,6 +25,8 @@ const TERMS = {
     ownerPortal: "Buyer portal",
     fee: "Fee",
     primeContract: "Purchase agreement",
+    project: "Home",
+    projects: "Homes",
   },
 } as const
 

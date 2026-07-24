@@ -39,6 +39,8 @@ export interface Prospect {
   name: string
   status: ProspectStatus
   owner_user_id?: string | null
+  community_id?: string | null
+  community_name?: string | null
   source?: string | null
   jobsite_location?: {
     street?: string
@@ -67,9 +69,9 @@ export interface Prospect {
 }
 
 const prospectSelect = `
-  id, org_id, name, status, owner_user_id, source, jobsite_location, project_type,
+  id, org_id, name, status, owner_user_id, community_id, source, jobsite_location, project_type,
   budget_range, timeline_preference, tags, notes, lost_reason, next_follow_up_at, won_at, lost_at,
-  created_by, created_at, updated_at
+  created_by, created_at, updated_at, community:communities(name)
 `
 
 const prospectContactSelect = `
@@ -88,6 +90,8 @@ function mapProspect(
     name: row.name,
     status: row.status,
     owner_user_id: row.owner_user_id ?? null,
+    community_id: row.community_id ?? null,
+    community_name: (Array.isArray(row.community) ? row.community[0]?.name : row.community?.name) ?? null,
     source: row.source ?? null,
     jobsite_location: row.jobsite_location ?? null,
     project_type: row.project_type ?? null,
@@ -211,6 +215,9 @@ export async function listProspects(orgId?: string, filters?: ProspectFilters): 
   }
   if (parsedFilters.owner_user_id) {
     query = query.eq("owner_user_id", parsedFilters.owner_user_id)
+  }
+  if (parsedFilters.community_id) {
+    query = query.eq("community_id", parsedFilters.community_id)
   }
   if (parsedFilters.search) {
     query = query.ilike("name", `%${parsedFilters.search}%`)
@@ -404,6 +411,7 @@ export async function createProspect({
     name: parsed.name,
     status: parsed.status,
     owner_user_id: parsed.owner_user_id ?? userId,
+    community_id: parsed.community_id ?? null,
     source: parsed.source ?? null,
     jobsite_location: parsed.jobsite_location ?? null,
     project_type: parsed.project_type ?? null,
@@ -528,6 +536,7 @@ export async function updateProspect({
   if (parsed.name !== undefined) updates.name = parsed.name
   if (parsed.status !== undefined) updates.status = parsed.status
   if (parsed.owner_user_id !== undefined) updates.owner_user_id = parsed.owner_user_id
+  if (parsed.community_id !== undefined) updates.community_id = parsed.community_id
   if (parsed.source !== undefined) updates.source = parsed.source
   if (parsed.jobsite_location !== undefined) updates.jobsite_location = parsed.jobsite_location
   if (parsed.project_type !== undefined) updates.project_type = parsed.project_type
