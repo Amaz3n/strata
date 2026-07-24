@@ -243,7 +243,12 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
     return { success: false, error: "No active QBO connection" }
   }
 
-  if (await isSyncPushBlocked(supabase, orgId, "invoice", invoiceId, options?.connectionId)) {
+  const resolvedConnectionId = await resolveHealthConnectionId(orgId, options?.connectionId)
+  if (!resolvedConnectionId) {
+    return { success: false, error: "No active QBO connection" }
+  }
+
+  if (await isSyncPushBlocked(supabase, orgId, "invoice", invoiceId, resolvedConnectionId)) {
     await supabase.from("invoices").update({ qbo_sync_status: "skipped" }).eq("id", invoiceId).eq("org_id", orgId)
     return { success: true, skipped: true }
   }
@@ -270,7 +275,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
     ? { qbo_class_id: accountingTarget.dimensions.class.id, qbo_class_name: accountingTarget.dimensions.class.name }
     : null
 
-  const connection = await getQBOConnectionSettings(orgId, options?.connectionId)
+  const connection = await getQBOConnectionSettings(orgId, resolvedConnectionId)
 
   const invoiceIncomeAccountId = (typedInvoice.metadata as any)?.qbo_income_account_id
   const defaultIncomeAccountId =
@@ -286,6 +291,7 @@ export async function syncInvoiceToQBO(invoiceId: string, orgId: string, options
       .from("accounting_sync_records")
       .select("qbo_id:external_id, qbo_sync_token:external_version")
       .eq("org_id", orgId)
+      .eq("connection_id", resolvedConnectionId)
       .eq("entity_type", "invoice")
       .eq("entity_id", invoiceId)
       .maybeSingle()
@@ -688,7 +694,12 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string, options
     return { success: false, error: "No active QBO connection" }
   }
 
-  if (await isSyncPushBlocked(supabase, orgId, "payment", paymentId, options?.connectionId)) {
+  const resolvedConnectionId = await resolveHealthConnectionId(orgId, options?.connectionId)
+  if (!resolvedConnectionId) {
+    return { success: false, error: "No active QBO connection" }
+  }
+
+  if (await isSyncPushBlocked(supabase, orgId, "payment", paymentId, resolvedConnectionId)) {
     return { success: true, skipped: true }
   }
 
@@ -696,6 +707,7 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string, options
     .from("accounting_sync_records")
     .select("qbo_id:external_id")
     .eq("org_id", orgId)
+    .eq("connection_id", resolvedConnectionId)
     .eq("entity_type", "payment")
     .eq("entity_id", paymentId)
     .maybeSingle()
@@ -733,7 +745,7 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string, options
 
     const claimed = await claimSyncCreate({
       orgId,
-      connectionId: options?.connectionId ?? null,
+      connectionId: resolvedConnectionId,
       entityType: "payment",
       entityId: paymentId,
     })
@@ -745,6 +757,7 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string, options
       .from("accounting_sync_records")
       .select("qbo_id:external_id")
       .eq("org_id", orgId)
+      .eq("connection_id", resolvedConnectionId)
       .eq("entity_type", "customer")
       .eq("entity_id", invoice.project_id)
       .maybeSingle()
@@ -760,7 +773,7 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string, options
           if (invoice.project_id && cust.Id) {
             await upsertSyncRecord({
               orgId,
-              connectionId: options?.connectionId,
+              connectionId: resolvedConnectionId,
               entityId: invoice.project_id,
               qboId: cust.Id,
               entityType: "customer",
@@ -782,7 +795,7 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string, options
 
     await upsertSyncRecord({
       orgId,
-      connectionId: options?.connectionId,
+      connectionId: resolvedConnectionId,
       entityId: paymentId,
       qboId: qboPayment.Id,
       entityType: "payment",
@@ -820,7 +833,12 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string, 
     return { success: false, error: "No active QBO connection" }
   }
 
-  if (await isSyncPushBlocked(supabase, orgId, "project_expense", expenseId, options?.connectionId)) {
+  const resolvedConnectionId = await resolveHealthConnectionId(orgId, options?.connectionId)
+  if (!resolvedConnectionId) {
+    return { success: false, error: "No active QBO connection" }
+  }
+
+  if (await isSyncPushBlocked(supabase, orgId, "project_expense", expenseId, resolvedConnectionId)) {
     await supabase.from("project_expenses").update({ qbo_sync_status: "skipped" }).eq("id", expenseId).eq("org_id", orgId)
     return { success: true, skipped: true }
   }
@@ -878,8 +896,8 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string, 
 
   try {
     const vendorName = resolveExpenseVendorName(typedExpense)
-    const vendor = await resolveQboVendorForConnection({ client, supabase, orgId, connectionId: options?.connectionId, companyId: typedExpense.vendor_company_id, displayName: vendorName, legacyId: typedExpense.qbo_vendor_id, legacyName: typedExpense.qbo_vendor_name })
-    const customer = await getOrCreateProjectCustomer({ client, supabase, orgId, connectionId: options?.connectionId, projectId: typedExpense.project_id, projectName: typedExpense.project?.name ?? null })
+    const vendor = await resolveQboVendorForConnection({ client, supabase, orgId, connectionId: resolvedConnectionId, companyId: typedExpense.vendor_company_id, displayName: vendorName, legacyId: typedExpense.qbo_vendor_id, legacyName: typedExpense.qbo_vendor_name })
+    const customer = await getOrCreateProjectCustomer({ client, supabase, orgId, connectionId: resolvedConnectionId, projectId: typedExpense.project_id, projectName: typedExpense.project?.name ?? null })
     const totalAmount = (Number(typedExpense.amount_cents ?? 0) + Number(typedExpense.tax_cents ?? 0)) / 100
     const lineDescription = typedExpense.description?.trim() || vendorName
     const billableStatus = typedExpense.is_billable === false ? "NotBillable" : "Billable"
@@ -918,7 +936,7 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string, 
           pid,
           pid === typedExpense.project_id
             ? customer
-            : await getOrCreateProjectCustomer({ client, supabase, orgId, connectionId: options?.connectionId, projectId: pid, projectName: projectInfoById.get(pid)?.name ?? null }),
+            : await getOrCreateProjectCustomer({ client, supabase, orgId, connectionId: resolvedConnectionId, projectId: pid, projectName: projectInfoById.get(pid)?.name ?? null }),
         )
       }
 
@@ -968,6 +986,7 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string, 
       .from("accounting_sync_records")
       .select("qbo_id:external_id, qbo_sync_token:external_version")
       .eq("org_id", orgId)
+      .eq("connection_id", resolvedConnectionId)
       .eq("entity_type", "project_expense")
       .eq("entity_id", expenseId)
       .maybeSingle()
@@ -1003,7 +1022,7 @@ export async function syncProjectExpenseToQBO(expenseId: string, orgId: string, 
 
     await upsertSyncRecord({
       orgId,
-      connectionId: options?.connectionId,
+      connectionId: resolvedConnectionId,
       entityId: expenseId,
       qboId: result.Id!,
       syncToken: result.SyncToken,
@@ -1071,6 +1090,11 @@ export async function syncVendorBillToQBO(billId: string, orgId: string, options
     return { success: false, error: "No active QBO connection" }
   }
 
+  const resolvedConnectionId = await resolveHealthConnectionId(orgId, options?.connectionId)
+  if (!resolvedConnectionId) {
+    return { success: false, error: "No active QBO connection" }
+  }
+
   const { data: bill, error } = await supabase
     .from("vendor_bills")
     .select(
@@ -1109,7 +1133,7 @@ export async function syncVendorBillToQBO(billId: string, orgId: string, options
   }
   const isVendorCredit = (typedBill.metadata as Record<string, any> | null)?.source === "vendor_credit"
   const syncEntityType = isVendorCredit ? "vendor_credit" : "bill"
-  if (await isSyncPushBlocked(supabase, orgId, syncEntityType, billId, options?.connectionId)) {
+  if (await isSyncPushBlocked(supabase, orgId, syncEntityType, billId, resolvedConnectionId)) {
     await supabase.from("vendor_bills").update({ qbo_sync_status: "skipped" }).eq("id", billId).eq("org_id", orgId)
     return { success: true, skipped: true }
   }
@@ -1123,7 +1147,7 @@ export async function syncVendorBillToQBO(billId: string, orgId: string, options
     const billCompany = typedBill.company ?? typedBill.commitment?.company ?? null
     const linkedVendorId = billCompany?.qbo_vendor_id ?? typedBill.qbo_vendor_id ?? null
     const linkedVendorName = billCompany?.qbo_vendor_name ?? typedBill.qbo_vendor_name ?? null
-    const vendor = await resolveQboVendorForConnection({ client, supabase, orgId, connectionId: options?.connectionId, companyId: typedBill.company_id ?? typedBill.commitment?.company?.id, displayName: vendorName, legacyId: linkedVendorId, legacyName: linkedVendorName })
+    const vendor = await resolveQboVendorForConnection({ client, supabase, orgId, connectionId: resolvedConnectionId, companyId: typedBill.company_id ?? typedBill.commitment?.company?.id, displayName: vendorName, legacyId: linkedVendorId, legacyName: linkedVendorName })
     const sourceLines =
       typedBill.bill_lines && typedBill.bill_lines.length > 0
         ? typedBill.bill_lines
@@ -1157,7 +1181,7 @@ export async function syncVendorBillToQBO(billId: string, orgId: string, options
           client,
           supabase,
           orgId,
-          connectionId: options?.connectionId,
+          connectionId: resolvedConnectionId,
           projectId: pid,
           projectName: projectInfoById.get(pid)?.name ?? null,
         }),
@@ -1226,7 +1250,7 @@ export async function syncVendorBillToQBO(billId: string, orgId: string, options
       .from("accounting_sync_records")
       .select("qbo_id:external_id, qbo_sync_token:external_version")
       .eq("org_id", orgId)
-      .eq("connection_id", options?.connectionId ?? "")
+      .eq("connection_id", resolvedConnectionId)
       .eq("entity_type", syncEntityType)
       .eq("entity_id", billId)
       .maybeSingle()
@@ -1255,7 +1279,7 @@ export async function syncVendorBillToQBO(billId: string, orgId: string, options
 
     await upsertSyncRecord({
       orgId,
-      connectionId: options?.connectionId,
+      connectionId: resolvedConnectionId,
       entityId: billId,
       qboId: result.Id!,
       syncToken: result.SyncToken,
@@ -1335,7 +1359,12 @@ export async function syncBillPaymentToQBO(paymentId: string, orgId: string, opt
     return { success: false, error: "No active QBO connection" }
   }
 
-  if (await isSyncPushBlocked(supabase, orgId, "bill_payment", paymentId, options?.connectionId)) {
+  const resolvedConnectionId = await resolveHealthConnectionId(orgId, options?.connectionId)
+  if (!resolvedConnectionId) {
+    return { success: false, error: "No active QBO connection" }
+  }
+
+  if (await isSyncPushBlocked(supabase, orgId, "bill_payment", paymentId, resolvedConnectionId)) {
     return { success: true, skipped: true }
   }
 
@@ -1343,6 +1372,7 @@ export async function syncBillPaymentToQBO(paymentId: string, orgId: string, opt
     .from("accounting_sync_records")
     .select("qbo_id:external_id")
     .eq("org_id", orgId)
+    .eq("connection_id", resolvedConnectionId)
     .eq("entity_type", "bill_payment")
     .eq("entity_id", paymentId)
     .maybeSingle()
@@ -1363,7 +1393,7 @@ export async function syncBillPaymentToQBO(paymentId: string, orgId: string, opt
   if (!bill?.qbo_id) {
     const billId = (payment as any).bill_id as string | undefined
     if (!billId) return { success: false, error: "Payment is not linked to a vendor bill" }
-    const billSync = await syncVendorBillToQBO(billId, orgId)
+    const billSync = await syncVendorBillToQBO(billId, orgId, { connectionId: resolvedConnectionId })
     if (!billSync.success) {
       return { success: false, error: billSync.error ?? "Bill is not linked to QuickBooks yet" }
     }
@@ -1384,7 +1414,7 @@ export async function syncBillPaymentToQBO(paymentId: string, orgId: string, opt
       return { success: false, error: "QuickBooks bill is missing a vendor reference" }
     }
 
-    const connection = await getQBOConnectionSettings(orgId, options?.connectionId)
+    const connection = await getQBOConnectionSettings(orgId, resolvedConnectionId)
     const paymentAccountId = (payment.metadata as any)?.qbo_payment_account_id ?? (connection?.settings as any)?.default_payment_account_id
     if (!paymentAccountId) {
       return { success: false, error: "Choose a default QuickBooks payment account before syncing bill payments" }
@@ -1409,7 +1439,7 @@ export async function syncBillPaymentToQBO(paymentId: string, orgId: string, opt
 
     await upsertSyncRecord({
       orgId,
-      connectionId: options?.connectionId,
+      connectionId: resolvedConnectionId,
       entityId: paymentId,
       qboId: qboPayment.Id,
       syncToken: qboPayment.SyncToken,

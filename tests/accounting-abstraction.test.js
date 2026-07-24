@@ -69,6 +69,32 @@ test("accounting identities and imports are atomically scoped to one connection"
   assert.match(reconciler, /resolveLocalSyncMapping\(params\.supabase, params\.orgId, params\.connectionId/)
 })
 
+test("QBO reconnects preserve identity and outbound lookups stay connection-scoped", () => {
+  const fs = require("node:fs")
+  const path = require("node:path")
+  const connections = fs.readFileSync(path.join(__dirname, "../lib/services/accounting-connections.ts"), "utf8")
+  const adapter = fs.readFileSync(path.join(__dirname, "../lib/integrations/accounting/qbo/adapter.ts"), "utf8")
+  const pushFunctions = [
+    "syncInvoiceToQBO",
+    "syncPaymentToQBO",
+    "syncProjectExpenseToQBO",
+    "syncVendorBillToQBO",
+    "syncBillPaymentToQBO",
+  ]
+
+  assert.match(connections, /\.eq\("external_account_id", input\.realmId\)/)
+  assert.match(connections, /existingConnection[\s\S]*?\.update\(connectionPayload\)/)
+
+  for (const [index, functionName] of pushFunctions.entries()) {
+    const start = adapter.indexOf(`export async function ${functionName}`)
+    const nextName = pushFunctions[index + 1]
+    const end = nextName ? adapter.indexOf(`export async function ${nextName}`, start) : adapter.indexOf("async function upsertSyncRecord", start)
+    const body = adapter.slice(start, end)
+    assert.match(body, /resolveHealthConnectionId\(orgId, options\?\.connectionId\)/, `${functionName} does not resolve a connection identity`)
+    assert.match(body, /\.eq\("connection_id", resolvedConnectionId\)/, `${functionName} reads an unscoped sync identity`)
+  }
+})
+
 test("accounting hardening preserves old-code compatibility through deployment", () => {
   const fs = require("node:fs")
   const path = require("node:path")

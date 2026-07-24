@@ -419,32 +419,61 @@ export async function upsertQBOConnection(input: {
     console.warn("Unable to detect QBO invoice pattern, defaulting to numeric", err)
   }
 
-  const { data, error } = await supabase
+  const { data: priorConnections, error: priorError } = await supabase
     .from("accounting_connections")
-    .insert({
-      org_id: input.orgId,
-      provider: "qbo",
-      label: input.label?.trim() || input.companyName?.trim() || "QuickBooks",
-      external_account_id: input.realmId,
-      client_id: getQBOClientId(),
-      access_token: encryptToken(input.accessToken),
-      refresh_token: encryptToken(input.refreshToken),
-      token_expires_at: new Date(Date.now() + input.expiresInSeconds * 1000).toISOString(),
-      refresh_token_expires_at: computeRefreshTokenExpiresAt(input.refreshTokenExpiresInSeconds),
-      refresh_failure_count: 0,
-      external_account_name: input.companyName,
-      connected_by: input.connectedBy ?? null,
-      status: "active",
-      settings: {
-        auto_sync: true,
-        sync_payments: true,
-        customer_sync_mode: "create_new",
-        invoice_number_sync: true,
-        invoice_number_pattern: settings.invoice_number_pattern,
-        invoice_number_prefix: settings.invoice_number_prefix,
-        last_known_invoice_number: settings.last_known_invoice_number,
-      },
-    })
+    .select("id,status,label,settings")
+    .eq("org_id", input.orgId)
+    .eq("provider", "qbo")
+    .eq("external_account_id", input.realmId)
+    .order("connected_at", { ascending: false })
+
+  if (priorError) {
+    throw new Error(`Failed to inspect existing QBO connection: ${priorError.message}`)
+  }
+
+  const existingConnection =
+    priorConnections?.find((connection) => connection.status === "active") ??
+    priorConnections?.[0] ??
+    null
+  const existingSettings =
+    (existingConnection?.settings as Record<string, unknown> | null) ?? {}
+  const connectionPayload = {
+    org_id: input.orgId,
+    provider: "qbo",
+    label: input.label?.trim() || existingConnection?.label || input.companyName?.trim() || "QuickBooks",
+    external_account_id: input.realmId,
+    client_id: getQBOClientId(),
+    access_token: encryptToken(input.accessToken),
+    refresh_token: encryptToken(input.refreshToken),
+    token_expires_at: new Date(Date.now() + input.expiresInSeconds * 1000).toISOString(),
+    refresh_token_expires_at: computeRefreshTokenExpiresAt(input.refreshTokenExpiresInSeconds),
+    refresh_failure_count: 0,
+    external_account_name: input.companyName,
+    connected_by: input.connectedBy ?? null,
+    connected_at: new Date().toISOString(),
+    disconnected_at: null,
+    last_error: null,
+    status: "active",
+    settings: {
+      auto_sync: true,
+      sync_payments: true,
+      customer_sync_mode: "create_new",
+      invoice_number_sync: true,
+      ...existingSettings,
+      invoice_number_pattern: settings.invoice_number_pattern,
+      invoice_number_prefix: settings.invoice_number_prefix,
+      last_known_invoice_number: settings.last_known_invoice_number,
+    },
+  }
+
+  const saveQuery = existingConnection
+    ? supabase
+        .from("accounting_connections")
+        .update(connectionPayload)
+        .eq("id", existingConnection.id)
+        .eq("org_id", input.orgId)
+    : supabase.from("accounting_connections").insert(connectionPayload)
+  const { data, error } = await saveQuery
     .select("id")
     .single()
 
