@@ -15,6 +15,7 @@ import {
   type ImportParsedRow,
   type ImportRawRow,
 } from "@/lib/services/import-parsers"
+import type { ProjectPosture } from "@/lib/product-tier"
 
 export const IMPORTER_KEYS = [
   "cost_codes", "plan_library", "option_catalog", "price_book",
@@ -37,6 +38,13 @@ export interface ImporterDefinition {
   key: ImporterKey
   label: string
   description: string
+  /**
+   * Which postures this importer is offered to. Absent means every posture —
+   * the same convention the project nav uses. An importer whose destination
+   * feature is production-only has no business appearing for a custom builder
+   * who can't open the workbench it loads into.
+   */
+  postures?: readonly ProjectPosture[]
   fileKinds?: readonly { key: string; label: string }[]
   columns: readonly ImportColumnSpec[]
   updateFields: readonly string[]
@@ -52,28 +60,28 @@ export const IMPORTER_DEFINITIONS: Record<ImporterKey, ImporterDefinition> = {
     updateFields: ["name", "parent_code", "division", "category", "cost_type", "unit", "default_unit_cost_cents"],
   },
   plan_library: {
-    key: "plan_library", label: "Plan library", description: "Import plans and elevations first, then takeoff lines into their draft versions.",
+    key: "plan_library", postures: ["production"], label: "Plan library", description: "Import plans and elevations first, then takeoff lines into their draft versions.",
     fileKinds: [{ key: "plans", label: "Plans & elevations" }, { key: "takeoffs", label: "Takeoff lines" }],
     columns: [text("plan_code", "Plan code", true), text("plan_name", "Plan name"), text("series", "Series"), typed("heated_sqft", "Heated sqft", "integer"), typed("total_sqft", "Total sqft", "integer"), typed("beds", "Beds", "number"), typed("baths", "Baths", "number"), typed("stories", "Stories", "number"), typed("garage_bays", "Garage bays", "number"), text("elevation_code", "Elevation code"), text("elevation_name", "Elevation name"), typed("elevation_sqft_delta", "Elevation sqft delta", "integer"), typed("swing_applicable", "Swing applicable", "boolean"), text("cost_code", "Cost code"), text("description", "Description"), typed("quantity", "Quantity", "number"), typed("uom", "UOM", "uom"), typed("unit_cost_cents", "Unit cost", "cents")],
     updateFields: ["plan_name", "series", "heated_sqft", "total_sqft", "beds", "baths", "stories", "garage_bays", "elevation_name", "elevation_sqft_delta", "swing_applicable", "quantity", "uom", "unit_cost_cents"],
   },
   option_catalog: {
-    key: "option_catalog", label: "Option catalog", description: "Categories, options, cost/price, scope, vendor, and plan availability.",
+    key: "option_catalog", postures: ["production"], label: "Option catalog", description: "Categories, options, cost/price, scope, vendor, and plan availability.",
     columns: [text("category", "Category", true), text("parent_category", "Parent category"), text("option_code", "Option code", true), text("option_name", "Option name", true), text("scope", "Scope", true), typed("price_cents", "Buyer price", "cents", true), typed("cost_cents", "Builder cost", "cents"), text("cost_code", "Cost code"), text("vendor", "Vendor"), typed("lead_time_days", "Lead time days", "integer"), typed("is_default", "Default", "boolean"), text("applicable_plans", "Applicable plans")],
     updateFields: ["option_name", "scope", "price_cents", "cost_cents", "cost_code", "vendor", "lead_time_days", "is_default", "applicable_plans"],
   },
   price_book: {
-    key: "price_book", label: "Price book", description: "Effective-dated vendor pricing by cost code and optional plan/community/division scope.",
+    key: "price_book", postures: ["production"], label: "Price book", description: "Effective-dated vendor pricing by cost code and optional plan/community/division scope.",
     columns: [text("vendor", "Vendor", true), text("cost_code", "Cost code", true), text("description", "Description", true), typed("uom", "UOM", "uom", true), typed("unit_price_cents", "Unit price", "cents", true), text("plan_code", "Plan code"), text("community", "Community"), text("division", "Division"), typed("effective_start", "Effective start", "date"), typed("effective_end", "Effective end", "date")],
     updateFields: ["description", "uom", "unit_price_cents", "effective_end"],
   },
   communities_lots: {
-    key: "communities_lots", label: "Communities & lots", description: "Communities and phases are grouped from lot rows; started lots are deferred to Open WIP.",
+    key: "communities_lots", postures: ["production"], label: "Communities & lots", description: "Communities and phases are grouped from lot rows; started lots are deferred to Open WIP.",
     columns: [text("community", "Community", true), text("community_code", "Community code"), text("division", "Division"), text("phase", "Phase"), text("lot_number", "Lot number", true), text("block", "Block"), text("status", "Status", true), text("address", "Address"), text("city", "City"), text("state", "State"), text("postal_code", "Postal code"), typed("width_ft", "Width ft", "number"), typed("depth_ft", "Depth ft", "number"), typed("acreage", "Acreage", "number"), text("swing", "Swing"), typed("premium_cents", "Premium", "cents"), typed("cost_basis_cents", "Cost basis", "cents"), text("takedown", "Takedown"), typed("takedown_date", "Takedown date", "date"), text("plan_code", "Plan code"), text("elevation_code", "Elevation code")],
     updateFields: ["status", "address", "city", "state", "postal_code", "width_ft", "depth_ft", "acreage", "swing", "premium_cents", "cost_basis_cents", "takedown", "takedown_date", "plan_code", "elevation_code"],
   },
   open_wip: {
-    key: "open_wip", label: "Open WIP", description: "Current-state houses, snapshot budgets, and remaining-value POs as of one cutover date.",
+    key: "open_wip", postures: ["production"], label: "Open WIP", description: "Current-state houses, snapshot budgets, and remaining-value POs as of one cutover date.",
     fileKinds: [{ key: "houses", label: "Houses" }, { key: "budgets", label: "Budget snapshot" }, { key: "purchase_orders", label: "Open POs" }],
     columns: [text("community", "Community", true), text("lot_number", "Lot number", true), text("block", "Block"), text("plan_code", "Plan code"), text("elevation_code", "Elevation code"), text("stage_task", "Current stage task"), typed("stage_date", "Stage date", "date"), typed("budget_total_cents", "Budget total", "cents"), typed("sold", "Sold", "boolean"), text("buyer_name", "Buyer name"), typed("buyer_email", "Buyer email", "email"), typed("sale_price_cents", "Sale price", "cents"), typed("sale_date", "Sale date", "date"), text("cost_code", "Cost code"), typed("budget_cents", "Budget", "cents"), text("po_number", "PO number"), text("vendor", "Vendor"), text("description", "Description"), typed("remaining_cents", "Remaining", "cents"), typed("original_cents", "Original", "cents")],
     updateFields: [],

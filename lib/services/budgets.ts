@@ -5,6 +5,7 @@ import { z } from "zod"
 import { recordAudit } from "@/lib/services/audit"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
+import { getOrgCostCodesEnabled, resolveCostCodesEnabled } from "@/lib/financials/cost-codes-enabled"
 import { recordEvent } from "@/lib/services/events"
 import { getProjectJobCostActualsByCostCode } from "@/lib/services/job-cost-actuals"
 import { requirePermission } from "@/lib/services/permissions"
@@ -839,7 +840,8 @@ async function getBudgetWithActualsInternal(
     ),
   ])
 
-  const costCodesEnabled = settingsResult.data?.cost_codes_enabled ?? true
+  const orgCostCodesDefault = await getOrgCostCodesEnabled(supabase, orgId)
+  const costCodesEnabled = resolveCostCodesEnabled(settingsResult.data?.cost_codes_enabled, orgCostCodesDefault)
   const groupBy = costCodesEnabled ? "cost_code" : "budget_line"
 
   // Bucket key for a row: the cost code (codes on) or the budget line (codes off).

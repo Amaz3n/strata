@@ -215,7 +215,7 @@ export function InspectionsClient({
             </div>
             <div className="flex w-full gap-2 sm:w-auto">
               <Button variant="outline" asChild className="w-full sm:w-auto">
-                <Link href="/settings/checklists">Checklist library</Link>
+                <Link href="/settings/templates?section=checklists">Checklist library</Link>
               </Button>
               <Button onClick={() => setSheetOpen(true)} className="w-full sm:w-auto">
                 <Plus className="mr-2 h-4 w-4" />

@@ -2022,8 +2022,8 @@ function EstimateImportDialog({
     setGenerating(true)
     setReviewLines(null)
     const build = sourceKind === "template"
-      ? proposeBudgetFromTemplateAction(projectId, estimateId, costCodesEnabled)
-      : proposeBudgetFromEstimateAction(projectId, estimateId, costCodesEnabled)
+      ? proposeBudgetFromTemplateAction(projectId, estimateId)
+      : proposeBudgetFromEstimateAction(projectId, estimateId)
     build
       .then((draft) => {
         setUsedAi(draft.used_ai)

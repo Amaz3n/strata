@@ -89,17 +89,21 @@ export async function updateMemberLaborSettingsAction(membershipId: string, inpu
 }
 
 export async function suspendMemberAction(membershipId: string) {
-  await suspendMember(membershipId)
-  revalidatePath("/team")
-  revalidatePath("/settings")
-  return true
+  return run(async () => {
+    await suspendMember(membershipId)
+    revalidatePath("/team")
+    revalidatePath("/settings")
+    return true
+  })
 }
 
 export async function reactivateMemberAction(membershipId: string) {
-  await reactivateMember(membershipId)
-  revalidatePath("/team")
-  revalidatePath("/settings")
-  return true
+  return run(async () => {
+    await reactivateMember(membershipId)
+    revalidatePath("/team")
+    revalidatePath("/settings")
+    return true
+  })
 }
 
 export async function removeMemberAction(membershipId: string) {
@@ -121,8 +125,10 @@ export async function resendInviteAction(membershipId: string) {
 }
 
 export async function resetMemberMfaAction(membershipId: string) {
-  const result = await resetMemberMfa(membershipId)
-  revalidatePath("/team")
-  revalidatePath("/settings")
-  return result
+  return run(async () => {
+    const result = await resetMemberMfa(membershipId)
+    revalidatePath("/team")
+    revalidatePath("/settings")
+    return result
+  })
 }

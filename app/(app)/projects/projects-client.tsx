@@ -47,6 +47,7 @@ import {
   searchProjectQboCustomersAction,
   createProjectQboCustomerAction,
 } from "./actions"
+import { getCostCodingSettingsAction } from "@/app/(app)/settings/cost-coding/actions"
 import { projectInputSchema } from "@/lib/validation/projects"
 import type { ProjectInput } from "@/lib/validation/projects"
 import type { AccountingDimensionValue } from "@/lib/integrations/accounting/provider"
@@ -214,6 +215,7 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries, pr
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<ProjectStatus | "all">("all")
   const [qboClasses, setQboClasses] = useState<QBOClassOption[]>([])
+  const [orgCostCodesDefault, setOrgCostCodesDefault] = useState(true)
 
   const createForm = useForm<ProjectInput>({
     resolver: zodResolver(projectInputSchema),
@@ -287,6 +289,14 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries, pr
     return () => {
       cancelled = true
     }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    getCostCodingSettingsAction()
+      .then((settings) => { if (!cancelled) setOrgCostCodesDefault(settings.costCodesEnabled) })
+      .catch(() => { if (!cancelled) setOrgCostCodesDefault(true) })
+    return () => { cancelled = true }
   }, [])
 
   // Sync create date range → form
@@ -628,6 +638,7 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries, pr
         financialSetup={createFinancialSetup}
         onFinancialSetupChange={setCreateFinancialSetup}
         productTier={productTier}
+        orgCostCodesDefault={orgCostCodesDefault}
         onClose={() => {
           createForm.reset()
           setCreateFinancialSetup(emptyFinancialSetup("fixed_price", defaultPropertyType))
@@ -651,6 +662,7 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries, pr
         financialSetup={editFinancialSetup}
         onFinancialSetupChange={setEditFinancialSetup}
         productTier={productTier}
+        orgCostCodesDefault={orgCostCodesDefault}
         onClose={() => {
           setEditSheetOpen(false)
           setEditingProject(null)
@@ -784,6 +796,7 @@ interface ProjectFormSheetProps {
   financialSetup: FinancialSetupValue
   onFinancialSetupChange: (value: FinancialSetupValue) => void
   productTier: ProductTier
+  orgCostCodesDefault: boolean
   onClose: () => void
 }
 
@@ -801,6 +814,7 @@ function ProjectFormSheet({
   financialSetup,
   onFinancialSetupChange,
   productTier,
+  orgCostCodesDefault,
   onClose,
 }: ProjectFormSheetProps) {
   const isEdit = mode === "edit"
@@ -1351,6 +1365,7 @@ function ProjectFormSheet({
                   value={financialSetup}
                   onChange={onFinancialSetupChange}
                   posture={posture}
+                  costCodes={isEdit ? { orgDefault: orgCostCodesDefault } : undefined}
                 />
                 {financialMessages.blocking[0] || financialMessages.warnings[0] ? (
                   <p

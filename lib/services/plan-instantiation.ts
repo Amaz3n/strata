@@ -12,6 +12,7 @@ import {
   type ResolvedPlanPricingLine,
 } from "@/lib/financials/plan-pricing";
 import { recordAudit } from "@/lib/services/audit";
+import { getOrgCostCodesEnabled, resolveCostCodesEnabled } from "@/lib/financials/cost-codes-enabled";
 import { getBudgetTemplate } from "@/lib/services/budget-templates";
 import { createBudget } from "@/lib/services/budgets";
 import { requireOrgContext } from "@/lib/services/context";
@@ -485,6 +486,7 @@ async function loadInstantiationContext(
     warnings.push(
       "Plan or elevation is not currently available in this community; operations override recorded.",
     );
+  const orgCostCodesDefault = await getOrgCostCodesEnabled(context.supabase, context.orgId);
   return {
     ...context,
     project: {
@@ -496,7 +498,7 @@ async function loadInstantiationContext(
     snapshot,
     takeoffLines,
     costCodeDefaults,
-    costCodesEnabled: settingsResult.data?.cost_codes_enabled !== false,
+    costCodesEnabled: resolveCostCodesEnabled(settingsResult.data?.cost_codes_enabled, orgCostCodesDefault),
     communityId,
     warnings,
   };

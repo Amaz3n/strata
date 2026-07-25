@@ -3,16 +3,24 @@ import Link from "next/link"
 import { cn } from "@/lib/utils"
 
 const SALES_TABS = [
-  ["leads", "Leads"],
-  ["inventory", "Inventory"],
+  ["board", "Board"],
+  ["pipeline", "Pipeline"],
   ["backlog", "Backlog"],
   ["closings", "Closings"],
+  ["pricing", "Pricing"],
 ] as const
 
 export type SalesTab = (typeof SALES_TABS)[number][0]
 
+const TAB_ALIASES: Record<string, SalesTab> = {
+  inventory: "board",
+  leads: "pipeline",
+}
+
 export function normalizeSalesTab(value: string | undefined): SalesTab {
-  return SALES_TABS.some(([key]) => key === value) ? (value as SalesTab) : "backlog"
+  if (!value) return "board"
+  if (SALES_TABS.some(([key]) => key === value)) return value as SalesTab
+  return TAB_ALIASES[value] ?? "board"
 }
 
 export function SalesTabs({
@@ -23,12 +31,13 @@ export function SalesTabs({
   searchParams?: Record<string, string | undefined>
 }) {
   return (
-    <nav aria-label="Sales" className="flex h-10 items-end gap-5 overflow-x-auto border-b px-4 text-xs">
+    <nav aria-label="Sales" className="flex h-10 items-end gap-5 overflow-x-auto border-b px-4 text-xs sm:px-6">
       {SALES_TABS.map(([key, label]) => {
         const params = new URLSearchParams()
         params.set("tab", key)
         for (const [name, value] of Object.entries(searchParams)) {
-          if (value && name !== "tab") params.set(name, value)
+          // Carry scope across tabs; drop row/overlay-specific params.
+          if (value && ["division", "community"].includes(name)) params.set(name, value)
         }
         return (
           <Link

@@ -14,6 +14,7 @@ import {
 } from "@/lib/services/cost-plus"
 import { updateVendorBillStatus } from "@/lib/services/vendor-bills"
 import { getProjectFinancialSettings } from "@/lib/services/project-financial-setup"
+import { getOrgCostCodesEnabled } from "@/lib/financials/cost-codes-enabled"
 import { APPROVAL_GATE_REASONS } from "@/lib/financials/approval-gates"
 
 import { unwrapAction, actionError, type ActionResult  } from "@/lib/action-result"
@@ -208,7 +209,7 @@ export async function approveInboxVendorBillAction(projectId: string, billId: st
 
       if (billError) throw new Error(`Failed to validate billing period: ${billError.message}`)
       const settings = await getProjectFinancialSettings({ supabase, orgId, projectId })
-      const costCodesEnabled = settings?.cost_codes_enabled ?? true
+      const costCodesEnabled = settings?.cost_codes_enabled ?? (await getOrgCostCodesEnabled(supabase, orgId))
       await assertProjectBillingDateEditable({
         supabase,
         orgId,

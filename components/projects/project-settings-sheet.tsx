@@ -32,6 +32,7 @@ import {
 import { DistributionListManager } from "@/components/projects/distribution-list-manager"
 import { ProjectLocationsManager } from "@/components/locations/project-locations-manager"
 import { listLocationsAction } from "@/app/(app)/projects/[id]/locations/actions"
+import { getCostCodingSettingsAction } from "@/app/(app)/settings/cost-coding/actions"
 import type { ProjectLocation } from "@/lib/services/locations"
 import { listProjectQboClassesAction, searchProjectQboCustomersAction, createProjectQboCustomerAction } from "@/app/(app)/projects/actions"
 import {
@@ -146,6 +147,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
   const [projectLocations, setProjectLocations] = useState<ProjectLocation[]>([])
   const [pendingModuleKey, setPendingModuleKey] = useState<ProjectModuleKey | null>(null)
   const [financialSetup, setFinancialSetup] = useState<FinancialSetupValue>(() => financialSetupFromProject(project, contract))
+  const [orgCostCodesDefault, setOrgCostCodesDefault] = useState(true)
   const [step, setStep] = useState<"details" | "financials">(initialStep)
   const [saving, setSaving] = useState(false)
   const [removingSample, setRemovingSample] = useState(false)
@@ -202,6 +204,15 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
       .catch(() => { if (!cancelled) setTeamMembers([]) })
     return () => { cancelled = true }
   }, [open, posture, project.superintendent_id])
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    getCostCodingSettingsAction()
+      .then((settings) => { if (!cancelled) setOrgCostCodesDefault(settings.costCodesEnabled) })
+      .catch(() => { if (!cancelled) setOrgCostCodesDefault(true) })
+    return () => { cancelled = true }
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -939,6 +950,7 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                   value={financialSetup}
                   onChange={setFinancialSetup}
                   posture={posture}
+                  costCodes={{ orgDefault: orgCostCodesDefault }}
                 />
                 <p className="mt-4 text-xs text-muted-foreground">
                   These terms update the active project contract Arc uses for financial workflows.

@@ -25,12 +25,18 @@ import {
   convertReservationSchema,
   incentiveSchema,
   releaseReservationSchema,
+  setLotAskingPriceSchema,
   voidPurchaseAgreementSchema,
   type AgreementConfigurationInput,
   type IncentiveInput,
 } from "@/lib/validation/community-sales"
 
 const LIVE_RESERVATION_STATUSES = ["hold", "reserved", "converted"]
+
+/** Flatten a Supabase embedded relation (array or object) to a single row. */
+function one<T>(value: T | T[] | null | undefined): T | null {
+  return Array.isArray(value) ? value[0] ?? null : value ?? null
+}
 
 type OrgContext = Awaited<ReturnType<typeof requireOrgContext>>
 
@@ -197,6 +203,371 @@ export async function listSpecInventory(opts: {
     askingPriceCents: Number(lot.asking_price_override_cents ?? ((availability ?? []).find((row: any) => row.community_id === lot.community_id && row.house_plan_id === lot.house_plan_id && (row.elevation_id ?? null) === (lot.house_plan_elevation_id ?? null))?.base_price_cents ?? 0) + Number(lot.premium_cents ?? 0) + (structuralByProject.get(lot.project_id) ?? 0)),
     premiumCents: Number(lot.premium_cents ?? 0),
   }))
+}
+
+/** Lot statuses that can appear on the sales board — sellable through closed. */
+const BOARD_LOT_STATUSES = ["owned", "developed", "assigned", "started", "closed"] as const
+
+export type UnitAvailability = "available" | "held" | "reserved" | "sold" | "closed"
+export type UnitType = "spec" | "tbb" | "model"
+
+export interface SellableUnitDTO {
+  lotId: string
+  lotLabel: string
+  block: string | null
+  communityId: string
+  communityName: string | null
+  phaseName: string | null
+  divisionId: string | null
+  projectId: string | null
+  projectName: string | null
+  unitType: UnitType
+  availability: UnitAvailability
+  planId: string | null
+  planLabel: string | null
+  planCode: string | null
+  elevationLabel: string | null
+  swing: "left" | "right" | "either"
+  beds: number | null
+  baths: number | null
+  heatedSqft: number | null
+  basePriceCents: number
+  premiumCents: number
+  optionsCents: number
+  /** Effective asking price (override wins, else derived list price). */
+  askingPriceCents: number
+  /** Non-null when a manual markdown/markup override is in effect. */
+  askingOverrideCents: number | null
+  /** Derived list price before any override — powers the strike-through. */
+  listPriceCents: number
+  agingDays: number
+  startedAt: string | null
+  projectedCloseDate: string | null
+  reservationId: string | null
+  reservationStatus: string | null
+  reservationExpiresAt: string | null
+  buyerContactId: string | null
+  buyerName: string | null
+  prospectId: string | null
+  depositRequiredCents: number
+  contractId: string | null
+}
+
+export interface SellableInventoryPage {
+  units: SellableUnitDTO[]
+  total: number
+  page: number
+  pageSize: number
+  bandCounts: Record<UnitAvailability, number>
+}
+
+type SellableInventoryFilters = {
+  communityId?: string
+  divisionId?: string
+  planId?: string
+  type?: UnitType
+  search?: string
+  lotIds?: string[]
+  page?: number
+  pageSize?: number
+}
+
+/**
+ * The org sales board's single source of truth: every sellable unit in scope —
+ * started specs AND unstarted to-be-builts — annotated with availability, price,
+ * buyer, and delivery. Supersedes listSpecInventory (which only returned started
+ * specs and silently capped at 50). Division-scoped, paginated over the lots table.
+ */
+export async function listSellableInventory(
+  filters: SellableInventoryFilters = {},
+  orgId?: string,
+): Promise<SellableInventoryPage> {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.read", context)
+  const divisionAccess = await getSalesDivisionAccess(context)
+  const emptyPage: SellableInventoryPage = {
+    units: [],
+    total: 0,
+    page: filters.page ?? 1,
+    pageSize: Math.min(filters.pageSize ?? 100, 200),
+    bandCounts: { available: 0, held: 0, reserved: 0, sold: 0, closed: 0 },
+  }
+  if (filters.divisionId && divisionAccess.assignedOnly && !divisionAccess.divisionIds.includes(filters.divisionId)) {
+    return emptyPage
+  }
+  if (filters.communityId) await assertCommunityInSalesScope(context, filters.communityId)
+  await expireStaleHolds(context.orgId, filters.communityId)
+
+  const page = Math.max(1, filters.page ?? 1)
+  const pageSize = Math.min(Math.max(1, filters.pageSize ?? 100), 200)
+  const rangeFrom = (page - 1) * pageSize
+
+  let query = context.supabase
+    .from("lots")
+    .select(
+      "id, community_id, division_id, community_phase_id, lot_number, block, status, swing, premium_cents, asking_price_override_cents, project_id, house_plan_id, house_plan_elevation_id, metadata, created_at, project:projects(id, name, start_date, end_date, status), plan:house_plans(id, name, code, beds, baths, heated_sqft), elevation:house_plan_elevations(name, code), community:communities(name, division_id), phase:community_phases(name)",
+      { count: "exact" },
+    )
+    .eq("org_id", context.orgId)
+    .in("status", BOARD_LOT_STATUSES as unknown as string[])
+  if (filters.lotIds) query = query.in("id", filters.lotIds.length ? filters.lotIds : ["00000000-0000-0000-0000-000000000000"])
+  if (filters.communityId) query = query.eq("community_id", filters.communityId)
+  if (filters.divisionId) query = query.eq("division_id", filters.divisionId)
+  else if (divisionAccess.assignedOnly) {
+    if (divisionAccess.divisionIds.length === 0) return emptyPage
+    query = query.in("division_id", divisionAccess.divisionIds)
+  }
+  if (filters.planId) query = query.eq("house_plan_id", filters.planId)
+  if (filters.type === "tbb") query = query.is("project_id", null)
+  else if (filters.type === "spec") query = query.not("project_id", "is", null)
+  if (filters.search) {
+    const term = `%${filters.search.replace(/[%_]/g, "")}%`
+    query = query.or(`lot_number.ilike.${term},block.ilike.${term}`)
+  }
+  const { data: lots, error, count } = await query
+    .order("created_at", { ascending: true })
+    .range(rangeFrom, rangeFrom + pageSize - 1)
+  if (error) throw new Error(`Failed to load sellable inventory: ${error.message}`)
+
+  const lotRows = lots ?? []
+  if (lotRows.length === 0) return { ...emptyPage, page, pageSize, total: count ?? 0 }
+
+  const lotIds = lotRows.map((lot: any) => lot.id)
+  const projectIds = lotRows.map((lot: any) => lot.project_id).filter(Boolean) as string[]
+  const planIds = Array.from(new Set(lotRows.map((lot: any) => lot.house_plan_id).filter(Boolean))) as string[]
+  const communityIds = Array.from(new Set(lotRows.map((lot: any) => lot.community_id))) as string[]
+
+  const [{ data: reservations }, { data: agreements }, { data: availability }, { data: selections }] = await Promise.all([
+    context.supabase
+      .from("lot_reservations")
+      .select("id, lot_id, status, expires_at, buyer_contact_id, prospect_id, deposit_required_cents, contract_id, buyer:contacts!lot_reservations_buyer_contact_id_fkey(full_name)")
+      .eq("org_id", context.orgId)
+      .in("lot_id", lotIds)
+      .in("status", LIVE_RESERVATION_STATUSES),
+    projectIds.length
+      ? context.supabase.from("contracts").select("id, project_id").eq("org_id", context.orgId).in("project_id", projectIds).eq("contract_type", "purchase_agreement").eq("status", "active")
+      : Promise.resolve({ data: [] as any[] }),
+    communityIds.length && planIds.length
+      ? context.supabase.from("community_plan_availability").select("community_id, house_plan_id, elevation_id, base_price_cents").eq("org_id", context.orgId).in("community_id", communityIds).in("house_plan_id", planIds).eq("is_available", true)
+      : Promise.resolve({ data: [] as any[] }),
+    projectIds.length
+      ? context.supabase.from("project_selections").select("project_id, price_cents_snapshot, option:selection_options!project_selections_selected_option_id_fkey(option_scope)").eq("org_id", context.orgId).in("project_id", projectIds).in("status", ["confirmed", "ordered", "received"])
+      : Promise.resolve({ data: [] as any[] }),
+  ])
+
+  const reservationByLot = new Map<string, any>()
+  for (const row of reservations ?? []) if (!reservationByLot.has(row.lot_id)) reservationByLot.set(row.lot_id, row)
+  const soldProjectIds = new Set((agreements ?? []).map((row: any) => row.project_id))
+  const contractByProject = new Map<string, string>()
+  for (const row of agreements ?? []) contractByProject.set(row.project_id, row.id)
+  const structuralByProject = new Map<string, number>()
+  for (const row of selections ?? []) {
+    const option = Array.isArray((row as any).option) ? (row as any).option[0] : (row as any).option
+    if (option?.option_scope === "structural") {
+      structuralByProject.set((row as any).project_id, (structuralByProject.get((row as any).project_id) ?? 0) + Number((row as any).price_cents_snapshot ?? 0))
+    }
+  }
+  const basePriceFor = (lot: any) => {
+    const match = (availability ?? []).find(
+      (row: any) => row.community_id === lot.community_id && row.house_plan_id === lot.house_plan_id && (row.elevation_id ?? null) === (lot.house_plan_elevation_id ?? null),
+    )
+    return Number(match?.base_price_cents ?? 0)
+  }
+
+  const bandCounts: Record<UnitAvailability, number> = { available: 0, held: 0, reserved: 0, sold: 0, closed: 0 }
+  const units: SellableUnitDTO[] = lotRows.map((lot: any) => {
+    const project = one(lot.project as any)
+    const plan = one(lot.plan as any)
+    const elevation = one(lot.elevation as any)
+    const community = one(lot.community as any)
+    const phase = one(lot.phase as any)
+    const reservation = reservationByLot.get(lot.id)
+    const buyer = reservation ? one(reservation.buyer as any) : null
+    const metadata = (lot.metadata ?? {}) as Record<string, unknown>
+
+    const isSold = lot.status === "closed" || (lot.project_id && soldProjectIds.has(lot.project_id))
+    let availabilityState: UnitAvailability
+    if (lot.status === "closed") availabilityState = "closed"
+    else if (isSold) availabilityState = "sold"
+    else if (reservation?.status === "reserved" || reservation?.status === "converted") availabilityState = "reserved"
+    else if (reservation?.status === "hold") availabilityState = "held"
+    else availabilityState = "available"
+    bandCounts[availabilityState] += 1
+
+    const unitType: UnitType = metadata.is_model === true ? "model" : lot.project_id ? "spec" : "tbb"
+    const basePriceCents = basePriceFor(lot)
+    const premiumCents = Number(lot.premium_cents ?? 0)
+    const optionsCents = lot.project_id ? structuralByProject.get(lot.project_id) ?? 0 : 0
+    const listPriceCents = basePriceCents + premiumCents + optionsCents
+    const askingOverrideCents = lot.asking_price_override_cents != null ? Number(lot.asking_price_override_cents) : null
+    const startedAt = project?.start_date ?? null
+
+    return {
+      lotId: lot.id,
+      lotLabel: lot.lot_number,
+      block: lot.block ?? null,
+      communityId: lot.community_id,
+      communityName: community?.name ?? null,
+      phaseName: phase?.name ?? null,
+      divisionId: lot.division_id ?? community?.division_id ?? null,
+      projectId: lot.project_id ?? null,
+      projectName: project?.name ?? null,
+      unitType,
+      availability: availabilityState,
+      planId: lot.house_plan_id ?? null,
+      planLabel: plan?.name ?? null,
+      planCode: plan?.code ?? null,
+      elevationLabel: elevation?.name ?? elevation?.code ?? null,
+      swing: (lot.swing ?? "either") as "left" | "right" | "either",
+      beds: plan?.beds ?? null,
+      baths: plan?.baths ?? null,
+      heatedSqft: plan?.heated_sqft ?? null,
+      basePriceCents,
+      premiumCents,
+      optionsCents,
+      askingPriceCents: askingOverrideCents ?? listPriceCents,
+      askingOverrideCents,
+      listPriceCents,
+      agingDays: startedAt ? Math.max(0, Math.floor((Date.now() - Date.parse(startedAt)) / 86_400_000)) : Math.max(0, Math.floor((Date.now() - Date.parse(lot.created_at)) / 86_400_000)),
+      startedAt,
+      projectedCloseDate: project?.end_date ?? null,
+      reservationId: reservation?.id ?? null,
+      reservationStatus: reservation?.status ?? null,
+      reservationExpiresAt: reservation?.expires_at ?? null,
+      buyerContactId: reservation?.buyer_contact_id ?? null,
+      buyerName: buyer?.full_name ?? null,
+      prospectId: reservation?.prospect_id ?? null,
+      depositRequiredCents: Number(reservation?.deposit_required_cents ?? 0),
+      contractId: reservation?.contract_id ?? (lot.project_id ? contractByProject.get(lot.project_id) ?? null : null),
+    }
+  })
+
+  return { units, total: count ?? units.length, page, pageSize, bandCounts }
+}
+
+/** Single-row read for the unit sheet — shares the list builder so pricing stays identical. */
+export async function getSellableUnit(lotId: string, orgId?: string): Promise<SellableUnitDTO | null> {
+  const page = await listSellableInventory({ lotIds: [lotId], pageSize: 1 }, orgId)
+  return page.units[0] ?? null
+}
+
+/**
+ * Manual asking-price override (spec markdown / markup). lots.asking_price_override_cents
+ * is read across the pricing paths but had no writer — so the weekly aging review's core
+ * decision could not be executed. Passing null clears the override.
+ */
+export async function setLotAskingPrice(input: unknown, orgId?: string) {
+  const parsed = setLotAskingPriceSchema.parse(input)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.manage", context)
+  const { data: lot, error } = await context.supabase
+    .from("lots")
+    .select("id, community_id, asking_price_override_cents")
+    .eq("org_id", context.orgId)
+    .eq("id", parsed.lotId)
+    .maybeSingle()
+  if (error || !lot) throw new Error("Lot not found")
+  await assertCommunityInSalesScope(context, lot.community_id)
+  const previous = lot.asking_price_override_cents != null ? Number(lot.asking_price_override_cents) : null
+  const { data, error: updateError } = await context.supabase
+    .from("lots")
+    .update({ asking_price_override_cents: parsed.askingPriceCents, updated_at: new Date().toISOString() })
+    .eq("org_id", context.orgId)
+    .eq("id", parsed.lotId)
+    .select("id, asking_price_override_cents")
+    .single()
+  if (updateError || !data) throw new Error(`Failed to set asking price: ${updateError?.message}`)
+  await Promise.all([
+    recordEvent({
+      orgId: context.orgId,
+      actorId: context.userId,
+      eventType: "lot_asking_price_changed",
+      entityType: "lot",
+      entityId: parsed.lotId,
+      payload: { previous_cents: previous, new_cents: parsed.askingPriceCents, reason: parsed.reason ?? null },
+    }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "lot", entityId: parsed.lotId, before: { asking_price_override_cents: previous }, after: { asking_price_override_cents: parsed.askingPriceCents } }),
+  ])
+  return { lotId: parsed.lotId, askingOverrideCents: parsed.askingPriceCents }
+}
+
+export interface LotActivityEntry {
+  id: string
+  eventType: string
+  payload: Record<string, unknown> | null
+  createdAt: string
+}
+
+/** Event timeline for one unit — reservation lifecycle + price changes + agreement events. */
+export async function listLotActivity(lotId: string, orgId?: string, limit = 15): Promise<LotActivityEntry[]> {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.read", context)
+  const { data: reservations } = await context.supabase
+    .from("lot_reservations")
+    .select("id, contract_id")
+    .eq("org_id", context.orgId)
+    .eq("lot_id", lotId)
+  const reservationIds = (reservations ?? []).map((row: any) => row.id)
+  const contractIds = (reservations ?? []).map((row: any) => row.contract_id).filter(Boolean)
+  const clauses = [`and(entity_type.eq.lot,entity_id.eq.${lotId})`]
+  if (reservationIds.length) clauses.push(`and(entity_type.eq.lot_reservation,entity_id.in.(${reservationIds.join(",")}))`)
+  if (contractIds.length) clauses.push(`and(entity_type.eq.contract,entity_id.in.(${contractIds.join(",")}))`)
+  const { data, error } = await context.supabase
+    .from("events")
+    .select("id, event_type, payload, created_at")
+    .eq("org_id", context.orgId)
+    .or(clauses.join(","))
+    .order("created_at", { ascending: false })
+    .limit(limit)
+  if (error) throw new Error(`Failed to load unit activity: ${error.message}`)
+  return (data ?? []).map((row: any) => ({
+    id: row.id as string,
+    eventType: row.event_type as string,
+    payload: (row.payload ?? null) as Record<string, unknown> | null,
+    createdAt: row.created_at as string,
+  }))
+}
+
+/** Everything the unit sheet renders: the unit, its event timeline, and applicable incentives. */
+export async function getUnitSheetData(lotId: string, orgId?: string) {
+  const unit = await getSellableUnit(lotId, orgId)
+  if (!unit) return null
+  const [activity, incentives] = await Promise.all([
+    listLotActivity(lotId, orgId),
+    listIncentives({ communityId: unit.communityId, status: "active" }, orgId),
+  ])
+  return {
+    unit,
+    activity,
+    incentives: incentives.map((row: any) => ({ id: String(row.id), name: String(row.name), appliesTo: String(row.applies_to) })),
+  }
+}
+
+/** Everything the agreement configurator needs: the unit, buyer catalog, plan versions, incentives. */
+export async function getAgreementConfiguratorData(lotId: string, orgId?: string) {
+  const unit = await getSellableUnit(lotId, orgId)
+  if (!unit) return null
+  const { listBuyerCatalog } = await import("@/lib/services/option-catalog")
+  const { getHousePlan } = await import("@/lib/services/house-plans")
+  const [catalog, incentives, plan] = await Promise.all([
+    listBuyerCatalog({ communityId: unit.communityId }),
+    listIncentives({ communityId: unit.communityId, status: "active" }, orgId),
+    unit.planId ? getHousePlan(unit.planId, orgId).catch(() => null) : Promise.resolve(null),
+  ])
+  return {
+    unit,
+    catalog,
+    incentives: incentives.map((row: any) => ({
+      id: String(row.id),
+      name: String(row.name),
+      incentiveType: String(row.incentive_type) as "fixed_amount" | "percent_of_base",
+      appliesTo: String(row.applies_to) as "price" | "design_credit",
+      amountCents: row.amount_cents != null ? Number(row.amount_cents) : null,
+      percent: row.percent != null ? Number(row.percent) : null,
+    })),
+    versions: (plan?.versions ?? []).filter((version: any) => version.status === "released").map((version: any) => ({ id: version.id as string, label: (version.label as string) ?? `v${version.version_number}` })),
+    elevations: (plan?.elevations ?? []).map((elevation: any) => ({ id: elevation.id as string, label: (elevation.name as string) ?? (elevation.code as string) ?? "Standard" })),
+  }
 }
 
 export async function getCommunitySalesPipeline(communityId: string, orgId?: string) {

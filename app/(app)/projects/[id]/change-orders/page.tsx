@@ -6,6 +6,8 @@ import { listChangeOrdersAction } from "@/app/(app)/change-orders/actions"
 import { ChangeOrdersClient } from "@/components/change-orders/change-orders-client"
 import { Skeleton } from "@/components/ui/skeleton"
 import { getOrgBilling } from "@/lib/services/orgs"
+import { requireOrgContext } from "@/lib/services/context"
+import { getOrgCostCodesEnabled, resolveCostCodesEnabled } from "@/lib/financials/cost-codes-enabled"
 import { listProjectBudgetLines } from "@/lib/services/budgets"
 import { listCostCodes } from "@/lib/services/cost-codes"
 import type { Address } from "@/lib/types"
@@ -48,7 +50,11 @@ async function ProjectChangeOrdersData({ id }: { id: string }) {
     notFound()
   }
 
-  const costCodesEnabled = project.financial_settings?.cost_codes_enabled ?? true
+  const { supabase, orgId } = await requireOrgContext()
+  const costCodesEnabled = resolveCostCodesEnabled(
+    project.financial_settings?.cost_codes_enabled,
+    await getOrgCostCodesEnabled(supabase, orgId),
+  )
   const [changeOrders, orgBilling, costCodes, budgetLines] = await Promise.all([
     listChangeOrdersAction(id),
     getOrgBilling().catch(() => null),

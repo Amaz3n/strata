@@ -14,6 +14,7 @@ import {
 } from "@/lib/integrations/accounting/qbo/import"
 import { listProjects } from "@/lib/services/projects"
 import { requireOrgContext } from "@/lib/services/context"
+import { getOrgCostCodesEnabled, resolveCostCodesEnabled } from "@/lib/financials/cost-codes-enabled"
 import { requireAuthorization } from "@/lib/services/authorization"
 
 export async function listQboImportConnectionsAction(): Promise<{ id: string; label: string; company: string | null }[]> {
@@ -60,11 +61,12 @@ export async function listQboCustomersForImportAction(connectionId?: string): Pr
 
 /** Lightweight project list (id + name) for the per-line "allocate to project" picker. */
 export async function listProjectsForImportAction(): Promise<{ id: string; name: string; costCodesEnabled: boolean }[]> {
-  const projects = await listProjects()
+  const { supabase, orgId } = await requireOrgContext()
+  const [projects, orgCostCodesDefault] = await Promise.all([listProjects(), getOrgCostCodesEnabled(supabase, orgId)])
   return projects.map((project) => ({
     id: project.id,
     name: project.name,
-    costCodesEnabled: project.financial_settings?.cost_codes_enabled ?? true,
+    costCodesEnabled: resolveCostCodesEnabled(project.financial_settings?.cost_codes_enabled, orgCostCodesDefault),
   }))
 }
 

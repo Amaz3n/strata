@@ -1,25 +1,110 @@
 import Link from "next/link"
 
 import { PageLayout } from "@/components/layout/page-layout"
-import { Badge } from "@/components/ui/badge"
+import { SettingsGroup } from "@/components/settings/settings-section"
+import { ChevronRight } from "@/components/icons"
+import { getProjectPosture } from "@/lib/product-tier"
+import { getOrgProductTier } from "@/lib/services/context"
 import { IMPORTER_DEFINITIONS, IMPORTER_KEYS } from "@/lib/services/import-definitions"
-import { listImportBatches } from "@/lib/services/imports"
+import { listImportBatches, type ImportBatchSummary } from "@/lib/services/imports"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
+import { orgHasPriceAgreements } from "@/lib/services/price-book"
+import { orgHasProductionProjects } from "@/lib/services/production-desk-scope"
 
 export const dynamic = "force-dynamic"
 
+const CONTAINER = "mx-auto w-full max-w-3xl space-y-8 px-5 py-6 lg:px-8 lg:py-8"
+
+const STATUS_LABELS: Record<string, string> = {
+  draft: "Draft",
+  staged: "Staged",
+  validated: "Validated",
+  committed: "Committed",
+  failed: "Failed",
+}
+
+function batchSummary(batches: ImportBatchSummary[]) {
+  const latest = batches[0]
+  if (!latest) return "Never run"
+  const status = STATUS_LABELS[latest.status] ?? latest.status
+  return batches.length === 1 ? status : `${status} · ${batches.length} batches`
+}
+
 export default async function ImportsPage() {
-  const [result, access] = await Promise.all([listImportBatches({ limit: 50 }), getCurrentUserPermissions()])
+  const [result, access, productTier, hasProductionProjects, hasPriceAgreements] = await Promise.all([
+    listImportBatches({ limit: 50 }),
+    getCurrentUserPermissions(),
+    getOrgProductTier(),
+    orgHasProductionProjects().catch(() => false),
+    orgHasPriceAgreements().catch(() => false),
+  ])
+
+  const posture = getProjectPosture(null, productTier)
   const permissions = new Set(access.permissions)
   const hasAny = (...keys: string[]) => permissions.has("*") || keys.some((key) => permissions.has(key))
+  // Mirrors the sidebar: an org running price agreements keeps Purchasing even
+  // off the production tier, so its importer follows the same rule.
+  const showsPurchasing = posture === "production" || hasProductionProjects || hasPriceAgreements
+
   const available = IMPORTER_KEYS.filter((key) => {
+    const definition = IMPORTER_DEFINITIONS[key]
+    // Open WIP cutover is run by us, not by the customer.
     if (key === "open_wip") return false
+    if (key === "price_book") return showsPurchasing && hasAny("price_book.write", "commitment.write")
+    if (definition.postures && !definition.postures.includes(posture)) return false
     if (key === "plan_library") return hasAny("plan.write")
     if (key === "option_catalog") return hasAny("selections.catalog.manage")
-    if (key === "price_book") return hasAny("price_book.write", "commitment.write")
     if (key === "communities_lots") return hasAny("community.write", "lot.write")
     if (key === "team") return hasAny("members.manage")
     return true
   })
-  return <PageLayout title="Data imports" breadcrumbs={[{ label: "Settings", href: "/settings" }, { label: "Data imports" }]}><div className="space-y-5"><div className="border-b pb-4"><h1 className="text-xl font-semibold tracking-tight">Data imports</h1><p className="mt-1 text-sm text-muted-foreground">Stage, validate, correct, and commit organization data. Open-WIP cutover remains platform-assisted.</p></div><div className="divide-y border">{available.map((key) => { const definition = IMPORTER_DEFINITIONS[key]; const batches = result.batches.filter((batch) => batch.importer === key); const latest = batches[0]; return <Link key={key} href={`/settings/imports/${key}`} className="grid grid-cols-[minmax(0,1fr)_100px_100px] items-center gap-3 px-4 py-3 hover:bg-muted/30"><span><span className="block text-sm font-medium">{definition.label}</span><span className="block truncate text-xs text-muted-foreground">{definition.description}</span></span><Badge variant="outline">{batches.length} batches</Badge><span className="text-right text-xs text-muted-foreground">{latest?.status ?? "Not started"}</span></Link> })}</div></div></PageLayout>
+
+  return (
+    <PageLayout
+      fullBleed
+      title="Data imports"
+      breadcrumbs={[{ label: "Settings", href: "/settings" }, { label: "Data imports" }]}
+    >
+      <div className={CONTAINER}>
+        <SettingsGroup
+          title="Importers"
+          description="Bring existing data into Arc. Every import stages first — you validate and correct the rows before anything is committed."
+        >
+          {available.length === 0 ? (
+            <div className="py-6">
+              <p className="text-sm leading-5 text-foreground">No importers available</p>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                Importing cost codes or your team roster needs the matching permission. Ask an organization admin.
+              </p>
+            </div>
+          ) : (
+            available.map((key) => {
+              const definition = IMPORTER_DEFINITIONS[key]
+              const batches = result.batches.filter((batch) => batch.importer === key)
+              return (
+                <Link
+                  key={key}
+                  href={`/settings/imports/${key}`}
+                  className="group grid gap-2 py-4 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)] sm:gap-8"
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium leading-5 text-foreground group-hover:underline">
+                      {definition.label}
+                    </p>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">{definition.description}</p>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="min-w-0 truncate text-sm leading-6 text-muted-foreground">
+                      {batchSummary(batches)}
+                    </span>
+                    <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+                  </div>
+                </Link>
+              )
+            })
+          )}
+        </SettingsGroup>
+      </div>
+    </PageLayout>
+  )
 }

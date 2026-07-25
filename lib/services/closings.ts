@@ -228,7 +228,7 @@ export async function settleClosing(input: unknown, orgId?: string) {
   await Promise.all([
     recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "closing_settled", entityType: "closing", entityId: closing.id, payload: { final_price_cents: settlement.finalPriceCents, community_id: closing.community_id, closing_invoice_id: invoice.id } }),
     recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "closing", entityId: closing.id, before: closing, after: updated }),
-    enqueueOutboxJob({ orgId: context.orgId, jobType: "warranty_enroll_coverage", payload: { project_id: closing.project_id, effective_date: parsed.actualDate }, dedupeByPayloadKeys: ["project_id"] }),
+    enqueueOutboxJob({ orgId: context.orgId, jobType: "warranty_enroll_coverage", payload: { project_id: closing.project_id, effective_date: parsed.actualDate, source: "closing" }, dedupeByPayloadKeys: ["project_id"] }),
   ])
   return getClosing(closing.project_id, context.orgId)
 }

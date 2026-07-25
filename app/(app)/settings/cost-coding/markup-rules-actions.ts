@@ -58,7 +58,7 @@ export async function createMarkupRuleFormAction(formData: FormData) {
         effectiveFrom: String(formData.get("effective_from") || "") ? new Date(String(formData.get("effective_from"))) : null,
         effectiveTo: String(formData.get("effective_to") || "") ? new Date(String(formData.get("effective_to"))) : null,
       })
-      revalidatePath("/settings/markup-rules")
+      revalidatePath("/settings/cost-coding")
   })
 }
 
@@ -66,6 +66,6 @@ export async function deleteMarkupRuleFormAction(ruleId: string) {
   return run(async () => {
       await requirePermissionGuard("org.admin")
       await deleteMarkupRule(ruleId)
-      revalidatePath("/settings/markup-rules")
+      revalidatePath("/settings/cost-coding")
   })
 }

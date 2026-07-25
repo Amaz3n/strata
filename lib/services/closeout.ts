@@ -2,6 +2,8 @@ import { requireOrgContext } from "@/lib/services/context"
 import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
+import { enqueueOutboxJob } from "@/lib/services/outbox"
+import { getProjectPosture } from "@/lib/product-tier"
 import { closeoutItemInputSchema, closeoutItemUpdateSchema, type CloseoutItemInput, type CloseoutItemUpdate } from "@/lib/validation/closeout"
 import type { CloseoutItem, CloseoutPackage } from "@/lib/types"
 
@@ -331,12 +333,72 @@ export async function updateCloseoutItem({
     const completed = (items ?? []).filter((item) => item.status === "complete").length
     const nextStatus = total > 0 && completed === total ? "complete" : "in_progress"
 
-    await supabase
+    const { data: pkg } = await supabase
       .from("closeout_packages")
-      .update({ status: nextStatus, updated_at: new Date().toISOString() })
+      .select("status, substantial_completion_date")
       .eq("org_id", resolvedOrgId)
       .eq("id", updatedItem.closeout_package_id)
+      .maybeSingle()
+
+    // The package reaching complete is substantial completion, and for projects that
+    // never close it's what starts the warranty clock. Stamped once — reopening an
+    // item later doesn't move a date coverage was already snapshotted from.
+    const reachedCompletion = nextStatus === "complete" && !pkg?.substantial_completion_date
+    const completionDate = reachedCompletion ? new Date().toISOString().slice(0, 10) : null
+
+    await supabase
+      .from("closeout_packages")
+      .update({
+        status: nextStatus,
+        updated_at: new Date().toISOString(),
+        ...(completionDate ? { substantial_completion_date: completionDate } : {}),
+      })
+      .eq("org_id", resolvedOrgId)
+      .eq("id", updatedItem.closeout_package_id)
+
+    if (completionDate) {
+      await enrollWarrantyCoverageOnCompletion({
+        supabase,
+        orgId: resolvedOrgId,
+        projectId: updatedItem.project_id as string,
+        completionDate,
+      })
+    }
   }
 
   return mapItem(updatedItem)
+}
+
+/**
+ * Production homes enroll warranty coverage at closing, so they're left alone here.
+ * Every other posture has no closing — substantial completion is the only date the
+ * coverage clock can start from.
+ */
+async function enrollWarrantyCoverageOnCompletion({
+  supabase,
+  orgId,
+  projectId,
+  completionDate,
+}: {
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"]
+  orgId: string
+  projectId: string
+  completionDate: string
+}) {
+  const { productTier } = await requireOrgContext(orgId)
+  const { data: project } = await supabase
+    .from("projects")
+    .select("property_type")
+    .eq("org_id", orgId)
+    .eq("id", projectId)
+    .maybeSingle()
+
+  if (getProjectPosture(project?.property_type, productTier) === "production") return
+
+  await enqueueOutboxJob({
+    orgId,
+    jobType: "warranty_enroll_coverage",
+    payload: { project_id: projectId, effective_date: completionDate, source: "completion" },
+    dedupeByPayloadKeys: ["project_id"],
+  })
 }

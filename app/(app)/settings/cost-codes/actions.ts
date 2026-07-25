@@ -47,7 +47,7 @@ export async function createCostCodeAction(input: {
         cost_type: input.cost_type,
       })
       revalidatePath("/settings")
-      revalidatePath("/settings/cost-codes")
+      revalidatePath("/settings/cost-coding")
       return result
   })
 }
@@ -81,7 +81,7 @@ export async function updateCostCodeAction(input: {
         cost_type: input.cost_type,
       })
       revalidatePath("/settings")
-      revalidatePath("/settings/cost-codes")
+      revalidatePath("/settings/cost-coding")
       return result
   })
 }
@@ -91,7 +91,7 @@ export async function setCostCodeActiveAction(id: string, isActive: boolean) {
       await requirePermissionGuard("org.admin")
       const result = await setCostCodeActive(id, isActive)
       revalidatePath("/settings")
-      revalidatePath("/settings/cost-codes")
+      revalidatePath("/settings/cost-coding")
       return result
   })
 }
@@ -105,6 +105,6 @@ export async function seedCostCodesAction(standard: "nahb" | "csi" = "nahb") {
         await seedNAHBCostCodes()
       }
       revalidatePath("/settings")
-      revalidatePath("/settings/cost-codes")
+      revalidatePath("/settings/cost-coding")
   })
 }

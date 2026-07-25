@@ -118,6 +118,22 @@
   --signer-5: oklch(0.52 0.20 15);
   --signer-5-bg: oklch(0.94 0.03 15);
   --signer-5-border: oklch(0.65 0.16 15);
+
+  /* Product tiers — the one Arc mark in three keys. Sourced from the marketing
+     site (arc-website/src/lib/sectors.ts) so app and site read as one brand.
+     The accent is an rgb triplet, so surfaces can tint it with
+     `rgb(var(--tier-x) / <alpha>)`; deep/light are the mark's radial-gradient
+     stops, kept as brand-exact hex. Tier color signals which product an org
+     runs — identity/state (like the signer hues above), never decoration. */
+  --tier-residential: 47 111 237;
+  --tier-residential-deep: #0034a0;
+  --tier-residential-light: #2da7e7;
+  --tier-commercial: 169 124 42;
+  --tier-commercial-deep: #6b4a0f;
+  --tier-commercial-light: #c9922e;
+  --tier-production: 109 91 208;
+  --tier-production-deep: #2e2170;
+  --tier-production-light: #7c6bd8;
 }
 
 .dark {
@@ -186,6 +202,13 @@
   --signer-5: oklch(0.55 0.20 15);
   --signer-5-bg: oklch(0.93 0.04 15);
   --signer-5-border: oklch(0.70 0.14 15);
+
+  /* Lift the tier accents so gold and violet clear contrast on the dark
+     canvas (mirrors arc-website's .dark restore). The mark's deep/light
+     gradient stops stay brand-exact and carry over from :root. */
+  --tier-residential: 88 150 240;
+  --tier-commercial: 201 146 46;
+  --tier-production: 156 139 232;
 }
 
 @theme inline {

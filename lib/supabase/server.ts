@@ -1,5 +1,5 @@
 import { cache } from "react"
-import { cookies } from "next/headers"
+import { cookies, headers } from "next/headers"
 import { createServerClient, type CookieOptions } from "@supabase/ssr"
 import { createClient as createBrowserlessClient, type SupabaseClient } from "@supabase/supabase-js"
 
@@ -23,7 +23,18 @@ export const createServerSupabaseClient = cache(async (): Promise<SupabaseClient
   try {
     const cookieStore = await cookies()
 
+    // GoTrue stamps sessions with the caller's User-Agent/IP on sign-in AND on every
+    // token refresh. Without forwarding, that caller is this Vercel function ("node",
+    // AWS IP), which turns the Devices list into nonsense.
+    const headerStore = await headers()
+    const forwardedHeaders: Record<string, string> = {}
+    const userAgent = headerStore.get("user-agent")
+    const forwardedFor = headerStore.get("x-forwarded-for")
+    if (userAgent) forwardedHeaders["User-Agent"] = userAgent
+    if (forwardedFor) forwardedHeaders["X-Forwarded-For"] = forwardedFor
+
     return createServerClient(url, anonKey, {
+      global: { headers: forwardedHeaders },
       cookies: {
         get: (name: string) => {
           try {

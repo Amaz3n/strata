@@ -76,5 +76,13 @@ export const voidPurchaseAgreementSchema = z.object({
   depositDisposition: z.enum(["refund", "forfeit"]),
 })
 
+export const setLotAskingPriceSchema = z.object({
+  lotId: z.string().uuid(),
+  /** null clears the override and returns the lot to derived pricing. */
+  askingPriceCents: z.number().int().min(0).max(1_000_000_000).nullable(),
+  reason: z.string().max(1000).optional().nullable(),
+})
+export type SetLotAskingPriceInput = z.infer<typeof setLotAskingPriceSchema>
+
 export type IncentiveInput = z.infer<typeof incentiveSchema>
 export type AgreementConfigurationInput = z.infer<typeof agreementConfigurationSchema>

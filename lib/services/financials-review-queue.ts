@@ -51,7 +51,7 @@ export async function loadFinancialsReviewQueueData(projectId: string) {
   const setup = setupResult.status === "fulfilled" ? setupResult.value : null
   if (setup?.billingModel === "fixed_price") {
     const costCodes = costCodesResult.status === "fulfilled" ? costCodesResult.value : []
-    const costCodesEnabled = setup.settings?.cost_codes_enabled ?? true
+    const costCodesEnabled = setup.costCodesEnabled
     return {
       timeEntries: [],
       expenses: [],
@@ -78,7 +78,7 @@ export async function loadFinancialsReviewQueueData(projectId: string) {
       ? feeSummaryResult.value
       : null
   const settings = setup?.settings ?? null
-  const costCodesEnabled = settings?.cost_codes_enabled ?? true
+  const costCodesEnabled = setup?.costCodesEnabled ?? true
   const gateSettings = {
     cost_codes_enabled: costCodesEnabled,
     proof_required: settings?.proof_required ?? false,
