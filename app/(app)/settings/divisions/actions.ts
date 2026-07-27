@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache"
 import { z } from "zod"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
-import { archiveDivision, createDivision, updateDivision } from "@/lib/services/divisions"
+import { archiveDivision, createDivision, restoreDivision, updateDivision } from "@/lib/services/divisions"
 import { divisionInputSchema, divisionUpdateSchema } from "@/lib/validation/divisions"
 
 async function run<T>(operation: () => Promise<T>): Promise<ActionResult<T>> {
@@ -27,4 +27,8 @@ export async function updateDivisionAction(id: string, input: unknown) {
 
 export async function archiveDivisionAction(id: string) {
   return run(() => archiveDivision(z.string().uuid().parse(id)))
+}
+
+export async function restoreDivisionAction(id: string) {
+  return run(() => restoreDivision(z.string().uuid().parse(id)))
 }

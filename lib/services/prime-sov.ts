@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { requireOrgContext } from "@/lib/services/context"
+import { getOrgCostCodesEnabled, resolveCostCodesEnabled } from "@/lib/financials/cost-codes-enabled"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
@@ -487,17 +488,20 @@ export async function importSovFromEstimate(
     throw new Error("This project has no estimate to import from")
   }
 
-  const { data: settings } = await supabase
-    .from("project_financial_settings")
-    .select("cost_codes_enabled")
-    .eq("org_id", resolvedOrgId)
-    .eq("project_id", projectId)
-    .maybeSingle()
+  const [{ data: settings }, orgCostCodesDefault] = await Promise.all([
+    supabase
+      .from("project_financial_settings")
+      .select("cost_codes_enabled")
+      .eq("org_id", resolvedOrgId)
+      .eq("project_id", projectId)
+      .maybeSingle(),
+    getOrgCostCodesEnabled(supabase, resolvedOrgId),
+  ])
 
   const draft = await buildBudgetDraftFromEstimate({
     projectId,
     estimateId,
-    costCodesEnabled: settings?.cost_codes_enabled !== false,
+    costCodesEnabled: resolveCostCodesEnabled(settings?.cost_codes_enabled, orgCostCodesDefault),
     orgId: resolvedOrgId,
   })
 

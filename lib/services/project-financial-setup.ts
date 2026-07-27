@@ -16,6 +16,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { requirePermission } from "@/lib/services/permissions"
+import { getOrgCostCodesEnabled, resolveCostCodesEnabled } from "@/lib/financials/cost-codes-enabled"
 
 export type ProjectFinancialSetupStatus = "complete" | "needs_setup"
 
@@ -46,6 +47,10 @@ export interface ProjectFinancialSetupStatusResult {
   billingModel: ProjectBillingModel
   status: ProjectFinancialSetupStatus
   settings: ProjectFinancialSettings | null
+  /** Effective cost-codes flag: the project override if set, else the org default
+   *  (also covers projects with no settings row yet). Prefer this over
+   *  `settings?.cost_codes_enabled` at read sites. */
+  costCodesEnabled: boolean
   contract: {
     id?: string | null
     total_cents?: number | null
@@ -126,7 +131,8 @@ const financialSetupInputSchema = z.object({
   proofRequired: z.boolean().default(false),
   clientCostApprovalRequired: z.boolean().default(false),
   openBookRequired: z.boolean().default(false),
-  costCodesEnabled: z.boolean().default(true),
+  // null = inherit the org default (resolved at read time).
+  costCodesEnabled: z.boolean().nullable().default(null),
 })
 
 export type FinancialSetupInput = z.infer<typeof financialSetupInputSchema>
@@ -419,7 +425,10 @@ export async function saveBillingContractWithAmendment(args: {
   return { contract: data, contractId: data.id, action: "update" as const, materialChanges }
 }
 
-function mapSettings(row: any): ProjectFinancialSettings {
+// `cost_codes_enabled` is resolved here (`orgCostCodesDefault`), so the returned
+// DTO always carries the effective boolean. The raw per-project value (null =
+// inherit) is only read where the override itself is being edited.
+function mapSettings(row: any, orgCostCodesDefault: boolean): ProjectFinancialSettings {
   return {
     id: row.id,
     org_id: row.org_id,
@@ -430,7 +439,7 @@ function mapSettings(row: any): ProjectFinancialSettings {
     proof_required: row.proof_required ?? false,
     client_cost_approval_required: row.client_cost_approval_required ?? false,
     open_book_required: row.open_book_required ?? false,
-    cost_codes_enabled: row.cost_codes_enabled ?? true,
+    cost_codes_enabled: resolveCostCodesEnabled(row.cost_codes_enabled, orgCostCodesDefault),
     setup_completed_at: row.setup_completed_at ?? null,
     setup_completed_by: row.setup_completed_by ?? null,
     metadata: row.metadata ?? {},
@@ -446,18 +455,16 @@ export async function getProjectFinancialSettings({
   orgId: string
   projectId: string
 }) {
-  const { data, error } = await supabase
-    .from("project_financial_settings")
-    .select("*")
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .maybeSingle()
+  const [{ data, error }, orgCostCodesDefault] = await Promise.all([
+    supabase.from("project_financial_settings").select("*").eq("org_id", orgId).eq("project_id", projectId).maybeSingle(),
+    getOrgCostCodesEnabled(supabase, orgId),
+  ])
 
   if (error) {
     throw new Error(`Failed to load project financial settings: ${error.message}`)
   }
 
-  return data ? mapSettings(data) : null
+  return data ? mapSettings(data, orgCostCodesDefault) : null
 }
 
 async function getActiveContract(params: { supabase: SupabaseClient; orgId: string; projectId: string }): Promise<ContractLike | null> {
@@ -491,6 +498,10 @@ export async function getProjectFinancialSetupStatus({
     getProjectFinancialSettings({ supabase, orgId, projectId }),
     getActiveContract({ supabase, orgId, projectId }),
   ])
+
+  // `settings.cost_codes_enabled` is already resolved against the org default;
+  // fall back to the org default directly when the project has no settings row.
+  const costCodesEnabled = settings ? settings.cost_codes_enabled : await getOrgCostCodesEnabled(supabase, orgId)
 
   const billingModel = settings?.billing_model ?? resolveProjectBillingModel(contract as any)
   const issues: ProjectFinancialSetupIssue[] = []
@@ -558,6 +569,7 @@ export async function getProjectFinancialSetupStatus({
     projectId,
     billingModel,
     settings,
+    costCodesEnabled,
     contract: contract
       ? {
           id: contract.id ?? null,
@@ -593,6 +605,18 @@ export async function upsertProjectFinancialSettingsFromProjectInput(args: {
     orgId: args.orgId,
     projectId: args.projectId,
   }).catch(() => null)
+  // The resolved DTO can't tell "inherit" (null) from an explicit value, so read the
+  // raw column to preserve it when the caller doesn't touch cost coding.
+  const [existingRawResult, orgCostCodesDefault] = await Promise.all([
+    args.supabase
+      .from("project_financial_settings")
+      .select("cost_codes_enabled")
+      .eq("org_id", args.orgId)
+      .eq("project_id", args.projectId)
+      .maybeSingle(),
+    getOrgCostCodesEnabled(args.supabase, args.orgId),
+  ])
+  const existingRawCostCodesEnabled = (existingRawResult.data?.cost_codes_enabled ?? null) as boolean | null
   const billingModel =
     normalizeBillingModel(args.input.billing_model) ??
     existingSettings?.billing_model ??
@@ -619,7 +643,9 @@ export async function upsertProjectFinancialSettingsFromProjectInput(args: {
     client_cost_approval_required:
       args.input.requires_client_cost_approval ?? args.existingContract?.requires_client_cost_approval ?? false,
     open_book_required: isCostPlus ? args.input.open_book ?? args.existingContract?.open_book ?? true : false,
-    cost_codes_enabled: args.input.cost_codes_enabled ?? existingSettings?.cost_codes_enabled ?? true,
+    // null = inherit org default; only overwrite when the caller sends a value.
+    cost_codes_enabled:
+      args.input.cost_codes_enabled !== undefined ? args.input.cost_codes_enabled : existingRawCostCodesEnabled,
     setup_completed_at: now,
     setup_completed_by: args.userId ?? null,
     updated_by: args.userId ?? null,
@@ -637,7 +663,7 @@ export async function upsertProjectFinancialSettingsFromProjectInput(args: {
     throw new Error(`Failed to save project financial settings: ${error?.message}`)
   }
 
-  return mapSettings(data)
+  return mapSettings(data, orgCostCodesDefault)
 }
 
 export async function saveProjectFinancialSetup(input: FinancialSetupInput, orgId?: string) {

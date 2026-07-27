@@ -8,13 +8,17 @@ import { NotificationService } from '@/lib/services/notifications'
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { createStripeBillingPortalSession, createStripeCheckoutSession, createStripeCustomer, getAppBaseUrl } from "@/lib/integrations/payments/stripe"
 import { getCurrentUserPermissions, requireAnyPermission, requirePermission } from "@/lib/services/permissions"
-import { TEAM_PERMISSION_OPTIONS, listAssignableOrgRoles, listTeamMembers } from "@/lib/services/team"
+import { TEAM_PERMISSION_OPTIONS, listAssignableOrgRoles, listOrgRolePermissions, listTeamMembers } from "@/lib/services/team"
+import { listDivisions } from "@/lib/services/divisions"
 import { getOrgAccessState } from "@/lib/services/access"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { createFileRecord } from "@/lib/services/files"
 import { createInitialVersion } from "@/lib/services/file-versions"
 import { buildOrgScopedPath, uploadFilesObject } from "@/lib/storage/files-storage"
+
+import { updateDocumentNumbering } from "@/lib/services/document-numbering"
+import { documentNumberingSchema } from "@/lib/validation/document-numbering"
 
 import { unwrapAction, actionError, type ActionResult  } from "@/lib/action-result"
 
@@ -289,6 +293,8 @@ type BillingPageData = {
     org?: {
       name?: string | null
       billing_model?: string | null
+      product_tier?: string | null
+      billing_email?: string | null
     } | null
     subscription?: {
       plan_code?: string | null
@@ -297,6 +303,9 @@ type BillingPageData = {
       external_customer_id?: string | null
       external_subscription_id?: string | null
       trial_ends_at?: string | null
+      cancel_at?: string | null
+      collection_method?: string | null
+      net_days?: number | null
     } | null
     plan?: {
       name?: string | null
@@ -324,12 +333,12 @@ export async function getBillingPageDataAction(): Promise<BillingPageData> {
       const [orgResult, subscriptionResult, plansResult] = await Promise.all([
         service
           .from("orgs")
-          .select("name, billing_model")
+          .select("name, billing_model, product_tier, billing_email")
           .eq("id", orgId)
           .maybeSingle(),
         service
           .from("subscriptions")
-          .select("plan_code, status, current_period_end, external_customer_id, external_subscription_id, trial_ends_at")
+          .select("plan_code, status, current_period_end, external_customer_id, external_subscription_id, trial_ends_at, cancel_at, collection_method, net_days")
           .eq("org_id", orgId)
           .order("created_at", { ascending: false })
           .limit(1)
@@ -554,20 +563,28 @@ export async function getTeamSettingsDataAction() {
           teamMembers: [],
           roleOptions: [],
           permissionOptions: [],
+          rolePermissions: {},
+          divisions: [],
+          currentUserId: permissionResult?.userId ?? null,
           canManageMembers: false,
           canEditRoles: false,
           locked: true,
         }
       }
 
-      const [teamMembers, roleOptions] = await Promise.all([
+      const [teamMembers, roleOptions, rolePermissions, divisions] = await Promise.all([
         listTeamMembers(undefined, { includeProjectCounts: false }),
         listAssignableOrgRoles().catch(() => []),
+        listOrgRolePermissions().catch(() => ({})),
+        listDivisions().catch(() => []),
       ])
       return {
         teamMembers,
         roleOptions,
         permissionOptions: TEAM_PERMISSION_OPTIONS,
+        rolePermissions,
+        divisions,
+        currentUserId: permissionResult?.userId ?? null,
         canManageMembers: permissions.includes("members.manage"),
         canEditRoles: permissions.includes("org.admin"),
         locked: false,
@@ -575,7 +592,6 @@ export async function getTeamSettingsDataAction() {
 }
 
 const organizationDetailsSettingsSchema = z.object({
-  name: z.string().trim().min(2, "Organization name is required."),
   proposalTermsTemplate: z.string().trim().max(8000).optional().default(""),
   estimateTermsTemplate: z.string().trim().max(8000).optional().default(""),
   estimateAccentColor: z
@@ -593,12 +609,8 @@ const organizationDetailsSettingsSchema = z.object({
 
 const invoicingSettingsSchema = z.object({
   billingEmail: z.string().trim().email("Enter a valid billing email."),
-  addressLine1: z.string().trim().max(120).optional().default(""),
-  addressLine2: z.string().trim().max(120).optional().default(""),
-  city: z.string().trim().max(80).optional().default(""),
-  state: z.string().trim().max(80).optional().default(""),
-  postalCode: z.string().trim().max(20).optional().default(""),
-  country: z.string().trim().max(80).optional().default(""),
+  // Free-form multi-line remittance address, stored as the address `formatted` block.
+  address: z.string().trim().max(600).optional().default(""),
   defaultPaymentTermsDays: z.number().min(0).max(365).default(15),
   defaultInvoiceNote: z.string().trim().max(2000).optional().default(""),
 })
@@ -617,80 +629,33 @@ type OrgAddress = {
   country?: string
 } | null
 
-function resolveAddressFields(address: OrgAddress) {
-  if (!address) {
-    return {
-      addressLine1: "",
-      addressLine2: "",
-      city: "",
-      state: "",
-      postalCode: "",
-      country: "",
-      address: "",
-    }
-  }
-
-  const street1 = address.street1 ?? ""
-  const street2 = address.street2 ?? ""
-  const city = address.city ?? ""
-  const state = address.state ?? ""
-  const postalCode = address.postal_code ?? ""
-  const country = address.country ?? ""
-  const formattedParts = String(address.formatted ?? "")
-    .split(/\n|,/g)
-    .map((part) => part.trim())
-    .filter(Boolean)
-
-  const resolvedStreet1 = street1 || formattedParts[0] || ""
-  const resolvedCity = city || (formattedParts.length > 1 ? formattedParts[1] : "")
-  const resolvedCountry = country || (formattedParts.length > 2 ? formattedParts[2] : "")
-  const addressText = [
-    [resolvedStreet1, street2].filter(Boolean).join(" ").trim(),
-    [resolvedCity, state, postalCode].filter(Boolean).join(" ").trim(),
-    resolvedCountry,
+/**
+ * Formatted multi-line address string for display / editing. Prefers `formatted`,
+ * reconstructing from structured parts only for older records that predate it.
+ */
+function resolveAddressText(address: OrgAddress): string {
+  if (!address) return ""
+  if (address.formatted && address.formatted.trim()) return address.formatted.trim()
+  return [
+    [address.street1, address.street2].filter(Boolean).join(" ").trim(),
+    [address.city, address.state, address.postal_code].filter(Boolean).join(" ").trim(),
+    address.country,
   ]
     .filter(Boolean)
     .join("\n")
     .trim()
-
-  return {
-    addressLine1: resolvedStreet1,
-    addressLine2: street2,
-    city: resolvedCity,
-    state,
-    postalCode,
-    country: resolvedCountry,
-    address: address.formatted ?? addressText,
-  }
 }
 
 function buildAddressPayload(input: InvoicingSettingsInput): OrgAddress {
-  const line1 = input.addressLine1.trim()
-  const line2 = input.addressLine2.trim()
-  const city = input.city.trim()
-  const state = input.state.trim()
-  const postalCode = input.postalCode.trim()
-  const country = input.country.trim()
-  const formatted = [
-    [line1, line2].filter(Boolean).join(" ").trim(),
-    [city, state, postalCode].filter(Boolean).join(" ").trim(),
-    country,
-  ]
+  const formatted = input.address
+    .split("\n")
+    .map((line) => line.trim())
     .filter(Boolean)
     .join("\n")
-    .trim()
 
   if (!formatted) return null
 
-  return {
-    formatted,
-    street1: line1 || undefined,
-    street2: line2 || undefined,
-    city: city || undefined,
-    state: state || undefined,
-    postal_code: postalCode || undefined,
-    country: country || undefined,
-  }
+  return { formatted }
 }
 
 function resolveLogoPath(logoUrl: string | null | undefined) {
@@ -760,7 +725,7 @@ export async function getOrganizationSettingsAction() {
         .select("settings")
         .eq("org_id", orgId)
         .maybeSingle()
-      const orgAddress = resolveAddressFields((orgResult.data.address as OrgAddress) ?? null)
+      const addressText = resolveAddressText((orgResult.data.address as OrgAddress) ?? null)
       const settings = (orgSettingsData?.settings as Record<string, any> | null) ?? {}
       const defaultPaymentTermsDaysRaw = Number(settings.invoice_default_payment_terms_days ?? 15)
       const defaultPaymentTermsDays = Number.isFinite(defaultPaymentTermsDaysRaw) ? defaultPaymentTermsDaysRaw : 15
@@ -769,13 +734,7 @@ export async function getOrganizationSettingsAction() {
         id: orgResult.data.id as string,
         name: (orgResult.data.name as string) ?? "",
         billingEmail: (orgResult.data.billing_email as string | null) ?? "",
-        address: orgAddress.address,
-        addressLine1: orgAddress.addressLine1,
-        addressLine2: orgAddress.addressLine2,
-        city: orgAddress.city,
-        state: orgAddress.state,
-        postalCode: orgAddress.postalCode,
-        country: orgAddress.country,
+        address: addressText,
         defaultPaymentTermsDays,
         defaultInvoiceNote: String(settings.invoice_default_payment_details ?? settings.invoice_default_note ?? ""),
         proposalTermsTemplate: String(settings.proposal_terms_template ?? ""),
@@ -798,14 +757,8 @@ type OrganizationSettingsSection = "organization" | "invoicing" | "all"
 
 export async function updateOrganizationSettingsAction(input: {
   section?: OrganizationSettingsSection
-  name?: string
   billingEmail?: string
-  addressLine1?: string
-  addressLine2?: string
-  city?: string
-  state?: string
-  postalCode?: string
-  country?: string
+  address?: string
   defaultPaymentTermsDays?: number
   defaultInvoiceNote?: string
   proposalTermsTemplate?: string
@@ -875,9 +828,6 @@ export async function updateOrganizationSettingsAction(input: {
       }
 
       const orgUpdate: Record<string, unknown> = {}
-      if (includesOrganizationFields) {
-        orgUpdate.name = data.name
-      }
       if (includesInvoicingFields) {
         orgUpdate.billing_email = data.billingEmail
         orgUpdate.address = buildAddressPayload(data as InvoicingSettingsInput)
@@ -1098,20 +1048,23 @@ export async function updateOrganizationLogoAction(formData: FormData) {
 export async function updateUserAvatarAction(formData: FormData) {
   return run(async () => {
       const { orgId, user } = await requireOrgMembership()
+      const remove = String(formData.get("remove") ?? "false") === "true"
       const rawFile = formData.get("avatar")
       const file = rawFile instanceof File ? rawFile : null
 
-      if (!file) {
-        return { error: "Choose a profile photo to upload." }
-      }
+      if (!remove) {
+        if (!file) {
+          return { error: "Choose a profile photo to upload." }
+        }
 
-      const supportedTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/svg+xml"])
-      if (!supportedTypes.has(file.type)) {
-        return { error: "Use PNG, JPG, WEBP, or SVG." }
-      }
+        const supportedTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/svg+xml"])
+        if (!supportedTypes.has(file.type)) {
+          return { error: "Use PNG, JPG, WEBP, or SVG." }
+        }
 
-      if (file.size > 5 * 1024 * 1024) {
-        return { error: "Profile photo must be 5MB or smaller." }
+        if (file.size > 5 * 1024 * 1024) {
+          return { error: "Profile photo must be 5MB or smaller." }
+        }
       }
 
       const service = createServiceSupabaseClient()
@@ -1126,6 +1079,40 @@ export async function updateUserAvatarAction(formData: FormData) {
       }
 
       const previousAvatarPath = resolveUserAvatarPath((existingUser?.avatar_url as string | null) ?? null)
+
+      if (remove) {
+        const { error: clearError } = await service
+          .from("app_users")
+          .update({ avatar_url: null })
+          .eq("id", user.id)
+
+        if (clearError) {
+          return { error: clearError.message ?? "Failed to remove profile photo." }
+        }
+
+        if (previousAvatarPath) {
+          await service.storage.from("user-avatars").remove([previousAvatarPath])
+        }
+
+        await recordAudit({
+          orgId,
+          actorId: user.id,
+          action: "update",
+          entityType: "app_user",
+          entityId: user.id,
+          before: existingUser ?? null,
+          after: { ...(existingUser ?? {}), avatar_url: null },
+          source: "settings.profile.avatar",
+        })
+
+        revalidatePath("/settings")
+        return { success: true, avatarUrl: null }
+      }
+
+      if (!file) {
+        return { error: "Choose a profile photo to upload." }
+      }
+
       const extension = extensionForMimeType(file.type)
       const storagePath = `${user.id}/avatar-${Date.now()}.${extension}`
       const fileBuffer = Buffer.from(await file.arrayBuffer())
@@ -1188,4 +1175,16 @@ export async function updateUserAvatarAction(formData: FormData) {
       revalidatePath("/settings")
       return { success: true, avatarUrl }
   })
+}
+
+export async function updateDocumentNumberingAction(
+  input: unknown,
+): Promise<ActionResult<Awaited<ReturnType<typeof updateDocumentNumbering>>>> {
+  try {
+    const result = await updateDocumentNumbering(documentNumberingSchema.parse(input))
+    revalidatePath("/settings")
+    return { success: true, data: result }
+  } catch (error) {
+    return actionError(error)
+  }
 }

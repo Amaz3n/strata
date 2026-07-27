@@ -81,7 +81,7 @@ async function FinancialsReceivablesData({ id, periodId }: { id: string; periodI
         retainage={retainage}
         contacts={receivablesData.contacts}
         costCodes={receivablesData.costCodes}
-        costCodesEnabled={setupStatus.settings?.cost_codes_enabled ?? true}
+        costCodesEnabled={setupStatus.costCodesEnabled}
         ownerBillingPackages={receivablesData.ownerBillingPackages}
         feeSummary={receivablesData.feeSummary}
         arSummary={receivablesData.arSummary}

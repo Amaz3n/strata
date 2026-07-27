@@ -1,15 +1,25 @@
 import { Suspense } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
 export const dynamic = 'force-dynamic'
+import { PageLayout } from "@/components/layout/page-layout"
 import { SettingsWindow } from "@/components/settings/settings-window"
 import { getStripeConnectedAccount } from "@/lib/services/stripe-connected-accounts"
-import { TEAM_PERMISSION_OPTIONS, listAssignableOrgRoles, listTeamMembers } from "@/lib/services/team"
+import { TEAM_PERMISSION_OPTIONS, listAssignableOrgRoles, listOrgRolePermissions, listTeamMembers } from "@/lib/services/team"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
-import { getOrgBilling } from "@/lib/services/orgs"
 import { getOrgAccessState } from "@/lib/services/access"
 import { getComplianceRules, getDefaultComplianceRequirements } from "@/lib/services/compliance"
+import { listComplianceDocumentTypes } from "@/lib/services/compliance-documents"
 import { getCurrentUserAction } from "@/app/actions/user"
 import { listDivisions } from "@/lib/services/divisions"
+import { getDocumentNumbering } from "@/lib/services/document-numbering"
+import type { ComplianceRules } from "@/lib/types"
+
+const DEFAULT_COMPLIANCE_RULES: ComplianceRules = {
+  require_lien_waiver: false,
+  block_payment_on_missing_docs: true,
+  warn_subcontract_execution_on_missing_docs: true,
+  block_subcontract_execution_on_missing_docs: false,
+}
 
 interface SettingsPageProps {
   searchParams: Promise<{
@@ -27,64 +37,63 @@ async function SettingsData({ searchParams }: SettingsPageProps) {
   const isLocked = accessState.locked
   const initialTab = typeof resolvedSearchParams?.tab === "string" ? resolvedSearchParams.tab : undefined
 
-  const [stripeConnection, teamMembers, roleOptions, permissionOptions, divisions] = isLocked
-    ? [null, initialTab === "team" ? [] : undefined, initialTab === "team" ? [] : undefined, initialTab === "team" ? [] : undefined, initialTab === "team" ? [] : undefined]
+  const [stripeConnection, teamMembers, roleOptions, permissionOptions, divisions, rolePermissions] = isLocked
+    ? [null, initialTab === "team" ? [] : undefined, initialTab === "team" ? [] : undefined, initialTab === "team" ? [] : undefined, initialTab === "team" ? [] : undefined, initialTab === "team" ? {} : undefined]
     : await Promise.all([
         getStripeConnectedAccount(),
         initialTab === "team" ? listTeamMembers(undefined, { includeProjectCounts: false }) : Promise.resolve(undefined),
         initialTab === "team" ? listAssignableOrgRoles().catch(() => []) : Promise.resolve(undefined),
         initialTab === "team" ? Promise.resolve(TEAM_PERMISSION_OPTIONS) : Promise.resolve(undefined),
         initialTab === "team" ? listDivisions().catch(() => []) : Promise.resolve(undefined),
+        initialTab === "team" ? listOrgRolePermissions().catch(() => ({})) : Promise.resolve(undefined),
       ])
   const permissions = permissionResult?.permissions ?? []
   const canManageMembers = permissions.includes("members.manage")
   const canEditRoles = permissions.includes("org.admin")
   const canManageBilling = permissions.includes("billing.manage")
-  const billing = canManageBilling ? await getOrgBilling().catch(() => null) : null
-  const complianceRules = isLocked ? {
-    require_lien_waiver: false,
-    block_payment_on_missing_docs: true,
-    warn_subcontract_execution_on_missing_docs: true,
-    block_subcontract_execution_on_missing_docs: false,
-  } : await getComplianceRules().catch(() => ({
-    require_lien_waiver: false,
-    block_payment_on_missing_docs: true,
-    warn_subcontract_execution_on_missing_docs: true,
-    block_subcontract_execution_on_missing_docs: false,
-  }))
   const canManageCompliance =
     permissions.includes("org.admin") ||
     permissions.includes("billing.manage")
-  const complianceRequirementDefaults = isLocked
-    ? []
-    : await getDefaultComplianceRequirements().catch(() => [])
+
+  const [complianceRules, complianceRequirementDefaults, complianceDocumentTypes, documentNumbering] = isLocked
+    ? [DEFAULT_COMPLIANCE_RULES, [], [], null]
+    : await Promise.all([
+        getComplianceRules().catch(() => DEFAULT_COMPLIANCE_RULES),
+        getDefaultComplianceRequirements().catch(() => []),
+        listComplianceDocumentTypes().catch(() => []),
+        getDocumentNumbering().catch(() => null),
+      ])
 
   return (
     <SettingsWindow
+      initialDocumentNumbering={documentNumbering}
       user={currentUser}
       initialTab={initialTab}
       initialStripeConnection={stripeConnection}
       teamMembers={teamMembers}
       roleOptions={roleOptions}
       permissionOptions={permissionOptions}
+      initialRolePermissions={rolePermissions}
       divisions={divisions}
       canManageMembers={canManageMembers}
       canEditRoles={canEditRoles}
-      initialBilling={billing}
       canManageBilling={canManageBilling}
       initialComplianceRules={complianceRules}
       canManageCompliance={canManageCompliance}
       initialComplianceRequirementDefaults={complianceRequirementDefaults}
+      complianceDocumentTypes={complianceDocumentTypes}
     />
   )
 }
 
 export default function SettingsPage({ searchParams }: SettingsPageProps) {
   return (
-    <div className="-m-4 -mt-6 flex h-full min-h-0 overflow-hidden">
-      <Suspense fallback={<div className="p-6 space-y-4"><Skeleton className="h-8 w-48 mb-6" /><div className="space-y-2">{Array.from({ length: 5 }).map((_, i) => (<Skeleton key={i} className="h-16 w-full rounded-md" />))}</div></div>}>
-        <SettingsData searchParams={searchParams} />
-      </Suspense>
-    </div>
+    <PageLayout fullBleed>
+      <div className="flex h-full min-h-0 overflow-hidden">
+        <Suspense fallback={<div className="p-6 space-y-4"><Skeleton className="h-8 w-48 mb-6" /><div className="space-y-2">{Array.from({ length: 5 }).map((_, i) => (<Skeleton key={i} className="h-16 w-full rounded-md" />))}</div></div>}>
+          <SettingsData searchParams={searchParams} />
+        </Suspense>
+      </div>
+    </PageLayout>
   )
 }

@@ -205,3 +205,26 @@ export async function archiveDivision(id: string, orgId?: string): Promise<void>
     recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "division", entityId: id, before, after: { ...before, archived_at: archivedAt } }),
   ])
 }
+
+export async function restoreDivision(id: string, orgId?: string): Promise<DivisionDTO> {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("division.manage", context)
+  const { data: before, error: beforeError } = await context.supabase
+    .from("divisions")
+    .select("id, name, code, region, archived_at")
+    .eq("org_id", context.orgId)
+    .eq("id", id)
+    .maybeSingle()
+  if (beforeError || !before) throw new Error("Division not found")
+  const { error } = await context.supabase
+    .from("divisions")
+    .update({ archived_at: null })
+    .eq("org_id", context.orgId)
+    .eq("id", id)
+  if (error) throw new Error(`Failed to restore division: ${error.message}`)
+  await Promise.all([
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "division.restored", entityType: "division", entityId: id, payload: { name: before.name } }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "division", entityId: id, before, after: { ...before, archived_at: null } }),
+  ])
+  return getDivisionDTO(id, context.orgId)
+}

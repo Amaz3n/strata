@@ -49,7 +49,7 @@ async function FinancialsBudgetData({ id }: { id: string }) {
         contractValueCents={contract?.total_cents ?? 0}
         budgetData={data.budgetData}
         costCodes={data.costCodes}
-        costCodesEnabled={setupStatus.settings?.cost_codes_enabled ?? true}
+        costCodesEnabled={setupStatus.costCodesEnabled}
         varianceAlerts={data.varianceAlerts}
         commitments={data.commitments}
         companies={data.companies}

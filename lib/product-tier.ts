@@ -9,6 +9,18 @@ export const PRODUCT_TIER_LABELS: Record<ProductTier, string> = {
   production: "Arc Production",
 }
 
+/**
+ * Customer-facing product names — the full marketing brand, matching the
+ * website. Distinct from PRODUCT_TIER_LABELS on purpose: that map's residential
+ * entry is the short internal "Arc", whereas customers see "Arc Residential".
+ * Use these on customer-facing surfaces (e.g. Settings → Billing).
+ */
+export const PRODUCT_TIER_BRAND_NAMES: Record<ProductTier, string> = {
+  residential: "Arc Residential",
+  commercial: "Arc Commercial",
+  production: "Arc Production",
+}
+
 export function isProductTier(value: unknown): value is ProductTier {
   return value === "residential" || value === "commercial" || value === "production"
 }

@@ -1,4 +1,5 @@
 import { requireOrgContext } from "@/lib/services/context"
+import { getOrgCostCodesEnabled, resolveCostCodesEnabled } from "@/lib/financials/cost-codes-enabled"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { QBOClient } from "@/lib/integrations/accounting/qbo/client"
@@ -1210,13 +1211,16 @@ type CostCodeResolutionContext = {
 
 async function ensureProjectCostCodeSetting(ctx: CostCodeResolutionContext, projectId: string): Promise<boolean> {
   if (ctx.projectCostCodesEnabled.has(projectId)) return ctx.projectCostCodesEnabled.get(projectId) ?? true
-  const { data } = await ctx.supabase
-    .from("project_financial_settings")
-    .select("cost_codes_enabled")
-    .eq("org_id", ctx.orgId)
-    .eq("project_id", projectId)
-    .maybeSingle()
-  const enabled = data?.cost_codes_enabled ?? true
+  const [{ data }, orgDefault] = await Promise.all([
+    ctx.supabase
+      .from("project_financial_settings")
+      .select("cost_codes_enabled")
+      .eq("org_id", ctx.orgId)
+      .eq("project_id", projectId)
+      .maybeSingle(),
+    getOrgCostCodesEnabled(ctx.supabase, ctx.orgId),
+  ])
+  const enabled = resolveCostCodesEnabled(data?.cost_codes_enabled, orgDefault)
   ctx.projectCostCodesEnabled.set(projectId, enabled)
   return enabled
 }

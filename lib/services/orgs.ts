@@ -1,4 +1,19 @@
+import type { SupabaseClient } from "@supabase/supabase-js"
+
 import { requireOrgContext } from "@/lib/services/context"
+
+/**
+ * The org-level settings bag (org_settings.settings JSONB). Returns {} when the
+ * row doesn't exist yet. RLS lets any org member read their org's settings, so
+ * this works with a user-scoped or service client — pass whichever is in scope.
+ */
+export async function getOrgSettings(
+  supabase: SupabaseClient,
+  orgId: string,
+): Promise<Record<string, unknown>> {
+  const { data } = await supabase.from("org_settings").select("settings").eq("org_id", orgId).maybeSingle()
+  return (data?.settings as Record<string, unknown> | null) ?? {}
+}
 
 export async function getOrgBilling(orgId?: string) {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId, { allowLocked: true })

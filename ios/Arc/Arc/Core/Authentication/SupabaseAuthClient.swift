@@ -26,7 +26,17 @@ struct SupabaseAuthClient: AuthClient, Sendable {
     enum AuthError: LocalizedError {
         case missingConfiguration
         case invalidResponse
+        /// The server examined the credentials/token and said no. Only this case
+        /// justifies discarding a stored session.
         case rejected(message: String)
+        /// The server couldn't answer properly (5xx, rate limit, timeout). The
+        /// stored session may still be perfectly valid — retry later.
+        case transient(message: String)
+
+        var isDefinitiveRejection: Bool {
+            if case .rejected = self { return true }
+            return false
+        }
 
         var errorDescription: String? {
             switch self {
@@ -34,7 +44,7 @@ struct SupabaseAuthClient: AuthClient, Sendable {
                 "Supabase is not configured for this build."
             case .invalidResponse:
                 "Arc received an invalid authentication response."
-            case .rejected(let message):
+            case .rejected(let message), .transient(let message):
                 message
             }
         }
@@ -114,9 +124,14 @@ struct SupabaseAuthClient: AuthClient, Sendable {
         guard let httpResponse = response as? HTTPURLResponse else { throw AuthError.invalidResponse }
         guard 200 ..< 300 ~= httpResponse.statusCode else {
             let error = try? JSONDecoder.arc.decode(ErrorResponse.self, from: data)
-            throw AuthError.rejected(
-                message: error?.message ?? error?.errorDescription ?? error?.msg ?? "Email or password is incorrect."
-            )
+            let message = error?.message ?? error?.errorDescription ?? error?.msg
+            let isRejection = 400 ..< 500 ~= httpResponse.statusCode
+                && httpResponse.statusCode != 408
+                && httpResponse.statusCode != 429
+            if isRejection {
+                throw AuthError.rejected(message: message ?? "Email or password is incorrect.")
+            }
+            throw AuthError.transient(message: message ?? "Arc couldn't reach the sign-in service. Try again.")
         }
 
         let token = try JSONDecoder.arc.decode(TokenResponse.self, from: data)

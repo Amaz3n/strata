@@ -9,6 +9,7 @@ import {
   listBudgetEstimateSources,
 } from "@/lib/services/budget-from-estimate"
 import { requireOrgContext } from "@/lib/services/context"
+import { getProjectCostCodesEnabled } from "@/lib/financials/cost-codes-enabled"
 import { COST_TYPES } from "@/lib/cost-types"
 import {
   approveBudgetTransfer,
@@ -131,11 +132,10 @@ export async function listBudgetEstimateSourcesAction(projectId: string) {
       return listBudgetEstimateSources(projectId)
 }
 
-export async function proposeBudgetFromEstimateAction(
-  projectId: string,
-  estimateId: string,
-  costCodesEnabled: boolean,
-) {
+export async function proposeBudgetFromEstimateAction(projectId: string, estimateId: string) {
+      // Resolve server-side; never trust a cost-codes flag passed from the client.
+      const { supabase, orgId } = await requireOrgContext()
+      const costCodesEnabled = await getProjectCostCodesEnabled(supabase, orgId, projectId)
       return buildBudgetDraftFromEstimate({ projectId, estimateId, costCodesEnabled })
 }
 
@@ -143,11 +143,9 @@ export async function listBudgetTemplatesAction() {
   return listBudgetTemplates()
 }
 
-export async function proposeBudgetFromTemplateAction(
-  projectId: string,
-  templateId: string,
-  costCodesEnabled: boolean,
-) {
+export async function proposeBudgetFromTemplateAction(projectId: string, templateId: string) {
+  const { supabase, orgId } = await requireOrgContext()
+  const costCodesEnabled = await getProjectCostCodesEnabled(supabase, orgId, projectId)
   return buildBudgetDraftFromTemplate({ projectId, templateId, costCodesEnabled })
 }
 

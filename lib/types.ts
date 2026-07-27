@@ -246,7 +246,9 @@ export interface ProjectFinancialSettings {
   proof_required: boolean
   client_cost_approval_required: boolean
   open_book_required: boolean
-  cost_codes_enabled: boolean
+  // Raw per-project override: null = inherit the org default. Resolve with
+  // resolveCostCodesEnabled() before using; never read as a plain boolean.
+  cost_codes_enabled: boolean | null
   setup_completed_at?: string | null
   metadata?: Record<string, any>
 }

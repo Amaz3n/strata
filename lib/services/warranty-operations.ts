@@ -27,6 +27,7 @@ import {
   type WarrantyVisitCompleteInput,
   type WarrantyVisitScheduleInput,
 } from "@/lib/validation/warranty"
+import { normalizeProductTier, type ProductTier } from "@/lib/product-tier"
 import type { WarrantyRequest } from "@/lib/types"
 import {
   assertBackchargeTransition,
@@ -40,6 +41,7 @@ import {
   type WarrantyCostBasisItem,
   type WarrantyCoverageSnapshotTerm,
   type WarrantyCoverageTerm,
+  type WarrantySeverity,
 } from "@/lib/services/warranty/domain"
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"
@@ -138,11 +140,22 @@ export interface WarrantyProgramDTO {
   terms: WarrantyCoverageTerm[]
 }
 
+/** A program plus the blast radius of editing it: how many homes already enrolled. */
+export interface WarrantyProgramWithUsageDTO extends WarrantyProgramDTO {
+  enrolled_count: number
+}
+
+export interface WarrantySlaTargetDTO {
+  severity: WarrantySeverity
+  first_response_hours: number
+  resolution_days: number
+}
+
 export interface ProjectWarrantyCoverageDTO {
   project_id: string
   program_id: string
   effective_date: string
-  effective_source: "closing" | "manual"
+  effective_source: "closing" | "completion" | "manual"
   terms: Array<WarrantyCoverageSnapshotTerm & { expired: boolean }>
   structural_carrier: string | null
   structural_policy_number: string | null
@@ -211,11 +224,31 @@ function mapBackcharge(row: Record<string, unknown>): WarrantyBackchargeDTO {
   }
 }
 
-const DEFAULT_TERMS: WarrantyCoverageTerm[] = [
-  { key: "workmanship", label: "Workmanship & materials", duration_months: 12, is_structural: false, description: "Builder workmanship and installed materials." },
-  { key: "systems", label: "Major systems", duration_months: 24, is_structural: false, description: "Plumbing, electrical, and mechanical distribution systems." },
-  { key: "structural", label: "Structural", duration_months: 120, is_structural: true, description: "Covered structural defects, subject to the enrolled structural warranty." },
-]
+/**
+ * Seeded coverage differs by what the builder actually sells. A production builder
+ * sells 1-2-10 with a structural carrier; a custom builder sells a workmanship year;
+ * a commercial GC owes the one-year correction-of-work period under the prime
+ * contract. Seeding 1-2-10 everywhere put a production artifact in every org.
+ */
+const DEFAULT_TERMS_BY_TIER: Record<ProductTier, WarrantyCoverageTerm[]> = {
+  production: [
+    { key: "workmanship", label: "Workmanship & materials", duration_months: 12, is_structural: false, description: "Builder workmanship and installed materials." },
+    { key: "systems", label: "Major systems", duration_months: 24, is_structural: false, description: "Plumbing, electrical, and mechanical distribution systems." },
+    { key: "structural", label: "Structural", duration_months: 120, is_structural: true, description: "Covered structural defects, subject to the enrolled structural warranty." },
+  ],
+  residential: [
+    { key: "workmanship", label: "Workmanship & materials", duration_months: 12, is_structural: false, description: "Our workmanship and the materials we installed, for one year from substantial completion." },
+  ],
+  commercial: [
+    { key: "correction_of_work", label: "Correction of work", duration_months: 12, is_structural: false, description: "Correction of defective work for one year from substantial completion, per the prime contract." },
+  ],
+}
+
+const DEFAULT_PROGRAM_BY_TIER: Record<ProductTier, { name: string; description: string }> = {
+  production: { name: "Standard 1-2-10", description: "Standard production-home coverage" },
+  residential: { name: "Standard warranty", description: "Standard coverage offered to clients" },
+  commercial: { name: "Correction period", description: "Standard correction-of-work period" },
+}
 
 const DEFAULT_SLAS = [
   { severity: "emergency", first_response_hours: 24, resolution_days: 3 },
@@ -223,15 +256,24 @@ const DEFAULT_SLAS = [
   { severity: "routine_60", first_response_hours: 120, resolution_days: 60 },
 ] as const
 
+async function resolveOrgProductTier(supabase: SupabaseClient, orgId: string): Promise<ProductTier> {
+  const { data } = await supabase.from("orgs").select("product_tier").eq("id", orgId).maybeSingle()
+  return normalizeProductTier(data?.product_tier)
+}
+
 async function ensureWarrantyDefaults(supabase: SupabaseClient, orgId: string) {
   const { data: existing, error } = await supabase.from("warranty_programs").select("id").eq("org_id", orgId).limit(1)
   if (error) throw new Error(`Failed to load warranty programs: ${error.message}`)
   if ((existing ?? []).length === 0) {
+    // Only the first seed per org needs the tier, so it's resolved here rather than
+    // threaded through every caller (several run on the service client with no context).
+    const tier = await resolveOrgProductTier(supabase, orgId)
+    const defaults = DEFAULT_PROGRAM_BY_TIER[tier]
     const { data: program, error: programError } = await supabase.from("warranty_programs").insert({
-      org_id: orgId, name: "Standard 1-2-10", description: "Standard production-home coverage", is_default: true,
+      org_id: orgId, name: defaults.name, description: defaults.description, is_default: true,
     }).select("id").single()
     if (programError || !program) throw new Error(`Failed to seed warranty program: ${programError?.message}`)
-    const { error: termsError } = await supabase.from("warranty_coverage_terms").insert(DEFAULT_TERMS.map((term, index) => ({
+    const { error: termsError } = await supabase.from("warranty_coverage_terms").insert(DEFAULT_TERMS_BY_TIER[tier].map((term, index) => ({
       org_id: orgId, program_id: program.id, ...term, sort_order: index,
     })))
     if (termsError) throw new Error(`Failed to seed warranty terms: ${termsError.message}`)
@@ -251,11 +293,24 @@ async function loadPrograms(supabase: SupabaseClient, orgId: string): Promise<Wa
   }))
 }
 
-export async function listWarrantyPrograms(orgId?: string) {
+export async function listWarrantyPrograms(orgId?: string): Promise<WarrantyProgramWithUsageDTO[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.manage", { supabase, orgId: resolvedOrgId, userId })
   await ensureWarrantyDefaults(supabase, resolvedOrgId)
-  return loadPrograms(supabase, resolvedOrgId)
+  const programs = await loadPrograms(supabase, resolvedOrgId)
+  // Counted per program rather than by loading coverage rows — an org can have
+  // thousands of enrolled homes, and only the tally is shown.
+  const counts = await Promise.all(
+    programs.map(async (program) => {
+      const { count } = await supabase
+        .from("project_warranty_coverage")
+        .select("id", { count: "exact", head: true })
+        .eq("org_id", resolvedOrgId)
+        .eq("program_id", program.id)
+      return count ?? 0
+    }),
+  )
+  return programs.map((program, index) => ({ ...program, enrolled_count: counts[index] }))
 }
 
 export async function upsertWarrantyProgram(input: WarrantyProgramInput, orgId?: string) {
@@ -275,13 +330,17 @@ export async function upsertWarrantyProgram(input: WarrantyProgramInput, orgId?:
   return (await loadPrograms(supabase, resolvedOrgId)).find((candidate) => candidate.id === program.id)!
 }
 
-export async function listWarrantySlaTargets(orgId?: string) {
+export async function listWarrantySlaTargets(orgId?: string): Promise<WarrantySlaTargetDTO[]> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("warranty.manage", { supabase, orgId: resolvedOrgId, userId })
   await ensureWarrantyDefaults(supabase, resolvedOrgId)
   const { data, error } = await supabase.from("warranty_sla_targets").select("severity,first_response_hours,resolution_days").eq("org_id", resolvedOrgId).order("severity")
   if (error) throw new Error(`Failed to load SLA targets: ${error.message}`)
-  return data ?? []
+  return (data ?? []).map((row) => ({
+    severity: row.severity as WarrantySeverity,
+    first_response_hours: row.first_response_hours,
+    resolution_days: row.resolution_days,
+  }))
 }
 
 export async function upsertWarrantySlaTargets(input: unknown, orgId?: string) {
@@ -343,7 +402,13 @@ export async function enrollProjectWarrantyCoverage(input: { projectId: string; 
   return (await loadCoverage(supabase, resolvedOrgId, input.projectId))!
 }
 
-export async function enrollProjectWarrantyCoverageFromClosing(input: { orgId: string; projectId: string; effectiveDate: string }) {
+/**
+ * System-triggered enrollment. Production homes enroll at closing; residential and
+ * commercial projects enroll at substantial completion, since they never close.
+ * Both run from the outbox, so a missing program fails the job rather than the
+ * user's request.
+ */
+export async function enrollProjectWarrantyCoverageFromSystem(input: { orgId: string; projectId: string; effectiveDate: string; source: "closing" | "completion" }) {
   const supabase = createServiceSupabaseClient()
   await ensureWarrantyDefaults(supabase, input.orgId)
   const { data: existing } = await supabase.from("project_warranty_coverage").select("id").eq("org_id", input.orgId).eq("project_id", input.projectId).maybeSingle()
@@ -352,9 +417,9 @@ export async function enrollProjectWarrantyCoverageFromClosing(input: { orgId: s
   if (!program) throw new Error("Default warranty program not found")
   const programs = await loadPrograms(supabase, input.orgId), programDto = programs.find((candidate) => candidate.id === program.id)
   if (!programDto) throw new Error("Default warranty program not found")
-  const { data, error } = await supabase.from("project_warranty_coverage").insert({ org_id: input.orgId, project_id: input.projectId, program_id: program.id, effective_date: input.effectiveDate, effective_source: "closing", terms_snapshot: buildCoverageSnapshot(input.effectiveDate, programDto.terms) }).select("id").single()
-  if (error || !data) throw new Error(`Failed to enroll closing warranty: ${error?.message}`)
-  await recordEvent({ orgId: input.orgId, eventType: "warranty_coverage_enrolled", entityType: "warranty_coverage", entityId: data.id, payload: { project_id: input.projectId, effective_date: input.effectiveDate, source: "closing" } })
+  const { data, error } = await supabase.from("project_warranty_coverage").insert({ org_id: input.orgId, project_id: input.projectId, program_id: program.id, effective_date: input.effectiveDate, effective_source: input.source, terms_snapshot: buildCoverageSnapshot(input.effectiveDate, programDto.terms) }).select("id").single()
+  if (error || !data) throw new Error(`Failed to enroll warranty coverage: ${error?.message}`)
+  await recordEvent({ orgId: input.orgId, eventType: "warranty_coverage_enrolled", entityType: "warranty_coverage", entityId: data.id, payload: { project_id: input.projectId, effective_date: input.effectiveDate, source: input.source } })
   return { id: data.id, enrolled: true }
 }
 

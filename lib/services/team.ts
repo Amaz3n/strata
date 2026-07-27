@@ -222,6 +222,51 @@ export const TEAM_PERMISSION_OPTIONS: PermissionOption[] = [
 
 const CUSTOMIZABLE_PERMISSION_KEYS = new Set(TEAM_PERMISSION_OPTIONS.map((option) => option.key))
 
+/**
+ * Maps every org-scope role key to the permission keys it grants. Used by the
+ * team roster to compute each member's effective permissions (role grants ±
+ * per-member overrides) without a round trip per row.
+ */
+export async function listOrgRolePermissions(orgId?: string): Promise<Record<string, string[]>> {
+  const { orgId: resolvedOrgId, userId, supabase } = await requireOrgContext(orgId)
+  const adminDecision = await authorize({
+    permission: "org.admin",
+    userId,
+    orgId: resolvedOrgId,
+    supabase,
+    logDecision: false,
+    resourceType: "org",
+    resourceId: resolvedOrgId,
+  })
+  if (!adminDecision.allowed) {
+    await requireAuthorization({
+      permission: "members.manage",
+      userId,
+      orgId: resolvedOrgId,
+      supabase,
+      logDecision: false,
+      resourceType: "org",
+      resourceId: resolvedOrgId,
+    })
+  }
+
+  const serviceClient = createServiceSupabaseClient()
+  const { data, error } = await serviceClient
+    .from("roles")
+    .select("key, role_permissions(permission_key)")
+    .eq("scope", "org")
+
+  if (error) {
+    throw new Error(`Failed to load role permissions: ${error.message}`)
+  }
+
+  const map: Record<string, string[]> = {}
+  for (const row of (data ?? []) as Array<{ key: string; role_permissions: Array<{ permission_key: string }> | null }>) {
+    map[row.key] = (row.role_permissions ?? []).map((entry) => entry.permission_key)
+  }
+  return map
+}
+
 export async function listAssignableOrgRoles(orgId?: string): Promise<OrgRoleOption[]> {
   const { orgId: resolvedOrgId, userId, supabase } = await requireOrgContext(orgId)
   const adminDecision = await authorize({

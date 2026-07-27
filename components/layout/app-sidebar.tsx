@@ -24,7 +24,6 @@ import {
   Layers,
   MapPin,
   Receipt,
-  Settings,
   Shield,
   ShieldCheck,
   SlidersHorizontal,
@@ -85,24 +84,45 @@ type SidebarNavSubItem = ProjectNavSubItem
 type SidebarNavItem = ProjectNavItem
 type SidebarNavGroup = ProjectNavGroup
 
-const settingsItems: SidebarNavItem[] = [
-  { title: "Profile", url: "/settings?tab=profile", icon: UserIcon },
-  { title: "Organization", url: "/settings?tab=organization", icon: Building2 },
-  { title: "Divisions", url: "/settings/divisions", icon: Building2 },
-  { title: "Invoicing", url: "/settings?tab=invoicing", icon: Receipt },
-  { title: "Billing", url: "/settings?tab=billing", icon: CreditCard },
-  { title: "Notifications", url: "/settings?tab=notifications", icon: Bell },
-  { title: "Appearance", url: "/settings?tab=appearance", icon: SlidersHorizontal },
-  { title: "Integrations", url: "/settings?tab=integrations", icon: Link2 },
-  { title: "Team", url: "/settings?tab=team", icon: Users },
-  { title: "Cost Codes", url: "/settings?tab=cost-codes", icon: Tag },
-  { title: "Data Imports", url: "/settings/imports", icon: FileSpreadsheet, requiredAny: ["import.manage"] },
-  { title: "Markup Rules", url: "/settings/markup-rules", icon: SlidersHorizontal },
-  { title: "Billing Rates", url: "/settings/billing-rates", icon: Wallet },
-  { title: "Templates", url: "/settings/templates", icon: FileText },
-  { title: "Warranty", url: "/settings/warranty", icon: ShieldCheck, requiredAny: ["warranty.manage"] },
-  { title: "Vendor Compliance", url: "/settings?tab=compliance", icon: ShieldCheck },
-  { title: "About", url: "/settings?tab=about", icon: Settings },
+interface SidebarNavSection {
+  label: string
+  items: SidebarNavItem[]
+}
+
+const settingsSections: SidebarNavSection[] = [
+  {
+    label: "You",
+    items: [
+      { title: "Profile", url: "/settings?tab=profile", icon: UserIcon },
+      { title: "Notifications", url: "/settings?tab=notifications", icon: Bell },
+    ],
+  },
+  {
+    label: "Organization",
+    items: [
+      { title: "Organization", url: "/settings?tab=organization", icon: Building2 },
+      { title: "Team", url: "/settings?tab=team", icon: Users },
+      { title: "Divisions", url: "/settings/divisions", icon: Layers },
+      { title: "Billing", url: "/settings?tab=billing", icon: CreditCard },
+    ],
+  },
+  {
+    label: "Financial",
+    items: [
+      { title: "Invoicing", url: "/settings?tab=invoicing", icon: Receipt },
+      { title: "Cost coding", url: "/settings/cost-coding", icon: Tag },
+      { title: "Vendor compliance", url: "/settings?tab=compliance", icon: ShieldCheck },
+      { title: "Integrations", url: "/settings?tab=integrations", icon: Link2 },
+    ],
+  },
+  {
+    label: "Operations",
+    items: [
+      { title: "Templates", url: "/settings/templates", icon: FileText },
+      { title: "Warranty", url: "/settings/warranty", icon: ClipboardCheck, requiredAny: ["warranty.manage"] },
+      { title: "Data imports", url: "/settings/imports", icon: FileSpreadsheet, requiredAny: ["import.manage"] },
+    ],
+  },
 ]
 
 function canAccess(requiredAny: string[] | undefined, permissions: Set<string>) {
@@ -420,9 +440,16 @@ export function AppSidebar({
       isActive: !item.disabled && (item.isActive || pathname === item.url),
     })),
   }))
-  const visibleSettingsItems = settingsItems.filter(
-    (item) => item.title !== "Divisions" || showProductionNavigation || hasDivisions,
-  )
+  const visibleSettingsSections = settingsSections
+    .map((section) => ({
+      ...section,
+      items: section.items.filter(
+        (item) =>
+          canAccess(item.requiredAny, permissionSet) &&
+          (item.title !== "Divisions" || showProductionNavigation || hasDivisions),
+      ),
+    }))
+    .filter((section) => section.items.length > 0)
 
   const orgData = {
     name: "Arc Construction",
@@ -482,23 +509,27 @@ export function AppSidebar({
       <SidebarSeparator className="mx-0" />
       <SidebarContent>
         {isSettings ? (
-          <SidebarGroup>
-            <SidebarGroupLabel>Settings</SidebarGroupLabel>
-            <SidebarMenu>
-              {visibleSettingsItems.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton
-                    tooltip={item.title}
-                    isActive={item.url.includes("?tab=") ? activeSettingsTab === new URLSearchParams(item.url.split("?")[1] ?? "").get("tab") : pathname === item.url}
-                    onClick={() => navigateSettingsItem(item)}
-                  >
-                    {item.icon && <item.icon />}
-                    <span>{item.title}</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroup>
+          <>
+            {visibleSettingsSections.map((section) => (
+              <SidebarGroup key={section.label}>
+                <SidebarGroupLabel>{section.label}</SidebarGroupLabel>
+                <SidebarMenu>
+                  {section.items.map((item) => (
+                    <SidebarMenuItem key={item.title}>
+                      <SidebarMenuButton
+                        tooltip={item.title}
+                        isActive={item.url.includes("?tab=") ? activeSettingsTab === new URLSearchParams(item.url.split("?")[1] ?? "").get("tab") : pathname.startsWith(item.url.split("?")[0])}
+                        onClick={() => navigateSettingsItem(item)}
+                      >
+                        {item.icon && <item.icon />}
+                        <span>{item.title}</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))}
+                </SidebarMenu>
+              </SidebarGroup>
+            ))}
+          </>
         ) : (
           <AnimatePresence initial={false} mode="wait">
             <motion.div

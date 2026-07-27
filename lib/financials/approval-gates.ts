@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
+import { getOrgCostCodesEnabled, resolveCostCodesEnabled } from "@/lib/financials/cost-codes-enabled"
+
 export const APPROVAL_GATE_REASONS = {
   timeMissingRate: "Set a labor rate before approval.",
   missingCostCode: "Choose a cost code.",
@@ -30,19 +32,22 @@ export async function loadApprovalGateSettings({
   orgId: string
   projectId: string
 }): Promise<ApprovalGateSettings> {
-  const { data, error } = await supabase
-    .from("project_financial_settings")
-    .select("cost_codes_enabled, proof_required, paid_costs_required")
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .maybeSingle()
+  const [{ data, error }, orgCostCodesDefault] = await Promise.all([
+    supabase
+      .from("project_financial_settings")
+      .select("cost_codes_enabled, proof_required, paid_costs_required")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .maybeSingle(),
+    getOrgCostCodesEnabled(supabase, orgId),
+  ])
 
   if (error) {
     throw new Error(`Failed to load project financial approval settings: ${error.message}`)
   }
 
   return {
-    cost_codes_enabled: data?.cost_codes_enabled ?? true,
+    cost_codes_enabled: resolveCostCodesEnabled(data?.cost_codes_enabled, orgCostCodesDefault),
     proof_required: data?.proof_required ?? false,
     paid_costs_required: data?.paid_costs_required ?? false,
   }

@@ -141,7 +141,7 @@ export async function deleteBillingRateOverrideFormAction(overrideId: string) {
 }
 
 function revalidateBillingRates() {
-  revalidatePath("/settings/billing-rates")
+  revalidatePath("/settings/cost-coding")
 }
 
 function nullableString(value: FormDataEntryValue | null) {

@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache"
 import { requireOrgContext } from "@/lib/services/context"
 import { listProjects } from "@/lib/services/projects"
 import { getProjectFinancialSettings } from "@/lib/services/project-financial-setup"
+import { getOrgCostCodesEnabled } from "@/lib/financials/cost-codes-enabled"
 import { uploadCostPlusFile } from "@/lib/services/cost-plus-files"
 import { extractExpenseReceiptFromFile, type ExtractedExpenseReceipt } from "@/lib/services/receipt-extraction"
 import {
@@ -482,7 +483,7 @@ export async function getExpenseAccountingContextAction(projectId?: string) {
       const target = await resolveAccountingTarget({ orgId, projectId })
       const settings = (target?.connection.settings as Record<string, any> | null) ?? {}
       const projectSettings = projectId ? await getProjectFinancialSettings({ supabase, orgId, projectId }).catch(() => null) : null
-      const costCodesEnabled = projectSettings?.cost_codes_enabled ?? true
+      const costCodesEnabled = projectSettings?.cost_codes_enabled ?? (await getOrgCostCodesEnabled(supabase, orgId))
       const { data: costCodes } = costCodesEnabled
         ? await supabase
             .from("cost_codes")

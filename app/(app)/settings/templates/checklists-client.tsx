@@ -19,7 +19,7 @@ import {
   seedChecklistTemplatesAction,
   setChecklistTemplateActiveAction,
   updateChecklistTemplateAction,
-} from "./actions"
+} from "./checklists-actions"
 
 // Editor grammar: one checklist item per line; a line ending in ":" starts a
 // new section that applies to the lines after it.

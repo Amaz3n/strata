@@ -3,6 +3,8 @@ import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { requireAuth } from "@/lib/auth/context"
+import { getProjectPosture, normalizeProductTier, type ProductTier } from "@/lib/product-tier"
+import { orgHasPriceAgreements } from "@/lib/services/price-book"
 import { getCurrentPlatformAccess } from "@/lib/services/platform-access"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
@@ -40,6 +42,7 @@ interface ResolvedImportContext {
   supabase: SupabaseClient
   orgId: string
   userId: string
+  productTier: ProductTier
   platform: boolean
 }
 
@@ -80,9 +83,9 @@ async function resolveImportContext(access: ImportAccess = {}): Promise<Resolved
     const [platformAccess, auth] = await Promise.all([getCurrentPlatformAccess(), requireAuth()])
     if (!platformAccess.canAccessPlatform) throw new Error("Platform access is required")
     const supabase = createServiceSupabaseClient()
-    const { data: org, error } = await supabase.from("orgs").select("id").eq("id", access.platformOrgId).maybeSingle()
+    const { data: org, error } = await supabase.from("orgs").select("id, product_tier").eq("id", access.platformOrgId).maybeSingle()
     if (error || !org) throw new Error("Organization not found")
-    return { supabase, orgId: org.id, userId: auth.user.id, platform: true }
+    return { supabase, orgId: org.id, userId: auth.user.id, productTier: normalizeProductTier(org.product_tier), platform: true }
   }
 
   const context = await requireOrgContext(access.orgId)
@@ -91,13 +94,36 @@ async function resolveImportContext(access: ImportAccess = {}): Promise<Resolved
 }
 
 async function requireImporterPermission(importer: ImporterKey, context: ResolvedImportContext) {
+  // Platform onboarding runs every importer on the customer's behalf, whatever tier they're on.
   if (context.platform) return
   if (importer === "open_wip") throw new Error("Open-WIP cutover is restricted to the platform onboarding workbench")
+  await requireImporterPosture(importer, context)
   if (importer === "price_book") await requireAnyPermission(["price_book.write", "commitment.write"], context)
   if (importer === "plan_library") await requirePermission("plan.write", context)
   if (importer === "option_catalog") await requirePermission("selections.catalog.manage", context)
   if (importer === "communities_lots") await requireAnyPermission(["community.write", "lot.write"], context)
   if (importer === "team") await requirePermission("members.manage", context)
+}
+
+/**
+ * An importer whose destination feature is production-only is refused outright —
+ * otherwise a custom builder could stage a plan library into a Plans workbench
+ * their nav never shows them. Price book follows Purchasing's rule instead of raw
+ * posture, since an org running price agreements keeps it off the production tier.
+ */
+async function requireImporterPosture(importer: ImporterKey, context: ResolvedImportContext) {
+  const posture = getProjectPosture(null, context.productTier)
+  if (posture === "production") return
+
+  if (importer === "price_book") {
+    if (await orgHasPriceAgreements(context.orgId)) return
+    throw new Error("The price book importer is available to production builders and orgs using price agreements")
+  }
+
+  const definition = IMPORTER_DEFINITIONS[importer]
+  if (definition.postures && !definition.postures.includes(posture)) {
+    throw new Error(`The ${definition.label.toLowerCase()} importer is available to production builders`)
+  }
 }
 
 function mapBatch(row: Record<string, unknown>): ImportBatchSummary {

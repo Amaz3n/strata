@@ -117,10 +117,20 @@ export async function proxy(request: NextRequest) {
     },
   })
 
+  const clientUserAgent = request.headers.get("user-agent")
+  const clientForwardedFor = request.headers.get("x-forwarded-for")
+  const clientIdentityHeaders: Record<string, string> = {
+    ...(clientUserAgent ? { "User-Agent": clientUserAgent } : {}),
+    ...(clientForwardedFor ? { "X-Forwarded-For": clientForwardedFor } : {}),
+  }
+
   const supabase = createServerClient(
     requireEnv(process.env.NEXT_PUBLIC_SUPABASE_URL, "NEXT_PUBLIC_SUPABASE_URL"),
     requireEnv(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, "NEXT_PUBLIC_SUPABASE_ANON_KEY"),
     {
+      // Token refreshes from this proxy overwrite the session's User-Agent/IP in
+      // auth.sessions — forward the browser's so the Devices list stays truthful.
+      global: { headers: clientIdentityHeaders },
       cookies: {
         get(name: string) {
           return request.cookies.get(name)?.value

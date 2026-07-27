@@ -6,6 +6,7 @@ import { CheckCircle2, ClipboardCheck, FileCheck2, FileText, ListTree, ReceiptTe
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import type { FeePresentation, ProjectBillingModel } from "@/lib/financials/billing-model"
 import {
@@ -48,7 +49,8 @@ export type FinancialSetupValue = {
   proofRequired: boolean
   clientCostApprovalRequired: boolean
   openBookRequired: boolean
-  costCodesEnabled: boolean
+  // null = inherit the organization's cost-coding default; true/false = per-project override.
+  costCodesEnabled: boolean | null
 }
 
 export const billingModelOptions: Array<{ id: ProjectBillingModel; title: string; note: string }> = [
@@ -155,7 +157,7 @@ export function emptyFinancialSetup(
     proofRequired: false,
     clientCostApprovalRequired: false,
     openBookRequired: costDriven,
-    costCodesEnabled: true,
+    costCodesEnabled: null,
   }
 }
 
@@ -204,7 +206,7 @@ export function financialSetupFromProject(project: Project, contract?: Contract 
     proofRequired: Boolean(contractSnapshot.proof_required ?? false),
     clientCostApprovalRequired: Boolean(billingContract?.requires_client_cost_approval ?? false),
     openBookRequired: billingContract?.open_book ?? costDriven,
-    costCodesEnabled: project.financial_settings?.cost_codes_enabled ?? true,
+    costCodesEnabled: project.financial_settings?.cost_codes_enabled ?? null,
   }
 }
 
@@ -339,10 +341,14 @@ export function ProjectFinancialSetupFields({
   value,
   onChange,
   posture = "residential",
+  costCodes,
 }: {
   value: FinancialSetupValue
   onChange: (value: FinancialSetupValue) => void
   posture?: ProjectPosture
+  /** When provided (project settings), show the per-project cost-codes override.
+   *  Omitted (project creation) hides it — new projects inherit the org default. */
+  costCodes?: { orgDefault: boolean }
 }) {
   const costDriven = isCostDrivenModel(value.billingModel)
   const isGmp = value.billingModel === "cost_plus_gmp"
@@ -616,28 +622,44 @@ export function ProjectFinancialSetupFields({
         </div>
       </section>
 
-      <section className="space-y-3">
-        <div>
-          <h3 className="text-sm font-semibold">Cost structure</h3>
-          <p className="text-xs text-muted-foreground">Controls whether this project uses cost code coding on financial pages.</p>
-        </div>
-        <div className="flex items-center justify-between gap-4 rounded-md border p-3">
-          <div className="flex min-w-0 items-start gap-3">
-            <ListTree className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-            <div className="min-w-0">
-              <Label htmlFor="costCodesEnabled" className="text-sm font-medium">
-                Use cost codes
-              </Label>
-              <p className="mt-0.5 text-xs text-muted-foreground">Show cost code columns and require coding before cost review.</p>
-            </div>
+      {costCodes ? (
+        <section className="space-y-3">
+          <div>
+            <h3 className="text-sm font-semibold">Cost structure</h3>
+            <p className="text-xs text-muted-foreground">
+              Whether this project uses cost codes. By default it follows your organization&apos;s cost-coding setting.
+            </p>
           </div>
-          <Switch
-            id="costCodesEnabled"
-            checked={value.costCodesEnabled}
-            onCheckedChange={(checked) => update("costCodesEnabled", checked)}
-          />
-        </div>
-      </section>
+          <div className="flex items-center justify-between gap-4 rounded-md border p-3">
+            <div className="flex min-w-0 items-start gap-3">
+              <ListTree className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+              <div className="min-w-0">
+                <Label htmlFor="costCodesEnabled" className="text-sm font-medium">
+                  Cost codes
+                </Label>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {value.costCodesEnabled === null
+                    ? `Following the organization default (${costCodes.orgDefault ? "on" : "off"}).`
+                    : "Overriding the organization default for this project."}
+                </p>
+              </div>
+            </div>
+            <Select
+              value={value.costCodesEnabled === null ? "inherit" : value.costCodesEnabled ? "on" : "off"}
+              onValueChange={(next) => update("costCodesEnabled", next === "inherit" ? null : next === "on")}
+            >
+              <SelectTrigger id="costCodesEnabled" className="w-[184px] shrink-0">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="inherit">Org default ({costCodes.orgDefault ? "On" : "Off"})</SelectItem>
+                <SelectItem value="on">On</SelectItem>
+                <SelectItem value="off">Off</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </section>
+      ) : null}
 
       {costDriven ? (
         <section className="space-y-3">

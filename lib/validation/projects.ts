@@ -44,7 +44,8 @@ export const projectInputSchema = z.object({
   open_book: z.boolean().optional(),
   paid_costs_required: z.boolean().optional(),
   proof_required: z.boolean().optional(),
-  cost_codes_enabled: z.boolean().optional(),
+  // null = inherit the org default; omitted = leave the existing value unchanged.
+  cost_codes_enabled: z.boolean().optional().nullable(),
   prospect_id: z.string().uuid().optional().nullable(),
   qbo_class_id: z.string().optional().nullable(),
   qbo_class_name: z.string().optional().nullable(),

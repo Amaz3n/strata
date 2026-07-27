@@ -22,7 +22,7 @@ import { acceptProposalFromEnvelopeExecution } from "@/lib/services/proposals"
 import { executePurchaseAgreementFromEnvelopeExecution } from "@/lib/services/community-sales"
 import { confirmSelectionFromEnvelopeExecution } from "@/lib/services/selections"
 import { recomputeProjectSelectionCutoffs } from "@/lib/services/selection-cutoffs"
-import { enrollProjectWarrantyCoverageFromClosing } from "@/lib/services/warranty"
+import { enrollProjectWarrantyCoverageFromSystem } from "@/lib/services/warranty"
 import { isEmailNotificationTypeEnabled, isEmailEligibleNotificationType } from "@/lib/services/notifications"
 import { isApnsConfigured, sendApnsNotification } from "@/lib/services/apns"
 import { buildDrawingsTilesBaseUrl } from "@/lib/storage/drawings-urls"
@@ -518,7 +518,8 @@ async function processOutboxQueue(request: NextRequest) {
         const projectId = typeof job.payload?.project_id === "string" ? job.payload.project_id : null
         const effectiveDate = typeof job.payload?.effective_date === "string" ? job.payload.effective_date : null
         if (!projectId || !effectiveDate) throw new Error("Warranty enrollment is missing project_id or effective_date")
-        await enrollProjectWarrantyCoverageFromClosing({ orgId: job.org_id, projectId, effectiveDate })
+        const source = job.payload?.source === "completion" ? "completion" : "closing"
+        await enrollProjectWarrantyCoverageFromSystem({ orgId: job.org_id, projectId, effectiveDate, source })
       } else {
         await supabase
           .from("outbox")
