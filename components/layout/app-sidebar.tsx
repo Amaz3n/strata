@@ -38,7 +38,6 @@ import type { LucideIcon } from "@/components/icons"
 import { NavMain } from "./nav-main"
 import { NavUser } from "./nav-user"
 import { OrgSwitcher } from "./org-switcher"
-import { DivisionContextSwitcher } from "./division-context-switcher"
 import { SidebarProjectSwitcher } from "./sidebar-project-switcher"
 import {
   Sidebar,
@@ -77,8 +76,6 @@ interface AppSidebarProps {
   whatsNewUnreadCount?: number
   productTier?: ProductTier
   hasDivisions?: boolean
-  divisions?: Array<{ id: string; name: string }>
-  divisionId?: string
   showProductionNavigation?: boolean
   showPurchasingNavigation?: boolean
   showPipelineNavigation?: boolean
@@ -145,7 +142,8 @@ function buildWorkspaceGroups(
   showPipelineNavigation = true,
 ): SidebarNavGroup[] {
   const orgTerms = terminology(productTier)
-  const workspaceItems: SidebarNavItem[] = [
+
+  const personalItems: SidebarNavItem[] = [
     {
       title: "Home",
       url: "/",
@@ -160,78 +158,24 @@ function buildWorkspaceGroups(
       badge: myWorkBadgeCount && myWorkBadgeCount > 0 ? myWorkBadgeCount : undefined,
       requiredAny: ["org.member"],
     },
-    {
-      title: orgTerms.projects,
-      url: "/projects",
-      icon: FolderOpen,
-      isActive: pathname === "/projects" || pathname.startsWith("/projects?"),
-      requiredAny: ["org.member", "project.read"],
-    },
-    showPipelineNavigation ? {
-      title: "Pipeline",
-      url: "/pipeline",
-      icon: Contact,
-      isActive: pathname.startsWith("/pipeline"),
-      badge: pipelineBadgeCount && pipelineBadgeCount > 0 ? pipelineBadgeCount : undefined,
-      requiredAny: ["pipeline.read", "pipeline.write"],
-    } : null,
-  ].filter(Boolean) as SidebarNavItem[]
+  ]
 
-  if (showProductionNavigation) {
-    workspaceItems.splice(
-      workspaceItems.length,
-      0,
-      {
-        title: "Communities",
-        url: "/communities",
-        icon: MapPin,
-        isActive: pathname.startsWith("/communities"),
-        requiredAny: ["community.read"],
-      },
-      {
-        title: "Plans",
-        url: "/plans",
-        icon: Layers,
-        isActive: pathname.startsWith("/plans"),
-        requiredAny: ["plan.read"],
-      },
-      {
-        title: "Design Studio",
-        url: "/design-studio",
-        icon: SlidersHorizontal,
-        isActive: pathname.startsWith("/design-studio"),
-        requiredAny: ["selections.read", "design_studio.manage"],
-      },
-      {
-        title: "Sales",
-        url: "/sales",
-        icon: Target,
-        isActive: pathname.startsWith("/sales"),
-        requiredAny: ["sales.read"],
-      },
-      {
-        title: "Starts",
-        url: "/starts",
-        icon: CalendarDays,
-        isActive: pathname.startsWith("/starts"),
-        requiredAny: ["start.read"],
-      },
-      {
-        title: "My Houses",
-        url: "/my-houses",
-        icon: HardHat,
-        isActive: pathname.startsWith("/my-houses"),
-        requiredAny: ["start.read"],
-      },
-      {
-        title: "Warranty",
-        url: "/warranty",
-        icon: ShieldCheck,
-        isActive: pathname.startsWith("/warranty"),
-        requiredAny: ["warranty.read"],
-      },
-    )
+  const homesItem: SidebarNavItem = {
+    title: orgTerms.projects,
+    url: "/projects",
+    icon: FolderOpen,
+    isActive: pathname === "/projects" || pathname.startsWith("/projects?"),
+    requiredAny: ["org.member", "project.read"],
   }
+
+  const pipelineItem: SidebarNavItem | null = showPipelineNavigation ? {
+    title: "Pipeline",
+    url: "/pipeline",
+    icon: Contact,
+    isActive: pathname.startsWith("/pipeline"),
+    badge: pipelineBadgeCount && pipelineBadgeCount > 0 ? pipelineBadgeCount : undefined,
+    requiredAny: ["pipeline.read", "pipeline.write"],
+  } : null
 
   const officeItems: SidebarNavItem[] = [
     ...(showPurchasingNavigation ? [{
@@ -296,7 +240,81 @@ function buildWorkspaceGroups(
     })
   }
 
-  const groups: SidebarNavGroup[] = [{ items: workspaceItems }, { label: "Office", items: officeItems }]
+  // A production builder narrates its business as sell → build → back office, so
+  // the sidebar follows that spine instead of one flat list of ten. Other tiers keep
+  // the single unlabelled workspace group they have always had.
+  const groups: SidebarNavGroup[] = showProductionNavigation
+    ? [
+        { items: personalItems },
+        {
+          label: "Sell",
+          items: [
+            {
+              title: "Sales",
+              url: "/sales",
+              icon: Target,
+              isActive: pathname.startsWith("/sales"),
+              requiredAny: ["sales.read"],
+            },
+            // Only reachable on a hybrid org (non-production tier carrying
+            // production projects); a true production org has no Pipeline.
+            ...(pipelineItem ? [pipelineItem] : []),
+            {
+              title: "Communities",
+              url: "/communities",
+              icon: MapPin,
+              isActive: pathname.startsWith("/communities"),
+              requiredAny: ["community.read"],
+            },
+            {
+              title: "Plans",
+              url: "/plans",
+              icon: Layers,
+              isActive: pathname.startsWith("/plans"),
+              requiredAny: ["plan.read"],
+            },
+            {
+              title: "Design Studio",
+              url: "/design-studio",
+              icon: SlidersHorizontal,
+              isActive: pathname.startsWith("/design-studio"),
+              requiredAny: ["selections.read", "design_studio.manage"],
+            },
+          ],
+        },
+        {
+          label: "Build",
+          items: [
+            {
+              title: "Starts",
+              url: "/starts",
+              icon: CalendarDays,
+              isActive: pathname.startsWith("/starts"),
+              requiredAny: ["start.read"],
+            },
+            homesItem,
+            {
+              title: "My Houses",
+              url: "/my-houses",
+              icon: HardHat,
+              isActive: pathname.startsWith("/my-houses"),
+              requiredAny: ["start.read"],
+            },
+            {
+              title: "Warranty",
+              url: "/warranty",
+              icon: ShieldCheck,
+              isActive: pathname.startsWith("/warranty"),
+              requiredAny: ["warranty.read"],
+            },
+          ],
+        },
+        { label: "Office", items: officeItems },
+      ]
+    : [
+        { items: [...personalItems, homesItem, ...(pipelineItem ? [pipelineItem] : [])] },
+        { label: "Office", items: officeItems },
+      ]
 
   if (canAccessPlatform) {
     groups.push({
@@ -332,8 +350,6 @@ export function AppSidebar({
   whatsNewUnreadCount = 0,
   productTier = "residential",
   hasDivisions = false,
-  divisions = [],
-  divisionId,
   showProductionNavigation = false,
   showPurchasingNavigation = false,
   showPipelineNavigation = true,
@@ -464,12 +480,6 @@ export function AppSidebar({
         </AnimatePresence>
       </SidebarHeader>
       <SidebarSeparator className="mx-0" />
-      {!isSettings && !isProject && (
-        <div className="space-y-2 px-2 py-2">
-          {hasDivisions ? <DivisionContextSwitcher divisions={divisions} divisionId={divisionId} /> : null}
-          <SidebarProjectSwitcher projectId={projectId ?? undefined} />
-        </div>
-      )}
       <SidebarContent>
         {isSettings ? (
           <SidebarGroup>

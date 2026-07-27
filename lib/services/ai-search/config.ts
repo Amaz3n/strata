@@ -176,7 +176,7 @@ export const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
   warranty_request: "/warranty?request={id}",
   warranty_backcharge: "/warranty?backcharge={id}",
   closing: "/projects/{project_id}/closing",
-  start_package: "/starts/pipeline/{id}",
+  start_package: "/starts/{id}",
   price_agreement: "/purchasing?tab=price-book&agreement={id}",
   commitment_change_order: "/projects/{project_id}/financials/budget?vpo={id}",
   selection_option: "/design-studio?option={id}",

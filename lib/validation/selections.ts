@@ -46,8 +46,16 @@ export const catalogOptionSchema = z.object({
   vendor: optionalText(160),
   leadTimeDays: z.number().int().min(0).max(3650).nullable().optional(),
   imageUrl: optionalText(2000),
+  /** The uploaded file backing imageUrl, so the object can be traced back. */
+  fileId: optionalUuid,
   sortOrder: z.number().int().min(0).max(10000).default(0),
   isAvailable: z.boolean().default(true),
+  /**
+   * The grade included in base price. A production catalog is standard plus
+   * upgrades, so exactly one option per category should carry this; a standard
+   * option is always priced at zero and pre-selected on a new home.
+   */
+  isStandard: z.boolean().default(false),
 })
 
 export const catalogPriceSchema = z

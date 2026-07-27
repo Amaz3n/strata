@@ -1,0 +1,202 @@
+/* Launch Lane marks — scoped to components/starts/*.
+   Surfaces, ink and hairlines all come from the global tokens in
+   app/globals.css, so light and dark mode are handled once, in one place.
+   The derivations below exist because the lane needs tinted fills for risk
+   states and the global palette ships the semantic hues without background
+   variants. Nothing here invents a colour. */
+
+.lane {
+  --lane-late: var(--destructive);
+  --lane-late-bg: color-mix(in oklab, var(--destructive) 12%, var(--card));
+  --lane-risk: var(--warning);
+  --lane-risk-bg: color-mix(in oklab, var(--warning) 14%, var(--card));
+  --lane-ready: var(--success);
+  --lane-ready-bg: color-mix(in oklab, var(--success) 12%, var(--card));
+  --lane-column: 15rem;
+  --lane-rule: color-mix(in oklab, var(--border) 70%, transparent);
+}
+
+/* ===== Week columns ===== */
+
+.lane-track {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: var(--lane-column);
+  align-items: start;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+}
+
+.lane-column {
+  scroll-snap-align: start;
+  border-right: 1px solid var(--lane-rule);
+  min-height: 100%;
+}
+
+/* Odd weeks carry a whisper of tint so the eye can count columns without
+   counting labels. Far too subtle to read as a state. */
+.lane-column[data-parity="1"] {
+  background: color-mix(in oklab, var(--foreground) 2%, transparent);
+}
+
+.lane-column[data-past="true"] {
+  opacity: 0.55;
+}
+
+.lane-column[data-current="true"] {
+  border-left: 2px solid var(--primary);
+  background: color-mix(in oklab, var(--primary) 4%, transparent);
+}
+
+.lane-column[data-over="true"] .lane-column-head {
+  color: var(--lane-late);
+}
+
+.lane-column[data-dropping="true"] {
+  background: color-mix(in oklab, var(--primary) 10%, transparent);
+  outline: 1px solid var(--primary);
+  outline-offset: -1px;
+}
+
+.lane-column-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+
+/* ===== Slot meter =====
+   One square per targeted start. Solid = released, half = targeted but not
+   yet released, hollow = an open slot. Reads as "this week has a hole"
+   without any arithmetic. */
+
+.lane-slot {
+  width: 9px;
+  height: 9px;
+  border: 1px solid var(--line-strong);
+  flex: none;
+}
+
+.lane-slot[data-state="released"] {
+  background: var(--foreground);
+  border-color: var(--foreground);
+}
+
+.lane-slot[data-state="targeted"] {
+  background: linear-gradient(135deg, var(--foreground) 0 50%, transparent 50% 100%);
+  border-color: var(--foreground);
+}
+
+.lane-slot[data-state="over"] {
+  background: var(--lane-late);
+  border-color: var(--lane-late);
+}
+
+/* ===== House cards ===== */
+
+.lane-card {
+  position: relative;
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--line-strong);
+  padding: 8px 9px;
+  transition: box-shadow 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+}
+
+.lane-card:hover,
+.lane-card:focus-visible {
+  border-color: var(--line-strong);
+  box-shadow: 0 2px 10px color-mix(in oklab, var(--foreground) 14%, transparent);
+  z-index: 2;
+}
+
+.lane-card[data-risk="ready"] {
+  border-left-color: var(--lane-ready);
+}
+
+.lane-card[data-risk="at_risk"] {
+  border-left-color: var(--lane-risk);
+  background: var(--lane-risk-bg);
+}
+
+.lane-card[data-risk="late"],
+.lane-card[data-risk="failed"] {
+  border-left-color: var(--lane-late);
+  background: var(--lane-late-bg);
+}
+
+.lane-card[data-selected="true"] {
+  outline: 2px solid var(--primary);
+  outline-offset: -1px;
+}
+
+.lane-card[data-dragging="true"] {
+  opacity: 0.4;
+}
+
+.lane-card[data-released="true"] {
+  background: color-mix(in oklab, var(--foreground) 4%, var(--card));
+  border-left-color: var(--foreground);
+}
+
+/* The readiness bar is the only chrome on the card that is purely graphic —
+   it exists so a column of cards can be scanned for progress in one pass. */
+.lane-meter {
+  height: 3px;
+  background: color-mix(in oklab, var(--foreground) 12%, transparent);
+}
+
+.lane-meter-fill {
+  height: 3px;
+  background: color-mix(in oklab, var(--foreground) 55%, transparent);
+}
+
+.lane-card[data-risk="ready"] .lane-meter-fill {
+  background: var(--lane-ready);
+}
+
+/* ===== The yard ===== */
+
+.lane-yard {
+  border-right: 1px solid var(--border);
+  background: color-mix(in oklab, var(--foreground) 3%, var(--card));
+}
+
+.lane-yard[data-dropping="true"] {
+  background: color-mix(in oklab, var(--primary) 10%, var(--card));
+}
+
+/* ===== Motion ===== */
+
+@keyframes lane-settle {
+  from {
+    transform: translateY(-4px);
+    opacity: 0.4;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+.lane-settling {
+  animation: lane-settle 0.22s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lane-card,
+  .lane-settling {
+    animation: none;
+    transition: none;
+  }
+
+  .lane-card:hover,
+  .lane-card:focus-visible {
+    transform: none;
+  }
+}

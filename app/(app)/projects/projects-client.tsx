@@ -119,9 +119,7 @@ interface ProjectsClientProps {
   scheduleSummaries: Record<string, ProjectScheduleSummary>
   productTier: ProductTier
   communities: ProductionScopeOption[]
-  divisions: ProductionScopeOption[]
   communityId?: string
-  divisionId?: string
 }
 
 type SortKey = "name" | "client" | "status" | "progress" | "value"
@@ -169,7 +167,7 @@ function normalizeProjectInput(values: ProjectInput): ProjectInput {
   }
 }
 
-export function ProjectsClient({ projects, clientContacts, scheduleSummaries, productTier, communities, divisions, communityId, divisionId }: ProjectsClientProps) {
+export function ProjectsClient({ projects, clientContacts, scheduleSummaries, productTier, communities, communityId }: ProjectsClientProps) {
   const defaultPropertyType = getDefaultProjectPropertyType(productTier)
   const orgTerms = terminology(productTier)
   const [projectsState, setProjectsState] = useState<Project[]>(projects)
@@ -433,7 +431,7 @@ export function ProjectsClient({ projects, clientContacts, scheduleSummaries, pr
       <div className="relative z-20 shrink-0 border-b bg-background/95 backdrop-blur-sm px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <DeskScopeFilters communities={communities} divisions={divisions} communityId={communityId} divisionId={divisionId} />
+            <DeskScopeFilters communities={communities} communityId={communityId} />
             <div className="relative w-64">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <Input

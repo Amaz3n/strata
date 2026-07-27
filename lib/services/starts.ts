@@ -2,7 +2,7 @@ import "server-only"
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-import { RELEASE_PRODUCED_GATE_KEYS, canAttestFinalApproval, isGateApplicable, startPackageReadiness, type GateAppliesWhen, type GateStatus } from "@/lib/starts/gate-logic"
+import { RELEASE_PRODUCED_GATE_KEYS, canAttestFinalApproval, isGateApplicable, pickBlocker, startPackageReadiness, type GateAppliesWhen, type GateBlocker, type GateBlockerInput, type GateStatus } from "@/lib/starts/gate-logic"
 import { mondayOfIsoWeek } from "@/lib/starts/even-flow-math"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
@@ -10,10 +10,7 @@ import { recordEvent } from "@/lib/services/events"
 import { NotificationService } from "@/lib/services/notifications"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { requirePermission } from "@/lib/services/permissions"
-import {
-  getDivisionAccessForUser,
-  getDivisionScopedProjectIds,
-} from "@/lib/services/authorization"
+import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { createProject } from "@/lib/services/projects"
 import { triggerStartsPipeline } from "@/lib/services/starts-pipeline-trigger"
 import {
@@ -57,6 +54,22 @@ export interface StartGateDTO {
   releaseProduced: boolean
 }
 
+/**
+ * How much trouble a house is in, in the order the desk cares about it.
+ * `late` and `at_risk` are only knowable for sold homes — a spec has no
+ * contractual close date to miss.
+ */
+export type StartRisk = "failed" | "late" | "at_risk" | "ready" | "on_track"
+
+export interface StartSaleDTO {
+  isSold: boolean
+  buyerName: string | null
+  closingDate: string | null
+}
+
+/** Fallback when an org has no completed homes to measure a real cycle from. */
+export const DEFAULT_TARGET_CYCLE_DAYS = 130
+
 export interface StartPackageListItemDTO {
   id: string
   lotId: string
@@ -77,6 +90,15 @@ export interface StartPackageListItemDTO {
   releasedAt: string | null
   superintendentId: string | null
   superintendentName: string | null
+  /** The one gate this house is actually waiting on. */
+  blocker: GateBlocker | null
+  /** Days since anything last cleared — how long this house has been stuck. */
+  stalledDays: number
+  /** Closing date minus target cycle. Null for specs and unscheduled closings. */
+  mustStartBy: string | null
+  daysToMustStart: number | null
+  risk: StartRisk
+  sale: StartSaleDTO
 }
 
 export interface StartPackageDetailDTO extends StartPackageListItemDTO {
@@ -110,6 +132,78 @@ function text(value: unknown) {
 
 function daysSince(value: string) {
   return Math.max(0, Math.floor((Date.now() - Date.parse(value)) / 86_400_000))
+}
+
+function todayIso() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function shiftDays(date: string, days: number) {
+  const value = new Date(`${date}T00:00:00.000Z`)
+  value.setUTCDate(value.getUTCDate() + days)
+  return value.toISOString().slice(0, 10)
+}
+
+function daysBetween(from: string, to: string) {
+  return Math.round((Date.parse(`${to}T00:00:00.000Z`) - Date.parse(`${from}T00:00:00.000Z`)) / 86_400_000)
+}
+
+function targetCycleDays(settings: unknown) {
+  if (settings && typeof settings === "object") {
+    const value = Reflect.get(settings, "target_cycle_days")
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.trunc(value)
+  }
+  return DEFAULT_TARGET_CYCLE_DAYS
+}
+
+const EMPTY_SALE: StartSaleDTO = { isSold: false, buyerName: null, closingDate: null }
+
+/**
+ * Sold-or-spec, plus the closing date that gives a house its deadline. A home
+ * counts as sold once its purchase agreement is active; the closing row exists
+ * from that moment (created by the agreement-executed callback) but only
+ * carries a date once one is set.
+ */
+async function loadSalesByProject(supabase: SupabaseClient, orgId: string, projectIds: Array<string | null>) {
+  const unique = Array.from(new Set(projectIds.filter((id): id is string => Boolean(id))))
+  if (!unique.length) return new Map<string, StartSaleDTO>()
+  const [contracts, closings] = await Promise.all([
+    supabase.from("contracts").select("project_id").eq("org_id", orgId)
+      .eq("contract_type", "purchase_agreement").eq("status", "active").in("project_id", unique),
+    supabase.from("closings").select("project_id,scheduled_date").eq("org_id", orgId)
+      .in("project_id", unique).neq("status", "cancelled").not("scheduled_date", "is", null),
+  ])
+  if (contracts.error) throw new Error(`Failed to load purchase agreements: ${contracts.error.message}`)
+  if (closings.error) throw new Error(`Failed to load closings: ${closings.error.message}`)
+  const sold = new Set((contracts.data ?? []).flatMap((row) => row.project_id ? [row.project_id as string] : []))
+  const closingDates = new Map<string, string>()
+  for (const row of closings.data ?? []) {
+    const current = closingDates.get(row.project_id)
+    // Earliest scheduled closing wins — it is the one that constrains the start.
+    if (!current || row.scheduled_date < current) closingDates.set(row.project_id, row.scheduled_date)
+  }
+  return new Map(unique.map((projectId) => [projectId, {
+    isSold: sold.has(projectId),
+    buyerName: null,
+    closingDate: closingDates.get(projectId) ?? null,
+  }]))
+}
+
+function deriveSchedulePressure(input: {
+  status: StartPackageStatus
+  closingDate: string | null
+  cycleDays: number
+  blocker: GateBlocker | null
+}): { mustStartBy: string | null; daysToMustStart: number | null; risk: StartRisk } {
+  const mustStartBy = input.closingDate ? shiftDays(input.closingDate, -input.cycleDays) : null
+  const daysToMustStart = mustStartBy ? daysBetween(todayIso(), mustStartBy) : null
+  if (input.status === "attention") return { mustStartBy, daysToMustStart, risk: "failed" }
+  if (daysToMustStart !== null && daysToMustStart < 0) return { mustStartBy, daysToMustStart, risk: "late" }
+  if (daysToMustStart !== null && input.blocker && daysToMustStart < input.blocker.leadDays) {
+    return { mustStartBy, daysToMustStart, risk: "at_risk" }
+  }
+  if (input.status === "ready") return { mustStartBy, daysToMustStart, risk: "ready" }
+  return { mustStartBy, daysToMustStart, risk: "on_track" }
 }
 
 function mapDefinition(row: Relation): GateDefinitionDTO {
@@ -517,6 +611,37 @@ export async function releaseStart(packageId: string, input: { scheduledStartDat
   return { released: true }
 }
 
+export interface BatchReleaseResult {
+  released: string[]
+  needsConfirm: Array<{ id: string; slot: { targetWeek: string; target: number; alreadyTargeted: number } }>
+  failed: Array<{ id: string; error: string }>
+}
+
+/**
+ * Release day is a batch — a coordinator approves the week's houses in one
+ * sitting, not one page load at a time. Releases run in sequence because each
+ * one consumes a slot the next one's over-target check has to see.
+ */
+export async function releaseStarts(
+  ids: string[],
+  input: { scheduledStartDate: string; confirmOverSlot?: boolean },
+  orgId?: string,
+): Promise<BatchReleaseResult> {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("start.release", context)
+  const result: BatchReleaseResult = { released: [], needsConfirm: [], failed: [] }
+  for (const id of Array.from(new Set(ids))) {
+    try {
+      const outcome = await releaseStart(id, input, context.orgId)
+      if ("requiresConfirm" in outcome) result.needsConfirm.push({ id, slot: outcome.slot })
+      else result.released.push(id)
+    } catch (error) {
+      result.failed.push({ id, error: error instanceof Error ? error.message : "Release failed" })
+    }
+  }
+  return result
+}
+
 export async function retryRelease(packageId: string, orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.release", context)
@@ -580,30 +705,44 @@ export async function setProjectSuperintendent(projectId: string, userId: string
 }
 
 export async function listStartPackages(
-  filters: { id?: string; communityId?: string; divisionId?: string; status?: StartPackageStatus[]; targetWeek?: string; page?: number; pageSize?: number } = {},
+  filters: { id?: string; communityId?: string; divisionId?: string; status?: StartPackageStatus[]; targetWeek?: string; targetWeekFrom?: string; page?: number; pageSize?: number } = {},
   orgId?: string,
 ): Promise<{ packages: StartPackageListItemDTO[]; total: number }> {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.read", context)
-  const authorizedProjectIds = await getDivisionScopedProjectIds(context)
-  if (authorizedProjectIds?.length === 0) return { packages: [], total: 0 }
+  const divisionAccess = await getDivisionAccessForUser({ orgId: context.orgId, userId: context.userId })
+  if (filters.divisionId && divisionAccess.assignedOnly && !divisionAccess.divisionIds.includes(filters.divisionId)) {
+    return { packages: [], total: 0 }
+  }
   const page = Math.max(1, filters.page ?? 1)
   const pageSize = Math.min(200, Math.max(1, filters.pageSize ?? 50))
+  // The project is a LEFT join on purpose: a package legitimately has no
+  // project until it is opened or released, and an inner join silently hid
+  // those packages — including failed releases — from every desk and count.
+  // Division scoping therefore runs off the lot, which always exists.
   let query = context.supabase.from("start_packages").select(`
-    *, lot:lots!inner(lot_number,block,house_plan_id,house_plan_elevation_id,
+    *, lot:lots!inner(lot_number,block,division_id,house_plan_id,house_plan_elevation_id,
       plan:house_plans(code,name),elevation:house_plan_elevations(code)),
-    community:communities!inner(name), project:projects!inner(division_id,superintendent_id,superintendent:app_users!projects_superintendent_id_fkey(full_name)),
-    gates:start_package_gates(status,definition:start_gate_definitions(key,applies_when))
+    community:communities!inner(name,settings),
+    project:projects(division_id,superintendent_id,client:contacts(full_name),superintendent:app_users!projects_superintendent_id_fkey(full_name)),
+    gates:start_package_gates(status,attested_at,definition:start_gate_definitions(key,label,check_kind,applies_when))
   `, { count: "exact" }).eq("org_id", context.orgId)
   if (filters.id) query = query.eq("id", filters.id)
   if (filters.communityId) query = query.eq("community_id", filters.communityId)
-  if (filters.divisionId) query = query.eq("project.division_id", filters.divisionId)
-  if (authorizedProjectIds) query = query.in("project_id", authorizedProjectIds)
+  if (filters.divisionId) query = query.eq("lot.division_id", filters.divisionId)
+  else if (divisionAccess.assignedOnly) {
+    if (divisionAccess.divisionIds.length === 0) return { packages: [], total: 0 }
+    query = query.in("lot.division_id", divisionAccess.divisionIds)
+  }
   if (filters.status?.length) query = query.in("status", filters.status)
   if (filters.targetWeek) query = query.eq("target_week", filters.targetWeek)
+  if (filters.targetWeekFrom) query = query.gte("target_week", filters.targetWeekFrom)
   const { data, error, count } = await query.order("target_week", { ascending: true, nullsFirst: false }).order("created_at").range((page - 1) * pageSize, page * pageSize - 1)
   if (error) throw new Error(`Failed to load start packages: ${error.message}`)
-  const purchasingByCommunity = await loadPurchasingEnabledByCommunity(context.supabase, context.orgId, (data ?? []).map((row) => row.community_id))
+  const [purchasingByCommunity, salesByProject] = await Promise.all([
+    loadPurchasingEnabledByCommunity(context.supabase, context.orgId, (data ?? []).map((row) => row.community_id)),
+    loadSalesByProject(context.supabase, context.orgId, (data ?? []).map((row) => row.project_id)),
+  ])
   const packages = (data ?? []).map((row) => {
     const lot = relation(row.lot)
     const community = relation(row.community)
@@ -612,10 +751,31 @@ export async function listStartPackages(
     const plan = relation(lot?.plan)
     const elevation = relation(lot?.elevation)
     const purchasingEnabled = purchasingByCommunity.get(row.community_id) ?? false
-    const readiness = startPackageReadiness((row.gates ?? []).map((gate: Relation) => {
+    const flags = { isFinanced: row.is_financed, purchasingEnabled }
+    const gates: Array<GateBlockerInput & { attestedAt: string | null }> = (row.gates ?? []).map((gate: Relation) => {
       const definition = relation(gate.definition)
-      return { key: String(definition?.key), appliesWhen: definition?.applies_when as GateAppliesWhen, status: gate.status as GateStatus }
-    }), { isFinanced: row.is_financed, purchasingEnabled })
+      return {
+        key: String(definition?.key), label: String(definition?.label ?? definition?.key),
+        checkKind: definition?.check_kind as "auto" | "manual",
+        appliesWhen: definition?.applies_when as GateAppliesWhen,
+        status: gate.status as GateStatus, attestedAt: text(gate.attested_at),
+      }
+    })
+    const readiness = startPackageReadiness(gates, flags)
+    const blocker = pickBlocker(gates, flags)
+    // "Stalled" is measured from the last gate that actually cleared, so a
+    // house that has been sitting on the same blocker for weeks says so.
+    const lastProgressAt = gates.reduce(
+      (latest: string, gate) => (gate.attestedAt && gate.attestedAt > latest ? gate.attestedAt : latest),
+      String(row.created_at),
+    )
+    const sale = { ...(salesByProject.get(row.project_id) ?? EMPTY_SALE), buyerName: text(relation(project?.client)?.full_name) }
+    const pressure = deriveSchedulePressure({
+      status: row.status as StartPackageStatus,
+      closingDate: sale.closingDate,
+      cycleDays: targetCycleDays(community?.settings),
+      blocker,
+    })
     return {
       id: row.id, lotId: row.lot_id, lotLabel: lot?.block ? `${lot.block}-${lot.lot_number}` : String(lot?.lot_number ?? "Lot"),
       communityId: row.community_id, communityName: String(community?.name ?? "Community"), projectId: row.project_id,
@@ -623,6 +783,7 @@ export async function listStartPackages(
       targetWeek: row.target_week, scheduledStartDate: row.scheduled_start_date, gatesPassed: readiness.passed, gatesTotal: readiness.total,
       preconAgeDays: daysSince(row.created_at), isFinanced: row.is_financed, releasedAt: row.released_at,
       superintendentId: text(project?.superintendent_id), superintendentName: text(superintendent?.full_name),
+      blocker, stalledDays: daysSince(lastProgressAt), sale, ...pressure,
     }
   })
   return { packages, total: count ?? 0 }
@@ -644,17 +805,6 @@ export async function getStartPackage(id: string, orgId?: string): Promise<Start
     ...item, notes: pkg.notes, gates: gates.map((gate) => mapGate(gate)),
     steps: (stepsResult.data ?? []).map((step) => ({ stepKey: step.step_key, status: step.status, attempt: Number(step.attempt), error: step.error, detail: step.detail ?? {}, completedAt: step.completed_at })),
   }
-}
-
-export async function getStartAttentionCount(orgId?: string) {
-  const context = await requireOrgContext(orgId)
-  await requirePermission("start.read", context)
-  const authorizedProjectIds = await getDivisionScopedProjectIds(context)
-  if (authorizedProjectIds?.length === 0) return 0
-  let query = context.supabase.from("start_packages").select("id", { count: "exact", head: true }).eq("org_id", context.orgId).eq("status", "attention")
-  if (authorizedProjectIds) query = query.in("project_id", authorizedProjectIds)
-  const { count } = await query
-  return count ?? 0
 }
 
 export async function listSuperintendentCandidates(orgId?: string): Promise<Array<{ id: string; name: string }>> {
@@ -690,8 +840,9 @@ export async function listStartPackageCandidates(
     return []
   }
   let query = context.supabase.from("lots").select(`
-    id,lot_number,block,status,community_id,community:communities!inner(name),
+    id,lot_number,block,status,community_id,project_id,community:communities!inner(name,settings),
     plan:house_plans(code,name),elevation:house_plan_elevations(code),
+    project:projects(client:contacts(full_name)),
     packages:start_packages!start_packages_lot_id_fkey(id,status)
   `).eq("org_id", context.orgId).in("status", ["developed", "assigned"])
   if (filters.communityId) query = query.eq("community_id", filters.communityId)
@@ -702,14 +853,37 @@ export async function listStartPackageCandidates(
   }
   const { data, error } = await query.order("lot_number").limit(500)
   if (error) throw new Error(`Failed to load start-package lots: ${error.message}`)
-  return (data ?? []).filter((lot) => !(lot.packages ?? []).some((pkg: { status: string }) => pkg.status !== "cancelled")).map((lot) => {
+  const available = (data ?? []).filter((lot) => !(lot.packages ?? []).some((pkg: { status: string }) => pkg.status !== "cancelled"))
+  const salesByProject = await loadSalesByProject(context.supabase, context.orgId, available.map((lot) => lot.project_id))
+  return available.map((lot) => {
     const community = relation(lot.community)
     const plan = relation(lot.plan)
     const elevation = relation(lot.elevation)
+    const sale = { ...(salesByProject.get(lot.project_id) ?? EMPTY_SALE), buyerName: text(relation(relation(lot.project)?.client)?.full_name) }
+    const pressure = deriveSchedulePressure({
+      status: "open", closingDate: sale.closingDate, cycleDays: targetCycleDays(community?.settings), blocker: null,
+    })
     return {
-      id: lot.id, communityId: lot.community_id,
-      label: `${String(community?.name ?? "Community")} · ${lot.block ? `${lot.block}-` : ""}${lot.lot_number}`,
-      plan: [text(plan?.code) ?? text(plan?.name), text(elevation?.code)].filter(Boolean).join(" / ") || null,
+      lotId: lot.id,
+      communityId: lot.community_id,
+      communityName: String(community?.name ?? "Community"),
+      lotLabel: `${lot.block ? `${lot.block}-` : ""}${lot.lot_number}`,
+      planLabel: [text(plan?.code) ?? text(plan?.name), text(elevation?.code)].filter(Boolean).join(" / ") || null,
+      sale,
+      mustStartBy: pressure.mustStartBy,
+      daysToMustStart: pressure.daysToMustStart,
     }
+  }).sort((a, b) => {
+    // A sold home with no start package is the most expensive thing on this
+    // desk, so the yard opens on the ones closest to their deadline.
+    if (a.sale.isSold !== b.sale.isSold) return a.sale.isSold ? -1 : 1
+    if (a.daysToMustStart !== b.daysToMustStart) {
+      if (a.daysToMustStart === null) return 1
+      if (b.daysToMustStart === null) return -1
+      return a.daysToMustStart - b.daysToMustStart
+    }
+    return `${a.communityName} ${a.lotLabel}`.localeCompare(`${b.communityName} ${b.lotLabel}`)
   })
 }
+
+export type StartCandidateDTO = Awaited<ReturnType<typeof listStartPackageCandidates>>[number]

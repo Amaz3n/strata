@@ -53,5 +53,7 @@ export function ProjectAvatar({ projectId, className, size = "md" }: ProjectAvat
     xl: "size-10",
   }
 
-  return <div className={cn("bg-gradient-to-br shrink-0", gradient, sizeClasses[size], className)} />
+  return (
+    <div className={cn("project-avatar bg-gradient-to-br shrink-0", gradient, sizeClasses[size], className)} />
+  )
 }

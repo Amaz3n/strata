@@ -17,16 +17,24 @@ import {
   updateLotTakedown,
 } from "@/lib/services/communities"
 import {
+  assignCommunityMember,
+  removeCommunityAssignment,
+} from "@/lib/services/community-assignments"
+import { logCommunityTraffic } from "@/lib/services/community-traffic"
+import {
   attachProjectToLot,
   bulkUpdateLots,
   createLots,
   deleteLot,
   detachProjectFromLot,
+  setLotPlatPositions,
   setLotStatus,
   updateLot,
 } from "@/lib/services/lots"
 import {
+  communityAssignmentInputSchema,
   communityInputSchema,
+  communityTrafficInputSchema,
   communityUpdateSchema,
   phaseInputSchema,
   phaseUpdateSchema,
@@ -63,6 +71,20 @@ export async function archiveCommunityAction(id: string) {
   return run(() => archiveCommunity(z.string().uuid().parse(id)), ["/communities", `/communities/${id}`])
 }
 
+export async function assignCommunityMemberAction(input: unknown) {
+  const parsed = communityAssignmentInputSchema.parse(input)
+  return run(() => assignCommunityMember(parsed), ["/communities", `/communities/${parsed.communityId}/team`])
+}
+
+export async function removeCommunityAssignmentAction(id: string) {
+  return run(() => removeCommunityAssignment(z.string().uuid().parse(id)), ["/communities"])
+}
+
+export async function logCommunityTrafficAction(input: unknown) {
+  const parsed = communityTrafficInputSchema.parse(input)
+  return run(() => logCommunityTraffic(parsed), ["/communities", `/communities/${parsed.communityId}`])
+}
+
 export async function createCommunityPhaseAction(communityId: string, input: unknown) {
   return run(() => createCommunityPhase(z.string().uuid().parse(communityId), phaseInputSchema.parse(input)), [`/communities/${communityId}`, `/communities/${communityId}/land`])
 }
@@ -75,16 +97,18 @@ export async function deleteCommunityPhaseAction(id: string, communityId: string
   return run(() => deleteCommunityPhase(z.string().uuid().parse(id)), [`/communities/${communityId}`, `/communities/${communityId}/land`])
 }
 
+// The desk projects every community's runway off the takedown schedule, so the
+// board is revalidated alongside the workbench whenever a takedown moves.
 export async function createLotTakedownAction(communityId: string, input: unknown) {
-  return run(() => createLotTakedown(z.string().uuid().parse(communityId), takedownInputSchema.parse(input)), [`/communities/${communityId}`, `/communities/${communityId}/land`])
+  return run(() => createLotTakedown(z.string().uuid().parse(communityId), takedownInputSchema.parse(input)), ["/communities", `/communities/${communityId}`, `/communities/${communityId}/land`])
 }
 
 export async function updateLotTakedownAction(id: string, communityId: string, input: unknown) {
-  return run(() => updateLotTakedown(z.string().uuid().parse(id), takedownUpdateSchema.parse(input)), [`/communities/${communityId}`, `/communities/${communityId}/land`])
+  return run(() => updateLotTakedown(z.string().uuid().parse(id), takedownUpdateSchema.parse(input)), ["/communities", `/communities/${communityId}`, `/communities/${communityId}/land`])
 }
 
 export async function closeLotTakedownAction(id: string, communityId: string, actualDate: string) {
-  return run(() => closeLotTakedown(z.string().uuid().parse(id), { actualDate: z.string().date().parse(actualDate) }), [`/communities/${communityId}`, `/communities/${communityId}/land`])
+  return run(() => closeLotTakedown(z.string().uuid().parse(id), { actualDate: z.string().date().parse(actualDate) }), ["/communities", `/communities/${communityId}`, `/communities/${communityId}/land`])
 }
 
 export async function createLotsAction(communityId: string, input: unknown) {
@@ -121,4 +145,21 @@ export async function detachProjectFromLotAction(lotId: string, communityId: str
 
 export async function deleteLotAction(lotId: string, communityId: string) {
   return run(() => deleteLot(z.string().uuid().parse(lotId)), [`/communities/${communityId}`])
+}
+
+const platPositionsSchema = z
+  .array(
+    z.object({
+      lotId: z.string().uuid(),
+      platX: z.number().int().min(0).max(400),
+      platY: z.number().int().min(0).max(400),
+    }),
+  )
+  .max(1_000)
+
+export async function setLotPlatPositionsAction(communityId: string, input: unknown) {
+  return run(
+    () => setLotPlatPositions(z.string().uuid().parse(communityId), platPositionsSchema.parse(input)),
+    [`/communities/${communityId}`],
+  )
 }

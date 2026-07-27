@@ -14,7 +14,6 @@ export interface ProductionScopeOption {
 
 export interface ProductionDeskScope {
   communities: ProductionScopeOption[]
-  divisions: ProductionScopeOption[]
   communityId?: string
   divisionId?: string
   /** null means no filter; [] deliberately matches no projects. */
@@ -48,25 +47,19 @@ export async function orgHasActiveNonProductionProjects(orgId?: string): Promise
 
 export async function resolveProductionDeskScope(input: {
   communityId?: string
-  divisionId?: string
 }): Promise<ProductionDeskScope> {
   const context = await requireOrgContext()
   const ambient = await getAmbientDeskContext()
   const requestedCommunityId = input.communityId ?? ambient.communityId
-  const requestedDivisionId = input.divisionId ?? ambient.divisionId
   const communityRows = await listCommunities({}, context.orgId)
   const communities = communityRows.map(({ id, name }) => ({ id, name }))
-  const divisions = ambient.divisions.map(({ id, name }) => ({ id, name }))
   const communityId = communities.some((option) => option.id === requestedCommunityId)
     ? requestedCommunityId
     : undefined
-  const divisionId = divisions.some((option) => option.id === requestedDivisionId)
-    ? requestedDivisionId
-    : undefined
+  const divisionId = ambient.divisionId
 
   if (!communityId && !divisionId) {
-    const invalidRequestedScope = Boolean(requestedCommunityId || requestedDivisionId)
-    return { communities, divisions, communityId, divisionId, projectIds: invalidRequestedScope ? [] : null }
+    return { communities, communityId, divisionId, projectIds: requestedCommunityId ? [] : null }
   }
 
   const [communityProjectIds, divisionProjectIds, excludedProjectIds] = await Promise.all([
@@ -81,5 +74,5 @@ export async function resolveProductionDeskScope(input: {
     : (communityProjectIds ?? divisionProjectIds ?? [])
         .filter((id) => !excludedProjectSet.has(id))
 
-  return { communities, divisions, communityId, divisionId, projectIds }
+  return { communities, communityId, divisionId, projectIds }
 }

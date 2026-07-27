@@ -1,13 +1,21 @@
+import { COOP_AGENT_ROLE } from "@/lib/sales/activity"
+import { serializeLostReason } from "@/lib/sales/lost-reasons"
 import {
   createProspectInputSchema,
+  logProspectContactInputSchema,
+  markProspectLostInputSchema,
   prospectContactInputSchema,
   prospectFiltersSchema,
+  updateDealDetailsInputSchema,
   updateProspectContactInputSchema,
   updateProspectInputSchema,
   type CreateProspectInput,
+  type LogProspectContactInput,
+  type MarkProspectLostInput,
   type ProspectContactInput,
   type ProspectFilters,
   type ProspectStatus,
+  type UpdateDealDetailsInput,
   type UpdateProspectContactInput,
   type UpdateProspectInput,
 } from "@/lib/validation/prospects"
@@ -508,6 +516,208 @@ export async function setProspectFollowUp({
   return mapProspect(data, contacts)
 }
 
+/**
+ * Records that somebody actually talked to this buyer. Written as an event so it
+ * lands in one timeline with holds, pricing and signatures instead of a parallel
+ * notes table, and so the "no contact in N days" question has a single source.
+ */
+export async function logProspectContact({
+  prospectId,
+  input,
+  orgId,
+}: {
+  prospectId: string
+  input: LogProspectContactInput
+  orgId?: string
+}): Promise<void> {
+  const parsed = logProspectContactInputSchema.parse(input)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
+
+  const { data: prospect, error } = await supabase
+    .from("prospects")
+    .select("id, status")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", prospectId)
+    .maybeSingle()
+  if (error || !prospect) throw new Error("Prospect not found")
+
+  // Talking to a new inquiry IS the inquiry → working transition, so the touch
+  // makes it. Nothing else on the Sales desk moves a prospect off `new`, and a
+  // stage observed from state must be moved by the act that changed the state —
+  // otherwise you call a buyer three times and they stay a "New inquiry"
+  // forever while the New inquiries chip never drains.
+  const advanced = prospect.status === "new"
+  await supabase
+    .from("prospects")
+    .update({
+      updated_at: new Date().toISOString(),
+      ...(advanced ? { status: "contacted" } : {}),
+    })
+    .eq("org_id", resolvedOrgId)
+    .eq("id", prospectId)
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    eventType: "prospect_contact_logged",
+    entityType: "prospect",
+    entityId: prospectId,
+    payload: { kind: parsed.kind, note: parsed.note ?? null, occurred_at: parsed.occurredAt ?? null },
+  })
+
+  // Emitted separately so the deal file's log shows the stage move as its own
+  // line, the way every other observed transition appears.
+  if (advanced) {
+    await recordEvent({
+      orgId: resolvedOrgId,
+      actorId: userId,
+      eventType: "prospect_status_changed",
+      entityType: "prospect",
+      entityId: prospectId,
+      payload: { from: "new", to: "contacted", reason: "contact_logged" },
+    })
+  }
+}
+
+/**
+ * Correcting a deal: the buyer's name and contact details, and who owns it.
+ *
+ * Holding a lot *promotes* the prospect contact into a `contacts` row and the
+ * board then reads the buyer's name from there — so an edit that only touched
+ * the lead record would appear to do nothing the moment a deal reached hold.
+ * Both rows move together.
+ */
+export async function updateDealDetails({
+  prospectId,
+  input,
+  orgId,
+}: {
+  prospectId: string
+  input: UpdateDealDetailsInput
+  orgId?: string
+}): Promise<Prospect> {
+  const parsed = updateDealDetailsInputSchema.parse(input)
+  const { orgId: resolvedOrgId } = await requireOrgContext(orgId)
+
+  const email = parsed.email?.trim() || null
+  const phone = parsed.phone?.trim() || null
+  const contacts = await listProspectContacts(prospectId, resolvedOrgId)
+  const primary = contacts.find((contact) => contact.is_primary) ?? contacts[0] ?? null
+
+  if (primary) {
+    await updateProspectContact({
+      contactId: primary.id,
+      input: { full_name: parsed.fullName, phone, email, is_primary: true },
+      orgId: resolvedOrgId,
+    })
+    if (primary.promoted_contact_id) {
+      const { updateContact } = await import("@/lib/services/contacts")
+      await updateContact({
+        contactId: primary.promoted_contact_id,
+        input: { full_name: parsed.fullName, phone: phone ?? undefined, email: email ?? undefined },
+        orgId: resolvedOrgId,
+      })
+    }
+  } else {
+    await createProspectContact({
+      prospectId,
+      input: { full_name: parsed.fullName, phone, email, is_primary: true },
+      orgId: resolvedOrgId,
+    })
+  }
+
+  // The co-op agent is one secondary contact, reconciled rather than appended —
+  // otherwise correcting a brokerage's spelling leaves two brokers on the deal.
+  const coopName = parsed.coopAgentName?.trim() || null
+  const coopBrokerage = parsed.coopBrokerage?.trim() || null
+  const existingCoop = contacts.find((contact) => !contact.is_primary && contact.role === COOP_AGENT_ROLE)
+  if (coopName && existingCoop) {
+    await updateProspectContact({
+      contactId: existingCoop.id,
+      input: { full_name: coopName, company_name: coopBrokerage, role: COOP_AGENT_ROLE },
+      orgId: resolvedOrgId,
+    })
+  } else if (coopName) {
+    await createProspectContact({
+      prospectId,
+      input: { full_name: coopName, company_name: coopBrokerage, role: COOP_AGENT_ROLE, is_primary: false },
+      orgId: resolvedOrgId,
+    })
+  } else if (existingCoop) {
+    await deleteProspectContact({ contactId: existingCoop.id, orgId: resolvedOrgId })
+  }
+
+  return updateProspect({
+    prospectId,
+    input: {
+      name: parsed.fullName,
+      owner_user_id: parsed.ownerUserId ?? null,
+      community_id: parsed.communityId ?? null,
+      source: parsed.source ?? null,
+      project_type: parsed.planInterest ?? null,
+      budget_range: parsed.priceRange ?? null,
+      timeline_preference: parsed.timeframe ?? null,
+      notes: parsed.notes ?? null,
+    },
+    orgId: resolvedOrgId,
+  })
+}
+
+/**
+ * Working a follow-up off the list: record the touch and clear the reminder in
+ * one call, because they are one act. Splitting them is how a board ends up full
+ * of follow-ups that were made but never marked.
+ */
+export async function completeProspectFollowUp({
+  prospectId,
+  input,
+  orgId,
+}: {
+  prospectId: string
+  input: LogProspectContactInput
+  orgId?: string
+}): Promise<Prospect> {
+  await logProspectContact({ prospectId, input, orgId })
+  return setProspectFollowUp({ prospectId, nextFollowUpAt: null, orgId })
+}
+
+/**
+ * Closes a prospect out with a reason code. The code — not a free-text note — is
+ * what makes a cancellation report countable, so it is required.
+ */
+export async function markProspectLost({
+  prospectId,
+  input,
+  orgId,
+}: {
+  prospectId: string
+  input: MarkProspectLostInput
+  orgId?: string
+}): Promise<Prospect> {
+  const parsed = markProspectLostInputSchema.parse(input)
+  return updateProspect({
+    prospectId,
+    input: {
+      status: "lost",
+      lost_reason: serializeLostReason(parsed.reasonCode, parsed.note),
+      next_follow_up_at: null,
+    },
+    orgId,
+  })
+}
+
+/** Puts a lost deal back in the book — buyers come back, and financing gets fixed. */
+export async function reopenProspect({
+  prospectId,
+  orgId,
+}: {
+  prospectId: string
+  orgId?: string
+}): Promise<Prospect> {
+  return updateProspect({ prospectId, input: { status: "contacted", lost_reason: null }, orgId })
+}
+
 export async function updateProspect({
   prospectId,
   input,
@@ -796,4 +1006,57 @@ export async function updateProspectContact({
   })
 
   return mapProspectContact(data)
+}
+
+/**
+ * Removes a secondary contact from a lead — the co-op agent who turned out not to
+ * be involved, the spouse entered twice.
+ *
+ * Refuses the primary contact: that is the buyer, and a deal without a buyer is
+ * not a state the board can render. If the contact was promoted into the org
+ * directory the directory record stays — dropping a broker from one deal is not
+ * the same as deleting them from the company.
+ */
+export async function deleteProspectContact({
+  contactId,
+  orgId,
+}: {
+  contactId: string
+  orgId?: string
+}): Promise<void> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
+
+  const { data: existing, error: existingError } = await supabase
+    .from("prospect_contacts")
+    .select(prospectContactSelect)
+    .eq("org_id", resolvedOrgId)
+    .eq("id", contactId)
+    .maybeSingle()
+
+  if (existingError || !existing) {
+    throw new Error("Prospect contact not found")
+  }
+  if (existing.is_primary) {
+    throw new Error("The primary contact cannot be removed — edit the buyer instead")
+  }
+
+  const { error } = await supabase
+    .from("prospect_contacts")
+    .delete()
+    .eq("org_id", resolvedOrgId)
+    .eq("id", contactId)
+
+  if (error) {
+    throw new Error(`Failed to delete prospect contact: ${error.message}`)
+  }
+
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "delete",
+    entityType: "prospect_contact",
+    entityId: contactId,
+    before: existing,
+  })
 }

@@ -117,9 +117,12 @@ export function groupResolvedPlanLines(
   return Array.from(groups.values())
 }
 
-function driftKey(line: PlanTakeoffPricingLine): string {
+/** Identity of a takeoff line across versions: what makes two lines "the same line". */
+export function takeoffLineKey(line: PlanTakeoffPricingLine): string {
   return [line.elevation_id ?? "base", line.cost_code_id, line.description.trim(), line.uom].join("|")
 }
+
+const driftKey = takeoffLineKey
 
 export function diffPlanTakeoffs(
   before: PlanTakeoffPricingLine[],

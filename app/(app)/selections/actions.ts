@@ -41,7 +41,7 @@ export async function createSelectionAction(input: unknown) {
   return run(async () => {
       const parsed = selectionInputSchema.parse(input)
       const selection = await createProjectSelection({ input: parsed })
-      revalidatePath("/selections")
+      revalidatePath(`/projects/${parsed.project_id}/selections`)
       return selection
   })
 }

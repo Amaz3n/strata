@@ -121,7 +121,7 @@ export async function createProspectLotHoldAction(input: unknown) {
     const reservation = await createLotHoldFromProspect(parsed)
     revalidatePipelinePaths(parsed.prospectId)
     revalidatePath("/sales")
-    revalidatePath(`/communities/${reservation.communityId}/sales`)
+    revalidatePath(`/communities/${reservation.communityId}`)
     return reservation
   })
 }

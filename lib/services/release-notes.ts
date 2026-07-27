@@ -4,8 +4,26 @@ import { requireOrgMembership } from "@/lib/auth/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 
-export type ReleaseNoteCategory = "new" | "improved" | "fixed" | "admin" | "mobile"
+/** Product surface a release belongs to. Drives the filter chips on What's New. */
+export type ReleaseNoteArea =
+  | "general"
+  | "projects"
+  | "financials"
+  | "field"
+  | "admin"
+  | "mobile"
+
+/** Change type of a single shipped feature inside a release. */
+export type ReleaseNoteItemType = "new" | "improved" | "fixed"
+
 export type ReleaseNoteVisibility = "quiet" | "badge" | "announce"
+
+export interface ReleaseNoteItem {
+  type: ReleaseNoteItemType
+  title: string
+  detail: string | null
+  href: string | null
+}
 
 export interface ReleaseNote {
   id: string
@@ -13,7 +31,9 @@ export interface ReleaseNote {
   title: string
   summary: string
   body: string | null
-  category: ReleaseNoteCategory
+  version: string | null
+  area: ReleaseNoteArea
+  items: ReleaseNoteItem[]
   visibility: ReleaseNoteVisibility
   href: string | null
   ctaLabel: string | null
@@ -44,7 +64,9 @@ export type ReleaseNoteInput = {
   title: string
   summary: string
   body?: string | null
-  category: ReleaseNoteCategory
+  version?: string | null
+  area: ReleaseNoteArea
+  items: ReleaseNoteItem[]
   visibility: ReleaseNoteVisibility
   href?: string | null
   ctaLabel?: string | null
@@ -63,7 +85,9 @@ type ReleaseNoteRow = {
   title: string
   summary: string
   body: string | null
-  category: ReleaseNoteCategory
+  version: string | null
+  area: string
+  items: unknown
   visibility: ReleaseNoteVisibility
   href: string | null
   cta_label: string | null
@@ -84,6 +108,56 @@ type ReleaseNoteViewRow = {
   dismissed_at: string | null
 }
 
+const RELEASE_NOTE_COLUMNS =
+  "id, slug, title, summary, body, version, area, items, visibility, href, cta_label, org_id, audience_roles, audience_permissions, audience_features, published_at, expires_at"
+
+const ADMIN_RELEASE_NOTE_COLUMNS = `${RELEASE_NOTE_COLUMNS}, is_published, created_at`
+
+function isReleaseNoteArea(value: unknown): value is ReleaseNoteArea {
+  return (
+    value === "general" ||
+    value === "projects" ||
+    value === "financials" ||
+    value === "field" ||
+    value === "admin" ||
+    value === "mobile"
+  )
+}
+
+function isReleaseNoteItemType(value: unknown): value is ReleaseNoteItemType {
+  return value === "new" || value === "improved" || value === "fixed"
+}
+
+function parseArea(value: unknown): ReleaseNoteArea {
+  return isReleaseNoteArea(value) ? value : "general"
+}
+
+/** `items` is jsonb, so it arrives untyped — drop anything that isn't a usable entry. */
+function parseItems(value: unknown): ReleaseNoteItem[] {
+  if (!Array.isArray(value)) return []
+
+  const items: ReleaseNoteItem[] = []
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) continue
+
+    const record: Record<string, unknown> = entry
+    const title = record.title
+    if (!isReleaseNoteItemType(record.type)) continue
+    if (typeof title !== "string" || !title.trim()) continue
+
+    const detail = record.detail
+    const href = record.href
+    items.push({
+      type: record.type,
+      title: title.trim(),
+      detail: typeof detail === "string" && detail.trim() ? detail.trim() : null,
+      href: typeof href === "string" && href.trim() ? href.trim() : null,
+    })
+  }
+
+  return items
+}
+
 function mapAdminReleaseNote(row: ReleaseNoteRow): AdminReleaseNote {
   return {
     id: row.id,
@@ -91,7 +165,9 @@ function mapAdminReleaseNote(row: ReleaseNoteRow): AdminReleaseNote {
     title: row.title,
     summary: row.summary,
     body: row.body,
-    category: row.category,
+    version: row.version,
+    area: parseArea(row.area),
+    items: parseItems(row.items),
     visibility: row.visibility,
     href: row.href,
     ctaLabel: row.cta_label,
@@ -170,7 +246,9 @@ function mapReleaseNote(row: ReleaseNoteRow, view?: ReleaseNoteViewRow): Release
     title: row.title,
     summary: row.summary,
     body: row.body,
-    category: row.category,
+    version: row.version,
+    area: parseArea(row.area),
+    items: parseItems(row.items),
     visibility: row.visibility,
     href: row.href,
     ctaLabel: row.cta_label,
@@ -202,9 +280,7 @@ async function fetchVisibleReleaseNotes(context: ReleaseNotesContext, limit = 50
   const now = new Date().toISOString()
   const { data, error } = await context.supabase
     .from("release_notes")
-    .select(
-      "id, slug, title, summary, body, category, visibility, href, cta_label, org_id, audience_roles, audience_permissions, audience_features, published_at, expires_at",
-    )
+    .select(RELEASE_NOTE_COLUMNS)
     .eq("is_published", true)
     .lte("published_at", now)
     .or(`org_id.is.null,org_id.eq.${context.orgId}`)
@@ -336,7 +412,9 @@ function normalizeReleaseNoteInput(input: ReleaseNoteInput) {
     title: input.title.trim(),
     summary: input.summary.trim(),
     body: input.body?.trim() || null,
-    category: input.category,
+    version: input.version?.trim() || null,
+    area: input.area,
+    items: input.items,
     visibility: input.visibility,
     href: input.href?.trim() || null,
     cta_label: input.ctaLabel?.trim() || null,
@@ -355,9 +433,7 @@ export async function listReleaseNotesForAdmin(): Promise<AdminReleaseNote[]> {
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("release_notes")
-    .select(
-      "id, slug, title, summary, body, category, visibility, href, cta_label, org_id, audience_roles, audience_permissions, audience_features, is_published, published_at, expires_at, created_at",
-    )
+    .select(ADMIN_RELEASE_NOTE_COLUMNS)
     .order("published_at", { ascending: false, nullsFirst: false })
     .order("created_at", { ascending: false })
 
@@ -370,9 +446,7 @@ export async function createReleaseNote(input: ReleaseNoteInput) {
   const { data, error } = await supabase
     .from("release_notes")
     .insert(normalizeReleaseNoteInput(input))
-    .select(
-      "id, slug, title, summary, body, category, visibility, href, cta_label, org_id, audience_roles, audience_permissions, audience_features, is_published, published_at, expires_at, created_at",
-    )
+    .select(ADMIN_RELEASE_NOTE_COLUMNS)
     .single()
 
   if (error) throw new Error(`Unable to create release note: ${error.message}`)
@@ -385,9 +459,7 @@ export async function updateReleaseNote(id: string, input: ReleaseNoteInput) {
     .from("release_notes")
     .update(normalizeReleaseNoteInput(input))
     .eq("id", id)
-    .select(
-      "id, slug, title, summary, body, category, visibility, href, cta_label, org_id, audience_roles, audience_permissions, audience_features, is_published, published_at, expires_at, created_at",
-    )
+    .select(ADMIN_RELEASE_NOTE_COLUMNS)
     .single()
 
   if (error) throw new Error(`Unable to update release note: ${error.message}`)

@@ -1,6 +1,6 @@
 import "server-only"
 
-import { addWeeks, calendarDaysBetween, median, mondayOfIsoWeek, percentile, releaseSlotVariance } from "@/lib/starts/even-flow-math"
+import { addWeeks, calendarDaysBetween, median, mondayOfIsoWeek, percentile } from "@/lib/starts/even-flow-math"
 import { recordAudit } from "@/lib/services/audit"
 import {
   getDivisionAccessForUser,
@@ -12,31 +12,10 @@ import { requirePermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { slotSchema } from "@/lib/validation/starts"
 
-export interface ReleaseBoardWeekDTO {
-  weekStart: string
-  targetStarts: number
-  slotNoteId: string | null
-  released: number
-  targeted: number
-  variance: number
-}
-
-export interface ReleaseBoardCommunityDTO {
-  communityId: string
-  communityName: string
-  weeks: ReleaseBoardWeekDTO[]
-  precon: { open: number; ready: number; attention: number; oldestAgeDays: number }
-  underConstruction: number
-}
-
 function settingsNumber(settings: unknown, key: string, fallback: number, max: number) {
   if (!settings || typeof settings !== "object") return fallback
   const value = Reflect.get(settings, key)
   return typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(0, Math.trunc(value))) : fallback
-}
-
-function daysOld(createdAt: string) {
-  return Math.max(0, Math.floor((Date.now() - Date.parse(createdAt)) / 86_400_000))
 }
 
 async function ensureSlotsWithClient(
@@ -93,10 +72,22 @@ export async function setReleaseSlot(
   ])
 }
 
-export async function getReleaseBoard(
+export interface CommunityReleaseSlotsDTO {
+  communityId: string
+  communityName: string
+  weeks: Array<{ weekStart: string; targetStarts: number }>
+}
+
+/**
+ * The weekly start capacity each community has committed to, seeding any slots
+ * that do not exist yet. Only the target is returned — what actually fills a
+ * week is counted from the packages the caller can see, so the meter on the
+ * lane can never disagree with the cards under it.
+ */
+export async function getCommunityReleaseSlots(
   opts: { communityId?: string; divisionId?: string; weeksBack?: number; weeksAhead?: number } = {},
   orgId?: string,
-): Promise<ReleaseBoardCommunityDTO[]> {
+): Promise<CommunityReleaseSlotsDTO[]> {
   const context = await requireOrgContext(orgId)
   await requirePermission("start.read", context)
   const divisionAccess = await getDivisionAccessForUser({
@@ -122,37 +113,18 @@ export async function getReleaseBoard(
   const currentWeek = mondayOfIsoWeek(new Date())
   const from = addWeeks(currentWeek, -Math.min(52, Math.max(0, opts.weeksBack ?? 4)))
   const to = addWeeks(currentWeek, Math.min(104, Math.max(1, opts.weeksAhead ?? 12)))
-  const [slotsResult, packagesResult, lotsResult] = await Promise.all([
-    context.supabase.from("community_release_slots").select("id,community_id,week_start,target_starts,notes")
-      .eq("org_id", context.orgId).in("community_id", communityIds).gte("week_start", from).lte("week_start", to).order("week_start"),
-    context.supabase.from("start_packages").select("id,community_id,status,target_week,created_at")
-      .eq("org_id", context.orgId).in("community_id", communityIds).limit(10_000),
-    context.supabase.from("lots").select("id,community_id,status").eq("org_id", context.orgId).in("community_id", communityIds).eq("status", "started").limit(10_000),
-  ])
-  for (const result of [slotsResult, packagesResult, lotsResult]) {
-    if (result.error) throw new Error(`Failed to load release board: ${result.error.message}`)
-  }
-  const today = new Date().toISOString().slice(0, 10)
-  return (communities ?? []).map((community) => {
-    const packages = (packagesResult.data ?? []).filter((pkg) => pkg.community_id === community.id)
-    const weeks = (slotsResult.data ?? []).filter((slot) => slot.community_id === community.id).map((slot) => {
-      const targeted = packages.filter((pkg) => pkg.target_week === slot.week_start && pkg.status !== "cancelled").length
-      const released = packages.filter((pkg) => pkg.target_week === slot.week_start && pkg.status === "released").length
-      const target = Number(slot.target_starts)
-      return { weekStart: slot.week_start, targetStarts: target, slotNoteId: slot.notes ? slot.id : null, released, targeted, variance: releaseSlotVariance({ weekStart: slot.week_start, today, target, released, targeted }) }
-    })
-    const precon = packages.filter((pkg) => ["open", "ready", "attention"].includes(pkg.status))
-    return {
-      communityId: community.id, communityName: community.name, weeks,
-      precon: {
-        open: precon.filter((pkg) => pkg.status === "open").length,
-        ready: precon.filter((pkg) => pkg.status === "ready").length,
-        attention: precon.filter((pkg) => pkg.status === "attention").length,
-        oldestAgeDays: precon.reduce((oldest, pkg) => Math.max(oldest, daysOld(pkg.created_at)), 0),
-      },
-      underConstruction: (lotsResult.data ?? []).filter((lot) => lot.community_id === community.id).length,
-    }
-  })
+  const { data: slots, error: slotsError } = await context.supabase.from("community_release_slots")
+    .select("community_id,week_start,target_starts")
+    .eq("org_id", context.orgId).in("community_id", communityIds)
+    .gte("week_start", from).lte("week_start", to).order("week_start")
+  if (slotsError) throw new Error(`Failed to load release slots: ${slotsError.message}`)
+  return (communities ?? []).map((community) => ({
+    communityId: community.id,
+    communityName: community.name,
+    weeks: (slots ?? [])
+      .filter((slot) => slot.community_id === community.id)
+      .map((slot) => ({ weekStart: slot.week_start, targetStarts: Number(slot.target_starts) })),
+  }))
 }
 
 export interface CycleTimeRow {
@@ -251,36 +223,6 @@ export async function getEvenFlowAdherence(
   }))
 }
 
-export async function getWipCounts(opts: { divisionId?: string } = {}, orgId?: string) {
-  const context = await requireOrgContext(orgId)
-  await requirePermission("report.read", context)
-  const divisionAccess = await getDivisionAccessForUser({
-    orgId: context.orgId,
-    userId: context.userId,
-  })
-  if (opts.divisionId && divisionAccess.assignedOnly && !divisionAccess.divisionIds.includes(opts.divisionId)) {
-    return []
-  }
-  let communitiesQuery = context.supabase.from("communities").select("id,name").eq("org_id", context.orgId).eq("status", "active").limit(50)
-  if (opts.divisionId) communitiesQuery = communitiesQuery.eq("division_id", opts.divisionId)
-  else if (divisionAccess.assignedOnly) {
-    if (divisionAccess.divisionIds.length === 0) return []
-    communitiesQuery = communitiesQuery.in("division_id", divisionAccess.divisionIds)
-  }
-  const { data: communities, error } = await communitiesQuery
-  if (error) throw new Error(`Failed to load WIP communities: ${error.message}`)
-  const ids = (communities ?? []).map((community) => community.id)
-  if (!ids.length) return []
-  const [packages, lots] = await Promise.all([
-    context.supabase.from("start_packages").select("community_id,status").eq("org_id", context.orgId).in("community_id", ids).limit(10_000),
-    context.supabase.from("lots").select("community_id,status").eq("org_id", context.orgId).in("community_id", ids).eq("status", "started").limit(10_000),
-  ])
-  return (communities ?? []).map((community) => {
-    const scoped = (packages.data ?? []).filter((pkg) => pkg.community_id === community.id)
-    return { communityId: community.id, communityName: community.name, precon: scoped.filter((pkg) => ["open", "ready", "attention"].includes(pkg.status)).length, underConstruction: (lots.data ?? []).filter((lot) => lot.community_id === community.id).length, readyBacklog: scoped.filter((pkg) => pkg.status === "ready").length, attention: scoped.filter((pkg) => pkg.status === "attention").length }
-  })
-}
-
 export async function listReleasedStartMarkers(projectIds: string[], orgId?: string) {
   if (!projectIds.length) return new Map<string, string>()
   const context = await requireOrgContext(orgId)
@@ -299,43 +241,4 @@ export async function listReleasedStartMarkers(projectIds: string[], orgId?: str
     .in("project_id", scopedProjectIds.slice(0, 500)).not("actual_start_date", "is", null).limit(500)
   if (error) throw new Error(`Failed to load portfolio start markers: ${error.message}`)
   return new Map((data ?? []).flatMap((row) => row.project_id && row.actual_start_date ? [[row.project_id, row.actual_start_date] as const] : []))
-}
-
-export async function getLateTaskHeatmap(opts: { communityId?: string; superintendentId?: string } = {}, orgId?: string) {
-  const context = await requireOrgContext(orgId)
-  await requirePermission("report.read", context)
-  const authorizedProjectIds = await getDivisionScopedProjectIds({
-    orgId: context.orgId,
-    userId: context.userId,
-    supabase: context.supabase,
-  })
-  if (authorizedProjectIds !== null && authorizedProjectIds.length === 0) return []
-  let projectsQuery = context.supabase.from("projects").select("id")
-    .eq("org_id", context.orgId).eq("property_type", "production").eq("status", "active").limit(500)
-  if (opts.superintendentId) projectsQuery = projectsQuery.eq("superintendent_id", opts.superintendentId)
-  if (authorizedProjectIds !== null) projectsQuery = projectsQuery.in("id", authorizedProjectIds)
-  const { data: projects } = await projectsQuery
-  let projectIds = (projects ?? []).map((project) => project.id)
-  if (opts.communityId && projectIds.length) {
-    const { data: lots } = await context.supabase.from("lots").select("project_id").eq("org_id", context.orgId).eq("community_id", opts.communityId).in("project_id", projectIds)
-    projectIds = (lots ?? []).flatMap((lot) => lot.project_id ? [lot.project_id] : [])
-  }
-  if (!projectIds.length) return []
-  const [items, lots] = await Promise.all([
-    context.supabase.from("schedule_items").select("project_id,phase,end_date,status").eq("org_id", context.orgId).in("project_id", projectIds).lt("end_date", new Date().toISOString().slice(0, 10)).neq("status", "completed").limit(10_000),
-    context.supabase.from("lots").select("project_id,lot_number,block").eq("org_id", context.orgId).in("project_id", projectIds),
-  ])
-  const today = new Date().toISOString().slice(0, 10)
-  const groups = new Map<string, { projectId: string; phase: string | null; lateCount: number; maxDaysLate: number }>()
-  for (const item of items.data ?? []) {
-    const key = `${item.project_id}:${item.phase ?? ""}`
-    const current = groups.get(key) ?? { projectId: item.project_id, phase: item.phase, lateCount: 0, maxDaysLate: 0 }
-    current.lateCount += 1
-    current.maxDaysLate = Math.max(current.maxDaysLate, calendarDaysBetween(item.end_date, today))
-    groups.set(key, current)
-  }
-  return Array.from(groups.values()).map((group) => {
-    const lot = (lots.data ?? []).find((row) => row.project_id === group.projectId)
-    return { ...group, lotLabel: lot?.block ? `${lot.block}-${lot.lot_number}` : lot?.lot_number ?? "Lot" }
-  })
 }

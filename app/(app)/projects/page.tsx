@@ -12,13 +12,13 @@ import { terminology } from "@/lib/terminology"
 
 export const dynamic = 'force-dynamic'
 
-async function ProjectsData({ communityId, divisionId }: { communityId?: string; divisionId?: string }) {
+async function ProjectsData({ communityId }: { communityId?: string }) {
   const { orgId, productTier } = await requireOrgContext()
   const [allProjects, clientContacts, allScheduleSummaries, scope] = await Promise.all([
     listProjectsAction(),
     listProjectClientContactsAction(),
     listProjectScheduleSummariesAction(),
-    resolveProductionDeskScope({ communityId, divisionId }),
+    resolveProductionDeskScope({ communityId }),
   ])
   const allowed = scope.projectIds === null ? null : new Set(scope.projectIds)
   const projects = allowed ? allProjects.filter((project) => allowed.has(project.id)) : allProjects
@@ -34,20 +34,18 @@ async function ProjectsData({ communityId, divisionId }: { communityId?: string;
       scheduleSummaries={scheduleSummaries}
       productTier={productTier}
       communities={scope.communities}
-      divisions={scope.divisions}
       communityId={scope.communityId}
-      divisionId={scope.divisionId}
     />
   )
 }
 
-export default async function ProjectsPage({ searchParams }: { searchParams: Promise<{ community?: string; division?: string }> }) {
+export default async function ProjectsPage({ searchParams }: { searchParams: Promise<{ community?: string }> }) {
   const [params, context] = await Promise.all([searchParams, requireOrgContext()])
   return (
     <PageLayout title={terminology(context.productTier).projects}>
       <div className="-m-4 -mt-6 h-[calc(100vh-3.5rem)]">
         <Suspense fallback={<ProjectsSkeleton />}>
-          <ProjectsData communityId={params.community} divisionId={params.division} />
+          <ProjectsData communityId={params.community} />
         </Suspense>
       </div>
     </PageLayout>

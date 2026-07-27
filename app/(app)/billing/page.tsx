@@ -184,9 +184,9 @@ function agingTone(days: number) {
   return "text-muted-foreground"
 }
 
-export default async function BillingPage({ searchParams }: { searchParams: Promise<{ community?: string; division?: string }> }) {
+export default async function BillingPage({ searchParams }: { searchParams: Promise<{ community?: string }> }) {
   const params = await searchParams
-  const scope = await resolveProductionDeskScope({ communityId: params.community, divisionId: params.division })
+  const scope = await resolveProductionDeskScope({ communityId: params.community })
   const [desk, report] = await Promise.all([loadOrgBillingDeskData(scope.projectIds), getOrgWipOverUnderReport()])
   const { stats } = desk
 
@@ -211,7 +211,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
   return (
     <PageLayout title="Billing" fullBleed>
       <div>
-        <DeskScopeFilters communities={scope.communities} divisions={scope.divisions} communityId={scope.communityId} divisionId={scope.divisionId} className="border-b px-4 py-2.5 sm:px-6" />
+        <DeskScopeFilters communities={scope.communities} communityId={scope.communityId} className="border-b px-4 py-2.5 sm:px-6" />
         {/* ── Instrument header: four figures, aging band below ────────── */}
         <section className="desk-rise border-b bg-card">
           <div className="mx-auto w-full max-w-7xl px-4 py-5 sm:px-6 lg:px-8">

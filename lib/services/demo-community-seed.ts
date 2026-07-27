@@ -43,7 +43,24 @@ export async function seedSampleCommunity(orgId: string, actorUserId: string): P
 
   const { data: costCodes } = await supabase.from("cost_codes").select("code").eq("org_id", orgId).eq("is_active", true).order("code").limit(25)
   if (!costCodes || costCodes.length < 5) throw new Error("Seed cost codes before the sample community")
-  const takeoffRows = SAMPLE_COMMUNITY_SPEC.plans.flatMap((plan) => costCodes.map((costCode, index) => ({ plan_code: plan.code, elevation_code: "", cost_code: costCode.code, description: `Sample scope ${index + 1}`, quantity: index % 4 === 0 ? plan.heatedSqft : 1, uom: index % 4 === 0 ? "sf" : "ls", unit_cost_cents: index % 4 === 0 ? 1.25 : (3500 + index * 275) / 100 })))
+  // Sample takeoff aims at a believable production direct cost: the square-foot
+  // scopes carry roughly $95/sf and the lump-sum scopes another ~$38k, landing a
+  // 1,650 sf plan near $118/sf and a 2,400 sf plan near $111/sf. Values are cents.
+  const sqftScopeUnitCents = 1_350
+  const takeoffRows = SAMPLE_COMMUNITY_SPEC.plans.flatMap((plan) =>
+    costCodes.map((costCode, index) => {
+      const bySqft = index % 4 === 0
+      return {
+        plan_code: plan.code,
+        elevation_code: "",
+        cost_code: costCode.code,
+        description: `Sample scope ${index + 1}`,
+        quantity: bySqft ? plan.heatedSqft : 1,
+        uom: bySqft ? "sf" : "ls",
+        unit_cost_cents: bySqft ? sqftScopeUnitCents : 150_000 + index * 25_000,
+      }
+    }),
+  )
   await importCsv({ orgId, importer: "plan_library", name: "sample-takeoffs.csv", headers: Object.keys(takeoffRows[0]), rows: takeoffRows, context: { file_kind: "takeoffs", is_sample: true } })
 
   const scheduleItems = [

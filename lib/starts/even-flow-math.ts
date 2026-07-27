@@ -13,17 +13,6 @@ export function addWeeks(weekStart: string, weeks: number) {
   return date.toISOString().slice(0, 10)
 }
 
-export function releaseSlotVariance(input: {
-  weekStart: string
-  today: string
-  target: number
-  released: number
-  targeted: number
-}) {
-  const actual = input.weekStart < mondayOfIsoWeek(input.today) ? input.released : input.targeted
-  return actual - input.target
-}
-
 export function normalizeWorkGroupKey(name: string) {
   return name.trim().toLocaleLowerCase().replace(/\s+/g, " ")
 }

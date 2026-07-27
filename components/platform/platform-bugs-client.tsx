@@ -68,6 +68,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { PillSelect } from "@/components/ui/pill-select"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Select,
@@ -1288,38 +1289,3 @@ function NewBugDialog({
   )
 }
 
-function PillSelect({
-  name,
-  value,
-  defaultValue,
-  onValueChange,
-  icon: Icon,
-  items,
-  className,
-  disabled,
-  placeholder,
-}: {
-  name?: string
-  value?: string
-  defaultValue?: string
-  onValueChange?: (value: string) => void
-  icon: React.ComponentType<{ className?: string }>
-  items: { value: string; label: string }[]
-  className?: string
-  disabled?: boolean
-  placeholder?: string
-}) {
-  return (
-    <Select name={name} value={value} defaultValue={defaultValue} onValueChange={onValueChange} disabled={disabled}>
-      <SelectTrigger className={cn("w-fit justify-start rounded-none bg-muted/50 px-3", className)}>
-        <Icon className="size-4" />
-        <SelectValue placeholder={placeholder} />
-      </SelectTrigger>
-      <SelectContent>
-        {items.map((item) => (
-          <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  )
-}

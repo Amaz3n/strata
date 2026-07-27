@@ -138,6 +138,12 @@ G consumes F's division lens and E's community P&L primitives. H is the closing 
 1. **No third sidebar scope.** The org/project two-level system holds. The community
    stays a horizontally-tabbed workbench; divisions become ambient *context*, not a
    nav mode. Do not build a community sidebar.
+   > **Amended 2026-07-25.** Still binding for navigation, but the community was
+   > under-modelled as a filter. Scope is now org → community → home, with the
+   > community expressed as (a) an assignment-defaulted ambient lens in the header
+   > that every desk honours, and (b) a workbench with real depth. The sidebar
+   > still never changes shape. See "The community lens" in
+   > `docs/production-org-playbook.md`.
 2. **One sales noun per tier.** Residential/commercial: Pipeline. Production: Sales
    (with the lead funnel as a tab inside it). Never both, except the mixed-org rule in
    Phase B.

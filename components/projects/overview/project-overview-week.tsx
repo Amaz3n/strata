@@ -1,4 +1,3 @@
-import Link from "next/link"
 import { format, parseISO, isToday, isTomorrow, differenceInCalendarDays } from "date-fns"
 import {
   CalendarDays,
@@ -7,6 +6,14 @@ import {
   DollarSign,
   Sparkles,
 } from "@/components/icons"
+import {
+  BandBody,
+  BandHeader,
+  GroupHeader,
+  IconChip,
+  OverviewEmptyState,
+  OverviewRow,
+} from "@/components/overview/primitives"
 import { cn } from "@/lib/utils"
 import type { ComingUpItem } from "@/app/(app)/projects/[id]/overview-actions"
 
@@ -65,36 +72,24 @@ export function ProjectOverviewWeek({ items, projectId: _ }: ProjectOverviewWeek
 
   return (
     <section>
-      <header className="px-5 sm:px-8 lg:px-12 pt-10 pb-5 flex items-baseline justify-between gap-3">
-        <div className="flex items-baseline gap-3">
-          <h2 className="text-[10px] font-semibold uppercase tracking-[0.16em] text-foreground/85">
-            This week
-          </h2>
-          {visible.length > 0 && (
-            <span className="text-[10px] font-medium tabular-nums text-muted-foreground/65">
-              {visible.length} ahead
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1.5">
-          {milestoneCount > 0 && (
-            <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-foreground bg-foreground/[0.07] px-2 py-0.5 rounded-sm">
-              <Flag className="h-2.5 w-2.5" strokeWidth={2.5} />
-              {milestoneCount}
-            </span>
-          )}
-          {drawCount > 0 && (
-            <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-success bg-success/10 px-2 py-0.5 rounded-sm">
-              <DollarSign className="h-2.5 w-2.5" />
-              {drawCount}
-            </span>
-          )}
-        </div>
-      </header>
+      <BandHeader title="This week" count={visible.length > 0 ? `${visible.length} ahead` : null}>
+        {milestoneCount > 0 && (
+          <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-foreground bg-foreground/[0.07] px-2 py-0.5 rounded-sm">
+            <Flag className="h-2.5 w-2.5" strokeWidth={2.5} />
+            {milestoneCount}
+          </span>
+        )}
+        {drawCount > 0 && (
+          <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-success bg-success/10 px-2 py-0.5 rounded-sm">
+            <DollarSign className="h-2.5 w-2.5" />
+            {drawCount}
+          </span>
+        )}
+      </BandHeader>
 
-      <div className="px-5 sm:px-8 lg:px-12 pb-10">
+      <BandBody>
         {groups.length === 0 ? (
-          <EmptyState
+          <OverviewEmptyState
             icon={<Sparkles className="h-5 w-5 text-muted-foreground/70" />}
             tone="neutral"
             title="A clear week"
@@ -122,16 +117,9 @@ export function ProjectOverviewWeek({ items, projectId: _ }: ProjectOverviewWeek
                       isMilestone ? "inverted" : isDraw ? "success" : "neutral"
                     return (
                       <li key={`${item.type}-${item.id}`}>
-                        <Link
+                        <OverviewRow
                           href={item.link}
-                          className={cn(
-                            "group flex items-center gap-3 py-2 -mx-2 px-2 rounded-md transition-all duration-150",
-                            isMilestone
-                              ? "bg-foreground/[0.025] hover:bg-foreground/[0.05]"
-                              : isDraw
-                              ? "bg-success/[0.03] hover:bg-success/[0.07]"
-                              : "hover:bg-muted/45"
-                          )}
+                          tone={isMilestone ? "emphasis" : isDraw ? "success" : "neutral"}
                         >
                           <IconChip tone={chipTone}>
                             <Icon
@@ -174,7 +162,7 @@ export function ProjectOverviewWeek({ items, projectId: _ }: ProjectOverviewWeek
                               Draw
                             </span>
                           )}
-                        </Link>
+                        </OverviewRow>
                       </li>
                     )
                   })}
@@ -183,100 +171,33 @@ export function ProjectOverviewWeek({ items, projectId: _ }: ProjectOverviewWeek
             ))}
           </div>
         )}
-      </div>
+      </BandBody>
     </section>
   )
 }
 
-/* ================================================================
- * Local primitives (mirrored from blockers panel for visual symmetry)
- * ============================================================== */
-
 function DayHeader({ group }: { group: DayGroup }) {
-  const ruleClass = group.isToday
-    ? "bg-foreground/40"
-    : group.isTomorrow
-    ? "bg-foreground/25"
-    : "bg-muted-foreground/30"
-  const labelClass = group.isToday
-    ? "text-foreground"
-    : group.isTomorrow
-    ? "text-foreground/85"
-    : "text-muted-foreground/85"
   return (
-    <div className="flex items-center justify-between gap-3 mb-3">
-      <div className="flex items-center gap-2.5 min-w-0">
-        <span className={cn("h-px w-4 shrink-0", ruleClass)} />
-        <span
-          className={cn(
-            "text-[10px] font-semibold uppercase tracking-[0.16em] truncate",
-            labelClass
-          )}
-        >
-          {group.primary}
-        </span>
-        <span className="text-[10px] tabular-nums text-muted-foreground/55">
-          {group.secondary}
-        </span>
-        {group.isToday && (
-          <span aria-hidden className="h-1 w-1 rounded-full bg-foreground" />
-        )}
-      </div>
-      <span className="text-[10px] font-medium tabular-nums text-muted-foreground/55 shrink-0">
-        {group.items.length}
-      </span>
-    </div>
-  )
-}
-
-function IconChip({
-  children,
-  tone,
-}: {
-  children: React.ReactNode
-  tone: "neutral" | "destructive" | "warning" | "success" | "inverted"
-}) {
-  return (
-    <span
-      className={cn(
-        "shrink-0 inline-flex items-center justify-center h-7 w-7 rounded-md transition-colors",
-        tone === "neutral" &&
-          "bg-muted/60 text-muted-foreground ring-1 ring-foreground/[0.04] ring-inset",
-        tone === "destructive" && "bg-destructive/10 text-destructive",
-        tone === "warning" && "bg-warning/12 text-warning",
-        tone === "success" && "bg-success/12 text-success",
-        tone === "inverted" && "bg-foreground text-background"
-      )}
+    <GroupHeader
+      label={group.primary}
+      count={group.items.length}
+      ruleClassName={
+        group.isToday
+          ? "bg-foreground/40"
+          : group.isTomorrow
+          ? "bg-foreground/25"
+          : "bg-muted-foreground/30"
+      }
+      labelClassName={
+        group.isToday
+          ? "text-foreground"
+          : group.isTomorrow
+          ? "text-foreground/85"
+          : "text-muted-foreground/85"
+      }
     >
-      {children}
-    </span>
-  )
-}
-
-function EmptyState({
-  icon,
-  tone,
-  title,
-  description,
-}: {
-  icon: React.ReactNode
-  tone: "success" | "neutral"
-  title: string
-  description: string
-}) {
-  return (
-    <div className="flex flex-col items-center justify-center py-12 text-center">
-      <div
-        className={cn(
-          "mb-3 inline-flex h-10 w-10 items-center justify-center rounded-full",
-          tone === "success" && "bg-success/10",
-          tone === "neutral" && "bg-muted/60"
-        )}
-      >
-        {icon}
-      </div>
-      <p className="text-sm font-medium text-foreground">{title}</p>
-      <p className="mt-1 text-xs text-muted-foreground">{description}</p>
-    </div>
+      <span className="text-[10px] tabular-nums text-muted-foreground/55">{group.secondary}</span>
+      {group.isToday && <span aria-hidden className="h-1 w-1 rounded-full bg-foreground" />}
+    </GroupHeader>
   )
 }

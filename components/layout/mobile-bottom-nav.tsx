@@ -19,8 +19,10 @@ import {
   MoreHorizontal,
   Plus,
   Settings,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Target,
   Wallet,
   X,
 } from "@/components/icons"
@@ -30,6 +32,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import type { User } from "@/lib/types"
 import type { ProductTier } from "@/lib/product-tier"
+import { terminology } from "@/lib/terminology"
 import { cn } from "@/lib/utils"
 import { useSidebarProjects } from "./use-sidebar-projects"
 import {
@@ -51,6 +54,7 @@ interface MobileBottomNavProps {
   whatsNewUnreadCount?: number
   productTier?: ProductTier
   showProductionNavigation?: boolean
+  showPipelineNavigation?: boolean
   showPurchasingNavigation?: boolean
 }
 
@@ -106,6 +110,7 @@ export function MobileBottomNav({
   whatsNewUnreadCount = 0,
   productTier = "residential",
   showProductionNavigation = false,
+  showPipelineNavigation = true,
   showPurchasingNavigation = false,
 }: MobileBottomNavProps) {
   const pathname = useOptimisticPathname()
@@ -234,6 +239,17 @@ export function MobileBottomNav({
       return { primary: projectPrimary, menuSections: projectMenu }
     }
 
+    const orgTerms = terminology(productTier)
+    const pipelineNavItem: NavItem = {
+      title: "Pipeline",
+      url: "/pipeline",
+      icon: Contact,
+      isActive: pathname.startsWith("/pipeline"),
+      badge: visibleBadge(pipelineBadgeCount),
+      requiredAny: ["pipeline.read", "pipeline.write"],
+    }
+    // A production rep's daily driver is Sales, not Pipeline — and on a true
+    // production org /pipeline just redirects to /sales, so it never belongs here.
     const workspacePrimary: NavItem[] = [
       { title: "Home", url: "/", icon: Home, isActive: pathname === "/" },
       {
@@ -245,28 +261,39 @@ export function MobileBottomNav({
         requiredAny: ["org.member"],
       },
       {
-        title: "Projects",
+        title: orgTerms.projects,
         url: "/projects",
         icon: FolderOpen,
         isActive: pathname === "/projects" || pathname.startsWith("/projects"),
         requiredAny: ["org.member", "project.read"],
       },
-      {
-        title: "Pipeline",
-        url: "/pipeline",
-        icon: Contact,
-        isActive: pathname.startsWith("/pipeline"),
-        badge: visibleBadge(pipelineBadgeCount),
-        requiredAny: ["pipeline.read", "pipeline.write"],
-      },
+      ...(showProductionNavigation
+        ? [{
+            title: "Sales",
+            url: "/sales",
+            icon: Target,
+            isActive: pathname.startsWith("/sales"),
+            requiredAny: ["sales.read"],
+          }]
+        : showPipelineNavigation ? [pipelineNavItem] : []),
     ]
+    // Mirrors the desktop sidebar's sell → build → office spine. Sales and Homes
+    // are already in the bar above, so they are not repeated here.
     const workspaceMenu: MenuSection[] = [
       ...(showProductionNavigation ? [{
-        label: "Production",
+        label: "Sell",
         items: [
+          ...(showPipelineNavigation ? [pipelineNavItem] : []),
           { title: "Communities", url: "/communities", icon: Building2, isActive: pathname.startsWith("/communities"), requiredAny: ["community.read"] },
           { title: "Plans", url: "/plans", icon: Home, isActive: pathname.startsWith("/plans"), requiredAny: ["plan.read"] },
           { title: "Design Studio", url: "/design-studio", icon: SlidersHorizontal, isActive: pathname.startsWith("/design-studio"), requiredAny: ["selections.read", "design_studio.manage"] },
+        ],
+      }, {
+        label: "Build",
+        items: [
+          { title: "Starts", url: "/starts", icon: CalendarDays, isActive: pathname.startsWith("/starts"), requiredAny: ["start.read"] },
+          { title: "My Houses", url: "/my-houses", icon: HardHat, isActive: pathname.startsWith("/my-houses"), requiredAny: ["start.read"] },
+          { title: "Warranty", url: "/warranty", icon: ShieldCheck, isActive: pathname.startsWith("/warranty"), requiredAny: ["warranty.read"] },
         ],
       }] : []),
       {
@@ -306,7 +333,7 @@ export function MobileBottomNav({
       },
     ]
     return { primary: workspacePrimary, menuSections: workspaceMenu }
-  }, [pathname, projectId, isProject, section, currentProject, projectReviewBadgeCounts, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, productTier, showProductionNavigation, showPurchasingNavigation])
+  }, [pathname, projectId, isProject, section, currentProject, projectReviewBadgeCounts, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, productTier, showProductionNavigation, showPipelineNavigation, showPurchasingNavigation])
 
   const visiblePrimary = useMemo(
     () =>

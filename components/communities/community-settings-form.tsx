@@ -34,6 +34,7 @@ export function CommunitySettingsForm({ community, divisions, canWrite }: { comm
   const [status, setStatus] = useState(community.status)
   const [divisionId, setDivisionId] = useState(community.divisionId ?? "none")
   const [plannedLotCount, setPlannedLotCount] = useState(community.plannedLotCount != null ? String(community.plannedLotCount) : "")
+  const [targetAbsorption, setTargetAbsorption] = useState(community.targetAbsorptionPerMonth != null ? String(community.targetAbsorptionPerMonth) : "")
   const [address, setAddress] = useState(community.address ?? "")
   const [city, setCity] = useState(community.city ?? "")
   const [state, setState] = useState(community.state ?? "")
@@ -49,6 +50,7 @@ export function CommunitySettingsForm({ community, divisions, canWrite }: { comm
           status,
           divisionId: divisionId === "none" ? null : divisionId,
           plannedLotCount: plannedLotCount ? Number(plannedLotCount) : null,
+          targetAbsorptionPerMonth: targetAbsorption ? Number(targetAbsorption) : null,
           address: address || null,
           city: city || null,
           state: state || null,
@@ -123,6 +125,11 @@ export function CommunitySettingsForm({ community, divisions, canWrite }: { comm
               <Label htmlFor="settings-planned">Planned lots</Label>
               <Input id="settings-planned" disabled={!canWrite} type="number" min={0} value={plannedLotCount} onChange={(event) => setPlannedLotCount(event.target.value)} />
               <p className="text-xs text-muted-foreground">Target buildout used for absorption tracking. Leave empty if unknown.</p>
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="settings-absorption">Target pace</Label>
+              <Input id="settings-absorption" disabled={!canWrite} type="number" min={0} step="0.5" value={targetAbsorption} onChange={(event) => setTargetAbsorption(event.target.value)} />
+              <p className="text-xs text-muted-foreground">Net sales per month this community is underwritten to. Drives pace vs required on the board.</p>
             </div>
           </div>
         </section>

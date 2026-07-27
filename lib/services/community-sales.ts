@@ -3,7 +3,7 @@ import { recordAudit } from "@/lib/services/audit"
 import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
 import { createInvoice } from "@/lib/services/invoices"
-import { resolveOptionPricing } from "@/lib/services/option-catalog"
+import { listCatalog, resolveOptionPricing } from "@/lib/services/option-catalog"
 import { recordPaymentReversal } from "@/lib/services/payments"
 import { requirePermission } from "@/lib/services/permissions"
 import { createProject } from "@/lib/services/projects"
@@ -20,6 +20,7 @@ import { getOrgSenderEmail, renderEmailTemplate, sendEmail } from "@/lib/service
 import { SignatureEmail } from "@/lib/emails/signature-email"
 import {
   agreementConfigurationSchema,
+  communityPlanPriceSchema,
   createLotHoldSchema,
   createPurchaseAgreementSchema,
   convertReservationSchema,
@@ -31,6 +32,8 @@ import {
 } from "@/lib/validation/community-sales"
 
 const LIVE_RESERVATION_STATUSES = ["hold", "reserved", "converted"]
+/** Lot states a buyer can be sold into — controlled land and closed lots are not. */
+const SELLABLE_LOT_STATUSES = ["owned", "developed", "assigned", "started"]
 
 type OrgContext = Awaited<ReturnType<typeof requireOrgContext>>
 
@@ -134,11 +137,18 @@ export async function expireStaleHolds(orgId?: string, communityId?: string) {
   return data?.length ?? 0
 }
 
+/**
+ * Sellable inventory. By default this is spec inventory only — started homes
+ * with no buyer — which is what the community sales tab wants. Pass
+ * `includeToBeBuilt` for the Sales "Find a home" picker, which also needs
+ * unstarted lots a buyer can still choose a plan on.
+ */
 export async function listSpecInventory(opts: {
   communityId?: string
   divisionId?: string
   status?: string
   limit?: number
+  includeToBeBuilt?: boolean
 } = {}) {
   const context = await requireOrgContext()
   await requirePermission("sales.read", context)
@@ -150,9 +160,11 @@ export async function listSpecInventory(opts: {
   await expireStaleHolds(context.orgId, opts.communityId)
   let query = context.supabase
     .from("lots")
-    .select("id, community_id, division_id, lot_number, status, premium_cents, asking_price_override_cents, project_id, house_plan_id, house_plan_elevation_id, project:projects(id, name, start_date), plan:house_plans(name), community:communities(name)")
+    .select("id, community_id, division_id, lot_number, block, status, premium_cents, asking_price_override_cents, project_id, house_plan_id, house_plan_elevation_id, project:projects(id, name, start_date), plan:house_plans(name, beds, baths, heated_sqft, total_sqft), community:communities(name)")
     .eq("org_id", context.orgId)
-    .not("project_id", "is", null)
+  query = opts.includeToBeBuilt
+    ? query.in("status", SELLABLE_LOT_STATUSES)
+    : query.not("project_id", "is", null)
   if (opts.communityId) query = query.eq("community_id", opts.communityId)
   if (opts.divisionId) query = query.eq("division_id", opts.divisionId)
   else if (divisionAccess.assignedOnly) {
@@ -185,36 +197,22 @@ export async function listSpecInventory(opts: {
   }
   return availableLots.map((lot: any) => ({
     lotId: lot.id,
-    lotLabel: lot.lot_number,
+    lotLabel: lot.block ? `${lot.block}-${lot.lot_number}` : lot.lot_number,
     communityId: lot.community_id,
     communityName: lot.community?.name ?? null,
     projectId: lot.project_id,
     projectName: lot.project?.name ?? null,
     planLabel: lot.plan?.name ?? "Unassigned plan",
+    beds: lot.plan?.beds != null ? Number(lot.plan.beds) : null,
+    baths: lot.plan?.baths != null ? Number(lot.plan.baths) : null,
+    sqft: lot.plan?.heated_sqft ?? lot.plan?.total_sqft ?? null,
+    isSpec: Boolean(lot.project_id),
     status: lot.status,
     startedAt: lot.project?.start_date ?? null,
     agingDays: lot.project?.start_date ? Math.max(0, Math.floor((Date.now() - Date.parse(lot.project.start_date)) / 86_400_000)) : 0,
     askingPriceCents: Number(lot.asking_price_override_cents ?? ((availability ?? []).find((row: any) => row.community_id === lot.community_id && row.house_plan_id === lot.house_plan_id && (row.elevation_id ?? null) === (lot.house_plan_elevation_id ?? null))?.base_price_cents ?? 0) + Number(lot.premium_cents ?? 0) + (structuralByProject.get(lot.project_id) ?? 0)),
     premiumCents: Number(lot.premium_cents ?? 0),
   }))
-}
-
-export async function getCommunitySalesPipeline(communityId: string, orgId?: string) {
-  const context = await requireOrgContext(orgId)
-  await requirePermission("sales.read", context)
-  await assertCommunityInSalesScope(context, communityId)
-  await expireStaleHolds(context.orgId, communityId)
-  const [{ data: reservations, error: reservationError }, { data: closings, error: closingError }, specs] = await Promise.all([
-    context.supabase.from("lot_reservations").select("*, lot:lots(lot_number, project_id), buyer:contacts!lot_reservations_buyer_contact_id_fkey(full_name)").eq("org_id", context.orgId).eq("community_id", communityId).in("status", LIVE_RESERVATION_STATUSES).order("created_at", { ascending: false }),
-    context.supabase.from("closings").select("*, project:projects(name, client:contacts(full_name)), lot:lots(lot_number)").eq("org_id", context.orgId).eq("community_id", communityId).order("scheduled_date", { ascending: true }),
-    listSpecInventory({ communityId, limit: 100 }),
-  ])
-  if (reservationError || closingError) throw new Error(reservationError?.message ?? closingError?.message)
-  const mapped = (reservations ?? []).map(reservationDto)
-  const holds = mapped.filter((row) => row.status === "hold")
-  const reserved = mapped.filter((row) => row.status === "reserved")
-  const agreements = mapped.filter((row) => row.status === "converted")
-  return { specs, holds, reserved, agreements, closings: closings ?? [], counts: { specs: specs.length, holds: holds.length, reserved: reserved.length, agreements: agreements.length, closings: closings?.length ?? 0 } }
 }
 
 /** Sellable lots for the hold flow: owned/developed/assigned/started, no live reservation, not sold. */
@@ -228,7 +226,7 @@ export async function listSellableLots(communityId: string, orgId?: string) {
     .select("id, lot_number, status, premium_cents, project_id, plan:house_plans(name)")
     .eq("org_id", context.orgId)
     .eq("community_id", communityId)
-    .in("status", ["owned", "developed", "assigned", "started"])
+    .in("status", SELLABLE_LOT_STATUSES)
     .order("lot_number")
     .limit(500)
   if (error) throw new Error(`Failed to list lots: ${error.message}`)
@@ -408,7 +406,7 @@ export async function getCommunityPriceSheet(communityId: string, opts: { onDate
   await assertCommunityInSalesScope(context, communityId)
   const onDate = opts.onDate ?? new Date().toISOString().slice(0, 10)
   const [{ data: availability, error }, { data: lots }, incentives] = await Promise.all([
-    context.supabase.from("community_plan_availability").select("base_price_cents, elevation_id, plan:house_plans(id, name, code, beds, baths, heated_sqft), elevation:house_plan_elevations(name, code)").eq("org_id", context.orgId).eq("community_id", communityId).eq("is_available", true).or(`effective_start.is.null,effective_start.lte.${onDate}`).or(`effective_end.is.null,effective_end.gte.${onDate}`),
+    context.supabase.from("community_plan_availability").select("id, base_price_cents, elevation_id, plan:house_plans(id, name, code, beds, baths, heated_sqft), elevation:house_plan_elevations(name, code)").eq("org_id", context.orgId).eq("community_id", communityId).eq("is_available", true).or(`effective_start.is.null,effective_start.lte.${onDate}`).or(`effective_end.is.null,effective_end.gte.${onDate}`),
     context.supabase.from("lots").select("premium_cents").eq("org_id", context.orgId).eq("community_id", communityId).in("status", ["owned", "developed", "assigned"]),
     listIncentives({ communityId, status: "active" }, context.orgId),
   ])
@@ -416,7 +414,34 @@ export async function getCommunityPriceSheet(communityId: string, opts: { onDate
   const premiums = (lots ?? []).map((lot: any) => Number(lot.premium_cents ?? 0))
   const minPremium = premiums.length ? Math.min(...premiums) : 0
   const maxPremium = premiums.length ? Math.max(...premiums) : 0
-  return { asOfDate: onDate, minPremiumCents: minPremium, maxPremiumCents: maxPremium, incentives, rows: (availability ?? []).map((row: any) => ({ planId: row.plan?.id, planName: row.plan?.name, planCode: row.plan?.code, elevationId: row.elevation_id, elevationName: row.elevation?.name ?? row.elevation?.code ?? "Standard", basePriceCents: Number(row.base_price_cents), fromPriceCents: Number(row.base_price_cents) + minPremium, beds: row.plan?.beds, baths: row.plan?.baths, sqft: row.plan?.heated_sqft })) }
+  return { asOfDate: onDate, minPremiumCents: minPremium, maxPremiumCents: maxPremium, incentives, rows: (availability ?? []).map((row: any) => ({ availabilityId: row.id, planId: row.plan?.id, planName: row.plan?.name, planCode: row.plan?.code, elevationId: row.elevation_id, elevationName: row.elevation?.name ?? row.elevation?.code ?? "Standard", basePriceCents: Number(row.base_price_cents), fromPriceCents: Number(row.base_price_cents) + minPremium, beds: row.plan?.beds, baths: row.plan?.baths, sqft: row.plan?.heated_sqft })) }
+}
+
+/**
+ * The base price a plan sells for in one community. Plans decides *which* plans
+ * are offered where; this decides what they cost there, because repricing is the
+ * sales manager's weekly edit and not an estimating change. `setCommunityAvailability`
+ * on the plan side sets the launch price and never touches it again.
+ */
+export async function setCommunityPlanPrice(input: unknown, orgId?: string) {
+  const parsed = communityPlanPriceSchema.parse(input)
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.manage", context)
+  await assertCommunityInSalesScope(context, parsed.communityId)
+  const { data, error } = await context.supabase
+    .from("community_plan_availability")
+    .update({ base_price_cents: parsed.basePriceCents })
+    .eq("org_id", context.orgId)
+    .eq("id", parsed.availabilityId)
+    .eq("community_id", parsed.communityId)
+    .select("id, community_id, house_plan_id, elevation_id, base_price_cents")
+    .maybeSingle()
+  if (error || !data) throw new Error(`Failed to update base price: ${error?.message ?? "price sheet row not found"}`)
+  await Promise.all([
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "community_plan_availability.repriced", entityType: "house_plan", entityId: data.house_plan_id, payload: { community_id: data.community_id, elevation_id: data.elevation_id, base_price_cents: parsed.basePriceCents } }),
+    recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "community_plan_availability", entityId: data.id, after: data }),
+  ])
+  return { ...data, base_price_cents: Number(data.base_price_cents) }
 }
 
 export async function listIncentives(opts: { communityId?: string; status?: string } = {}, orgId?: string) {
@@ -489,6 +514,175 @@ export async function priceAgreementDraft(input: AgreementConfigurationInput, or
   })
   const pricing = composePurchaseAgreementPricing({ basePriceCents: Number(availability.base_price_cents), lotPremiumCents: Number(lot.premium_cents ?? 0), structuralOptions: priced.filter((item: any) => item.scope === "structural"), designSelections: priced.filter((item: any) => item.scope !== "structural"), incentives: (incentiveRows ?? []).map((row: any) => ({ incentiveId: row.id, name: row.name, incentiveType: row.incentive_type, appliesTo: row.applies_to, amountCents: row.amount_cents, percent: row.percent })) })
   return { ...pricing, lotId: lot.id, communityId: lot.community_id, housePlanId: version.house_plan_id, housePlanVersionId: version.id, elevationId, swing: parsed.swing ?? lot.swing, planLabel: (version as any).plan?.name ?? version.label ?? "Plan", elevationLabel: (lot as any).elevation?.name ?? (lot as any).elevation?.code ?? null, optionItems: parsed.optionItems }
+}
+
+/** What a priced-but-unwritten configuration looks like. */
+export type AgreementDraftPricing = Awaited<ReturnType<typeof priceAgreementDraft>>
+
+export type AgreementCatalogItem = {
+  optionId?: string
+  packageId?: string
+  label: string
+  category: string | null
+  priceCents: number
+}
+
+export type AgreementDraftContext = {
+  reservationId: string
+  lotId: string
+  lotLabel: string | null
+  communityId: string
+  buyerName: string | null
+  /**
+   * Null blocks the whole flow: `generatePurchaseAgreementSigningDocument` needs
+   * somewhere to send the envelope, and it runs *after* the contract row is
+   * inserted — so the form must refuse before that, not recover after.
+   */
+  buyerEmail: string | null
+  planLabel: string | null
+  elevationLabel: string | null
+  swing: "left" | "right" | "either" | null
+  /** Set when the lot pins a version (a spec home) and it cannot be changed. */
+  pinnedVersionId: string | null
+  versions: { id: string; label: string; isPinned: boolean }[]
+  elevations: { id: string; label: string }[]
+  structuralOptions: AgreementCatalogItem[]
+  designSelections: AgreementCatalogItem[]
+  packages: AgreementCatalogItem[]
+  incentives: { id: string; name: string; summary: string }[]
+}
+
+function incentiveSummary(row: {
+  incentive_type: string
+  amount_cents: number | null
+  percent: number | null
+  applies_to: string
+}): string {
+  const value =
+    row.incentive_type === "percent_of_base"
+      ? `${Number(row.percent ?? 0)}% of base`
+      : formatCentsShort(Number(row.amount_cents ?? 0))
+  return `${value} · ${row.applies_to === "design_credit" ? "design credit" : "off price"}`
+}
+
+function formatCentsShort(cents: number): string {
+  return `$${Math.round(cents / 100).toLocaleString("en-US")}`
+}
+
+/**
+ * Everything the purchase-agreement form needs, in one round trip: what the lot
+ * is already configured as, which released versions and elevations it may be,
+ * the community's option catalog split by scope, and the live incentives.
+ *
+ * Loaded on open rather than with the deal page — a consultant writes a handful
+ * of agreements a week and opens the deal file all day, so two thousand catalog
+ * options do not ride along with every page view.
+ */
+export async function getAgreementDraftContext(
+  reservationId: string,
+  orgId?: string,
+): Promise<AgreementDraftContext> {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("sales.manage", context)
+
+  const { data: reservation } = await context.supabase
+    .from("lot_reservations")
+    .select(
+      "id, status, lot_id, community_id, buyer_contact_id, buyer:contacts!lot_reservations_buyer_contact_id_fkey(full_name, email), lot:lots(id, community_id, project_id, house_plan_id, house_plan_version_id, house_plan_elevation_id, swing, block, lot_number, plan:house_plans(name), elevation:house_plan_elevations(name, code))",
+    )
+    .eq("org_id", context.orgId)
+    .eq("id", reservationId)
+    .maybeSingle()
+  if (!reservation) throw new Error("Reservation not found")
+  if (reservation.status !== "reserved") {
+    throw new Error("Take the reservation first — an agreement needs a reserved lot")
+  }
+  const lot = Array.isArray(reservation.lot) ? reservation.lot[0] : reservation.lot
+  if (!lot) throw new Error("Reservation is not attached to a lot")
+  if (!lot.house_plan_id) throw new Error("Assign a plan to the lot before writing the agreement")
+  await assertCommunityInSalesScope(context, lot.community_id)
+
+  const buyer = Array.isArray(reservation.buyer) ? reservation.buyer[0] : reservation.buyer
+  const plan = Array.isArray(lot.plan) ? lot.plan[0] : lot.plan
+  const elevation = Array.isArray(lot.elevation) ? lot.elevation[0] : lot.elevation
+
+  const [{ data: versions }, { data: elevations }, catalog, incentiveRows] = await Promise.all([
+    context.supabase
+      .from("house_plan_versions")
+      .select("id, label, released_at")
+      .eq("org_id", context.orgId)
+      .eq("house_plan_id", lot.house_plan_id)
+      .eq("status", "released")
+      .order("released_at", { ascending: false }),
+    context.supabase
+      .from("house_plan_elevations")
+      .select("id, name, code")
+      .eq("org_id", context.orgId)
+      .eq("house_plan_id", lot.house_plan_id)
+      .order("name"),
+    listCatalog({ communityId: lot.community_id }),
+    listIncentives({ communityId: lot.community_id, status: "active" }, context.orgId),
+  ])
+
+  const toItem = (option: { id: string; name: string; price_cents: number | null }, category: string | null) => ({
+    optionId: option.id,
+    label: option.name,
+    category,
+    priceCents: Number(option.price_cents ?? 0),
+  })
+  const sellable = catalog.categories.flatMap((category) =>
+    category.options
+      .filter((option) => option.is_available && !option.is_archived && !option.is_default)
+      .map((option) => ({ option, categoryName: category.name })),
+  )
+
+  return {
+    reservationId: reservation.id,
+    lotId: lot.id,
+    lotLabel: lot.block ? `${lot.block}-${lot.lot_number}` : (lot.lot_number ?? null),
+    communityId: lot.community_id,
+    buyerName: buyer?.full_name ?? null,
+    buyerEmail: buyer?.email ?? null,
+    planLabel: plan?.name ?? null,
+    elevationLabel: elevation?.name ?? elevation?.code ?? null,
+    swing: (lot.swing ?? null) as AgreementDraftContext["swing"],
+    pinnedVersionId: lot.project_id && lot.house_plan_version_id ? lot.house_plan_version_id : null,
+    versions: (versions ?? []).map((version) => ({
+      id: version.id as string,
+      label: (version.label as string | null) ?? "Released version",
+      isPinned: version.id === lot.house_plan_version_id,
+    })),
+    elevations: (elevations ?? []).map((row) => ({
+      id: row.id as string,
+      label: (row.name as string | null) ?? (row.code as string | null) ?? "Elevation",
+    })),
+    structuralOptions: sellable
+      .filter(({ option }) => option.option_scope === "structural")
+      .map(({ option, categoryName }) => toItem(option, categoryName)),
+    designSelections: sellable
+      .filter(({ option }) => option.option_scope !== "structural")
+      .map(({ option, categoryName }) => toItem(option, categoryName)),
+    packages: catalog.packages
+      .filter((row) => row.is_available && !row.is_archived)
+      .map((row) => ({
+        packageId: row.id,
+        label: row.name,
+        category: "Package",
+        priceCents: Number(row.price_cents ?? 0),
+      })),
+    incentives: (incentiveRows ?? []).map((row: Record<string, unknown>) => ({
+      id: row.id as string,
+      name: row.name as string,
+      summary: incentiveSummary(
+        row as unknown as {
+          incentive_type: string
+          amount_cents: number | null
+          percent: number | null
+          applies_to: string
+        },
+      ),
+    })),
+  }
 }
 
 export async function createPurchaseAgreement(input: unknown, orgId?: string) {

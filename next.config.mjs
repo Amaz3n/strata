@@ -70,6 +70,31 @@ const nextConfig = {
         destination: '/projects/:id/documents',
         permanent: true,
       },
+      {
+        source: '/starts/pipeline/:id',
+        destination: '/starts/:id',
+        permanent: true,
+      },
+      {
+        source: '/starts/pipeline',
+        destination: '/starts',
+        permanent: true,
+      },
+      {
+        source: '/starts/reports',
+        destination: '/reports',
+        permanent: true,
+      },
+      {
+        source: '/starts/trades',
+        destination: '/schedule/trades',
+        permanent: true,
+      },
+      {
+        source: '/starts/settings',
+        destination: '/settings/starts',
+        permanent: true,
+      },
     ]
   },
 }

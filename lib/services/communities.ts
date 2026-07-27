@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { cache } from "react"
 
 import type { LotStatus } from "@/lib/land/lot-lifecycle"
 import { LOT_STATUSES } from "@/lib/land/lot-lifecycle"
@@ -55,6 +56,7 @@ export interface CommunityListItemDTO {
   city: string | null
   state: string | null
   plannedLotCount: number | null
+  targetAbsorptionPerMonth: number | null
   lotCounts: Record<LotStatus, number>
 }
 
@@ -78,6 +80,7 @@ type CommunityRow = {
   postal_code: string | null
   description: string | null
   planned_lot_count: number | null
+  target_absorption_per_month: number | string | null
   division?: { name?: string | null } | Array<{ name?: string | null }> | null
 }
 
@@ -106,6 +109,11 @@ type TakedownRow = {
   notes: string | null
 }
 
+const COMMUNITY_SELECT =
+  "id, name, code, status, division_id, address, city, state, postal_code, description, planned_lot_count, target_absorption_per_month, division:divisions(name)"
+/** One community's lots, read once to tally status and takedown linkage together. */
+const LOT_SCAN_CAP = 5_000
+
 function emptyLotCounts(): Record<LotStatus, number> {
   return Object.fromEntries(LOT_STATUSES.map((status) => [status, 0])) as Record<LotStatus, number>
 }
@@ -126,6 +134,7 @@ function mapCommunity(row: CommunityRow, lotCounts: Record<LotStatus, number>): 
     city: row.city,
     state: row.state,
     plannedLotCount: row.planned_lot_count,
+    targetAbsorptionPerMonth: row.target_absorption_per_month == null ? null : Number(row.target_absorption_per_month),
     lotCounts,
   }
 }
@@ -206,6 +215,7 @@ function applyCommunityInput(parsed: Partial<CommunityInput>) {
   if (parsed.postalCode !== undefined) patch.postal_code = parsed.postalCode || null
   if (parsed.description !== undefined) patch.description = parsed.description || null
   if (parsed.plannedLotCount !== undefined) patch.planned_lot_count = parsed.plannedLotCount
+  if (parsed.targetAbsorptionPerMonth !== undefined) patch.target_absorption_per_month = parsed.targetAbsorptionPerMonth
   if (parsed.settings !== undefined) patch.settings = parsed.settings
   if (parsed.metadata !== undefined) patch.metadata = parsed.metadata
   return patch
@@ -221,7 +231,7 @@ export async function listCommunities(
   if (scope.assignedOnly && scope.divisionIds.length === 0) return []
   let query = context.supabase
     .from("communities")
-    .select("id, name, code, status, division_id, address, city, state, postal_code, description, planned_lot_count, division:divisions(name)")
+    .select(COMMUNITY_SELECT)
     .eq("org_id", context.orgId)
     .is("archived_at", null)
     .order("name")
@@ -243,17 +253,42 @@ export async function listCommunities(
   })
 }
 
-export async function getCommunity(id: string, orgId?: string): Promise<CommunityDetailDTO> {
+/**
+ * One community and its structure.
+ *
+ * Memoized per request: the workbench layout, the tab page, the plat, and the
+ * lot status counts each need the community, and without this they would each
+ * pay for the whole read. It also used to find the row by scanning
+ * `listCommunities()` — 200 rows plus an org-wide lot-count aggregation — so a
+ * single page load ran that scan about five times.
+ */
+export const getCommunity = cache(async function getCommunity(
+  id: string,
+  orgId?: string,
+): Promise<CommunityDetailDTO> {
   const context = await requireOrgContext(orgId)
-  const community = (await listCommunities({}, context.orgId)).find((candidate) => candidate.id === id)
-  if (!community) throw new Error("Community not found")
-  const [detailResult, phasesResult, takedownsResult, linkedLotsResult] = await Promise.all([
+  await requirePermission("community.read", context)
+  // Division scope is enforced here rather than inherited from listCommunities:
+  // a community outside the caller's divisions must read as not found.
+  const scope = await allowedDivisionScope(context.orgId, context.userId)
+  if (scope.assignedOnly && scope.divisionIds.length === 0) throw new Error("Community not found")
+
+  let communityQuery = context.supabase
+    .from("communities")
+    .select(COMMUNITY_SELECT)
+    .eq("org_id", context.orgId)
+    .eq("id", id)
+    .is("archived_at", null)
+  if (scope.assignedOnly) communityQuery = communityQuery.in("division_id", scope.divisionIds)
+
+  const [detailResult, lotStatusResult, phasesResult, takedownsResult] = await Promise.all([
+    communityQuery.maybeSingle(),
     context.supabase
-      .from("communities")
-      .select("address, postal_code, description")
+      .from("lots")
+      .select("status, takedown_id")
       .eq("org_id", context.orgId)
-      .eq("id", id)
-      .single(),
+      .eq("community_id", id)
+      .limit(LOT_SCAN_CAP),
     context.supabase
       .from("community_phases")
       .select("id, community_id, name, phase_number, status, target_open_date, notes")
@@ -266,33 +301,34 @@ export async function getCommunity(id: string, orgId?: string): Promise<Communit
       .eq("org_id", context.orgId)
       .eq("community_id", id)
       .order("scheduled_date", { ascending: true, nullsFirst: false }),
-    context.supabase
-      .from("lots")
-      .select("takedown_id")
-      .eq("org_id", context.orgId)
-      .eq("community_id", id)
-      .not("takedown_id", "is", null),
   ])
   if (detailResult.error) throw new Error(`Failed to load community: ${detailResult.error.message}`)
+  if (!detailResult.data) throw new Error("Community not found")
+  if (lotStatusResult.error) throw new Error(`Failed to count community lots: ${lotStatusResult.error.message}`)
   if (phasesResult.error) throw new Error(`Failed to load phases: ${phasesResult.error.message}`)
   if (takedownsResult.error) throw new Error(`Failed to load takedowns: ${takedownsResult.error.message}`)
-  if (linkedLotsResult.error) throw new Error(`Failed to count takedown lots: ${linkedLotsResult.error.message}`)
+
+  const lotCounts = emptyLotCounts()
   const linkedCounts = new Map<string, number>()
-  for (const row of linkedLotsResult.data ?? []) {
-    if (!row.takedown_id) continue
-    linkedCounts.set(row.takedown_id, (linkedCounts.get(row.takedown_id) ?? 0) + 1)
+  for (const row of lotStatusResult.data ?? []) {
+    const status = row.status as LotStatus
+    if (LOT_STATUSES.includes(status)) lotCounts[status] += 1
+    const takedownId = row.takedown_id as string | null
+    if (takedownId) linkedCounts.set(takedownId, (linkedCounts.get(takedownId) ?? 0) + 1)
   }
+
+  const row = detailResult.data as CommunityRow & { address: string | null; postal_code: string | null; description: string | null }
   return {
-    ...community,
-    address: detailResult.data.address,
-    postalCode: detailResult.data.postal_code,
-    description: detailResult.data.description,
-    phases: (phasesResult.data ?? []).map((row) => mapPhase(row as PhaseRow)),
-    takedowns: (takedownsResult.data ?? []).map((row) =>
-      mapTakedown(row as TakedownRow, linkedCounts.get(row.id) ?? 0),
+    ...mapCommunity(row, lotCounts),
+    address: row.address,
+    postalCode: row.postal_code,
+    description: row.description,
+    phases: (phasesResult.data ?? []).map((phase) => mapPhase(phase as PhaseRow)),
+    takedowns: (takedownsResult.data ?? []).map((takedown) =>
+      mapTakedown(takedown as TakedownRow, linkedCounts.get(takedown.id) ?? 0),
     ),
   }
-}
+})
 
 async function logMutation(input: {
   orgId: string

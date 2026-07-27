@@ -3,41 +3,41 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* The single clock behind .project-avatar's hover shimmer: --avatar-phase
+   drives the light wave and the edge glow off one value so they cannot drift
+   apart, --avatar-glow fades the whole effect in and out. */
+@property --avatar-phase {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+@property --avatar-glow {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
 /* =====================================================================
    ARC DESIGN STANDARD — operational software for construction.
 
-   The look: a quiet, modern console (think Linear/Vercel, not a
-   newspaper). Paper-white surfaces, graphite ink, sharp corners, mono
-   tabular figures. Structure comes from spacing and subtle surface
-   shifts — a slightly darker panel, a low-contrast 1px border — never
-   from tinted section blocks, heavy rules, or enclosure for its own
-   sake. Authority comes from density and alignment, not decoration.
+   The full standard lives in docs/design.md. Read it before adding
+   anything here. The short version:
 
-   Rules (enforced — violating these is a bug):
-   1. Tokens only. Every color in the app resolves to a variable defined
-      here. No hex/rgb/oklch literals in components, no raw Tailwind
-      palette classes (emerald-500, indigo-50, ...), no new grays.
-   2. Radius is 0. Surfaces are square. 999px pills are allowed only for
-      small status chips.
-   3. Color is state. Blue = primary/active, amber = warning/aging,
-      red = late/destructive, green = success. Color is never decoration
-      and never section identity — a payments section is not green, a
-      paid amount is.
-   4. Sections separate with whitespace and a microlabel first; reach
-      for a bordered bg-card / bg-muted panel only when a region needs
-      to read as one unit (a line-item card, a docked pane). Never tint
-      a section's background to label it.
-   5. No gradients, no glassmorphism, no glows, no hero/marquee panels,
-      no oversized stat billboards. Pages open with the work: a title
-      row, then the data.
-   6. Motion policy: one orchestrated entrance per page load (.desk-rise),
-      hover transitions ≤ 200ms, and NO infinite animation except a live
-      progress indicator for work actually happening (.skeleton-shimmer,
-      .receipt-scan-sweep).
-   7. Component-specific CSS lives next to the component (see
-      components/schedule/gantt.css), not in this file. This file holds
-      tokens, base styles, and the small shared library below — keep it
-      under ~500 lines.
+   - Tokens only. Every color in the app resolves to a variable defined
+     below — no literals in components, no raw Tailwind palette classes.
+   - Radius is 0. --radius owns shape; components never set it.
+   - Color is state, never decoration and never section identity.
+   - Two zones: app/(app)/** is ascetic (no gradients, glows, or idle
+     motion); auth pages and token portals are expressive.
+   - Motion in the ascetic zone: one .desk-rise entrance per page, hover
+     ≤ 200ms, no infinite animation except a live-progress indicator for
+     work actually happening.
+
+   This file holds tokens, base styles, and the small shared class
+   library below — target under ~500 lines. Component-specific CSS lives
+   next to its component (components/schedule/gantt.css,
+   components/starts/starts.css, components/design-studio/studio.css).
    ===================================================================== */
 
 :root {
@@ -398,12 +398,150 @@ html[data-ui-size="comfortable"] {
     }
   }
 
+  /* Project identity square. At rest a flat gradient chip; on hover one clock
+     (--avatar-phase) drives everything: a drift of coloured light crosses the
+     chip top-left → bottom-right, the border lights up wherever that light is
+     currently passing, and the outer bloom trails it along the same diagonal.
+     One clock means ring, face and bloom cannot drift out of phase. The
+     animation is always attached but paused, so unhovering freezes the light
+     where it is and fades it out instead of snapping it back. */
+  .project-avatar {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    /* Centre of the travelling light, from fully before the chip to fully past
+       it. The sine terms bow the path off the straight diagonal so the pass
+       drifts rather than sliding at a machine-constant rate. */
+    --avatar-x: calc(-35% + var(--avatar-phase) * 170% + sin(var(--avatar-phase) * 360deg) * 4%);
+    --avatar-y: calc(-35% + var(--avatar-phase) * 170% - sin(var(--avatar-phase) * 360deg) * 4%);
+    /* Holds at full across the middle of the cycle and falls to nothing at both
+       ends, so the wrap lands while there is nothing on screen to jump. */
+    --avatar-window: clamp(0, (0.5 - 0.5 * cos(var(--avatar-phase) * 360deg)) * 2.4, 1);
+    --avatar-spread: 1;
+    --avatar-travel: calc((var(--avatar-phase) * 2 - 1) * 4px);
+    --avatar-lume: calc(0.5 - 0.5 * cos(var(--avatar-phase) * 360deg));
+    /* The inset hairline is deliberately constant: it carries the border
+       through the moment the travelling light is faded out for the wrap. */
+    box-shadow:
+      inset 0 0 0 1px oklch(1 0 0 / calc(var(--avatar-glow) * 0.16)),
+      var(--avatar-travel) var(--avatar-travel) 10px -4px
+        oklch(1 0 0 / calc(var(--avatar-glow) * 0.4 * var(--avatar-lume)));
+    animation: avatar-shimmer 2.1s linear infinite;
+    animation-play-state: paused;
+    transition: --avatar-glow 240ms ease;
+  }
+
+  .project-avatar::before,
+  .project-avatar::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    /* Additive, so the light reads as light on an already-saturated chip
+       instead of washing it grey. */
+    mix-blend-mode: plus-lighter;
+    /* The light itself: blooms in the chart hues strung loosely along the
+       diagonal, each wide enough to sit on top of its neighbours so the hues
+       melt into one another. Stops on one gradient would band; overlapping
+       blooms blend. The white one is kept faint — raise it and the colour
+       washes out to a single bright smear. */
+    background:
+      radial-gradient(
+        calc(54% * var(--avatar-spread)) calc(54% * var(--avatar-spread)) at
+          calc(var(--avatar-x) + 30%) calc(var(--avatar-y) + 12%),
+        color-mix(in oklab, var(--chart-3) 60%, transparent),
+        transparent 70%
+      ),
+      radial-gradient(
+        calc(56% * var(--avatar-spread)) calc(56% * var(--avatar-spread)) at
+          calc(var(--avatar-x) - 6%) calc(var(--avatar-y) + 22%),
+        color-mix(in oklab, var(--chart-4) 62%, transparent),
+        transparent 72%
+      ),
+      radial-gradient(
+        calc(50% * var(--avatar-spread)) calc(50% * var(--avatar-spread)) at
+          calc(var(--avatar-x) + 4%) calc(var(--avatar-y) + 2%),
+        oklch(1 0 0 / 0.14),
+        transparent 66%
+      ),
+      radial-gradient(
+        calc(58% * var(--avatar-spread)) calc(58% * var(--avatar-spread)) at
+          calc(var(--avatar-x) + 12%) calc(var(--avatar-y) - 24%),
+        color-mix(in oklab, var(--chart-1) 60%, transparent),
+        transparent 74%
+      ),
+      radial-gradient(
+        calc(60% * var(--avatar-spread)) calc(60% * var(--avatar-spread)) at
+          calc(var(--avatar-x) - 30%) calc(var(--avatar-y) - 10%),
+        color-mix(in oklab, var(--chart-5) 58%, transparent),
+        transparent 74%
+      );
+  }
+
+  /* The border — the same blooms clipped to a hairline ring, so the edge
+     lights up where the light is passing. Blown up well past the face layer:
+     at full size the blooms always reach the perimeter, so the border stays
+     lit for the whole crossing instead of going dark mid-pass when the light
+     sits in the middle and touches no edge. */
+  .project-avatar::before {
+    --avatar-spread: 2.2;
+    padding: 1px;
+    opacity: calc(var(--avatar-glow) * var(--avatar-window));
+    filter: brightness(1.6);
+    -webkit-mask:
+      linear-gradient(oklch(0 0 0) 0 0) content-box,
+      linear-gradient(oklch(0 0 0) 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+      linear-gradient(oklch(0 0 0) 0 0) content-box,
+      linear-gradient(oklch(0 0 0) 0 0);
+    mask-composite: exclude;
+  }
+
+  /* The light across the face — eased down toward the middle so the chip stays
+     a chip. The falloff is gradual on purpose: a hard centre hole shows up as
+     a dark bite taken out of the light as it crosses. */
+  .project-avatar::after {
+    opacity: calc(var(--avatar-glow) * 0.65 * var(--avatar-window));
+    filter: blur(2px);
+    -webkit-mask: radial-gradient(closest-side, oklch(0 0 0 / 0.6), oklch(0 0 0));
+    mask: radial-gradient(closest-side, oklch(0 0 0 / 0.6), oklch(0 0 0));
+  }
+
+  /* Hovering the chip lights it. A row that stands in for the chip — a project
+     switcher trigger, a project row in a menu — opts in with
+     .project-avatar-host. Deliberately not `.group`: shadcn puts a bare
+     `group` on the whole sidebar, so that selector lit the chip from anywhere
+     in it. */
+  @media (hover: hover) {
+    .project-avatar:hover,
+    .project-avatar-host:hover .project-avatar {
+      --avatar-glow: 1;
+      animation-play-state: running;
+    }
+  }
+
+  @keyframes avatar-shimmer {
+    from {
+      --avatar-phase: 0;
+    }
+    to {
+      --avatar-phase: 1;
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .desk-rise,
     .spectrum-wipe,
     .skeleton-shimmer::after,
     .receipt-scan-sweep::before {
       animation: none;
+    }
+
+    /* Hover still lights the chip, but the band holds mid-crossing. */
+    .project-avatar {
+      animation: none;
+      --avatar-phase: 0.5;
     }
   }
 

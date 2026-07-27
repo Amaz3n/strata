@@ -101,7 +101,7 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     subtitleFields: ['status', 'target_week', 'scheduled_start_date'],
     descriptionFields: ['notes'],
     searchableFields: ['status', 'notes'],
-    hrefTemplate: '/starts/pipeline/{id}',
+    hrefTemplate: '/starts/{id}',
   },
   commitment_change_order: {
     table: 'commitment_change_orders',

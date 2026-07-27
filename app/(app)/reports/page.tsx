@@ -31,7 +31,9 @@ export default async function ReportsPage() {
   return (
     <PageLayout title="Reports" fullBleed>
       <div className="mx-auto w-full max-w-7xl space-y-5 px-4 py-6 sm:px-6 lg:px-8">
-        {production ? <ProductionExecutiveReports report={production[0]} backlog={production[1]} cycle={production[2]} flow={production[3]} /> : null}
+        {production ? (
+          <ProductionExecutiveReports report={production[0]} backlog={production[1]} cycle={production[2]} flow={production[3]} />
+        ) : null}
         <div>
           <h2 className="text-lg font-semibold">WIP / over-under billing</h2>
           <p className="mt-1 text-sm text-muted-foreground">

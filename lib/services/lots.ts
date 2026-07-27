@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { assertLotStatusTransition, LOT_STATUSES, type LotStatus } from "@/lib/land/lot-lifecycle"
+import { getDivisionAccessForUser } from "@/lib/services/authorization"
 import { recordAudit } from "@/lib/services/audit"
 import { getCommunity } from "@/lib/services/communities"
 import { requireOrgContext } from "@/lib/services/context"
@@ -227,19 +228,155 @@ export async function listLots(
   }
 }
 
-export async function getLotStatusCounts(communityId: string, orgId?: string): Promise<Record<LotStatus, number>> {
+/** The plat draws the whole community at once, so it reads every lot — but only
+ *  the fields a tile shows, and never more than one screen's worth of dirt. */
+const PLAT_LOT_CAP = 600
+/** The attach-a-home picker is a dropdown; past this it needs a search, not a longer list. */
+const ATTACHABLE_PROJECT_CAP = 500
+
+export interface PlatLotDTO {
+  id: string
+  lotNumber: string
+  block: string | null
+  phaseId: string | null
+  phaseName: string | null
+  takedownId: string | null
+  takedownName: string | null
+  status: LotStatus
+  address: string | null
+  premiumCents: number
+  projectId: string | null
+  projectName: string | null
+  planName: string | null
+  /** Grid position on the community plat. Null means it has never been arranged. */
+  platX: number | null
+  platY: number | null
+}
+
+export interface PlatLots {
+  lots: PlatLotDTO[]
+  total: number
+  truncated: boolean
+}
+
+export async function listLotsForPlat(communityId: string, orgId?: string): Promise<PlatLots> {
   const context = await requireOrgContext(orgId)
   await requirePermission("community.read", context)
   await getCommunity(communityId, context.orgId)
-  const results = await Promise.all(LOT_STATUSES.map((status) =>
-    context.supabase.from("lots").select("id", { count: "exact", head: true }).eq("org_id", context.orgId).eq("community_id", communityId).eq("status", status),
-  ))
-  const output = Object.fromEntries(LOT_STATUSES.map((status) => [status, 0])) as Record<LotStatus, number>
-  results.forEach((result, index) => {
-    if (result.error) throw new Error(`Failed to count lots: ${result.error.message}`)
-    output[LOT_STATUSES[index]] = result.count ?? 0
+  const { data, error, count } = await context.supabase
+    .from("lots")
+    .select(
+      "id, lot_number, block, community_phase_id, takedown_id, status, address, premium_cents, project_id, plat_x, plat_y, phase:community_phases(name), project:projects(name), takedown:lot_takedowns(name), plan:house_plans(name)",
+      { count: "exact" },
+    )
+    .eq("org_id", context.orgId)
+    .eq("community_id", communityId)
+    .order("block", { ascending: true, nullsFirst: true })
+    .order("lot_number", { ascending: true })
+    .limit(PLAT_LOT_CAP)
+  if (error) throw new Error(`Failed to load the plat: ${error.message}`)
+  const relation = <T>(value: T | T[] | null): T | null => (Array.isArray(value) ? value[0] ?? null : value)
+  const lots = (data ?? []).map((row) => ({
+    id: row.id as string,
+    lotNumber: row.lot_number as string,
+    block: (row.block as string | null) ?? null,
+    phaseId: (row.community_phase_id as string | null) ?? null,
+    phaseName: relation(row.phase as { name?: string | null } | Array<{ name?: string | null }> | null)?.name ?? null,
+    takedownId: (row.takedown_id as string | null) ?? null,
+    takedownName: relation(row.takedown as { name?: string | null } | Array<{ name?: string | null }> | null)?.name ?? null,
+    status: row.status as LotStatus,
+    address: (row.address as string | null) ?? null,
+    premiumCents: Number(row.premium_cents ?? 0),
+    projectId: (row.project_id as string | null) ?? null,
+    projectName: relation(row.project as { name?: string | null } | Array<{ name?: string | null }> | null)?.name ?? null,
+    planName: relation(row.plan as { name?: string | null } | Array<{ name?: string | null }> | null)?.name ?? null,
+    platX: row.plat_x == null ? null : Number(row.plat_x),
+    platY: row.plat_y == null ? null : Number(row.plat_y),
+  }))
+  const total = count ?? lots.length
+  return { lots, total, truncated: total > lots.length }
+}
+
+/**
+ * Persist a plat arrangement. Somebody drags a community's lots into the shape
+ * of the recorded plat once; every later read draws it back. Positions are a
+ * presentation fact, so this records an audit entry but emits no domain event.
+ */
+export async function setLotPlatPositions(
+  communityId: string,
+  positions: Array<{ lotId: string; platX: number; platY: number }>,
+  orgId?: string,
+): Promise<{ updated: number }> {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("lot.write", context)
+  await getCommunity(communityId, context.orgId)
+  if (positions.length === 0) return { updated: 0 }
+
+  const { data: owned, error: ownedError } = await context.supabase
+    .from("lots")
+    .select("id")
+    .eq("org_id", context.orgId)
+    .eq("community_id", communityId)
+    .in("id", positions.map((position) => position.lotId))
+  if (ownedError) throw new Error(`Failed to verify lots: ${ownedError.message}`)
+  const ownedIds = new Set((owned ?? []).map((row) => row.id as string))
+  const valid = positions.filter((position) => ownedIds.has(position.lotId))
+  if (valid.length !== positions.length) throw new Error("Some lots do not belong to this community")
+
+  const results = await Promise.all(
+    valid.map((position) =>
+      context.supabase
+        .from("lots")
+        .update({ plat_x: position.platX, plat_y: position.platY })
+        .eq("org_id", context.orgId)
+        .eq("id", position.lotId),
+    ),
+  )
+  for (const result of results) {
+    if (result.error) throw new Error(`Failed to save the plat: ${result.error.message}`)
+  }
+
+  await recordAudit({
+    orgId: context.orgId,
+    actorId: context.userId,
+    action: "update",
+    entityType: "community",
+    entityId: communityId,
+    after: { plat_positions: valid.length },
   })
-  return output
+  return { updated: valid.length }
+}
+
+/**
+ * Homes that can still be attached to a lot in this community. Replaces loading
+ * every project in the org to populate one dropdown.
+ */
+export async function listAttachableProjects(
+  communityId: string,
+  orgId?: string,
+): Promise<Array<{ id: string; name: string }>> {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("community.read", context)
+  await getCommunity(communityId, context.orgId)
+  const scope = await getDivisionAccessForUser({ orgId: context.orgId, userId: context.userId })
+  if (scope.assignedOnly && scope.divisionIds.length === 0) return []
+  let query = context.supabase
+    .from("projects")
+    .select("id, name, lot:lots(id)")
+    .eq("org_id", context.orgId)
+    .not("status", "in", "(completed,cancelled)")
+    .or("property_type.is.null,property_type.eq.production")
+    .order("name")
+    .limit(ATTACHABLE_PROJECT_CAP)
+  if (scope.assignedOnly) query = query.in("division_id", scope.divisionIds)
+  const { data, error } = await query
+  if (error) throw new Error(`Failed to load homes: ${error.message}`)
+  return (data ?? [])
+    .filter((row) => {
+      const linked = row.lot as unknown
+      return Array.isArray(linked) ? linked.length === 0 : linked == null
+    })
+    .map((row) => ({ id: row.id as string, name: row.name as string }))
 }
 
 async function getLotById(supabase: SupabaseClient, orgId: string, id: string) {

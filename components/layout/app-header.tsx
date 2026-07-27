@@ -5,10 +5,9 @@ import { usePathname } from "next/navigation"
 
 import Link from "next/link"
 
+import { MapPin } from "@/components/icons"
 import { CommandSearch } from "@/components/layout/command-search-lazy"
-import { GlobalTasksSheet } from "@/components/tasks/global-tasks-sheet"
-import { Separator } from "@/components/ui/separator"
-import { SidebarTrigger } from "@/components/ui/sidebar"
+import { ScopeSwitcher, type ScopeDivision } from "@/components/layout/scope-switcher"
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -17,6 +16,7 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb"
+import type { AmbientCommunity } from "@/lib/services/desk-context"
 import { cn } from "@/lib/utils"
 import { usePageTitle } from "./page-title-context"
 
@@ -92,9 +92,11 @@ function SlidingLabel({ label, className }: { label: string; className?: string 
 }
 
 interface AppHeaderProps {
-  title?: string
-  breadcrumbs?: AppBreadcrumbItem[]
-  className?: string
+  divisions?: ScopeDivision[]
+  divisionId?: string
+  communities?: AmbientCommunity[]
+  communityId?: string
+  showCommunityScope?: boolean
   platformSessionControlDesktop?: React.ReactNode
   platformSessionControlMobile?: React.ReactNode
 }
@@ -140,16 +142,31 @@ function labelFromPathname(pathname: string): string {
   return PATHNAME_FALLBACK_LABELS[segment] ?? "Home"
 }
 
-export function AppHeader({ title, breadcrumbs, className, platformSessionControlDesktop, platformSessionControlMobile }: AppHeaderProps) {
+/** One separator for the whole header path, from the scope lens to the last crumb. */
+function PathSeparator() {
+  return (
+    <span aria-hidden className="shrink-0 text-muted-foreground/40 select-none">
+      /
+    </span>
+  )
+}
+
+export function AppHeader({
+  divisions = [],
+  divisionId,
+  communities = [],
+  communityId,
+  showCommunityScope = false,
+  platformSessionControlDesktop,
+  platformSessionControlMobile,
+}: AppHeaderProps) {
   const pathname = usePathname()
-  const { title: contextTitle, breadcrumbs: contextBreadcrumbs, projectContext } = usePageTitle()
-  const effectiveTitle = title || contextTitle
-  const effectiveBreadcrumbs = breadcrumbs || contextBreadcrumbs
+  const { title, breadcrumbs, projectContext } = usePageTitle()
   const fallbackLabel = labelFromPathname(pathname)
-  const breadcrumbItems = effectiveBreadcrumbs?.length
-    ? effectiveBreadcrumbs
-    : effectiveTitle
-      ? [{ label: effectiveTitle }]
+  const breadcrumbItems = breadcrumbs?.length
+    ? breadcrumbs
+    : title
+      ? [{ label: title }]
       : [{ label: fallbackLabel }]
 
   // Get current page title for mobile display
@@ -163,109 +180,122 @@ export function AppHeader({ title, breadcrumbs, className, platformSessionContro
       ? breadcrumbItems[0]
       : null
 
+  // Inside a single project or community the URL already fixes the scope, so the
+  // lens gives way to a link back up to the record that owns the page.
+  const isRecordScoped =
+    /^\/projects\/[^/]+/.test(pathname) || /^\/communities\/[^/]+/.test(pathname)
+  const showScope =
+    !isRecordScoped && (divisions.length > 0 || (showCommunityScope && communities.length > 1))
+  const recordContext =
+    isRecordScoped && projectContext?.contextLabel && projectContext.contextHref
+      ? { label: projectContext.contextLabel, href: projectContext.contextHref }
+      : null
+
   if (pathname.startsWith("/settings")) return null
 
-  return (
-    <header
-      className={cn(
-        "shrink-0 transition-[width,height] ease-linear border-b border-border",
-        className,
-      )}
+  const scopeSlot = showScope ? (
+    <ScopeSwitcher
+      divisions={divisions}
+      divisionId={divisionId}
+      communities={communities}
+      communityId={communityId}
+      showCommunities={showCommunityScope}
+    />
+  ) : recordContext ? (
+    <Link
+      href={recordContext.href}
+      className="flex h-8 min-w-0 max-w-[22rem] items-center gap-2 border border-transparent px-2.5 text-sm text-muted-foreground transition-colors hover:border-border/50 hover:bg-accent/60 hover:text-foreground"
     >
-      {/* Desktop Header - Single Row */}
-      <div className="hidden lg:flex h-14 items-center">
-        {/* Left section - Sidebar trigger + breadcrumbs */}
-        <div className="flex items-center gap-2 px-4 flex-1 min-w-0">
-          <SidebarTrigger className="-ml-1" />
-          <Separator orientation="vertical" className="mr-2 h-4" />
+      <MapPin className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 truncate">{recordContext.label}</span>
+    </Link>
+  ) : null
+
+  return (
+    <header className="shrink-0 border-b border-border">
+      {/* Desktop — one row: scope, path, then search pinned right */}
+      <div className="hidden h-14 items-center gap-2 px-3 lg:flex">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          {scopeSlot}
+          {scopeSlot ? <PathSeparator /> : null}
 
           <Breadcrumb className="flex min-w-0 items-center">
-            <BreadcrumbList className="flex min-w-0 flex-nowrap items-center">
-              {breadcrumbItems.length > 0 ? (
-                breadcrumbItems.map((item, index) => {
-                  const isLast = index === breadcrumbItems.length - 1
-                  const content = isLast ? (
-                    <BreadcrumbPage>
-                      <SlidingLabel label={item.label} />
-                    </BreadcrumbPage>
-                  ) : item.onClick ? (
-                    <BreadcrumbLink
-                      href={item.href ?? "#"}
-                      onClick={(event) => {
-                        event.preventDefault()
-                        item.onClick?.()
-                      }}
-                    >
-                      <SlidingLabel label={item.label} />
-                    </BreadcrumbLink>
-                  ) : item.href ? (
-                    <BreadcrumbLink href={item.href}>
-                      <SlidingLabel label={item.label} />
-                    </BreadcrumbLink>
-                  ) : (
-                    <SlidingLabel label={item.label} className="text-muted-foreground" />
-                  )
+            <BreadcrumbList className="flex min-w-0 flex-nowrap items-center gap-2 text-sm sm:gap-2">
+              {breadcrumbItems.map((item, index) => {
+                const isLast = index === breadcrumbItems.length - 1
+                const content = isLast ? (
+                  <BreadcrumbPage className="font-medium">
+                    <SlidingLabel label={item.label} />
+                  </BreadcrumbPage>
+                ) : item.onClick ? (
+                  <BreadcrumbLink
+                    href={item.href ?? "#"}
+                    className="text-muted-foreground"
+                    onClick={(event) => {
+                      event.preventDefault()
+                      item.onClick?.()
+                    }}
+                  >
+                    <SlidingLabel label={item.label} />
+                  </BreadcrumbLink>
+                ) : item.href ? (
+                  <BreadcrumbLink href={item.href} className="text-muted-foreground">
+                    <SlidingLabel label={item.label} />
+                  </BreadcrumbLink>
+                ) : (
+                  <SlidingLabel label={item.label} className="text-muted-foreground" />
+                )
 
-                  return (
-                    <React.Fragment key={`${item.label}-${index}`}>
-                      <BreadcrumbItem className="min-w-0">{content}</BreadcrumbItem>
-                      {index < breadcrumbItems.length - 1 && <BreadcrumbSeparator />}
-                    </React.Fragment>
-                  )
-                })
-              ) : (
-                <BreadcrumbItem className="min-w-0">
-                  <BreadcrumbPage className="truncate">No breadcrumbs</BreadcrumbPage>
-                </BreadcrumbItem>
-              )}
+                return (
+                  <React.Fragment key={`${item.label}-${index}`}>
+                    <BreadcrumbItem className="min-w-0">{content}</BreadcrumbItem>
+                    {!isLast && (
+                      <BreadcrumbSeparator className="[&>svg]:hidden">
+                        <PathSeparator />
+                      </BreadcrumbSeparator>
+                    )}
+                  </React.Fragment>
+                )
+              })}
             </BreadcrumbList>
           </Breadcrumb>
-          {projectContext?.contextLabel && projectContext.contextHref ? (
-            <Link href={projectContext.contextHref} className="ml-3 truncate text-xs text-muted-foreground hover:text-foreground">
-              {projectContext.contextLabel}
-            </Link>
-          ) : null}
         </div>
 
-        {/* Center section - Search */}
-        <div className="flex-shrink-0">
-          <CommandSearch />
-        </div>
-
-        {/* Right section - Actions */}
-        <div className="flex items-center gap-2 px-4 flex-1 justify-end">
-          {platformSessionControlDesktop}
-          <GlobalTasksSheet />
-        </div>
+        {platformSessionControlDesktop}
+        <CommandSearch />
       </div>
 
-      {/* Mobile Header - Single Row */}
-      <div className="lg:hidden flex h-16 items-center px-4 gap-3">
-        {/* Sidebar trigger only on md+ (tablets); phones use the bottom bar */}
-        <SidebarTrigger className="-ml-1 shrink-0 hidden md:inline-flex" />
-
-        {/* Title block - eyebrow (project name) + page title */}
-        <div className="flex-1 min-w-0 flex flex-col justify-center gap-0.5">
+      {/* Mobile — title block, search pinned right */}
+      <div className="flex h-16 items-center gap-3 px-4 lg:hidden">
+        <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
           {projectEyebrow?.href && (
             <Link
               href={projectEyebrow.href}
-              className="block truncate text-xs font-semibold uppercase tracking-wider leading-none text-primary/85 transition-colors hover:text-primary"
+              className="block truncate text-xs leading-none font-semibold tracking-wider text-primary/85 uppercase transition-colors hover:text-primary"
             >
               {projectEyebrow.label}
             </Link>
           )}
+          {!projectEyebrow && showScope && (
+            <div className="-ml-2 flex items-center">
+              <ScopeSwitcher
+                divisions={divisions}
+                divisionId={divisionId}
+                communities={communities}
+                communityId={communityId}
+                showCommunities={showCommunityScope}
+                className="h-7 border-transparent px-2 text-xs"
+              />
+            </div>
+          )}
           {currentPage && (
-            <h1 className="text-xl font-semibold truncate leading-tight">
-              {currentPage.label}
-            </h1>
+            <h1 className="truncate text-xl leading-tight font-semibold">{currentPage.label}</h1>
           )}
         </div>
 
-        {/* Actions */}
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex shrink-0 items-center gap-1">
           {platformSessionControlMobile}
           <CommandSearch />
-          <GlobalTasksSheet />
         </div>
       </div>
     </header>

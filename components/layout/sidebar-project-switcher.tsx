@@ -144,7 +144,7 @@ export function SidebarProjectSwitcher({ projectId }: SidebarProjectSwitcherProp
         <DropdownMenu onOpenChange={(open) => { if (!open) setQuery("") }}>
           <DropdownMenuTrigger asChild>
             <SidebarMenuButton
-              className="h-10 min-w-0 data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground group-data-[collapsible=icon]:justify-center"
+              className="project-avatar-host h-10 min-w-0 data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground group-data-[collapsible=icon]:justify-center"
             >
               {renderCurrent()}
             </SidebarMenuButton>
@@ -193,7 +193,7 @@ export function SidebarProjectSwitcher({ projectId }: SidebarProjectSwitcherProp
                   <DropdownMenuItem
                     key={project.id}
                     className={cn(
-                      "group min-w-0 gap-3 rounded-none border border-transparent px-2.5 py-2.5 transition-colors",
+                      "project-avatar-host group min-w-0 gap-3 rounded-none border border-transparent px-2.5 py-2.5 transition-colors",
                       "hover:bg-accent/40",
                       isCurrent && "border-primary/60 bg-primary/10 hover:bg-primary/15"
                     )}

@@ -3,7 +3,7 @@ import "server-only"
 import { getDivisionScopedProjectIds, getDivisionAccessForUser } from "@/lib/services/authorization"
 import { getBacklogReport, listClosings } from "@/lib/services/closings"
 import { requireOrgContext } from "@/lib/services/context"
-import { getCoordinatorDesk } from "@/lib/services/option-catalog"
+import { getStudioRunway } from "@/lib/services/design-studio"
 import { listStartPackages } from "@/lib/services/starts"
 
 const STALLED_DAYS = 7
@@ -53,13 +53,16 @@ export async function getProductionHomeData(
   monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7))
   const mondayIso = monday.toISOString().slice(0, 10)
 
-  const [communitiesResult, closingsPage, backlog, packages, coordinator] = await Promise.all([
+  const [communitiesResult, closingsPage, backlog, packages, runway] = await Promise.all([
     scopedCommunityQuery(context, filters, "id", { count: "exact", head: true }, access.assignedOnly ? access.divisionIds : null),
     listClosings({ divisionId: filters.divisionId, communityId: filters.communityId, from: monthStart, to: monthEnd, limit: 500 }, context.orgId).catch(() => ({ closings: [], total: 0 })),
     getBacklogReport({ divisionId: filters.divisionId }, context.orgId).catch(() => []),
     listStartPackages({ divisionId: filters.divisionId, communityId: filters.communityId, status: ["open", "ready", "attention"], pageSize: 100 }, context.orgId).catch(() => ({ packages: [], total: 0 })),
-    getCoordinatorDesk({ communityId: filters.communityId, divisionId: filters.divisionId }).catch(() => ({ upcomingAppointments: [], overdueSelections: [], cutoffRisk: [] })),
+    getStudioRunway({ communityId: filters.communityId, divisionId: filters.divisionId }).catch(() => null),
   ])
+  const overdueSelections = (runway?.lanes ?? [])
+    .flatMap((lane) => lane.homes.filter((home) => home.state === "overdue").map((home) => ({ lane, home })))
+    .sort((a, b) => (a.home.daysToCutoff ?? 0) - (b.home.daysToCutoff ?? 0))
 
   const scopedProjectIds = await resolveScopedProjectIds(context, filters, authorizedIds)
   const scopedCommunityIds = await resolveScopedCommunityIds(
@@ -108,7 +111,13 @@ export async function getProductionHomeData(
 
   const exceptions: ProductionHomeData["exceptions"] = [
     ...blocked.map((pkg) => ({ id: `start:${pkg.id}`, label: `${pkg.communityName} · ${pkg.lotLabel}`, detail: `${pkg.gatesTotal - pkg.gatesPassed} start gate${pkg.gatesTotal - pkg.gatesPassed === 1 ? "" : "s"} open`, href: `/starts?package=${pkg.id}`, tone: "danger" as const })),
-    ...((coordinator.overdueSelections as any[]) ?? []).slice(0, 5).map((row: any) => ({ id: `selection:${row.id}`, label: relation(row.project)?.name ?? "Home", detail: `${relation(row.group)?.name ?? "Selections"} · ${row.pending_count} unconfirmed past cutoff`, href: `/projects/${row.project_id}/selections`, tone: "danger" as const })),
+    ...overdueSelections.slice(0, 5).map(({ lane, home }) => ({
+      id: `selection:${home.projectId}:${lane.groupId}`,
+      label: `${home.lotLabel} · ${home.buyerName}`,
+      detail: `${lane.name} · ${home.categoryCount - home.chosenCount} unchosen past cutoff`,
+      href: `/design-studio/sheet/${home.projectId}`,
+      tone: "danger" as const,
+    })),
     ...(vpos ?? []).filter((row: any) => ["draft", "sent"].includes(row.status) && Number(row.total_cents ?? 0) >= 5_000_00).slice(0, 5).map((row: any) => ({ id: `vpo:${row.id}`, label: relation(row.project)?.name ?? row.title, detail: `${currency(Number(row.total_cents ?? 0))} VPO awaiting approval`, href: `/purchasing?tab=variance`, tone: "warning" as const })),
     ...Array.from(stalledByProject.values()).slice(0, 5).map((row: any) => ({ id: `stalled:${row.project_id}`, label: relation(row.project)?.name ?? "Home", detail: `No schedule progress in ${STALLED_DAYS}+ days`, href: `/projects/${row.project_id}/schedule`, tone: "warning" as const })),
     ...(closingsPage.closings ?? []).filter((row: any) => row.scheduled_date >= todayIso && row.scheduled_date <= weekEnd && (closingOpenCount.get(row.id) ?? 0) > 0).slice(0, 5).map((row: any) => ({ id: `closing:${row.id}`, label: relation(row.project)?.name ?? "Closing", detail: `${closingOpenCount.get(row.id)} closing checklist items open`, href: `/projects/${row.project_id}/closing`, tone: "warning" as const })),

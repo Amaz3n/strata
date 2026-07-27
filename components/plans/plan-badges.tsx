@@ -37,3 +37,19 @@ export function PricingSourceBadge({ source }: { source: PlanPricingSource }) {
 export function centsToMoney(cents: number): string {
   return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
 }
+
+/** Whole dollars. Nobody prices a house to the cent, and the decimals cost two columns. */
+export function centsToDollars(cents: number): string {
+  return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
+}
+
+/** Short form for axis labels and price bands: $385k, $1.24M. */
+export function centsToCompact(cents: number): string {
+  const dollars = cents / 100
+  if (Math.abs(dollars) >= 1_000_000) return `$${(dollars / 1_000_000).toFixed(2)}M`
+  return `$${Math.round(dollars / 1000).toLocaleString()}k`
+}
+
+export function signedDollars(cents: number): string {
+  return `${cents >= 0 ? "+" : "−"}${centsToDollars(Math.abs(cents))}`
+}

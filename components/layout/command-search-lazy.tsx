@@ -25,7 +25,7 @@ function TriggerFallback({ className, onOpen }: { className?: string; onOpen?: (
       <div className="hidden lg:block">
         <Button
           variant="ghost"
-          className="relative h-9 w-80 justify-start rounded-none border border-border/80 bg-popover/90 px-3 text-sm font-normal text-muted-foreground shadow-sm backdrop-blur transition-colors supports-[backdrop-filter]:bg-popover/80 hover:bg-accent/50 hover:text-foreground"
+          className="relative h-8 w-64 justify-start rounded-none border border-border/70 bg-transparent px-2.5 text-sm font-normal text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground xl:w-72"
           onClick={onOpen}
           onMouseEnter={preloadCommandSearch}
           onFocus={preloadCommandSearch}

@@ -32,6 +32,10 @@ function one(value: unknown): Record<string, unknown> | null {
   return row && typeof row === "object" ? row as Record<string, unknown> : null
 }
 
+function text(value: unknown) {
+  return typeof value === "string" ? value : null
+}
+
 async function companyRecipients(supabase: SupabaseClient, orgId: string, companyId: string) {
   const { data, error } = await supabase.from("contacts").select("email").eq("org_id", orgId).eq("company_id", companyId).not("email", "is", null).limit(50)
   if (error) throw new Error(`Failed to load trade contacts: ${error.message}`)
@@ -49,15 +53,16 @@ export async function getTradeLookahead(
   const endDate = new Date()
   endDate.setUTCDate(endDate.getUTCDate() + parsed.weeks * 7)
   const end = endDate.toISOString().slice(0, 10)
-  let itemsQuery = context.supabase.from("schedule_items").select(`
+  // The lot hangs off the project, not off the schedule item — there is no
+  // schedule_items → lots foreign key to embed through. Community narrowing
+  // happens in the grouping pass below rather than as an embedded filter, so
+  // an item whose project has no lot is never silently dropped.
+  const { data: items, error } = await context.supabase.from("schedule_items").select(`
     id,project_id,name,trade,status,start_date,end_date,cost_code_id,
-    project:projects!inner(property_type,status),
-    assignments:schedule_assignments(company_id,confirmed_at,company:companies(name)),
-    lot:lots!lots_project_id_fkey(lot_number,block,community_id,community:communities(name))
+    project:projects!inner(property_type,status,lot:lots(lot_number,block,community_id,community:communities(name))),
+    assignments:schedule_assignments(company_id,confirmed_at,company:companies(name))
   `).eq("org_id", context.orgId).eq("project.property_type", "production").eq("project.status", "active")
     .gte("start_date", start).lte("start_date", end).order("start_date").limit(5000)
-  if (parsed.communityId) itemsQuery = itemsQuery.eq("lot.community_id", parsed.communityId)
-  const { data: items, error } = await itemsQuery
   if (error) throw new Error(`Failed to load trade look-ahead: ${error.message}`)
   const unresolved = (items ?? []).filter((item) => !(item.assignments ?? []).some((assignment: { company_id?: string | null }) => assignment.company_id) && item.cost_code_id)
   const projectIds = Array.from(new Set(unresolved.map((item) => item.project_id)))
@@ -74,6 +79,8 @@ export async function getTradeLookahead(
   }
   const groups = new Map<string, TradeLookaheadRow>()
   for (const item of items ?? []) {
+    const itemLot = one(one(item.project)?.lot)
+    if (parsed.communityId && text(itemLot?.community_id) !== parsed.communityId) continue
     const assignment = (item.assignments ?? []).find((row: { company_id?: string | null }) => row.company_id)
     const assignedCompany = assignment ? one(assignment.company) : null
     const fallback = item.cost_code_id ? vendorByProjectCost.get(`${item.project_id}:${item.cost_code_id}`) : undefined
@@ -81,7 +88,7 @@ export async function getTradeLookahead(
     if (parsed.companyId && companyId !== parsed.companyId) continue
     const companyName = assignedCompany?.name ? String(assignedCompany.name) : fallback?.name ?? "Unassigned"
     const key = `${companyId ?? "unassigned"}:${item.trade ?? ""}`
-    const lot = one(item.lot)
+    const lot = itemLot
     const community = one(lot?.community)
     const row: TradeLookaheadRow = groups.get(key) ?? { companyId, companyName, trade: item.trade, items: [] }
     row.items.push({

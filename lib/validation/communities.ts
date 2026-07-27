@@ -18,6 +18,7 @@ export const communityInputSchema = z.object({
   postalCode: z.string().trim().max(20).optional().nullable(),
   description: z.string().trim().max(5000).optional().nullable(),
   plannedLotCount: z.number().int().min(0).optional().nullable(),
+  targetAbsorptionPerMonth: z.number().min(0).max(999).optional().nullable(),
   settings: z.record(z.unknown()).optional(),
   metadata: z.record(z.unknown()).optional(),
 })
@@ -49,6 +50,32 @@ export const takedownInputSchema = z.object({
 
 export const takedownUpdateSchema = takedownInputSchema.partial()
 
+export const communityAssignmentRoleSchema = z.enum([
+  "sales",
+  "superintendent",
+  "closing",
+  "warranty",
+  "land",
+])
+
+export const communityAssignmentInputSchema = z.object({
+  communityId: z.string().uuid(),
+  userId: z.string().uuid(),
+  role: communityAssignmentRoleSchema,
+})
+
+export const communityTrafficInputSchema = z.object({
+  communityId: z.string().uuid(),
+  loggedDate: z.string().date(),
+  walkIns: z.number().int().min(0).max(9999).default(0),
+  appointments: z.number().int().min(0).max(9999).default(0),
+  webInquiries: z.number().int().min(0).max(9999).default(0),
+  notes: z.string().trim().max(2000).optional().nullable(),
+})
+
 export type CommunityInput = z.infer<typeof communityInputSchema>
 export type PhaseInput = z.infer<typeof phaseInputSchema>
 export type TakedownInput = z.infer<typeof takedownInputSchema>
+export type CommunityAssignmentRole = z.infer<typeof communityAssignmentRoleSchema>
+export type CommunityAssignmentInput = z.infer<typeof communityAssignmentInputSchema>
+export type CommunityTrafficInput = z.infer<typeof communityTrafficInputSchema>

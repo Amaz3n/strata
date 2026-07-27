@@ -10,6 +10,7 @@ import {
   resolvePriceForLinePure,
   type PriceAgreementCandidate,
 } from "@/lib/financials/price-resolution"
+import { THIN_MARGIN_PCT, grossMarginPct } from "@/lib/plans/margin"
 import type { LotStatus } from "@/lib/land/lot-lifecycle"
 import { recordAudit } from "@/lib/services/audit"
 import { authorize, getDivisionAccessForUser } from "@/lib/services/authorization"
@@ -209,7 +210,7 @@ async function loadPlanAggregates(context: Awaited<ReturnType<typeof requireOrgC
 function mapPlan(row: PlanRow, aggregates: Awaited<ReturnType<typeof loadPlanAggregates>>): HousePlanDto {
   const elevations = aggregates.elevations.filter((item) => item.house_plan_id === row.id)
   const versions = aggregates.versions.filter((item) => item.house_plan_id === row.id)
-  const activeLots = aggregates.lots.filter((item) => item.house_plan_id === row.id && !["closed","cancelled"].includes(item.status))
+  const activeLots = aggregates.lots.filter((item) => item.house_plan_id === row.id && item.status !== "closed")
   const availabilityRows = aggregates.availability.filter((item) => item.house_plan_id === row.id)
   const communities = new Set(availabilityRows.map((item) => item.community_id))
   const prices = availabilityRows.map((item) => Number(item.base_price_cents)).filter((value) => value > 0)
@@ -596,18 +597,39 @@ export async function releasePlanVersion(versionId: string, orgId?: string): Pro
   return (await listPlanVersions(writable.house_plan_id, context.orgId)).find((item) => item.id === versionId) ?? (() => { throw new Error("Released plan version not found") })()
 }
 
+/**
+ * Publishes a plan into communities: which communities may sell it, from when,
+ * and the launch price the first time it lands there. Repricing an already-priced
+ * row is deliberately *not* possible here — that is the sales manager's edit and
+ * lives on the community Offering tab (`setCommunityPlanPrice`). A caller passing
+ * a new price for an existing priced row keeps the price it already had.
+ */
 export async function setCommunityAvailability(entries: AvailabilityInput[], orgId?: string): Promise<CommunityPlanAvailabilityDto[]> {
   const parsed = entries.map((entry) => availabilityInputSchema.parse(entry))
   const context = await requireOrgContext(orgId)
   await requirePermission("plan.write", context)
   if (parsed.length === 0) return []
+  const planIds = Array.from(new Set(parsed.map((entry) => entry.housePlanId)))
+  const { data: existingRows, error: existingError } = await context.supabase
+    .from("community_plan_availability")
+    .select("community_id, house_plan_id, elevation_id, base_price_cents, is_available")
+    .eq("org_id", context.orgId)
+    .in("house_plan_id", planIds)
+  if (existingError) throw new Error(`Failed to load current plan availability: ${existingError.message}`)
+  // Only a live offering's price is protected. Re-publishing a withdrawn plan is a
+  // relaunch, so it takes the new launch price rather than resurrecting a stale one.
+  const pricedAlready = new Map(
+    (existingRows ?? [])
+      .filter((row) => row.is_available && Number(row.base_price_cents) > 0)
+      .map((row) => [`${row.community_id}:${row.house_plan_id}:${row.elevation_id ?? "all"}`, Number(row.base_price_cents)]),
+  )
   const { data, error } = await context.supabase.from("community_plan_availability").upsert(parsed.map((entry) => ({
     org_id: context.orgId,
     community_id: entry.communityId,
     house_plan_id: entry.housePlanId,
     elevation_id: entry.elevationId ?? null,
     is_available: entry.isAvailable,
-    base_price_cents: entry.basePriceCents,
+    base_price_cents: pricedAlready.get(`${entry.communityId}:${entry.housePlanId}:${entry.elevationId ?? "all"}`) ?? entry.basePriceCents,
     effective_start: entry.effectiveStart ?? null,
     effective_end: entry.effectiveEnd ?? null,
     metadata: entry.metadata ?? {},
@@ -698,11 +720,15 @@ export type PlanCommunityCostDto = {
   cost_cents: number
 }
 
+export type PlanCommunityLotBasisDto = { community_id: string; lot_basis_cents: number }
+
 export type PlanPricingDto = {
   available: boolean
   as_of: string
   versions: PlanVersionPricingDto[]
   community_costs: PlanCommunityCostDto[]
+  /** Median lot basis per community, so margin can be price less build *and* land. */
+  community_lot_basis: PlanCommunityLotBasisDto[]
 }
 
 type AgreementRow = PriceAgreementCandidate & { company: { name: string } | Array<{ name: string }> | null }
@@ -779,7 +805,9 @@ export async function getPlanPricing(planId: string, orgId?: string): Promise<Pl
   const plan = await getHousePlan(planId, context.orgId)
   const versions = (plan.versions ?? []).filter((version) => version.status !== "superseded")
   const costCodeIds = Array.from(new Set(versions.flatMap((version) => (version.takeoff_lines ?? []).map((line) => line.cost_code_id))))
-  if (costCodeIds.length === 0) return { available: decision.allowed, as_of: asOf, versions: [], community_costs: [] }
+  if (costCodeIds.length === 0) {
+    return { available: decision.allowed, as_of: asOf, versions: [], community_costs: [], community_lot_basis: [] }
+  }
   const [agreementsResult, defaultsResult, availabilityResult] = await Promise.all([
     decision.allowed
       ? context.supabase.from("vendor_price_agreements").select("*, company:companies(name)").eq("org_id", context.orgId).eq("status", "active").in("cost_code_id", costCodeIds)
@@ -798,6 +826,28 @@ export async function getPlanPricing(planId: string, orgId?: string): Promise<Pl
   for (const row of availabilityResult.data ?? []) {
     const community = one(row.community as { division_id: string | null } | Array<{ division_id: string | null }> | null)
     communityDivisions.set(row.community_id, community?.division_id ?? null)
+  }
+
+  const communityIds = Array.from(communityDivisions.keys())
+  const basisResult = communityIds.length
+    ? await context.supabase
+        .from("lots")
+        .select("community_id, cost_basis_cents")
+        .eq("org_id", context.orgId)
+        .in("community_id", communityIds)
+        .gt("cost_basis_cents", 0)
+    : { data: [], error: null }
+  if (basisResult.error) throw new Error(`Failed to load lot basis: ${basisResult.error.message}`)
+  const basisSamples = new Map<string, number[]>()
+  for (const row of basisResult.data ?? []) {
+    const list = basisSamples.get(row.community_id) ?? []
+    list.push(Number(row.cost_basis_cents))
+    basisSamples.set(row.community_id, list)
+  }
+  const communityLotBasis: PlanCommunityLotBasisDto[] = []
+  for (const [communityId, samples] of basisSamples) {
+    const value = median(samples)
+    if (value != null) communityLotBasis.push({ community_id: communityId, lot_basis_cents: value })
   }
   const versionPricing = versions.map((version) => {
     const lines = (version.takeoff_lines ?? []).map((line) =>
@@ -828,7 +878,13 @@ export async function getPlanPricing(planId: string, orgId?: string): Promise<Pl
       }
     }
   }
-  return { available: decision.allowed, as_of: asOf, versions: versionPricing, community_costs: communityCosts }
+  return {
+    available: decision.allowed,
+    as_of: asOf,
+    versions: versionPricing,
+    community_costs: communityCosts,
+    community_lot_basis: communityLotBasis,
+  }
 }
 
 export type SelectionTemplateCategoryDto = { id: string; name: string }
@@ -862,4 +918,345 @@ export async function getPlanVersionDrift(planId: string, orgId?: string): Promi
       manual_price_delta_cents: changes.reduce((sum, change) => sum + change.manual_price_delta_cents, 0),
     }
   })
+}
+
+export type PlanCostVarianceDto = {
+  cost_code_id: string
+  label: string
+  estimate_cents: number
+  actual_cents: number
+  delta_cents: number
+}
+
+export type PlanBuildPerformanceDto = {
+  version_id: string
+  version_number: number
+  /** Closed houses only — a half-built house makes the takeoff look brilliant. */
+  house_count: number
+  estimate_per_house_cents: number
+  actual_per_house_cents: number
+  variance_pct: number | null
+  /** The divisions carrying the variance, worst first. */
+  drivers: PlanCostVarianceDto[]
+}
+
+/**
+ * What the plan actually cost to build, against what its takeoff said it would.
+ * Everything else on the plan surface is a forecast; this is the only number that
+ * tells an estimator the forecast is wrong — and it says so while there is still
+ * time to fix the takeoff instead of after another forty houses.
+ *
+ * Only closed lots count. Actuals on a house that is three weeks into framing
+ * would read as a saving against a full takeoff, which is exactly backwards.
+ */
+export async function getPlanBuildPerformance(planId: string, orgId?: string): Promise<PlanBuildPerformanceDto[]> {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("plan.read", context)
+  const { data: lotRows, error: lotError } = await context.supabase
+    .from("lots")
+    .select("project_id, house_plan_version_id")
+    .eq("org_id", context.orgId)
+    .eq("house_plan_id", planId)
+    .eq("status", "closed")
+    .not("project_id", "is", null)
+    .limit(500)
+  if (lotError) throw new Error(`Failed to load closed lots for plan: ${lotError.message}`)
+
+  const closed = (lotRows ?? []).filter(
+    (row): row is { project_id: string; house_plan_version_id: string } =>
+      Boolean(row.project_id) && Boolean(row.house_plan_version_id),
+  )
+  if (closed.length === 0) return []
+
+  const [versions, actualsResult] = await Promise.all([
+    listPlanVersions(planId, context.orgId),
+    context.supabase
+      .from("job_cost_entries")
+      .select("project_id, cost_code_id, cost_cents, cost_code:cost_codes(code, name)")
+      .eq("org_id", context.orgId)
+      .eq("status", "posted")
+      .in("project_id", Array.from(new Set(closed.map((row) => row.project_id))))
+      .limit(20000),
+  ])
+  if (actualsResult.error) throw new Error(`Failed to load plan actuals: ${actualsResult.error.message}`)
+
+  const versionByProject = new Map(closed.map((row) => [row.project_id, row.house_plan_version_id]))
+  const houseCounts = new Map<string, number>()
+  for (const row of closed) {
+    houseCounts.set(row.house_plan_version_id, (houseCounts.get(row.house_plan_version_id) ?? 0) + 1)
+  }
+
+  const actualsByVersion = new Map<string, Map<string, { label: string; cents: number }>>()
+  for (const row of actualsResult.data ?? []) {
+    const versionId = row.project_id ? versionByProject.get(row.project_id) : undefined
+    if (!versionId || !row.cost_code_id) continue
+    const byCode = actualsByVersion.get(versionId) ?? new Map()
+    const code = one(row.cost_code as { code: string; name: string } | Array<{ code: string; name: string }> | null)
+    const current = byCode.get(row.cost_code_id) ?? { label: code ? `${code.code} · ${code.name}` : "Uncoded", cents: 0 }
+    current.cents += Number(row.cost_cents ?? 0)
+    byCode.set(row.cost_code_id, current)
+    actualsByVersion.set(versionId, byCode)
+  }
+
+  return versions
+    .filter((version) => (houseCounts.get(version.id) ?? 0) > 0)
+    .map((version) => {
+      const houses = houseCounts.get(version.id) ?? 0
+      const byCode = actualsByVersion.get(version.id) ?? new Map()
+      const estimateByCode = new Map<string, number>()
+      for (const line of version.takeoff_lines ?? []) {
+        const amount = resolveTakeoffLineAmount(line.quantity, line.unit_cost_cents ?? 0)
+        estimateByCode.set(line.cost_code_id, (estimateByCode.get(line.cost_code_id) ?? 0) + amount)
+      }
+      const actualTotal = Array.from(byCode.values()).reduce((sum, entry) => sum + entry.cents, 0)
+      const actualPerHouse = Math.round(actualTotal / houses)
+      const estimatePerHouse = version.takeoff_total_cents_manual
+
+      const drivers = Array.from(new Set([...estimateByCode.keys(), ...byCode.keys()]))
+        .map((costCodeId) => {
+          const estimate = estimateByCode.get(costCodeId) ?? 0
+          const actual = Math.round((byCode.get(costCodeId)?.cents ?? 0) / houses)
+          return {
+            cost_code_id: costCodeId,
+            // A code with actuals and no estimate is a hole in the takeoff; a code
+            // with an estimate and no actuals has simply not been billed yet.
+            label: byCode.get(costCodeId)?.label ?? "Not in the takeoff",
+            estimate_cents: estimate,
+            actual_cents: actual,
+            delta_cents: actual - estimate,
+          }
+        })
+        .filter((entry) => entry.delta_cents !== 0)
+        .sort((left, right) => Math.abs(right.delta_cents) - Math.abs(left.delta_cents))
+        .slice(0, 5)
+
+      return {
+        version_id: version.id,
+        version_number: version.version_number,
+        house_count: houses,
+        estimate_per_house_cents: estimatePerHouse,
+        actual_per_house_cents: actualPerHouse,
+        // No posted cost is missing data, not a house that came in free. Reporting
+        // −100% here would be the loudest wrong number on the page.
+        variance_pct:
+          estimatePerHouse > 0 && actualTotal > 0
+            ? ((actualPerHouse - estimatePerHouse) / estimatePerHouse) * 100
+            : null,
+        drivers,
+      }
+    })
+    .filter((entry) => entry.actual_per_house_cents > 0)
+    .sort((left, right) => right.version_number - left.version_number)
+}
+
+/** Median of a numeric sample. Lot basis is skewed by premium lots, so never a mean. */
+function median(values: number[]): number | null {
+  if (values.length === 0) return null
+  const sorted = [...values].sort((a, b) => a - b)
+  const middle = Math.floor(sorted.length / 2)
+  return sorted.length % 2 === 0 ? Math.round((sorted[middle - 1] + sorted[middle]) / 2) : sorted[middle]
+}
+
+export type PlanAttentionKind =
+  | "no_released_version"
+  | "open_draft"
+  | "unpriced_takeoff"
+  | "unpriced_community"
+  | "thin_margin"
+  | "no_imagery"
+
+export type PlanAttentionDto = { kind: PlanAttentionKind; label: string }
+
+export type PlanLadderRungDto = {
+  id: string
+  code: string
+  name: string
+  series: string | null
+  status: HousePlanDto["status"]
+  division_id: string | null
+  cover_file_id: string | null
+  elevation_cover_file_ids: string[]
+  heated_sqft: number | null
+  beds: number | null
+  baths: number | null
+  stories: number | null
+  garage_bays: number | null
+  elevation_count: number
+  community_count: number
+  community_ids: string[]
+  released_version_id: string | null
+  released_version_number: number | null
+  draft_version_id: string | null
+  draft_version_number: number | null
+  base_price_min_cents: number | null
+  base_price_max_cents: number | null
+  released_cost_cents: number | null
+  draft_cost_cents: number | null
+  /** Median lot basis across the communities this plan is published in, when lots carry one. */
+  lot_basis_cents: number | null
+  unpriced_line_count: number
+  lots_total: number
+  lots_unsold: number
+  lots_sold: number
+  lots_building: number
+  lots_closed: number
+  attention: PlanAttentionDto[]
+}
+
+export type PlanLadderDto = {
+  as_of: string
+  pricing_available: boolean
+  rungs: PlanLadderRungDto[]
+}
+
+/**
+ * The whole plan library as one comparable set: price band across communities,
+ * direct cost of the released version, and the same cost for any open draft so a
+ * release can be judged before it happens. Resolved in a fixed number of queries
+ * regardless of plan count — never per-plan `getPlanPricing` in a loop.
+ */
+export async function getPlanLadder(
+  filters: { divisionId?: string; communityId?: string } = {},
+  orgId?: string,
+): Promise<PlanLadderDto> {
+  const context = await requireOrgContext(orgId)
+  await requirePermission("plan.read", context)
+  const asOf = new Date().toISOString().slice(0, 10)
+  const plans = await listHousePlans(filters, context.orgId)
+  if (plans.length === 0) return { as_of: asOf, pricing_available: false, rungs: [] }
+
+  const planIds = plans.map((plan) => plan.id)
+  const [aggregates, priceBookDecision] = await Promise.all([
+    loadPlanAggregates(context, planIds),
+    authorize({ permission: "price_book.read", userId: context.userId, orgId: context.orgId, supabase: context.supabase }),
+  ])
+
+  const liveVersions = aggregates.versions.filter((version) => version.status !== "superseded")
+  const versionIds = liveVersions.map((version) => version.id)
+  const takeoffResult = versionIds.length
+    ? await context.supabase
+        .from("house_plan_takeoff_lines")
+        .select("id, house_plan_version_id, elevation_id, cost_code_id, cost_type, description, quantity, uom, unit_cost_cents, sort_order")
+        .eq("org_id", context.orgId)
+        .in("house_plan_version_id", versionIds)
+    : { data: [], error: null }
+  if (takeoffResult.error) throw new Error(`Failed to load plan ladder takeoff: ${takeoffResult.error.message}`)
+  const takeoffRows = (takeoffResult.data ?? []) as TakeoffRow[]
+
+  const costCodeIds = Array.from(new Set(takeoffRows.map((row) => row.cost_code_id)))
+  const [agreementsResult, defaultsResult] = await Promise.all([
+    priceBookDecision.allowed && costCodeIds.length > 0
+      ? context.supabase.from("vendor_price_agreements").select("*, company:companies(name)").eq("org_id", context.orgId).eq("status", "active").in("cost_code_id", costCodeIds)
+      : Promise.resolve({ data: [], error: null }),
+    costCodeIds.length > 0
+      ? context.supabase.from("cost_codes").select("id, default_unit_cost_cents").eq("org_id", context.orgId).in("id", costCodeIds)
+      : Promise.resolve({ data: [], error: null }),
+  ])
+  for (const result of [agreementsResult, defaultsResult]) {
+    if (result.error) throw new Error(`Failed to load plan ladder pricing inputs: ${result.error.message}`)
+  }
+  const candidates = (agreementsResult.data ?? []) as AgreementRow[]
+  const defaults = new Map<string, number | null>(
+    (defaultsResult.data ?? []).map((row) => [row.id, row.default_unit_cost_cents == null ? null : Number(row.default_unit_cost_cents)]),
+  )
+
+  const communityIds = Array.from(new Set(aggregates.availability.map((row) => row.community_id)))
+  const basisResult = communityIds.length
+    ? await context.supabase
+        .from("lots")
+        .select("community_id, cost_basis_cents")
+        .eq("org_id", context.orgId)
+        .in("community_id", communityIds)
+        .gt("cost_basis_cents", 0)
+    : { data: [], error: null }
+  if (basisResult.error) throw new Error(`Failed to load lot basis: ${basisResult.error.message}`)
+  const basisByCommunity = new Map<string, number[]>()
+  for (const row of basisResult.data ?? []) {
+    const list = basisByCommunity.get(row.community_id) ?? []
+    list.push(Number(row.cost_basis_cents))
+    basisByCommunity.set(row.community_id, list)
+  }
+
+  function costOf(planId: string, versionId: string): { cents: number; unpriced: number } {
+    const lines = takeoffRows.filter((row) => row.house_plan_version_id === versionId).map(mapTakeoff)
+    const resolved = lines.map((line) =>
+      resolveLine(line, candidates, defaults, { housePlanId: planId, versionId, communityId: null, divisionId: null }, asOf),
+    )
+    return {
+      cents: resolved.reduce((sum, line) => sum + line.amount_cents, 0),
+      unpriced: resolved.filter((line) => line.source === "unpriced").length,
+    }
+  }
+
+  const rungs = plans.map((plan) => {
+    const elevations = aggregates.elevations.filter((item) => item.house_plan_id === plan.id)
+    const versions = aggregates.versions.filter((item) => item.house_plan_id === plan.id)
+    const released = versions.find((version) => version.status === "released") ?? null
+    const draft = versions.find((version) => version.status === "draft") ?? null
+    const lots = aggregates.lots.filter((item) => item.house_plan_id === plan.id)
+    const availabilityRows = aggregates.availability.filter((item) => item.house_plan_id === plan.id)
+
+    const releasedCost = released ? costOf(plan.id, released.id) : null
+    const draftCost = draft ? costOf(plan.id, draft.id) : null
+    const lotBasis = median(plan.community_ids.flatMap((communityId) => basisByCommunity.get(communityId) ?? []))
+    const marginFloorPct = grossMarginPct({
+      priceCents: plan.base_price_min_cents,
+      buildCostCents: releasedCost?.cents ?? null,
+      lotBasisCents: lotBasis,
+    })
+
+    const attention: PlanAttentionDto[] = []
+    if (!released) attention.push({ kind: "no_released_version", label: "No released version" })
+    if (draft) attention.push({ kind: "open_draft", label: `v${draft.version_number} draft open` })
+    if (releasedCost && releasedCost.unpriced > 0) {
+      attention.push({ kind: "unpriced_takeoff", label: `${releasedCost.unpriced} unpriced line${releasedCost.unpriced === 1 ? "" : "s"}` })
+    }
+    const unpricedCommunities = availabilityRows.filter((row) => Number(row.base_price_cents) <= 0).length
+    if (unpricedCommunities > 0) {
+      attention.push({ kind: "unpriced_community", label: `${unpricedCommunities} community price${unpricedCommunities === 1 ? "" : "s"} missing` })
+    }
+    if (marginFloorPct != null && marginFloorPct < THIN_MARGIN_PCT) {
+      attention.push({ kind: "thin_margin", label: `${Math.round(marginFloorPct)}% gross margin at worst community` })
+    }
+    if (!plan.cover_file_id && elevations.every((elevation) => !elevation.cover_file_id)) {
+      attention.push({ kind: "no_imagery", label: "No elevation imagery" })
+    }
+
+    return {
+      id: plan.id,
+      code: plan.code,
+      name: plan.name,
+      series: plan.series,
+      status: plan.status,
+      division_id: plan.division_id,
+      cover_file_id: plan.cover_file_id,
+      elevation_cover_file_ids: elevations.map((elevation) => elevation.cover_file_id).filter((value): value is string => Boolean(value)),
+      heated_sqft: plan.heated_sqft,
+      beds: plan.beds,
+      baths: plan.baths,
+      stories: plan.stories,
+      garage_bays: plan.garage_bays,
+      elevation_count: plan.elevation_count,
+      community_count: plan.community_count,
+      community_ids: plan.community_ids,
+      released_version_id: released?.id ?? null,
+      released_version_number: released ? Number(released.version_number) : null,
+      draft_version_id: draft?.id ?? null,
+      draft_version_number: draft ? Number(draft.version_number) : null,
+      base_price_min_cents: plan.base_price_min_cents,
+      base_price_max_cents: plan.base_price_max_cents,
+      released_cost_cents: releasedCost?.cents ?? null,
+      draft_cost_cents: draftCost?.cents ?? null,
+      lot_basis_cents: lotBasis,
+      unpriced_line_count: releasedCost?.unpriced ?? draftCost?.unpriced ?? 0,
+      lots_total: lots.length,
+      lots_unsold: lots.filter((lot) => ["controlled", "owned", "developed"].includes(lot.status)).length,
+      lots_sold: lots.filter((lot) => lot.status === "assigned").length,
+      lots_building: lots.filter((lot) => lot.status === "started").length,
+      lots_closed: lots.filter((lot) => lot.status === "closed").length,
+      attention,
+    } satisfies PlanLadderRungDto
+  })
+
+  return { as_of: asOf, pricing_available: priceBookDecision.allowed, rungs }
 }

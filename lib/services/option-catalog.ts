@@ -2,9 +2,8 @@ import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
-import { getDivisionScopedProjectIds } from "@/lib/services/authorization"
-import { intersectProjectReadScopes } from "@/lib/services/authorization-policy"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { buildFilesPublicUrl } from "@/lib/storage/files-storage"
 import { allocatePackageTotal, chooseResolvedPrice } from "@/lib/selections/catalog-math"
 
 export { allocatePackageTotal, chooseResolvedPrice } from "@/lib/selections/catalog-math"
@@ -40,13 +39,14 @@ export type CatalogOptionDto = {
   vendor: string | null
   lead_time_days: number | null
   image_url: string | null
+  file_id: string | null
   is_available: boolean
   is_archived: boolean
+  /** The grade included in base price — see `isStandard` on the input schema. */
+  is_default: boolean
   sort_order: number
   source: CatalogSource
 }
-
-export type BuyerOptionDto = Omit<CatalogOptionDto, "cost_cents" | "cost_code_id" | "vendor">
 
 export type CatalogCategoryDto = {
   id: string
@@ -160,7 +160,7 @@ export async function listCatalog(
       .limit(500),
     context.supabase
       .from("selection_options")
-      .select("id, category_id, parent_option_id, community_id, name, description, option_scope, price_cents, cost_cents, cost_code_id, sku, vendor, lead_time_days, image_url, is_available, is_archived, sort_order")
+      .select("id, category_id, parent_option_id, community_id, name, description, option_scope, price_cents, cost_cents, cost_code_id, sku, vendor, lead_time_days, image_url, file_id, is_available, is_archived, is_default, sort_order")
       .eq("org_id", context.orgId)
       .order("sort_order")
       .limit(2000),
@@ -230,17 +230,6 @@ export async function listCatalog(
   return { categories, packages, can_read_margin: canReadMargin }
 }
 
-export async function listBuyerCatalog(opts: { communityId?: string } = {}) {
-  const catalog = await listCatalog(opts)
-  return {
-    categories: catalog.categories.map((category) => ({
-      ...category,
-      options: category.options.map(({ cost_cents: _cost, cost_code_id: _costCode, vendor: _vendor, ...option }) => option),
-    })),
-    packages: catalog.packages.map(({ cost_cents: _cost, ...selectionPackage }) => selectionPackage),
-  }
-}
-
 async function saveCatalogEntity<T>(input: {
   table: "selection_categories" | "selection_options" | "selection_packages" | "selection_catalog_prices" | "selection_groups"
   id?: string | null
@@ -297,7 +286,10 @@ export async function upsertCategory(raw: CatalogCategoryInput) {
 
 export async function upsertOption(raw: CatalogOptionInput) {
   const input = catalogOptionSchema.parse(raw)
-  return saveCatalogEntity({
+  // Standard grade is carried by three columns that must never disagree: it is
+  // the option included in base price, so it prices at zero and pre-selects.
+  const priceCents = input.isStandard ? 0 : input.priceCents ?? 0
+  const saved = await saveCatalogEntity({
     table: "selection_options",
     id: input.id,
     payload: {
@@ -307,20 +299,78 @@ export async function upsertOption(raw: CatalogOptionInput) {
       name: input.name,
       description: input.description ?? null,
       option_scope: input.optionScope,
-      price_cents: input.priceCents ?? null,
-      price_type: input.priceCents === 0 ? "included" : "upgrade",
+      price_cents: priceCents,
+      price_type: priceCents === 0 ? "included" : "upgrade",
       cost_cents: input.costCents ?? null,
       cost_code_id: input.costCodeId ?? null,
       sku: input.sku ?? null,
       vendor: input.vendor ?? null,
       lead_time_days: input.leadTimeDays ?? null,
       image_url: input.imageUrl ?? null,
+      file_id: input.fileId ?? null,
       sort_order: input.sortOrder,
       is_available: input.isAvailable,
+      is_default: input.isStandard,
     },
-    select: "id, org_id, category_id, community_id, parent_option_id, name, description, option_scope, price_cents, cost_cents, cost_code_id, sku, vendor, lead_time_days, image_url, sort_order, is_available, is_archived",
+    select: "id, org_id, category_id, community_id, parent_option_id, name, description, option_scope, price_cents, cost_cents, cost_code_id, sku, vendor, lead_time_days, image_url, file_id, sort_order, is_available, is_archived, is_default",
     entityType: "selection_option",
   })
+  if (input.isStandard) await demoteOtherStandards(input.categoryId, saved.id, input.communityId ?? null)
+  return saved
+}
+
+/**
+ * A category has at most one standard grade. Promoting an option demotes the
+ * previous one rather than refusing the edit, because the coordinator's intent
+ * ("this is the new base carpet") is unambiguous.
+ */
+async function demoteOtherStandards(categoryId: string, keepOptionId: string, communityId: string | null) {
+  const context = await requireOrgContext()
+  let query = context.supabase
+    .from("selection_options")
+    .update({ is_default: false })
+    .eq("org_id", context.orgId)
+    .eq("category_id", categoryId)
+    .eq("is_default", true)
+    .neq("id", keepOptionId)
+  query = communityId ? query.eq("community_id", communityId) : query.is("community_id", null)
+  const { error } = await query
+  if (error) throw new Error(`Failed to demote the previous standard grade: ${error.message}`)
+}
+
+/** Where option photography lands in the file tree, org-wide rather than per project. */
+export const CATALOG_IMAGE_FOLDER = "/design-studio/catalog"
+
+export type CatalogImage = {
+  fileId: string
+  /** Public CDN URL, so the buyer portal can render it without a session. */
+  url: string
+  fileName: string
+}
+
+/**
+ * An image already in the catalog folder with these exact bytes. The same tile
+ * photo legitimately backs several options, and the upload path rejects
+ * duplicate checksums — so callers look here first and reuse the object rather
+ * than storing a second copy of it.
+ */
+export async function findCatalogImageByChecksum(checksum: string): Promise<CatalogImage | null> {
+  const context = await requireOrgContext()
+  await requirePermission("selections.catalog.manage", context)
+  const { data, error } = await context.supabase
+    .from("files")
+    .select("id, file_name, storage_path")
+    .eq("org_id", context.orgId)
+    .eq("checksum", checksum)
+    .eq("folder_path", CATALOG_IMAGE_FOLDER)
+    .is("archived_at", null)
+    .limit(1)
+    .maybeSingle()
+  if (error) throw new Error(`Failed to look up the image: ${error.message}`)
+  if (!data) return null
+  const url = buildFilesPublicUrl(data.storage_path)
+  if (!url) return null
+  return { fileId: data.id, url, fileName: data.file_name }
 }
 
 export async function archiveCatalogEntity(input: {
@@ -483,19 +533,90 @@ export async function resolveOptionPricing(opts: {
   })
 }
 
-export async function listPlanPricingMatrix(opts: { housePlanVersionId: string; communityId?: string }) {
+export type PlanColumn = {
+  versionId: string
+  planId: string
+  planName: string
+  versionLabel: string
+}
+
+export type PlanPriceCell = {
+  priceCents: number | null
+  costCents: number | null
+  isAvailable: boolean
+  /** False when the cell falls back to the option's base price. */
+  isOverride: boolean
+}
+
+export type PlanPricingMatrix = {
+  plans: PlanColumn[]
+  /** Keyed `${optionId}:${versionId}`. Absent keys inherit the base price. */
+  cells: Record<string, PlanPriceCell>
+}
+
+/**
+ * Options priced per released plan version. The same quartz counter costs
+ * different money in a 1,600 sf plan than a 3,200 sf one, which is what
+ * `selection_catalog_prices` exists to express; this assembles it into the grid
+ * the catalog screen edits.
+ */
+export async function listPlanPricingMatrix(
+  opts: { communityId?: string; optionIds: string[] } = { optionIds: [] },
+): Promise<PlanPricingMatrix> {
   const context = await requireOrgContext()
-  await requirePermission("selections.catalog.manage", context)
-  let query = context.supabase
-    .from("selection_catalog_prices")
-    .select("id, option_id, package_id, house_plan_version_id, community_id, price_cents, cost_cents, is_available")
-    .eq("org_id", context.orgId)
-    .eq("house_plan_version_id", opts.housePlanVersionId)
-    .order("created_at")
-  if (opts.communityId) query = query.or(`community_id.is.null,community_id.eq.${opts.communityId}`)
-  const { data, error } = await query.limit(1000)
-  if (error) throw new Error(`Failed to load plan pricing: ${error.message}`)
-  return data ?? []
+  await requirePermission("selections.read", context)
+  if (opts.optionIds.length === 0) return { plans: [], cells: {} }
+
+  const [versionsResult, pricesResult] = await Promise.all([
+    context.supabase
+      .from("house_plan_versions")
+      .select("id, house_plan_id, version_number, label, status, plan:house_plans(name)")
+      .eq("org_id", context.orgId)
+      .eq("status", "released")
+      .order("version_number", { ascending: false })
+      .limit(100),
+    context.supabase
+      .from("selection_catalog_prices")
+      .select("option_id, house_plan_version_id, community_id, price_cents, cost_cents, is_available")
+      .eq("org_id", context.orgId)
+      .in("option_id", opts.optionIds.slice(0, 200))
+      .limit(4000),
+  ])
+  if (versionsResult.error) throw new Error(`Failed to load plan versions: ${versionsResult.error.message}`)
+  if (pricesResult.error) throw new Error(`Failed to load plan pricing: ${pricesResult.error.message}`)
+
+  const seenPlans = new Set<string>()
+  const plans: PlanColumn[] = []
+  for (const row of versionsResult.data ?? []) {
+    const planId = row.house_plan_id as string
+    // One column per plan: its latest released version is the one being sold.
+    if (seenPlans.has(planId)) continue
+    seenPlans.add(planId)
+    const plan = Array.isArray(row.plan) ? row.plan[0] : row.plan
+    plans.push({
+      versionId: row.id as string,
+      planId,
+      planName: plan?.name ?? "Plan",
+      versionLabel: (row.label as string | null) ?? `v${row.version_number}`,
+    })
+  }
+
+  const cells: Record<string, PlanPriceCell> = {}
+  for (const row of pricesResult.data ?? []) {
+    if (!row.option_id) continue
+    // A community-specific price wins over the org-wide one for the same cell.
+    const key = `${row.option_id}:${row.house_plan_version_id}`
+    const isCommunity = row.community_id === opts.communityId
+    if (row.community_id !== null && !isCommunity) continue
+    if (cells[key]?.isOverride && !isCommunity) continue
+    cells[key] = {
+      priceCents: row.price_cents,
+      costCents: row.cost_cents,
+      isAvailable: row.is_available,
+      isOverride: true,
+    }
+  }
+  return { plans: plans.sort((a, b) => a.planName.localeCompare(b.planName)), cells }
 }
 
 export async function listSelectionGroups(opts: { communityId?: string } = {}): Promise<SelectionGroupDto[]> {
@@ -585,7 +706,10 @@ export async function listAppointments(opts: {
   limit?: number
 } = {}): Promise<AppointmentDto[]> {
   const context = await requireOrgContext()
-  await requirePermission("design_studio.manage", context)
+  // Reading the calendar is part of every selections read surface — a
+  // superintendent checking a cutoff must not be blocked by the coordinator's
+  // manage permission. Booking and rescheduling keep the stricter gate.
+  await requirePermission("selections.read", context)
   let query = context.supabase
     .from("design_studio_appointments")
     .select("id, community_id, project_id, contact_id, coordinator_user_id, scheduled_at, duration_minutes, location, status, group_ids, notes, project:projects(name), community:communities(name), buyer:contacts(full_name), coordinator:app_users(full_name)")
@@ -643,95 +767,4 @@ export async function upsertAppointment(raw: AppointmentInput): Promise<Appointm
     recordAudit({ orgId: context.orgId, actorId: context.userId, action: input.id ? "update" : "insert", entityType: "design_studio_appointment", entityId: data.id, after: payload }),
   ])
   return { ...data, status: data.status as AppointmentDto["status"] }
-}
-
-export async function getCoordinatorDesk(opts: { communityId?: string; divisionId?: string } = {}) {
-  const context = await requireOrgContext()
-  await requirePermission("design_studio.manage", context)
-  const today = new Date().toISOString().slice(0, 10)
-  const riskDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
-  const authorizedProjectIds = await getDivisionScopedProjectIds(context)
-  const { data: divisionProjects, error: divisionError } = opts.divisionId
-    ? await context.supabase.from("projects").select("id").eq("org_id", context.orgId).eq("division_id", opts.divisionId).limit(1000)
-    : { data: null, error: null }
-  if (divisionError) throw new Error(`Failed to scope the coordinator desk: ${divisionError.message}`)
-  const divisionProjectIds = divisionProjects ? divisionProjects.map((project) => project.id as string) : null
-  const baseProjectIds = intersectProjectReadScopes(authorizedProjectIds, divisionProjectIds)
-  const { data: scopedLots, error: scopedLotsError } = opts.communityId
-    ? await context.supabase.from("lots").select("project_id").eq("org_id", context.orgId).eq("community_id", opts.communityId).not("project_id", "is", null).limit(1000)
-    : { data: null, error: null }
-  if (scopedLotsError) throw new Error(`Failed to scope the coordinator desk: ${scopedLotsError.message}`)
-  const communityProjectIds = opts.communityId
-    ? Array.from(new Set((scopedLots ?? []).map((lot) => lot.project_id).filter((value): value is string => Boolean(value))))
-    : null
-  const scopedProjectIds = intersectProjectReadScopes(baseProjectIds, communityProjectIds)
-  if (scopedProjectIds && scopedProjectIds.length === 0) {
-    return { upcomingAppointments: [], overdueSelections: [], cutoffRisk: [] }
-  }
-  let overdueQuery = context.supabase
-    .from("project_selection_groups")
-    .select("id, project_id, group_id, cutoff_date, status, group:selection_groups(name), project:projects(name)")
-    .eq("org_id", context.orgId)
-    .lt("cutoff_date", today)
-    .limit(50)
-  let riskQuery = context.supabase
-    .from("project_selection_groups")
-    .select("id, project_id, group_id, cutoff_date, status, group:selection_groups(name), project:projects(name)")
-    .eq("org_id", context.orgId)
-    .eq("status", "open")
-    .gte("cutoff_date", today)
-    .lte("cutoff_date", riskDate)
-    .limit(50)
-  let unresolvedQuery = context.supabase
-    .from("project_selection_groups")
-    .select("id, project_id, group_id, cutoff_date, status, group:selection_groups(name), project:projects(name)")
-    .eq("org_id", context.orgId)
-    .eq("status", "open")
-    .is("cutoff_date", null)
-    .limit(50)
-  if (scopedProjectIds) {
-    overdueQuery = overdueQuery.in("project_id", scopedProjectIds)
-    riskQuery = riskQuery.in("project_id", scopedProjectIds)
-    unresolvedQuery = unresolvedQuery.in("project_id", scopedProjectIds)
-  }
-  const [appointmentRows, overdueResult, riskResult, unresolvedResult] = await Promise.all([
-    listAppointments({ communityId: opts.communityId, from: new Date().toISOString(), limit: 50 }),
-    overdueQuery,
-    riskQuery,
-    unresolvedQuery,
-  ])
-  const appointments = scopedProjectIds
-    ? appointmentRows.filter((appointment) => scopedProjectIds.includes(appointment.project_id))
-    : appointmentRows
-  if (overdueResult.error) throw new Error(`Failed to load overdue selections: ${overdueResult.error.message}`)
-  if (riskResult.error) throw new Error(`Failed to load cutoff risk: ${riskResult.error.message}`)
-  if (unresolvedResult.error) throw new Error(`Failed to load unresolved cutoffs: ${unresolvedResult.error.message}`)
-  const riskRows = [...(unresolvedResult.data ?? []), ...(riskResult.data ?? [])].slice(0, 50)
-  const deskRows = [...(overdueResult.data ?? []), ...riskRows]
-  const projectIds = Array.from(new Set(deskRows.map((row) => row.project_id)))
-  const groupIds = Array.from(new Set(deskRows.map((row) => row.group_id)))
-  const { data: pending, error: pendingError } = projectIds.length && groupIds.length
-    ? await context.supabase
-        .from("project_selections")
-        .select("project_id, group_id")
-        .eq("org_id", context.orgId)
-        .in("project_id", projectIds)
-        .in("group_id", groupIds)
-        .neq("status", "confirmed")
-        .limit(5000)
-    : { data: [], error: null }
-  if (pendingError) throw new Error(`Failed to count pending selections: ${pendingError.message}`)
-  const counts = new Map<string, number>()
-  for (const row of pending ?? []) {
-    const key = `${row.project_id}:${row.group_id}`
-    counts.set(key, (counts.get(key) ?? 0) + 1)
-  }
-  const addCount = <T extends { project_id: string; group_id: string }>(rows: T[]) => rows
-    .map((row) => ({ ...row, pending_count: counts.get(`${row.project_id}:${row.group_id}`) ?? 0 }))
-    .filter((row) => row.pending_count > 0)
-  return {
-    upcomingAppointments: appointments,
-    overdueSelections: addCount(overdueResult.data ?? []),
-    cutoffRisk: addCount(riskRows),
-  }
 }

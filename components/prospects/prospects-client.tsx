@@ -345,7 +345,16 @@ export function ProspectsClient({
       />
       {isProduction ? (
         <CreateLotHoldDialog
-          prospect={holdProspect}
+          buyer={
+            holdProspect
+              ? {
+                  prospectId: holdProspect.id,
+                  name: holdProspect.name,
+                  communityId: holdProspect.community_id ?? null,
+                  hasContact: Boolean(holdProspect.primary_contact ?? holdProspect.contacts?.[0]),
+                }
+              : null
+          }
           communities={communities}
           open={Boolean(holdProspect)}
           onOpenChange={(open) => !open && setHoldProspect(null)}

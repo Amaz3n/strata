@@ -19,6 +19,8 @@ import {
 } from "@/components/ui/dialog"
 import type { ReleaseNote } from "@/lib/services/release-notes"
 
+import { ReleaseItemGroups } from "@/components/release-notes/release-items"
+
 const STORAGE_PREFIX = "arc.releaseNotes.announced."
 
 export function ReleaseNotesAnnouncement({
@@ -80,6 +82,12 @@ export function ReleaseNotesAnnouncement({
 
         {currentAnnouncement.body && (
           <p className="text-sm leading-6 text-foreground/85">{currentAnnouncement.body}</p>
+        )}
+
+        {currentAnnouncement.items.length > 0 && (
+          <div className="border-t border-border pt-4">
+            <ReleaseItemGroups items={currentAnnouncement.items} />
+          </div>
         )}
 
         <DialogFooter>

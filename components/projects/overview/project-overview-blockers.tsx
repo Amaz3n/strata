@@ -1,4 +1,3 @@
-import Link from "next/link"
 import { parseISO, differenceInDays } from "date-fns"
 import {
   CheckCircle2,
@@ -10,6 +9,14 @@ import {
   CheckSquare,
   DollarSign,
 } from "@/components/icons"
+import {
+  BandBody,
+  BandHeader,
+  GroupHeader,
+  IconChip,
+  OverviewEmptyState,
+  OverviewRow,
+} from "@/components/overview/primitives"
 import { cn } from "@/lib/utils"
 import type { AttentionItem, HealthCounts } from "@/app/(app)/projects/[id]/overview-actions"
 
@@ -117,28 +124,18 @@ export function ProjectOverviewBlockers({
 
   return (
     <section className="border-b lg:border-b-0 lg:border-r">
-      <header className="px-5 sm:px-8 lg:px-12 pt-10 pb-5 flex items-baseline justify-between gap-3">
-        <div className="flex items-baseline gap-3">
-          <h2 className="text-[10px] font-semibold uppercase tracking-[0.16em] text-foreground/85">
-            Needs attention
-          </h2>
-          {allItems.length > 0 && (
-            <span className="text-[10px] font-medium tabular-nums text-muted-foreground/65">
-              {allItems.length} open
-            </span>
-          )}
-        </div>
+      <BandHeader title="Needs attention" count={allItems.length > 0 ? `${allItems.length} open` : null}>
         {criticalCount > 0 && (
           <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-destructive bg-destructive/10 px-2 py-0.5 rounded-sm">
             <span className="h-1 w-1 rounded-full bg-destructive" />
             {criticalCount} critical
           </span>
         )}
-      </header>
+      </BandHeader>
 
-      <div className="px-5 sm:px-8 lg:px-12 pb-10">
+      <BandBody>
         {allItems.length === 0 ? (
-          <EmptyState
+          <OverviewEmptyState
             icon={<CheckCircle2 className="h-5 w-5 text-success" />}
             tone="success"
             title="Nothing blocking"
@@ -148,7 +145,12 @@ export function ProjectOverviewBlockers({
           <div className="space-y-7">
             {grouped.map((group) => (
               <div key={group.key}>
-                <GroupHeader label={group.label} count={group.items.length} tone={group.tone} />
+                <GroupHeader
+                  label={group.label}
+                  count={group.items.length}
+                  ruleClassName={toneRule[group.tone]}
+                  labelClassName={toneText[group.tone]}
+                />
                 <ul className="space-y-0.5">
                   {group.items.map((item) => {
                     const isCritical =
@@ -161,15 +163,7 @@ export function ProjectOverviewBlockers({
                     )
                     return (
                       <li key={`${item.type}-${item.id}`}>
-                        <Link
-                          href={item.link}
-                          className={cn(
-                            "group flex items-center gap-3 py-2 -mx-2 px-2 rounded-md transition-all duration-150",
-                            isCritical
-                              ? "bg-destructive/[0.03] hover:bg-destructive/[0.07]"
-                              : "hover:bg-muted/45"
-                          )}
-                        >
+                        <OverviewRow href={item.link} tone={isCritical ? "destructive" : "neutral"}>
                           <IconChip tone={isCritical ? "destructive" : "neutral"}>
                             {icon}
                           </IconChip>
@@ -177,7 +171,7 @@ export function ProjectOverviewBlockers({
                             {item.title}
                           </span>
                           <RightMeta late={late} reason={item.reason} groupKey={group.key} />
-                        </Link>
+                        </OverviewRow>
                       </li>
                     )
                   })}
@@ -186,52 +180,8 @@ export function ProjectOverviewBlockers({
             ))}
           </div>
         )}
-      </div>
+      </BandBody>
     </section>
-  )
-}
-
-/* ================================================================
- * Shared UI primitives
- * ============================================================== */
-
-function GroupHeader({ label, count, tone }: { label: string; count: number; tone: Tone }) {
-  return (
-    <div className="flex items-center justify-between gap-3 mb-3">
-      <div className="flex items-center gap-2.5 min-w-0">
-        <span className={cn("h-px w-4 shrink-0", toneRule[tone])} />
-        <span className={cn("text-[10px] font-semibold uppercase tracking-[0.16em] truncate", toneText[tone])}>
-          {label}
-        </span>
-      </div>
-      <span className="text-[10px] font-medium tabular-nums text-muted-foreground/55 shrink-0">
-        {count}
-      </span>
-    </div>
-  )
-}
-
-function IconChip({
-  children,
-  tone,
-}: {
-  children: React.ReactNode
-  tone: "neutral" | "destructive" | "warning" | "success" | "inverted"
-}) {
-  return (
-    <span
-      className={cn(
-        "shrink-0 inline-flex items-center justify-center h-7 w-7 rounded-md transition-colors",
-        tone === "neutral" &&
-          "bg-muted/60 text-muted-foreground ring-1 ring-foreground/[0.04] ring-inset",
-        tone === "destructive" && "bg-destructive/10 text-destructive",
-        tone === "warning" && "bg-warning/12 text-warning",
-        tone === "success" && "bg-success/12 text-success",
-        tone === "inverted" && "bg-foreground text-background"
-      )}
-    >
-      {children}
-    </span>
   )
 }
 
@@ -263,32 +213,4 @@ function RightMeta({
   if (reason === "at_risk") return <span className="shrink-0 text-[11px] font-semibold text-warning">At risk</span>
   if (reason === "missing") return <span className="shrink-0 text-[11px] font-medium text-muted-foreground">Missing</span>
   return <span className="shrink-0 text-[11px] font-medium text-muted-foreground/70">Pending</span>
-}
-
-function EmptyState({
-  icon,
-  tone,
-  title,
-  description,
-}: {
-  icon: React.ReactNode
-  tone: "success" | "neutral"
-  title: string
-  description: string
-}) {
-  return (
-    <div className="flex flex-col items-center justify-center py-12 text-center">
-      <div
-        className={cn(
-          "mb-3 inline-flex h-10 w-10 items-center justify-center rounded-full",
-          tone === "success" && "bg-success/10",
-          tone === "neutral" && "bg-muted/60"
-        )}
-      >
-        {icon}
-      </div>
-      <p className="text-sm font-medium text-foreground">{title}</p>
-      <p className="mt-1 text-xs text-muted-foreground">{description}</p>
-    </div>
-  )
 }

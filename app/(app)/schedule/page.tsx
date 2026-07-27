@@ -679,15 +679,15 @@ function LegendSwatch({ color, label }: { color: string; label: string }) {
 export default async function SchedulePage({
   searchParams,
 }: {
-  searchParams: Promise<{ zoom?: string; community?: string; division?: string }>
+  searchParams: Promise<{ zoom?: string; community?: string }>
 }) {
-  const { zoom: zoomParam, community, division } = await searchParams
+  const { zoom: zoomParam, community } = await searchParams
   const zoom: Zoom = zoomParam === "day" || zoomParam === "month" ? zoomParam : "week"
 
   const [allProjects, allItems, scope] = await Promise.all([
     listProjectsAction(),
     listScheduleItemsAction(),
-    resolveProductionDeskScope({ communityId: community, divisionId: division }),
+    resolveProductionDeskScope({ communityId: community }),
   ])
   const allowedProjectIds = scope.projectIds === null ? null : new Set(scope.projectIds)
   const projects = allowedProjectIds
@@ -748,7 +748,7 @@ export default async function SchedulePage({
   if (activeProjects.length === 0) {
     return (
       <PageLayout title="Schedule">
-        <DeskScopeFilters communities={scope.communities} divisions={scope.divisions} communityId={scope.communityId} divisionId={scope.divisionId} className="border-b px-4 py-2.5 sm:px-6" />
+        <DeskScopeFilters communities={scope.communities} communityId={scope.communityId} className="border-b px-4 py-2.5 sm:px-6" />
         <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
           <CalendarDays className="size-10 text-muted-foreground/50" />
           <h2 className="text-lg font-semibold">No active projects</h2>
@@ -797,14 +797,13 @@ export default async function SchedulePage({
   function zoomHref(nextZoom: Zoom) {
     const params = new URLSearchParams({ zoom: nextZoom })
     if (scope.communityId) params.set("community", scope.communityId)
-    if (scope.divisionId) params.set("division", scope.divisionId)
     return `/schedule?${params}`
   }
 
   return (
     <PageLayout title="Schedule" fullBleed>
       <div className="desk-root flex h-[calc(100vh-56px)] flex-col overflow-hidden">
-        <DeskScopeFilters communities={scope.communities} divisions={scope.divisions} communityId={scope.communityId} divisionId={scope.divisionId} className="border-b px-4 py-2.5 sm:px-6" />
+        <DeskScopeFilters communities={scope.communities} communityId={scope.communityId} className="border-b px-4 py-2.5 sm:px-6" />
         {/* ── Context + zoom + legend ── */}
         <div className="desk-rise flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b px-4 py-2.5 sm:px-6">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
@@ -840,6 +839,12 @@ export default async function SchedulePage({
           </div>
 
           <div className="flex items-center gap-3">
+            <Link
+              href="/schedule/trades"
+              className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+            >
+              Trade look-aheads
+            </Link>
             {/* Zoom — a server round-trip, no client state */}
             <div className="flex items-center border p-0.5 text-xs">
               {(["month", "week", "day"] as Zoom[]).map((z) => (

@@ -1,12 +1,14 @@
 import { notFound } from "next/navigation"
 
 import { PageLayout } from "@/components/layout/page-layout"
-import { PlanDetailClient } from "@/components/plans/plan-detail-client"
+import { PlanSheet } from "@/components/plans/plan-sheet"
 import { listBudgetTemplates } from "@/lib/services/budget-templates"
 import { listCommunities } from "@/lib/services/communities"
 import { listCostCodes } from "@/lib/services/cost-codes"
+import { getCycleTimeReport } from "@/lib/services/even-flow"
 import {
   getHousePlan,
+  getPlanBuildPerformance,
   getPlanPricing,
   getPlanVersionDrift,
   listCommunityAvailability,
@@ -24,6 +26,7 @@ export default async function PlanDetailPage({ params }: { params: Promise<{ id:
   const [
     plan,
     drift,
+    performance,
     pricing,
     lots,
     costCodes,
@@ -33,11 +36,13 @@ export default async function PlanDetailPage({ params }: { params: Promise<{ id:
     selectionCategories,
     communities,
     availability,
+    cycle,
     permissionResult,
   ] = await Promise.all([
     getHousePlan(id).catch(() => null),
     getPlanVersionDrift(id).catch(() => []),
-    getPlanPricing(id).catch(() => ({ available: false, as_of: "", versions: [], community_costs: [] })),
+    getPlanBuildPerformance(id).catch(() => []),
+    getPlanPricing(id).catch(() => ({ available: false, as_of: "", versions: [], community_costs: [], community_lot_basis: [] })),
     listPlanLots(id).catch(() => []),
     listCostCodes().catch(() => []),
     listBudgetTemplates().catch(() => []),
@@ -46,6 +51,8 @@ export default async function PlanDetailPage({ params }: { params: Promise<{ id:
     listSelectionTemplateCategories().catch(() => []),
     listCommunities().catch(() => []),
     listCommunityAvailability({ housePlanId: id }).catch(() => []),
+    // Report-scoped; a plan.read user without report.read still gets the workbench.
+    getCycleTimeReport({ groupBy: "plan" }).catch(() => []),
     getCurrentUserPermissions(),
   ])
   if (!plan) notFound()
@@ -57,9 +64,10 @@ export default async function PlanDetailPage({ params }: { params: Promise<{ id:
       breadcrumbs={[{ label: "Plans", href: "/plans" }, { label: plan.code }]}
       fullBleed
     >
-      <PlanDetailClient
+      <PlanSheet
         plan={plan}
         drift={drift}
+        performance={performance}
         pricing={pricing}
         lots={lots}
         costCodes={costCodes}
@@ -69,6 +77,7 @@ export default async function PlanDetailPage({ params }: { params: Promise<{ id:
         selectionCategories={selectionCategories}
         communities={communities}
         availability={availability}
+        cycleMedianDays={cycle.find((row) => row.groupKey === id)?.medianDays ?? null}
         canWrite={elevated || permissions.includes("plan.write")}
         canRelease={elevated || permissions.includes("plan.release")}
       />

@@ -1,0 +1,284 @@
+/* Design Studio marks — scoped to components/design-studio/*.
+   Follows the app design standard (app/globals.css header): surfaces, ink,
+   hairlines and type all come from the global tokens, so light and dark mode
+   are handled once, in one place. Nothing here defines a colour of its own.
+
+   The three tokens below are the exception, and they are derivations rather
+   than new colours: the runway needs tinted fills for time pressure, and the
+   global palette ships the semantic hues without background variants. */
+
+.studio {
+  --studio-late: var(--destructive);
+  --studio-late-bg: color-mix(in oklab, var(--destructive) 12%, var(--card));
+  --studio-soon: var(--warning);
+  --studio-soon-bg: color-mix(in oklab, var(--warning) 14%, var(--card));
+  --studio-done: var(--success);
+  --studio-done-bg: color-mix(in oklab, var(--success) 12%, var(--card));
+}
+
+/* ===== Runway ===== */
+
+/* Height is set inline from the number of rows a lane had to pack into. */
+.studio-track {
+  position: relative;
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--border) 0 1px,
+    transparent 1px 25%
+  );
+}
+
+.studio-today {
+  position: absolute;
+  inset-block: 0;
+  width: 2px;
+  background: var(--primary);
+}
+
+.studio-gutter {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  background: var(--studio-late-bg);
+}
+
+.studio-chip {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 9px 5px 5px;
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  color: var(--foreground);
+  white-space: nowrap;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.studio-chip:hover,
+.studio-chip:focus-visible {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px color-mix(in oklab, var(--foreground) 18%, transparent);
+  z-index: 2;
+}
+
+.studio-chip[data-state="overdue"] {
+  border-color: var(--studio-late);
+  background: var(--studio-late-bg);
+  color: var(--studio-late);
+}
+
+.studio-chip[data-state="due_soon"] {
+  border-color: var(--studio-soon);
+  background: var(--studio-soon-bg);
+  color: var(--studio-soon);
+}
+
+.studio-chip[data-state="unresolved"] {
+  border-style: dashed;
+  color: var(--muted-foreground);
+}
+
+.studio-chip[data-dimmed="true"] {
+  opacity: 0.25;
+}
+
+/* Completion ring: how much of this group the buyer has actually decided.
+   A late chip with a full ring is paperwork; a late chip with an empty ring is
+   a buyer who has not come in. They must not look the same. */
+.studio-ring {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border-radius: 50%;
+  background: conic-gradient(currentColor calc(var(--studio-progress) * 360deg), transparent 0);
+  -webkit-mask: radial-gradient(circle, transparent 5.5px, #000 6px);
+  mask: radial-gradient(circle, transparent 5.5px, #000 6px);
+}
+
+.studio-counter {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 18px;
+  border-right: 1px solid var(--border);
+  text-align: left;
+  transition: background 0.15s ease;
+}
+
+.studio-counter:last-child {
+  border-right: 0;
+}
+
+.studio-counter:hover {
+  background: var(--muted);
+}
+
+.studio-counter[data-active="true"] {
+  background: var(--studio-late-bg);
+  box-shadow: inset 0 -2px 0 var(--studio-late);
+  color: var(--studio-late);
+}
+
+/* ===== Selection sheet ===== */
+
+.studio-swatch {
+  position: relative;
+  height: 88px;
+  background-color: var(--muted);
+  background-size: cover;
+  background-position: center;
+}
+
+/* A catalog with no photography yet must not read as broken, so an option
+   without an image gets a deterministic weave derived from its own hue. */
+.studio-swatch[data-generated="true"] {
+  background-image: repeating-linear-gradient(
+    45deg,
+    color-mix(in oklab, var(--studio-swatch-hue) 88%, black) 0 6px,
+    var(--studio-swatch-hue) 6px 12px
+  );
+}
+
+.studio-option {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  background: var(--card);
+  text-align: left;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.studio-option:hover:not(:disabled),
+.studio-option:focus-visible {
+  transform: translateY(-2px);
+  box-shadow: 0 3px 10px color-mix(in oklab, var(--foreground) 16%, transparent);
+}
+
+.studio-option[data-picked="true"] {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+.studio-option:disabled {
+  opacity: 0.45;
+}
+
+.studio-tag {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 3px 6px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background: var(--foreground);
+  color: var(--background);
+}
+
+.studio-cat {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.studio-cat:hover {
+  background: var(--muted);
+}
+
+.studio-cat[data-selected="true"] {
+  background: var(--muted);
+  box-shadow: inset 2px 0 0 var(--primary);
+}
+
+.studio-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  background: var(--line-strong);
+}
+
+.studio-dot[data-state="chosen"] {
+  background: var(--studio-done);
+}
+
+.studio-dot[data-state="open"] {
+  background: var(--studio-soon);
+}
+
+.studio-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border: 1px solid var(--line-strong);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.studio-pill[data-tone="standard"] {
+  border-color: var(--studio-done);
+  background: var(--studio-done-bg);
+  color: var(--studio-done);
+}
+
+.studio-pill[data-tone="late"] {
+  border-color: var(--studio-late);
+  background: var(--studio-late-bg);
+  color: var(--studio-late);
+}
+
+.studio-pill[data-tone="soon"] {
+  border-color: var(--studio-soon);
+  background: var(--studio-soon-bg);
+  color: var(--studio-soon);
+}
+
+/* The two moments that animate: an option landing in the rail, and the total
+   settling after it changes. Both are feedback for something that happened. */
+@keyframes studio-land {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.studio-land {
+  animation: studio-land 0.18s ease-out;
+}
+
+@keyframes studio-tick {
+  from {
+    transform: translateY(-3px);
+  }
+  to {
+    transform: none;
+  }
+}
+
+.studio-tick {
+  animation: studio-tick 0.18s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .studio-land,
+  .studio-tick {
+    animation: none;
+  }
+
+  .studio-chip:hover,
+  .studio-option:hover:not(:disabled) {
+    transform: none;
+  }
+}

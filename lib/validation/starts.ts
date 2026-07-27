@@ -5,6 +5,9 @@ const mondayDate = z.string().date().refine((value) => {
   return date.getUTCDay() === 1
 }, "Week start must be a Monday")
 
+/** A retarget either names a Monday or clears the target entirely. */
+export const targetWeekSchema = mondayDate.nullable()
+
 export const startPackageInputSchema = z.object({
   isFinanced: z.boolean().optional().default(false),
   targetWeek: mondayDate.optional().nullable(),

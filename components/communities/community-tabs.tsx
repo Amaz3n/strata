@@ -8,13 +8,13 @@ import { cn } from "@/lib/utils"
 export function CommunityTabs({ communityId }: { communityId: string }) {
   const pathname = usePathname()
   const base = `/communities/${communityId}`
+  // Three tabs, three jobs. The plat carries land, price, buyer, and money for
+  // every lot, so P&L is a lens on it rather than a tab; phases, takedowns, and
+  // assignments are how the container is configured, so they live in Settings.
+  // Holds and traffic belong to the consultant on /sales, not here.
   const tabs = [
     ["Lots", base],
-    ["Land", `${base}/land`],
-    ["Starts", `${base}/starts`],
-    ["Sales", `${base}/sales`],
-    ["Plans & Pricing", `${base}/plans`],
-    ["P&L", `${base}/pnl`],
+    ["Offering", `${base}/offering`],
     ["Settings", `${base}/settings`],
   ] as const
 

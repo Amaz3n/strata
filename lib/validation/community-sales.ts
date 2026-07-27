@@ -76,5 +76,11 @@ export const voidPurchaseAgreementSchema = z.object({
   depositDisposition: z.enum(["refund", "forfeit"]),
 })
 
+export const communityPlanPriceSchema = z.object({
+  availabilityId: z.string().uuid(),
+  communityId: z.string().uuid(),
+  basePriceCents: z.number().int().min(0).max(100_000_000_00),
+})
+
 export type IncentiveInput = z.infer<typeof incentiveSchema>
 export type AgreementConfigurationInput = z.infer<typeof agreementConfigurationSchema>

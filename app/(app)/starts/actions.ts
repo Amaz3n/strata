@@ -6,21 +6,20 @@ import { z } from "zod"
 import { actionError, type ActionResult } from "@/lib/action-result"
 import { setReleaseSlot } from "@/lib/services/even-flow"
 import {
-  attestGate, cancelRelease, cancelStartPackage, openStartPackage, refreshAutoGates,
-  releaseStart, reopenGate, retryRelease, seedDefaultGateDefinitions, setProjectSuperintendent,
-  updateStartPackage, upsertGateDefinition, waiveGate,
+  attestGate, cancelRelease, cancelStartPackage, getStartPackage, listSuperintendentCandidates,
+  openStartPackage, refreshAutoGates, releaseStart, releaseStarts, reopenGate, retryRelease,
+  seedDefaultGateDefinitions, setProjectSuperintendent, updateStartPackage, upsertGateDefinition,
+  waiveGate,
 } from "@/lib/services/starts"
-import { sendTradeLookahead } from "@/lib/services/trade-lookahead"
 import {
   gateAttestSchema, gateDefinitionSchema, gateWaiveSchema, releaseInputSchema,
-  startPackageInputSchema, startPackageUpdateSchema,
+  startPackageInputSchema, startPackageUpdateSchema, targetWeekSchema,
 } from "@/lib/validation/starts"
 
 const uuid = z.string().uuid()
-const weeksSchema = z.union([z.literal(2), z.literal(3), z.literal(4)])
 
 function packagePaths(packageId?: string) {
-  return ["/starts", "/starts/pipeline", ...(packageId ? [`/starts/pipeline/${packageId}`] : [])]
+  return ["/starts", ...(packageId ? [`/starts/${packageId}`] : [])]
 }
 
 async function run<T>(operation: () => Promise<T>, paths: string[]): Promise<ActionResult<T>> {
@@ -31,6 +30,14 @@ async function run<T>(operation: () => Promise<T>, paths: string[]): Promise<Act
   } catch (error) {
     return actionError(error)
   }
+}
+
+/** Loads a package on demand so the lane's sheet never ships every detail up front. */
+export async function getStartPackageAction(id: string) {
+  return await run(async () => ({
+    pkg: await getStartPackage(uuid.parse(id)),
+    superintendents: await listSuperintendentCandidates().catch(() => []),
+  }), [])
 }
 
 export async function openStartPackageAction(lotId: string, input: unknown) {
@@ -61,6 +68,17 @@ export async function releaseStartAction(packageId: string, input: unknown) {
   return await run(() => releaseStart(uuid.parse(packageId), releaseInputSchema.parse(input)), packagePaths(packageId))
 }
 
+export async function releaseStartsAction(packageIds: string[], input: unknown) {
+  const ids = z.array(uuid).min(1).max(50).parse(packageIds)
+  return await run(() => releaseStarts(ids, releaseInputSchema.parse(input)), ["/starts", ...ids.map((id) => `/starts/${id}`)])
+}
+
+/** Drag-to-retarget on the lane; a null week sends the house back to the yard. */
+export async function setStartTargetWeekAction(packageId: string, weekStart: unknown) {
+  const targetWeek = targetWeekSchema.parse(weekStart)
+  return await run(() => updateStartPackage(uuid.parse(packageId), { targetWeek }), packagePaths(packageId))
+}
+
 export async function retryReleaseAction(packageId: string) {
   return await run(() => retryRelease(uuid.parse(packageId)), packagePaths(packageId))
 }
@@ -79,16 +97,11 @@ export async function setReleaseSlotAction(communityId: string, weekStart: strin
 }
 
 export async function upsertGateDefinitionAction(input: unknown) {
-  return await run(() => upsertGateDefinition(gateDefinitionSchema.parse(input)), ["/starts/settings"])
+  return await run(() => upsertGateDefinition(gateDefinitionSchema.parse(input)), ["/settings/starts"])
 }
 
 export async function seedDefaultGatesAction() {
-  return await run(() => seedDefaultGateDefinitions(), ["/starts/settings"])
-}
-
-export async function sendTradeLookaheadAction(companyId: string, input: unknown) {
-  const parsed = z.object({ weeks: weeksSchema }).parse(input)
-  return await run(() => sendTradeLookahead(uuid.parse(companyId), parsed), ["/starts/trades"])
+  return await run(() => seedDefaultGateDefinitions(), ["/settings/starts"])
 }
 
 export async function setProjectSuperintendentAction(projectId: string, userId: string | null) {
