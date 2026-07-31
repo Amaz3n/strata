@@ -1928,12 +1928,22 @@ async function handleGenerateDrawingTiles(supabase: SupabaseClient, job: Claimed
       ? version.page_index
       : 0
 
-  let pngBuffer: Buffer
+  let pngBuffer: Buffer | null = null
   let sourceHash = typeof metadata.source_hash === "string" ? metadata.source_hash : null
 
   if (tempPngPath) {
-    pngBuffer = await downloadTilesObject({ supabase, path: tempPngPath })
-  } else {
+    // Temp renders are deleted after use; a stale metadata pointer (forced
+    // re-tiles of old versions) must fall back to re-rendering from the PDF.
+    try {
+      pngBuffer = await downloadTilesObject({ supabase, path: tempPngPath })
+    } catch (error) {
+      console.warn(
+        `[drawings-pipeline] Temp PNG missing for version ${sheetVersionId}; re-rendering from source`,
+        error,
+      )
+    }
+  }
+  if (!pngBuffer) {
     if (!version.file_id) {
       throw new Error("Sheet version has neither temp PNG nor file_id")
     }

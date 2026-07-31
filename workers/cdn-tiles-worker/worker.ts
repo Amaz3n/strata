@@ -8,6 +8,46 @@ const DEFAULT_COOKIE_NAME = "arc_tiles"
 const PATH_PREFIXES = ["/drawings-tiles/", "/drawing-tiles/"]
 const R2_KEY_PREFIX = "drawings-tiles"
 
+/**
+ * The GPU drawings viewer loads tiles with credentialed fetch() (it must — a
+ * cross-origin <img> without CORS approval cannot be uploaded to WebGL/WebGPU
+ * textures). A credentialed fetch requires the response to name the exact
+ * origin AND carry Access-Control-Allow-Credentials: true; a zone-level "*"
+ * rule is not enough. Applied to every response, including 401/404, so the
+ * viewer can read the status and trigger cookie recovery.
+ */
+function corsHeaders(request: Request): Record<string, string> {
+  const origin = request.headers.get("Origin")
+  if (!origin) return {}
+  let allowed = false
+  try {
+    const { hostname } = new URL(origin)
+    allowed =
+      hostname === "arcnaples.com" ||
+      hostname.endsWith(".arcnaples.com") ||
+      hostname === "localhost" ||
+      hostname.endsWith(".localhost")
+  } catch {
+    allowed = false
+  }
+  if (!allowed) return {}
+  return {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Credentials": "true",
+    "Access-Control-Allow-Methods": "GET, HEAD",
+    "Access-Control-Expose-Headers": "ETag",
+    Vary: "Origin",
+  }
+}
+
+function withCors(request: Request, response: Response): Response {
+  const headers = new Headers(response.headers)
+  for (const [key, value] of Object.entries(corsHeaders(request))) {
+    headers.set(key, value)
+  }
+  return new Response(response.body, { status: response.status, headers })
+}
+
 function getCookieValue(cookieHeader: string | null, name: string): string | null {
   if (!cookieHeader) return null
   const parts = cookieHeader.split(";")
@@ -74,6 +114,14 @@ async function validateCookie(
 
 const worker = {
   async fetch(request: Request, env: Env): Promise<Response> {
+    return withCors(request, await handle(request, env))
+  },
+}
+
+async function handle(request: Request, env: Env): Promise<Response> {
+    if (request.method === "OPTIONS") {
+      return new Response(null, { status: 204 })
+    }
     const url = new URL(request.url)
     const matchedPrefix = PATH_PREFIXES.find((prefix) => url.pathname.startsWith(prefix))
     if (!matchedPrefix) {
@@ -121,7 +169,6 @@ const worker = {
     headers.set("Cache-Control", headers.get("Cache-Control") ?? "public, max-age=31536000, immutable")
 
     return new Response(object.body, { headers })
-  },
 }
 
 export default worker
