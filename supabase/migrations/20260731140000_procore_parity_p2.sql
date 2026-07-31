@@ -4,6 +4,22 @@
 alter table public.checklist_templates rename to structured_form_templates;
 alter table public.checklist_template_items rename to structured_form_items;
 
+-- Keep the currently deployed inspections build operational during the rolling
+-- application deploy. These simple security-invoker views remain automatically
+-- updatable while preserving the underlying tables' RLS policies. They can be
+-- removed after every application instance uses the structured-form names.
+create view public.checklist_templates
+with (security_invoker = true)
+as select * from public.structured_form_templates;
+
+create view public.checklist_template_items
+with (security_invoker = true)
+as select * from public.structured_form_items;
+
+grant select, insert, update, delete on public.checklist_templates,
+  public.checklist_template_items to authenticated;
+grant all on public.checklist_templates, public.checklist_template_items to service_role;
+
 alter table public.structured_form_templates drop constraint if exists checklist_templates_kind_check;
 alter table public.structured_form_templates add constraint structured_form_templates_kind_check
   check (kind in ('safety','quality','action_plan','general'));

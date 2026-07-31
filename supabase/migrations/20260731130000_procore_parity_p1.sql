@@ -15,7 +15,7 @@ create table public.photo_albums (
 
 alter table public.photos
   add column if not exists album_id uuid references public.photo_albums(id) on delete set null,
-  add column if not exists location_id uuid references public.locations(id) on delete set null,
+  add column if not exists location_id uuid references public.project_locations(id) on delete set null,
   add column if not exists trade_company_id uuid references public.companies(id) on delete set null,
   add column if not exists latitude numeric(10,7),
   add column if not exists longitude numeric(10,7),
@@ -63,7 +63,7 @@ language sql stable security invoker set search_path = public, pg_catalog as $$
   left join public.daily_logs dl on dl.id = p.daily_log_id and dl.org_id = p.org_id
   where p.project_id = p_project_id and p.org_id = p_org_id and p.visibility = 'client'
   group by date_trunc('week', coalesce(p.taken_at, p.created_at))
-  order by week_start desc;
+  order by 1 desc;
 $$;
 
 create table public.quick_capture_drafts (

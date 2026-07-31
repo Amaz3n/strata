@@ -1,7 +1,7 @@
 # Procore Parity & One-Up Gameplan
 
-**Status:** Implemented for WS-01 through WS-10; migrations are written but intentionally
-unapplied pending human approval. WS-11 remains gated by its P6-shop prospect trigger.
+**Status:** Implemented for WS-01 through WS-10; production migrations were applied on
+July 31, 2026. WS-11 remains gated by its P6-shop prospect trigger.
 
 **Source:** July 2026 deep review of procore.com (Preconstruction, Project Execution,
 Cost Management, Resource Management, Analytics/Helix AI, Pay, platform) against Arc's
