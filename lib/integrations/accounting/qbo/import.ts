@@ -3425,7 +3425,11 @@ export async function linkExistingQboImportRecord({
   })
 
   const connection = await requireAccountingConnectionForOrg(connectionId, resolvedOrgId, { activeOnly: true, provider: "qbo" })
-  const { data: claimToken, error: claimError } = await supabase.rpc("accounting_claim_import", {
+  // Import claims are an internal concurrency primitive whose RPCs are deliberately service-only.
+  // The caller has already passed org membership and accounting authorization above; keep the
+  // actual record reads/writes on the user client so RLS still applies, and elevate only the lease.
+  const claimSupabase = createServiceSupabaseClient()
+  const { data: claimToken, error: claimError } = await claimSupabase.rpc("accounting_claim_import", {
     p_org_id: resolvedOrgId,
     p_connection_id: connectionId,
     p_external_entity_type: entityType,
@@ -3433,7 +3437,7 @@ export async function linkExistingQboImportRecord({
   })
   if (claimError) throw new Error(`Unable to claim accounting import: ${claimError.message}`)
   if (!claimToken) throw new Error("This accounting record is already imported or being processed")
-  const finishClaim = (status: "completed" | "error", error?: unknown) => supabase.rpc("accounting_finish_import", {
+  const finishClaim = (status: "completed" | "error", error?: unknown) => claimSupabase.rpc("accounting_finish_import", {
     p_connection_id: connectionId,
     p_external_entity_type: entityType,
     p_external_id: qboId,
@@ -3615,6 +3619,8 @@ export async function importQboRecords({
 
   const result: QboImportResult = { imported: 0, skipped: 0, failed: 0, errors: [] }
   const affectedProjectIds = new Set<string>()
+  // See linkExistingQboImportRecord: only the internal claim lease uses service privileges.
+  const claimSupabase = createServiceSupabaseClient()
 
   const importOne = async (item: (typeof ordered)[number]): Promise<{ skipped: boolean }> => {
     // Project-bound types must name a destination; payments resolve theirs from the linked doc.
@@ -3646,7 +3652,7 @@ export async function importQboRecords({
   }
 
   const importWithClaim = async (item: (typeof ordered)[number]) => {
-    const { data: claimToken, error: claimError } = await supabase.rpc("accounting_claim_import", {
+    const { data: claimToken, error: claimError } = await claimSupabase.rpc("accounting_claim_import", {
       p_org_id: resolvedOrgId,
       p_connection_id: connectionId,
       p_external_entity_type: item.entityType,
@@ -3657,7 +3663,7 @@ export async function importQboRecords({
 
     try {
       const outcome = await importOne(item)
-      const { error: finishError } = await supabase.rpc("accounting_finish_import", {
+      const { error: finishError } = await claimSupabase.rpc("accounting_finish_import", {
         p_connection_id: connectionId,
         p_external_entity_type: item.entityType,
         p_external_id: item.qboId,
@@ -3668,7 +3674,7 @@ export async function importQboRecords({
       if (finishError) throw new Error(`Unable to finalize accounting import: ${finishError.message}`)
       return outcome
     } catch (error) {
-      await supabase.rpc("accounting_finish_import", {
+      await claimSupabase.rpc("accounting_finish_import", {
         p_connection_id: connectionId,
         p_external_entity_type: item.entityType,
         p_external_id: item.qboId,
