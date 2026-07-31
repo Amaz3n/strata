@@ -4,14 +4,14 @@ import { memo, useImperativeHandle, useLayoutEffect, useRef } from "react"
 import type { Ref } from "react"
 import type { ImageToScreenMatrix } from "./tiled-drawing-viewer"
 import { cn } from "@/lib/utils"
-import { formatFeetInches } from "@/lib/validation/drawings"
+import { measurementLabel } from "@/lib/drawings/measure"
 import type { DrawingMarkup, DrawingPin } from "@/app/(app)/drawings/types"
 
 export interface SVGOverlayHandle {
   /**
-   * Apply the current image→screen transform. Called directly from OSD's
-   * viewport-change handler (potentially every frame), so it writes straight
-   * to the DOM instead of going through React state.
+   * Apply the current image→screen transform. Called directly from the GPU
+   * viewer's transform handler (potentially every frame), so it writes
+   * straight to the DOM instead of going through React state.
    */
   setTransform: (matrix: ImageToScreenMatrix | null) => void
 }
@@ -28,6 +28,7 @@ export interface SVGOverlayProps {
     color: string
     strokeWidth: number
     text?: string
+    label?: string | null
   }>
   pins: DrawingPin[]
   showMarkups: boolean
@@ -35,8 +36,23 @@ export interface SVGOverlayProps {
   highlightedPinId?: string
   interactive?: boolean
   onPinClick?: (pin: DrawingPin) => void
-  /** Sheet calibration: dimension labels render as feet-inches when set. */
+  /** Sheet calibration: measurement labels render in real units when set. */
   feetPerImagePx?: number | null
+  /**
+   * Takeoff mode. When a condition is selected, its geometry stays fully
+   * opaque and everything else recedes, so an estimator can see exactly what
+   * is counted without hiding the rest of the sheet.
+   */
+  selectedConditionId?: string | null
+  /** Measured markups clicked in the panel; drawn with a halo. */
+  highlightedMarkupIds?: ReadonlySet<string>
+  onMarkupClick?: (markup: DrawingMarkup) => void
+  /**
+   * Vector-snap indicator (image px): where the cursor will land if clicked.
+   * Drawn with the draft geometry so the estimator sees the snap before
+   * committing to it.
+   */
+  snapIndicator?: { x: number; y: number; color: string } | null
 }
 
 type PxPoint = { x: number; y: number }
@@ -49,11 +65,67 @@ function toTransformAttr(matrix: ImageToScreenMatrix) {
   return `matrix(${matrix.a} ${matrix.b} ${matrix.c} ${matrix.d} ${matrix.e} ${matrix.f})`
 }
 
-function dimensionLabel(distImagePx: number, feetPerImagePx?: number | null): string {
-  if (feetPerImagePx && feetPerImagePx > 0) {
-    return formatFeetInches(distImagePx * feetPerImagePx)
+function pathFromPoints(points: PxPoint[], close: boolean): string {
+  if (points.length === 0) return ""
+  const d = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ")
+  return close ? `${d} Z` : d
+}
+
+function centroidOf(points: PxPoint[]): PxPoint {
+  let sx = 0
+  let sy = 0
+  for (const p of points) {
+    sx += p.x
+    sy += p.y
   }
-  return `${Math.round(distImagePx)}px`
+  return { x: sx / points.length, y: sy / points.length }
+}
+
+/**
+ * Measurement labels sit on a filled plate so a number stays readable over
+ * hatching, dimension strings, and dark linework. Sized in image pixels so it
+ * scales with the sheet exactly like the geometry does.
+ */
+function MeasurementLabel({
+  x,
+  y,
+  text,
+  color,
+  anchor = "middle",
+}: {
+  x: number
+  y: number
+  text: string
+  color: string
+  anchor?: "middle" | "start"
+}) {
+  const padding = 4
+  const fontSize = 13
+  const width = text.length * fontSize * 0.58 + padding * 2
+  const rectX = anchor === "middle" ? x - width / 2 : x - padding
+  return (
+    <g style={{ pointerEvents: "none" }}>
+      <rect
+        x={rectX}
+        y={y - fontSize}
+        width={width}
+        height={fontSize + padding}
+        fill={color}
+        opacity={0.92}
+      />
+      <text
+        x={anchor === "middle" ? x : x}
+        y={y - padding}
+        fill="#FFFFFF"
+        fontSize={fontSize}
+        fontWeight={600}
+        textAnchor={anchor}
+        style={{ fontVariantNumeric: "tabular-nums" }}
+      >
+        {text}
+      </text>
+    </g>
+  )
 }
 
 export function SVGOverlay({
@@ -70,6 +142,10 @@ export function SVGOverlay({
   interactive = false,
   onPinClick,
   feetPerImagePx = null,
+  selectedConditionId = null,
+  highlightedMarkupIds,
+  onMarkupClick,
+  snapIndicator = null,
 }: SVGOverlayProps) {
   const gRef = useRef<SVGGElement>(null)
   const matrixRef = useRef<ImageToScreenMatrix | null>(null)
@@ -131,12 +207,34 @@ export function SVGOverlay({
         {/* Markups */}
         {showMarkups &&
           markups.map((m) => (
-            <MarkupShape key={m.id} markup={m} imageSize={imageSize} feetPerImagePx={feetPerImagePx} />
+            <MarkupShape
+              key={m.id}
+              markup={m}
+              imageSize={imageSize}
+              feetPerImagePx={feetPerImagePx}
+              dimmed={!!selectedConditionId && m.condition_id !== selectedConditionId}
+              highlighted={highlightedMarkupIds?.has(m.id) ?? false}
+              onClick={onMarkupClick ? () => onMarkupClick(m) : undefined}
+            />
           ))}
         {showMarkups &&
           draftMarkups.map((m, idx) => (
-            <DraftMarkupShape key={`draft-${idx}`} markup={m} feetPerImagePx={feetPerImagePx} />
+            <DraftMarkupShape key={`draft-${idx}`} markup={m} />
           ))}
+        {showMarkups && snapIndicator && (
+          <g style={{ pointerEvents: "none" }}>
+            <circle
+              cx={snapIndicator.x}
+              cy={snapIndicator.y}
+              r={7}
+              fill="none"
+              stroke={snapIndicator.color}
+              strokeWidth={1.5}
+              vectorEffect="non-scaling-stroke"
+            />
+            <circle cx={snapIndicator.x} cy={snapIndicator.y} r={2.5} fill={snapIndicator.color} />
+          </g>
+        )}
 
         {/* Pins */}
         {showPins &&
@@ -156,7 +254,6 @@ export function SVGOverlay({
 
 const DraftMarkupShape = memo(function DraftMarkupShape({
   markup,
-  feetPerImagePx,
 }: {
   markup: {
     type: string
@@ -164,8 +261,9 @@ const DraftMarkupShape = memo(function DraftMarkupShape({
     color: string
     strokeWidth: number
     text?: string
+    /** Pre-computed live measurement; the draft has no persisted quantity yet. */
+    label?: string | null
   }
-  feetPerImagePx?: number | null
 }) {
   const color = markup.color
   const strokeWidth = markup.strokeWidth
@@ -247,14 +345,106 @@ const DraftMarkupShape = memo(function DraftMarkupShape({
           {markup.text}
         </text>
       )
-    case "dimension":
+    case "dimension": {
       if (pts.length < 2) return null
+      const label = markup.label ?? null
       return (
         <g style={{ pointerEvents: "none" }}>
           <line x1={pts[0].x} y1={pts[0].y} x2={pts[1].x} y2={pts[1].y} stroke={color} strokeWidth={strokeWidth} />
-          <text x={(pts[0].x + pts[1].x) / 2} y={(pts[0].y + pts[1].y) / 2 - 6} fill={color} fontSize={12}>
-            {dimensionLabel(Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y), feetPerImagePx)}
-          </text>
+          {label && (
+            <MeasurementLabel
+              x={(pts[0].x + pts[1].x) / 2}
+              y={(pts[0].y + pts[1].y) / 2 - 6}
+              text={label}
+              color={color}
+            />
+          )}
+        </g>
+      )
+    }
+    // Takeoff drafts: committed geometry plus a rubber band to the cursor.
+    case "polyline":
+      if (pts.length < 1) return null
+      return (
+        <g style={{ pointerEvents: "none" }}>
+          <path
+            d={pathFromPoints(pts, false)}
+            stroke={color}
+            strokeWidth={strokeWidth + 1}
+            fill="none"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeDasharray="10 5"
+            vectorEffect="non-scaling-stroke"
+          />
+          {pts.map((p, i) => (
+            <circle key={i} cx={p.x} cy={p.y} r={strokeWidth + 2} fill={color} />
+          ))}
+          {markup.label && (
+            <MeasurementLabel
+              x={pts[pts.length - 1].x + 14}
+              y={pts[pts.length - 1].y - 8}
+              text={markup.label}
+              color={color}
+              anchor="start"
+            />
+          )}
+        </g>
+      )
+    case "area":
+      if (pts.length < 1) return null
+      return (
+        <g style={{ pointerEvents: "none" }}>
+          {pts.length >= 3 && <path d={pathFromPoints(pts, true)} fill={color} opacity={0.14} />}
+          <path
+            d={pathFromPoints(pts, pts.length >= 3)}
+            stroke={color}
+            strokeWidth={strokeWidth + 1}
+            fill="none"
+            strokeLinejoin="round"
+            strokeDasharray="10 5"
+            vectorEffect="non-scaling-stroke"
+          />
+          {pts.map((p, i) => (
+            // The first vertex is the close target, so it reads as a target.
+            <circle
+              key={i}
+              cx={p.x}
+              cy={p.y}
+              r={i === 0 ? strokeWidth + 5 : strokeWidth + 2}
+              fill={i === 0 ? "none" : color}
+              stroke={color}
+              strokeWidth={i === 0 ? 2 : 0}
+            />
+          ))}
+          {markup.label && (
+            <MeasurementLabel
+              x={pts[pts.length - 1].x + 14}
+              y={pts[pts.length - 1].y - 8}
+              text={markup.label}
+              color={color}
+              anchor="start"
+            />
+          )}
+        </g>
+      )
+    case "count":
+      if (pts.length < 1) return null
+      return (
+        <g style={{ pointerEvents: "none" }}>
+          {pts.map((p, i) => (
+            <g key={i}>
+              <circle cx={p.x} cy={p.y} r={9} fill={color} opacity={0.22} />
+              <circle cx={p.x} cy={p.y} r={4.5} fill={color} />
+            </g>
+          ))}
+          <MeasurementLabel
+            x={pts[pts.length - 1].x + 12}
+            y={pts[pts.length - 1].y - 6}
+            text={`${pts.length}`}
+            color={color}
+            anchor="start"
+          />
         </g>
       )
     case "cloud":
@@ -281,10 +471,16 @@ const MarkupShape = memo(function MarkupShape({
   markup,
   imageSize,
   feetPerImagePx,
+  dimmed = false,
+  highlighted = false,
+  onClick,
 }: {
   markup: DrawingMarkup
   imageSize: { width: number; height: number }
   feetPerImagePx?: number | null
+  dimmed?: boolean
+  highlighted?: boolean
+  onClick?: () => void
 }) {
   const data = (markup as any).data as any
   const type = data?.type as string | undefined
@@ -294,7 +490,82 @@ const MarkupShape = memo(function MarkupShape({
 
   const px = points.map((p) => toPxPoint(p, imageSize))
 
+  const shape = renderShape()
+  if (!shape) return null
+
+  // Takeoff focus: everything outside the selected condition recedes rather
+  // than disappearing, so the estimator keeps context on the sheet.
+  if (!dimmed && !highlighted && !onClick) return shape
+  return (
+    <g
+      opacity={dimmed ? 0.18 : 1}
+      onClick={onClick}
+      className={onClick ? "cursor-pointer" : undefined}
+      style={{ pointerEvents: onClick ? "auto" : "none" }}
+    >
+      {highlighted && <HighlightHalo points={px} type={type} color={color} />}
+      {shape}
+    </g>
+  )
+
+  function renderShape() {
   switch (type) {
+    case "polyline": {
+      if (px.length < 2) return null
+      const label = measurementLabel({ type: "polyline", points }, imageSize, feetPerImagePx)
+      const mid = px[Math.floor(px.length / 2)]
+      return (
+        <g style={{ pointerEvents: "none" }}>
+          <path
+            d={pathFromPoints(px, false)}
+            stroke={color}
+            strokeWidth={strokeWidth + 1}
+            fill="none"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+          />
+          {px.map((p, i) => (
+            <circle key={i} cx={p.x} cy={p.y} r={strokeWidth + 1.5} fill={color} />
+          ))}
+          {label && <MeasurementLabel x={mid.x} y={mid.y - 8} text={label} color={color} />}
+        </g>
+      )
+    }
+    case "area": {
+      if (px.length < 3) return null
+      const label = measurementLabel({ type: "area", points }, imageSize, feetPerImagePx)
+      const center = centroidOf(px)
+      return (
+        <g style={{ pointerEvents: "none" }}>
+          <path d={pathFromPoints(px, true)} fill={color} opacity={0.18} />
+          <path
+            d={pathFromPoints(px, true)}
+            stroke={color}
+            strokeWidth={strokeWidth + 1}
+            fill="none"
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+          />
+          {label && <MeasurementLabel x={center.x} y={center.y} text={label} color={color} />}
+        </g>
+      )
+    }
+    case "count": {
+      if (px.length < 1) return null
+      const last = px[px.length - 1]
+      return (
+        <g style={{ pointerEvents: "none" }}>
+          {px.map((p, i) => (
+            <g key={i}>
+              <circle cx={p.x} cy={p.y} r={9} fill={color} opacity={0.22} />
+              <circle cx={p.x} cy={p.y} r={4.5} fill={color} />
+            </g>
+          ))}
+          <MeasurementLabel x={last.x + 12} y={last.y - 6} text={`${px.length}`} color={color} anchor="start" />
+        </g>
+      )
+    }
     case "arrow": {
       if (px.length < 2) return null
       return (
@@ -398,11 +669,9 @@ const MarkupShape = memo(function MarkupShape({
     }
     case "dimension": {
       if (px.length < 2) return null
-      const dx = px[1].x - px[0].x
-      const dy = px[1].y - px[0].y
-      const dist = Math.sqrt(dx * dx + dy * dy)
       const midX = (px[0].x + px[1].x) / 2
       const midY = (px[0].y + px[1].y) / 2
+      const label = measurementLabel({ type: "dimension", points }, imageSize, feetPerImagePx)
       return (
         <g style={{ pointerEvents: "none" }}>
           <line
@@ -413,9 +682,7 @@ const MarkupShape = memo(function MarkupShape({
             stroke={color}
             strokeWidth={strokeWidth}
           />
-          <text x={midX} y={midY - 6} fill={color} fontSize={12}>
-            {dimensionLabel(dist, feetPerImagePx)}
-          </text>
+          {label && <MeasurementLabel x={midX} y={midY - 6} text={label} color={color} />}
         </g>
       )
     }
@@ -445,7 +712,46 @@ const MarkupShape = memo(function MarkupShape({
     default:
       return null
   }
+  }
 })
+
+/**
+ * The "you clicked this row in the takeoff panel" ring. Drawn under the shape
+ * so it reads as a glow rather than an outline change.
+ */
+function HighlightHalo({
+  points,
+  type,
+  color,
+}: {
+  points: PxPoint[]
+  type: string | undefined
+  color: string
+}) {
+  if (points.length === 0) return null
+  if (type === "count") {
+    return (
+      <g style={{ pointerEvents: "none" }}>
+        {points.map((p, i) => (
+          <circle key={i} cx={p.x} cy={p.y} r={16} fill={color} opacity={0.28} />
+        ))}
+      </g>
+    )
+  }
+  return (
+    <path
+      d={pathFromPoints(points, type === "area")}
+      stroke={color}
+      strokeWidth={14}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      fill="none"
+      opacity={0.28}
+      vectorEffect="non-scaling-stroke"
+      style={{ pointerEvents: "none" }}
+    />
+  )
+}
 
 const PinMarker = memo(function PinMarker({
   pin,

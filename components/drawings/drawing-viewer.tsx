@@ -9,7 +9,6 @@ import {
   logPerformanceSummary,
   type DrawingPerformanceMetrics,
 } from "./use-drawing-performance"
-import { ImageViewer, type ImageLoadStage } from "./image-viewer"
 import {
   ArrowRight,
   Circle,
@@ -46,6 +45,12 @@ import {
   Camera,
   FileDown,
   Crosshair,
+  Spline,
+  Pentagon,
+  Hash,
+  Calculator,
+  Check,
+  Loader2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -101,6 +106,7 @@ import {
 import type { DrawingSheet, DrawingSheetVersion, DrawingMarkup, DrawingPin, MarkupType } from "@/app/(app)/drawings/types"
 import {
   listSheetVersionsWithUrlsAction,
+  detectSheetVersionScaleAction,
   getSheetCalibrationAction,
   setSheetVersionCalibrationAction,
   createPhotoFromDrawingAction,
@@ -110,111 +116,29 @@ import { uploadDocumentFileDirect } from "@/lib/services/files-client"
 import { useDrawingKeyboardShortcuts } from "./use-drawing-keyboard-shortcuts"
 import { KeyboardShortcutsHelp } from "./keyboard-shortcuts-help"
 import { ComparisonViewer } from "./comparison-viewer"
-import { DrawingPinLayer } from "./drawing-pin-layer"
 import { SheetThumbnailStrip } from "./sheet-thumbnail-strip"
-import { useTouchGestures } from "./use-touch-gestures"
-import { LongPressMenu } from "./long-press-menu"
 import { usePrefetchAdjacentSheets } from "./use-prefetch-sheets"
 import { useIsMobile } from "@/components/ui/use-mobile"
-import { useIsTouchDevice } from "@/lib/hooks/use-is-touch-device"
 import { TiledDrawingViewer, type ImageToScreenMatrix, type TileManifest } from "./viewer/tiled-drawing-viewer"
+import type { GpuDrawingViewer } from "@/lib/viewer"
 import { SVGOverlay, type SVGOverlayHandle } from "./viewer/svg-overlay"
+import { useMeasureTools, type MeasureToolType, type NormPoint } from "./viewer/use-measure-tools"
+import { useSheetVectors } from "./viewer/use-sheet-vectors"
+import {
+  snapPoint,
+  type VectorIndex,
+} from "@/lib/drawings/vector-snap"
+import { TakeoffPanel } from "./takeoff-panel"
+import {
+  assignMarkupsToConditionAction,
+  getConditionRollupAction,
+} from "@/app/(app)/drawings/takeoff-actions"
+import type { TakeoffCondition } from "@/lib/services/takeoff"
+import type { ConditionRollup } from "@/lib/services/takeoff"
+import { measurementLabel } from "@/lib/drawings/measure"
+import type { SheetCalibration } from "@/lib/services/drawings"
 
 import { unwrapAction } from "@/lib/action-result"
-
-// Dynamically import PDF components to avoid SSR issues
-interface PDFViewerProps {
-  file: string
-  onLoadSuccess: () => void
-  onPdfImported?: () => void
-  onWorkerLoaded?: () => void
-  onDocumentLoaded?: () => void
-}
-
-const PDFViewer = ({
-  file,
-  onLoadSuccess,
-  onPdfImported,
-  onWorkerLoaded,
-  onDocumentLoaded,
-}: PDFViewerProps) => {
-  const [PDFComponents, setPDFComponents] = useState<{
-    Document: any;
-    Page: any;
-    pdfjs: any;
-  } | null>(null)
-  const importStartRef = useRef<number>(0)
-  const callbacksRef = useRef<{
-    onLoadSuccess: PDFViewerProps["onLoadSuccess"]
-    onPdfImported?: PDFViewerProps["onPdfImported"]
-    onWorkerLoaded?: PDFViewerProps["onWorkerLoaded"]
-    onDocumentLoaded?: PDFViewerProps["onDocumentLoaded"]
-  }>({ onLoadSuccess, onPdfImported, onWorkerLoaded, onDocumentLoaded })
-
-  // Keep latest callbacks without re-running the import effect.
-  useEffect(() => {
-    callbacksRef.current = { onLoadSuccess, onPdfImported, onWorkerLoaded, onDocumentLoaded }
-  }, [onLoadSuccess, onPdfImported, onWorkerLoaded, onDocumentLoaded])
-
-  useEffect(() => {
-    const loadPDF = async () => {
-      try {
-        importStartRef.current = performance.now()
-
-        const { Document, Page, pdfjs } = await import("react-pdf")
-
-        // Track PDF import time
-        const importTime = Math.round(performance.now() - importStartRef.current)
-        console.log(`[Drawing Performance] PDF.js import: ${importTime}ms`)
-        callbacksRef.current.onPdfImported?.()
-
-        // Set worker and track time
-        const workerStart = performance.now()
-        pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs"
-
-        // Worker loading happens asynchronously, we track it on document load
-        setPDFComponents({ Document, Page, pdfjs })
-
-        const workerTime = Math.round(performance.now() - workerStart)
-        console.log(`[Drawing Performance] Worker config: ${workerTime}ms`)
-        callbacksRef.current.onWorkerLoaded?.()
-      } catch (error) {
-        console.error("Failed to load PDF components:", error)
-      }
-    }
-
-    loadPDF()
-  }, [])
-
-  if (!PDFComponents) {
-    return null
-  }
-
-  const { Document, Page } = PDFComponents
-
-  return (
-    <Document
-      file={file}
-      loading={null}
-      error={null}
-      onLoadSuccess={() => {
-        console.log(`[Drawing Performance] PDF document loaded`)
-        callbacksRef.current.onDocumentLoaded?.()
-      }}
-    >
-      <Page
-        pageNumber={1}
-        width={undefined}
-        renderTextLayer={false}
-        renderAnnotationLayer={false}
-        onLoadSuccess={() => {
-          console.log(`[Drawing Performance] PDF page rendered`)
-          callbacksRef.current.onLoadSuccess()
-        }}
-      />
-    </Document>
-  )
-}
 
 // Color palette for markups
 const MARKUP_COLORS = [
@@ -268,6 +192,35 @@ const MARKUP_TOOLS: Array<{
   { type: "highlight", icon: Highlighter, label: "Highlight" },
 ]
 
+// Takeoff measuring tools. Kept apart from MARKUP_TOOLS because they behave
+// differently (multi-click, commit-on-finish, priced) and appear only in
+// takeoff mode.
+const MEASURE_TOOLS: Array<{
+  type: MeasureToolType
+  icon: React.ElementType
+  label: string
+  hint: string
+}> = [
+  { type: "polyline", icon: Spline, label: "Linear", hint: "Click each corner · Enter to finish" },
+  { type: "area", icon: Pentagon, label: "Area", hint: "Click the corners · click the first point to close" },
+  { type: "count", icon: Hash, label: "Count", hint: "Click each item · Enter to finish" },
+]
+
+/**
+ * How far a press may travel and still count as placing a point rather than
+ * panning the sheet. Tracing a room means clicking, dragging the sheet along,
+ * and clicking again — so the two gestures have to share the left button.
+ */
+const POINT_PLACEMENT_SLOP_PX = 4
+
+/**
+ * How far (screen px) a takeoff click reaches for real linework. Converted to
+ * image pixels at the current zoom, so snapping feels the same at any
+ * magnification, with a clamp so a zoomed-out click can't leap across a room.
+ */
+const SNAP_TOLERANCE_SCREEN_PX = 10
+const SNAP_TOLERANCE_MAX_IMAGE_PX = 32
+
 interface DrawingViewerProps {
   sheet: DrawingSheet
   fileUrl?: string
@@ -275,20 +228,48 @@ interface DrawingViewerProps {
   pins?: DrawingPin[]
   highlightedPinId?: string
   onClose: () => void
-  onSaveMarkup?: (markup: Omit<DrawingMarkup, "id" | "org_id" | "created_at" | "updated_at">) => Promise<void>
+  onSaveMarkup?: (markup: SaveMarkupInput) => Promise<void>
   onDeleteMarkup?: (markupId: string) => Promise<void>
+  /** Measuring markups persist immediately; the host refreshes and returns the saved row. */
+  onSaveMeasurement?: (markup: SaveMarkupInput) => Promise<void>
+  /** Takeoff is unavailable without a project (the conditions' home). */
+  takeoffProjectId?: string | null
+  /**
+   * Production: measure a house plan against this project's sheets. When set,
+   * conditions belong to the PLAN VERSION instead of the project, so the
+   * quantities roll up to the plan rather than the lot.
+   */
+  takeoffPlanVersionId?: string | null
+  canWriteTakeoff?: boolean
+  /** Deep link: open in takeoff mode with this condition armed. */
+  initialConditionId?: string | null
+  /** Host refetches the sheet's markups after a reassignment repaints them. */
+  onMeasurementReassigned?: () => void
   onCreatePin?: (x: number, y: number) => void
   onPinClick?: (pin: DrawingPin) => void
   readOnly?: boolean
   // Stage 2: Sheet navigation
   sheets?: DrawingSheet[]
   onNavigateSheet?: (sheet: DrawingSheet) => void
-  // Phase 1 Performance: Pre-rendered image URLs (optional - falls back to PDF if not provided)
+  /** Low-res placeholder shown by the tiled viewer until real tiles land. */
   imageThumbnailUrl?: string | null
-  imageMediumUrl?: string | null
-  imageFullUrl?: string | null
   imageWidth?: number | null
   imageHeight?: number | null
+}
+
+/**
+ * What the viewer hands back to be persisted. The server computes `quantity`
+ * and `uom` from the geometry, so the viewer never sends them.
+ */
+export type SaveMarkupInput = {
+  drawing_sheet_id: string
+  sheet_version_id?: string
+  data: DrawingMarkup["data"]
+  label?: string
+  is_private?: boolean
+  share_with_clients?: boolean
+  share_with_subs?: boolean
+  condition_id?: string | null
 }
 
 interface Point {
@@ -318,48 +299,33 @@ export function DrawingViewer({
   readOnly = false,
   sheets = [],
   onNavigateSheet,
-  // Phase 1 Performance: Pre-rendered images
   imageThumbnailUrl,
-  imageMediumUrl,
-  imageFullUrl,
   imageWidth,
   imageHeight,
+  onSaveMeasurement,
+  takeoffProjectId,
+  takeoffPlanVersionId,
+  canWriteTakeoff = false,
+  initialConditionId = null,
+  onMeasurementReassigned,
   initialVersionsPanelOpen = false,
 }: DrawingViewerProps & { initialVersionsPanelOpen?: boolean }) {
   // Device detection
   const isMobile = useIsMobile()
-  const isTouch = useIsTouchDevice()
 
-  // Check if optimized images are available (Phase 1 performance optimization)
-  const hasOptimizedImages = !!(imageFullUrl && imageMediumUrl && imageThumbnailUrl)
+  /**
+   * Tiles are the only render path. A sheet without them has not finished
+   * processing yet — there is no legacy renderer to fall back to.
+   */
   const hasTiles =
     !!sheet.tile_base_url &&
     !!sheet.tile_manifest &&
     !!((sheet.tile_manifest as any)?.Image?.Size?.Width ?? sheet.image_width) &&
     !!((sheet.tile_manifest as any)?.Image?.Size?.Height ?? sheet.image_height)
 
-  const isPdfUrl = (value: string) => {
-    const lower = value.toLowerCase()
-    if (lower.includes("application/pdf")) return true
-    // Supabase signed URLs look like ".../file.pdf?token=..."; ignore query params.
-    try {
-      const u = new URL(value)
-      return u.pathname.toLowerCase().endsWith(".pdf")
-    } catch {
-      return lower.split("?")[0]?.endsWith(".pdf") ?? false
-    }
-  }
-
   // Performance tracking
-  // If we have optimized images, we're not using PDF rendering
-  const isPdf = !hasTiles && !hasOptimizedImages && !!fileUrl && isPdfUrl(fileUrl)
-  const {
-    markTiming,
-    markFullyLoaded,
-    getElapsed,
-  } = useDrawingPerformance({
+  const { markTiming, markFullyLoaded } = useDrawingPerformance({
     sheetId: sheet.id,
-    isPdf,
     onComplete: (metrics) => {
       // Log detailed performance summary
       logPerformanceSummary(metrics)
@@ -370,9 +336,7 @@ export function DrawingViewer({
         loadTime: metrics.loadTime,
         device: metrics.device,
         connection: metrics.connection || "unknown",
-        isPdf: metrics.isPdf,
         fileSize: metrics.fileSize ?? 0,
-        usedOptimizedImages: hasOptimizedImages,
       })
 
       // Performance rating for analytics
@@ -386,16 +350,9 @@ export function DrawingViewer({
         rating: performanceRating,
         loadTime: metrics.loadTime,
         device: metrics.device,
-        usedOptimizedImages: hasOptimizedImages,
       })
     },
   })
-
-  // View state
-  const [zoom, setZoom] = useState(1)
-  const [pan, setPan] = useState({ x: 0, y: 0 })
-  const [isPanning, setIsPanning] = useState(false)
-  const [panStart, setPanStart] = useState({ x: 0, y: 0 })
 
   // Tool state
   const [activeTool, setActiveTool] = useState<MarkupType | "pan" | "pin" | "photo" | null>("pan")
@@ -404,11 +361,10 @@ export function DrawingViewer({
   const [showMarkups, setShowMarkups] = useState(true)
   const [showPins, setShowPins] = useState(true)
 
-  // Calibration state (dimension tool scale, stored per sheet version)
-  const [calibration, setCalibration] = useState<{
-    versionId: string
-    feetPerImagePx: number | null
-  } | null>(null)
+  // Calibration state (measurement scale, stored per sheet version)
+  const [calibration, setCalibration] = useState<SheetCalibration | null>(null)
+  const [applyingProposal, setApplyingProposal] = useState(false)
+  const [scanningScale, setScanningScale] = useState(false)
   const [calibrating, setCalibrating] = useState(false)
   const [calibrationPoints, setCalibrationPoints] = useState<Point[]>([])
   const [calibrationDialogOpen, setCalibrationDialogOpen] = useState(false)
@@ -464,58 +420,60 @@ export function DrawingViewer({
   const [compareVersions, setCompareVersions] = useState<[string, string] | null>(null)
   const [loadingVersions, setLoadingVersions] = useState(false)
 
-  // Stage 2: Mobile/touch state
-  const [longPressPosition, setLongPressPosition] = useState<{ x: number; y: number; clientX: number; clientY: number } | null>(null)
-  const [showLongPressMenu, setShowLongPressMenu] = useState(false)
+  // Takeoff mode. Measuring is a MODE of the viewer, not a separate page: the
+  // conditions panel docks on the right and the tool dock swaps to the three
+  // measuring tools. Off by default so nothing changes for a user annotating.
+  const [takeoffMode, setTakeoffMode] = useState(!!initialConditionId)
+  const [selectedCondition, setSelectedCondition] = useState<TakeoffCondition | null>(null)
+  const [hoveredConditionId, setHoveredConditionId] = useState<string | null>(null)
+  const [takeoffRefreshToken, setTakeoffRefreshToken] = useState(0)
+  const [initialRollup, setInitialRollup] = useState<Promise<ConditionRollup[]> | null>(null)
+  const selectedConditionId = selectedCondition?.id ?? null
 
   // Refs
   const containerRef = useRef<HTMLDivElement>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const imageRef = useRef<HTMLImageElement>(null)
-  const pdfCanvasRef = useRef<HTMLDivElement>(null)
-  const contentRef = useRef<HTMLDivElement>(null)
 
-  const [contentSize, setContentSize] = useState<{ width: number; height: number } | null>(
-    null
-  )
+  // Tiled viewer (GPU) handle
+  const [gpuViewer, setGpuViewer] = useState<GpuDrawingViewer | null>(null)
 
-  // Tiled viewer (OpenSeadragon) state
-  const [osdViewer, setOsdViewer] = useState<any | null>(null)
-
-  const handleOsdReady = useCallback((viewer: any | null) => {
-    setOsdViewer((prev: any | null) => (prev === viewer ? prev : viewer))
+  const handleViewerReady = useCallback((viewer: GpuDrawingViewer | null) => {
+    setGpuViewer((prev) => (prev === viewer ? prev : viewer))
   }, [])
 
   // Pan/zoom hot path: viewport-change fires every frame, so the transform is
   // pushed straight to the SVG overlay's DOM node via an imperative handle and
   // kept in a ref for coordinate math. React state only updates for the rare
   // bits (container resize, visible zoom % change).
-  const osdMatrixRef = useRef<ImageToScreenMatrix | null>(null)
+  const viewerMatrixRef = useRef<ImageToScreenMatrix | null>(null)
   const overlayHandleRef = useRef<SVGOverlayHandle | null>(null)
 
   const setOverlayHandle = useCallback((handle: SVGOverlayHandle | null) => {
     overlayHandleRef.current = handle
     // Replay the latest transform when the overlay mounts after the first emit.
-    handle?.setTransform(osdMatrixRef.current)
+    handle?.setTransform(viewerMatrixRef.current)
   }, [])
 
-  const handleOsdTransformChange = useCallback(({ matrix, container, zoom }: any) => {
-    osdMatrixRef.current = matrix
+  const handleViewerTransformChange = useCallback(({ matrix, container, zoom }: {
+    matrix: ImageToScreenMatrix
+    container: { width: number; height: number }
+    zoom: number
+  }) => {
+    viewerMatrixRef.current = matrix
     overlayHandleRef.current?.setTransform(matrix)
-    setOsdContainer((prev) =>
+    setViewerContainer((prev) =>
       prev && prev.width === container.width && prev.height === container.height
         ? prev
         : container
     )
-    setOsdZoom((prev) => (Math.round(prev * 100) === Math.round(zoom * 100) ? prev : zoom))
+    setViewerZoom((prev) => (Math.round(prev * 100) === Math.round(zoom * 100) ? prev : zoom))
     if (!tiledPerfMarkedRef.current) {
       tiledPerfMarkedRef.current = true
       markTiming("thumbnailLoad")
       markFullyLoaded()
     }
   }, [markTiming, markFullyLoaded])
-  const [osdContainer, setOsdContainer] = useState<{ width: number; height: number } | null>(null)
-  const [osdZoom, setOsdZoom] = useState<number>(1)
+  const [viewerContainer, setViewerContainer] = useState<{ width: number; height: number } | null>(null)
+  const [viewerZoom, setViewerZoom] = useState<number>(1)
   const tiledPerfMarkedRef = useRef(false)
 
   const tileBaseUrl = useMemo(() => sheet.tile_base_url ?? null, [sheet.tile_base_url])
@@ -531,12 +489,11 @@ export function DrawingViewer({
   }, [sheet, tileManifest])
 
   // Rendered-image pixel dimensions: the space markup geometry lives in.
-  // Falls back to the displayed content size for legacy PDF/image sheets.
   const rasterImageSize = useMemo(() => {
-    if (hasTiles && tiledImageSize) return tiledImageSize
+    if (tiledImageSize) return tiledImageSize
     if (imageWidth && imageHeight) return { width: imageWidth, height: imageHeight }
-    return contentSize
-  }, [hasTiles, tiledImageSize, imageWidth, imageHeight, contentSize])
+    return null
+  }, [tiledImageSize, imageWidth, imageHeight])
 
   // Load the dimension calibration for this sheet's current version.
   useEffect(() => {
@@ -544,9 +501,7 @@ export function DrawingViewer({
     setCalibration(null)
     getSheetCalibrationAction(sheet.id)
       .then((cal) => {
-        if (!cancelled && cal) {
-          setCalibration({ versionId: cal.sheet_version_id, feetPerImagePx: cal.feet_per_image_px })
-        }
+        if (!cancelled) setCalibration(cal)
       })
       .catch((error) => {
         console.error("[DrawingViewer] Failed to load calibration:", error)
@@ -564,6 +519,171 @@ export function DrawingViewer({
     setPendingPhotoPosition(null)
   }, [sheet.id])
 
+  // ---------------------------------------------------------------------------
+  // Takeoff measuring
+  // ---------------------------------------------------------------------------
+
+  // Either home will do; the plan-version scope wins when both are present
+  // (arriving from a plan sheet means the plan is what is being measured).
+  const takeoffAvailable = !!(takeoffPlanVersionId || takeoffProjectId) && !readOnly
+  const feetPerImagePx = calibration?.feet_per_image_px ?? null
+  // Measurements persist the moment a shape is finished — the panel's rollup
+  // has to be live, so there is no "draft then save" batch here.
+  const commitMeasurement = useCallback(
+    async (payload: { type: MeasureToolType; points: Array<[number, number]> }) => {
+      const save = onSaveMeasurement ?? onSaveMarkup
+      if (!save) throw new Error("Measurements cannot be saved here")
+      await save({
+        drawing_sheet_id: sheet.id,
+        sheet_version_id: calibration?.sheet_version_id,
+        data: {
+          type: payload.type,
+          points: payload.points,
+          color: selectedCondition?.color ?? MARKUP_COLORS[4],
+          strokeWidth: 2,
+        },
+        is_private: false,
+        share_with_clients: false,
+        share_with_subs: false,
+        condition_id: selectedConditionId,
+      })
+      setTakeoffRefreshToken((token) => token + 1)
+    },
+    [
+      onSaveMeasurement,
+      onSaveMarkup,
+      sheet.id,
+      calibration,
+      selectedCondition,
+      selectedConditionId,
+    ],
+  )
+
+  // -------------------------------------------------------------------------
+  // Vector snapping (extracted PDF linework, when the sheet has any)
+  // -------------------------------------------------------------------------
+
+  const vectorIndexRef = useRef<VectorIndex | null>(null)
+  /** Alt held on the last pointer event = snap bypass, resolved here not in the hook. */
+  const altKeyRef = useRef(false)
+  const rasterImageSizeRef = useRef(rasterImageSize)
+  rasterImageSizeRef.current = rasterImageSize
+  /** Where the cursor would land (image px); drives the overlay indicator dot. */
+  const [snapHit, setSnapHit] = useState<Point | null>(null)
+
+  const snapMeasurePoint = useCallback((p: NormPoint): NormPoint | null => {
+    const index = vectorIndexRef.current
+    const size = rasterImageSizeRef.current
+    if (!index || !size || altKeyRef.current) {
+      setSnapHit(null)
+      return null
+    }
+    const matrix = viewerMatrixRef.current
+    const scale = matrix ? Math.hypot(matrix.a, matrix.b) : 1
+    const tolerance = Math.min(
+      SNAP_TOLERANCE_MAX_IMAGE_PX,
+      Math.max(1, SNAP_TOLERANCE_SCREEN_PX / Math.max(scale, 1e-6)),
+    )
+    const hit = snapPoint(index, { x: p.x * size.width, y: p.y * size.height }, tolerance)
+    if (!hit) {
+      setSnapHit(null)
+      return null
+    }
+    setSnapHit({ x: hit.point.x, y: hit.point.y })
+    return { x: hit.point.x / size.width, y: hit.point.y / size.height }
+  }, [])
+
+  const measureTools = useMeasureTools({
+    imageSize: rasterImageSize,
+    feetPerImagePx,
+    onCommit: commitMeasurement,
+    snap: snapMeasurePoint,
+  })
+
+  // Vectors load lazily, only once a measuring tool is armed; a sheet without
+  // vectors.bin resolves to "unavailable" and everything behaves as before.
+  const sheetVectors = useSheetVectors({
+    tileBaseUrl,
+    imageSize: rasterImageSize,
+    active:
+      takeoffMode &&
+      !!measureTools.activeTool,
+  })
+  vectorIndexRef.current = sheetVectors.index
+
+  // The snap indicator dies with the tool, not on the next mouse move.
+  useEffect(() => {
+    if (!measureTools.activeTool) {
+      setSnapHit(null)
+    }
+  }, [measureTools.activeTool])
+
+  /** Where the current press started, for telling a click from a pan-drag. */
+  const pressOriginRef = useRef<{ x: number; y: number } | null>(null)
+  // The tools object is rebuilt every render; reading it through a ref keeps
+  // the listener effect below from re-subscribing on every rubber-band frame.
+  const measureToolsRef = useRef(measureTools)
+  measureToolsRef.current = measureTools
+
+  /**
+   * Reassignment gesture: in takeoff mode with a condition armed and no tool
+   * active, clicking existing geometry moves it into that condition. This is
+   * the fix for "I measured six rooms into the wrong bucket", which otherwise
+   * means deleting and re-tracing them.
+   */
+  const handleMeasurementClick = useCallback(
+    async (markup: DrawingMarkup) => {
+      if (!takeoffMode || !canWriteTakeoff) return
+      if (measureTools.activeTool) return
+      if (!markup.uom) return
+      if (!selectedCondition) {
+        toast.info("Pick a condition first, then click a measurement to move it there")
+        return
+      }
+      if (markup.condition_id === selectedCondition.id) return
+
+      try {
+        unwrapAction(
+          await assignMarkupsToConditionAction({
+            condition_id: selectedCondition.id,
+            markup_ids: [markup.id],
+          }),
+        )
+        toast.success(`Moved into ${selectedCondition.name}`)
+        setTakeoffRefreshToken((token) => token + 1)
+        onMeasurementReassigned?.()
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Failed to move the measurement")
+      }
+    },
+    [takeoffMode, canWriteTakeoff, measureTools.activeTool, selectedCondition, onMeasurementReassigned],
+  )
+
+  const prefetchTakeoffRollup = useCallback(() => {
+    if (initialRollup || (!takeoffProjectId && !takeoffPlanVersionId)) return
+    setInitialRollup(
+      getConditionRollupAction(
+        takeoffPlanVersionId
+          ? { house_plan_version_id: takeoffPlanVersionId }
+          : { project_id: takeoffProjectId as string },
+      ),
+    )
+  }, [initialRollup, takeoffPlanVersionId, takeoffProjectId])
+  const consumeInitialRollup = useCallback(() => setInitialRollup(null), [])
+
+  useEffect(() => {
+    if (takeoffMode) prefetchTakeoffRollup()
+  }, [takeoffMode, prefetchTakeoffRollup])
+
+  const { setActiveTool: setMeasureTool } = measureTools
+  // Leaving takeoff mode must not strand a half-drawn shape or an armed tool.
+  useEffect(() => {
+    if (!takeoffMode) setMeasureTool(null)
+  }, [takeoffMode, setMeasureTool])
+  useEffect(() => {
+    setMeasureTool(null)
+  }, [sheet.id, setMeasureTool])
+
   // Escape cancels calibrate mode (capture phase so the viewer doesn't close).
   useEffect(() => {
     if (!calibrating) return
@@ -580,20 +700,23 @@ export function DrawingViewer({
     return () => window.removeEventListener("keydown", onKey, true)
   }, [calibrating])
 
-  // Keep OpenSeadragon mouse navigation aligned with the active tool.
+  // Keep viewer mouse navigation aligned with the active tool.
   useEffect(() => {
-    if (!hasTiles || !osdViewer || !osdViewer.gestureSettingsMouse) return
+    if (!gpuViewer) return
+    // A measuring tool leaves activeTool on "pan" (it owns clicks itself, and
+    // the viewer must keep handling drags). Click-zoom has to go regardless,
+    // or every vertex placed would zoom the sheet and double-click-to-finish
+    // would fight the viewer for the gesture. Trackpad panning (two-finger
+    // scroll) and pinch-zoom stay live while tracing; scrollToZoom only
+    // gates notched mouse wheels.
+    const measuring = !!measureTools.activeTool
     const enableNav = activeTool === "pan"
-    try {
-      // OpenSeadragon controls mouse navigation through gesture settings
-      osdViewer.gestureSettingsMouse.clickToZoom = enableNav
-      osdViewer.gestureSettingsMouse.dblClickToZoom = enableNav
-      osdViewer.gestureSettingsMouse.scrollToZoom = enableNav
-      // Note: pinchToZoom should probably stay enabled for touch devices
-    } catch (e) {
-      console.error("[DrawingViewer] Failed to toggle OpenSeadragon nav:", e)
-    }
-  }, [activeTool, hasTiles, osdViewer])
+    gpuViewer.setGestureOptions({
+      clickToZoom: enableNav && !measuring,
+      dblClickToZoom: enableNav && !measuring,
+      scrollToZoom: enableNav,
+    })
+  }, [activeTool, gpuViewer, measureTools.activeTool])
 
   // Hide the mobile bottom nav while the drawing viewer is open
   useEffect(() => {
@@ -610,21 +733,21 @@ export function DrawingViewer({
 
   const getNormalizedCoordsFromTiledClient = useCallback(
     (clientX: number, clientY: number): { x: number; y: number } | null => {
-      const osdMatrix = osdMatrixRef.current
-      if (!containerRef.current || !osdMatrix || !tiledImageSize) return null
+      const viewerMatrix = viewerMatrixRef.current
+      if (!containerRef.current || !viewerMatrix || !tiledImageSize) return null
       const rect = containerRef.current.getBoundingClientRect()
       const sx = clientX - rect.left
       const sy = clientY - rect.top
 
       // Invert 2D affine matrix.
-      const det = osdMatrix.a * osdMatrix.d - osdMatrix.b * osdMatrix.c
+      const det = viewerMatrix.a * viewerMatrix.d - viewerMatrix.b * viewerMatrix.c
       if (!det) return null
 
-      const dx = sx - osdMatrix.e
-      const dy = sy - osdMatrix.f
+      const dx = sx - viewerMatrix.e
+      const dy = sy - viewerMatrix.f
 
-      const imgX = (osdMatrix.d * dx - osdMatrix.c * dy) / det
-      const imgY = (-osdMatrix.b * dx + osdMatrix.a * dy) / det
+      const imgX = (viewerMatrix.d * dx - viewerMatrix.c * dy) / det
+      const imgY = (-viewerMatrix.b * dx + viewerMatrix.a * dy) / det
 
       const nx = imgX / tiledImageSize.width
       const ny = imgY / tiledImageSize.height
@@ -680,127 +803,29 @@ export function DrawingViewer({
     }
   }, [hasNextSheet, onNavigateSheet, sheets, currentSheetIndex])
 
-  // Stage 2: Touch gestures
-  const touchRef = useTouchGestures({
-    enabled: isTouch && !textDialogOpen && !showCompare && !hasTiles,
-    handlers: {
-      onPinchZoom: (scale) => {
-        setZoom((z) => Math.max(0.25, Math.min(5, z * scale)))
-      },
-      onPan: (dx, dy) => {
-        setPan((p) => ({ x: p.x + dx, y: p.y + dy }))
-      },
-      onDoubleTap: () => {
-        // Toggle between fit and 100%
-        setZoom((z) => (z === 1 ? 2 : 1))
-        setPan({ x: 0, y: 0 })
-      },
-      onSwipeLeft: () => {
-        if (hasNextSheet) goToNextSheet()
-      },
-      onSwipeRight: () => {
-        if (hasPrevSheet) goToPrevSheet()
-      },
-      onLongPress: (position: { x: number; y: number }) => {
-        // Position is already normalized (0-1), convert to client coords for menu positioning
-        const el = hasTiles ? containerRef.current : contentRef.current
-        if (el) {
-          const rect = el.getBoundingClientRect()
-          const clientX = rect.left + position.x * rect.width
-          const clientY = rect.top + position.y * rect.height
-          setLongPressPosition({ x: position.x, y: position.y, clientX, clientY })
-          setShowLongPressMenu(true)
-        }
-      },
-    },
-  })
-
   // Phase 3: Prefetch adjacent sheets for instant navigation
   usePrefetchAdjacentSheets(sheet.id, sheets, !showCompare)
 
-  // Helper to get normalized coords from client position
-  const getNormalizedCoordsFromClient = useCallback(
-    (clientX: number, clientY: number): { x: number; y: number } | null => {
-      if (hasTiles) {
-        return getNormalizedCoordsFromTiledClient(clientX, clientY)
-      }
-      if (!contentRef.current) return null
-      const imgRect = contentRef.current.getBoundingClientRect()
-      const x = (clientX - imgRect.left) / imgRect.width
-      const y = (clientY - imgRect.top) / imgRect.height
-      if (x < 0 || x > 1 || y < 0 || y > 1) return null
-      return { x, y }
-    },
-    [getNormalizedCoordsFromTiledClient, hasTiles]
+  // Zoom controls. The GPU viewer's camera is the single source of zoom.
+  const zoomBy = useCallback(
+    (factor: number) => gpuViewer?.zoomBy(factor),
+    [gpuViewer]
   )
 
-  // Stage 2: Long press menu handlers
-  const handleLongPressAction = useCallback(
-    (action: string) => {
-      if (!longPressPosition) return
-
-      switch (action) {
-        case "drop-pin":
-          onCreatePin?.(longPressPosition.x, longPressPosition.y)
-          break
-        case "new-task":
-        case "new-rfi":
-        case "new-punch":
-          // These will open the create dialog - pass to parent
-          onCreatePin?.(longPressPosition.x, longPressPosition.y)
-          break
-        case "attach-photo": {
-          const coords =
-            getNormalizedCoordsFromClient(longPressPosition.clientX, longPressPosition.clientY) ?? {
-              x: longPressPosition.x,
-              y: longPressPosition.y,
-            }
-          setPendingPhotoPosition(coords)
-          photoInputRef.current?.click()
-          break
-        }
-        case "add-measurement":
-          setActiveTool("dimension")
-          break
-      }
-
-      setShowLongPressMenu(false)
-      setLongPressPosition(null)
-    },
-    [longPressPosition, onCreatePin, getNormalizedCoordsFromClient]
-  )
-
-  // Stage 2: Handle cluster click - zoom to location
-  const handleClusterClick = useCallback(
-    (clusterPins: DrawingPin[], center: { x: number; y: number }) => {
-      // Zoom in to the cluster location
-      setZoom((z) => Math.min(z * 2, 3))
-      // Center the view on the cluster (rough calculation)
-      if (containerRef.current && contentSize) {
-        const containerRect = containerRef.current.getBoundingClientRect()
-        const targetX = center.x * contentSize.width * zoom
-        const targetY = center.y * contentSize.height * zoom
-        setPan({
-          x: containerRect.width / 2 - targetX,
-          y: containerRect.height / 2 - targetY,
-        })
-      }
-    },
-    [contentSize, zoom]
-  )
+  const handleZoomIn = useCallback(() => zoomBy(1.2), [zoomBy])
+  const handleZoomOut = useCallback(() => zoomBy(1 / 1.2), [zoomBy])
+  const handleResetView = useCallback(() => gpuViewer?.goHome(), [gpuViewer])
 
   // Keyboard shortcuts for viewer
   useDrawingKeyboardShortcuts({
     enabled: !textDialogOpen && !showCompare,
     context: "viewer",
     handlers: {
-      onZoomIn: () => setZoom((z) => Math.min(z * 1.2, 5)),
-      onZoomOut: () => setZoom((z) => Math.max(z / 1.2, 0.5)),
-      onFitToScreen: () => {
-        setZoom(1)
-        setPan({ x: 0, y: 0 })
-      },
-      onZoom100: () => setZoom(1),
+      onZoomIn: () => zoomBy(1.2),
+      onZoomOut: () => zoomBy(1 / 1.2),
+      onFitToScreen: () => gpuViewer?.goHome(),
+      // True 1:1 with the source raster, not the fit-to-window zoom.
+      onZoom100: () => gpuViewer?.zoomToActualSize(),
       onToggleMarkup: () => setShowMarkups((v) => !v),
       onTogglePins: () => setShowPins((v) => !v),
       onDownload: () => {
@@ -839,38 +864,26 @@ export function DrawingViewer({
     return () => window.removeEventListener("keydown", onKey)
   }, [textDialogOpen, showCompare])
 
-  // Get normalized coordinates (0-1)
-  const getNormalizedCoords = useCallback(
-    (clientX: number, clientY: number): Point | null => {
-      if (hasTiles) {
-        return getNormalizedCoordsFromTiledClient(clientX, clientY)
-      }
-      if (!containerRef.current || !contentRef.current) return null
-
-      const imgRect = contentRef.current.getBoundingClientRect()
-
-      // Get position relative to the image
-      const x = (clientX - imgRect.left) / imgRect.width
-      const y = (clientY - imgRect.top) / imgRect.height
-
-      // Return null if outside image bounds
-      if (x < 0 || x > 1 || y < 0 || y > 1) return null
-
-      return { x, y }
-    },
-    [getNormalizedCoordsFromTiledClient, hasTiles]
-  )
+  /** Normalized (0-1) sheet coordinates for a client point. */
+  const getNormalizedCoords = getNormalizedCoordsFromTiledClient
 
   const tiledDraftMarkups = useMemo(() => {
-    if (!hasTiles || !tiledImageSize) return []
+    if (!tiledImageSize) return []
     const toPx = (p: { x: number; y: number }) => ({
       x: p.x * tiledImageSize.width,
       y: p.y * tiledImageSize.height,
     })
 
-    const drafts = [
+    const drafts: Array<{
+      type: string
+      points: Array<{ x: number; y: number }>
+      color: string
+      strokeWidth: number
+      text?: string
+      label?: string | null
+    }> = [
       ...localMarkups.map((m) => ({
-        type: m.type,
+        type: m.type as string,
         points: m.points.map(toPx),
         color: m.color,
         strokeWidth: m.strokeWidth,
@@ -885,6 +898,22 @@ export function DrawingViewer({
         color: currentMarkup.color,
         strokeWidth: currentMarkup.strokeWidth,
         text: currentMarkup.text,
+      })
+    }
+
+    // Measuring shape under construction, with its live measurement as the
+    // label — the number climbs as the cursor moves.
+    const measureDraft = measureTools.draft
+    if (measureDraft) {
+      const points = [...measureDraft.points]
+      if (measureDraft.cursor && measureDraft.tool !== "count") points.push(measureDraft.cursor)
+      drafts.push({
+        type: measureDraft.tool,
+        points: points.map(toPx),
+        color: selectedCondition?.color ?? MARKUP_COLORS[4],
+        strokeWidth: 2,
+        text: undefined,
+        label: measureTools.draftLabel,
       })
     }
 
@@ -907,24 +936,84 @@ export function DrawingViewer({
           color: "#3B82F6",
           strokeWidth: 2,
           text: undefined,
+          // While picking the reference distance the label shows what the
+          // CURRENT scale makes of it — which is how you spot that the sheet
+          // is calibrated wrong before typing the real number.
+          label: measurementLabel(
+            {
+              type: "dimension",
+              points: calibrationPoints.map((p) => [p.x, p.y] as [number, number]),
+            },
+            rasterImageSize,
+            feetPerImagePx,
+          ),
         })
       }
     }
 
     return drafts
-  }, [currentMarkup, hasTiles, localMarkups, tiledImageSize, calibrating, calibrationPoints])
+  }, [
+    currentMarkup,
+    localMarkups,
+    tiledImageSize,
+    calibrating,
+    calibrationPoints,
+    rasterImageSize,
+    feetPerImagePx,
+    measureTools.draft,
+    measureTools.draftLabel,
+    selectedCondition,
+  ])
 
-  // Handle mouse down
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault()
-      // In tiled mode, OpenSeadragon owns panning.
-      if (hasTiles && activeTool === "pan" && !calibrating) return
-      const coords = getNormalizedCoords(e.clientX, e.clientY)
+  /**
+   * Point-placing tools listen for POINTER events in the CAPTURE phase, not
+   * through React and not for mouse events.
+   *
+   * The GPU viewer's gesture layer owns its canvas and calls `preventDefault()`
+   * on `pointerdown` for every primary-button press (see lib/viewer/gestures.ts).
+   * That sets the browser's prevent-mouse-event flag, so no `mousedown`,
+   * `mousemove` or `mouseup` is ever synthesised for the gesture — a mouse
+   * listener simply never fires over a tiled sheet, in any phase, React or
+   * native. Pointer events and `click` are the only ones that survive, and
+   * capture runs root-to-target so this container sees them ahead of the canvas.
+   *
+   * A press places a point only if the pointer barely moved; anything further
+   * belongs to the viewer's pan, which stays live so a forty-click room can be
+   * traced across a sheet without disarming the tool.
+   *
+   * Only attached while a tool actually needs raw clicks, so ordinary panning
+   * and zooming are untouched the rest of the time.
+   */
+  const capturingClicks = !!measureTools.activeTool || calibrating
+
+  useEffect(() => {
+    const element = containerRef.current
+    if (!element || !capturingClicks) return
+
+    const onPointerDown = (event: PointerEvent) => {
+      altKeyRef.current = event.altKey
+      if (!event.isPrimary) return
+      if (event.pointerType === "mouse" && event.button !== 0) return
+      // On a ref, not in this closure: a re-subscribe between press and
+      // release (arming a different condition mid-shape) must not lose it.
+      pressOriginRef.current = { x: event.clientX, y: event.clientY }
+    }
+
+    const onPointerUp = (event: PointerEvent) => {
+      altKeyRef.current = event.altKey
+      const origin = pressOriginRef.current
+      pressOriginRef.current = null
+      if (!origin) return
+      if (
+        Math.hypot(event.clientX - origin.x, event.clientY - origin.y) >
+        POINT_PLACEMENT_SLOP_PX
+      ) {
+        return
+      }
+
+      const coords = getNormalizedCoords(event.clientX, event.clientY)
       if (!coords) return
 
-      // Calibrate mode: collect the two reference points, then ask for the
-      // real-world distance.
       if (calibrating) {
         setCalibrationPoints((prev) => {
           if (prev.length >= 2) return prev
@@ -938,15 +1027,74 @@ export function DrawingViewer({
         return
       }
 
+      measureToolsRef.current.handleClick(coords)
+    }
+
+    // The rubber band follows the cursor; the viewer still needs the move to
+    // pan, so this one deliberately does not stop propagation.
+    const onPointerMove = (event: PointerEvent) => {
+      altKeyRef.current = event.altKey
+      if (!measureToolsRef.current.isDrafting) {
+        // Before the first point lands, the snap indicator still previews
+        // where a click would go (the fn feeds the overlay dot as it runs).
+        if (measureToolsRef.current.activeTool) {
+          const coords = getNormalizedCoords(event.clientX, event.clientY)
+          if (coords) snapMeasurePoint(coords)
+          else setSnapHit(null)
+        }
+        return
+      }
+      measureToolsRef.current.handleMove(getNormalizedCoords(event.clientX, event.clientY))
+    }
+
+    const onPointerCancel = () => {
+      pressOriginRef.current = null
+    }
+
+    const onDoubleClick = (event: MouseEvent) => {
+      if (calibrating) return
+      event.preventDefault()
+      event.stopPropagation()
+      measureToolsRef.current.handleDoubleClick()
+    }
+
+    element.addEventListener("pointerdown", onPointerDown, true)
+    element.addEventListener("pointerup", onPointerUp, true)
+    element.addEventListener("pointermove", onPointerMove, true)
+    element.addEventListener("pointercancel", onPointerCancel, true)
+    element.addEventListener("dblclick", onDoubleClick, true)
+    return () => {
+      element.removeEventListener("pointerdown", onPointerDown, true)
+      element.removeEventListener("pointerup", onPointerUp, true)
+      element.removeEventListener("pointermove", onPointerMove, true)
+      element.removeEventListener("pointercancel", onPointerCancel, true)
+      element.removeEventListener("dblclick", onDoubleClick, true)
+    }
+  }, [
+    capturingClicks,
+    calibrating,
+    getNormalizedCoords,
+    snapMeasurePoint,
+  ])
+
+  // Handle mouse down
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      // Measuring and calibration are served by the capture-phase pointer
+      // listener above; ignoring the bubbled copy keeps a press that reaches
+      // React (an interactive SVG overlay swallows it before the canvas can)
+      // from placing the point twice.
+      if (capturingClicks) return
+      e.preventDefault()
+
+      // The GPU viewer owns panning.
+      if (activeTool === "pan") return
+      const coords = getNormalizedCoords(e.clientX, e.clientY)
+      if (!coords) return
+
       if (activeTool === "photo" && !readOnly) {
         setPendingPhotoPosition(coords)
         photoInputRef.current?.click()
-        return
-      }
-
-      if (activeTool === "pan") {
-        setIsPanning(true)
-        setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y })
         return
       }
 
@@ -972,21 +1120,20 @@ export function DrawingViewer({
         })
       }
     },
-    [activeTool, pan, getNormalizedCoords, selectedColor, strokeWidth, readOnly, onCreatePin, hasTiles, calibrating]
+    [
+      activeTool,
+      getNormalizedCoords,
+      selectedColor,
+      strokeWidth,
+      readOnly,
+      onCreatePin,
+      capturingClicks,
+    ]
   )
 
   // Handle mouse move
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
-      if (isPanning) {
-        if (hasTiles) return
-        setPan({
-          x: e.clientX - panStart.x,
-          y: e.clientY - panStart.y,
-        })
-        return
-      }
-
       if (!isDrawing || !currentMarkup) return
 
       const coords = getNormalizedCoords(e.clientX, e.clientY)
@@ -1004,20 +1151,11 @@ export function DrawingViewer({
         )
       }
     },
-    [isPanning, panStart, isDrawing, currentMarkup, getNormalizedCoords, hasTiles]
+    [isDrawing, currentMarkup, getNormalizedCoords]
   )
 
   // Handle mouse up
   const handleMouseUp = useCallback(() => {
-    if (isPanning) {
-      if (hasTiles) {
-        setIsPanning(false)
-        return
-      }
-      setIsPanning(false)
-      return
-    }
-
     if (isDrawing && currentMarkup && currentMarkup.points.length >= 2) {
       // Save to local markups
       setHistory((prev) => [...prev, localMarkups])
@@ -1026,7 +1164,7 @@ export function DrawingViewer({
 
     setIsDrawing(false)
     setCurrentMarkup(null)
-  }, [isPanning, isDrawing, currentMarkup, localMarkups, hasTiles])
+  }, [isDrawing, currentMarkup, localMarkups])
 
   // Handle text submit
   const handleTextSubmit = async () => {
@@ -1121,7 +1259,7 @@ export function DrawingViewer({
       toast.error('Enter a distance like 24\' 6" or 10.5')
       return
     }
-    if (!calibration?.versionId) {
+    if (!calibration?.sheet_version_id) {
       toast.error("This sheet has no published version to calibrate")
       return
     }
@@ -1136,12 +1274,21 @@ export function DrawingViewer({
     try {
       const saved = unwrapAction(
         await setSheetVersionCalibrationAction({
-          sheet_version_id: calibration.versionId,
+          sheet_version_id: calibration.sheet_version_id,
           feet_per_image_px: feet / calibrationPixelDistance,
+          method: "two_point",
         })
       )
-      setCalibration({ versionId: saved.sheet_version_id, feetPerImagePx: saved.feet_per_image_px })
-      toast.success("Sheet calibrated — dimensions now show real lengths")
+      setCalibration(saved)
+      // Recalibrating rewrites every stored quantity on this version; saying
+      // how many changed is the difference between a scale fix and a silent
+      // repricing.
+      toast.success(
+        saved.recomputed_markups > 0
+          ? `Scale saved — ${saved.recomputed_markups} measurement${saved.recomputed_markups === 1 ? "" : "s"} recalculated`
+          : "Sheet calibrated — measurements now show real quantities",
+      )
+      setTakeoffRefreshToken((token) => token + 1)
       exitCalibrateMode()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to save calibration")
@@ -1149,6 +1296,72 @@ export function DrawingViewer({
       setSavingCalibration(false)
     }
   }
+
+  /**
+   * Accept a scale the pipeline derived from the sheet itself (title block or
+   * printed dimensions). One click, and it is recorded as a real calibration
+   * with its method, so the readout can say what it is standing on.
+   */
+  const handleApplyProposal = useCallback(async () => {
+    const proposal = calibration?.proposal
+    if (!proposal || !calibration?.sheet_version_id) return
+
+    setApplyingProposal(true)
+    try {
+      const saved = unwrapAction(
+        await setSheetVersionCalibrationAction({
+          sheet_version_id: calibration.sheet_version_id,
+          feet_per_image_px: proposal.feet_per_image_px,
+          method: proposal.method,
+          ...(proposal.raw ? { source_label: proposal.raw } : {}),
+        }),
+      )
+      setCalibration(saved)
+      toast.success(
+        saved.recomputed_markups > 0
+          ? `Scale applied — ${saved.recomputed_markups} measurement${saved.recomputed_markups === 1 ? "" : "s"} recalculated`
+          : "Scale applied",
+      )
+      setTakeoffRefreshToken((token) => token + 1)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to apply scale")
+    } finally {
+      setApplyingProposal(false)
+    }
+  }, [calibration])
+
+  /**
+   * Sheets uploaded before scale detection existed have no proposal and no way
+   * to get one. Opening takeoff mode on such a sheet reads its scale off the
+   * PDF once, in the background — otherwise "one-click scale" would be dead on
+   * every sheet already in the register.
+   *
+   * Runs at most once per sheet version: the service records that it looked,
+   * so a sheet with no readable scale is not re-opened on every visit.
+   */
+  useEffect(() => {
+    if (!takeoffMode || !canWriteTakeoff) return
+    if (!calibration?.sheet_version_id) return
+    if (calibration.feet_per_image_px || calibration.proposal || calibration.scanned) return
+
+    let cancelled = false
+    setScanningScale(true)
+    detectSheetVersionScaleAction(calibration.sheet_version_id)
+      .then((result) => {
+        if (cancelled || !result.success) return
+        setCalibration((prev) =>
+          prev && prev.sheet_version_id === calibration.sheet_version_id
+            ? { ...prev, proposal: result.data, scanned: true }
+            : prev,
+        )
+      })
+      .finally(() => {
+        if (!cancelled) setScanningScale(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [takeoffMode, canWriteTakeoff, calibration])
 
   // ---------------------------------------------------------------------------
   // Photo pins
@@ -1247,355 +1460,6 @@ export function DrawingViewer({
     [onPinClick, openPhotoPin]
   )
 
-  // Zoom controls
-  const handleZoomIn = () => {
-    if (hasTiles && osdViewer) {
-      osdViewer.viewport.zoomBy(1.2)
-      osdViewer.viewport.applyConstraints()
-      return
-    }
-    setZoom((z) => Math.min(z * 1.2, 5))
-  }
-  const handleZoomOut = () => {
-    if (hasTiles && osdViewer) {
-      osdViewer.viewport.zoomBy(1 / 1.2)
-      osdViewer.viewport.applyConstraints()
-      return
-    }
-    setZoom((z) => Math.max(z / 1.2, 0.5))
-  }
-  const computeFitZoom = useCallback((): number => {
-    if (!containerRef.current) return 1
-    const container = containerRef.current.getBoundingClientRect()
-    const naturalW = imageWidth ?? contentSize?.width
-    const naturalH = imageHeight ?? contentSize?.height
-    if (!naturalW || !naturalH || !container.width || !container.height) return 1
-    const padding = 48
-    const fitW = (container.width - padding) / naturalW
-    const fitH = (container.height - padding) / naturalH
-    return Math.min(fitW, fitH, 1)
-  }, [contentSize, imageWidth, imageHeight])
-
-  const handleResetView = () => {
-    if (hasTiles && osdViewer) {
-      osdViewer.viewport.goHome()
-      return
-    }
-    const fit = computeFitZoom()
-    setZoom(fit)
-    setPan({ x: 0, y: 0 })
-  }
-
-  // Auto-fit on first content load for each sheet
-  const fittedSheetIdRef = useRef<string | null>(null)
-  useEffect(() => {
-    if (hasTiles) return
-    if (!contentSize) return
-    if (fittedSheetIdRef.current === sheet.id) return
-    fittedSheetIdRef.current = sheet.id
-    const fit = computeFitZoom()
-    setZoom(fit)
-    setPan({ x: 0, y: 0 })
-  }, [contentSize, hasTiles, sheet.id, computeFitZoom])
-
-  // Render markup on canvas
-  const renderMarkup = useCallback(
-    (
-      ctx: CanvasRenderingContext2D,
-      markup: MarkupInProgress,
-      canvasWidth: number,
-      canvasHeight: number,
-      feetPerImagePx?: number | null
-    ) => {
-      ctx.strokeStyle = markup.color
-      ctx.fillStyle = markup.color
-      ctx.lineWidth = markup.strokeWidth
-      ctx.lineCap = "round"
-      ctx.lineJoin = "round"
-
-      const toCanvas = (p: Point) => ({
-        x: p.x * canvasWidth,
-        y: p.y * canvasHeight,
-      })
-
-      switch (markup.type) {
-        case "arrow": {
-          if (markup.points.length < 2) break
-          const start = toCanvas(markup.points[0])
-          const end = toCanvas(markup.points[1])
-
-          // Draw line
-          ctx.beginPath()
-          ctx.moveTo(start.x, start.y)
-          ctx.lineTo(end.x, end.y)
-          ctx.stroke()
-
-          // Draw arrowhead
-          const angle = Math.atan2(end.y - start.y, end.x - start.x)
-          const headLen = 15
-          ctx.beginPath()
-          ctx.moveTo(end.x, end.y)
-          ctx.lineTo(
-            end.x - headLen * Math.cos(angle - Math.PI / 6),
-            end.y - headLen * Math.sin(angle - Math.PI / 6)
-          )
-          ctx.moveTo(end.x, end.y)
-          ctx.lineTo(
-            end.x - headLen * Math.cos(angle + Math.PI / 6),
-            end.y - headLen * Math.sin(angle + Math.PI / 6)
-          )
-          ctx.stroke()
-          break
-        }
-
-        case "circle": {
-          if (markup.points.length < 2) break
-          const center = toCanvas(markup.points[0])
-          const edge = toCanvas(markup.points[1])
-          const radius = Math.sqrt(
-            Math.pow(edge.x - center.x, 2) + Math.pow(edge.y - center.y, 2)
-          )
-          ctx.beginPath()
-          ctx.arc(center.x, center.y, radius, 0, 2 * Math.PI)
-          ctx.stroke()
-          break
-        }
-
-        case "rectangle": {
-          if (markup.points.length < 2) break
-          const p1 = toCanvas(markup.points[0])
-          const p2 = toCanvas(markup.points[1])
-          ctx.strokeRect(p1.x, p1.y, p2.x - p1.x, p2.y - p1.y)
-          break
-        }
-
-        case "freehand": {
-          if (markup.points.length < 2) break
-          ctx.beginPath()
-          const first = toCanvas(markup.points[0])
-          ctx.moveTo(first.x, first.y)
-          for (let i = 1; i < markup.points.length; i++) {
-            const p = toCanvas(markup.points[i])
-            ctx.lineTo(p.x, p.y)
-          }
-          ctx.stroke()
-          break
-        }
-
-        case "text":
-        case "callout": {
-          if (markup.points.length < 1 || !markup.text) break
-          const pos = toCanvas(markup.points[0])
-          ctx.font = `${14 * (markup.strokeWidth / 2)}px sans-serif`
-          ctx.fillText(markup.text, pos.x, pos.y)
-
-          if (markup.type === "callout") {
-            // Draw callout bubble
-            const metrics = ctx.measureText(markup.text)
-            const padding = 8
-            ctx.strokeRect(
-              pos.x - padding,
-              pos.y - 14 * (markup.strokeWidth / 2) - padding,
-              metrics.width + padding * 2,
-              14 * (markup.strokeWidth / 2) + padding * 2
-            )
-          }
-          break
-        }
-
-        case "cloud": {
-          if (markup.points.length < 2) break
-          const p1 = toCanvas(markup.points[0])
-          const p2 = toCanvas(markup.points[1])
-
-          // Draw a cloud-like shape with bumps
-          const width = Math.abs(p2.x - p1.x)
-          const height = Math.abs(p2.y - p1.y)
-          const minX = Math.min(p1.x, p2.x)
-          const minY = Math.min(p1.y, p2.y)
-
-          ctx.beginPath()
-          const bumps = 8
-          const bumpRadius = width / bumps / 2
-
-          for (let i = 0; i < bumps; i++) {
-            ctx.arc(
-              minX + bumpRadius + (i * width) / bumps,
-              minY,
-              bumpRadius,
-              Math.PI,
-              0
-            )
-          }
-          for (let i = 0; i < bumps / 2; i++) {
-            ctx.arc(
-              minX + width,
-              minY + bumpRadius * 2 + (i * height) / (bumps / 2),
-              bumpRadius,
-              -Math.PI / 2,
-              Math.PI / 2
-            )
-          }
-          for (let i = bumps - 1; i >= 0; i--) {
-            ctx.arc(
-              minX + bumpRadius + (i * width) / bumps,
-              minY + height,
-              bumpRadius,
-              0,
-              Math.PI
-            )
-          }
-          for (let i = bumps / 2 - 1; i >= 0; i--) {
-            ctx.arc(
-              minX,
-              minY + bumpRadius * 2 + (i * height) / (bumps / 2),
-              bumpRadius,
-              Math.PI / 2,
-              -Math.PI / 2
-            )
-          }
-          ctx.closePath()
-          ctx.stroke()
-          break
-        }
-
-        case "highlight": {
-          if (markup.points.length < 2) break
-          const p1 = toCanvas(markup.points[0])
-          const p2 = toCanvas(markup.points[1])
-          ctx.globalAlpha = 0.3
-          ctx.fillRect(
-            Math.min(p1.x, p2.x),
-            Math.min(p1.y, p2.y),
-            Math.abs(p2.x - p1.x),
-            Math.abs(p2.y - p1.y)
-          )
-          ctx.globalAlpha = 1
-          break
-        }
-
-        case "dimension": {
-          if (markup.points.length < 2) break
-          const start = toCanvas(markup.points[0])
-          const end = toCanvas(markup.points[1])
-
-          // Draw dimension line with ticks
-          ctx.beginPath()
-          ctx.moveTo(start.x, start.y)
-          ctx.lineTo(end.x, end.y)
-          ctx.stroke()
-
-          // Draw tick marks
-          const angle = Math.atan2(end.y - start.y, end.x - start.x)
-          const perpAngle = angle + Math.PI / 2
-          const tickLen = 10
-
-          for (const p of [start, end]) {
-            ctx.beginPath()
-            ctx.moveTo(
-              p.x - tickLen * Math.cos(perpAngle),
-              p.y - tickLen * Math.sin(perpAngle)
-            )
-            ctx.lineTo(
-              p.x + tickLen * Math.cos(perpAngle),
-              p.y + tickLen * Math.sin(perpAngle)
-            )
-            ctx.stroke()
-          }
-
-          // Draw length label
-          const dist = Math.sqrt(
-            Math.pow(end.x - start.x, 2) + Math.pow(end.y - start.y, 2)
-          )
-          const midX = (start.x + end.x) / 2
-          const midY = (start.y + end.y) / 2
-          ctx.font = "12px sans-serif"
-          const label =
-            feetPerImagePx && feetPerImagePx > 0
-              ? formatFeetInches(dist * feetPerImagePx)
-              : `${Math.round(dist)}px`
-          ctx.fillText(label, midX, midY - 5)
-          break
-        }
-      }
-    },
-    []
-  )
-
-  // Draw canvas (legacy path)
-  useEffect(() => {
-    if (hasTiles) return
-    const canvas = canvasRef.current
-    if (!canvas || !contentSize) return
-
-    const ctx = canvas.getContext("2d")
-    if (!ctx) return
-
-    // Clear canvas
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
-
-    const feetPerImagePx = calibration?.feetPerImagePx ?? null
-
-    // Draw saved markups
-    if (showMarkups) {
-      for (const markup of markups) {
-        renderMarkup(
-          ctx,
-          {
-            type: markup.data.type,
-            points: markup.data.points.map(([x, y]) => ({ x, y })),
-            color: markup.data.color,
-            strokeWidth: markup.data.strokeWidth,
-            text: markup.data.text,
-          },
-          canvas.width,
-          canvas.height,
-          feetPerImagePx
-        )
-      }
-
-      // Draw local markups
-      for (const markup of localMarkups) {
-        renderMarkup(ctx, markup, canvas.width, canvas.height, feetPerImagePx)
-      }
-
-      // Draw current markup
-      if (currentMarkup) {
-        renderMarkup(ctx, currentMarkup, canvas.width, canvas.height, feetPerImagePx)
-      }
-    }
-
-    // Calibration reference line (drawn regardless of markup visibility)
-    if (calibrating && calibrationPoints.length === 2) {
-      renderMarkup(
-        ctx,
-        { type: "dimension", points: calibrationPoints, color: "#3B82F6", strokeWidth: 2 },
-        canvas.width,
-        canvas.height
-      )
-    }
-  }, [markups, localMarkups, currentMarkup, showMarkups, renderMarkup, contentSize, hasTiles, calibration, calibrating, calibrationPoints])
-
-  useEffect(() => {
-    if (!contentSize || !canvasRef.current) return
-    canvasRef.current.width = contentSize.width
-    canvasRef.current.height = contentSize.height
-  }, [contentSize])
-
-
-  const syncPdfSize = useCallback(() => {
-    const pdfContainer = pdfCanvasRef.current
-    if (!pdfContainer) return
-
-    // Find the canvas element inside the PDF container
-    const canvas = pdfContainer.querySelector('canvas')
-    if (!canvas) return
-
-    const rect = canvas.getBoundingClientRect()
-    if (!rect.width || !rect.height) return
-    setContentSize({ width: rect.width, height: rect.height })
-  }, [])
-
   // Get status color for pins
   const getStatusColor = (status?: string) => {
     switch (status) {
@@ -1616,6 +1480,44 @@ export function DrawingViewer({
     }
   }
 
+  const filteredSheets = useMemo(
+    () =>
+      sheets.filter((s) => {
+        if (!sheetListQuery) return true
+        const q = sheetListQuery.toLowerCase()
+        return (
+          s.sheet_number?.toLowerCase().includes(q) ||
+          s.sheet_title?.toLowerCase().includes(q) ||
+          s.discipline?.toLowerCase().includes(q)
+        )
+      }),
+    [sheets, sheetListQuery],
+  )
+
+  const groupedSheets = useMemo(
+    () =>
+      groupSheetsByDiscipline(
+        filteredSheets as Array<DrawingSheet & { discipline?: DrawingDiscipline | null }>,
+      ),
+    [filteredSheets],
+  )
+
+  const orderedDisciplines = useMemo(
+    () => DISCIPLINE_SORT_ORDER.filter((d) => groupedSheets.has(d)),
+    [groupedSheets],
+  )
+
+  const activeDiscipline = (sheet.discipline as DrawingDiscipline | undefined) ?? "X"
+
+  // When searching, auto-expand all matching groups; otherwise expand the current sheet's group.
+  const accordionDefault = useMemo(
+    () =>
+      sheetListQuery
+        ? orderedDisciplines.map((d) => String(d))
+        : [String(activeDiscipline)],
+    [sheetListQuery, orderedDisciplines, activeDiscipline],
+  )
+
   // Show comparison viewer if active
   if (showCompare && versions.length >= 2 && compareVersions) {
     return (
@@ -1631,7 +1533,7 @@ export function DrawingViewer({
   }
 
   // Fade chrome while actively drawing; fully hide when uiHidden
-  const isInteracting = isDrawing || isPanning
+  const isInteracting = isDrawing
   const chromeClass = cn(
     "transition-opacity duration-200",
     uiHidden
@@ -1641,44 +1543,34 @@ export function DrawingViewer({
         : "opacity-100",
   )
 
-  const filteredSheets = sheets.filter((s) => {
-    if (!sheetListQuery) return true
-    const q = sheetListQuery.toLowerCase()
-    return (
-      s.sheet_number?.toLowerCase().includes(q) ||
-      s.sheet_title?.toLowerCase().includes(q) ||
-      s.discipline?.toLowerCase().includes(q)
-    )
-  })
-
-  const groupedSheets = groupSheetsByDiscipline(filteredSheets as Array<DrawingSheet & { discipline?: DrawingDiscipline | null }>)
-  const orderedDisciplines = DISCIPLINE_SORT_ORDER.filter((d) => groupedSheets.has(d))
-
-  const activeDiscipline = (sheet.discipline as DrawingDiscipline | undefined) ?? "X"
   const ActiveDisciplineIcon = disciplineIcon(activeDiscipline)
-
-  // When searching, auto-expand all matching groups; otherwise expand the current sheet's group.
-  const accordionDefault = sheetListQuery
-    ? orderedDisciplines.map((d) => String(d))
-    : [String(activeDiscipline)]
 
   const activeToolDef = MARKUP_TOOLS.find((t) => t.type === activeTool)
   const MarkupActiveIcon = activeToolDef?.icon ?? Pencil
   const markupToolActive =
     !!activeTool && activeTool !== "pan" && activeTool !== "pin" && activeTool !== "photo"
 
+  // In takeoff mode the panel takes a fixed column and the sheet gets the rest;
+  // insetting the drawing surface (rather than overlaying the panel) means the
+  // geometry the estimator is measuring is never hidden behind the numbers.
+  const panelOpen = takeoffMode && takeoffAvailable
+
   return (
     <div className="fixed inset-0 z-50 bg-neutral-900 overflow-hidden">
       {/* Full-bleed drawing surface */}
       <div
-        ref={(el) => {
-          ;(containerRef as React.MutableRefObject<HTMLDivElement | null>).current = el
-          if (touchRef) {
-            ;(touchRef as React.MutableRefObject<HTMLDivElement | null>).current = el
-          }
+        ref={containerRef}
+        className={cn(
+          "absolute inset-y-0 left-0 overflow-hidden transition-[right] duration-200",
+          panelOpen ? "right-[380px] max-md:right-0" : "right-0",
+        )}
+        style={{
+          cursor: measureTools.activeTool
+            ? "crosshair"
+            : activeTool === "pan"
+              ? "grab"
+              : "crosshair",
         }}
-        className="absolute inset-0 overflow-hidden"
-        style={{ cursor: activeTool === "pan" ? "grab" : "crosshair" }}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
@@ -1691,12 +1583,12 @@ export function DrawingViewer({
               tileManifest={tileManifest}
               thumbnailUrl={imageThumbnailUrl || undefined}
               className="absolute inset-0"
-              onReady={handleOsdReady}
-              onTransformChange={handleOsdTransformChange}
+              onReady={handleViewerReady}
+              onTransformChange={handleViewerTransformChange}
             />
             <SVGOverlay
               ref={setOverlayHandle}
-              container={osdContainer}
+              container={viewerContainer}
               imageSize={tiledImageSize}
               markups={markups}
               draftMarkups={tiledDraftMarkups}
@@ -1706,113 +1598,88 @@ export function DrawingViewer({
               highlightedPinId={highlightedPinId}
               interactive={!readOnly && activeTool !== "pan"}
               onPinClick={handlePinActivate}
-              feetPerImagePx={calibration?.feetPerImagePx ?? null}
+              feetPerImagePx={feetPerImagePx}
+              selectedConditionId={
+                takeoffMode ? hoveredConditionId ?? selectedConditionId : null
+              }
+              onMarkupClick={
+                takeoffMode && canWriteTakeoff && !measureTools.activeTool
+                  ? (markup) => void handleMeasurementClick(markup)
+                  : undefined
+              }
+              snapIndicator={
+                measureTools.activeTool && snapHit
+                  ? {
+                      x: snapHit.x,
+                      y: snapHit.y,
+                      color: selectedCondition?.color ?? MARKUP_COLORS[4],
+                    }
+                  : null
+              }
             />
           </div>
-        ) : !hasOptimizedImages && !fileUrl ? (
-          <DrawingLoader sheetNumber={sheet.sheet_number} />
         ) : (
-          <>
-            {!contentSize && (
-              <DrawingLoader sheetNumber={sheet.sheet_number} />
-            )}
-          <div
-            className={cn(
-              "absolute inset-0 flex items-center justify-center transition-opacity duration-300",
-              !contentSize && "opacity-0",
-            )}
-            style={{
-              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-              transformOrigin: "center",
-            }}
-          >
-            <div ref={contentRef} className="relative inline-block bg-white shadow-2xl">
-              {hasOptimizedImages ? (
-                <ImageViewer
-                  thumbnailUrl={imageThumbnailUrl!}
-                  mediumUrl={imageMediumUrl!}
-                  fullUrl={imageFullUrl!}
-                  width={imageWidth || 2400}
-                  height={imageHeight || 1800}
-                  alt={`${sheet.sheet_number} - ${sheet.sheet_title || ""}`}
-                  className="max-w-full max-h-full"
-                  onLoadStage={(stage: ImageLoadStage) => {
-                    // Stages load in parallel and can complete out of order —
-                    // size the content on whichever stage lands first.
-                    if (imageWidth && imageHeight) {
-                      setContentSize((prev) => prev ?? { width: imageWidth, height: imageHeight })
-                    }
-                    if (stage === "thumbnail") {
-                      markTiming("thumbnailLoad")
-                    } else if (stage === "medium") {
-                      markTiming("mediumLoad")
-                    } else if (stage === "full") {
-                      markTiming("fullLoad")
-                      markFullyLoaded()
-                    }
-                  }}
-                  onError={(error) => {
-                    console.error("[DrawingViewer] Image load error:", error)
-                  }}
-                />
-              ) : isPdf ? (
-                <div ref={pdfCanvasRef}>
-                  <PDFViewer
-                    file={fileUrl}
-                    onLoadSuccess={() => {
-                      syncPdfSize()
-                      markTiming("rendering")
-                      markFullyLoaded()
-                    }}
-                    onPdfImported={() => markTiming("pdfImport")}
-                    onWorkerLoaded={() => markTiming("workerLoad")}
-                    onDocumentLoaded={() => markTiming("pdfParsing")}
-                  />
-                </div>
-              ) : (
-                <img
-                  ref={imageRef}
-                  src={fileUrl}
-                  alt={sheet.sheet_number}
-                  className="max-w-full max-h-full object-contain bg-white"
-                  draggable={false}
-                  onDragStart={(e) => e.preventDefault()}
-                  onLoad={(e) => {
-                    const rect = e.currentTarget.getBoundingClientRect()
-                    if (rect.width && rect.height) {
-                      setContentSize({ width: rect.width, height: rect.height })
-                    }
-                    markTiming("fullLoad")
-                    markFullyLoaded()
-                  }}
-                />
-              )}
-
-              <canvas
-                ref={canvasRef}
-                className="absolute inset-0 pointer-events-none"
-                style={{
-                  width: contentSize?.width ?? "100%",
-                  height: contentSize?.height ?? "100%",
-                }}
-              />
-
-              {showPins && contentSize && (
-                <DrawingPinLayer
-                  pins={allPins}
-                  zoom={zoom}
-                  containerWidth={contentSize.width}
-                  containerHeight={contentSize.height}
-                  onPinClick={handlePinActivate}
-                  onClusterClick={handleClusterClick}
-                  highlightedPinId={highlightedPinId}
-                />
-              )}
+          <div className="absolute inset-0">
+            <DrawingLoader sheetNumber={sheet.sheet_number} />
+            <div className="absolute inset-0 flex items-center justify-center p-8">
+              <div className="max-w-sm text-center">
+                <p className="text-sm font-medium text-white">
+                  This sheet is still processing
+                </p>
+                <p className="mt-1 text-xs text-white/60">
+                  {sheet.sheet_number} will open as soon as its tiles finish
+                  building. Check back in a moment.
+                </p>
+              </div>
             </div>
           </div>
-          </>
         )}
       </div>
+
+      {/* Right dock: the takeoff panel. Occupies real layout, not an overlay. */}
+      {panelOpen && (
+        <div className="absolute inset-y-0 right-0 z-30 w-[380px] max-md:w-full">
+          <TakeoffPanel
+            projectId={takeoffPlanVersionId ? null : takeoffProjectId}
+            housePlanVersionId={takeoffPlanVersionId}
+            sheetProjectId={takeoffProjectId}
+            activeSheetId={sheet.id}
+            selectedConditionId={selectedConditionId}
+            initialRollup={initialRollup}
+            onInitialRollupConsumed={consumeInitialRollup}
+            initialConditionId={initialConditionId}
+            onSelectCondition={setSelectedCondition}
+            onHighlightCondition={setHoveredConditionId}
+            refreshToken={takeoffRefreshToken}
+            canWrite={canWriteTakeoff}
+            onClose={() => setTakeoffMode(false)}
+          />
+        </div>
+      )}
+
+      {/* Scale bar. Only in takeoff mode: outside it, scale is a detail of the
+          dimension tool; inside it, every number on screen depends on it. */}
+      {panelOpen && (
+        <div
+          className={cn(
+            "absolute top-4 left-1/2 z-20 -translate-x-1/2 max-md:left-4 max-md:translate-x-0",
+            chromeClass,
+          )}
+        >
+          <ScaleBar
+            calibration={calibration}
+            applying={applyingProposal}
+            scanning={scanningScale}
+            onApplyProposal={() => void handleApplyProposal()}
+            onCalibrate={() => {
+              measureTools.setActiveTool(null)
+              setActiveTool("dimension")
+              setCalibrating(true)
+              setCalibrationPoints([])
+            }}
+          />
+        </div>
+      )}
 
       {/* Top-left: sheet identity + navigation */}
       <div className={cn("absolute top-4 left-4 z-20", chromeClass)}>
@@ -2031,7 +1898,7 @@ export function DrawingViewer({
             <ZoomOut className="h-4 w-4" />
           </Button>
           <span className="text-xs font-mono tabular-nums w-11 text-center">
-            {Math.round((hasTiles ? osdZoom : zoom) * 100)}%
+            {Math.round(viewerZoom * 100)}%
           </span>
           <Button
             variant="ghost"
@@ -2336,16 +2203,99 @@ export function DrawingViewer({
         </div>
       )}
 
-      {/* Bottom-center: tool dock */}
+      {/* Bottom-center: tool dock. Shifts with the panel so it stays centered
+          under the sheet rather than under the whole window. */}
       {!readOnly && !isMobile && (
         <div
           className={cn(
-            "absolute bottom-6 left-1/2 -translate-x-1/2 z-20",
+            "absolute bottom-6 z-20 -translate-x-1/2 transition-[left] duration-200",
+            panelOpen ? "left-[calc(50%-190px)]" : "left-1/2",
             chromeClass,
           )}
         >
           <div className="flex items-center gap-0.5 rounded-2xl border bg-background/95 backdrop-blur-md shadow-xl p-1.5">
             <TooltipProvider delayDuration={300}>
+              {takeoffAvailable && (
+                <>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant={takeoffMode ? "secondary" : "ghost"}
+                        size="sm"
+                        className="h-10 gap-1.5 px-2.5"
+                        onClick={() => {
+                          if (!takeoffMode) prefetchTakeoffRollup()
+                          setTakeoffMode((mode) => !mode)
+                        }}
+                      >
+                        <Calculator className="h-4 w-4" />
+                        Takeoff
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">
+                      Measure quantities and price them
+                    </TooltipContent>
+                  </Tooltip>
+
+                  {/* Measuring tools live inside takeoff mode, never beside the
+                      annotation tools — they produce money, not marks. */}
+                  <div
+                    className={cn(
+                      "flex items-center gap-0.5 overflow-hidden transition-[max-width,opacity,margin] duration-200 ease-out",
+                      takeoffMode
+                        ? "ml-1 max-w-[420px] opacity-100"
+                        : "pointer-events-none ml-0 max-w-0 opacity-0",
+                    )}
+                  >
+                    <Separator orientation="vertical" className="h-6 mx-1" />
+                    {selectedCondition ? (
+                      <span
+                        className="flex h-8 max-w-[150px] items-center gap-1.5 rounded-lg border px-2 text-xs"
+                        title={`Measuring into ${selectedCondition.name}`}
+                      >
+                        <span
+                          className="h-2 w-2 shrink-0 rounded-full"
+                          style={{ backgroundColor: selectedCondition.color }}
+                        />
+                        <span className="truncate">{selectedCondition.name}</span>
+                      </span>
+                    ) : (
+                      <span className="px-2 text-xs text-muted-foreground">
+                        Pick a condition →
+                      </span>
+                    )}
+                    {MEASURE_TOOLS.map((tool) => (
+                      <Tooltip key={tool.type}>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant={measureTools.activeTool === tool.type ? "secondary" : "ghost"}
+                            size="icon"
+                            className="h-10 w-10"
+                            disabled={!canWriteTakeoff || !selectedCondition}
+                            onClick={() => {
+                              setActiveTool("pan")
+                              measureTools.setActiveTool(
+                                measureTools.activeTool === tool.type ? null : tool.type,
+                              )
+                            }}
+                          >
+                            <tool.icon className="h-4 w-4" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top">
+                          <div className="font-medium">{tool.label}</div>
+                          <div className="text-xs opacity-80">{tool.hint}</div>
+                        </TooltipContent>
+                      </Tooltip>
+                    ))}
+                    {measureTools.saving && (
+                      <Loader2 className="mx-1 h-4 w-4 animate-spin text-muted-foreground" />
+                    )}
+                  </div>
+
+                  <Separator orientation="vertical" className="h-6 mx-1" />
+                </>
+              )}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -2480,7 +2430,7 @@ export function DrawingViewer({
                         onValueChange={([v]) => setStrokeWidth(v)}
                       />
                     </div>
-                    {activeTool === "dimension" && !calibration?.feetPerImagePx && (
+                    {activeTool === "dimension" && !calibration?.feet_per_image_px && (
                       <p className="text-xs text-muted-foreground border-t pt-2">
                         Calibrate this sheet to get real dimensions.
                       </p>
@@ -2510,7 +2460,7 @@ export function DrawingViewer({
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent side="top">
-                    {calibration?.feetPerImagePx
+                    {calibration?.feet_per_image_px
                       ? "Recalibrate the sheet scale"
                       : "Calibrate this sheet to get real dimensions"}
                   </TooltipContent>
@@ -2568,6 +2518,48 @@ export function DrawingViewer({
                 </Button>
               </div>
             </TooltipProvider>
+          </div>
+        </div>
+      )}
+
+      {/* Live measurement readout. Sits above the dock while a shape is open so
+          the number is where the eye already is, not across the screen. */}
+      {measureTools.draft && (
+        <div
+          className={cn(
+            "absolute bottom-24 z-20 -translate-x-1/2 transition-[left] duration-200",
+            panelOpen ? "left-[calc(50%-190px)]" : "left-1/2",
+          )}
+        >
+          <div className="flex items-center gap-3 rounded-xl border bg-background/95 px-3 py-2 shadow-xl backdrop-blur-md">
+            <span
+              className="h-2.5 w-2.5 rounded-full"
+              style={{ backgroundColor: selectedCondition?.color ?? MARKUP_COLORS[4] }}
+            />
+            <span className="text-base font-semibold tabular-nums">
+              {measureTools.draftLabel ?? "—"}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {measureTools.remainingPoints > 0
+                ? `${measureTools.remainingPoints} more point${measureTools.remainingPoints === 1 ? "" : "s"}`
+                : measureTools.draft.tool === "area"
+                  ? "Click the first point to close"
+                  : "Enter to finish"}
+            </span>
+            <Separator orientation="vertical" className="h-5" />
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 gap-1"
+              disabled={measureTools.remainingPoints > 0}
+              onClick={() => measureTools.finish()}
+            >
+              <Check className="h-3.5 w-3.5" />
+              Done
+            </Button>
+            <Button size="sm" variant="ghost" className="h-7" onClick={() => measureTools.cancel()}>
+              Cancel
+            </Button>
           </div>
         </div>
       )}
@@ -2683,20 +2675,6 @@ export function DrawingViewer({
       )}
 
       {/* Long press context menu */}
-      <LongPressMenu
-        open={showLongPressMenu}
-        onClose={() => {
-          setShowLongPressMenu(false)
-          setLongPressPosition(null)
-        }}
-        onAction={handleLongPressAction}
-        position={
-          longPressPosition
-            ? { x: longPressPosition.clientX, y: longPressPosition.clientY }
-            : { x: 0, y: 0 }
-        }
-      />
-
       {/* Calibrate mode hint */}
       {calibrating && (
         <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-20 rounded-lg border bg-background/95 backdrop-blur-md shadow-lg px-3 py-1.5 text-xs text-muted-foreground pointer-events-none">
@@ -2912,6 +2890,118 @@ export function DrawingViewer({
         onOpenChange={setShowShortcutsHelp}
         context="viewer"
       />
+    </div>
+  )
+}
+
+/**
+ * The scale readout.
+ *
+ * Every quantity in takeoff mode is a multiple of this one number, so it gets
+ * to say where it came from: dragged by hand, read off the title block, or
+ * cross-checked against printed dimensions. A pipeline-derived scale is a
+ * PROPOSAL until someone clicks Apply — auto-applying a wrong scale would
+ * silently multiply every measurement on the sheet.
+ */
+function ScaleBar({
+  calibration,
+  applying,
+  scanning,
+  onApplyProposal,
+  onCalibrate,
+}: {
+  calibration: SheetCalibration | null
+  applying: boolean
+  scanning: boolean
+  onApplyProposal: () => void
+  onCalibrate: () => void
+}) {
+  if (!calibration) {
+    return (
+      <div className="flex items-center gap-2 rounded-xl border bg-background/95 px-3 py-2 text-xs shadow-lg backdrop-blur-md">
+        <Crosshair className="h-3.5 w-3.5 text-muted-foreground" />
+        <span className="text-muted-foreground">This sheet has no published version to scale</span>
+      </div>
+    )
+  }
+
+  const proposal = calibration.proposal
+
+  if (!calibration.feet_per_image_px) {
+    if (scanning) {
+      return (
+        <div className="flex items-center gap-2 rounded-xl border bg-background/95 px-3 py-2 text-xs shadow-lg backdrop-blur-md">
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+          <span className="text-muted-foreground">Reading the scale off this sheet…</span>
+        </div>
+      )
+    }
+    if (proposal) {
+      return (
+        <div className="flex items-center gap-3 rounded-xl border bg-background/95 px-3 py-2 shadow-lg backdrop-blur-md">
+          <div className="text-xs">
+            <div className="font-medium">
+              Scale detected{proposal.raw ? `: ${proposal.raw}` : ""}
+            </div>
+            <div className="text-muted-foreground">
+              {proposal.method === "dimension_check"
+                ? `Cross-checked against ${proposal.sample_count ?? 0} printed dimensions`
+                : proposal.method === "space_area"
+                  ? `Cross-checked against ${proposal.sample_count ?? 0} printed room areas`
+                  : "Read from the title block"}
+            </div>
+          </div>
+          <Button size="sm" className="h-7 gap-1" onClick={onApplyProposal} disabled={applying}>
+            {applying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+            Apply
+          </Button>
+          <Button size="sm" variant="ghost" className="h-7" onClick={onCalibrate}>
+            Set by hand
+          </Button>
+        </div>
+      )
+    }
+
+    return (
+      <div className="flex items-center gap-3 rounded-xl border bg-background/95 px-3 py-2 shadow-lg backdrop-blur-md">
+        <span className="text-xs text-warning">No scale — measurements can&apos;t be priced yet</span>
+        <Button size="sm" className="h-7 gap-1" onClick={onCalibrate}>
+          <Crosshair className="h-3.5 w-3.5" />
+          Set scale
+        </Button>
+      </div>
+    )
+  }
+
+  // A scale carried forward from the previous revision is a guess that is
+  // usually right — usable immediately, but flagged until someone confirms.
+  const carried = !!calibration.carried_from_version_id
+
+  return (
+    <div className="flex items-center gap-2.5 rounded-xl border bg-background/95 px-3 py-2 shadow-lg backdrop-blur-md">
+      <Crosshair className="h-3.5 w-3.5 text-muted-foreground" />
+      <span className="text-xs tabular-nums">
+        {calibration.source_label ??
+          `1 px = ${formatFeetInches(calibration.feet_per_image_px)}`}
+      </span>
+      {(calibration.method === "dimension_check" || calibration.method === "space_area") && !carried && (
+        <Badge variant="outline" className="h-5 gap-1 px-1.5 text-[10px] font-normal">
+          <Check className="h-2.5 w-2.5" />
+          Verified
+        </Badge>
+      )}
+      {carried && (
+        <Badge
+          variant="outline"
+          className="h-5 gap-1 border-warning/40 px-1.5 text-[10px] font-normal text-warning"
+        >
+          Carried forward — verify
+        </Badge>
+      )}
+      <Separator orientation="vertical" className="h-4" />
+      <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={onCalibrate}>
+        {carried ? "Verify" : "Recalibrate"}
+      </Button>
     </div>
   )
 }

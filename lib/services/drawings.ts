@@ -13,8 +13,10 @@ import type {
   DrawingDiscipline,
   DrawingIssuanceType,
   SetSheetVersionCalibrationInput,
+  CalibrationMethod,
 } from "@/lib/validation/drawings"
 import {
+  calibrationMethodSchema,
   setSheetVersionCalibrationInputSchema,
   drawingSetInputSchema,
   drawingSetUpdateSchema,
@@ -39,6 +41,7 @@ import {
 } from "@/lib/storage/drawings-tiles-storage"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { enqueuePageTextBackfill } from "@/lib/services/drawings-pipeline"
+import { recomputeMarkupQuantitiesForVersion } from "@/lib/services/drawing-measurements"
 
 // ============================================================================
 // TYPES
@@ -125,6 +128,17 @@ async function cleanupSheetVersionStorage(versionRows: VersionStorageRow[]) {
 export async function enqueueSheetsListRefresh(orgId: string) {
   try {
     const { supabase } = await requireOrgContext(orgId)
+    // Coalesce: the refresh rebuilds the WHOLE materialized view (all orgs),
+    // so one pending job covers every caller. Without this, an estimator
+    // tracing sixty rooms enqueues sixty full rebuilds.
+    const { data: pending } = await supabase
+      .from("outbox")
+      .select("id")
+      .eq("job_type", "refresh_drawing_sheets_list")
+      .eq("status", "pending")
+      .limit(1)
+    if (pending && pending.length > 0) return
+
     await supabase.from("outbox").insert({
       org_id: orgId,
       // outbox.event_id may have an FK to events; leave null unless you have a real event row
@@ -262,7 +276,7 @@ export interface DrawingSheetVersion {
   image_full_path?: string | null
   tile_manifest_path?: string | null
   tiles_base_path?: string | null
-  // Resolved tile source for the OpenSeadragon viewer / tile-aware compare
+  // Resolved tile source for the GPU tiled viewer / tile-aware compare
   tile_base_url?: string | null
   tile_manifest?: Record<string, any> | null
 }
@@ -1798,6 +1812,64 @@ export async function getSheetSignedUrl(
 export interface SheetCalibration {
   sheet_version_id: string
   feet_per_image_px: number | null
+  /** How the scale was established: dragged by a human, or derived and confirmed. */
+  method: CalibrationMethod | null
+  /** Human-readable basis, e.g. `1/4" = 1'-0"`. */
+  source_label: string | null
+  /**
+   * Set when this version inherited its scale from the previous revision. The
+   * geometry moved, the scale probably did not — but "probably" is not good
+   * enough to price from, so the viewer nags until someone confirms.
+   */
+  carried_from_version_id: string | null
+  /** Rendered-image dimensions markup geometry is normalized against. */
+  image_width: number | null
+  image_height: number | null
+  /**
+   * A scale the pipeline derived but nobody has accepted yet. Never applied
+   * automatically — a wrong scale silently multiplies every quantity.
+   */
+  proposal: SheetCalibrationProposal | null
+  /**
+   * Whether this version has ever been scanned for a scale. False on every
+   * sheet uploaded before scale detection existed, which is what lets the
+   * viewer offer to scan on demand instead of stranding them.
+   */
+  scanned: boolean
+}
+
+/** Pipeline-derived scale awaiting one human click. */
+export interface SheetCalibrationProposal {
+  feet_per_image_px: number
+  method: "title_block" | "dimension_check" | "space_area"
+  /** The printed text the scale was read from, e.g. `1/4" = 1'-0"`. */
+  raw: string | null
+  /** dimension_check only: how many printed dimensions agreed. */
+  sample_count?: number
+  /** dimension_check only: spread across those samples, as a percentage. */
+  spread_pct?: number
+}
+
+function normalizeCalibrationProposal(value: unknown): SheetCalibrationProposal | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  const feet = record.feet_per_image_px
+  const method = record.method
+  if (typeof feet !== "number" || !Number.isFinite(feet) || feet <= 0) return null
+  if (
+    method !== "title_block" &&
+    method !== "dimension_check" &&
+    method !== "space_area"
+  ) {
+    return null
+  }
+  return {
+    feet_per_image_px: feet,
+    method,
+    raw: typeof record.raw === "string" ? record.raw : null,
+    ...(typeof record.sample_count === "number" ? { sample_count: record.sample_count } : {}),
+    ...(typeof record.spread_pct === "number" ? { spread_pct: record.spread_pct } : {}),
+  }
 }
 
 /**
@@ -1826,7 +1898,9 @@ export async function getSheetCalibration(
 
   const { data: version, error: versionError } = await supabase
     .from("drawing_sheet_versions")
-    .select("id, calibration:extracted_metadata->calibration")
+    .select(
+      "id, image_width, image_height, tile_manifest, calibration:extracted_metadata->calibration, proposal:extracted_metadata->calibration_proposal, scan:extracted_metadata->calibration_scan, spaces:extracted_metadata->spaces",
+    )
     .eq("org_id", resolvedOrgId)
     .eq("drawing_sheet_id", sheetId)
     .eq("drawing_revision_id", sheet.current_revision_id)
@@ -1840,7 +1914,12 @@ export async function getSheetCalibration(
   if (!version) return null
 
   const calibration = (version as { calibration?: unknown }).calibration as
-    | { feet_per_image_px?: unknown }
+    | {
+        feet_per_image_px?: unknown
+        method?: unknown
+        source_label?: unknown
+        carried_from_version_id?: unknown
+      }
     | null
     | undefined
   const feetPerImagePx =
@@ -1848,23 +1927,77 @@ export async function getSheetCalibration(
       ? calibration.feet_per_image_px
       : null
 
-  return { sheet_version_id: version.id as string, feet_per_image_px: feetPerImagePx }
+  const manifestSize = (version.tile_manifest as any)?.Image?.Size
+  const imageWidth = Number(manifestSize?.Width ?? version.image_width ?? 0) || null
+  const imageHeight = Number(manifestSize?.Height ?? version.image_height ?? 0) || null
+
+  const method = calibrationMethodSchema.safeParse(calibration?.method)
+  const storedProposal = normalizeCalibrationProposal(
+    (version as { proposal?: unknown }).proposal,
+  )
+  const spaces = (version as { spaces?: unknown }).spaces
+  const spacesRecord =
+    spaces && typeof spaces === "object" && !Array.isArray(spaces)
+      ? (spaces as Record<string, unknown>)
+      : null
+  const inferredSpaceScale = spacesRecord?.inferred_feet_per_image_px
+  const spaceProposal: SheetCalibrationProposal | null =
+    !storedProposal &&
+    typeof inferredSpaceScale === "number" &&
+    Number.isFinite(inferredSpaceScale) &&
+    inferredSpaceScale > 0
+      ? {
+          feet_per_image_px: inferredSpaceScale,
+          method: "space_area",
+          raw: null,
+          ...(typeof spacesRecord?.verified_count === "number"
+            ? { sample_count: spacesRecord.verified_count }
+            : {}),
+        }
+      : null
+
+  return {
+    sheet_version_id: version.id as string,
+    feet_per_image_px: feetPerImagePx,
+    // Legacy rows predate `method`; a stored scale with no method was dragged.
+    method: method.success ? method.data : feetPerImagePx ? "two_point" : null,
+    source_label: typeof calibration?.source_label === "string" ? calibration.source_label : null,
+    carried_from_version_id:
+      typeof calibration?.carried_from_version_id === "string"
+        ? calibration.carried_from_version_id
+        : null,
+    image_width: imageWidth,
+    image_height: imageHeight,
+    proposal: storedProposal ?? spaceProposal,
+    // A proposal implies a scan even on rows written before the marker existed.
+    scanned:
+      !!(version as { scan?: unknown }).scan ||
+      !!(version as { proposal?: unknown }).proposal ||
+      !!spaceProposal,
+  }
 }
 
 /**
- * Persist two-point scale calibration on a sheet version. Stored under
+ * Persist scale calibration on a sheet version. Stored under
  * extracted_metadata.calibration (read-modify-write preserves other keys).
+ *
+ * Saving a scale always re-measures the sheet: every quantity already stored
+ * on this version was computed against the OLD scale, so leaving them alone
+ * would mean the panel shows one number and the geometry says another. The
+ * returned `recomputed_markups` count is what the toast reports.
  */
 export async function setSheetVersionCalibration(
   input: SetSheetVersionCalibrationInput,
   orgId?: string
-): Promise<SheetCalibration> {
+): Promise<SheetCalibration & { recomputed_markups: number }> {
   const parsed = setSheetVersionCalibrationInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
 
   const { data: version, error: fetchError } = await supabase
     .from("drawing_sheet_versions")
-    .select("id, extracted_metadata, drawing_sheets!inner(project_id)")
+    .select(
+      "id, extracted_metadata, image_width, image_height, tile_manifest, drawing_sheets!inner(project_id)",
+    )
     .eq("org_id", resolvedOrgId)
     .eq("id", parsed.sheet_version_id)
     .single()
@@ -1877,11 +2010,15 @@ export async function setSheetVersionCalibration(
   await requireProjectPermission(userId, projectId, "drawing.markup")
 
   const existingMetadata = (version.extracted_metadata ?? {}) as Record<string, unknown>
-  const calibration = {
+  const calibration: Record<string, unknown> = {
     feet_per_image_px: parsed.feet_per_image_px,
+    method: parsed.method,
     set_by: userId,
     set_at: new Date().toISOString(),
   }
+  if (parsed.source_label) calibration.source_label = parsed.source_label
+  // Confirming a carried-forward scale drops the "verify me" flag — that IS
+  // the confirmation gesture, so it must not be preserved here.
 
   const { error: updateError } = await supabase
     .from("drawing_sheet_versions")
@@ -1893,6 +2030,12 @@ export async function setSheetVersionCalibration(
     throw new Error(`Failed to save calibration: ${updateError.message}`)
   }
 
+  const recomputed = await recomputeMarkupQuantitiesForVersion(
+    supabase,
+    resolvedOrgId,
+    parsed.sheet_version_id,
+  )
+
   await recordAudit({
     orgId: resolvedOrgId,
     actorId: userId,
@@ -1900,12 +2043,173 @@ export async function setSheetVersionCalibration(
     entityType: "drawing_sheet_version",
     entityId: parsed.sheet_version_id,
     before: { calibration: existingMetadata.calibration ?? null },
-    after: { calibration },
+    after: { calibration, recomputed_markups: recomputed },
   })
+
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "drawing_sheet_calibrated",
+    entityType: "drawing_sheet_version",
+    entityId: parsed.sheet_version_id,
+    payload: {
+      project_id: projectId,
+      method: parsed.method,
+      feet_per_image_px: parsed.feet_per_image_px,
+      recomputed_markups: recomputed,
+    },
+  })
+
+  const manifestSize = (version.tile_manifest as any)?.Image?.Size
 
   return {
     sheet_version_id: parsed.sheet_version_id,
     feet_per_image_px: parsed.feet_per_image_px,
+    method: parsed.method,
+    source_label: parsed.source_label ?? null,
+    carried_from_version_id: null,
+    image_width: Number(manifestSize?.Width ?? version.image_width ?? 0) || null,
+    image_height: Number(manifestSize?.Height ?? version.image_height ?? 0) || null,
+    proposal: null,
+    scanned: true,
+    recomputed_markups: recomputed,
+  }
+}
+
+/**
+ * Read a sheet's own scale off its PDF, on demand.
+ *
+ * Detection normally runs once at upload, inside the page-render job. Every
+ * sheet uploaded before that existed therefore has no proposal and no way to
+ * ever get one — which made "one-click scale" invisible on all existing data.
+ * This is the same detection, callable against a sheet that is already in the
+ * register.
+ *
+ * The result is cached on the version either way: a `calibration_scan` marker
+ * records that we looked, so a sheet with no readable scale (a scan, a notes
+ * page) is not re-opened on every visit.
+ *
+ * Gated on `drawing.markup` rather than `drawing.read` because it writes, and
+ * because only someone who could apply the scale has any use for it.
+ */
+export async function detectSheetVersionScale(
+  sheetVersionId: string,
+  orgId?: string,
+): Promise<SheetCalibrationProposal | null> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+
+  const { data: version, error } = await supabase
+    .from("drawing_sheet_versions")
+    .select("id, file_id, page_index, image_width, image_height, tile_manifest, extracted_metadata, drawing_sheets!inner(project_id)")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", sheetVersionId)
+    .single()
+
+  if (error || !version) throw new Error("Sheet version not found")
+
+  const projectId = (version.drawing_sheets as unknown as { project_id: string }).project_id
+  await requireProjectPermission(userId, projectId, "drawing.markup")
+
+  const metadata = (version.extracted_metadata ?? {}) as Record<string, unknown>
+  // Already calibrated by a human — never second-guess it.
+  if ((metadata.calibration as { feet_per_image_px?: number } | null)?.feet_per_image_px) {
+    return null
+  }
+
+  const existing = normalizeCalibrationProposal(metadata.calibration_proposal)
+  if (existing) return existing
+
+  const manifestSize = (version.tile_manifest as any)?.Image?.Size
+  const widthPx = Number(manifestSize?.Width ?? version.image_width ?? 0)
+  const heightPx = Number(manifestSize?.Height ?? version.image_height ?? 0)
+
+  if (!version.file_id) {
+    await markScaleScanned(supabase, resolvedOrgId, sheetVersionId, metadata, null)
+    return null
+  }
+
+  const { data: file } = await supabase
+    .from("files")
+    .select("storage_path")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", version.file_id)
+    .maybeSingle()
+
+  if (!file?.storage_path) {
+    await markScaleScanned(supabase, resolvedOrgId, sheetVersionId, metadata, null)
+    return null
+  }
+
+  const { detectCalibrationProposal, loadMupdf } = await import("@/lib/services/drawings-pipeline")
+  const { downloadDrawingPdfObject } = await import("@/lib/storage/drawings-pdfs-storage")
+
+  const pdfBytes = await downloadDrawingPdfObject({
+    supabase: createServiceSupabaseClient(),
+    orgId: resolvedOrgId,
+    path: file.storage_path,
+  })
+
+  let proposal: SheetCalibrationProposal | null = null
+  try {
+    const mupdf = await loadMupdf()
+    const doc = mupdf.Document.openDocument(pdfBytes, "application/pdf")
+    try {
+      const pageIndex = Math.min(Math.max(0, version.page_index ?? 0), doc.countPages() - 1)
+      const page = doc.loadPage(pageIndex)
+      try {
+        // The stored raster dimensions are the ground truth for this version's
+        // DPI — sheets in the register were rendered at 96 and 100 DPI under
+        // earlier settings, and assuming today's would halve every quantity.
+        proposal = normalizeCalibrationProposal(
+          detectCalibrationProposal(
+            page,
+            widthPx > 0 ? { widthPx, heightPx: heightPx > 0 ? heightPx : undefined } : undefined,
+          ),
+        )
+      } finally {
+        ;(page as { destroy?: () => void }).destroy?.()
+      }
+    } finally {
+      ;(doc as { destroy?: () => void }).destroy?.()
+    }
+  } catch (pdfError) {
+    // A PDF engine failure is an infrastructure problem, not an answer about
+    // this sheet. Deliberately NOT marked as scanned, so it retries once the
+    // environment is fixed instead of being written off forever.
+    console.error("[drawings] Scale detection could not read the PDF:", pdfError)
+    return null
+  }
+
+  await markScaleScanned(supabase, resolvedOrgId, sheetVersionId, metadata, proposal)
+  return proposal
+}
+
+
+
+async function markScaleScanned(
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"],
+  orgId: string,
+  sheetVersionId: string,
+  metadata: Record<string, unknown>,
+  proposal: SheetCalibrationProposal | null,
+): Promise<void> {
+  const { error } = await supabase
+    .from("drawing_sheet_versions")
+    .update({
+      extracted_metadata: {
+        ...metadata,
+        calibration_scan: {
+          at: new Date().toISOString(),
+          found: !!proposal,
+          ...(proposal ? { method: proposal.method } : {}),
+        },
+        ...(proposal ? { calibration_proposal: proposal } : {}),
+      },
+    })
+    .eq("org_id", orgId)
+    .eq("id", sheetVersionId)
+
+  if (error) {
+    throw new Error(`Failed to record scale scan: ${error.message}`)
   }
 }
 
@@ -2166,6 +2470,29 @@ export async function publishRevision(input: PublishRevisionInput, orgId?: strin
 
   if (publishError) {
     throw new Error(`Failed to publish revision: ${publishError.message}`)
+  }
+
+  // Carry measured quantities onto the new versions. Without this, publishing
+  // a revision silently drops every measurement on the affected sheets out of
+  // its condition's rollup — see docs/takeoff-reanchor-design.md. Runs as an
+  // outbox job: publish never blocks on it, and a failure retries instead of
+  // silently losing the carry-forward (the exact failure this exists to stop).
+  const { error: reanchorEnqueueError } = await supabase.from("outbox").insert({
+    org_id: resolvedOrgId,
+    event_id: null,
+    job_type: "reanchor_takeoff_markups",
+    status: "pending",
+    run_at: new Date().toISOString(),
+    retry_count: 0,
+    last_error: "",
+    payload: { revision_id: input.revisionId },
+  })
+  if (reanchorEnqueueError) {
+    // The revision IS published; losing the queue row means measurements
+    // silently vanish from rollups, so this one is worth failing loudly.
+    throw new Error(
+      `Revision published, but measurement carry-forward could not be queued: ${reanchorEnqueueError.message}`,
+    )
   }
 
   await recordEvent({

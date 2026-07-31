@@ -1,37 +1,18 @@
 "use client"
 
-import { useState, useCallback, useRef, useEffect } from "react"
+import { useCallback, useEffect, useRef } from "react"
 
 /**
- * Performance timing phases for drawing viewer
+ * Load-time telemetry for the tiled drawing viewer.
  *
- * Current flow (with react-pdf):
- * 1. urlGeneration: Time to generate signed URL from Supabase
- * 2. pdfImport: Time to dynamically import react-pdf bundle (~2MB)
- * 3. workerLoad: Time to load PDF.js worker from unpkg
- * 4. pdfDownload: Time to download the PDF file
- * 5. pdfParsing: Time for PDF.js to parse the PDF in browser
- * 6. rendering: Time to render the PDF to canvas
- *
- * Target flow (with image generation):
- * 1. thumbnailLoad: Time to load thumbnail image (<100ms)
- * 2. mediumLoad: Time to load medium resolution (<200ms)
- * 3. fullLoad: Time to load full resolution (<500ms)
+ * Phases:
+ *   1. thumbnailLoad — the static thumbnail behind the GPU canvas is showing
+ *   2. firstVisible  — first meaningful content on screen
+ *   3. fullyLoaded   — the viewer reports a fully-loaded frame (reported once per sheet)
  */
 export interface DrawingPerformanceTimings {
-  // Phase identifiers
   startTime: number
-  urlGeneration: number | null
-  pdfImport: number | null
-  workerLoad: number | null
-  pdfDownload: number | null
-  pdfParsing: number | null
-  rendering: number | null
-  // For future image-based loading
   thumbnailLoad: number | null
-  mediumLoad: number | null
-  fullLoad: number | null
-  // Overall metrics
   firstVisible: number | null
   fullyLoaded: number | null
 }
@@ -42,54 +23,38 @@ export interface DrawingPerformanceMetrics {
   device: "desktop" | "mobile" | "tablet"
   connection?: "4g" | "3g" | "slow" | "unknown"
   loadTime: number
-  isPdf: boolean
-  // For debugging
   breakdown: {
-    urlGeneration?: number
-    pdfImport?: number
-    workerLoad?: number
-    pdfDownload?: number
-    pdfParsing?: number
-    rendering?: number
     thumbnailLoad?: number
-    mediumLoad?: number
-    fullLoad?: number
+    firstVisible?: number
   }
 }
 
 interface UseDrawingPerformanceOptions {
   sheetId: string
   fileSize?: number
-  isPdf: boolean
   onComplete?: (metrics: DrawingPerformanceMetrics) => void
+}
+
+const DEBUG_PERFORMANCE = process.env.NODE_ENV !== "production"
+
+function emptyTimings(startTime = 0): DrawingPerformanceTimings {
+  return { startTime, thumbnailLoad: null, firstVisible: null, fullyLoaded: null }
 }
 
 export function useDrawingPerformance({
   sheetId,
   fileSize,
-  isPdf,
   onComplete,
 }: UseDrawingPerformanceOptions) {
-  const [timings, setTimings] = useState<DrawingPerformanceTimings>({
-    startTime: 0,
-    urlGeneration: null,
-    pdfImport: null,
-    workerLoad: null,
-    pdfDownload: null,
-    pdfParsing: null,
-    rendering: null,
-    thumbnailLoad: null,
-    mediumLoad: null,
-    fullLoad: null,
-    firstVisible: null,
-    fullyLoaded: null,
-  })
-
-  const [isComplete, setIsComplete] = useState(false)
   const startTimeRef = useRef<number>(0)
-  const reportedRef = useRef(false)
+  const timingsRef = useRef<DrawingPerformanceTimings>(emptyTimings())
+  // Keyed by sheet id rather than a boolean so a completion event fires
+  // exactly once per sheet load, whichever onLoad path gets there first.
+  const reportedSheetRef = useRef<string | null>(null)
+  // Latest values for the report, so the callback never closes over stale props.
+  const reportInputsRef = useRef({ sheetId, fileSize, onComplete })
+  reportInputsRef.current = { sheetId, fileSize, onComplete }
 
-  // Detect device type
   const getDeviceType = useCallback((): "desktop" | "mobile" | "tablet" => {
     if (typeof window === "undefined") return "desktop"
     const ua = navigator.userAgent.toLowerCase()
@@ -98,7 +63,6 @@ export function useDrawingPerformance({
     return "desktop"
   }, [])
 
-  // Detect connection type
   const getConnectionType = useCallback((): "4g" | "3g" | "slow" | "unknown" => {
     if (typeof navigator === "undefined") return "unknown"
     const connection = (navigator as Navigator & { connection?: { effectiveType?: string } }).connection
@@ -110,142 +74,69 @@ export function useDrawingPerformance({
     return "unknown"
   }, [])
 
-  // Start timing when component mounts or sheet changes
+  // Restart the clock whenever the sheet changes.
   useEffect(() => {
     startTimeRef.current = performance.now()
-    reportedRef.current = false
-    setIsComplete(false)
-    setTimings({
-      startTime: startTimeRef.current,
-      urlGeneration: null,
-      pdfImport: null,
-      workerLoad: null,
-      pdfDownload: null,
-      pdfParsing: null,
-      rendering: null,
-      thumbnailLoad: null,
-      mediumLoad: null,
-      fullLoad: null,
-      firstVisible: null,
-      fullyLoaded: null,
-    })
+    reportedSheetRef.current = null
+    timingsRef.current = emptyTimings(startTimeRef.current)
 
-    console.log(`[Drawing Performance] Started timing for sheet ${sheetId}`)
+    if (DEBUG_PERFORMANCE) {
+      console.log(`[Drawing Performance] Started timing for sheet ${sheetId}`)
+    }
   }, [sheetId])
 
-  // Mark timing for a specific phase
   const markTiming = useCallback((phase: keyof Omit<DrawingPerformanceTimings, "startTime">) => {
-    const now = performance.now()
-    const elapsed = Math.round(now - startTimeRef.current)
+    const elapsed = Math.round(performance.now() - startTimeRef.current)
+    timingsRef.current = { ...timingsRef.current, [phase]: elapsed }
 
-    setTimings((prev) => ({
-      ...prev,
-      [phase]: elapsed,
-    }))
-
-    console.log(`[Drawing Performance] ${phase}: ${elapsed}ms`)
-
+    if (DEBUG_PERFORMANCE) {
+      console.log(`[Drawing Performance] ${phase}: ${elapsed}ms`)
+    }
     return elapsed
   }, [])
 
-  // Report final metrics
-  const reportMetrics = useCallback(() => {
-    if (reportedRef.current) return
-    reportedRef.current = true
+  const markFullyLoaded = useCallback(() => {
+    const { sheetId: currentSheetId, fileSize: currentFileSize, onComplete: currentOnComplete } =
+      reportInputsRef.current
+    if (reportedSheetRef.current === currentSheetId) return
+    reportedSheetRef.current = currentSheetId
 
-    const now = performance.now()
-    const totalTime = Math.round(now - startTimeRef.current)
-
-    setTimings((prev) => ({
-      ...prev,
-      fullyLoaded: totalTime,
-    }))
-    setIsComplete(true)
-
+    const totalTime = markTiming("fullyLoaded")
+    const breakdownSource = timingsRef.current
     const metrics: DrawingPerformanceMetrics = {
-      sheetId,
-      fileSize,
+      sheetId: currentSheetId,
+      fileSize: currentFileSize,
       device: getDeviceType(),
       connection: getConnectionType(),
       loadTime: totalTime,
-      isPdf,
       breakdown: {
-        urlGeneration: timings.urlGeneration ?? undefined,
-        pdfImport: timings.pdfImport ?? undefined,
-        workerLoad: timings.workerLoad ?? undefined,
-        pdfDownload: timings.pdfDownload ?? undefined,
-        pdfParsing: timings.pdfParsing ?? undefined,
-        rendering: timings.rendering ?? undefined,
-        thumbnailLoad: timings.thumbnailLoad ?? undefined,
-        mediumLoad: timings.mediumLoad ?? undefined,
-        fullLoad: timings.fullLoad ?? undefined,
+        thumbnailLoad: breakdownSource.thumbnailLoad ?? undefined,
+        firstVisible: breakdownSource.firstVisible ?? undefined,
       },
     }
 
-    console.log(`[Drawing Performance] Complete:`, {
-      sheetId,
-      totalTime: `${totalTime}ms`,
-      device: metrics.device,
-      connection: metrics.connection,
-      breakdown: metrics.breakdown,
-    })
+    currentOnComplete?.(metrics)
+  }, [markTiming, getDeviceType, getConnectionType])
 
-    onComplete?.(metrics)
-  }, [sheetId, fileSize, isPdf, timings, getDeviceType, getConnectionType, onComplete])
-
-  // Mark first visible content (thumbnail or initial render)
-  const markFirstVisible = useCallback(() => {
-    const elapsed = markTiming("firstVisible")
-    console.log(`[Drawing Performance] First visible content: ${elapsed}ms`)
-  }, [markTiming])
-
-  // Mark fully loaded (full resolution or PDF fully rendered)
-  const markFullyLoaded = useCallback(() => {
-    markTiming("fullyLoaded")
-    reportMetrics()
-  }, [markTiming, reportMetrics])
-
-  return {
-    timings,
-    isComplete,
-    markTiming,
-    markFirstVisible,
-    markFullyLoaded,
-    reportMetrics,
-    getElapsed: () => Math.round(performance.now() - startTimeRef.current),
-  }
-}
-
-/**
- * Utility to measure async operation timing
- */
-export async function measureAsync<T>(
-  operation: () => Promise<T>,
-  onTiming: (elapsed: number) => void
-): Promise<T> {
-  const start = performance.now()
-  const result = await operation()
-  const elapsed = Math.round(performance.now() - start)
-  onTiming(elapsed)
-  return result
+  return { markTiming, markFullyLoaded }
 }
 
 /**
  * Log performance summary to console in a table format
  */
 export function logPerformanceSummary(metrics: DrawingPerformanceMetrics) {
+  if (!DEBUG_PERFORMANCE) return
+
   console.group(`📊 Drawing Performance Report - ${metrics.sheetId}`)
   console.log(`Total Load Time: ${metrics.loadTime}ms`)
   console.log(`Device: ${metrics.device}`)
   console.log(`Connection: ${metrics.connection}`)
-  console.log(`File Type: ${metrics.isPdf ? "PDF" : "Image"}`)
   if (metrics.fileSize) {
     console.log(`File Size: ${(metrics.fileSize / 1024).toFixed(1)}KB`)
   }
   console.table(metrics.breakdown)
   console.groupEnd()
 
-  // Performance rating
   if (metrics.loadTime < 300) {
     console.log(`✅ Performance: EXCELLENT (<300ms)`)
   } else if (metrics.loadTime < 1000) {

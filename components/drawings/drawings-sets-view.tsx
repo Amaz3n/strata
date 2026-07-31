@@ -31,6 +31,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import {
   Select,
   SelectContent,
@@ -110,6 +111,8 @@ import {
   listSheetVersionsAction,
   getPendingDraftRevisionAction,
   searchSheetContentAction,
+  prioritizeSheetProcessingAction,
+  ensureDrawingVectorsBackfillAction,
 } from "@/app/(app)/drawings/actions"
 import { createObservationAction } from "@/app/(app)/projects/[id]/safety/actions"
 import type { RevisionDraftStatus, SheetContentMatch } from "@/lib/services/drawings"
@@ -127,13 +130,17 @@ import { RevisionReviewDialog, DistributeRevisionDialog } from "./revision-revie
 import { CreateFromDrawingDialog } from "./create-from-drawing-dialog"
 
 import { unwrapAction } from "@/lib/action-result"
+import { formatQuantityWithUom } from "@/lib/drawings/measure"
+import { getConditionLandingSheetAction } from "@/app/(app)/drawings/takeoff-actions"
 
 // The viewer only mounts once a sheet is opened; keep its 2k+ lines (and
-// OpenSeadragon/react-pdf chunks) out of the register's initial bundle.
+// GPU viewer/react-pdf chunks) out of the register's initial bundle.
 const DrawingViewer = dynamic(
   () => import("./drawing-viewer").then((mod) => mod.DrawingViewer),
   { ssr: false },
 )
+
+type SaveMarkupInput = import("./drawing-viewer").SaveMarkupInput
 
 type ProjectOption = { id: string; name: string }
 
@@ -145,6 +152,16 @@ interface DrawingsSetsViewProps {
   lockProject?: boolean
   initialSelectedSetId?: string
   initialSheetId?: string
+  /** Takeoff is read-only without takeoff.write; the panel still shows numbers. */
+  canWriteTakeoff?: boolean
+  /** Deep link from an estimate line: open the sheet in takeoff mode, armed. */
+  initialConditionId?: string
+  /**
+   * Production: measure a house plan against this project's drawings. The
+   * conditions belong to the PLAN VERSION, so the quantities roll up to the
+   * plan rather than to the lot that happens to carry the sheets.
+   */
+  takeoffPlanVersionId?: string
 }
 
 const DISCIPLINE_ORDER: DrawingDiscipline[] = [
@@ -173,6 +190,26 @@ const ISSUANCE_TYPE_ORDER: DrawingIssuanceType[] = [
   "permit_set",
   "bid_set",
   "sketch",
+  "record_set",
+  "other",
+]
+
+// The upload decision the user was never shown: a revision-style package is a
+// change to what is already in the register; a baseline package is a standalone
+// issuance. Both land in the project's single register — that is the part the
+// copy has to say out loud.
+const REVISION_ISSUANCE_TYPES: DrawingIssuanceType[] = [
+  "revision",
+  "asi",
+  "bulletin",
+  "addendum",
+  "sketch",
+]
+
+const BASELINE_ISSUANCE_TYPES: DrawingIssuanceType[] = [
+  "ifc_set",
+  "permit_set",
+  "bid_set",
   "record_set",
   "other",
 ]
@@ -321,7 +358,7 @@ function describeProcessingStage(set: DrawingSet | null) {
     case "extracting_text":
       return {
         title: `Processing ${processed}/${total ?? "?"} sheets`,
-        detail: "Using OCR and embedded PDF text to read each page.",
+        detail: "Reading the embedded PDF text on each page.",
       }
     case "rendering_pages":
       return {
@@ -364,6 +401,9 @@ export function DrawingsSetsView({
   lockProject = false,
   initialSelectedSetId,
   initialSheetId,
+  canWriteTakeoff = false,
+  initialConditionId,
+  takeoffPlanVersionId,
 }: DrawingsSetsViewProps) {
   const router = useRouter()
   const [sets, setSets] = useState<DrawingSet[]>(initialSets)
@@ -494,6 +534,12 @@ export function DrawingsSetsView({
   useEffect(() => {
     setSets(initialSets)
   }, [initialSets])
+
+  // Sheets processed before vector extraction existed get their takeoff snap
+  // layer backfilled lazily. Coalesced server-side; safe to fire every mount.
+  useEffect(() => {
+    void ensureDrawingVectorsBackfillAction().catch(() => {})
+  }, [])
 
   useEffect(() => {
     setSheetsBySet(buildSheetsBySet(initialSheets))
@@ -656,6 +702,28 @@ export function DrawingsSetsView({
     () => (selectedSetId ? sheetsBySet.get(selectedSetId) ?? [] : []),
     [selectedSetId, sheetsBySet],
   )
+  // Uploads always merge into the project's canonical (oldest) register — the
+  // upload dialog names it so the merge is never a surprise.
+  const canonicalSet = useMemo(() => {
+    if (sets.length === 0) return null
+    return [...sets].sort(
+      (a, b) =>
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+    )[0]
+  }, [sets])
+  const projectSheetCount = useMemo(() => {
+    let count = 0
+    for (const list of sheetsBySet.values()) count += list.length
+    return count
+  }, [sheetsBySet])
+  const uploadMode: "revision" | "baseline" = REVISION_ISSUANCE_TYPES.includes(
+    issuanceType,
+  )
+    ? "revision"
+    : "baseline"
+  const handleUploadModeChange = (mode: string) => {
+    setIssuanceType(mode === "revision" ? "revision" : "ifc_set")
+  }
   // When a past revision is selected, render its snapshot instead of the live set.
   const activeSheets = revisionFilter === "current" ? liveSheets : snapshotSheets
 
@@ -1315,6 +1383,12 @@ export function DrawingsSetsView({
       try {
         const hasTiles =
           !!(sheet as any).tile_base_url && !!(sheet as any).tile_manifest
+
+        // The user is looking at an unrendered sheet — jump its page job to
+        // the front of the processing queue. Fire-and-forget.
+        if (!hasTiles) {
+          void prioritizeSheetProcessingAction(sheet.id).catch(() => {})
+        }
         const hasOptimized =
           !!sheet.image_full_url &&
           !!sheet.image_medium_url &&
@@ -1404,9 +1478,33 @@ export function DrawingsSetsView({
     }
   }, [handleViewSheet, initialSheetId, sheetsBySet])
 
-  const handleSaveMarkup = async (
-    markup: Omit<DrawingMarkup, "id" | "org_id" | "created_at" | "updated_at">,
-  ) => {
+  // Deep link from an estimate line (?condition=): land on whichever sheet
+  // carries the most of that condition, already in takeoff mode.
+  useEffect(() => {
+    if (!initialConditionId || initialSheetId || initialSheetHandledRef.current) return
+    if (sheetsBySet.size === 0) return
+    let cancelled = false
+    initialSheetHandledRef.current = true
+    void getConditionLandingSheetAction(initialConditionId)
+      .then((landing) => {
+        if (cancelled || !landing) return
+        for (const sheets of sheetsBySet.values()) {
+          const match = sheets.find((sheet) => sheet.id === landing.drawing_sheet_id)
+          if (!match) continue
+          setSelectedSetId(match.drawing_set_id)
+          void handleViewSheet(match)
+          return
+        }
+      })
+      .catch(() => {
+        // The condition may have no measurements yet; the register is fine.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [handleViewSheet, initialConditionId, initialSheetId, sheetsBySet])
+
+  const handleSaveMarkup = async (markup: SaveMarkupInput) => {
     try {
       const created = unwrapAction(await createDrawingMarkupAction(markup))
       setViewerMarkups((prev) => [...prev, created])
@@ -1423,6 +1521,30 @@ export function DrawingsSetsView({
     } catch (err) {
       console.error(err)
       toast.error("Failed to save markup")
+    }
+  }
+
+  /**
+   * A finished measurement. Same write path, different feedback: the panel
+   * reports the rollup, so the toast names the quantity instead of saying
+   * "saved" and leaving the user to hunt for the number.
+   */
+  const handleSaveMeasurement = async (markup: SaveMarkupInput) => {
+    const created = unwrapAction(await createDrawingMarkupAction(markup))
+    setViewerMarkups((prev) => [...prev, created])
+    if (viewerSheet) {
+      const cached = viewerSheetCacheRef.current.get(viewerSheet.id)
+      if (cached) {
+        viewerSheetCacheRef.current.set(viewerSheet.id, {
+          ...cached,
+          markups: [...cached.markups, created],
+        })
+      }
+    }
+    if (created.quantity !== null && created.uom) {
+      toast.success(`${formatQuantityWithUom(created.quantity, created.uom)} measured`)
+    } else {
+      toast.success("Measurement saved — set the sheet scale to price it")
     }
   }
 
@@ -2106,6 +2228,60 @@ export function DrawingsSetsView({
               </div>
             )}
 
+            {uploadStep === "prepare" && canonicalSet && projectSheetCount > 0 && (
+              <div className="space-y-2">
+                <p className="microlabel">How this package lands</p>
+                <RadioGroup
+                  value={uploadMode}
+                  onValueChange={handleUploadModeChange}
+                  className="gap-0 divide-y border"
+                >
+                  <Label
+                    htmlFor="upload-mode-revision"
+                    className="flex cursor-pointer items-start gap-3 p-3 font-normal hover:bg-muted/40"
+                  >
+                    <RadioGroupItem
+                      id="upload-mode-revision"
+                      value="revision"
+                      className="mt-0.5"
+                    />
+                    <span className="min-w-0 space-y-1">
+                      <span className="block text-sm font-medium">
+                        Add as a revision to {canonicalSet.title}
+                      </span>
+                      <span className="block text-xs text-muted-foreground">
+                        Sheets whose numbers match one of the{" "}
+                        {projectSheetCount} sheets already in the register
+                        version up. Sheets not in this PDF stay exactly as they
+                        are.
+                      </span>
+                    </span>
+                  </Label>
+                  <Label
+                    htmlFor="upload-mode-baseline"
+                    className="flex cursor-pointer items-start gap-3 p-3 font-normal hover:bg-muted/40"
+                  >
+                    <RadioGroupItem
+                      id="upload-mode-baseline"
+                      value="baseline"
+                      className="mt-0.5"
+                    />
+                    <span className="min-w-0 space-y-1">
+                      <span className="block text-sm font-medium">
+                        Log as a new baseline package
+                      </span>
+                      <span className="block text-xs text-muted-foreground">
+                        Recorded as a standalone issuance — permit set, IFC, bid
+                        set. It still lands in {canonicalSet.title}: a project
+                        has one register, so matching sheet numbers still
+                        version up.
+                      </span>
+                    </span>
+                  </Label>
+                </RadioGroup>
+              </div>
+            )}
+
             {uploadStep === "prepare" && (
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="space-y-1.5">
@@ -2118,7 +2294,12 @@ export function DrawingsSetsView({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {ISSUANCE_TYPE_ORDER.map((type) => (
+                      {(canonicalSet && projectSheetCount > 0
+                        ? uploadMode === "revision"
+                          ? REVISION_ISSUANCE_TYPES
+                          : BASELINE_ISSUANCE_TYPES
+                        : ISSUANCE_TYPE_ORDER
+                      ).map((type) => (
                         <SelectItem key={type} value={type}>
                           {DRAWING_ISSUANCE_TYPE_LABELS[type]}
                         </SelectItem>
@@ -2735,14 +2916,17 @@ export function DrawingsSetsView({
           highlightedPinId={viewerHighlightedPinId ?? undefined}
           onClose={() => setViewerOpen(false)}
           onSaveMarkup={handleSaveMarkup}
+          onSaveMeasurement={handleSaveMeasurement}
           onDeleteMarkup={handleDeleteMarkup}
           onCreatePin={handleCreatePin}
+          takeoffProjectId={viewerSheet.project_id ?? selectedProjectId ?? null}
+          takeoffPlanVersionId={takeoffPlanVersionId ?? null}
+          canWriteTakeoff={canWriteTakeoff}
+          initialConditionId={initialConditionId ?? null}
           onPinClick={handlePinClick}
           sheets={viewerSheets}
           onNavigateSheet={handleViewSheet}
           imageThumbnailUrl={viewerSheet.image_thumbnail_url}
-          imageMediumUrl={viewerSheet.image_medium_url}
-          imageFullUrl={viewerSheet.image_full_url}
           imageWidth={viewerSheet.image_width}
           imageHeight={viewerSheet.image_height}
         />

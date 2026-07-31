@@ -1,42 +1,18 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
+import { buildRenderableTileBaseUrl } from "@/lib/drawings/tile-urls"
+import { GpuDrawingViewer, type OverlaySpec } from "@/lib/viewer"
+import type { CompareMode, ImageToScreenMatrix, TileManifest } from "@/lib/viewer"
 
-type OpenSeadragonNS = any
-
-export type TileManifest = {
-  Image: {
-    xmlns?: string
-    Format: string
-    Overlap: number
-    TileSize: number
-    Size: { Width: number; Height: number }
-  }
-  // Non-standard helper written by our worker for reliable level detection.
-  Levels?: number
-}
-
-export interface FallbackImageViewerProps {
-  imageUrl: string
-  className?: string
-  onReady?: () => void
-}
-
-export type ImageToScreenMatrix = {
-  a: number
-  b: number
-  c: number
-  d: number
-  e: number
-  f: number
-}
+export type { ImageToScreenMatrix, TileManifest }
 
 export interface TiledDrawingViewerProps {
   tileBaseUrl: string
   tileManifest: TileManifest
   className?: string
-  onReady?: (viewer: any | null) => void
+  onReady?: (viewer: GpuDrawingViewer | null) => void
   onTransformChange?: (args: {
     matrix: ImageToScreenMatrix
     container: { width: number; height: number }
@@ -44,14 +20,16 @@ export interface TiledDrawingViewerProps {
   }) => void
   thumbnailUrl?: string // Fallback for when tiles don't exist
   /**
-   * Optional second tiled image composited over the base image (used by the
-   * drawings comparison overlay). Opacity is 0..1 and updates live via
-   * setOpacity() without rebuilding the viewer or re-opening tile sources.
+   * Optional second tiled image rendered against the base image (used by the
+   * drawings comparison view). `overlay` composites it on top at `opacity`
+   * (live-updatable without refetching tiles); `difference` runs the GPU
+   * ink-diff — unchanged linework gray, removed red, added blue.
    */
   overlaySource?: {
     tileBaseUrl: string
     tileManifest: TileManifest
     opacity: number
+    mode?: "overlay" | "difference"
   }
   /**
    * Route that mints the arc_tiles cookie for this viewer's audience.
@@ -59,66 +37,6 @@ export interface TiledDrawingViewerProps {
    * endpoint (/api/portal/drawings/[token]/tiles-cookie).
    */
   tilesCookieEndpoint?: string
-}
-
-function buildMatrix(args: {
-  p00: { x: number; y: number }
-  p10: { x: number; y: number }
-  p01: { x: number; y: number }
-  imageWidth: number
-  imageHeight: number
-}): ImageToScreenMatrix {
-  const { p00, p10, p01, imageWidth, imageHeight } = args
-
-  const a = (p10.x - p00.x) / imageWidth
-  const b = (p10.y - p00.y) / imageWidth
-  const c = (p01.x - p00.x) / imageHeight
-  const d = (p01.y - p00.y) / imageHeight
-  const e = p00.x
-  const f = p00.y
-
-  return { a, b, c, d, e, f }
-}
-
-function normalizeFormat(value?: string) {
-  const normalized = (value ?? "png").trim().toLowerCase()
-  return normalized || "png"
-}
-
-function buildRenderableTileBaseUrl(baseUrl: string, secureTilesEnabled: boolean) {
-  if (typeof window === "undefined") return baseUrl
-  if (!secureTilesEnabled) return baseUrl
-
-  const host = window.location.hostname.toLowerCase()
-  const isProductionAppHost =
-    host === "app.arcnaples.com" || host.endsWith(".arcnaples.com")
-
-  if (isProductionAppHost) return baseUrl
-
-  try {
-    const parsed = new URL(baseUrl)
-    const marker = "/drawings-tiles/"
-    const index = parsed.pathname.indexOf(marker)
-    if (index === -1) return baseUrl
-    const path = parsed.pathname.slice(index + marker.length)
-    return `/api/drawings/tiles/${path}`
-  } catch {
-    return baseUrl
-  }
-}
-
-/**
- * Convert a raw drawings CDN url (tile base, thumbnail.png, etc.) into a URL the
- * browser can actually load. Raw cdn.arcnaples.com urls are auth-protected and
- * 401 off the production host (e.g. on localhost), so we route them through the
- * authenticated /api/drawings/tiles proxy. Mirrors the viewer's tile handling.
- */
-export function toRenderableDrawingsUrl(
-  url?: string | null,
-): string | undefined {
-  if (!url) return undefined
-  const secure = process.env.NEXT_PUBLIC_DRAWINGS_TILES_SECURE === "true"
-  return buildRenderableTileBaseUrl(url, secure)
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +90,10 @@ function ensureTilesCookie(endpoint: string, options?: { force?: boolean }): Pro
   return promise
 }
 
+function toCompareMode(mode: "overlay" | "difference" | undefined): CompareMode {
+  return mode === "difference" ? "difference" : "composite"
+}
+
 export function TiledDrawingViewer({
   tileBaseUrl,
   tileManifest,
@@ -184,14 +106,12 @@ export function TiledDrawingViewer({
 }: TiledDrawingViewerProps) {
   const secureTilesEnabled = process.env.NEXT_PUBLIC_DRAWINGS_TILES_SECURE === "true"
   const containerRef = useRef<HTMLDivElement>(null)
-  const viewerRef = useRef<any | null>(null)
-  const resizeObserverRef = useRef<ResizeObserver | null>(null)
-  const imageSizeRef = useRef<{ width: number; height: number } | null>(null)
+  const viewerRef = useRef<GpuDrawingViewer | null>(null)
   const onReadyRef = useRef<TiledDrawingViewerProps["onReady"]>(onReady)
   const onTransformChangeRef = useRef<TiledDrawingViewerProps["onTransformChange"]>(onTransformChange)
   const lastAuthRecoveryAtRef = useRef(0)
 
-  // Thumbnail-first render: show the sheet thumbnail behind the OSD canvas so
+  // Thumbnail-first render: show the sheet thumbnail behind the GPU canvas so
   // the user never stares at a blank surface while tiles stream in.
   const [thumbnailHidden, setThumbnailHidden] = useState(false)
   const renderableThumbnailUrl = useMemo(
@@ -199,11 +119,6 @@ export function TiledDrawingViewer({
     [secureTilesEnabled, thumbnailUrl]
   )
 
-  const imageSize = useMemo(() => {
-    const w = tileManifest?.Image?.Size?.Width ?? 1
-    const h = tileManifest?.Image?.Size?.Height ?? 1
-    return { width: w, height: h }
-  }, [tileManifest])
   const renderableTileBaseUrl = useMemo(
     () => buildRenderableTileBaseUrl(tileBaseUrl, secureTilesEnabled),
     [secureTilesEnabled, tileBaseUrl]
@@ -211,6 +126,7 @@ export function TiledDrawingViewer({
   const overlayTileBaseUrl = overlaySource?.tileBaseUrl
   const overlayManifest = overlaySource?.tileManifest
   const overlayOpacity = overlaySource?.opacity
+  const overlayMode = overlaySource?.mode
   const renderableOverlayBaseUrl = useMemo(
     () =>
       overlayTileBaseUrl
@@ -220,10 +136,6 @@ export function TiledDrawingViewer({
   )
 
   useEffect(() => {
-    imageSizeRef.current = imageSize
-  }, [imageSize])
-
-  useEffect(() => {
     onReadyRef.current = onReady
   }, [onReady])
 
@@ -231,178 +143,56 @@ export function TiledDrawingViewer({
     onTransformChangeRef.current = onTransformChange
   }, [onTransformChange])
 
-  const buildTileSource = useCallback(
-    (baseUrl: string, manifest: TileManifest) => {
-      const width = manifest?.Image?.Size?.Width ?? 1
-      const height = manifest?.Image?.Size?.Height ?? 1
-      const format = normalizeFormat(manifest?.Image?.Format)
-      const explicitLevels =
-        typeof manifest?.Levels === "number" && Number.isFinite(manifest.Levels)
-          ? Math.max(1, Math.floor(manifest.Levels))
-          : null
-
-      // Backward compatibility:
-      // Legacy manifests had no level metadata and only one file at /tiles/0/0_0.png.
-      if (!explicitLevels || explicitLevels <= 1) {
-        return {
-          type: "image",
-          url: `${baseUrl}/tiles/0/0_0.${format}`,
-          buildPyramid: false,
-        }
-      }
-
-      const maxLevel = explicitLevels - 1
-      const tileSize = Math.max(1, manifest?.Image?.TileSize ?? 512)
-      const overlap = Math.max(0, manifest?.Image?.Overlap ?? 0)
-
-      return {
-        width,
-        height,
-        minLevel: 0,
-        maxLevel,
-        tileSize,
-        tileOverlap: overlap,
-        getTileUrl: (level: number, x: number, y: number) =>
-          `${baseUrl}/tiles/${level}/${x}_${y}.${format}`,
-      }
-    },
-    []
+  const sources = useMemo(
+    () => ({
+      base: { baseUrl: renderableTileBaseUrl, manifest: tileManifest },
+      overlay:
+        renderableOverlayBaseUrl && overlayManifest
+          ? ({
+              source: { baseUrl: renderableOverlayBaseUrl, manifest: overlayManifest },
+              opacity: overlayOpacity ?? 1,
+              mode: toCompareMode(overlayMode),
+            } satisfies OverlaySpec)
+          : null,
+    }),
+    // Opacity and mode update in place via their own effects below; changing
+    // them must not re-open the tile sources.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [renderableTileBaseUrl, tileManifest, renderableOverlayBaseUrl, overlayManifest]
   )
+  const sourcesRef = useRef(sources)
+  sourcesRef.current = sources
+  /** What the mounted viewer is showing, to skip the mount-echo setSource. */
+  const appliedSourcesRef = useRef<typeof sources | null>(null)
 
-  // Latest tile source inputs, readable from the mount-once boot effect.
-  const tileSourceRef = useRef<{ baseUrl: string; manifest: TileManifest }>({
-    baseUrl: renderableTileBaseUrl,
-    manifest: tileManifest,
-  })
+  // Create the GPU viewer ONCE per component mount. Sheet changes reuse the
+  // instance via setSource() (see the effect below) instead of destroy/recreate.
   useEffect(() => {
-    tileSourceRef.current = { baseUrl: renderableTileBaseUrl, manifest: tileManifest }
-  }, [renderableTileBaseUrl, tileManifest])
+    const container = containerRef.current
+    if (!container || viewerRef.current) return
 
-  const overlaySourceRef = useRef<{ baseUrl: string; manifest: TileManifest } | null>(null)
-  const overlayOpacityRef = useRef(overlayOpacity ?? 1)
-  useEffect(() => {
-    overlaySourceRef.current =
-      renderableOverlayBaseUrl && overlayManifest
-        ? { baseUrl: renderableOverlayBaseUrl, manifest: overlayManifest }
-        : null
-  }, [renderableOverlayBaseUrl, overlayManifest])
-
-  // Compose the open() payload: base image plus (optionally) the overlay image.
-  const composeTileSources = useCallback(() => {
-    const { baseUrl, manifest } = tileSourceRef.current
-    const overlay = overlaySourceRef.current
-    const sources: any[] = [buildTileSource(baseUrl, manifest)]
-    if (overlay) {
-      sources.push({
-        tileSource: buildTileSource(overlay.baseUrl, overlay.manifest),
-        opacity: overlayOpacityRef.current,
+    if (secureTilesEnabled) {
+      // Start the cookie POST before the first tile request goes out.
+      ensureTilesCookie(tilesCookieEndpoint).catch((error) => {
+        console.error("[TiledDrawingViewer] Tiles cookie mint failed:", error)
       })
     }
-    return sources
-  }, [buildTileSource])
 
-  // Create the OSD viewer ONCE per component mount. Sheet changes reuse the
-  // instance via viewer.open() (see the effect below) instead of destroy/recreate.
-  useEffect(() => {
-    if (!containerRef.current || viewerRef.current) return
-
-    let disposed = false
-    let viewer: any | null = null
-
-    const boot = async () => {
-      // Avoid importing openseadragon during SSR/module evaluation:
-      // it touches `document` at import-time.
-      // Start the cookie POST and the module import concurrently.
-      const [mod] = await Promise.all([
-        import("openseadragon") as Promise<any>,
-        secureTilesEnabled ? ensureTilesCookie(tilesCookieEndpoint) : Promise.resolve(),
-      ])
-      const OSD: OpenSeadragonNS = mod?.default ?? mod
-      if (disposed || !containerRef.current) return
-
-      viewer = OSD({
-        element: containerRef.current,
-        tileSources: composeTileSources(),
-        // Secure tiles are cookie-protected on a sibling subdomain.
-        // Avoid `anonymous` here because it strips credentials from image requests.
-        crossOriginPolicy: secureTilesEnabled ? false : "Anonymous",
-        // Interaction
-        gestureSettingsMouse: {
-          clickToZoom: false,
-          dblClickToZoom: true,
-          scrollToZoom: true,
-        },
-        gestureSettingsTouch: {
-          pinchToZoom: true,
-          flickEnabled: true,
-        },
-        // Performance
-        immediateRender: true,
-        imageLoaderLimit: 18,
-        maxImageCacheCount: 600,
-        blendTime: 0.05,
-        alwaysBlend: false,
-        // UI (we provide our own controls)
-        showNavigationControl: false,
-        showNavigator: false,
-        constrainDuringPan: true,
-        visibilityRatio: 0.5,
-      })
-
-      viewerRef.current = viewer
-      onReadyRef.current?.(viewer)
-
-      const emitTransform = () => {
-        const el = containerRef.current
-        if (!el || !viewer) return
-
-        const rect = el.getBoundingClientRect()
-        const container = { width: rect.width, height: rect.height }
-
-        // Derive affine matrix image(px) -> screen(px) from 3 points.
-        const p00 = viewer.viewport.imageToViewerElementCoordinates(new OSD.Point(0, 0))
-        const currentSize = imageSizeRef.current ?? { width: 1, height: 1 }
-        const p10 = viewer.viewport.imageToViewerElementCoordinates(
-          new OSD.Point(currentSize.width, 0)
-        )
-        const p01 = viewer.viewport.imageToViewerElementCoordinates(
-          new OSD.Point(0, currentSize.height)
-        )
-
-        const matrix = buildMatrix({
-          p00,
-          p10,
-          p01,
-          imageWidth: currentSize.width,
-          imageHeight: currentSize.height,
-        })
-
-        const zoom = viewer.viewport.getZoom(true)
-        onTransformChangeRef.current?.({ matrix, container, zoom })
-      }
-
-      viewer.addHandler("open", () => {
-        emitTransform()
-
-        // The overlay opacity may have changed while open() was in flight.
-        viewer?.world?.getItemAt?.(1)?.setOpacity?.(overlayOpacityRef.current)
-
-        // Fade the static thumbnail out once OSD has a fully-loaded frame.
-        const item = viewer?.world?.getItemAt?.(0)
-        if (!item) return
-        if (item.getFullyLoaded?.()) {
-          setThumbnailHidden(true)
-          return
-        }
-        item.addHandler?.("fully-loaded-change", (event: any) => {
-          if (event?.fullyLoaded) setThumbnailHidden(true)
-        })
-      })
-      viewer.addHandler("viewport-change", emitTransform)
-
+    const initialSources = sourcesRef.current
+    appliedSourcesRef.current = initialSources
+    const viewer = new GpuDrawingViewer({
+      container,
+      source: initialSources.base,
+      overlay: initialSources.overlay,
+      credentials: secureTilesEnabled ? "include" : "omit",
+      onTransformChange: (transform) => onTransformChangeRef.current?.(transform),
+      onFirstFullFrame: () => setThumbnailHidden(true),
+      // The thumbnail backdrop is only aligned with the home view; the first
+      // pan/zoom drops it even if tiles are still streaming.
+      onViewInteraction: () => setThumbnailHidden(true),
       // Tile failures that look like cookie expiry (e.g. after the machine
       // slept past the TTL): re-POST the cookie once, then re-request tiles.
-      viewer.addHandler("tile-load-failed", () => {
+      onTileAuthError: () => {
         if (!secureTilesEnabled) return
         const now = Date.now()
         if (now - getTilesCookieState(tilesCookieEndpoint).setAt < TILES_COOKIE_FRESH_MS) return
@@ -410,57 +200,39 @@ export function TiledDrawingViewer({
         lastAuthRecoveryAtRef.current = now
 
         ensureTilesCookie(tilesCookieEndpoint, { force: true })
-          .then(() => {
-            const current = viewerRef.current
-            if (!current) return
-            const count = current.world?.getItemCount?.() ?? 0
-            for (let i = 0; i < count; i++) {
-              current.world.getItemAt(i)?.reset?.()
-            }
-            current.forceRedraw?.()
-          })
+          .then(() => viewerRef.current?.refreshTiles())
           .catch((error) => {
             console.error("[TiledDrawingViewer] Tiles cookie recovery failed:", error)
           })
-      })
-
-      resizeObserverRef.current = new ResizeObserver(() => {
-        emitTransform()
-      })
-      resizeObserverRef.current.observe(containerRef.current)
-    }
-
-    boot().catch((e) => console.error("[TiledDrawingViewer] Failed to init OpenSeadragon:", e))
+      },
+    })
+    viewerRef.current = viewer
+    onReadyRef.current?.(viewer)
 
     return () => {
-      disposed = true
-      resizeObserverRef.current?.disconnect()
-      resizeObserverRef.current = null
-      viewer?.destroy?.()
+      viewer.destroy()
       viewerRef.current = null
       onReadyRef.current?.(null)
     }
-  }, [composeTileSources, secureTilesEnabled, tilesCookieEndpoint])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [secureTilesEnabled, tilesCookieEndpoint])
 
-  // Sheet/manifest/overlay-source changes: reuse the existing viewer via open()
-  // instead of a destroy/recreate cycle. (No-op on mount — the viewer doesn't
-  // exist yet and boot() constructs it with the latest sources from the refs.)
+  // Sheet/manifest/overlay-source changes: reuse the existing viewer via
+  // setSource() instead of a destroy/recreate cycle.
   useEffect(() => {
-    if (!viewerRef.current) return
-    try {
-      viewerRef.current.open(composeTileSources())
-    } catch (e) {
-      console.error('[TiledViewer] Failed to update tile source:', e)
-    }
-  }, [composeTileSources, renderableTileBaseUrl, tileManifest, renderableOverlayBaseUrl, overlayManifest])
+    const viewer = viewerRef.current
+    if (!viewer || appliedSourcesRef.current === sources) return
+    appliedSourcesRef.current = sources
+    viewer.setSource(sources.base, sources.overlay)
+  }, [sources])
 
-  // Overlay opacity changes: update the composited image in place — no
-  // re-open, no tile refetch.
+  // Overlay opacity / compare-mode changes: update in place — no refetch.
   useEffect(() => {
-    if (typeof overlayOpacity !== 'number') return
-    overlayOpacityRef.current = overlayOpacity
-    viewerRef.current?.world?.getItemAt?.(1)?.setOpacity?.(overlayOpacity)
+    if (typeof overlayOpacity === "number") viewerRef.current?.setOverlayOpacity(overlayOpacity)
   }, [overlayOpacity])
+  useEffect(() => {
+    if (overlayMode) viewerRef.current?.setCompareMode(toCompareMode(overlayMode))
+  }, [overlayMode])
 
   // Re-show the thumbnail whenever the sheet (tile source) changes.
   useEffect(() => {

@@ -15,9 +15,9 @@ import { ArrowUpDown, X } from 'lucide-react'
 import type { DrawingSheet, DrawingSheetVersion } from '@/lib/services/drawings'
 import {
   TiledDrawingViewer,
-  toRenderableDrawingsUrl,
   type TileManifest,
 } from './viewer/tiled-drawing-viewer'
+import { toRenderableDrawingsUrl } from '@/lib/drawings/tile-urls'
 
 function getTileSource(version: DrawingSheetVersion | undefined): {
   tileBaseUrl: string
@@ -40,7 +40,7 @@ function getVersionImageUrl(version: DrawingSheetVersion | undefined) {
   )
 }
 
-type CompareMode = 'side-by-side' | 'overlay'
+type CompareMode = 'side-by-side' | 'overlay' | 'difference'
 
 interface ComparisonViewerProps {
   sheet: DrawingSheet
@@ -118,11 +118,12 @@ export function ComparisonViewer({
             size="sm"
             value={mode}
             onValueChange={v => {
-              if (v === 'side-by-side' || v === 'overlay') setMode(v)
+              if (v === 'side-by-side' || v === 'overlay' || v === 'difference') setMode(v)
             }}
           >
             <ToggleGroupItem value="side-by-side">Side by side</ToggleGroupItem>
             <ToggleGroupItem value="overlay">Overlay</ToggleGroupItem>
+            <ToggleGroupItem value="difference">Difference</ToggleGroupItem>
           </ToggleGroup>
 
           {/* Version Selectors */}
@@ -176,6 +177,14 @@ export function ComparisonViewer({
             leftLabel={fullLabel(leftVersion, 0)}
             rightLabel={fullLabel(rightVersion, 1)}
           />
+        ) : mode === 'difference' ? (
+          <DifferenceView
+            baseVersion={baseVersion}
+            topVersion={topVersion}
+            baseLabel={fullLabel(baseVersion, 0)}
+            topLabel={fullLabel(topVersion, 1)}
+            onSwap={() => setSwapped(s => !s)}
+          />
         ) : (
           <OverlayView
             baseVersion={baseVersion}
@@ -205,7 +214,7 @@ function ComparePane({
 }) {
   const tiles = getTileSource(version)
   if (tiles) {
-    // Full-resolution tiled rendering with its own pan/zoom (OpenSeadragon).
+    // Full-resolution tiled rendering with its own pan/zoom (GPU viewer).
     return (
       <TiledDrawingViewer
         tileBaseUrl={tiles.tileBaseUrl}
@@ -321,7 +330,7 @@ function OverlayView({
 
       <div className="flex-1 overflow-hidden">
         {baseTiles && topTiles ? (
-          // Both versions have tiles: one OSD viewer, newer composited over
+          // Both versions have tiles: one GPU viewer, newer composited over
           // older in a single shared viewport.
           <TiledDrawingViewer
             tileBaseUrl={baseTiles.tileBaseUrl}
@@ -361,6 +370,69 @@ function OverlayView({
         ) : (
           <div className="flex h-full w-full items-center justify-center text-muted-foreground">
             No preview available
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * GPU ink-diff: both revisions rasterized offscreen with a shared camera and
+ * combined by a difference shader — unchanged linework recedes to gray,
+ * linework only in the base (older) revision reads red (removed), linework
+ * only in the top revision reads blue (added). Needs processed tiles for
+ * both versions; until then the Overlay mode's static fallback is the honest
+ * answer, so we say so instead of faking a diff from mismatched previews.
+ */
+function DifferenceView({
+  baseVersion,
+  topVersion,
+  baseLabel,
+  topLabel,
+  onSwap,
+}: {
+  baseVersion?: DrawingSheetVersion
+  topVersion?: DrawingSheetVersion
+  baseLabel: string
+  topLabel: string
+  onSwap: () => void
+}) {
+  const baseTiles = getTileSource(baseVersion)
+  const topTiles = getTileSource(topVersion)
+
+  return (
+    <div className="flex h-full flex-col">
+      {/* Control bar — mirrors the overlay mode's bar */}
+      <div className="flex items-center justify-center gap-3 border-b bg-muted/50 px-4 py-2 text-sm">
+        <span className="font-medium">{baseLabel}</span>
+        <span className="text-muted-foreground">vs</span>
+        <span className="font-medium">{topLabel}</span>
+        <span className="text-muted-foreground">
+          · red removed · blue added · gray unchanged
+        </span>
+        <Button variant="ghost" size="sm" onClick={onSwap}>
+          <ArrowUpDown className="h-4 w-4" />
+          Swap
+        </Button>
+      </div>
+
+      <div className="flex-1 overflow-hidden">
+        {baseTiles && topTiles ? (
+          <TiledDrawingViewer
+            tileBaseUrl={baseTiles.tileBaseUrl}
+            tileManifest={baseTiles.tileManifest}
+            overlaySource={{
+              tileBaseUrl: topTiles.tileBaseUrl,
+              tileManifest: topTiles.tileManifest,
+              opacity: 1,
+              mode: "difference",
+            }}
+            className="h-full w-full"
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+            Difference needs processed tiles for both versions — still processing
           </div>
         )}
       </div>
