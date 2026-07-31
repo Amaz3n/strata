@@ -107,6 +107,6 @@ export async function seedDefaultGatesAction() {
 export async function setProjectSuperintendentAction(projectId: string, userId: string | null) {
   return await run(
     () => setProjectSuperintendent(uuid.parse(projectId), userId ? uuid.parse(userId) : null),
-    [`/projects/${projectId}`, "/my-houses", ...packagePaths()],
+    [`/projects/${projectId}`, "/", ...packagePaths()],
   )
 }

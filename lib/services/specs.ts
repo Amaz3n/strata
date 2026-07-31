@@ -8,6 +8,8 @@ import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { requireProjectPermission } from "@/lib/services/permissions"
 import { triggerSpecsPipeline } from "@/lib/services/specs-pipeline-trigger"
 import { createManualSpecSectionSchema, createSpecUploadSchema, type CreateManualSpecSectionInput, type CreateSpecUploadInput } from "@/lib/validation/specs"
+import { downloadFilesObject } from "@/lib/storage/files-storage"
+import { getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
 
 export type SpecUpload = {
   id: string; project_id: string; file_id: string; file_name: string | null; status: "pending" | "processing" | "complete" | "failed"
@@ -119,4 +121,21 @@ export async function createManualSpecSection(input: CreateManualSpecSectionInpu
   const detail = await getSpecSection(created.section_id, resolvedOrgId)
   if (!detail) throw new Error("Specification section was created but could not be loaded")
   return detail
+}
+
+export async function emailSpecSection(input: { sectionId: string; recipients: string[]; message?: string }, orgId?: string) {
+  if (!input.recipients.length || input.recipients.length > 25) throw new Error("Choose 1–25 recipients")
+  const context = await requireOrgContext(orgId)
+  const section = await getSpecSection(input.sectionId, context.orgId)
+  if (!section) throw new Error("Specification section not found")
+  await requireProjectPermission(context.userId, section.project_id, "spec.write")
+  const revision = section.revisions.find((item) => item.id === section.current_revision_id) ?? section.revisions[0]
+  if (!revision) throw new Error("Specification section has no revision file")
+  const { data: file } = await context.supabase.from("files").select("file_name,storage_path,mime_type").eq("org_id", context.orgId).eq("project_id", section.project_id).eq("id", revision.file_id).maybeSingle()
+  if (!file) throw new Error("Specification file not found")
+  const bytes = await downloadFilesObject({ supabase: context.supabase, orgId: context.orgId, path: file.storage_path })
+  const html = renderStandardEmailLayout({ title: `${section.section_number} — ${section.title}`, messageHtml: `<p>${input.message?.trim() || "The current specification section is attached."}</p>`, showManageSettings: false })
+  const sent = await sendEmail({ from: getOrgSenderEmail(), to: input.recipients, subject: `Specification ${section.section_number}: ${section.title}`, html, attachments: [{ filename: file.file_name, content: Buffer.from(bytes).toString("base64"), contentType: file.mime_type ?? "application/pdf" }] })
+  if (!sent) throw new Error("Specification email was not sent")
+  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "spec_section_distributed", entityType: "spec_section", entityId: section.id, payload: { project_id: section.project_id, revision_id: revision.id, recipient_count: input.recipients.length } })
 }

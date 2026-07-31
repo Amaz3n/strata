@@ -1,6 +1,5 @@
 import { PageLayout } from "@/components/layout/page-layout"
 import { CatalogWorkbench } from "@/components/design-studio/catalog-workbench"
-import { listCommunities } from "@/lib/services/communities"
 import { listCatalog, listPlanPricingMatrix } from "@/lib/services/option-catalog"
 import { getAmbientDeskContext } from "@/lib/services/desk-context"
 import { requireOrgContext } from "@/lib/services/context"
@@ -18,9 +17,8 @@ export default async function CatalogPage({ searchParams }: PageProps) {
   const communityId = community || ambient.communityId
 
   const context = await requireOrgContext()
-  const [catalog, communities, canManage] = await Promise.all([
+  const [catalog, canManage] = await Promise.all([
     listCatalog({ communityId }),
-    listCommunities(ambient.divisionId ? { divisionId: ambient.divisionId } : {}),
     hasPermission("selections.catalog.manage", context),
   ])
   const matrix = await listPlanPricingMatrix({
@@ -38,7 +36,6 @@ export default async function CatalogPage({ searchParams }: PageProps) {
         catalog={catalog}
         matrix={matrix}
         communityId={communityId}
-        communities={communities.map((item) => ({ id: item.id, name: item.name }))}
         canManage={canManage}
       />
     </PageLayout>

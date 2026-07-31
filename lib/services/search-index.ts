@@ -36,6 +36,7 @@ const AUDIT_ENTITY_TYPE_TO_SEARCH: Record<string, SearchEntityType> = {
   commitment: "commitment",
   bid_package: "bid_package",
   change_order: "change_order",
+  change_event: "change_event",
   contract: "contract",
   proposal: "proposal",
   rfi: "rfi",
@@ -46,6 +47,7 @@ const AUDIT_ENTITY_TYPE_TO_SEARCH: Record<string, SearchEntityType> = {
   punch_item: "punch_item",
   schedule_item: "schedule_item",
   photo: "photo",
+  project_email: "project_email",
   prospect: "prospect",
   pay_application: "pay_application",
   meeting: "meeting",
@@ -71,6 +73,7 @@ const AUDIT_ENTITY_TYPE_TO_SEARCH: Record<string, SearchEntityType> = {
   closing: "closing",
   warranty_request: "warranty_request",
   warranty_backcharge: "warranty_backcharge",
+  takeoff_condition: "takeoff_condition",
   // Aliases → canonical search type
   vendor_bill: "payable",
   bill: "payable",

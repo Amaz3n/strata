@@ -7,6 +7,7 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { Skeleton } from "@/components/ui/skeleton"
 import { getProjectFinancialSetupStatusForProject } from "@/lib/services/project-financial-setup"
 import { loadFinancialsOverviewData } from "../page-data"
+import { evaluateHolds } from "@/lib/services/payment-holds"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -32,6 +33,8 @@ async function FinancialsPayablesData({ id }: { id: string }) {
     fetchPayablesTabDataAction(id),
     getProjectFinancialSetupStatusForProject(id),
   ])
+  const holdEntries = await Promise.all(data.vendorBills.map(async (bill) => [bill.id, await evaluateHolds(bill.id).catch(() => null)] as const))
+  const holdEvaluations = Object.fromEntries(holdEntries.filter((entry): entry is readonly [string, NonNullable<(typeof entry)[1]>] => entry[1] !== null))
 
   return (
     <PageLayout
@@ -54,6 +57,7 @@ async function FinancialsPayablesData({ id }: { id: string }) {
         complianceRules={data.complianceRules}
         complianceStatusByCompanyId={data.complianceStatusByCompanyId}
         loadErrors={data.errors}
+        holdEvaluations={holdEvaluations}
       />
     </PageLayout>
   )

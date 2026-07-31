@@ -12,8 +12,9 @@ import { enqueueReindex } from "@/lib/services/search-index"
 import { triggerSpecsPipeline } from "@/lib/services/specs-pipeline-trigger"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { downloadFilesObject, uploadFilesObject } from "@/lib/storage/files-storage"
+import { extractSubmittalRegisterDrafts } from "@/lib/services/submittal-register-extraction"
 
-export const SPEC_PIPELINE_JOB_TYPES = ["process_spec_upload"] as const
+export const SPEC_PIPELINE_JOB_TYPES = ["process_spec_upload", "extract_submittal_register"] as const
 const MAX_RETRIES = 3
 const STALE_MINUTES = 5
 const headingSchema = z.object({ section_number: z.string().regex(/^\d{2} \d{2} \d{2}$/), title: z.string().min(1).max(300) })
@@ -115,6 +116,12 @@ export async function processSpecUpload(supabase: SupabaseClient, uploadId: stri
         p_extracted_text: extractedText, p_issued_date: null, p_created_by: upload.created_by ?? null })
       if (appendError || !appended?.[0]) throw new Error(`Failed to append ${boundary.sectionNumber}: ${appendError?.message}`)
       await enqueueReindex({ orgId, entityType: "spec_section", entityId: appended[0].section_id, op: "upsert" }, supabase)
+      await supabase.from("outbox").insert({
+        org_id: orgId,
+        job_type: "extract_submittal_register",
+        payload: { sectionId: appended[0].section_id, revisionId: appended[0].revision_id },
+        dedupe_key: `extract_submittal_register:revisionId:${appended[0].revision_id}`,
+      })
       detectedCount += 1
     }
     await supabase.from("spec_uploads").update({ status: "complete", sections_detected: detectedCount, error: null }).eq("id", uploadId)
@@ -135,9 +142,16 @@ export async function runSpecsPipeline(options: { deadlineMs?: number } = {}) {
     for (const job of data as ClaimedJob[]) {
       const heartbeat = setInterval(() => { void supabase.from("outbox").update({ updated_at: new Date().toISOString() }).eq("id", job.job_id) }, 45_000)
       try {
-        const uploadId = typeof job.payload.specUploadId === "string" ? job.payload.specUploadId : null
-        if (!uploadId) throw new Error("Missing specUploadId")
-        await processSpecUpload(supabase, uploadId, job.org_id)
+        if (job.job_type === "process_spec_upload") {
+          const uploadId = typeof job.payload.specUploadId === "string" ? job.payload.specUploadId : null
+          if (!uploadId) throw new Error("Missing specUploadId")
+          await processSpecUpload(supabase, uploadId, job.org_id)
+        } else {
+          const sectionId = typeof job.payload.sectionId === "string" ? job.payload.sectionId : null
+          const revisionId = typeof job.payload.revisionId === "string" ? job.payload.revisionId : null
+          if (!sectionId || !revisionId) throw new Error("Missing sectionId or revisionId")
+          await extractSubmittalRegisterDrafts({ supabase, orgId: job.org_id, sectionId, revisionId })
+        }
         await supabase.from("outbox").update({ status: "completed", last_error: null }).eq("id", job.job_id); summary.processed++
       } catch (jobError) {
         const message = jobError instanceof Error ? jobError.message : String(jobError); const retry = job.retry_count + 1

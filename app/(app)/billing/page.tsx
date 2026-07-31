@@ -273,7 +273,9 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
           >
             <SectionHeader title="Ready to bill" count={readyProjects.length}>
               <Button asChild variant="outline" size="sm">
-                <a href="/api/reports/wip?format=csv">
+                {/* File download, not navigation — `Link` would prefetch and soft-navigate. */}
+                {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+                <a href="/api/reports/wip-over-under?format=csv" download>
                   <Download className="mr-1.5 h-3.5 w-3.5" />
                   WIP CSV
                 </a>

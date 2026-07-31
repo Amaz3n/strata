@@ -11,6 +11,7 @@ import { attachFile } from "@/lib/services/file-links"
 import { requirePermission } from "@/lib/services/permissions"
 import { createChangeOrder } from "@/lib/services/change-orders"
 import { changeOrderInputSchema } from "@/lib/validation/change-orders"
+import { createSystemChangeEvent } from "@/lib/services/change-events"
 import {
   ensurePortalLink,
   fetchCompanyContacts,
@@ -422,7 +423,7 @@ export async function addRfiResponse({ orgId, input }: { orgId?: string; input: 
   const now = new Date().toISOString()
   const { data: rfi, error: rfiError } = await supabase
     .from("rfis")
-    .select("id, notify_contact_id")
+    .select("id, project_id, subject, notify_contact_id")
     .eq("id", input.rfi_id)
     .eq("org_id", resolvedOrgId)
     .maybeSingle()
@@ -481,6 +482,10 @@ export async function addRfiResponse({ orgId, input }: { orgId?: string; input: 
       created_via_portal: false,
     },
   })
+
+  if (input.response_type === "answer" && input.implies_scope_change) {
+    await createSystemChangeEvent({ orgId: resolvedOrgId, projectId: rfi.project_id, title: `RFI scope change: ${rfi.subject}`, description: input.body, originType: "rfi", originId: rfi.id })
+  }
 
   if (input.file_id) {
     try {

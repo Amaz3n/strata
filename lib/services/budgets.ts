@@ -1253,17 +1253,18 @@ async function getBudgetWithActualsInternal(
   }
 }
 
-export async function takeBudgetSnapshot(projectId: string, orgId: string) {
+export async function takeBudgetSnapshot(
+  projectId: string,
+  orgId: string,
+  options: { source?: "manual" | "nightly"; label?: string | null; formal?: boolean } = {},
+) {
   const supabase = createServiceSupabaseClient()
   const data = await getBudgetWithActualsInternal(supabase, projectId, orgId)
   if (!data?.budget) return null
 
   const today = new Date().toISOString().split("T")[0]
 
-  const { data: snapshot, error } = await supabase
-    .from("budget_snapshots")
-    .upsert(
-      {
+  const payload = {
         org_id: orgId,
         project_id: projectId,
         budget_id: data.budget.id,
@@ -1275,17 +1276,41 @@ export async function takeBudgetSnapshot(projectId: string, orgId: string) {
         variance_cents: data.summary.total_variance_cents,
         margin_percent: data.summary.gross_margin_percent,
         by_cost_code: data.breakdown,
-      },
-      { onConflict: "budget_id,snapshot_date" },
-    )
-    .select("*")
-    .single()
+        source: options.source ?? "manual",
+        label: options.label ?? null,
+        status: options.formal ? "formal" : "captured",
+        captured_at: new Date().toISOString(),
+      }
 
-  if (error) {
-    throw new Error(`Failed to record budget snapshot: ${error.message}`)
+  let snapshot: Record<string, unknown> | null = null
+  let snapshotError: { message: string } | null = null
+  if (options.source === "nightly") {
+    const { data: existing } = await supabase.from("budget_snapshots").select("id")
+      .eq("org_id", orgId).eq("budget_id", data.budget.id).eq("snapshot_date", today).eq("source", "nightly").maybeSingle()
+    const result = existing
+      ? await supabase.from("budget_snapshots").update(payload).eq("org_id", orgId).eq("id", existing.id).select("*").single()
+      : await supabase.from("budget_snapshots").insert(payload).select("*").single()
+    snapshot = result.data
+    snapshotError = result.error
+  } else {
+    const result = await supabase.from("budget_snapshots").insert(payload).select("*").single()
+    snapshot = result.data
+    snapshotError = result.error
+  }
+
+  if (snapshotError) {
+    throw new Error(`Failed to record budget snapshot: ${snapshotError.message}`)
   }
 
   return snapshot
+}
+
+export async function listBudgetSnapshots(projectId: string, orgId?: string) {
+  const context = await requireOrgContext(orgId)
+  await requireBudgetAuth({ permission: "budget.read", userId: context.userId, orgId: context.orgId, projectId, supabase: context.supabase })
+  const { data, error } = await context.supabase.from("budget_snapshots").select("id,snapshot_date,label,status,source,captured_at,total_budget_cents,total_committed_cents,total_actual_cents,variance_cents,margin_percent,by_cost_code").eq("org_id", context.orgId).eq("project_id", projectId).order("captured_at", { ascending: false }).limit(120)
+  if (error) throw new Error(`Failed to load budget snapshots: ${error.message}`)
+  return data ?? []
 }
 
 export async function checkVarianceAlerts(projectId: string, orgId: string, thresholds = [15], actorUserId?: string) {

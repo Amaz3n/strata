@@ -8,14 +8,6 @@ import {
   type CommunityAssignmentRole,
 } from "@/lib/validation/communities"
 
-export const COMMUNITY_ASSIGNMENT_ROLE_LABELS: Record<CommunityAssignmentRole, string> = {
-  sales: "Sales consultant",
-  superintendent: "Superintendent",
-  closing: "Closing coordinator",
-  warranty: "Warranty",
-  land: "Land manager",
-}
-
 export interface CommunityAssignmentDTO {
   id: string
   communityId: string

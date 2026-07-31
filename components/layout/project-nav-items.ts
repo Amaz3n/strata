@@ -17,6 +17,7 @@ export type ProjectSection =
   | "schedule"
   | "daily-logs"
   | "photos"
+  | "correspondence"
   | "tasks"
   | "time"
   | "punch"
@@ -26,6 +27,7 @@ export type ProjectSection =
   | "meetings"
   | "transmittals"
   | "inspections"
+  | "forms"
   | "safety"
   | "decisions"
   | "selections"
@@ -94,6 +96,7 @@ export const BUILD_SECTIONS = new Set<ProjectSection>([
   "schedule",
   "daily-logs",
   "photos",
+  "correspondence",
   "tasks",
   "time",
   "punch",
@@ -102,6 +105,7 @@ export const BUILD_SECTIONS = new Set<ProjectSection>([
   "meetings",
   "transmittals",
   "inspections",
+  "forms",
   "safety",
   "decisions",
   "selections",
@@ -152,6 +156,7 @@ export function getProjectSection(pathname: string): ProjectSection {
     case "schedule":
     case "daily-logs":
     case "photos":
+    case "correspondence":
     case "tasks":
     case "time":
     case "punch":
@@ -161,6 +166,7 @@ export function getProjectSection(pathname: string): ProjectSection {
     case "meetings":
     case "transmittals":
     case "inspections":
+    case "forms":
     case "safety":
     case "decisions":
     case "selections":
@@ -353,6 +359,13 @@ export function buildProjectNavGroups({
       isActive: section === "photos",
       requiredAny: ["docs.read"],
     },
+    {
+      title: "Correspondence",
+      postures: ["residential", "commercial"],
+      url: url("/correspondence"),
+      isActive: section === "correspondence",
+      requiredAny: ["correspondence.read"],
+    },
     config?.showTime === false
       ? null
       : {
@@ -385,6 +398,12 @@ export function buildProjectNavGroups({
       url: url("/submittals"),
       isActive: section === "submittals",
       requiredAny: ["submittal.read"],
+    },
+    {
+      title: "Forms",
+      url: url("/forms"),
+      isActive: section === "forms",
+      requiredAny: ["forms.read", "forms.write"],
     },
     {
       title: "Meeting Minutes",

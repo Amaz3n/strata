@@ -15,6 +15,7 @@ import {
   updateLotTakedownAction,
 } from "@/app/(app)/communities/actions"
 import { CommunityStatusBadge } from "@/components/communities/community-status-badge"
+import { LotMixBar } from "@/components/communities/lot-mix-bar"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -40,7 +41,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 import { unwrapAction } from "@/lib/action-result"
+import { LOT_STATUSES, UNPHASED_KEY, type LotStatus } from "@/lib/land/lot-lifecycle"
 import type { CommunityDetailDTO, CommunityPhaseDTO, LotTakedownDTO } from "@/lib/services/communities"
+
+/** Lots a buyer could still be sold — the number a phase is judged on. */
+const SELLABLE_STATUSES: LotStatus[] = ["owned", "developed", "assigned"]
 
 function money(cents: number | null) {
   if (cents == null) return "—"
@@ -60,7 +65,16 @@ const EMPTY_TAKEDOWN = {
   notes: "",
 }
 
-export function CommunityStructure({ community, canWrite }: { community: CommunityDetailDTO; canWrite: boolean }) {
+export function CommunityStructure({
+  community,
+  lotsByPhase,
+  canWrite,
+}: {
+  community: CommunityDetailDTO
+  /** Status mix per phase id, plus `unphased`. Empty when the count failed. */
+  lotsByPhase: Record<string, Record<LotStatus, number>>
+  canWrite: boolean
+}) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [phaseOpen, setPhaseOpen] = useState(false)
@@ -72,6 +86,11 @@ export function CommunityStructure({ community, canWrite }: { community: Communi
   const [closeDate, setCloseDate] = useState("")
 
   const phaseNames = useMemo(() => new Map(community.phases.map((phase) => [phase.id, phase.name])), [community.phases])
+
+  const unphasedTotal = useMemo(() => {
+    const counts = lotsByPhase[UNPHASED_KEY]
+    return counts ? LOT_STATUSES.reduce((sum, status) => sum + counts[status], 0) : 0
+  }, [lotsByPhase])
 
   const takedownTotals = useMemo(() => {
     let contracted = 0
@@ -198,7 +217,7 @@ export function CommunityStructure({ community, canWrite }: { community: Communi
       <section>
         <div className="mb-3 flex items-center justify-between">
           <div>
-            <h2 className="text-sm font-semibold">Phases</h2>
+            <h2 className="microlabel">Phases</h2>
             <p className="text-xs text-muted-foreground">Lot releases and buildout tranches.</p>
           </div>
           {canWrite ? <Button variant="outline" size="sm" className="rounded-none" onClick={openPhaseCreate}><Plus className="mr-1.5 h-4 w-4" />Phase</Button> : null}
@@ -206,45 +225,89 @@ export function CommunityStructure({ community, canWrite }: { community: Communi
         <div className="overflow-x-auto border">
           <Table>
             <TableHeader>
-              <TableRow className="text-[11px] uppercase tracking-wide">
+              <TableRow className="microlabel">
                 <TableHead className="w-10">#</TableHead>
                 <TableHead>Name</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Target open</TableHead>
-                <TableHead>Notes</TableHead>
+                <TableHead className="text-right">Lots</TableHead>
+                <TableHead className="w-40">Mix</TableHead>
+                <TableHead className="text-right">Sellable</TableHead>
                 {canWrite ? <TableHead className="w-10" /> : null}
               </TableRow>
             </TableHeader>
             <TableBody>
               {community.phases.length === 0 ? (
-                <TableRow><TableCell colSpan={canWrite ? 6 : 5} className="py-8 text-center text-xs text-muted-foreground">No phases yet. Phases group lots into release tranches.</TableCell></TableRow>
-              ) : community.phases.map((phase) => (
-                <TableRow key={phase.id} className="text-xs">
-                  <TableCell className="tabular-nums">{phase.phaseNumber}</TableCell>
-                  <TableCell className="font-medium">{phase.name}</TableCell>
-                  <TableCell><CommunityStatusBadge status={phase.status} /></TableCell>
-                  <TableCell className="text-muted-foreground">{phase.targetOpenDate ?? "—"}</TableCell>
-                  <TableCell className="max-w-64 truncate text-muted-foreground">{phase.notes ?? "—"}</TableCell>
-                  {canWrite ? (
-                    <TableCell className="text-right">
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="sm" className="h-7 w-7 p-0">
-                            <MoreHorizontal className="h-4 w-4" />
-                            <span className="sr-only">Phase {phase.name} actions</span>
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => openPhaseEdit(phase)}>Edit phase</DropdownMenuItem>
-                          <DropdownMenuItem asChild><Link href={`/communities/${community.id}`}>View on the plat</Link></DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem variant="destructive" onClick={() => setDeletingPhase(phase)}>Delete phase</DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                <TableRow><TableCell colSpan={canWrite ? 8 : 7} className="py-8 text-center text-xs text-muted-foreground">No phases yet. Phases group lots into release tranches.</TableCell></TableRow>
+              ) : community.phases.map((phase) => {
+                const counts = lotsByPhase[phase.id]
+                const total = counts ? LOT_STATUSES.reduce((sum, status) => sum + counts[status], 0) : 0
+                const sellable = counts ? SELLABLE_STATUSES.reduce((sum, status) => sum + counts[status], 0) : 0
+                return (
+                  <TableRow key={phase.id} className="text-xs">
+                    <TableCell className="tabular-nums">{phase.phaseNumber}</TableCell>
+                    <TableCell className="font-medium">
+                      {phase.name}
+                      {/* Notes were a truncated column competing with the numbers;
+                          they belong under the name, where they are read. */}
+                      {phase.notes ? (
+                        <span className="block max-w-96 truncate font-normal text-muted-foreground">{phase.notes}</span>
+                      ) : null}
                     </TableCell>
-                  ) : null}
+                    <TableCell><CommunityStatusBadge status={phase.status} /></TableCell>
+                    <TableCell className="text-muted-foreground">{phase.targetOpenDate ?? "—"}</TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {counts ? (
+                        <Link href={`/communities/${community.id}?phase=${phase.id}`} className="hover:underline">
+                          {total}
+                        </Link>
+                      ) : (
+                        "—"
+                      )}
+                    </TableCell>
+                    <TableCell>{counts && total > 0 ? <LotMixBar counts={counts} /> : null}</TableCell>
+                    <TableCell className="text-right tabular-nums">{counts ? sellable : "—"}</TableCell>
+                    {canWrite ? (
+                      <TableCell className="text-right">
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="sm" className="h-7 w-7 p-0">
+                              <MoreHorizontal className="h-4 w-4" />
+                              <span className="sr-only">Phase {phase.name} actions</span>
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => openPhaseEdit(phase)}>Edit phase</DropdownMenuItem>
+                            {/* Used to drop you on the unfiltered table and call
+                                itself the plat. */}
+                            <DropdownMenuItem asChild>
+                              <Link href={`/communities/${community.id}?view=map&phase=${phase.id}`}>View on the plat</Link>
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem variant="destructive" onClick={() => setDeletingPhase(phase)}>Delete phase</DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </TableCell>
+                    ) : null}
+                  </TableRow>
+                )
+              })}
+              {unphasedTotal > 0 ? (
+                <TableRow className="text-xs">
+                  <TableCell />
+                  <TableCell className="text-muted-foreground">Unphased</TableCell>
+                  <TableCell colSpan={2} />
+                  <TableCell className="text-right tabular-nums">
+                    <Link href={`/communities/${community.id}`} className="hover:underline">
+                      {unphasedTotal}
+                    </Link>
+                  </TableCell>
+                  <TableCell>
+                    <LotMixBar counts={lotsByPhase[UNPHASED_KEY]} />
+                  </TableCell>
+                  <TableCell colSpan={canWrite ? 2 : 1} />
                 </TableRow>
-              ))}
+              ) : null}
             </TableBody>
           </Table>
         </div>
@@ -253,7 +316,7 @@ export function CommunityStructure({ community, canWrite }: { community: Communi
       <section>
         <div className="mb-3 flex items-center justify-between">
           <div>
-            <h2 className="text-sm font-semibold">Lot takedowns</h2>
+            <h2 className="microlabel">Lot takedowns</h2>
             <p className="text-xs text-muted-foreground">Contracted land tranches, deposits, and actual acquisition dates.</p>
           </div>
           {canWrite ? <Button variant="outline" size="sm" className="rounded-none" onClick={openTakedownCreate}><Plus className="mr-1.5 h-4 w-4" />Takedown</Button> : null}
@@ -261,13 +324,11 @@ export function CommunityStructure({ community, canWrite }: { community: Communi
         <div className="overflow-x-auto border">
           <Table>
             <TableHeader>
-              <TableRow className="text-[11px] uppercase tracking-wide">
+              <TableRow className="microlabel">
                 <TableHead>Name</TableHead>
                 <TableHead>Phase</TableHead>
-                <TableHead>Scheduled</TableHead>
-                <TableHead>Actual</TableHead>
-                <TableHead className="text-right">Lots</TableHead>
-                <TableHead className="text-right">Price / lot</TableHead>
+                <TableHead>Scheduled → actual</TableHead>
+                <TableHead className="text-right">Lots linked</TableHead>
                 <TableHead className="text-right">Contract value</TableHead>
                 <TableHead className="text-right">Deposit</TableHead>
                 <TableHead>Status</TableHead>
@@ -276,16 +337,27 @@ export function CommunityStructure({ community, canWrite }: { community: Communi
             </TableHeader>
             <TableBody>
               {community.takedowns.length === 0 ? (
-                <TableRow><TableCell colSpan={canWrite ? 10 : 9} className="py-8 text-center text-xs text-muted-foreground">No takedowns yet. Record contracted tranches to track land economics.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={canWrite ? 8 : 7} className="py-8 text-center text-xs text-muted-foreground">No takedowns yet. Record contracted tranches to track land economics.</TableCell></TableRow>
               ) : community.takedowns.map((takedown) => (
                 <TableRow key={takedown.id} className="text-xs">
                   <TableCell className="font-medium">{takedown.name}</TableCell>
                   <TableCell className="text-muted-foreground">{takedown.communityPhaseId ? phaseNames.get(takedown.communityPhaseId) ?? "—" : "—"}</TableCell>
-                  <TableCell className="text-muted-foreground">{takedown.scheduledDate ?? "—"}</TableCell>
-                  <TableCell className="text-muted-foreground">{takedown.actualDate ?? "—"}</TableCell>
-                  <TableCell className="text-right tabular-nums">{takedown.linkedLotCount} / {takedown.lotCount}</TableCell>
-                  <TableCell className="text-right tabular-nums">{money(takedown.pricePerLotCents)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{takedown.pricePerLotCents != null ? money(takedown.pricePerLotCents * takedown.lotCount) : "—"}</TableCell>
+                  <TableCell className="tabular-nums text-muted-foreground">
+                    {takedown.scheduledDate ?? "—"}
+                    {takedown.actualDate ? <span className="text-foreground"> → {takedown.actualDate}</span> : null}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {takedown.linkedLotCount} / {takedown.lotCount}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {/* Contract value leads; price per lot is how it was reached. */}
+                    {takedown.pricePerLotCents != null ? money(takedown.pricePerLotCents * takedown.lotCount) : "—"}
+                    {takedown.pricePerLotCents != null ? (
+                      <span className="block text-[11px] font-normal text-muted-foreground">
+                        {money(takedown.pricePerLotCents)} / lot
+                      </span>
+                    ) : null}
+                  </TableCell>
                   <TableCell className="text-right tabular-nums">{money(takedown.depositCents)}</TableCell>
                   <TableCell><CommunityStatusBadge status={takedown.status} /></TableCell>
                   {canWrite ? (
@@ -299,6 +371,19 @@ export function CommunityStructure({ community, canWrite }: { community: Communi
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
                           <DropdownMenuItem onClick={() => openTakedownEdit(takedown)}>Edit takedown</DropdownMenuItem>
+                          {/* The linked/contracted gap was shown here and closable
+                              only somewhere else. This is the way over. */}
+                          <DropdownMenuItem asChild>
+                            <Link
+                              href={
+                                takedown.communityPhaseId
+                                  ? `/communities/${community.id}?phase=${takedown.communityPhaseId}`
+                                  : `/communities/${community.id}`
+                              }
+                            >
+                              Assign lots
+                            </Link>
+                          </DropdownMenuItem>
                           {takedown.status === "scheduled" ? (
                             <DropdownMenuItem
                               onClick={() => {
@@ -319,10 +404,9 @@ export function CommunityStructure({ community, canWrite }: { community: Communi
             {community.takedowns.length > 1 ? (
               <TableFooter>
                 <TableRow className="text-xs">
-                  <TableCell colSpan={4} className="font-medium">All active takedowns</TableCell>
+                  <TableCell colSpan={3} className="font-medium">All active takedowns</TableCell>
                   <TableCell className="text-right tabular-nums">{takedownTotals.linked} / {takedownTotals.contracted}</TableCell>
-                  <TableCell />
-                  <TableCell className="text-right tabular-nums font-medium">{takedownTotals.value ? money(takedownTotals.value) : "—"}</TableCell>
+                  <TableCell className="text-right font-medium tabular-nums">{takedownTotals.value ? money(takedownTotals.value) : "—"}</TableCell>
                   <TableCell className="text-right tabular-nums">{money(takedownTotals.deposits)}</TableCell>
                   <TableCell colSpan={canWrite ? 2 : 1} />
                 </TableRow>

@@ -52,6 +52,7 @@ export function PlanManifest({
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [open, setOpen] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   const [label, setLabel] = useState(version.label ?? "")
   const [notes, setNotes] = useState(version.notes ?? "")
   const [budget, setBudget] = useState(version.budget_template_id ?? "none")
@@ -127,92 +128,112 @@ export function PlanManifest({
   const snapshotScheduleItems = snapshotSchedule && Array.isArray(snapshotSchedule.items) ? snapshotSchedule.items.length : 0
 
   return (
-    <section className="border-b">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2 px-4 pb-2 pt-3.5">
-        <div>
-          <h3 className="text-sm font-medium">What a start generates</h3>
-          <p className="text-[11px] text-muted-foreground">
-            {version.status === "draft"
-              ? `The moment a lot is released on v${version.version_number}, this is what appears inside the house.`
-              : `What v${version.version_number} froze at release.`}
+    <section id="plan-recipe" className="scroll-mt-10 border-b">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
+        <div className="min-w-0">
+          <h3 className="text-sm font-medium">Start recipe</h3>
+          <p className="truncate text-[11px] text-muted-foreground">
+            {version.takeoff_line_count > 0 || version.budget_template_id ? "Budget ready" : "Budget missing"}
+            {" · "}
+            {version.schedule_template_id ? "Schedule ready" : "Schedule missing"}
+            {" · "}
+            {version.drawing_source_file_id ? "Plan set attached" : "No plan set"}
+            {" · "}
+            {version.checklist_template_ids.length} checklists
+            {" · "}
+            {version.selection_category_ids.length} selection categories
           </p>
         </div>
-        {editable ? (
-          <Button size="sm" variant="outline" className="h-7 rounded-none px-2 text-[11px]" onClick={() => setOpen(true)}>
-            Change the recipe
+        <div className="flex items-center gap-1">
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 rounded-none px-2 text-[11px]"
+            onClick={() => setExpanded((current) => !current)}
+          >
+            {expanded ? "Hide recipe" : "View recipe"}
           </Button>
-        ) : null}
+          {editable && expanded ? (
+            <Button size="sm" variant="ghost" className="h-7 rounded-none px-2 text-[11px]" onClick={() => setOpen(true)}>
+              Edit
+            </Button>
+          ) : null}
+        </div>
       </div>
 
-      <dl className="divide-y border-t">
-        <ManifestRow
-          title={
-            version.budget_template_id
-              ? `Budget — ${budgetTemplate?.name ?? "template"}`
-              : "Budget — generated from the takeoff"
-          }
-          detail={
-            version.budget_template_id
-              ? `${budgetTemplate?.line_count ?? 0} template lines`
-              : `${version.takeoff_line_count} takeoff line${version.takeoff_line_count === 1 ? "" : "s"}, priced by the price book at release`
-          }
-          missing={version.takeoff_line_count === 0 && !version.budget_template_id}
-          missingLabel="No cost basis — a released house would start with an empty budget"
-        />
-        <ManifestRow
-          title={
-            snapshot
-              ? `Schedule — ${typeof snapshotSchedule?.name === "string" ? snapshotSchedule.name : "captured at release"}`
-              : scheduleTemplate
-                ? `Schedule — ${scheduleTemplate.name}`
-                : "Schedule"
-          }
-          detail={
-            snapshot
-              ? `${snapshotScheduleItems} items`
-              : scheduleTemplate
-                ? `${scheduleTemplate.items.length} items, offset from the start date`
-                : ""
-          }
-          missing={!version.schedule_template_id}
-          missingLabel="Required — without it a released house starts with an empty calendar"
-        />
-        <ManifestRow
-          title="Plan set"
-          detail={
-            version.drawing_source_file_id
-              ? "Versioned onto the house's canonical drawing set at start"
-              : "Houses started from this edition begin without drawings"
-          }
-          action={
-            version.drawing_source_file_id ? (
-              <a
-                href={`/api/files/${version.drawing_source_file_id}/raw`}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1.5 text-[11px] text-primary hover:underline"
-              >
-                <FileText className="h-3.5 w-3.5" />
-                Open
-              </a>
-            ) : null
-          }
-        />
-        <ManifestRow
-          title={`Field checklists — ${snapshot ? snapshotChecklists.length : version.checklist_template_ids.length}`}
-          detail={checklistNames.length > 0 ? checklistNames.join(" · ") : "None attached"}
-        />
-        <ManifestRow
-          title={`Selection sheet — ${snapshot ? snapshotSelections.length : version.selection_category_ids.length} categor${(snapshot ? snapshotSelections.length : version.selection_category_ids.length) === 1 ? "y" : "ies"}`}
-          detail={
-            selectionNames.length > 0
-              ? selectionNames.join(" · ")
-              : "Buyers on this edition start with no selection sheet"
-          }
-        />
-      </dl>
+      {expanded ? (
+        <>
+          <dl className="divide-y border-t">
+            <ManifestRow
+              title={
+                version.budget_template_id
+                  ? `Budget — ${budgetTemplate?.name ?? "template"}`
+                  : "Budget — generated from the takeoff"
+              }
+              detail={
+                version.budget_template_id
+                  ? `${budgetTemplate?.line_count ?? 0} template lines`
+                  : `${version.takeoff_line_count} takeoff line${version.takeoff_line_count === 1 ? "" : "s"}, priced by the price book at release`
+              }
+              missing={version.takeoff_line_count === 0 && !version.budget_template_id}
+              missingLabel="No cost basis — a released house would start with an empty budget"
+            />
+            <ManifestRow
+              title={
+                snapshot
+                  ? `Schedule — ${typeof snapshotSchedule?.name === "string" ? snapshotSchedule.name : "captured at release"}`
+                  : scheduleTemplate
+                    ? `Schedule — ${scheduleTemplate.name}`
+                    : "Schedule"
+              }
+              detail={
+                snapshot
+                  ? `${snapshotScheduleItems} items`
+                  : scheduleTemplate
+                    ? `${scheduleTemplate.items.length} items, offset from the start date`
+                    : ""
+              }
+              missing={!version.schedule_template_id}
+              missingLabel="Required — without it a released house starts with an empty calendar"
+            />
+            <ManifestRow
+              title="Plan set"
+              detail={
+                version.drawing_source_file_id
+                  ? "Versioned onto the house's canonical drawing set at start"
+                  : "Houses started from this edition begin without drawings"
+              }
+              action={
+                version.drawing_source_file_id ? (
+                  <a
+                    href={`/api/files/${version.drawing_source_file_id}/raw`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 text-[11px] text-primary hover:underline"
+                  >
+                    <FileText className="h-3.5 w-3.5" />
+                    Open
+                  </a>
+                ) : null
+              }
+            />
+            <ManifestRow
+              title={`Field checklists — ${snapshot ? snapshotChecklists.length : version.checklist_template_ids.length}`}
+              detail={checklistNames.length > 0 ? checklistNames.join(" · ") : "None attached"}
+            />
+            <ManifestRow
+              title={`Selection sheet — ${snapshot ? snapshotSelections.length : version.selection_category_ids.length} categor${(snapshot ? snapshotSelections.length : version.selection_category_ids.length) === 1 ? "y" : "ies"}`}
+              detail={
+                selectionNames.length > 0
+                  ? selectionNames.join(" · ")
+                  : "Buyers on this edition start with no selection sheet"
+              }
+            />
+          </dl>
 
-      {version.notes ? <p className="border-t px-4 py-2 text-[11px] text-muted-foreground">{version.notes}</p> : null}
+          {version.notes ? <p className="border-t px-4 py-2 text-[11px] text-muted-foreground">{version.notes}</p> : null}
+        </>
+      ) : null}
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-h-[85vh] overflow-y-auto rounded-none sm:max-w-2xl">

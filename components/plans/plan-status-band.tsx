@@ -4,7 +4,7 @@ import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
-import { AlertTriangle, CheckCircle2, Circle, Lock } from "@/components/icons"
+import { AlertTriangle, Lock } from "@/components/icons"
 import { releasePlanVersionAction } from "@/app/(app)/plans/actions"
 import { centsToDollars, signedDollars } from "@/components/plans/plan-badges"
 import { Button } from "@/components/ui/button"
@@ -17,7 +17,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { unwrapAction } from "@/lib/action-result"
-import { blockingGates, releaseGates } from "@/lib/plans/release-gates"
+import { blockingGates } from "@/lib/plans/release-gates"
 import type {
   HousePlanDto,
   HousePlanVersionDto,
@@ -70,19 +70,19 @@ export function PlanStatusBand({
 
   if (version.status === "released") {
     return (
-      <div className="border-b bg-primary/5 px-4 py-3">
-        <p className="text-sm font-medium">v{version.version_number} is the current edition</p>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Every house started from now builds to it.
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b bg-primary/5 px-4 py-2 text-[11px]">
+        <span className="font-medium text-foreground">Current edition</span>
+        <span className="text-muted-foreground">
+          New starts use v{version.version_number}.
           {version.released_at ? ` Released ${new Date(version.released_at).toLocaleDateString()}.` : ""}{" "}
           {version.pinned_lot_count > 0
-            ? `${version.pinned_lot_count} ${version.pinned_lot_count === 1 ? "house is" : "houses are"} pinned to it.`
-            : "No houses pinned to it yet."}
+            ? `${version.pinned_lot_count} ${version.pinned_lot_count === 1 ? "house" : "houses"} pinned.`
+            : "No houses pinned."}
           {cycleMedianDays != null ? ` ${cycleMedianDays} day median cycle.` : ""}
           {performance?.variance_pct != null
-            ? ` Actuals running ${performance.variance_pct > 0 ? "" : "−"}${Math.abs(performance.variance_pct).toFixed(1)}% against the takeoff.`
+            ? ` Actuals ${performance.variance_pct > 0 ? "+" : "−"}${Math.abs(performance.variance_pct).toFixed(1)}% vs takeoff.`
             : ""}
-        </p>
+        </span>
       </div>
     )
   }
@@ -90,42 +90,36 @@ export function PlanStatusBand({
   if (version.status === "superseded") {
     const behind = drift?.changes.length ?? 0
     return (
-      <div className="border-b bg-muted/40 px-4 py-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <Lock className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <p className="text-sm font-medium">v{version.version_number} is superseded and read-only</p>
-        </div>
-        <p className="mt-1 text-xs text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b bg-muted/40 px-4 py-2 text-[11px]">
+        <Lock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <span className="font-medium">Superseded · read-only</span>
+        <span className="text-muted-foreground">
           {version.pinned_lot_count > 0
-            ? `${version.pinned_lot_count} ${version.pinned_lot_count === 1 ? "house is" : "houses are"} still building to it — they keep the bill of process they started on.`
-            : "No houses are still building to it."}
+            ? `${version.pinned_lot_count} ${version.pinned_lot_count === 1 ? "house is" : "houses are"} still building to v${version.version_number}.`
+            : "No houses still use this edition."}
           {behind > 0 && drift
-            ? ` ${behind} ${behind === 1 ? "line has" : "lines have"} changed since, worth ${signedDollars(drift.manual_price_delta_cents)}.`
+            ? ` ${behind} changed ${behind === 1 ? "line" : "lines"} · ${signedDollars(drift.manual_price_delta_cents)}.`
             : ""}
-        </p>
+        </span>
       </div>
     )
   }
 
-  const gates = releaseGates(version)
   const blocking = blockingGates(version)
   const ready = blocking.length === 0
 
   return (
-    <div className={cn("border-b px-4 py-3", ready ? "bg-success/5" : "bg-warning/5")}>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-medium">
-            {ready
-              ? `v${version.version_number} is ready to release`
-              : `v${version.version_number} is a draft — ${blocking.length} required ${blocking.length === 1 ? "gate is" : "gates are"} still open`}
+    <div className={cn("border-b px-4 py-2.5", ready ? "bg-success/5" : "bg-warning/5")}>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+          <p className="text-xs font-medium">
+            {ready ? `v${version.version_number} ready to release` : `v${version.version_number} draft`}
           </p>
-          <p className="mt-1 max-w-3xl text-xs text-muted-foreground">
-            Releasing freezes this bill of process for every house started on it.
-            {releasedVersion
-              ? ` v${releasedVersion.version_number} becomes superseded; its ${releasedVersion.pinned_lot_count} pinned ${releasedVersion.pinned_lot_count === 1 ? "house keeps" : "houses keep"} building to v${releasedVersion.version_number}.`
-              : ` This is the first release for ${plan.code}.`}
-          </p>
+          {!ready ? (
+            <p className="text-[11px] text-destructive">
+              Needs {blocking.map((gate) => gate.label.toLowerCase()).join(" and ")}
+            </p>
+          ) : null}
         </div>
         {canRelease ? (
           <Button
@@ -139,34 +133,6 @@ export function PlanStatusBand({
           </Button>
         ) : null}
       </div>
-
-      <ol className="mt-3 grid divide-y border sm:grid-cols-2 sm:divide-y-0 lg:grid-cols-5 lg:divide-x">
-        {gates.map((gate) => (
-          <li key={gate.key} className="relative flex items-start gap-2 bg-background p-2.5">
-            <span
-              aria-hidden
-              className={cn(
-                "absolute inset-y-0 left-0 w-0.5",
-                gate.ok ? "bg-success" : gate.required ? "bg-destructive" : "bg-border",
-              )}
-            />
-            {gate.ok ? (
-              <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />
-            ) : (
-              <Circle
-                className={cn("mt-0.5 h-3.5 w-3.5 shrink-0", gate.required ? "text-destructive" : "text-muted-foreground")}
-              />
-            )}
-            <div className="min-w-0">
-              <p className={cn("text-[11px] font-medium", !gate.ok && gate.required && "text-destructive")}>
-                {gate.label}
-                {!gate.required ? <span className="font-normal text-muted-foreground"> · optional</span> : null}
-              </p>
-              <p className="text-[10px] text-muted-foreground">{gate.detail}</p>
-            </div>
-          </li>
-        ))}
-      </ol>
 
       <Dialog open={confirming} onOpenChange={setConfirming}>
         <DialogContent className="rounded-none sm:max-w-lg">

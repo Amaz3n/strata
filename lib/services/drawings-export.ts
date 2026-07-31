@@ -17,7 +17,7 @@ import { requirePermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { downloadDrawingPdfObject } from "@/lib/storage/drawings-pdfs-storage"
 import type { MarkupData } from "@/lib/validation/drawings"
-import { formatFeetInches } from "@/lib/validation/drawings"
+import { measurementLabel } from "@/lib/drawings/measure"
 
 const SET_EXPORT_MAX_SHEETS = 500
 // Fallback when a version predates image dimension tracking (96 DPI era).
@@ -29,6 +29,7 @@ interface ExportVersionRow {
   file_id: string
   page_index: number
   image_width: number | null
+  image_height: number | null
   calibration: { feet_per_image_px?: number } | null
 }
 
@@ -127,7 +128,7 @@ export async function exportProjectSetPdf(
   const service = createServiceSupabaseClient()
   const { data: versionRows, error: versionsError } = await service
     .from("drawing_sheet_versions")
-    .select("id, drawing_sheet_id, drawing_revision_id, file_id, page_index, image_width, calibration:extracted_metadata->calibration")
+    .select("id, drawing_sheet_id, drawing_revision_id, file_id, page_index, image_width, image_height, calibration:extracted_metadata->calibration")
     .eq("org_id", resolvedOrgId)
     .in("drawing_sheet_id", sheets.map((s) => s.id))
   if (versionsError) {
@@ -179,7 +180,7 @@ async function resolveExportVersion(
   const service = createServiceSupabaseClient()
   let query = service
     .from("drawing_sheet_versions")
-    .select("id, drawing_sheet_id, file_id, page_index, image_width, calibration:extracted_metadata->calibration")
+    .select("id, drawing_sheet_id, file_id, page_index, image_width, image_height, calibration:extracted_metadata->calibration")
     .eq("org_id", orgId)
     .eq("drawing_sheet_id", sheet.id)
   if (versionId) {
@@ -256,6 +257,7 @@ async function appendSheetPage(
     font,
     visible.map((m) => m.data as MarkupData),
     version.image_width,
+    version.image_height,
     feetPerImagePx,
   )
 }
@@ -312,9 +314,16 @@ function drawMarkupsOnPage(
   font: PDFFont,
   markups: MarkupData[],
   imageWidth: number | null,
+  imageHeight: number | null,
   feetPerImagePx: number | null,
 ) {
   const map = buildPageMap(page, imageWidth)
+  // measure.ts works in rendered-image pixels; without both dimensions a
+  // measured label cannot be recomputed, so it is simply omitted.
+  const imageSize =
+    imageWidth && imageHeight && imageWidth > 0 && imageHeight > 0
+      ? { width: imageWidth, height: imageHeight }
+      : null
 
   for (const data of markups) {
     if (!data || !Array.isArray(data.points)) continue
@@ -401,15 +410,89 @@ function drawMarkupsOnPage(
       case "dimension": {
         if (pts.length < 2) break
         page.drawLine({ start: pts[0], end: pts[1], thickness: strokeWidth, color })
-        // Same label the viewer renders: calibrated feet-inches when the
-        // version carries a scale, raw rendered-image pixels otherwise.
-        const distImagePx = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y) / map.scale
-        const dimensionLabel = feetPerImagePx
-          ? formatFeetInches(distImagePx * feetPerImagePx)
-          : `${Math.round(distImagePx)}px`
-        page.drawText(data.text || dimensionLabel, {
-          x: (pts[0].x + pts[1].x) / 2,
-          y: (pts[0].y + pts[1].y) / 2 + 6 * map.scale,
+        // Same label the viewer renders — one implementation, in measure.ts.
+        const label = data.text || measurementLabel(data, imageSize, feetPerImagePx)
+        if (label) {
+          page.drawText(label, {
+            x: (pts[0].x + pts[1].x) / 2,
+            y: (pts[0].y + pts[1].y) / 2 + 6 * map.scale,
+            size: 12 * map.scale,
+            font,
+            color,
+            rotate: degrees(map.textRotation),
+          })
+        }
+        break
+      }
+      case "polyline": {
+        if (pts.length < 2) break
+        for (let i = 1; i < pts.length; i++) {
+          page.drawLine({
+            start: pts[i - 1],
+            end: pts[i],
+            thickness: strokeWidth + map.scale,
+            color,
+            lineCap: 1,
+          })
+        }
+        const label = measurementLabel(data, imageSize, feetPerImagePx)
+        if (label) {
+          const anchor = pts[Math.floor(pts.length / 2)]
+          page.drawText(label, {
+            x: anchor.x,
+            y: anchor.y + 8 * map.scale,
+            size: 12 * map.scale,
+            font,
+            color,
+            rotate: degrees(map.textRotation),
+          })
+        }
+        break
+      }
+      case "area": {
+        if (pts.length < 3) break
+        // pdf-lib has no polygon primitive; the ring is stroked edge by edge
+        // and the fill is omitted rather than faked with a bounding box.
+        for (let i = 0; i < pts.length; i++) {
+          page.drawLine({
+            start: pts[i],
+            end: pts[(i + 1) % pts.length],
+            thickness: strokeWidth + map.scale,
+            color,
+            lineCap: 1,
+          })
+        }
+        const label = measurementLabel(data, imageSize, feetPerImagePx)
+        if (label) {
+          const cx = pts.reduce((sum, p) => sum + p.x, 0) / pts.length
+          const cy = pts.reduce((sum, p) => sum + p.y, 0) / pts.length
+          page.drawText(label, {
+            x: cx,
+            y: cy,
+            size: 12 * map.scale,
+            font,
+            color,
+            rotate: degrees(map.textRotation),
+          })
+        }
+        break
+      }
+      case "count": {
+        if (pts.length < 1) break
+        const radius = Math.max(4 * map.scale, strokeWidth * 2)
+        for (const point of pts) {
+          page.drawEllipse({
+            x: point.x,
+            y: point.y,
+            xScale: radius,
+            yScale: radius,
+            color,
+          })
+        }
+        const last = pts[pts.length - 1]
+        page.drawText(`${pts.length}`, {
+          x: last.x + radius * 2,
+          y: last.y,
           size: 12 * map.scale,
           font,
           color,

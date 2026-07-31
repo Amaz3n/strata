@@ -81,7 +81,7 @@ export type InspectionItem = {
 
 export type InspectionDetail = Inspection & { items: InspectionItem[] }
 
-const TEMPLATE_SELECT = "id, org_id, name, kind, trade, description, is_active, created_at, checklist_template_items(count)"
+const TEMPLATE_SELECT = "id, org_id, name, kind, trade, description, is_active, created_at, structured_form_items(count)"
 const TEMPLATE_ITEM_SELECT = "id, template_id, section, prompt, response_type, sort_order"
 const INSPECTION_SELECT =
   "id, org_id, project_id, inspection_number, template_id, kind, title, status, result, inspected_at, inspector_user_id, inspector_name, location, location_id, company_id, schedule_item_id, notes, created_at, updated_at, company:companies(name)"
@@ -89,8 +89,8 @@ const ITEM_SELECT =
   "id, inspection_id, section, prompt, response_type, response, is_deficient, note, photo_file_id, punch_item_id, observation_id, sort_order"
 
 function mapTemplate(row: Record<string, any>): ChecklistTemplate {
-  const { checklist_template_items, ...rest } = row
-  const countRow = Array.isArray(checklist_template_items) ? checklist_template_items[0] : checklist_template_items
+  const { structured_form_items, ...rest } = row
+  const countRow = Array.isArray(structured_form_items) ? structured_form_items[0] : structured_form_items
   return { ...rest, item_count: countRow?.count ?? 0 } as ChecklistTemplate
 }
 
@@ -107,7 +107,7 @@ function mapInspection(row: Record<string, any>): Inspection {
 export async function listChecklistTemplates(orgId?: string, options?: { includeInactive?: boolean }): Promise<ChecklistTemplate[]> {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
   let query = supabase
-    .from("checklist_templates")
+    .from("structured_form_templates")
     .select(TEMPLATE_SELECT)
     .eq("org_id", resolvedOrgId)
     .order("kind")
@@ -121,7 +121,7 @@ export async function listChecklistTemplates(orgId?: string, options?: { include
 export async function listChecklistTemplateItems(templateId: string, orgId?: string): Promise<ChecklistTemplateItem[]> {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
   const { data, error } = await supabase
-    .from("checklist_template_items")
+    .from("structured_form_items")
     .select(TEMPLATE_ITEM_SELECT)
     .eq("org_id", resolvedOrgId)
     .eq("template_id", templateId)
@@ -136,7 +136,7 @@ export async function createChecklistTemplate(input: ChecklistTemplateInput, org
   await requirePermission("inspection.write", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: template, error } = await supabase
-    .from("checklist_templates")
+    .from("structured_form_templates")
     .insert({
       org_id: resolvedOrgId,
       name: parsed.name,
@@ -148,7 +148,7 @@ export async function createChecklistTemplate(input: ChecklistTemplateInput, org
     .single()
   if (error || !template) throw new Error(`Failed to create checklist template: ${error?.message}`)
 
-  const { error: itemsError } = await supabase.from("checklist_template_items").insert(
+  const { error: itemsError } = await supabase.from("structured_form_items").insert(
     parsed.items.map((item, index) => ({
       org_id: resolvedOrgId,
       template_id: template.id,
@@ -170,7 +170,7 @@ export async function updateChecklistTemplate(templateId: string, input: Checkli
   await requirePermission("inspection.write", { supabase, orgId: resolvedOrgId, userId })
 
   const { data: existing } = await supabase
-    .from("checklist_templates")
+    .from("structured_form_templates")
     .select("id")
     .eq("org_id", resolvedOrgId)
     .eq("id", templateId)
@@ -178,7 +178,7 @@ export async function updateChecklistTemplate(templateId: string, input: Checkli
   if (!existing) throw new Error("Checklist template not found")
 
   const { data: template, error } = await supabase
-    .from("checklist_templates")
+    .from("structured_form_templates")
     .update({ name: parsed.name, kind: parsed.kind, trade: parsed.trade ?? null, description: parsed.description ?? null })
     .eq("org_id", resolvedOrgId)
     .eq("id", templateId)
@@ -189,13 +189,13 @@ export async function updateChecklistTemplate(templateId: string, input: Checkli
   // Replace items wholesale — running inspections snapshot their items, so
   // rewriting the template never touches history.
   const { error: deleteError } = await supabase
-    .from("checklist_template_items")
+    .from("structured_form_items")
     .delete()
     .eq("org_id", resolvedOrgId)
     .eq("template_id", templateId)
   if (deleteError) throw new Error(`Failed to update template items: ${deleteError.message}`)
 
-  const { error: itemsError } = await supabase.from("checklist_template_items").insert(
+  const { error: itemsError } = await supabase.from("structured_form_items").insert(
     parsed.items.map((item, index) => ({
       org_id: resolvedOrgId,
       template_id: templateId,
@@ -215,7 +215,7 @@ export async function setChecklistTemplateActive(templateId: string, isActive: b
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("inspection.write", { supabase, orgId: resolvedOrgId, userId })
   const { error } = await supabase
-    .from("checklist_templates")
+    .from("structured_form_templates")
     .update({ is_active: isActive })
     .eq("org_id", resolvedOrgId)
     .eq("id", templateId)
@@ -346,14 +346,14 @@ export async function seedChecklistTemplates(orgId?: string): Promise<number> {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
 
   const { count } = await supabase
-    .from("checklist_templates")
+    .from("structured_form_templates")
     .select("id", { count: "exact", head: true })
     .eq("org_id", resolvedOrgId)
   if ((count ?? 0) > 0) return 0
 
   for (const template of STARTER_TEMPLATES) {
     const { data: created, error } = await supabase
-      .from("checklist_templates")
+      .from("structured_form_templates")
       .insert({
         org_id: resolvedOrgId,
         name: template.name,
@@ -365,7 +365,7 @@ export async function seedChecklistTemplates(orgId?: string): Promise<number> {
       .single()
     if (error || !created) throw new Error(`Failed to seed checklist templates: ${error?.message}`)
 
-    const { error: itemsError } = await supabase.from("checklist_template_items").insert(
+    const { error: itemsError } = await supabase.from("structured_form_items").insert(
       template.items.map((item, index) => ({
         org_id: resolvedOrgId,
         template_id: created.id,

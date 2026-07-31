@@ -9,20 +9,27 @@ import { ControlTowerWatch } from "@/components/control-tower/control-tower-watc
 import { ProductionHome } from "@/components/home/production-home";
 import { getOrgProductTier } from "@/lib/services/context";
 import { getAmbientDeskContext } from "@/lib/services/desk-context";
-import { getProductionHomeData } from "@/lib/services/production-home";
+import { getProductionHomeData, type FieldWindow } from "@/lib/services/production-home";
 import { orgHasActiveNonProductionProjects } from "@/lib/services/production-desk-scope";
 
-export default async function HomePage() {
-  const tier = await getOrgProductTier();
+const FIELD_WINDOWS: FieldWindow[] = ["today", "week", "twoweek"];
+
+export default async function HomePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ w?: string }>;
+}) {
+  const [tier, params] = await Promise.all([getOrgProductTier(), searchParams]);
   if (tier === "production") {
     const ambient = await getAmbientDeskContext();
+    const window = FIELD_WINDOWS.find((option) => option === params.w);
     const [data, showCustomProjects] = await Promise.all([
-      getProductionHomeData({ divisionId: ambient.divisionId, communityId: ambient.communityId }),
+      getProductionHomeData({ divisionId: ambient.divisionId, communityId: ambient.communityId, window }),
       orgHasActiveNonProductionProjects(),
     ]);
     return (
       <>
-        <PageLayout title="Production tempo" fullBleed />
+        <PageLayout title="Home" fullBleed />
         <ProductionHome data={data} showCustomProjects={showCustomProjects} />
       </>
     );

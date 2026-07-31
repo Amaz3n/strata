@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef } from "react"
 import type { DrawingSheet } from "@/lib/services/drawings"
+import { buildRenderableTileBaseUrl } from "@/lib/drawings/tile-urls"
 
 // Retain a bounded LRU of prefetched Image handles. The browser HTTP cache
 // keeps the bytes; this map only pins decode targets so re-navigation is
@@ -42,31 +43,6 @@ function preloadImage(url: string) {
     const oldest = retainedImages.keys().next().value
     if (oldest === undefined) break
     retainedImages.delete(oldest)
-  }
-}
-
-function buildRenderableTileBaseUrl(baseUrl: string) {
-  if (typeof window === "undefined") return baseUrl
-
-  const secureTilesEnabled =
-    process.env.NEXT_PUBLIC_DRAWINGS_TILES_SECURE === "true"
-  if (!secureTilesEnabled) return baseUrl
-
-  const host = window.location.hostname.toLowerCase()
-  const isProductionAppHost =
-    host === "app.arcnaples.com" || host.endsWith(".arcnaples.com")
-
-  if (isProductionAppHost) return baseUrl
-
-  try {
-    const parsed = new URL(baseUrl)
-    const marker = "/drawings-tiles/"
-    const index = parsed.pathname.indexOf(marker)
-    if (index === -1) return baseUrl
-    const path = parsed.pathname.slice(index + marker.length)
-    return `/api/drawings/tiles/${path}`
-  } catch {
-    return baseUrl
   }
 }
 

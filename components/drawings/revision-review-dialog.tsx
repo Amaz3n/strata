@@ -64,7 +64,10 @@ import {
   retryDraftRevisionAction,
   listRevisionRecipientsAction,
   distributeRevisionAction,
+  listDraftRevisionSheetsAction,
+  listRecentlyDeletedSheetNumbersAction,
 } from "@/app/(app)/drawings/actions"
+import type { DraftRevisionSheetPreview } from "@/app/(app)/drawings/types"
 import type {
   RevisionDiff,
   RevisionDiffSheet,
@@ -74,7 +77,7 @@ import type {
   RevisionDistributionRecipient,
   RevisionDistributionRecord,
 } from "@/lib/services/drawings-distribution"
-import { toRenderableDrawingsUrl } from "./viewer/tiled-drawing-viewer"
+import { toRenderableDrawingsUrl } from "@/lib/drawings/tile-urls"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -127,6 +130,12 @@ export function RevisionReviewDialog({
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [unchangedOpen, setUnchangedOpen] = useState(false)
   const [previewRetries, setPreviewRetries] = useState(0)
+  // Pages already split out of the draft, shown live while processing runs.
+  const [draftSheets, setDraftSheets] = useState<DraftRevisionSheetPreview[]>([])
+  // Sheet numbers deleted from this register before — annotates "new" sheets.
+  const [deletedSheetNumbers, setDeletedSheetNumbers] = useState<Set<string>>(
+    () => new Set(),
+  )
 
   const loadDiff = useCallback(async () => {
     setLoading(true)
@@ -138,6 +147,17 @@ export function RevisionReviewDialog({
       setIssuedDate(data.revision.issued_date?.slice(0, 10) ?? "")
       setReceivedFrom(data.revision.received_from ?? "")
       setNotes(data.revision.notes ?? "")
+
+      // A sheet with no live predecessor may still have existed here before
+      // someone deleted it. Best-effort: the review reads fine without this.
+      if (data.added.length > 0) {
+        const deleted = await listRecentlyDeletedSheetNumbersAction(
+          data.revision.project_id,
+        )
+        setDeletedSheetNumbers(new Set(deleted.success ? deleted.data : []))
+      } else {
+        setDeletedSheetNumbers(new Set())
+      }
     } catch (err) {
       console.error("Failed to load revision diff:", err)
       toast.error("Failed to load revision for review")
@@ -165,6 +185,7 @@ export function RevisionReviewDialog({
   useEffect(() => {
     if (!open) return
     setPreviewRetries(0)
+    setDraftSheets([])
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
 
@@ -189,16 +210,18 @@ export function RevisionReviewDialog({
         }
         if (status.status === "processing") {
           setProcessing(true)
-          setDiff((prev) =>
-            prev
-              ? prev
-              : ({
-                  revision: status,
-                  updated: [],
-                  added: [],
-                  unchanged: [],
-                } as RevisionDiff),
-          )
+          setDiff({
+            revision: status,
+            updated: [],
+            added: [],
+            unchanged: [],
+          })
+          // Sheet + version rows are written at split time, so pages show up
+          // here long before their tiles finish. Degrade silently: a failed
+          // page fetch just leaves the grid where it was.
+          const pages = await listDraftRevisionSheetsAction(revisionId)
+          if (cancelled) return
+          if (pages.success) setDraftSheets(pages.data)
           timer = setTimeout(tick, 2000)
           return
         }
@@ -309,24 +332,11 @@ export function RevisionReviewDialog({
               <p className="text-xs text-muted-foreground">{failed}</p>
             </div>
           ) : processing || (loading && !diff) ? (
-            <div className="flex flex-col items-center gap-3 p-10 text-center">
-              <RefreshCw className="h-6 w-6 animate-spin text-chart-1" />
-              <p className="text-sm font-medium">Processing your package…</p>
-              <p className="text-xs text-muted-foreground">
-                We&apos;re rendering pages and detecting sheets. This stays a draft
-                until you publish.
-              </p>
-              <Progress
-                value={
-                  diff?.revision.total_pages
-                    ? ((diff.revision.processed_pages ?? 0) /
-                        diff.revision.total_pages) *
-                      100
-                    : 8
-                }
-                className="mt-2 h-1.5 w-64"
-              />
-            </div>
+            <ProcessingPanel
+              processedPages={diff?.revision.processed_pages ?? 0}
+              totalPages={diff?.revision.total_pages ?? null}
+              sheets={draftSheets}
+            />
           ) : diff ? (
             <div className="flex-1 space-y-5 overflow-y-auto pr-1">
               {/* Issuance metadata */}
@@ -419,6 +429,7 @@ export function RevisionReviewDialog({
                     <AddedRow
                       key={sheet.sheet_id}
                       sheet={sheet}
+                      previouslyDeleted={deletedSheetNumbers.has(sheet.sheet_number)}
                       edit={edits[sheet.sheet_id]}
                       accepted={accepted(sheet.sheet_id)}
                       onAccept={(v) => toggleAccept(sheet.sheet_id, v)}
@@ -766,6 +777,114 @@ function Section({
   )
 }
 
+/** Mirrors DRAFT_SHEET_PREVIEW_CAP in the drawings actions. */
+const DRAFT_SHEET_GRID_CAP = 400
+/** Ghost tiles stand in for pages not split yet; enough to read as a package. */
+const MAX_PENDING_TILES = 48
+
+/**
+ * Live processing state. The pipeline writes sheet + version rows at split
+ * time, so pages land here one by one — the user sees the package being taken
+ * apart instead of an opaque wait.
+ */
+function ProcessingPanel({
+  processedPages,
+  totalPages,
+  sheets,
+}: {
+  processedPages: number
+  totalPages: number | null
+  sheets: DraftRevisionSheetPreview[]
+}) {
+  const percent =
+    totalPages && totalPages > 0
+      ? Math.min(100, Math.round((processedPages / totalPages) * 100))
+      : null
+  const pendingTiles =
+    totalPages && totalPages > sheets.length
+      ? Math.min(totalPages - sheets.length, MAX_PENDING_TILES)
+      : 0
+
+  return (
+    <div className="flex-1 space-y-4 overflow-y-auto pr-1">
+      <div className="flex items-start gap-3 border bg-muted/20 p-3">
+        <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-chart-1" />
+        <div className="min-w-0 flex-1 space-y-2">
+          <div className="flex items-baseline justify-between gap-3">
+            <p className="text-sm font-medium">
+              {totalPages
+                ? `Processed ${processedPages} of ${totalPages} sheets`
+                : "Reading the package…"}
+            </p>
+            <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+              {percent === null ? "—" : `${percent}%`}
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Sheets appear below as they come out of the PDF. Nothing changes in
+            the live register until you publish.
+          </p>
+          <Progress value={percent ?? 8} className="h-1.5" />
+        </div>
+      </div>
+
+      {sheets.length === 0 ? (
+        <p className="border border-dashed p-6 text-center text-xs text-muted-foreground">
+          No pages out of the PDF yet — the first sheets show up here within a
+          few seconds.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(84px,1fr))] gap-2">
+            {sheets.map((sheet) => (
+              <DraftTile key={sheet.version_id} sheet={sheet} />
+            ))}
+            {Array.from({ length: pendingTiles }, (_, i) => (
+              <div key={`pending-${i}`} className="space-y-1">
+                <div className="skeleton-shimmer h-24 w-full border border-dashed bg-muted/40" />
+                <p className="text-[10px] text-muted-foreground">—</p>
+              </div>
+            ))}
+          </div>
+          {sheets.length >= DRAFT_SHEET_GRID_CAP && (
+            <p className="text-xs text-muted-foreground">
+              Showing the first {DRAFT_SHEET_GRID_CAP} pages of this package.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DraftTile({ sheet }: { sheet: DraftRevisionSheetPreview }) {
+  const src = toRenderableDrawingsUrl(sheet.thumbnail_url)
+  return (
+    <div className="space-y-1">
+      <div
+        className={cn(
+          "flex h-24 w-full items-center justify-center overflow-hidden border bg-muted",
+          !src && "skeleton-shimmer",
+        )}
+      >
+        {src ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={src}
+            alt={sheet.sheet_number}
+            className="h-full w-full object-contain"
+          />
+        ) : (
+          <span className="text-[10px] text-muted-foreground">rendering…</span>
+        )}
+      </div>
+      <p className="truncate font-mono text-[10px] text-muted-foreground">
+        {sheet.sheet_number}
+      </p>
+    </div>
+  )
+}
+
 function Thumb({ preview, label }: { preview?: RevisionVersionPreview | null; label: string }) {
   const src = toRenderableDrawingsUrl(preview?.thumbnail_url)
   return (
@@ -872,12 +991,15 @@ function AddedRow({
   sheet,
   edit,
   accepted,
+  previouslyDeleted,
   onAccept,
   onEdit,
 }: {
   sheet: RevisionDiffSheet
   edit?: SheetEdit
   accepted: boolean
+  /** This sheet number was deleted from the register before — say so. */
+  previouslyDeleted: boolean
   onAccept: (v: boolean) => void
   onEdit: (patch: SheetEdit) => void
 }) {
@@ -894,7 +1016,14 @@ function AddedRow({
         className="mt-1 shrink-0"
       />
       <Thumb preview={sheet.draft} label="new" />
-      <MetaEditor sheet={sheet} edit={edit} onEdit={onEdit} />
+      <div className="flex min-w-[240px] flex-1 flex-col gap-2">
+        <MetaEditor sheet={sheet} edit={edit} onEdit={onEdit} />
+        {previouslyDeleted && (
+          <Badge variant="outline" className="w-fit font-normal text-muted-foreground">
+            Previously deleted — returning as new
+          </Badge>
+        )}
+      </div>
     </div>
   )
 }

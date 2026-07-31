@@ -20,6 +20,12 @@ export type QuoteViewLine = {
   muted?: boolean
   /** Optional add-on the client can choose to include. */
   is_optional?: boolean
+  /**
+   * Set when this line's quantity was measured off the plans. Renders a
+   * "show me" affordance that opens the measured regions — the whole point of
+   * the transparent estimate: the client can check the number, not just read it.
+   */
+  takeoff_condition_id?: string | null
 }
 
 export interface QuoteDocumentViewProps {
@@ -49,6 +55,8 @@ export interface QuoteDocumentViewProps {
   selectedOptionalIds?: string[]
   /** When provided, optional add-ons render as interactive checkboxes. */
   onToggleOptional?: (id: string) => void
+  /** When provided, measured lines offer "show me on the plans". */
+  onShowTakeoff?: (conditionId: string) => void
 }
 
 const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })
@@ -109,6 +117,7 @@ export function QuoteDocumentView({
   pricingDisplay = "itemized",
   selectedOptionalIds,
   onToggleOptional,
+  onShowTakeoff,
 }: QuoteDocumentViewProps) {
   const [showFullSummary, setShowFullSummary] = useState(false)
   const summaryIsLong = !!summary && (summary.length > 160 || summary.includes("\n"))
@@ -247,6 +256,16 @@ export function QuoteDocumentView({
                             {line.quantity ?? 1}
                             {line.unit ? ` ${line.unit}` : ""} × {money(line.unit_cost_cents)}
                           </p>
+                        ) : null}
+                        {line.takeoff_condition_id && onShowTakeoff ? (
+                          <button
+                            type="button"
+                            onClick={() => onShowTakeoff(line.takeoff_condition_id as string)}
+                            className="mt-1.5 text-xs font-medium underline-offset-2 hover:underline"
+                            style={accent ? { color: accent } : undefined}
+                          >
+                            Show me on the plans
+                          </button>
                         ) : null}
                       </div>
                       {showAmounts ? (

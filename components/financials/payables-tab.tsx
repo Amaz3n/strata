@@ -4,6 +4,7 @@ import type { BudgetLineOption, ComplianceRules, ComplianceStatusSummary, CostCo
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import { ProjectPayablesClient } from "@/components/payables/project-payables-client"
 import { AlertTriangle } from "lucide-react"
+import type { PaymentHoldEvaluation } from "@/lib/services/payment-holds"
 
 type ProjectBillingModel = "fixed_price" | "cost_plus_percent" | "cost_plus_fixed_fee" | "cost_plus_gmp" | "time_and_materials"
 
@@ -17,6 +18,7 @@ interface PayablesTabProps {
   complianceRules: ComplianceRules
   complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>
   loadErrors?: string[]
+  holdEvaluations?: Record<string, PaymentHoldEvaluation>
 }
 
 export function PayablesTab({
@@ -29,6 +31,7 @@ export function PayablesTab({
   complianceRules,
   complianceStatusByCompanyId,
   loadErrors = [],
+  holdEvaluations = {},
 }: PayablesTabProps) {
   return (
     <div className="w-full">
@@ -54,6 +57,7 @@ export function PayablesTab({
         complianceRules={complianceRules}
         complianceStatusByCompanyId={complianceStatusByCompanyId}
         fullBleed
+        holdEvaluations={holdEvaluations}
       />
     </div>
   )

@@ -1,4 +1,6 @@
 import "server-only"
+import { cache } from "react"
+
 
 import { LOT_STATUSES, type LotStatus } from "@/lib/land/lot-lifecycle"
 import { buildRunway, runwayVerdict, type RunwayPoint, type RunwayVerdict } from "@/lib/land/runway"
@@ -121,13 +123,17 @@ function paceStateFor(pace: number, required: number | null): PaceState {
  * stays a small page.
  */
 export async function getCommunityPortfolio(
-  { divisionId, status }: { divisionId?: string; status?: string } = {},
+  { divisionId, status, communityId }: { divisionId?: string; status?: string; communityId?: string } = {},
   orgId?: string,
 ): Promise<CommunityPortfolio> {
   const context = await requireOrgContext(orgId)
   await requirePermission("community.read", context)
 
-  const communities = await listCommunities({ divisionId, status }, context.orgId)
+  const listed = await listCommunities({ divisionId, status }, context.orgId)
+  // Filtering after the list keeps division scoping and the lot-count map on one
+  // path, so a single community's lane is computed by exactly the same math the
+  // board uses — the workbench must never disagree with the desk it came from.
+  const communities = communityId ? listed.filter((community) => community.id === communityId) : listed
   const ids = communities.map((community) => community.id)
   if (ids.length === 0) {
     return {
@@ -476,3 +482,18 @@ export async function getCommunityPortfolio(
     },
   }
 }
+
+/**
+ * One community's lane. The workbench header, its urgency strip, and the Land
+ * tab's runway all read this, so the community page and the board it was opened
+ * from state supply, pace, and margin identically.
+ */
+export const getCommunityLane = cache(async function getCommunityLane(
+  communityId: string,
+  orgId?: string,
+): Promise<CommunityLane | null> {
+  // Cached per request: the community layout and the tab inside it both want the
+  // lane, and the runway projection behind it is not cheap enough to run twice.
+  const portfolio = await getCommunityPortfolio({ communityId }, orgId)
+  return portfolio.lanes[0] ?? null
+})

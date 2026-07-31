@@ -794,8 +794,11 @@ function CashSheet({
         <FootLink href="/invoices">Invoices</FootLink>
         <span className="text-muted-foreground/40">·</span>
         <FootLink href="/invoices?status=overdue">Overdue</FootLink>
+        {/* File download, not navigation — `Link` would prefetch and soft-navigate. */}
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
         <a
-          href="/api/reports/ar-aging/export?format=pdf"
+          href="/api/reports/ar-aging?format=pdf"
+          download
           className="group ml-auto inline-flex items-center gap-1 text-[11px] font-medium text-foreground/80 transition-colors hover:text-foreground"
         >
           <Download className="h-3 w-3" />

@@ -58,6 +58,18 @@ export const communityAssignmentRoleSchema = z.enum([
   "land",
 ])
 
+/** Client-safe role labels (the service module is server-only). */
+export const COMMUNITY_ASSIGNMENT_ROLE_LABELS: Record<
+  z.infer<typeof communityAssignmentRoleSchema>,
+  string
+> = {
+  sales: "Sales consultant",
+  superintendent: "Superintendent",
+  closing: "Closing coordinator",
+  warranty: "Warranty",
+  land: "Land manager",
+}
+
 export const communityAssignmentInputSchema = z.object({
   communityId: z.string().uuid(),
   userId: z.string().uuid(),

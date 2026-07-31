@@ -4,11 +4,18 @@ import { useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
-import { Lock, Plus } from "@/components/icons"
+import { Lock, MoreHorizontal, Plus } from "@/components/icons"
 import { createPlanVersionAction, updateHousePlanAction } from "@/app/(app)/plans/actions"
 import { PlanStatusBadge } from "@/components/plans/plan-badges"
 import { Button } from "@/components/ui/button"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { unwrapAction } from "@/lib/action-result"
 import type { HousePlanDto, HousePlanVersionDto, PlanVersionDriftDto } from "@/lib/services/house-plans"
 import { cn } from "@/lib/utils"
@@ -39,7 +46,6 @@ export function PlanEditions({
   const [pending, startTransition] = useTransition()
   const ordered = [...versions].sort((left, right) => left.version_number - right.version_number)
   const draftVersion = versions.find((version) => version.status === "draft") ?? null
-  const selected = versions.find((version) => version.id === selectedId) ?? null
 
   function run(operation: () => Promise<unknown>, success: string) {
     startTransition(async () => {
@@ -63,7 +69,7 @@ export function PlanEditions({
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-2 border-b px-4 py-2">
+    <div id="plan-editions" className="flex scroll-mt-10 flex-wrap items-center gap-x-2 gap-y-2 border-b px-4 py-2">
       <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto">
         {ordered.map((version, index) => {
           const isSelected = version.id === selectedId
@@ -113,43 +119,49 @@ export function PlanEditions({
         })}
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1.5">
         <PlanStatusBadge status={plan.status} />
         {canWrite ? (
-          <Select
-            value={plan.status}
-            onValueChange={(status) =>
-              run(async () => unwrapAction(await updateHousePlanAction(plan.id, { status })), "Plan status updated")
-            }
-          >
-            <SelectTrigger className="h-7 w-24 rounded-none text-[11px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="draft">Draft</SelectItem>
-              <SelectItem value="active">Active</SelectItem>
-              <SelectItem value="retired">Retired</SelectItem>
-            </SelectContent>
-          </Select>
-        ) : null}
-        {canWrite ? (
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 rounded-none text-[11px]"
-            onClick={startDraft}
-            disabled={pending || Boolean(draftVersion)}
-            title={
-              draftVersion
-                ? `v${draftVersion.version_number} is already open as a draft`
-                : selected
-                  ? `Copies v${selected.version_number} into a new draft`
-                  : undefined
-            }
-          >
-            <Plus className="mr-1 h-3.5 w-3.5" />
-            New edition
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-7 w-7 rounded-none"
+                disabled={pending}
+                aria-label="Plan actions"
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuItem
+                onClick={startDraft}
+                disabled={Boolean(draftVersion)}
+                title={draftVersion ? `v${draftVersion.version_number} is already open` : undefined}
+              >
+                <Plus className="h-4 w-4" />
+                New edition
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Plan status</DropdownMenuLabel>
+              {(["draft", "active", "retired"] as const).map((status) => (
+                <DropdownMenuItem
+                  key={status}
+                  disabled={status === plan.status}
+                  onClick={() =>
+                    run(
+                      async () => unwrapAction(await updateHousePlanAction(plan.id, { status })),
+                      "Plan status updated",
+                    )
+                  }
+                >
+                  <span className="capitalize">{status}</span>
+                  {status === plan.status ? <span className="ml-auto text-[10px] text-muted-foreground">Current</span> : null}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
         ) : null}
       </div>
     </div>

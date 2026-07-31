@@ -1,4 +1,6 @@
-import { resolveTakeoffLineAmount, takeoffLineKey } from "@/lib/financials/plan-pricing"
+import { takeoffLineKey } from "@/lib/financials/plan-pricing"
+import type { PlanPricingSource } from "@/lib/financials/plan-pricing"
+import { resolveTakeoffLineAmount } from "@/lib/financials/plan-pricing"
 import type { TakeoffLineDto } from "@/lib/services/house-plans"
 import type { CostCode } from "@/lib/types"
 
@@ -9,13 +11,17 @@ import type { CostCode } from "@/lib/types"
  * rather than a report you open afterwards.
  *
  * Pure and client-safe — the plan sheet computes the bill in the browser as the
- * draft is edited, without a round trip per keystroke.
+ * draft is edited, without a round trip per keystroke. Pricing is resolved by the
+ * caller and passed in; this module only groups, diffs, and sums.
  */
 
 export type BillRowStatus = "added" | "removed" | "changed" | "same"
 
 export type BillRow = {
+  /** Stable across edits — a React key, never a comparison identity. */
   key: string
+  /** What makes two lines "the same line" across editions. */
+  matchKey: string
   /** Index into the editable draft array; -1 for a line that only exists in the comparison. */
   index: number
   costCodeId: string
@@ -25,13 +31,20 @@ export type BillRow = {
   uom: string
   quantity: number
   elevationId: string | null
-  /** Price-book resolution for the current edition, when pricing is available. */
+  /** Effective unit cost after price-book resolution, in cents. */
   unitCostCents: number | null
   amountCents: number
   comparisonAmountCents: number | null
   deltaCents: number | null
   status: BillRowStatus
+  /** Null on a removed row, which has no live pricing. */
+  pricingSource: PlanPricingSource | null
+  vendorName: string | null
+  /** True when an agreement prices the line as a lump sum regardless of quantity. */
+  lumpSum: boolean
   unpriced: boolean
+  /** Set when the draft row cannot be saved as-is. */
+  invalid: boolean
 }
 
 export type BillDivision = {
@@ -54,6 +67,7 @@ export type Bill = {
   lineCount: number
   unpricedCount: number
   changedCount: number
+  invalidCount: number
 }
 
 const UNCODED_KEY = "__uncoded"
@@ -71,18 +85,21 @@ function divisionLabels(costCodes: CostCode[]): Map<string, string> {
 }
 
 export type BillLineInput = {
-  /** Stable key when the line exists server-side; null for an unsaved draft row. */
-  lineId: string | null
+  /** Stable identity for the draft row, independent of its contents. */
+  uid: string
   index: number
   costCodeId: string
   description: string
   uom: string
   quantity: number
-  unitCostCents: number | null
   elevationId: string | null
-  /** Resolved amount when the price book priced it; falls back to qty × unit cost. */
-  resolvedAmountCents?: number | null
-  unpriced?: boolean
+  /** Effective unit cost — the caller has already applied price-book precedence. */
+  unitCostCents: number | null
+  amountCents: number
+  pricingSource: PlanPricingSource
+  vendorName: string | null
+  lumpSum: boolean
+  invalid: boolean
 }
 
 function keyOf(line: { elevationId: string | null; costCodeId: string; description: string; uom: string }): string {
@@ -122,14 +139,13 @@ export function buildBill({
 
   const rows: BillRow[] = lines.map((line) => {
     const code = codeById.get(line.costCodeId)
-    const key = keyOf(line)
-    seen.add(key)
-    const amountCents =
-      line.resolvedAmountCents ?? resolveTakeoffLineAmount(line.quantity, line.unitCostCents ?? 0)
-    const comparison = comparisonByKey.get(key) ?? null
-    const deltaCents = comparisonLines ? amountCents - (comparison ?? 0) : null
+    const matchKey = keyOf(line)
+    seen.add(matchKey)
+    const comparison = comparisonByKey.get(matchKey) ?? null
+    const deltaCents = comparisonLines ? line.amountCents - (comparison ?? 0) : null
     return {
-      key,
+      key: line.uid,
+      matchKey,
       index: line.index,
       costCodeId: line.costCodeId,
       costCode: code?.code ?? "—",
@@ -139,23 +155,28 @@ export function buildBill({
       quantity: line.quantity,
       elevationId: line.elevationId,
       unitCostCents: line.unitCostCents,
-      amountCents,
+      amountCents: line.amountCents,
       comparisonAmountCents: comparison,
       deltaCents,
       status: !comparisonLines ? "same" : comparison == null ? "added" : deltaCents === 0 ? "same" : "changed",
-      unpriced: Boolean(line.unpriced),
+      pricingSource: line.pricingSource,
+      vendorName: line.vendorName,
+      lumpSum: line.lumpSum,
+      unpriced: line.pricingSource === "unpriced",
+      invalid: line.invalid,
     }
   })
 
   // A line the released edition had and this one does not is the most expensive
   // kind of change to miss, so it stays in the document as a removal.
   for (const line of comparisonLines ?? []) {
-    const key = takeoffLineKey(line)
-    if (seen.has(key)) continue
+    const matchKey = takeoffLineKey(line)
+    if (seen.has(matchKey)) continue
     const code = codeById.get(line.cost_code_id)
-    const comparison = comparisonByKey.get(key) ?? 0
+    const comparison = comparisonByKey.get(matchKey) ?? 0
     rows.push({
-      key,
+      key: `removed:${matchKey}`,
+      matchKey,
       index: -1,
       costCodeId: line.cost_code_id,
       costCode: code?.code ?? "—",
@@ -169,7 +190,11 @@ export function buildBill({
       comparisonAmountCents: comparison,
       deltaCents: -comparison,
       status: "removed",
+      pricingSource: null,
+      vendorName: null,
+      lumpSum: false,
       unpriced: false,
+      invalid: false,
     })
   }
 
@@ -185,17 +210,19 @@ export function buildBill({
 
   const divisions: BillDivision[] = Array.from(groups.entries())
     .map(([key, groupRows]) => {
-      const sorted = groupRows.slice().sort((left, right) => left.costCode.localeCompare(right.costCode))
+      const sorted = groupRows.slice().sort((left, right) => {
+        const byCode = left.costCode.localeCompare(right.costCode, undefined, { numeric: true })
+        // Lines sharing a code keep the order they were entered in, so a row the
+        // estimator just added lands where they are looking.
+        return byCode !== 0 ? byCode : left.index - right.index
+      })
       const groupAmount = sorted.reduce((sum, row) => sum + row.amountCents, 0)
       const groupComparison = comparisonLines
         ? sorted.reduce((sum, row) => sum + (row.comparisonAmountCents ?? 0), 0)
         : null
       return {
         key,
-        label:
-          key === UNCODED_KEY
-            ? "Uncoded"
-            : labels.get(key) ?? `Division ${key}`,
+        label: key === UNCODED_KEY ? "Uncoded" : labels.get(key) ?? `Division ${key}`,
         rows: sorted,
         amountCents: groupAmount,
         comparisonAmountCents: groupComparison,
@@ -211,15 +238,16 @@ export function buildBill({
       return left.key.localeCompare(right.key, undefined, { numeric: true })
     })
 
+  const comparisonTotal = comparisonLines ? rows.reduce((sum, row) => sum + (row.comparisonAmountCents ?? 0), 0) : null
+
   return {
     divisions,
     amountCents,
-    comparisonAmountCents: comparisonLines ? rows.reduce((sum, row) => sum + (row.comparisonAmountCents ?? 0), 0) : null,
-    deltaCents: comparisonLines
-      ? amountCents - rows.reduce((sum, row) => sum + (row.comparisonAmountCents ?? 0), 0)
-      : null,
+    comparisonAmountCents: comparisonTotal,
+    deltaCents: comparisonTotal == null ? null : amountCents - comparisonTotal,
     lineCount: rows.filter((row) => row.status !== "removed").length,
     unpricedCount: rows.filter((row) => row.unpriced).length,
     changedCount: rows.filter((row) => row.status !== "same").length,
+    invalidCount: rows.filter((row) => row.invalid).length,
   }
 }

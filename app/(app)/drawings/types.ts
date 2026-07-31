@@ -29,6 +29,21 @@ export type {
 
 import type { DrawingDiscipline } from "@/lib/validation/drawings"
 
+/**
+ * A page that has already been split out of an in-flight draft revision. Sheet
+ * and version rows are created at split time, so these land well before tiles
+ * finish — which is what makes live per-sheet upload progress possible.
+ */
+export interface DraftRevisionSheetPreview {
+  version_id: string
+  sheet_id: string
+  page_index: number
+  sheet_number: string
+  sheet_title: string | null
+  thumbnail_url: string | null
+  tiles_ready: boolean
+}
+
 export interface UploadReviewSheet {
   id: string
   drawing_set_id: string

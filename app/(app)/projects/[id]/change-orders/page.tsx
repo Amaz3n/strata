@@ -13,13 +13,28 @@ import { listCostCodes } from "@/lib/services/cost-codes"
 import type { Address } from "@/lib/types"
 
 import { unwrapAction } from "@/lib/action-result"
+import { listChangeEvents } from "@/lib/services/change-events"
+import { ChangeEventsClient } from "@/components/change-orders/change-events-client"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 interface ProjectChangeOrdersPageProps {
   params: Promise<{ id: string }>
+  searchParams: Promise<{ new?: string; title?: string; description?: string }>
 }
 
-export default async function ProjectChangeOrdersPage({ params }: ProjectChangeOrdersPageProps) {
+export default async function ProjectChangeOrdersPage({
+  params,
+  searchParams,
+}: ProjectChangeOrdersPageProps) {
   const { id } = await params
+  const query = await searchParams
+  // `?new=1&description=…` — a takeoff quantity moved after a revision and the
+  // estimator chose to draft a CO. The composer opens prefilled; nothing is
+  // created until they submit.
+  const initialDraft =
+    query.new === "1"
+      ? { title: query.title ?? null, notes: query.description ?? null }
+      : null
 
   return (
     <>
@@ -37,13 +52,19 @@ export default async function ProjectChangeOrdersPage({ params }: ProjectChangeO
           </div>
         </div>
       }>
-        <ProjectChangeOrdersData id={id} />
+        <ProjectChangeOrdersData id={id} initialDraft={initialDraft} />
       </Suspense>
     </>
   )
 }
 
-async function ProjectChangeOrdersData({ id }: { id: string }) {
+async function ProjectChangeOrdersData({
+  id,
+  initialDraft,
+}: {
+  id: string
+  initialDraft: { title: string | null; notes: string | null } | null
+}) {
   const project = await getProjectAction(id)
 
   if (!project) {
@@ -55,29 +76,33 @@ async function ProjectChangeOrdersData({ id }: { id: string }) {
     project.financial_settings?.cost_codes_enabled,
     await getOrgCostCodesEnabled(supabase, orgId),
   )
-  const [changeOrders, orgBilling, costCodes, budgetLines] = await Promise.all([
+  const [changeOrders, changeEvents, orgBilling, costCodes, budgetLines] = await Promise.all([
     listChangeOrdersAction(id),
+    listChangeEvents(id).catch(() => []),
     getOrgBilling().catch(() => null),
     costCodesEnabled ? listCostCodes().catch(() => []) : Promise.resolve([]),
     costCodesEnabled ? Promise.resolve([]) : listProjectBudgetLines(id).catch(() => []),
   ])
 
   return (
-    <div className="space-y-6">
-      <ChangeOrdersClient
+    <Tabs defaultValue="events" className="space-y-4">
+      <TabsList><TabsTrigger value="events">Change events</TabsTrigger><TabsTrigger value="orders">Change orders</TabsTrigger></TabsList>
+      <TabsContent value="events"><ChangeEventsClient projectId={id} initialEvents={changeEvents} /></TabsContent>
+      <TabsContent value="orders"><ChangeOrdersClient
         changeOrders={changeOrders}
         projects={[project]}
         costCodes={costCodes}
         budgetLines={budgetLines}
         costCodesEnabled={costCodesEnabled}
         hideProjectFilter
+        initialDraft={initialDraft}
         builderInfo={{
           name: orgBilling?.org?.name,
           email: orgBilling?.org?.billing_email,
           address: formatAddress(orgBilling?.org?.address as Address | undefined),
         }}
-      />
-    </div>
+      /></TabsContent>
+    </Tabs>
   )
 }
 

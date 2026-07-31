@@ -167,7 +167,7 @@ export interface InboundBillResult {
   projectId?: string
 }
 
-export async function processInboundBillEmail(args: { orgId: string; emailId: string }): Promise<InboundBillResult> {
+export async function processInboundBillEmail(args: { orgId: string; emailId: string; preferredProjectId?: string }): Promise<InboundBillResult> {
   const { orgId, emailId } = args
   const supabase = createServiceSupabaseClient()
 
@@ -260,7 +260,7 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
   }
 
   // ── Route to a project via the vendor's commitments ────────────────────
-  let projectId: string | null = null
+  let projectId: string | null = args.preferredProjectId ?? null
   let commitmentId: string | null = null
   let routingNote: string | null = null
 
@@ -271,7 +271,7 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
       .eq("org_id", orgId)
       .eq("company_id", companyId)
       .eq("status", "approved")
-    const open = commitments ?? []
+    const open = args.preferredProjectId ? (commitments ?? []).filter((row) => row.project_id === args.preferredProjectId) : commitments ?? []
     if (open.length === 1) {
       commitmentId = open[0].id as string
       projectId = open[0].project_id as string

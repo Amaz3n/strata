@@ -209,9 +209,26 @@ export type DrawingSheetVersionInput = z.infer<typeof drawingSheetVersionInputSc
 // ============================================================================
 
 // Stored under drawing_sheet_versions.extracted_metadata.calibration.
+/**
+ * How a sheet's scale was established. `two_point` is the human dragging a
+ * known distance; the other two come from the pipeline's proposals and are
+ * recorded so the viewer can show what the number is standing on.
+ */
+export const calibrationMethodSchema = z.enum([
+  "two_point",
+  "title_block",
+  "dimension_check",
+  "space_area",
+])
+
+export type CalibrationMethod = z.infer<typeof calibrationMethodSchema>
+
 export const setSheetVersionCalibrationInputSchema = z.object({
   sheet_version_id: z.string().uuid(),
   feet_per_image_px: z.number().positive().finite(),
+  method: calibrationMethodSchema.default("two_point"),
+  /** Human-readable basis, e.g. `1/4" = 1'-0"` — shown next to the scale readout. */
+  source_label: z.string().max(120).optional(),
 })
 
 export type SetSheetVersionCalibrationInput = z.infer<typeof setSheetVersionCalibrationInputSchema>
@@ -230,8 +247,13 @@ export function formatFeetInches(feet: number): string {
 
 /**
  * Parse a user-entered real-world length into decimal feet. Accepts
- * `24`, `10.5` (decimal feet), `24'`, `24' 6"`, `24'6`, `24 ft 6 in`,
- * and inches-only like `8"`. Returns null when unparseable or non-positive.
+ * `24`, `10.5` (decimal feet), `24'`, `24' 6"`, `24'6`, `24'-6"`,
+ * `24 ft 6 in`, and inches-only like `8"`. Returns null when unparseable or
+ * non-positive.
+ *
+ * The hyphenated form matters twice over: it is how plans print dimensions
+ * (so the pipeline's scale detection reads it), and it is what
+ * `formatFeetInches` emits — without it the pair does not round-trip.
  */
 export function parseFeetInches(raw: string): number | null {
   const input = raw
@@ -241,9 +263,9 @@ export function parseFeetInches(raw: string): number | null {
     .replace(/[‘’]/g, "'")
   if (!input) return null
 
-  // Feet marker present, optional inches: 24' 6", 24'6, 24 ft 6 in
+  // Feet marker present, optional inches: 24' 6", 24'6, 24'-6", 24 ft 6 in
   const feetMatch = input.match(
-    /^(\d+(?:\.\d+)?)\s*(?:'|ft\.?|feet)\s*(?:(\d+(?:\.\d+)?)\s*(?:"|in\.?|inches)?)?$/,
+    /^(\d+(?:\.\d+)?)\s*(?:'|ft\.?|feet)\s*(?:[-\s]\s*)?(?:(\d+(?:\.\d+)?)\s*(?:"|in\.?|inches)?)?$/,
   )
   if (feetMatch) {
     const feet = Number.parseFloat(feetMatch[1])
@@ -328,7 +350,9 @@ export type DistributeRevisionInput = z.infer<typeof distributeRevisionInputSche
 // DRAWING MARKUP SCHEMAS (Phase 4)
 // ============================================================================
 
-// Markup types for annotations
+// Markup types. The first block annotates; `dimension`, `polyline`, `area` and
+// `count` MEASURE — they carry a real-world quantity (lib/drawings/measure.ts)
+// that is persisted on the row and rolled up into takeoff conditions.
 export const markupTypeSchema = z.enum([
   "arrow",
   "circle",
@@ -339,6 +363,9 @@ export const markupTypeSchema = z.enum([
   "dimension",
   "cloud",
   "highlight",
+  "polyline",
+  "area",
+  "count",
 ])
 
 export type MarkupType = z.infer<typeof markupTypeSchema>
@@ -354,7 +381,15 @@ export const MARKUP_TYPE_LABELS: Record<MarkupType, string> = {
   dimension: "Dimension",
   cloud: "Cloud",
   highlight: "Highlight",
+  polyline: "Linear",
+  area: "Area",
+  count: "Count",
 }
+
+// Unit of measure carried by a measured markup or a takeoff condition.
+export const measureUomSchema = z.enum(["lf", "sf", "ea"])
+
+export type MeasureUomValue = z.infer<typeof measureUomSchema>
 
 // Markup data structure (stored as JSON)
 export const markupDataSchema = z.object({
@@ -377,6 +412,8 @@ export const drawingMarkupInputSchema = z.object({
   is_private: z.boolean().optional(),
   share_with_clients: z.boolean().optional(),
   share_with_subs: z.boolean().optional(),
+  /** Takeoff condition this measurement rolls into. */
+  condition_id: z.string().uuid().optional().nullable(),
 })
 
 export type DrawingMarkupInput = z.infer<typeof drawingMarkupInputSchema>
@@ -387,6 +424,7 @@ export const drawingMarkupUpdateSchema = z.object({
   is_private: z.boolean().optional(),
   share_with_clients: z.boolean().optional(),
   share_with_subs: z.boolean().optional(),
+  condition_id: z.string().uuid().optional().nullable(),
 })
 
 export type DrawingMarkupUpdate = z.infer<typeof drawingMarkupUpdateSchema>
@@ -396,6 +434,9 @@ export const drawingMarkupListFiltersSchema = z.object({
   sheet_version_id: z.string().uuid().optional(),
   created_by: z.string().uuid().optional(),
   markup_type: markupTypeSchema.optional(),
+  condition_id: z.string().uuid().optional(),
+  /** Only markups carrying a measured quantity (takeoff panel rollups). */
+  measuring_only: z.boolean().optional(),
   include_private: z.boolean().optional(), // If false, excludes other users' private markups
   limit: z.number().int().positive().max(500).default(100),
   offset: z.number().int().nonnegative().default(0),

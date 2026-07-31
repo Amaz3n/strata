@@ -58,6 +58,7 @@ import {
 } from "@/app/(app)/projects/[id]/payables/actions"
 import { qboTxnUrl } from "@/lib/integrations/accounting/qbo/links"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
+import type { PaymentHoldEvaluation } from "@/lib/services/payment-holds"
 import {
   getPayableSyncBlockReason,
   isVendorCredit,
@@ -106,6 +107,7 @@ interface PayablesWorkspaceProps {
   complianceRules: ComplianceRules
   complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>
   onChanged: () => void
+  holdEvaluations?: Record<string, PaymentHoldEvaluation>
 }
 
 type SplitLine = {
@@ -133,6 +135,7 @@ export function PayablesWorkspace({
   qboExpenseAccounts,
   qboApAccounts,
   qboDefaults,
+  holdEvaluations = {},
   complianceRules,
   complianceStatusByCompanyId,
   onChanged,
@@ -724,6 +727,7 @@ export function PayablesWorkspace({
             </span>
             {bill.is_shared ? <Layers className="h-3 w-3 shrink-0 text-primary" /> : null}
           </div>
+          {holdEvaluations[bill.id]?.holds.filter((hold) => !hold.overridden).length ? <div className="mt-1 flex flex-wrap gap-1">{holdEvaluations[bill.id].holds.filter((hold) => !hold.overridden).slice(0, 2).map((hold) => <span key={hold.kind} className={cn("border px-1.5 py-0.5 text-[10px] font-medium", hold.level === "block" ? "border-destructive/30 bg-destructive/10 text-destructive" : "border-warning/30 bg-warning/10 text-warning")}>{hold.kind.replaceAll("_", " ")}</span>)}</div> : null}
         </>
       )}
     />
@@ -800,6 +804,7 @@ export function PayablesWorkspace({
                 This payable exceeds the linked commitment. Review the contract balance before approval.
               </div>
             ) : null}
+            {holdEvaluations[selectedBill.id]?.holds.filter((hold) => !hold.overridden).length ? <div className="space-y-1 border border-warning/30 bg-warning/10 px-3 py-2 text-xs">{holdEvaluations[selectedBill.id].holds.filter((hold) => !hold.overridden).map((hold) => <p key={hold.kind} className={hold.level === "block" ? "font-medium text-destructive" : "text-warning"}>{hold.level === "block" ? "Payment hold" : "Warning"}: {hold.message}</p>)}</div> : null}
 
             {selectedBill.commitment_id && (selectedBill.commitment_total_cents ?? 0) > 0 ? (
               <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3 text-xs text-muted-foreground">

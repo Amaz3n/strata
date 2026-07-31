@@ -692,9 +692,18 @@ export async function setProjectSuperintendent(projectId: string, userId: string
   }
   const { error } = await context.supabase.from("projects").update({ superintendent_id: userId }).eq("org_id", context.orgId).eq("id", projectId)
   if (error) throw new Error(`Failed to assign superintendent: ${error.message}`)
+  const { data: fieldRole } = await context.supabase.from("roles").select("id").eq("key", "field").eq("scope", "project").maybeSingle()
+  if (!fieldRole) throw new Error("Field project role is missing.")
+  // The outgoing super loses the project_members row this function gave them.
+  // Without this an "assigned" member keeps seeing houses they handed off, and
+  // assignment-scoped surfaces drift away from superintendent_id forever.
+  if (project.superintendent_id && project.superintendent_id !== userId) {
+    const { error: unscopeError } = await context.supabase.from("project_members").delete()
+      .eq("org_id", context.orgId).eq("project_id", projectId)
+      .eq("user_id", project.superintendent_id).eq("role_id", fieldRole.id)
+    if (unscopeError) throw new Error(`Failed to unscope previous superintendent: ${unscopeError.message}`)
+  }
   if (userId) {
-    const { data: fieldRole } = await context.supabase.from("roles").select("id").eq("key", "field").eq("scope", "project").maybeSingle()
-    if (!fieldRole) throw new Error("Field project role is missing.")
     const { error: memberError } = await context.supabase.from("project_members").upsert({
       org_id: context.orgId, project_id: projectId, user_id: userId, role_id: fieldRole.id, status: "active",
     }, { onConflict: "project_id,user_id" })

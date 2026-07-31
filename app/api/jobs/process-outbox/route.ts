@@ -23,6 +23,7 @@ import { executePurchaseAgreementFromEnvelopeExecution } from "@/lib/services/co
 import { confirmSelectionFromEnvelopeExecution } from "@/lib/services/selections"
 import { recomputeProjectSelectionCutoffs } from "@/lib/services/selection-cutoffs"
 import { enrollProjectWarrantyCoverageFromSystem } from "@/lib/services/warranty"
+import { reanchorRevisionMeasurements } from "@/lib/services/takeoff-reanchor"
 import { isEmailNotificationTypeEnabled, isEmailEligibleNotificationType } from "@/lib/services/notifications"
 import { isApnsConfigured, sendApnsNotification } from "@/lib/services/apns"
 import { buildDrawingsTilesBaseUrl } from "@/lib/storage/drawings-urls"
@@ -35,6 +36,10 @@ import { runDrawingsPipeline } from "@/lib/services/drawings-pipeline"
 import { downloadFilesObject, uploadFilesObject } from "@/lib/storage/files-storage"
 import { reindexEntity, removeFromIndex } from "@/lib/services/search-index"
 import { processInboundBillEmail } from "@/lib/services/payables-email-ingest"
+import { processQuickCaptureDraft } from "@/lib/services/quick-capture"
+import { processPhotoCaption } from "@/lib/services/photo-intelligence"
+import { classifyProjectEmail, processInboundProjectEmail } from "@/lib/services/project-email-ingest"
+import { sendVendorBillWaiverChase } from "@/lib/services/payment-holds"
 import type { SearchEntityType } from "@/lib/services/search-config"
 
 // Use @napi-rs/canvas's DOMMatrix, DOMPoint, DOMRect, ImageData, Path2D for PDF.js
@@ -463,7 +468,7 @@ async function processOutboxQueue(request: NextRequest) {
   const { data: jobs, error } = await supabase
     .from("outbox")
     .select("*")
-    .in("job_type", ["deliver_notification", "deliver_push", "send_daily_log_mention_email", "send_esign_executed_email", "send_bid_email", "process_esign_execution_side_effects", "refresh_drawing_sheets_list", "index_file", "generate_file_preview", "reindex_search", "remove_search_index", "process_inbound_bill_email", "selection_cutoff_recompute", "warranty_enroll_coverage"])
+    .in("job_type", ["deliver_notification", "deliver_push", "send_daily_log_mention_email", "send_esign_executed_email", "send_bid_email", "process_esign_execution_side_effects", "refresh_drawing_sheets_list", "index_file", "generate_file_preview", "reindex_search", "remove_search_index", "process_inbound_bill_email", "selection_cutoff_recompute", "warranty_enroll_coverage", "reanchor_takeoff_markups", "process_quick_capture", "caption_photo", "process_inbound_project_email", "classify_project_email", "chase_vendor_bill_waiver"])
     .eq("status", "pending")
     .lte("run_at", now)
     .order("created_at", { ascending: false })
@@ -520,6 +525,31 @@ async function processOutboxQueue(request: NextRequest) {
         if (!projectId || !effectiveDate) throw new Error("Warranty enrollment is missing project_id or effective_date")
         const source = job.payload?.source === "completion" ? "completion" : "closing"
         await enrollProjectWarrantyCoverageFromSystem({ orgId: job.org_id, projectId, effectiveDate, source })
+      } else if (job.job_type === "reanchor_takeoff_markups") {
+        const revisionId = typeof job.payload?.revision_id === "string" ? job.payload.revision_id : null
+        if (!revisionId) throw new Error("Reanchor job is missing revision_id")
+        await reanchorRevisionMeasurements(revisionId, job.org_id, supabase)
+      } else if (job.job_type === "process_quick_capture") {
+        const draftId = typeof job.payload?.draft_id === "string" ? job.payload.draft_id : null
+        if (!draftId) throw new Error("Quick-capture job is missing draft_id")
+        await processQuickCaptureDraft(draftId, job.org_id)
+      } else if (job.job_type === "caption_photo") {
+        const photoId = typeof job.payload?.photo_id === "string" ? job.payload.photo_id : null
+        if (!photoId) throw new Error("Photo-caption job is missing photo_id")
+        await processPhotoCaption(photoId, job.org_id)
+      } else if (job.job_type === "process_inbound_project_email") {
+        const emailId = typeof job.payload?.email_id === "string" ? job.payload.email_id : null
+        const projectId = typeof job.payload?.project_id === "string" ? job.payload.project_id : null
+        if (!emailId || !projectId) throw new Error("Project-email ingest job is missing email_id or project_id")
+        await processInboundProjectEmail({ orgId: job.org_id, projectId, emailId })
+      } else if (job.job_type === "classify_project_email") {
+        const projectEmailId = typeof job.payload?.project_email_id === "string" ? job.payload.project_email_id : null
+        if (!projectEmailId) throw new Error("Project-email classification job is missing project_email_id")
+        await classifyProjectEmail({ orgId: job.org_id, projectEmailId, body: typeof job.payload?.body === "string" ? job.payload.body : undefined })
+      } else if (job.job_type === "chase_vendor_bill_waiver") {
+        const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
+        if (!billId) throw new Error("Waiver chase is missing bill_id")
+        await sendVendorBillWaiverChase(job.org_id, billId)
       } else {
         await supabase
           .from("outbox")

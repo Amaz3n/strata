@@ -17,6 +17,7 @@ import { SignatureCapture } from "@/app/d/[token]/components/signature-capture"
 import { QuotePortalShell, type PortalStatusTone } from "@/components/portal/quote-portal-shell"
 import { QuoteDocumentView, type QuoteViewLine } from "@/components/portal/quote-document-view"
 import { EstimatePhotoGallery } from "@/components/portal/estimate-photo-gallery"
+import { TakeoffEvidenceDialog } from "@/components/portal/takeoff-evidence-dialog"
 import { submitEstimateDecisionAction, type EstimatePortalPayload } from "@/app/e/[token]/actions"
 
 const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })
@@ -79,10 +80,14 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
           notes: it.notes,
           is_optional: it.is_optional,
           badges: it.is_allowance ? ["Allowance"] : undefined,
+          takeoff_condition_id: it.takeoff_condition_id ?? null,
         }
       }),
     [estimate.items],
   )
+
+  // Which line's measurements the client is looking at, if any.
+  const [takeoffConditionId, setTakeoffConditionId] = useState<string | null>(null)
 
   // Optional add-ons the client can toggle. Pre-fill from the recorded selection
   // once signed; otherwise start unselected and let the client opt in.
@@ -202,9 +207,16 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
           pricingDisplay={estimate.pricing_display}
           selectedOptionalIds={selectedOptionalIds}
           onToggleOptional={canDecide ? toggleOptional : undefined}
+          onShowTakeoff={setTakeoffConditionId}
         />
       }
     >
+      <TakeoffEvidenceDialog
+        token={token}
+        conditionId={takeoffConditionId}
+        onClose={() => setTakeoffConditionId(null)}
+      />
+
       {estimate.photos.length > 0 ? (
         <Card className="overflow-hidden">
           <CardContent className="p-5">

@@ -4,9 +4,10 @@ import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
-import { Plus, Save, Upload } from "@/components/icons"
+import { Plus, Save } from "@/components/icons"
 import { updateHousePlanAction, upsertElevationAction } from "@/app/(app)/plans/actions"
 import { uploadFileAction } from "@/app/(app)/documents/actions"
+import { PlanImageAttachment, PLAN_IMAGE_TYPES } from "@/components/plans/plan-image-attachment"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
@@ -15,8 +16,6 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Textarea } from "@/components/ui/textarea"
 import { unwrapAction } from "@/lib/action-result"
 import type { HousePlanDto, HousePlanElevationDto } from "@/lib/services/house-plans"
-
-const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/avif"]
 
 type ElevationDraft = {
   name: string
@@ -56,6 +55,7 @@ export function PlanProductEditor({
   )
   const [newCode, setNewCode] = useState("")
   const [newName, setNewName] = useState("")
+  const [uploadTarget, setUploadTarget] = useState<string | null>(null)
   const [series, setSeries] = useState(plan.series ?? "")
   const [heatedSqft, setHeatedSqft] = useState(plan.heated_sqft?.toString() ?? "")
   const [totalSqft, setTotalSqft] = useState(plan.total_sqft?.toString() ?? "")
@@ -99,32 +99,38 @@ export function PlanProductEditor({
 
   function uploadCover(file: File | undefined, elevation: HousePlanElevationDto | null) {
     if (!file) return
-    if (!IMAGE_TYPES.includes(file.type)) {
+    if (!PLAN_IMAGE_TYPES.includes(file.type)) {
       toast.error("Choose a PNG, JPEG, WebP or AVIF image")
       return
     }
+    const target = elevation?.id ?? "plan"
+    setUploadTarget(target)
     run(
       async () => {
-        const formData = new FormData()
-        formData.set("file", file)
-        formData.set("category", "plans")
-        formData.set("visibility", "private")
-        const fileId = unwrapAction(await uploadFileAction(formData)).id
-        if (elevation) {
-          unwrapAction(
-            await upsertElevationAction(plan.id, {
-              id: elevation.id,
-              code: elevation.code,
-              name: elevation.name,
-              swingApplicable: elevation.swing_applicable,
-              heatedSqftDelta: elevation.heated_sqft_delta,
-              isActive: elevation.is_active,
-              coverFileId: fileId,
-              sortOrder: elevation.sort_order,
-            }),
-          )
-        } else {
-          unwrapAction(await updateHousePlanAction(plan.id, { coverFileId: fileId }))
+        try {
+          const formData = new FormData()
+          formData.set("file", file)
+          formData.set("category", "plans")
+          formData.set("visibility", "private")
+          const fileId = unwrapAction(await uploadFileAction(formData)).id
+          if (elevation) {
+            unwrapAction(
+              await upsertElevationAction(plan.id, {
+                id: elevation.id,
+                code: elevation.code,
+                name: elevation.name,
+                swingApplicable: elevation.swing_applicable,
+                heatedSqftDelta: elevation.heated_sqft_delta,
+                isActive: elevation.is_active,
+                coverFileId: fileId,
+                sortOrder: elevation.sort_order,
+              }),
+            )
+          } else {
+            unwrapAction(await updateHousePlanAction(plan.id, { coverFileId: fileId }))
+          }
+        } finally {
+          setUploadTarget(null)
         }
       },
       elevation ? `Elevation ${elevation.code} rendering uploaded` : "Plan rendering uploaded",
@@ -237,25 +243,20 @@ export function PlanProductEditor({
           </section>
 
           <section className="border-t pt-4">
-            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Plan rendering</p>
-            <Label
-              htmlFor="plan-cover"
-              className="mt-2 flex cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground"
-            >
-              <Upload className="h-3.5 w-3.5" />
-              Upload the fallback rendering used when an elevation has none
-            </Label>
-            <Input
-              id="plan-cover"
-              type="file"
-              accept={IMAGE_TYPES.join(",")}
-              disabled={pending}
-              className="sr-only"
-              onChange={(event) => {
-                uploadCover(event.target.files?.[0], null)
-                event.target.value = ""
-              }}
-            />
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Product imagery</p>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              The fallback exterior image used when an elevation does not have its own.
+            </p>
+            <div className="mt-2">
+              <PlanImageAttachment
+                existingUrl={plan.cover_file_id ? `/api/files/${plan.cover_file_id}/raw` : null}
+                existingName={`${plan.code} fallback imagery`}
+                description="Shown when an elevation-specific image is unavailable"
+                uploading={uploadTarget === "plan"}
+                disabled={pending}
+                onSelect={(file) => uploadCover(file, null)}
+              />
+            </div>
           </section>
 
           <section className="border-t pt-4">
@@ -337,25 +338,18 @@ export function PlanProductEditor({
                           />
                           active
                         </label>
-                        <Label
-                          htmlFor={`elevation-cover-${elevation.id}`}
-                          className="flex cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground"
-                        >
-                          <Upload className="h-3.5 w-3.5" />
-                          {elevation.cover_file_id ? "Replace rendering" : "Upload rendering"}
-                        </Label>
-                        <Input
-                          id={`elevation-cover-${elevation.id}`}
-                          type="file"
-                          accept={IMAGE_TYPES.join(",")}
-                          disabled={pending}
-                          className="sr-only"
-                          onChange={(event) => {
-                            uploadCover(event.target.files?.[0], elevation)
-                            event.target.value = ""
-                          }}
-                        />
                       </div>
+                      <PlanImageAttachment
+                        compact
+                        existingUrl={
+                          elevation.cover_file_id ? `/api/files/${elevation.cover_file_id}/raw` : null
+                        }
+                        existingName={`Elevation ${elevation.code}${elevation.name ? ` · ${elevation.name}` : ""}`}
+                        description="Elevation-specific exterior imagery"
+                        uploading={uploadTarget === elevation.id}
+                        disabled={pending}
+                        onSelect={(file) => uploadCover(file, elevation)}
+                      />
                     </div>
                   )
                 })

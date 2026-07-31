@@ -82,5 +82,18 @@ export const communityPlanPriceSchema = z.object({
   basePriceCents: z.number().int().min(0).max(100_000_000_00),
 })
 
+/** A percentage move or a flat move, in cents, applied across a price sheet. */
+export const communityBulkRepriceSchema = z
+  .object({
+    communityId: z.string().uuid(),
+    availabilityIds: z.array(z.string().uuid()).min(1).max(200),
+    mode: z.enum(["percent", "amount"]),
+    value: z.number(),
+  })
+  .refine((input) => (input.mode === "percent" ? Math.abs(input.value) <= 50 : Math.abs(input.value) <= 100_000_00), {
+    message: "That is larger than a repricing. Set the prices individually if it is really intended.",
+    path: ["value"],
+  })
+
 export type IncentiveInput = z.infer<typeof incentiveSchema>
 export type AgreementConfigurationInput = z.infer<typeof agreementConfigurationSchema>

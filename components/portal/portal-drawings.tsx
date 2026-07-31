@@ -8,10 +8,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   TiledDrawingViewer,
-  toRenderableDrawingsUrl,
   type ImageToScreenMatrix,
   type TileManifest,
 } from "@/components/drawings/viewer/tiled-drawing-viewer"
+import { toRenderableDrawingsUrl } from "@/lib/drawings/tile-urls"
 import { SVGOverlay, type SVGOverlayHandle } from "@/components/drawings/viewer/svg-overlay"
 import { DISCIPLINE_LABELS, type DrawingDiscipline } from "@/lib/validation/drawings"
 import type { DrawingMarkup, DrawingPin } from "@/app/(app)/drawings/types"

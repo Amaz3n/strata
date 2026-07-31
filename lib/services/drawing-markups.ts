@@ -24,6 +24,12 @@ import { requirePermission } from "@/lib/services/permissions"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { enqueueSheetsListRefresh } from "@/lib/services/drawings"
+import {
+  assertConditionAcceptsUom,
+  loadMeasurementContext,
+  measureMarkup,
+} from "@/lib/services/drawing-measurements"
+import { MEASURING_MARKUP_TYPES, type MeasureUom } from "@/lib/drawings/measure"
 
 // ============================================================================
 // TYPES
@@ -39,11 +45,18 @@ export interface DrawingMarkup {
   is_private: boolean
   share_with_clients: boolean
   share_with_subs: boolean
+  /** Real-world measurement, computed server-side. Null on non-measuring or uncalibrated markups. */
+  quantity: number | null
+  uom: MeasureUom | null
+  /** Takeoff condition this measurement rolls into. */
+  condition_id: string | null
   created_by?: string
   creator_name?: string
   creator_avatar?: string
   created_at: string
   updated_at: string
+  carried_from_markup_id?: string
+  carried_from_revision_id?: string
 }
 
 export interface DrawingPin {
@@ -99,12 +112,48 @@ function mapDrawingMarkup(row: any): DrawingMarkup {
     is_private: row.is_private ?? false,
     share_with_clients: row.share_with_clients ?? false,
     share_with_subs: row.share_with_subs ?? false,
+    // numeric arrives as a string over the wire; the UI does arithmetic on it.
+    quantity: row.quantity === null || row.quantity === undefined ? null : Number(row.quantity),
+    uom: (row.uom as MeasureUom | null) ?? null,
+    condition_id: row.condition_id ?? null,
     created_by: row.created_by ?? undefined,
     creator_name: (row.app_users as any)?.full_name ?? undefined,
     creator_avatar: (row.app_users as any)?.avatar_url ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    carried_from_markup_id: row.carried_from_markup_id ?? undefined,
+    carried_from_revision_id: row.carried_from_revision_id ?? undefined,
   }
+}
+
+export async function inheritPublishedMarkupsToRevision(input: {
+  supabase: import("@supabase/supabase-js").SupabaseClient
+  orgId: string
+  drawingSheetId: string
+  newVersionId: string
+}) {
+  const { data: priorVersion } = await input.supabase.from("drawing_sheet_versions").select("id")
+    .eq("org_id", input.orgId).eq("drawing_sheet_id", input.drawingSheetId).neq("id", input.newVersionId)
+    .order("created_at", { ascending: false }).limit(1).maybeSingle()
+  if (!priorVersion) return { carried: 0 }
+  const { data: markups, error } = await input.supabase.from("drawing_markups")
+    .select("id,data,label,is_private,share_with_clients,share_with_subs,created_by")
+    .eq("org_id", input.orgId).eq("drawing_sheet_id", input.drawingSheetId).eq("sheet_version_id", priorVersion.id)
+    .eq("is_private", false)
+  if (error) throw new Error(`Failed to load markups for inheritance: ${error.message}`)
+  const carry = (markups ?? []).filter((markup) => {
+    const type = markup.data && typeof markup.data === "object" && !Array.isArray(markup.data) ? markup.data.type : null
+    return type !== "freehand"
+  }).map((markup) => ({
+    org_id: input.orgId, drawing_sheet_id: input.drawingSheetId, sheet_version_id: input.newVersionId,
+    data: markup.data, label: markup.label, is_private: false, share_with_clients: markup.share_with_clients,
+    share_with_subs: markup.share_with_subs, created_by: markup.created_by,
+    carried_from_markup_id: markup.id, carried_from_revision_id: priorVersion.id,
+  }))
+  if (!carry.length) return { carried: 0 }
+  const { error: insertError } = await input.supabase.from("drawing_markups").upsert(carry, { onConflict: "sheet_version_id,carried_from_markup_id", ignoreDuplicates: true })
+  if (insertError) throw new Error(`Failed to carry drawing markups: ${insertError.message}`)
+  return { carried: carry.length }
 }
 
 function mapDrawingPin(row: any): DrawingPin {
@@ -151,6 +200,7 @@ export async function listDrawingMarkups(
     .select(`
       id, org_id, drawing_sheet_id, sheet_version_id,
       data, label, is_private, share_with_clients, share_with_subs,
+      quantity, uom, condition_id,
       created_by, created_at, updated_at,
       app_users!drawing_markups_created_by_fkey(full_name, avatar_url)
     `)
@@ -171,6 +221,14 @@ export async function listDrawingMarkups(
   // Filter by markup type within the JSON data
   if (parsed.markup_type) {
     query = query.eq("data->>type", parsed.markup_type)
+  }
+
+  if (parsed.condition_id) {
+    query = query.eq("condition_id", parsed.condition_id)
+  }
+
+  if (parsed.measuring_only) {
+    query = query.in("data->>type", [...MEASURING_MARKUP_TYPES])
   }
 
   // Filter private markups - only show current user's private markups
@@ -204,6 +262,7 @@ export async function getDrawingMarkup(
     .select(`
       id, org_id, drawing_sheet_id, sheet_version_id,
       data, label, is_private, share_with_clients, share_with_subs,
+      quantity, uom, condition_id,
       created_by, created_at, updated_at,
       app_users!drawing_markups_created_by_fkey(full_name, avatar_url)
     `)
@@ -230,6 +289,20 @@ export async function createDrawingMarkup(
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("drawing.markup", { supabase, orgId: resolvedOrgId, userId })
 
+  // The measured value is computed here, never accepted from the client — a
+  // quantity that flows into an estimate has to be derived from geometry the
+  // server can re-derive it from.
+  const measurement = parsed.sheet_version_id
+    ? measureMarkup(
+        parsed.data,
+        await loadMeasurementContext(supabase, resolvedOrgId, parsed.sheet_version_id),
+      )
+    : measureMarkup(parsed.data, { imageSize: null, feetPerImagePx: null })
+
+  if (parsed.condition_id) {
+    await assertConditionAcceptsUom(supabase, resolvedOrgId, parsed.condition_id, measurement.uom)
+  }
+
   const { data, error } = await supabase
     .from("drawing_markups")
     .insert({
@@ -241,11 +314,15 @@ export async function createDrawingMarkup(
       is_private: parsed.is_private ?? false,
       share_with_clients: parsed.share_with_clients ?? false,
       share_with_subs: parsed.share_with_subs ?? false,
+      quantity: measurement.quantity,
+      uom: measurement.uom,
+      condition_id: parsed.condition_id ?? null,
       created_by: userId,
     })
     .select(`
       id, org_id, drawing_sheet_id, sheet_version_id,
       data, label, is_private, share_with_clients, share_with_subs,
+      quantity, uom, condition_id,
       created_by, created_at, updated_at,
       app_users!drawing_markups_created_by_fkey(full_name, avatar_url)
     `)
@@ -272,6 +349,9 @@ export async function createDrawingMarkup(
     payload: {
       drawing_sheet_id: parsed.drawing_sheet_id,
       markup_type: parsed.data.type,
+      quantity: measurement.quantity,
+      uom: measurement.uom,
+      condition_id: parsed.condition_id ?? null,
     },
   })
 
@@ -311,6 +391,28 @@ export async function updateDrawingMarkup(
   if (parsed.share_with_clients !== undefined) updateData.share_with_clients = parsed.share_with_clients
   if (parsed.share_with_subs !== undefined) updateData.share_with_subs = parsed.share_with_subs
 
+  // Geometry changed → the stored quantity is stale. Recompute against the
+  // version this markup is pinned to before anything can roll it up.
+  const nextData = (parsed.data ?? existing.data) as MarkupData
+  const measurement = existing.sheet_version_id
+    ? measureMarkup(
+        nextData,
+        await loadMeasurementContext(supabase, resolvedOrgId, existing.sheet_version_id as string),
+      )
+    : measureMarkup(nextData, { imageSize: null, feetPerImagePx: null })
+
+  if (parsed.data !== undefined) {
+    updateData.quantity = measurement.quantity
+    updateData.uom = measurement.uom
+  }
+
+  if (parsed.condition_id !== undefined) {
+    if (parsed.condition_id) {
+      await assertConditionAcceptsUom(supabase, resolvedOrgId, parsed.condition_id, measurement.uom)
+    }
+    updateData.condition_id = parsed.condition_id
+  }
+
   const { data, error } = await supabase
     .from("drawing_markups")
     .update(updateData)
@@ -319,6 +421,7 @@ export async function updateDrawingMarkup(
     .select(`
       id, org_id, drawing_sheet_id, sheet_version_id,
       data, label, is_private, share_with_clients, share_with_subs,
+      quantity, uom, condition_id,
       created_by, created_at, updated_at,
       app_users!drawing_markups_created_by_fkey(full_name, avatar_url)
     `)

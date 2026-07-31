@@ -6,6 +6,7 @@ import { z } from "zod"
 import { actionError, type ActionResult } from "@/lib/action-result"
 import type { SellableHome } from "@/lib/sales/inventory"
 import {
+  bulkRepriceCommunityPlans,
   convertHoldToReservation,
   createPurchaseAgreement,
   endIncentive,
@@ -108,6 +109,10 @@ export async function upsertIncentiveAction(input: unknown) { return run(() => u
 export async function endIncentiveAction(id: string) { return run(() => endIncentive(z.string().uuid().parse(id))) }
 export async function setCommunityPlanPriceAction(communityId: string, input: unknown) {
   return run(() => setCommunityPlanPrice(input), ["/sales", "/plans", `/communities/${communityId}/offering`])
+}
+
+export async function bulkRepriceCommunityPlansAction(communityId: string, input: unknown) {
+  return run(() => bulkRepriceCommunityPlans(input), ["/sales", "/plans", `/communities/${communityId}/offering`])
 }
 
 /**

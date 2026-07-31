@@ -46,6 +46,9 @@ const PUBLIC_API_ROUTES = [
   "/api/jobs/warranty-sla-sweep",
   // Recurring invoice generator — cron only, self-authenticates via CRON_SECRET.
   "/api/jobs/invoice-schedules",
+  "/api/jobs/forecast-snapshots",
+  "/api/jobs/report-schedules",
+  "/api/exports/reports/",
   // Scheduled jobs — no user session; each route self-authenticates via CRON_SECRET.
   // Keep this list mirrored with vercel.json/CRON_JOBS or Vercel receives a sign-in 307.
   "/api/jobs/weekly-executive-snapshot",

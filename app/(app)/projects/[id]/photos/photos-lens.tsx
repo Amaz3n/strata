@@ -4,7 +4,7 @@ import Image from "next/image"
 import Link from "next/link"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { format, parseISO, startOfMonth, subDays } from "date-fns"
-import { ExternalLink, ImagePlus, Loader2, SlidersHorizontal } from "lucide-react"
+import { ExternalLink, ImagePlus, Loader2, Search, SlidersHorizontal } from "lucide-react"
 import { toast } from "sonner"
 import type { DateRange } from "react-day-picker"
 
@@ -14,13 +14,14 @@ import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Input } from "@/components/ui/input"
 import { FileViewer } from "@/components/files/file-viewer"
 import { downloadUrlToFile } from "@/components/files/download"
 import { formatFileSize, type FileWithDetails } from "@/components/files/types"
 import { unwrapAction } from "@/lib/action-result"
 import type { ProjectPhoto, ProjectPhotoPage, ProjectPhotoUploader } from "@/lib/services/photos"
 import type { ProjectPhotoFilters } from "@/lib/validation/photos"
-import { ensureTodayDailyLogForPhotosAction, listProjectPhotosAction } from "./actions"
+import { ensureTodayDailyLogForPhotosAction, listProjectPhotosAction, updatePhotoMetadataAction } from "./actions"
 
 const ALL = "__all__"
 const PAGE_SIZE = 30
@@ -95,7 +96,7 @@ function toViewerFile(photo: ProjectPhoto): FileWithDetails {
   }
 }
 
-function PhotoDetails({ photo }: { photo: ProjectPhoto }) {
+function PhotoDetails({ photo, onVisibilityChange }: { photo: ProjectPhoto; onVisibilityChange: (visibility: "internal" | "client") => void }) {
   return (
     <div className="p-4">
       <p className="truncate text-sm font-medium">{photo.file_name}</p>
@@ -117,6 +118,7 @@ function PhotoDetails({ photo }: { photo: ProjectPhoto }) {
           <dd className="min-w-0">{photo.locations.length ? photo.locations.join(", ") : "Not assigned"}</dd>
         </div>
       </dl>
+      <Button className="mt-4 w-full" size="sm" variant="outline" onClick={() => onVisibilityChange(photo.curated_visibility === "client" ? "internal" : "client")}>{photo.curated_visibility === "client" ? "Remove from client feed" : "Publish to client feed"}</Button>
 
       <p className="mt-5 text-xs font-medium uppercase tracking-wide text-muted-foreground">Filed under</p>
       <div className="mt-1 -mx-2">
@@ -145,12 +147,14 @@ export function PhotosLens({
   initialPage,
   locations,
   uploaders,
+  albums,
   canUpload,
 }: {
   projectId: string
   initialPage: ProjectPhotoPage
   locations: Array<{ id: string; full_path: string }>
   uploaders: ProjectPhotoUploader[]
+  albums: Array<{ id: string; name: string }>
   canUpload: boolean
 }) {
   const [photos, setPhotos] = useState(initialPage.photos)
@@ -160,6 +164,9 @@ export function PhotosLens({
   const [sourceType, setSourceType] = useState<string>(ALL)
   const [uploaderId, setUploaderId] = useState<string>(ALL)
   const [locationId, setLocationId] = useState<string>(ALL)
+  const [albumId, setAlbumId] = useState<string>(ALL)
+  const [visibility, setVisibility] = useState<string>(ALL)
+  const [search, setSearch] = useState("")
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -173,7 +180,10 @@ export function PhotosLens({
     source_type: sourceType === ALL ? undefined : sourceType,
     uploader_id: uploaderId === ALL ? undefined : uploaderId,
     location_id: locationId === ALL ? undefined : locationId,
-  }), [range, customRange, sourceType, uploaderId, locationId])
+    album_id: albumId === ALL ? undefined : albumId,
+    visibility: visibility === ALL ? undefined : visibility as "internal" | "client",
+    search: search.trim().length >= 2 ? search.trim() : undefined,
+  }), [range, customRange, sourceType, uploaderId, locationId, albumId, visibility, search])
   const filtersKey = JSON.stringify(filters)
 
   // "Custom range" only narrows anything once a start date is picked.
@@ -183,6 +193,7 @@ export function PhotosLens({
     (sourceType === ALL ? 0 : 1) +
     (uploaderId === ALL ? 0 : 1) +
     (locationId === ALL ? 0 : 1)
+    + (albumId === ALL ? 0 : 1) + (visibility === ALL ? 0 : 1) + (search.trim().length >= 2 ? 1 : 0)
 
   const currentYear = new Date().getFullYear()
   const grouped = useMemo(() => {
@@ -250,6 +261,9 @@ export function PhotosLens({
     setSourceType(ALL)
     setUploaderId(ALL)
     setLocationId(ALL)
+    setAlbumId(ALL)
+    setVisibility(ALL)
+    setSearch("")
   }
 
   async function handleDownload(file: FileWithDetails) {
@@ -294,6 +308,7 @@ export function PhotosLens({
   return (
     <div className="min-h-0">
       <div className="sticky top-0 z-20 flex h-12 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur sm:px-6">
+        <div className="relative w-full max-w-xs"><Search className="absolute left-2.5 top-2 size-4 text-muted-foreground" /><Input className="h-8 pl-8" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search captions and tags" /></div>
         <Popover>
           <PopoverTrigger asChild>
             <Button variant="outline" size="sm" className="h-8">
@@ -386,6 +401,8 @@ export function PhotosLens({
                 </Select>
               </div>
             ) : null}
+            {albums.length > 0 && <div className="space-y-1.5"><p className="text-xs text-muted-foreground">Album</p><Select value={albumId} onValueChange={setAlbumId}><SelectTrigger size="sm"><SelectValue /></SelectTrigger><SelectContent><SelectItem value={ALL}>All albums</SelectItem>{albums.map((album) => <SelectItem key={album.id} value={album.id}>{album.name}</SelectItem>)}</SelectContent></Select></div>}
+            <div className="space-y-1.5"><p className="text-xs text-muted-foreground">Visibility</p><Select value={visibility} onValueChange={setVisibility}><SelectTrigger size="sm"><SelectValue /></SelectTrigger><SelectContent><SelectItem value={ALL}>All photos</SelectItem><SelectItem value="internal">Internal</SelectItem><SelectItem value="client">Client feed</SelectItem></SelectContent></Select></div>
           </PopoverContent>
         </Popover>
 
@@ -504,7 +521,7 @@ export function PhotosLens({
         }}
         onDownload={(file) => void handleDownload(file)}
         onFileChange={(file) => setSelectedId(file.id)}
-        details={selected ? <PhotoDetails photo={selected} /> : undefined}
+        details={selected ? <PhotoDetails photo={selected} onVisibilityChange={(nextVisibility) => { void (async () => { try { unwrapAction(await updatePhotoMetadataAction({ project_id: projectId, file_id: selected.id, visibility: nextVisibility })); setPhotos((current) => current.map((photo) => photo.id === selected.id ? { ...photo, curated_visibility: nextVisibility } : photo)); toast.success(nextVisibility === "client" ? "Published to client feed" : "Photo is internal") } catch (error) { toast.error(error instanceof Error ? error.message : "Could not update photo") } })() }} /> : undefined}
       />
     </div>
   )

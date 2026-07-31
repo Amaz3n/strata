@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Sheet,
   SheetContent,
@@ -108,6 +109,7 @@ export function RfiDetailSheet({
       body: "",
       response_type: "comment",
       created_via_portal: false,
+      implies_scope_change: false,
     },
   })
 
@@ -128,6 +130,7 @@ export function RfiDetailSheet({
         body: "",
         response_type: "comment",
         created_via_portal: false,
+        implies_scope_change: false,
       })
       decisionForm.reset({
         rfi_id: rfi.id,
@@ -650,6 +653,12 @@ export function RfiDetailSheet({
                           </FormItem>
                         )}
                       />
+
+                      {responseForm.watch("response_type") === "answer" && (
+                        <FormField control={responseForm.control} name="implies_scope_change" render={({ field }) => (
+                          <FormItem className="flex items-center gap-2 space-y-0"><FormControl><Checkbox checked={field.value} onCheckedChange={field.onChange} /></FormControl><FormLabel className="text-xs font-normal">This answer implies a scope or cost change</FormLabel></FormItem>
+                        )} />
+                      )}
 
                       <Button type="submit" size="sm" disabled={isSubmitting} className="w-full">
                         {isSubmitting ? "Submitting..." : "Submit Response"}

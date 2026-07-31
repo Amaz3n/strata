@@ -18,6 +18,7 @@ export type SearchEntityType =
   | 'commitment'
   | 'bid_package'
   | 'change_order'
+  | 'change_event'
   | 'contract'
   | 'proposal'
   | 'rfi'
@@ -56,6 +57,8 @@ export type SearchEntityType =
   | 'closing'
   | 'warranty_request'
   | 'warranty_backcharge'
+  | 'takeoff_condition'
+  | 'project_email'
 
 export type SearchEntityConfig = {
   table: string
@@ -70,6 +73,31 @@ export type SearchEntityConfig = {
 
 // Entity search configurations
 export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
+  change_event: {
+    table: 'change_events',
+    titleField: 'title',
+    subtitleFields: ['event_number', 'status', 'origin_type'],
+    descriptionFields: ['description'],
+    searchableFields: ['title', 'description', 'origin_type', 'scope', 'status'],
+    hrefTemplate: '/projects/{project_id}/change-orders?event={id}',
+  },
+  project_email: {
+    table: 'project_emails',
+    titleField: 'subject',
+    subtitleFields: ['from_address', 'classification', 'received_at'],
+    searchableFields: ['subject', 'from_address', 'to_addresses', 'classification'],
+    hrefTemplate: '/projects/{project_id}/correspondence?email={id}',
+  },
+  takeoff_condition: {
+    table: 'takeoff_conditions',
+    titleField: 'name',
+    subtitleFields: ['uom', 'color'],
+    descriptionFields: ['notes'],
+    searchableFields: ['name', 'notes', 'uom'],
+    // Deep-links straight into the drawings viewer with the condition armed,
+    // which is where a condition is actually worked on.
+    hrefTemplate: '/projects/{project_id}/drawings?condition={id}',
+  },
   warranty_request: {
     table: 'warranty_requests',
     titleField: 'title',
@@ -437,8 +465,9 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     table: 'photos',
     titleField: 'id',
     subtitleFields: ['taken_at'],
-    searchableFields: ['tags'],
-    hrefTemplate: '/photos/{id}',
+    descriptionFields: ['ai_caption'],
+    searchableFields: ['tags', 'ai_tags', 'ai_caption'],
+    hrefTemplate: '/projects/{project_id}/photos?photo={id}',
     joins: ['LEFT JOIN projects p ON ph.project_id = p.id'],
   },
   portal_access: {
@@ -477,6 +506,9 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
 // Entity types that carry a project_id column. Org-level entities
 // (contact, company, prospect) and project itself are excluded.
 export const PROJECT_SCOPED_ENTITY_TYPES = new Set<SearchEntityType>([
+  // Nullable project_id (a production condition lives on a plan version
+  // instead), which the select clause tolerates.
+  "takeoff_condition",
   "warranty_request",
   "warranty_backcharge",
   "closing",
@@ -492,6 +524,7 @@ export const PROJECT_SCOPED_ENTITY_TYPES = new Set<SearchEntityType>([
   "commitment",
   "bid_package",
   "change_order",
+  "change_event",
   "contract",
   "proposal",
   "rfi",
@@ -502,6 +535,7 @@ export const PROJECT_SCOPED_ENTITY_TYPES = new Set<SearchEntityType>([
   "punch_item",
   "schedule_item",
   "photo",
+  "project_email",
   "portal_access",
   "payable",
   "expense",

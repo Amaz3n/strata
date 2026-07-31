@@ -52,6 +52,10 @@ export interface EntityPreview {
 }
 
 const CATEGORY_BY_TYPE: Record<SearchEntityType, PreviewCategory> = {
+  change_event: "financial",
+  project_email: "general",
+  // A condition is a priced quantity, so it reads with the money surfaces.
+  takeoff_condition: "financial",
   warranty_request: "request",
   warranty_backcharge: "financial",
   closing: "financial",

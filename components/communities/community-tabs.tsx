@@ -3,20 +3,27 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 
+import { MoreHorizontal } from "@/components/icons"
+import { Button } from "@/components/ui/button"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
 
 export function CommunityTabs({ communityId }: { communityId: string }) {
   const pathname = usePathname()
   const base = `/communities/${communityId}`
-  // Three tabs, three jobs. The plat carries land, price, buyer, and money for
-  // every lot, so P&L is a lens on it rather than a tab; phases, takedowns, and
-  // assignments are how the container is configured, so they live in Settings.
-  // Holds and traffic belong to the consultant on /sales, not here.
+  // Three tabs, three jobs. Inventory is every role's read of the lots; Offering
+  // is the sales manager's weekly edit; Land is the land manager's phases,
+  // takedowns, and runway. Settings is configure-once, so it sits in the overflow
+  // rather than taking a quarter of the tab bar. Buyers, starts, and selections
+  // are displayed here but mutated on Sales, Starts, and Design Studio — one
+  // home per mutation.
   const tabs = [
-    ["Lots", base],
+    ["Inventory", base],
     ["Offering", `${base}/offering`],
-    ["Settings", `${base}/settings`],
+    ["Land", `${base}/land`],
   ] as const
+  const settingsHref = `${base}/settings`
+  const onSettings = pathname.startsWith(settingsHref)
 
   return (
     <nav aria-label="Community" className="flex h-10 items-end gap-5 overflow-x-auto text-xs">
@@ -38,6 +45,23 @@ export function CommunityTabs({ communityId }: { communityId: string }) {
           </Link>
         )
       })}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="sm"
+            className={cn("mb-1 h-6 w-6 rounded-none p-0", onSettings ? "text-foreground" : "text-muted-foreground")}
+          >
+            <MoreHorizontal className="size-4" />
+            <span className="sr-only">More community actions</span>
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start">
+          <DropdownMenuItem asChild>
+            <Link href={settingsHref}>Community settings</Link>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </nav>
   )
 }

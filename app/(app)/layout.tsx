@@ -8,7 +8,6 @@ import { MobileBottomNav } from "@/components/layout/mobile-bottom-nav"
 import { PageTitleProvider } from "@/components/layout/page-title-context"
 import { MobileActionProvider } from "@/components/layout/mobile-action-context"
 import { AppPageContent } from "@/components/layout/app-page-content"
-import { PlatformSessionControl } from "@/components/layout/platform-session-control"
 import { ReleaseNotesAnnouncement } from "@/components/layout/release-notes-announcement"
 import { OrgInactiveScreen } from "@/components/layout/org-inactive-screen"
 import { TrialStatusBanner } from "@/components/layout/trial-status-banner"
@@ -103,8 +102,8 @@ export default async function AppLayout({
                 communities={ambientContext.pinnableCommunities}
                 communityId={ambientContext.communityId}
                 showCommunityScope={showProductionNavigation}
-                platformSessionControlDesktop={<PlatformSessionControl access={platformAccess} state={platformSessionState} />}
-                platformSessionControlMobile={<PlatformSessionControl access={platformAccess} state={platformSessionState} />}
+                platformAccess={platformAccess}
+                platformSessionState={platformSessionState}
               />
               <TrialStatusBanner access={access} />
               <AppPageContent>{children}</AppPageContent>

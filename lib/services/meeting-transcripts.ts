@@ -88,6 +88,27 @@ async function transcribeOpenAi(bytes: Buffer, mimeType: string, fileName: strin
   return body.text.trim()
 }
 
+export async function transcribeConstructionAudio(bytes: Buffer, mimeType: string, fileName: string) {
+  const supabase = createServiceSupabaseClient()
+  const config = await getPlatformAiFeatureDefaultConfig({ supabase, feature: "transcription" })
+  if (config.provider === "openai") return transcribeOpenAi(bytes, mimeType, fileName, config.model)
+  if (config.provider === "google") {
+    const key = getApiKeyForProvider("google")
+    if (!key) throw new Error("Google AI is not configured for transcription")
+    const result = await generateText({
+      model: resolveLanguageModel("google", key, config.model),
+      messages: [{ role: "user", content: [
+        { type: "text", text: "Transcribe this construction field note verbatim. Return transcript text only." },
+        { type: "file", data: bytes, mediaType: mimeType || "audio/webm", filename: fileName },
+      ] }],
+      abortSignal: AbortSignal.timeout(15 * 60_000),
+    })
+    if (!result.text.trim()) throw new Error("Google transcription returned no text")
+    return result.text.trim()
+  }
+  throw new Error("Anthropic does not expose an audio transcription endpoint; choose OpenAI or Google")
+}
+
 export async function processPendingMeetingTranscripts(limit = 3) {
   const supabase = createServiceSupabaseClient()
   const { data: rows, error } = await supabase.from("meeting_transcripts").select("id, org_id, audio_file_id, files!meeting_transcripts_audio_file_id_fkey(storage_path, mime_type, file_name)").eq("status", "pending").order("created_at").limit(limit)

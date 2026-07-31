@@ -11,7 +11,7 @@ import { useProductTerminology } from "@/components/layout/use-product-terminolo
 import { FileDropOverlay } from "@/components/files/file-drop-overlay";
 import { FileViewer } from "@/components/files/file-viewer";
 import { downloadUrlToFile, getDownloadFileName } from "@/components/files/download";
-import { DrawingViewer } from "@/components/drawings/drawing-viewer";
+import { DrawingViewer, type SaveMarkupInput } from "@/components/drawings/drawing-viewer";
 import { CreateFromDrawingDialog } from "@/components/drawings/create-from-drawing-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -998,12 +998,7 @@ function UnifiedDocumentsLayoutInner() {
   );
 
   const handleDrawingMarkupSave = useCallback(
-    async (
-      markup: Omit<
-        DrawingMarkup,
-        "id" | "org_id" | "created_at" | "updated_at"
-      >,
-    ) => {
+    async (markup: SaveMarkupInput) => {
       try {
         const created = unwrapAction(await createDrawingMarkupAction(markup));
         setDrawingViewerMarkups((prev) => [...prev, created]);
@@ -2197,8 +2192,6 @@ function UnifiedDocumentsLayoutInner() {
             void handleSheetClick(sheet, drawingViewerSheets);
           }}
           imageThumbnailUrl={drawingViewerSheet.image_thumbnail_url ?? null}
-          imageMediumUrl={drawingViewerSheet.image_medium_url ?? null}
-          imageFullUrl={drawingViewerSheet.image_full_url ?? null}
           imageWidth={drawingViewerSheet.image_width ?? null}
           imageHeight={drawingViewerSheet.image_height ?? null}
         />

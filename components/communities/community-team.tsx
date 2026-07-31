@@ -5,7 +5,8 @@ import { useState, useTransition } from "react"
 import { toast } from "sonner"
 
 import { assignCommunityMemberAction, removeCommunityAssignmentAction } from "@/app/(app)/communities/actions"
-import { Plus, Users } from "@/components/icons"
+import { Plus } from "@/components/icons"
+import { SettingsGroup } from "@/components/settings/settings-section"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -17,13 +18,12 @@ import {
 } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { unwrapAction } from "@/lib/action-result"
+import type { CommunityAssignmentDTO } from "@/lib/services/community-assignments"
 import {
   COMMUNITY_ASSIGNMENT_ROLE_LABELS,
-  type CommunityAssignmentDTO,
-} from "@/lib/services/community-assignments"
-import type { CommunityAssignmentRole } from "@/lib/validation/communities"
+  type CommunityAssignmentRole,
+} from "@/lib/validation/communities"
 
 const ROLES = Object.keys(COMMUNITY_ASSIGNMENT_ROLE_LABELS) as CommunityAssignmentRole[]
 
@@ -76,67 +76,51 @@ export function CommunityTeam({
   }
 
   return (
-    <div className="max-w-3xl space-y-4 p-4">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <div>
-          <h2 className="text-sm font-semibold">Community team</h2>
-          <p className="text-xs text-muted-foreground">
-            Assigned staff open Arc scoped to this community. Assignment is a convenience scope, not a permission —
-            access is still governed by roles and divisions.
+    <>
+      {/* A roster group, not a table in a panel — the shape every other roster in
+          Settings uses. */}
+      <SettingsGroup
+        title="Community team"
+        description="Assigned staff open Arc scoped to this community. Assignment is a convenience scope, not a permission — access is still governed by roles and divisions."
+        action={
+          canWrite ? (
+            <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
+              <Plus className="mr-1.5 size-4" />
+              Assign
+            </Button>
+          ) : null
+        }
+      >
+        {assignments.length === 0 ? (
+          <p className="py-4 text-sm text-muted-foreground">
+            Nobody is assigned. Assign the sales consultant and superintendent who work this community so their desks
+            default to it.
           </p>
-        </div>
-        {canWrite ? (
-          <Button size="sm" className="rounded-none" onClick={() => setOpen(true)}>
-            <Plus className="mr-1.5 h-4 w-4" />
-            Assign someone
-          </Button>
-        ) : null}
-      </div>
-
-      {assignments.length === 0 ? (
-        <div className="flex flex-col items-center justify-center gap-2 border border-dashed px-6 py-14 text-center">
-          <Users className="h-5 w-5 text-muted-foreground" />
-          <p className="text-sm font-medium">Nobody assigned yet</p>
-          <p className="max-w-sm text-xs text-muted-foreground">
-            Assign the sales consultant and superintendent who work this community so their desks default to it.
-          </p>
-        </div>
-      ) : (
-        <div className="overflow-x-auto border">
-          <Table>
-            <TableHeader>
-              <TableRow className="text-[11px] uppercase tracking-wide">
-                <TableHead>Name</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Email</TableHead>
-                {canWrite ? <TableHead className="w-20" /> : null}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {assignments.map((assignment) => (
-                <TableRow key={assignment.id} className="text-xs">
-                  <TableCell className="font-medium">{assignment.name}</TableCell>
-                  <TableCell>{COMMUNITY_ASSIGNMENT_ROLE_LABELS[assignment.role]}</TableCell>
-                  <TableCell className="text-muted-foreground">{assignment.email ?? "—"}</TableCell>
-                  {canWrite ? (
-                    <TableCell className="text-right">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 rounded-none px-2 text-[11px]"
-                        disabled={isPending}
-                        onClick={() => remove(assignment)}
-                      >
-                        Remove
-                      </Button>
-                    </TableCell>
-                  ) : null}
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      )}
+        ) : (
+          assignments.map((assignment) => (
+            <div key={assignment.id} className="flex items-center justify-between gap-3 py-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">{assignment.name}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {COMMUNITY_ASSIGNMENT_ROLE_LABELS[assignment.role]}
+                  {assignment.email ? ` · ${assignment.email}` : ""}
+                </p>
+              </div>
+              {canWrite ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="shrink-0"
+                  disabled={isPending}
+                  onClick={() => remove(assignment)}
+                >
+                  Remove
+                </Button>
+              ) : null}
+            </div>
+          ))
+        )}
+      </SettingsGroup>
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="rounded-none sm:max-w-md">
@@ -180,6 +164,6 @@ export function CommunityTeam({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </>
   )
 }

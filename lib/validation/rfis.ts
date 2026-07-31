@@ -41,6 +41,7 @@ export const rfiResponseInputSchema = z.object({
   portal_token_id: z.string().uuid().optional().nullable(),
   actor_ip: z.string().optional().nullable(),
   created_via_portal: z.boolean().default(false),
+  implies_scope_change: z.boolean().default(false),
 })
 
 export type RfiResponseInput = z.infer<typeof rfiResponseInputSchema>

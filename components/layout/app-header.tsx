@@ -5,8 +5,9 @@ import { usePathname } from "next/navigation"
 
 import Link from "next/link"
 
-import { MapPin } from "@/components/icons"
+import { ChevronRight, MapPin } from "@/components/icons"
 import { CommandSearch } from "@/components/layout/command-search-lazy"
+import { PlatformSessionControl } from "@/components/layout/platform-session-control"
 import { ScopeSwitcher, type ScopeDivision } from "@/components/layout/scope-switcher"
 import {
   Breadcrumb,
@@ -17,6 +18,8 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb"
 import type { AmbientCommunity } from "@/lib/services/desk-context"
+import type { PlatformAccessState } from "@/lib/services/platform-access"
+import type { PlatformSessionState } from "@/lib/services/platform-session"
 import { cn } from "@/lib/utils"
 import { usePageTitle } from "./page-title-context"
 
@@ -97,8 +100,8 @@ interface AppHeaderProps {
   communities?: AmbientCommunity[]
   communityId?: string
   showCommunityScope?: boolean
-  platformSessionControlDesktop?: React.ReactNode
-  platformSessionControlMobile?: React.ReactNode
+  platformAccess?: PlatformAccessState
+  platformSessionState?: PlatformSessionState
 }
 
 const PATHNAME_FALLBACK_LABELS: Record<string, string> = {
@@ -145,9 +148,7 @@ function labelFromPathname(pathname: string): string {
 /** One separator for the whole header path, from the scope lens to the last crumb. */
 function PathSeparator() {
   return (
-    <span aria-hidden className="shrink-0 text-muted-foreground/40 select-none">
-      /
-    </span>
+    <ChevronRight aria-hidden className="size-3.5 shrink-0 text-muted-foreground/50" />
   )
 }
 
@@ -157,8 +158,8 @@ export function AppHeader({
   communities = [],
   communityId,
   showCommunityScope = false,
-  platformSessionControlDesktop,
-  platformSessionControlMobile,
+  platformAccess,
+  platformSessionState,
 }: AppHeaderProps) {
   const pathname = usePathname()
   const { title, breadcrumbs, projectContext } = usePageTitle()
@@ -211,6 +212,11 @@ export function AppHeader({
     </Link>
   ) : null
 
+  const platformSessionControl =
+    platformAccess && platformSessionState ? (
+      <PlatformSessionControl access={platformAccess} state={platformSessionState} />
+    ) : null
+
   return (
     <header className="shrink-0 border-b border-border">
       {/* Desktop — one row: scope, path, then search pinned right */}
@@ -250,7 +256,7 @@ export function AppHeader({
                   <React.Fragment key={`${item.label}-${index}`}>
                     <BreadcrumbItem className="min-w-0">{content}</BreadcrumbItem>
                     {!isLast && (
-                      <BreadcrumbSeparator className="[&>svg]:hidden">
+                      <BreadcrumbSeparator className="flex items-center">
                         <PathSeparator />
                       </BreadcrumbSeparator>
                     )}
@@ -261,7 +267,7 @@ export function AppHeader({
           </Breadcrumb>
         </div>
 
-        {platformSessionControlDesktop}
+        {platformSessionControl}
         <CommandSearch />
       </div>
 
@@ -294,7 +300,7 @@ export function AppHeader({
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
-          {platformSessionControlMobile}
+          {platformSessionControl}
           <CommandSearch />
         </div>
       </div>

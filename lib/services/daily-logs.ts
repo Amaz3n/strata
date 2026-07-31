@@ -4,6 +4,7 @@ import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission, requireProjectPermission } from "@/lib/services/permissions"
+import { getProjectDailyWeather } from "@/lib/services/project-weather"
 
 function mapDailyLog(row: any): DailyLog {
   const weather = row.weather ?? {}
@@ -48,6 +49,7 @@ export async function createDailyLog({ input, orgId }: { input: DailyLogInput; o
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireProjectPermission(userId, input.project_id, "daily_log.write")
 
+  const weather = input.weather ?? await getProjectDailyWeather(resolvedOrgId, input.project_id, input.date).catch(() => null) ?? undefined
   const { data, error } = await supabase
     .from("daily_logs")
     .insert({
@@ -55,7 +57,7 @@ export async function createDailyLog({ input, orgId }: { input: DailyLogInput; o
       project_id: input.project_id,
       log_date: input.date,
       summary: input.summary,
-      weather: input.weather,
+      weather,
       created_by: userId,
     })
     .select("id, org_id, project_id, log_date, summary, weather, created_by, created_at, updated_at")

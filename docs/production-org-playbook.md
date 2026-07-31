@@ -27,7 +27,7 @@ proposed feature does not fit one, it probably does not belong in the tier.
 | The options | **Design Studio** | Option catalog, packages, cutoffs, appointments |
 | The sale | **Sales** | Buyers, holds, agreements, closings |
 | The release | **Starts** | Start packages, gates, even-flow release |
-| The build | **Homes** / **My Houses** | Schedule, budget, daily logs, punch |
+| The build | **Home** / **Homes** | Schedule, budget, daily logs, punch |
 | The service | **Warranty** | Post-close requests, visits, backcharges |
 | The money | **Billing / Payables / Purchasing** | Invoices, POs, draws, vendor payments |
 | The view | **Reports** | Backlog, cycle time, even-flow, portfolio |
@@ -44,6 +44,73 @@ Three rules keep it coherent:
   but only two of those change the sidebar. Community narrows every desk at once
   from the header lens; it never forks the navigation. See
   [The community lens](#the-community-lens).
+
+---
+
+## Where does this feature go?
+
+Three tests, in order. The first one that fires wins.
+
+**1. Who owns this record's lifecycle?** Not who reads it — who *advances* it.
+That role's home surface owns the mutation. Every other surface links to it.
+
+**2. Is this a queue across many objects, or everything about one object?**
+A queue is a desk. One object is a workbench. `/sales` is a queue of buyers;
+`/communities/[id]` is one community. "Sold lots awaiting release" is a queue, so
+it belongs on `/starts` — not as a tab on the community.
+
+**3. Does this fact change a decision made on this page?** If yes, **display it**,
+no matter who owns it. Read-only, deep-linked to the owner.
+
+> Test 3 is the one that gets skipped, and skipping it is how a page goes hollow.
+> When holds moved to the Sales desk, the community stopped *showing* buyers as
+> well as stopped editing them — so a consultant with a buyer in the model home
+> could not answer "what is going on with lot 47". Moving a mutation is not the
+> same decision as moving a fact. There is no rule against showing another
+> role's data; only against editing it.
+
+The field version: **who does this at 9am on a Tuesday, and what were they
+looking at when they decided to?** That screen is where it goes.
+
+### The lot has three owners
+
+An entity is not always owned whole. A lot is one row split by lifecycle stage:
+
+| Transition | Who advances it | Home |
+| --- | --- | --- |
+| controlled → owned | Land manager (takedown closes) | Communities |
+| owned → developed | Land manager | Communities |
+| developed → assigned | Consultant (buyer contracts) | Sales |
+| assigned → started | Starts manager (release) | Starts |
+| started → closed | Closing coordinator | Sales / closing |
+
+**The community owns the lot until it becomes sellable, then reads it.** This is
+why the lot inspector's status control stops at *Developed*: everything past it
+is the consequence of an owning event, and hand-setting it is how the workbench
+and the desks drift apart.
+
+### Allocation
+
+| Feature | Mutated on | Displayed on |
+| --- | --- | --- |
+| Lot land state, phase, takedown, address, dimensions, swing, cost basis | Communities | Sales, Starts |
+| Lot premium | Communities | Sales, agreement |
+| Phases, takedowns | Communities → Land | Board |
+| Community team | Communities → Settings | — |
+| Plan product (elevations, specs) | Plans | Communities → Offering |
+| Base price per community, incentives | Communities → Offering | Sales |
+| Hold, reservation, buyer, agreement | Sales | Communities → Inventory |
+| Selections, cutoffs, appointments | Design Studio | Communities, Sales |
+| Start release, gates | Starts | Communities (urgency strip) |
+| Traffic log | Sales (inquiry side effect) + Communities → Offering | Reports |
+| Spec inventory | Starts (creates the spec) | Communities → Offering, Sales |
+| Community P&L | nowhere — derived | Communities (header), Reports |
+| Cross-community land supply | nowhere — derived | Reports |
+
+**Known exception, unresolved:** releasing a plan to a community
+(`community_plan_availability`) is mutated in the plan library, but by test 1 it
+is the sales manager's offering decision and should move to the community
+Offering tab. The plan library owns the *product*, not its release.
 
 ## The community lens
 
@@ -69,8 +136,10 @@ totals — the fastest way to make people stop trusting the numbers. A lens gets
 the assigned user the same result with the scope visible in the header.
 
 Consequently the community workbench does **not** rebuild desks as tabs. It is
-Lots · Land · Offering · Sales · P&L · Team · Settings. There is no community
-Starts tab: `/starts` with the lens on is that view.
+**Inventory · Offering · Land · Settings** — four tabs, four owners. There is no
+community Sales tab and no community Starts tab: `/sales` and `/starts` with the
+lens on are those views. What the community *does* carry is the read of them —
+the buyer on a lot, the urgency strip — because of test 3 above.
 
 ---
 
@@ -219,15 +288,21 @@ so trades are not feast-or-famine.
 
 Runs 8–15 houses at a time.
 
-**Lives on:** `/my-houses`, then `/projects/[id]` for a specific home.
+**Lives on:** `/` (Home — the field band leads the page for anyone carrying
+houses), then `/projects/[id]` for a specific home.
 
 **Daily loop**
 
-1. Open My Houses: this week's scheduled work across every assigned house, plus a
-   roster showing phase, days in progress versus target, percent complete, late
-   count, open punch, and last daily log.
-2. Complete scheduled items from the list.
+1. Open Home. The field band leads: this week's scheduled work grouped by
+   activity across every assigned house ("Frame inspection · 6"), because the
+   job is one activity across many lots, not one house at a time. The band
+   header carries house count, late items, and missing daily logs; the window
+   toggles Today / This week / 2 weeks.
+2. Complete scheduled items in place, without leaving the page.
 3. Drop into a house for daily logs, photos, inspections, punch.
+
+The per-house roster (phase, days versus target, percent complete, open punch,
+last log) belongs on **Homes** filtered to the viewer — not duplicated here.
 
 **Mutates:** schedule items, daily logs, photos, punch items, inspections.
 
@@ -251,8 +326,9 @@ Post-close service.
 
 Feeds the machine: acquires and develops lots so there is inventory to sell.
 
-**Lives on:** `/communities` (the board), `/communities/[id]/land`. Cross-community
-land supply is a Reports section, not a Communities view.
+**Lives on:** `/communities` (the board), `/communities/[id]/land` — the runway,
+phases, and takedowns. Cross-community land supply is a Reports section, not a
+Communities view.
 
 **Mutates:** communities, phases, lots, takedowns.
 

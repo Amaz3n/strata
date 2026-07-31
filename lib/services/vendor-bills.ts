@@ -22,6 +22,8 @@ import { isCostDrivenBillingModel } from "@/lib/financials/billing-model"
 import { payableOutstandingCents } from "@/lib/financials/payables-rules"
 import { listMissingSubtierWaiversForBill } from "@/lib/services/lien-waivers"
 import { accountingReference, buildAccountingCoding } from "@/lib/services/accounting-coding"
+import { evaluateHolds } from "@/lib/services/payment-holds"
+import { evaluateAndAutoApproveVendorBill } from "@/lib/services/invoice-auto-approval"
 
 export type VendorBillStatus = "pending" | "approved" | "partial" | "paid"
 
@@ -700,6 +702,13 @@ export async function updateVendorBillStatus({
   }
 
   if (parsed.status === "paid" || parsed.status === "partial") {
+    const holdEvaluation = await evaluateHolds(billId, resolvedOrgId)
+    if (!holdEvaluation.releasable) {
+      const reasons = holdEvaluation.holds
+        .filter((hold) => hold.level === "block" && !hold.overridden)
+        .map((hold) => hold.message)
+      throw new Error(`Payment is on hold: ${reasons.join("; ")}`)
+    }
     const { data: projectControls } = await supabase
       .from("projects")
       .select("require_subtier_waivers")
@@ -1179,6 +1188,8 @@ export async function updateVendorBillStatus({
     },
   })
 
+  await evaluateAndAutoApproveVendorBill({ orgId: resolvedOrgId, billId: data.id as string }).catch((error) => console.warn("Invoice auto-approval evaluation failed", error))
+
   return mapVendorBill(data)
 }
 
@@ -1366,6 +1377,8 @@ export async function createProjectVendorBill({
       over_budget: isOverBudget,
     },
   })
+
+  await evaluateAndAutoApproveVendorBill({ orgId: resolvedOrgId, billId: data.id as string }).catch((error) => console.warn("Invoice auto-approval evaluation failed", error))
 
   return mapVendorBill(data)
 }
@@ -1638,6 +1651,8 @@ export async function createVendorBillFromPortal({
       over_budget: isOverBudget,
     },
   })
+
+  await evaluateAndAutoApproveVendorBill({ orgId, billId: data.id as string }).catch((error) => console.warn("Invoice auto-approval evaluation failed", error))
 
   return mapVendorBill(data)
 }

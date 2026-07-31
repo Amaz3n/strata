@@ -7,6 +7,10 @@ import { createDailyLog } from "@/lib/services/daily-logs"
 import { requireProjectPermission } from "@/lib/services/permissions"
 import { createFilesDownloadUrl } from "@/lib/storage/files-storage"
 import { ensurePhotoDailyLogSchema, listProjectPhotosSchema, type ListProjectPhotosInput, type ProjectPhotoFilters } from "@/lib/validation/photos"
+import { photoAlbumInputSchema, photoMetadataInputSchema } from "@/lib/validation/photos"
+import { recordAudit } from "@/lib/services/audit"
+import { recordEvent } from "@/lib/services/events"
+import { enqueueOutboxJob } from "@/lib/services/outbox"
 
 const SCAN_BATCH_SIZE = 96
 
@@ -56,6 +60,15 @@ export type ProjectPhoto = {
   primary_source: ProjectPhotoSource
   location_ids: string[]
   locations: string[]
+  album_id: string | null
+  location_id: string | null
+  trade_company_id: string | null
+  taken_at: string | null
+  latitude: number | null
+  longitude: number | null
+  ai_caption: string | null
+  ai_tags: string[]
+  curated_visibility: "internal" | "client"
 }
 
 export type ProjectPhotoPage = {
@@ -135,7 +148,7 @@ async function hydratePhotoRows(
   const [contextsByFileId, linksResult, legacyPhotosResult, inspectionItemsResult, observationsResult, incidentsResult] = await Promise.all([
     listFileSourceContexts(fileIds, orgId),
     supabase.from("file_links").select("file_id, entity_type, entity_id").eq("org_id", orgId).eq("project_id", projectId).in("file_id", fileIds),
-    supabase.from("photos").select("file_id, daily_log_id, task_id, taken_at").eq("org_id", orgId).eq("project_id", projectId).in("file_id", fileIds),
+    supabase.from("photos").select("file_id, daily_log_id, task_id, taken_at, album_id, location_id, trade_company_id, latitude, longitude, ai_caption, ai_tags, visibility").eq("org_id", orgId).eq("project_id", projectId).in("file_id", fileIds),
     supabase.from("inspection_items").select("id, photo_file_id, inspection:inspections(id, project_id, inspection_number, title, inspected_at, location_id, location)").eq("org_id", orgId).in("photo_file_id", fileIds),
     supabase.from("observations").select("id, photo_file_id, observation_number, kind, created_at, location_id, location").eq("org_id", orgId).eq("project_id", projectId).in("photo_file_id", fileIds),
     supabase.from("safety_incidents").select("id, photo_file_id, incident_number, occurred_at, location_id, location").eq("org_id", orgId).eq("project_id", projectId).in("photo_file_id", fileIds),
@@ -177,6 +190,8 @@ async function hydratePhotoRows(
   for (const row of rows) {
     if (row.daily_log_id) fileIdsByDailyLog.set(row.daily_log_id, [...(fileIdsByDailyLog.get(row.daily_log_id) ?? []), row.id])
   }
+
+  const metadataByFileId = new Map((legacyPhotosResult.data ?? []).map((photo) => [photo.file_id, photo]))
   for (const link of links) {
     if (link.entity_type === "daily_log") fileIdsByDailyLog.set(link.entity_id, [...(fileIdsByDailyLog.get(link.entity_id) ?? []), link.file_id])
   }
@@ -255,7 +270,8 @@ async function hydratePhotoRows(
       .then((result) => result.downloadUrl)
       .catch(() => buildInternalFileUrl(row.id))
     const isHeic = row.mime_type === "image/heic" || row.mime_type === "image/heif" || /\.hei[cf]$/i.test(row.file_name)
-    const locationIds = Array.from(new Set(effectiveSources.map((source) => source.location_id).filter((id): id is string => Boolean(id))))
+    const metadata = metadataByFileId.get(row.id)
+    const locationIds = Array.from(new Set([...effectiveSources.map((source) => source.location_id), metadata?.location_id].filter((id): id is string => Boolean(id))))
     const locations = Array.from(new Set(effectiveSources.map((source) => source.location).filter((value): value is string => Boolean(value))))
     return {
       id: row.id,
@@ -276,6 +292,15 @@ async function hydratePhotoRows(
       primary_source: effectiveSources[0],
       location_ids: locationIds,
       locations,
+      album_id: metadata?.album_id ?? null,
+      location_id: metadata?.location_id ?? null,
+      trade_company_id: metadata?.trade_company_id ?? null,
+      taken_at: metadata?.taken_at ?? null,
+      latitude: metadata?.latitude == null ? null : Number(metadata.latitude),
+      longitude: metadata?.longitude == null ? null : Number(metadata.longitude),
+      ai_caption: metadata?.ai_caption ?? null,
+      ai_tags: metadata?.ai_tags ?? [],
+      curated_visibility: metadata?.visibility === "client" ? "client" : "internal",
     }
   }))
 }
@@ -284,6 +309,12 @@ function matchesFilters(photo: ProjectPhoto, filters: ProjectPhotoFilters) {
   if (filters.source_type === "files" && photo.sources.some((source) => source.type !== "files")) return false
   if (filters.source_type && filters.source_type !== "files" && !photo.sources.some((source) => source.type === filters.source_type)) return false
   if (filters.location_id && !photo.location_ids.includes(filters.location_id)) return false
+  if (filters.album_id && photo.album_id !== filters.album_id) return false
+  if (filters.visibility && photo.curated_visibility !== filters.visibility) return false
+  if (filters.search) {
+    const haystack = [photo.file_name, photo.ai_caption, ...photo.ai_tags, ...photo.locations].filter(Boolean).join(" ").toLowerCase()
+    if (!haystack.includes(filters.search.toLowerCase())) return false
+  }
   return true
 }
 
@@ -347,4 +378,50 @@ export async function ensureTodayDailyLogForPhotos(projectId: string, localDate:
   if (existing) return existing
   const created = await createDailyLog({ input: { project_id: parsed.projectId, date: parsed.localDate, summary: "Jobsite photos" }, orgId: resolvedOrgId })
   return { id: created.id }
+}
+
+export async function listPhotoAlbums(projectId: string, orgId?: string) {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, projectId, "docs.read")
+  const { data, error } = await supabase.from("photo_albums").select("id,name,description,created_at,updated_at").eq("org_id", resolvedOrgId).eq("project_id", projectId).order("name").limit(250)
+  if (error) throw new Error(`Failed to list photo albums: ${error.message}`)
+  return data ?? []
+}
+
+export async function createPhotoAlbum(input: unknown, orgId?: string) {
+  const parsed = photoAlbumInputSchema.parse(input)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, parsed.project_id, "docs.upload")
+  const payload = { org_id: resolvedOrgId, project_id: parsed.project_id, name: parsed.name, description: parsed.description ?? null, created_by: userId }
+  const { data, error } = await supabase.from("photo_albums").insert(payload).select("*").single()
+  if (error || !data) throw new Error(`Failed to create photo album: ${error?.message}`)
+  await Promise.all([
+    recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "photo_album_created", entityType: "photo_album", entityId: data.id, payload: { project_id: parsed.project_id, name: parsed.name } }),
+    recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "insert", entityType: "photo_album", entityId: data.id, after: payload }),
+  ])
+  return data
+}
+
+export async function updatePhotoMetadata(input: unknown, orgId?: string) {
+  const parsed = photoMetadataInputSchema.parse(input)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireProjectPermission(userId, parsed.project_id, "docs.upload")
+  const { data: file } = await supabase.from("files").select("id").eq("org_id", resolvedOrgId).eq("project_id", parsed.project_id).eq("id", parsed.file_id).maybeSingle()
+  if (!file) throw new Error("Photo file not found")
+  const { data: existing } = await supabase.from("photos").select("id,*").eq("org_id", resolvedOrgId).eq("project_id", parsed.project_id).eq("file_id", parsed.file_id).order("created_at").limit(1).maybeSingle()
+  const patch = {
+    album_id: parsed.album_id, location_id: parsed.location_id, trade_company_id: parsed.trade_company_id,
+    taken_at: parsed.taken_at, latitude: parsed.latitude, longitude: parsed.longitude, visibility: parsed.visibility,
+  }
+  const cleanPatch = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined))
+  const result = existing
+    ? await supabase.from("photos").update(cleanPatch).eq("org_id", resolvedOrgId).eq("id", existing.id).select("*").single()
+    : await supabase.from("photos").insert({ org_id: resolvedOrgId, project_id: parsed.project_id, file_id: parsed.file_id, captured_by: userId, ...cleanPatch }).select("*").single()
+  if (result.error || !result.data) throw new Error(`Failed to update photo: ${result.error?.message}`)
+  await enqueueOutboxJob({ orgId: resolvedOrgId, jobType: "caption_photo", payload: { photo_id: result.data.id, project_id: parsed.project_id }, dedupeByPayloadKeys: ["photo_id"] })
+  await Promise.all([
+    recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: parsed.visibility === "client" ? "photo_published" : "photo_updated", entityType: "photo", entityId: result.data.id, payload: { project_id: parsed.project_id, file_id: parsed.file_id, visibility: result.data.visibility } }),
+    recordAudit({ orgId: resolvedOrgId, actorId: userId, action: existing ? "update" : "insert", entityType: "photo", entityId: result.data.id, before: existing, after: result.data }),
+  ])
+  return result.data
 }

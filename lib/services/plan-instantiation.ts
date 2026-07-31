@@ -315,9 +315,9 @@ async function buildDraftSnapshot(
   const checklistResult =
     checklistIds.length > 0
       ? await context.supabase
-          .from("checklist_templates")
+          .from("structured_form_templates")
           .select(
-            "id, name, kind, items:checklist_template_items(section,prompt,response_type,sort_order)",
+            "id, name, kind, items:structured_form_items(section,prompt,response_type,sort_order)",
           )
           .eq("org_id", context.orgId)
           .in("id", checklistIds)

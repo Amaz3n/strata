@@ -10,7 +10,7 @@ import {
   resolvePriceForLinePure,
   type PriceAgreementCandidate,
 } from "@/lib/financials/price-resolution"
-import { THIN_MARGIN_PCT, grossMarginPct } from "@/lib/plans/margin"
+import { THIN_MARGIN_PCT, grossMarginPct, marginBand } from "@/lib/plans/margin"
 import type { LotStatus } from "@/lib/land/lot-lifecycle"
 import { recordAudit } from "@/lib/services/audit"
 import { authorize, getDivisionAccessForUser } from "@/lib/services/authorization"
@@ -551,7 +551,7 @@ async function captureBundleSnapshot(version: HousePlanVersionDto, context: Awai
       ? context.supabase.from("schedule_templates").select("id, name, description, items").eq("org_id", context.orgId).eq("id", version.schedule_template_id).maybeSingle()
       : Promise.resolve({ data: null, error: null }),
     version.checklist_template_ids.length > 0
-      ? context.supabase.from("checklist_templates").select("id, name, kind, trade, description, items:checklist_template_items(section,prompt,response_type,sort_order)").eq("org_id", context.orgId).in("id", version.checklist_template_ids)
+      ? context.supabase.from("structured_form_templates").select("id, name, kind, trade, description, items:structured_form_items(section,prompt,response_type,sort_order)").eq("org_id", context.orgId).in("id", version.checklist_template_ids)
       : Promise.resolve({ data: [], error: null }),
     version.selection_category_ids.length > 0
       ? context.supabase.from("selection_categories").select("id").eq("org_id", context.orgId).in("id", version.selection_category_ids).eq("is_template", true)
@@ -703,6 +703,8 @@ export type ResolvedTakeoffLinePricing = {
   amount_cents: number
   source: PlanPricingSource
   vendor_name: string | null
+  /** A lump-sum agreement prices the line whole; quantity does not scale it. */
+  lump_sum: boolean
 }
 
 export type PlanVersionPricingDto = {
@@ -764,6 +766,7 @@ function resolveLine(
         amount_cents: result.resolved.lumpSumCents ?? 0,
         source: "price_agreement",
         vendor_name: vendorName,
+        lump_sum: true,
       }
     }
     const unit = result.resolved.unitCostCents ?? 0
@@ -773,6 +776,7 @@ function resolveLine(
       amount_cents: resolveTakeoffLineAmount(line.quantity, unit),
       source: "price_agreement",
       vendor_name: vendorName,
+      lump_sum: false,
     }
   }
   if (line.unit_cost_cents != null) {
@@ -782,6 +786,7 @@ function resolveLine(
       amount_cents: resolveTakeoffLineAmount(line.quantity, line.unit_cost_cents),
       source: "takeoff_manual",
       vendor_name: null,
+      lump_sum: false,
     }
   }
   const fallback = defaults.get(line.cost_code_id)
@@ -792,9 +797,17 @@ function resolveLine(
       amount_cents: resolveTakeoffLineAmount(line.quantity, fallback),
       source: "cost_code_default",
       vendor_name: null,
+      lump_sum: false,
     }
   }
-  return { line_id: line.id, resolved_unit_cost_cents: 0, amount_cents: 0, source: "unpriced", vendor_name: null }
+  return {
+    line_id: line.id,
+    resolved_unit_cost_cents: 0,
+    amount_cents: 0,
+    source: "unpriced",
+    vendor_name: null,
+    lump_sum: false,
+  }
 }
 
 export async function getPlanPricing(planId: string, orgId?: string): Promise<PlanPricingDto> {
@@ -1063,6 +1076,7 @@ export type PlanAttentionKind =
   | "unpriced_takeoff"
   | "unpriced_community"
   | "thin_margin"
+  | "implausible_margin"
   | "no_imagery"
 
 export type PlanAttentionDto = { kind: PlanAttentionKind; label: string }
@@ -1217,6 +1231,8 @@ export async function getPlanLadder(
     }
     if (marginFloorPct != null && marginFloorPct < THIN_MARGIN_PCT) {
       attention.push({ kind: "thin_margin", label: `${Math.round(marginFloorPct)}% gross margin at worst community` })
+    } else if (marginBand(marginFloorPct) === "implausible") {
+      attention.push({ kind: "implausible_margin", label: `${Math.round(marginFloorPct ?? 0)}% margin — check takeoff` })
     }
     if (!plan.cover_file_id && elevations.every((elevation) => !elevation.cover_file_id)) {
       attention.push({ kind: "no_imagery", label: "No elevation imagery" })

@@ -38,6 +38,31 @@ export interface OutboxHealth {
   failedItems: OutboxFailedItem[]
 }
 
+export interface StuckOutboxGroup {
+  jobType: string
+  pendingCount: number
+  processingCount: number
+  totalCount: number
+  /** run_at for pending, updated_at for processing — whichever stalled first. */
+  oldestStuckSince: string
+  /** Distinct orgs in the scan; `orgNames` may show only the first few. */
+  orgCount: number
+  orgNames: string[]
+  sampleLastError: string | null
+}
+
+export interface StuckOutboxHealth {
+  /** Exact totals, independent of the sampling cap. */
+  totalStuck: number
+  pendingStuck: number
+  processingStuck: number
+  groups: StuckOutboxGroup[]
+  /** True when more stuck rows exist than were scanned to build the groups. */
+  truncated: boolean
+  scannedCount: number
+  thresholdMinutes: number
+}
+
 export interface QboConnectionHealth {
   orgId: string
   orgName: string
@@ -175,6 +200,111 @@ export async function getOutboxHealth(): Promise<OutboxHealth> {
     completedLast24h: completedRes.count ?? 0,
     oldestPendingAt: oldestPendingRes.data?.created_at ?? null,
     failedItems,
+  }
+}
+
+// A job that hasn't moved in this long isn't "in flight", it's wedged — the
+// outbox drain runs every 5 minutes, so 10 covers a missed tick plus slack.
+const STUCK_THRESHOLD_MINUTES = 10
+// Groups shown in the detail table. Exact totals are counted separately so a
+// truncated list still reports honest numbers.
+const STUCK_GROUP_LIMIT = 50
+// How many stuck rows we pull to build the groups.
+const STUCK_SCAN_LIMIT = 2000
+const STUCK_ORG_NAMES_PER_GROUP = 8
+
+/**
+ * Jobs the queue has silently dropped: pending past their run_at, or claimed by
+ * a worker that never finished. Grouped by job type so a broken trigger chain
+ * (drawing-set fan-out, for one) shows up as a single obvious row.
+ */
+export async function listStuckOutboxJobs(): Promise<StuckOutboxHealth> {
+  const supabase = createServiceSupabaseClient()
+  const cutoffIso = new Date(Date.now() - STUCK_THRESHOLD_MINUTES * 60 * 1000).toISOString()
+
+  const [pendingRes, processingRes, rowsRes] = await Promise.all([
+    supabase
+      .from("outbox")
+      .select("*", { count: "exact", head: true })
+      .eq("status", "pending")
+      .lt("run_at", cutoffIso),
+    supabase
+      .from("outbox")
+      .select("*", { count: "exact", head: true })
+      .eq("status", "processing")
+      .lt("updated_at", cutoffIso),
+    supabase
+      .from("outbox")
+      .select("job_type, status, run_at, updated_at, last_error, org:orgs(name)")
+      .or(
+        `and(status.eq.pending,run_at.lt.${cutoffIso}),and(status.eq.processing,updated_at.lt.${cutoffIso})`,
+      )
+      .order("run_at", { ascending: true })
+      .limit(STUCK_SCAN_LIMIT),
+  ])
+
+  if (pendingRes.error) throw pendingRes.error
+  if (processingRes.error) throw processingRes.error
+  if (rowsRes.error) throw rowsRes.error
+
+  const rows = rowsRes.data ?? []
+  const pendingStuck = pendingRes.count ?? 0
+  const processingStuck = processingRes.count ?? 0
+
+  interface Accumulator extends Omit<StuckOutboxGroup, "orgNames" | "orgCount"> {
+    orgNames: Set<string>
+  }
+  const byJobType = new Map<string, Accumulator>()
+
+  for (const row of rows) {
+    const org = Array.isArray(row.org) ? row.org[0] : row.org
+    const stuckSince = row.status === "processing" ? row.updated_at : row.run_at
+    let group = byJobType.get(row.job_type)
+    if (!group) {
+      group = {
+        jobType: row.job_type,
+        pendingCount: 0,
+        processingCount: 0,
+        totalCount: 0,
+        oldestStuckSince: stuckSince,
+        orgNames: new Set<string>(),
+        sampleLastError: null,
+      }
+      byJobType.set(row.job_type, group)
+    }
+
+    group.totalCount += 1
+    if (row.status === "processing") group.processingCount += 1
+    else group.pendingCount += 1
+
+    if (new Date(stuckSince).getTime() < new Date(group.oldestStuckSince).getTime()) {
+      group.oldestStuckSince = stuckSince
+    }
+    group.orgNames.add(org?.name ?? "Unknown")
+    if (!group.sampleLastError && row.last_error) group.sampleLastError = row.last_error
+  }
+
+  const groups: StuckOutboxGroup[] = Array.from(byJobType.values())
+    .sort(
+      (a, b) =>
+        new Date(a.oldestStuckSince).getTime() - new Date(b.oldestStuckSince).getTime() ||
+        b.totalCount - a.totalCount,
+    )
+    .slice(0, STUCK_GROUP_LIMIT)
+    .map((group) => ({
+      ...group,
+      orgCount: group.orgNames.size,
+      orgNames: Array.from(group.orgNames).sort().slice(0, STUCK_ORG_NAMES_PER_GROUP),
+    }))
+
+  return {
+    totalStuck: pendingStuck + processingStuck,
+    pendingStuck,
+    processingStuck,
+    groups,
+    truncated: pendingStuck + processingStuck > rows.length,
+    scannedCount: rows.length,
+    thresholdMinutes: STUCK_THRESHOLD_MINUTES,
   }
 }
 

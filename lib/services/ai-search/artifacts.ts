@@ -404,8 +404,8 @@ function buildArExportLinks(projectId?: string, asOf?: string): AiSearchExportLi
   if (asOf) params.set("asOf", asOf)
   const suffix = params.toString() ? `&${params.toString()}` : ""
   return [
-    { format: "csv", label: "Export CSV", href: `/api/reports/ar-aging/export?format=csv${suffix}` },
-    { format: "pdf", label: "Export PDF", href: `/api/reports/ar-aging/export?format=pdf${suffix}` },
+    { format: "csv", label: "Export CSV", href: `/api/reports/ar-aging?format=csv${suffix}` },
+    { format: "pdf", label: "Export PDF", href: `/api/reports/ar-aging?format=pdf${suffix}` },
   ]
 }
 

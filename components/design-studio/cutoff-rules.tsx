@@ -33,7 +33,6 @@ interface Props {
   groups: SelectionGroupDto[]
   catalog: CatalogDto
   communityId?: string
-  communities: Array<{ id: string; name: string }>
   canManage: boolean
 }
 
@@ -42,7 +41,7 @@ function money(cents: number | null | undefined) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(cents / 100)
 }
 
-export function CutoffRules({ groups, catalog, communityId, communities, canManage }: Props) {
+export function CutoffRules({ groups, catalog, communityId, canManage }: Props) {
   const router = useRouter()
   const [groupTarget, setGroupTarget] = useState<{ group: SelectionGroupDto | null } | null>(null)
   const [packageOpen, setPackageOpen] = useState(false)
@@ -142,8 +141,6 @@ export function CutoffRules({ groups, catalog, communityId, communities, canMana
   return (
     <StudioShell
       active="rules"
-      communityId={communityId}
-      communities={communities}
       action={
         canManage ? (
           <div className="flex items-center gap-1.5">

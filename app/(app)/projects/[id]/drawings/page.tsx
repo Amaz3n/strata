@@ -5,12 +5,13 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { DrawingsSetsView } from "@/components/drawings"
 import { getProjectAction } from "../actions"
 import { listDrawingSets, listDrawingSheetsWithUrls } from "@/lib/services/drawings"
+import { hasPermission } from "@/lib/services/permissions"
 
 import { unwrapAction } from "@/lib/action-result"
 
 interface ProjectDrawingsPageProps {
   params: Promise<{ id: string }>
-  searchParams: Promise<{ set?: string; sheetId?: string }>
+  searchParams: Promise<{ set?: string; sheetId?: string; condition?: string; planVersion?: string }>
 }
 
 export default async function ProjectDrawingsPage({
@@ -57,13 +58,15 @@ async function ProjectDrawingsData({
 }: {
   id: string
   project: any
-  searchParams: Promise<{ set?: string; sheetId?: string }>
+  searchParams: Promise<{ set?: string; sheetId?: string; condition?: string; planVersion?: string }>
 }) {
   const query = await searchParams
 
-  const [sets, sheets] = await Promise.all([
+  const [sets, sheets, canWriteTakeoff] = await Promise.all([
     listDrawingSets({ project_id: id, limit: 100 }),
     listDrawingSheetsWithUrls({ project_id: id, limit: 500 }),
+    // Read-only viewers still see measured quantities; only writing is gated.
+    hasPermission("takeoff.write"),
   ])
 
   const initialSelectedSetId =
@@ -79,6 +82,9 @@ async function ProjectDrawingsData({
         lockProject
         initialSelectedSetId={initialSelectedSetId}
         initialSheetId={query.sheetId}
+        canWriteTakeoff={canWriteTakeoff}
+        initialConditionId={query.condition}
+        takeoffPlanVersionId={query.planVersion}
       />
     </div>
   )

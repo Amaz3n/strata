@@ -102,6 +102,7 @@ function mapAccessToken(row: any): PortalAccessToken {
     contact_id: row.contact_id ?? null,
     company_id: row.company_id ?? null,
     scoped_rfi_id: row.scoped_rfi_id ?? null,
+    scoped_change_event_rfq_id: row.scoped_change_event_rfq_id ?? null,
     token: row.token,
     name: row.name,
     portal_type: row.portal_type,
@@ -126,6 +127,7 @@ export async function createPortalAccessToken({
   contactId,
   companyId,
   scopedRfiId,
+  scopedChangeEventRfqId,
   reviewerRole,
   permissions,
   expiresAt,
@@ -137,6 +139,7 @@ export async function createPortalAccessToken({
   contactId?: string
   companyId?: string
   scopedRfiId?: string | null
+  scopedChangeEventRfqId?: string | null
   reviewerRole?: ReviewerRole | null
   permissions?: Partial<PortalPermissions>
   expiresAt?: string | null
@@ -163,6 +166,7 @@ export async function createPortalAccessToken({
   if (scopedRfiId) {
     payload.scoped_rfi_id = scopedRfiId
   }
+  if (scopedChangeEventRfqId) payload.scoped_change_event_rfq_id = scopedChangeEventRfqId
 
   const { data, error } = await serviceClient
     .from("portal_access_tokens")

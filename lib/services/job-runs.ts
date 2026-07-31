@@ -35,6 +35,8 @@ export const CRON_JOBS: CronJobDefinition[] = [
   { name: "starts-pipeline", path: "/api/jobs/starts-pipeline", schedule: "*/5 * * * *", scheduleLabel: "Every 5 min", expectedIntervalMinutes: 5 },
   { name: "warranty-sla-sweep", path: "/api/jobs/warranty-sla-sweep", schedule: "5 * * * *", scheduleLabel: "Hourly", expectedIntervalMinutes: 60 },
   { name: "invoice-schedules", path: "/api/jobs/invoice-schedules", schedule: "40 13 * * *", scheduleLabel: "Daily 13:40 UTC", expectedIntervalMinutes: 1440 },
+  { name: "forecast-snapshots", path: "/api/jobs/forecast-snapshots", schedule: "15 4 * * *", scheduleLabel: "Daily 04:15 UTC", expectedIntervalMinutes: 1440 },
+  { name: "report-schedules", path: "/api/jobs/report-schedules", schedule: "0 * * * *", scheduleLabel: "Hourly", expectedIntervalMinutes: 60 },
 ]
 
 const RETENTION_DAYS = 60

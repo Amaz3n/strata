@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState, useTransition } from "react"
+import { useEffect, useMemo, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { format } from "date-fns"
 import { toast } from "sonner"
@@ -294,6 +294,8 @@ interface ChangeOrdersClientProps {
   budgetLines?: BudgetLineOption[]
   costCodesEnabled?: boolean
   hideProjectFilter?: boolean
+  /** Opens the create sheet prefilled — used by "draft a change order" deep links. */
+  initialDraft?: { title?: string | null; notes?: string | null } | null
   builderInfo?: {
     name?: string | null
     email?: string | null
@@ -308,6 +310,7 @@ export function ChangeOrdersClient({
   budgetLines = [],
   costCodesEnabled = true,
   hideProjectFilter,
+  initialDraft,
 }: ChangeOrdersClientProps) {
   const router = useRouter()
   const isMobile = useIsMobile()
@@ -324,6 +327,12 @@ const [sheetOpen, setSheetOpen] = useState(false)
   const [selectedChangeOrder, setSelectedChangeOrder] = useState<ChangeOrder | null>(null)
   const [editingChangeOrder, setEditingChangeOrder] = useState<ChangeOrder | null>(null)
   const [isPending, startTransition] = useTransition()
+
+  // Arriving from a deep link with a reason already in hand: open the composer
+  // once, prefilled. Creating the CO itself stays the human's decision.
+  useEffect(() => {
+    if (initialDraft) setSheetOpen(true)
+  }, [initialDraft])
 
   const handleRowClick = (changeOrder: ChangeOrder) => {
     setSelectedChangeOrder(changeOrder)
@@ -964,6 +973,7 @@ const [sheetOpen, setSheetOpen] = useState(false)
         budgetLines={budgetLines}
         costCodesEnabled={costCodesEnabled}
         changeOrder={editingChangeOrder}
+        initialDraft={editingChangeOrder ? null : initialDraft}
       />
 
       <ChangeOrderDetailSheet

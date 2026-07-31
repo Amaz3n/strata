@@ -5,8 +5,10 @@ import { headers } from "next/headers"
 import {
   submitEstimateDecision,
   addClientEstimateComment,
+  loadTakeoffEvidenceByToken,
   type EstimateDecision,
   type EstimatePortalData,
+  type TakeoffEvidence,
 } from "@/lib/services/estimate-portal"
 
 export type EstimatePortalPayload = EstimatePortalData
@@ -42,4 +44,19 @@ export async function addClientEstimateCommentAction(input: {
   body: string
 }) {
   return addClientEstimateComment(input)
+}
+
+/**
+ * The measured regions behind one estimate line.
+ *
+ * Access is decided entirely inside the service: the token must resolve to an
+ * estimate that references this condition, and the builder must have marked the
+ * condition client-visible. A token from another org simply resolves to a
+ * different estimate and gets null.
+ */
+export async function loadTakeoffEvidenceAction(input: {
+  token: string
+  condition_id: string
+}): Promise<TakeoffEvidence | null> {
+  return loadTakeoffEvidenceByToken(input.token, input.condition_id)
 }

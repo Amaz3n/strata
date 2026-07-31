@@ -36,11 +36,29 @@ const nextConfig = {
     appIsrStatus: false,
     buildActivity: false,
   },
-  // Native Node addons (prevent bundling so bindings resolve correctly)
-  serverExternalPackages: ["@napi-rs/canvas"],
+  // Native Node addons (prevent bundling so bindings resolve correctly).
+  //
+  // `mupdf` is here because it is WASM, not JS: when the bundler processes it,
+  // the .wasm is emitted as a static asset and the loader is rewritten to
+  // fetch `/_next/static/media/mupdf-wasm.<hash>.wasm`, which the server then
+  // tries to open as a filesystem path — ENOENT, then an emscripten abort that
+  // surfaces as an unhandledRejection. Route handlers happened to survive this;
+  // server actions did not. Externalizing makes Node require it from
+  // node_modules, where the .wasm sits next to its loader.
+  serverExternalPackages: ["@napi-rs/canvas", "mupdf"],
   // Ensure bundled PDF fonts ship with the report export function on Vercel.
   outputFileTracingIncludes: {
     "/api/projects/[id]/reports/profitability": ["./lib/pdfs/fonts/**"],
+    // mupdf is externalized (see serverExternalPackages), so its 10MB .wasm is
+    // loaded from node_modules at runtime rather than bundled. Trace it
+    // explicitly onto the functions that open PDFs — an untraced .wasm fails
+    // only in production, and only when someone uploads a drawing.
+    "/api/jobs/drawings-pipeline": ["./node_modules/mupdf/dist/*.wasm"],
+    "/api/jobs/process-outbox": ["./node_modules/mupdf/dist/*.wasm"],
+    "/api/portal/drawings/[token]/[sheetId]": ["./node_modules/mupdf/dist/*.wasm"],
+    // Scale detection runs from the drawings surfaces' server actions.
+    "/projects/[id]/drawings": ["./node_modules/mupdf/dist/*.wasm"],
+    "/drawings": ["./node_modules/mupdf/dist/*.wasm"],
   },
   // Server Actions configuration
   experimental: {

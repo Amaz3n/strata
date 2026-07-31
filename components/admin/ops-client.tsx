@@ -11,11 +11,17 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { RotateCw } from "@/components/icons"
 import { cn } from "@/lib/utils"
 import { retryAllFailedOutboxAction, retryOutboxItemAction } from "@/app/(app)/admin/ops/actions"
-import type { CronJobHealth, OutboxHealth, QboConnectionHealth } from "@/lib/services/ops"
+import type {
+  CronJobHealth,
+  OutboxHealth,
+  QboConnectionHealth,
+  StuckOutboxHealth,
+} from "@/lib/services/ops"
 
 interface OpsClientProps {
   cronHealth: CronJobHealth[]
   outboxHealth: OutboxHealth
+  stuckHealth: StuckOutboxHealth
   qboHealth: QboConnectionHealth[]
 }
 
@@ -34,7 +40,7 @@ function exact(value: string | null) {
   return value ? format(new Date(value), "MMM d, HH:mm:ss") : undefined
 }
 
-export function OpsClient({ cronHealth, outboxHealth, qboHealth }: OpsClientProps) {
+export function OpsClient({ cronHealth, outboxHealth, stuckHealth, qboHealth }: OpsClientProps) {
   const router = useRouter()
   const [refreshing, startRefreshing] = useTransition()
   const [retryingId, setRetryingId] = useState<number | null>(null)
@@ -92,10 +98,16 @@ export function OpsClient({ cronHealth, outboxHealth, qboHealth }: OpsClientProp
 
       <div className="relative z-10 min-h-0 flex-1 overflow-auto">
         {/* Stat strip */}
-        <div className="grid grid-cols-2 gap-px border-b bg-border sm:grid-cols-5">
+        <div className="grid grid-cols-2 gap-px border-b bg-border sm:grid-cols-3 lg:grid-cols-6">
           <Stat label="Overdue crons" value={overdueCount} alarm={overdueCount > 0} hint="past 2× cadence" />
           <Stat label="Failing crons" value={failingCount} alarm={failingCount > 0} hint="last run errored" />
           <Stat label="Outbox failed" value={outboxHealth.failedCount} alarm={outboxHealth.failedCount > 0} hint="need attention" />
+          <Stat
+            label="Outbox stuck"
+            value={stuckHealth.totalStuck}
+            alarm={stuckHealth.totalStuck > 0}
+            hint={`no progress in ${stuckHealth.thresholdMinutes}m`}
+          />
           <Stat label="Outbox pending" value={outboxHealth.pendingCount} hint="waiting to run" />
           <Stat label="QBO alerts" value={qboErrorCount} alarm={qboErrorCount > 0} hint="connections w/ issues" />
         </div>
@@ -229,6 +241,87 @@ export function OpsClient({ cronHealth, outboxHealth, qboHealth }: OpsClientProp
           ) : null}
         </div>
 
+        {/* Stuck jobs */}
+        <div className="px-4 pb-2 pt-5">
+          <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Stuck jobs
+            <span className="ml-2 normal-case tracking-normal">
+              {stuckHealth.pendingStuck} pending past due · {stuckHealth.processingStuck} processing without
+              progress · idle over {stuckHealth.thresholdMinutes}m
+            </span>
+          </h2>
+        </div>
+        <div className="border-y">
+          {stuckHealth.groups.length === 0 ? (
+            <p className="flex items-center justify-center gap-2 px-4 py-6 text-center text-sm text-muted-foreground">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-success" />
+              No stuck jobs. Every queued job has moved in the last {stuckHealth.thresholdMinutes} minutes.
+            </p>
+          ) : (
+            <Table>
+              <TableHeader className="bg-muted/40">
+                <TableRow>
+                  <TableHead className="pl-4">Job type</TableHead>
+                  <TableHead className="text-right">Pending</TableHead>
+                  <TableHead className="text-right">Processing</TableHead>
+                  <TableHead className="text-right">Total</TableHead>
+                  <TableHead>Oldest</TableHead>
+                  <TableHead>Affected orgs</TableHead>
+                  <TableHead className="pr-4">Last error</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {stuckHealth.groups.map((group) => (
+                  <TableRow key={group.jobType}>
+                    <TableCell className="pl-4 py-2.5 font-mono text-xs">{group.jobType}</TableCell>
+                    <TableCell
+                      className={cn(
+                        "py-2.5 text-right text-xs tabular-nums",
+                        group.pendingCount > 0 ? "font-medium text-warning" : "text-muted-foreground",
+                      )}
+                    >
+                      {group.pendingCount}
+                    </TableCell>
+                    <TableCell
+                      className={cn(
+                        "py-2.5 text-right text-xs tabular-nums",
+                        group.processingCount > 0 ? "font-medium text-destructive" : "text-muted-foreground",
+                      )}
+                    >
+                      {group.processingCount}
+                    </TableCell>
+                    <TableCell className="py-2.5 text-right text-xs font-medium tabular-nums">
+                      {group.totalCount}
+                    </TableCell>
+                    <TableCell className="py-2.5 text-xs" title={exact(group.oldestStuckSince)}>
+                      {relative(group.oldestStuckSince)}
+                    </TableCell>
+                    <TableCell className="py-2.5 text-xs">
+                      <div className="max-w-xs truncate" title={orgsLabel(group)}>
+                        {orgsLabel(group)}
+                      </div>
+                    </TableCell>
+                    <TableCell className="py-2.5 pr-4">
+                      <div
+                        className="max-w-sm truncate font-mono text-[11px] text-destructive"
+                        title={group.sampleLastError ?? undefined}
+                      >
+                        {group.sampleLastError ?? "—"}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+          {stuckHealth.truncated ? (
+            <p className="border-t px-4 py-2 text-xs text-muted-foreground">
+              Grouped from the {stuckHealth.scannedCount} oldest of {stuckHealth.totalStuck} stuck jobs — per-type
+              counts are a floor, not the total.
+            </p>
+          ) : null}
+        </div>
+
         {/* QBO connections */}
         <SectionHeading>QuickBooks connections</SectionHeading>
         <div className="mb-8 border-y">
@@ -296,6 +389,12 @@ export function OpsClient({ cronHealth, outboxHealth, qboHealth }: OpsClientProp
       </div>
     </div>
   )
+}
+
+function orgsLabel(group: StuckOutboxHealth["groups"][number]) {
+  const hidden = group.orgCount - group.orgNames.length
+  const label = group.orgNames.join(", ")
+  return hidden > 0 ? `${label} +${hidden} more` : label
 }
 
 function SectionHeading({ children }: { children: React.ReactNode }) {

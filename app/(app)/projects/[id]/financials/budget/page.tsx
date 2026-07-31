@@ -7,6 +7,8 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { Skeleton } from "@/components/ui/skeleton"
 import { getProjectFinancialSetupStatusForProject } from "@/lib/services/project-financial-setup"
 import { loadFinancialsOverviewData } from "../page-data"
+import { listBudgetSnapshots } from "@/lib/services/budgets"
+import { BudgetSnapshotComparison } from "@/components/financials/budget-snapshot-comparison"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -27,10 +29,11 @@ export default async function FinancialsBudgetPage({ params }: PageProps) {
 }
 
 async function FinancialsBudgetData({ id }: { id: string }) {
-  const [{ project, contract }, data, setupStatus] = await Promise.all([
+  const [{ project, contract }, data, setupStatus, snapshots] = await Promise.all([
     loadFinancialsOverviewData(id),
     fetchBudgetTabDataAction(id),
     getProjectFinancialSetupStatusForProject(id),
+    listBudgetSnapshots(id).catch(() => []),
   ])
 
   return (
@@ -60,6 +63,7 @@ async function FinancialsBudgetData({ id }: { id: string }) {
         loadErrors={data.errors}
         budgetTransfers={data.budgetTransfers}
       />
+      <BudgetSnapshotComparison projectId={project.id} snapshots={snapshots as any} />
     </PageLayout>
   )
 }

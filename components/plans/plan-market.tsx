@@ -5,11 +5,18 @@ import { useMemo, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
-import { ExternalLink, Plus } from "@/components/icons"
+import { ExternalLink, MoreHorizontal, Plus } from "@/components/icons"
 import { setCommunityAvailabilityAction } from "@/app/(app)/plans/actions"
 import { centsToDollars } from "@/components/plans/plan-badges"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   Dialog,
   DialogContent,
@@ -123,14 +130,11 @@ export function PlanMarket({
   }
 
   return (
-    <section>
+    <section id="plan-markets" className="scroll-mt-10">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2 px-4 pb-2 pt-3.5">
         <div>
-          <h3 className="text-sm font-medium">Where it sells and where it stands</h3>
-          <p className="text-[11px] text-muted-foreground">
-            Publishing decides which communities may sell this plan and sets the launch price once. Repricing after that
-            is the sales manager&apos;s edit on the community Offering tab.
-          </p>
+          <h3 className="text-sm font-medium">Markets</h3>
+          <p className="text-[11px] text-muted-foreground">{rows.length} community relationships</p>
         </div>
         {canWrite && unpublished.length > 0 ? (
           <Button
@@ -224,24 +228,39 @@ export function PlanMarket({
                   )}
                 </div>
 
-                <div className="flex items-start justify-end gap-1">
-                  <Button asChild variant="ghost" size="sm" className="h-7 rounded-none px-2 text-[11px]">
-                    <Link href={`/communities/${row.communityId}/offering`}>
-                      Reprice
-                      <ExternalLink className="ml-1 h-3 w-3" />
-                    </Link>
-                  </Button>
-                  {canWrite && row.offered ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 rounded-none px-2 text-[11px] text-muted-foreground hover:text-destructive"
-                      disabled={pending}
-                      onClick={() => withdraw(row.communityId, row.communityName)}
-                    >
-                      Withdraw
-                    </Button>
-                  ) : null}
+                <div className="flex items-start justify-end">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 rounded-none"
+                        disabled={pending}
+                        aria-label={`Actions for ${row.communityName}`}
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem asChild>
+                        <Link href={`/communities/${row.communityId}/offering`}>
+                          <ExternalLink className="h-4 w-4" />
+                          Open offering
+                        </Link>
+                      </DropdownMenuItem>
+                      {canWrite && row.offered ? (
+                        <>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            className="text-destructive focus:text-destructive"
+                            onClick={() => withdraw(row.communityId, row.communityName)}
+                          >
+                            Withdraw from market
+                          </DropdownMenuItem>
+                        </>
+                      ) : null}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               </div>
             )

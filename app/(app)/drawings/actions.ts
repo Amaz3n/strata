@@ -36,6 +36,7 @@ import {
   getDraftRevisionStatus,
   getPendingDraftRevision,
   getSheetCalibration,
+  detectSheetVersionScale,
   setSheetVersionCalibration,
   searchSheetContent,
 } from "@/lib/services/drawings"
@@ -77,6 +78,7 @@ import type {
   RevisionDraftStatus,
   PublishRevisionInput,
   SheetCalibration,
+  SheetCalibrationProposal,
   SheetContentMatch,
 } from "@/lib/services/drawings"
 import type {
@@ -118,7 +120,7 @@ import { createRfi } from "@/lib/services/rfis"
 import { createProjectTaskAction } from "@/app/(app)/projects/[id]/actions"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
-import type { UploadReviewSheet } from "./types"
+import type { DraftRevisionSheetPreview, UploadReviewSheet } from "./types"
 
 import { unwrapAction, actionError, type ActionResult  } from "@/lib/action-result"
 
@@ -135,6 +137,61 @@ type TargetDrawingSheet = {
   sheet_number: string
   sheet_title: string | null
   discipline: DrawingDiscipline | null
+}
+
+// ============================================================================
+// PROCESSING PRIORITY
+// ============================================================================
+
+/**
+ * A user just opened a sheet whose tiles aren't rendered yet — move its page
+ * job to the front of the queue and kick a runner. Best-effort: any failure
+ * leaves the job exactly where it was.
+ */
+export async function prioritizeSheetProcessingAction(
+  sheetId: string,
+): Promise<ActionResult<void>> {
+  return run(async () => {
+    const { supabase, orgId } = await requireOrgContext()
+
+    const { data: version } = await supabase
+      .from("drawing_sheet_versions")
+      .select("id, drawing_revision_id, page_index")
+      .eq("org_id", orgId)
+      .eq("drawing_sheet_id", sheetId)
+      .is("tile_manifest", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (!version) return
+
+    await supabase
+      .from("outbox")
+      .update({ priority: 100, run_at: new Date().toISOString() })
+      .eq("org_id", orgId)
+      .eq("job_type", "process_drawing_page")
+      .eq("status", "pending")
+      .contains("payload", {
+        draftRevisionId: version.drawing_revision_id,
+        pageIndex: version.page_index,
+      })
+
+    void triggerDrawingsPipeline()
+  })
+}
+
+/**
+ * Kick the org's takeoff-vector backfill for sheets processed before vector
+ * extraction existed. Coalesced server-side; callers fire-and-forget.
+ */
+export async function ensureDrawingVectorsBackfillAction(): Promise<ActionResult<void>> {
+  return run(async () => {
+    const { orgId } = await requireOrgContext()
+    const { enqueueVectorBackfill } = await import(
+      "@/lib/services/drawings-pipeline"
+    )
+    await enqueueVectorBackfill(orgId)
+  })
 }
 
 // ============================================================================
@@ -989,11 +1046,24 @@ export async function getSheetCalibrationAction(
 }
 
 /**
- * Save two-point scale calibration on a sheet version
+ * Read a sheet's own scale off its PDF now, rather than at upload time.
+ *
+ * Sheets uploaded before scale detection existed carry no proposal; this is
+ * how they get one. Cached on the version, so it runs at most once per sheet.
+ */
+export async function detectSheetVersionScaleAction(
+  sheetVersionId: string
+): Promise<ActionResult<SheetCalibrationProposal | null>> {
+  return run(() => detectSheetVersionScale(sheetVersionId))
+}
+
+/**
+ * Save a sheet version's scale. Also re-measures every markup on that version,
+ * and reports how many changed.
  */
 export async function setSheetVersionCalibrationAction(
   input: SetSheetVersionCalibrationInput
-): Promise<ActionResult<SheetCalibration>> {
+): Promise<ActionResult<SheetCalibration & { recomputed_markups: number }>> {
   return run(async () => {
       const result = await setSheetVersionCalibration(input)
       revalidatePath("/drawings")
@@ -1212,6 +1282,106 @@ export async function getPendingDraftRevisionAction(
 
 export async function getRevisionDiffAction(revisionId: string): Promise<RevisionDiff> {
       return getRevisionDiff(revisionId)
+}
+
+/** A package larger than this shows the first N pages while it processes. */
+const DRAFT_SHEET_PREVIEW_CAP = 400
+
+/**
+ * Pages already split out of an in-flight draft revision, oldest page first.
+ * Deliberately lighter than the full diff: the review dialog polls this every
+ * couple of seconds while processing runs, so it must not touch the live
+ * register.
+ */
+export async function listDraftRevisionSheetsAction(
+  revisionId: string,
+): Promise<ActionResult<DraftRevisionSheetPreview[]>> {
+  return run(async () => {
+    const { supabase, orgId, userId } = await requireOrgContext()
+    await requirePermission("drawing.read", { supabase, orgId, userId })
+    const service = createServiceSupabaseClient()
+
+    const { data, error } = await service
+      .from("drawing_sheet_versions")
+      .select(
+        "id, page_index, thumb_path, thumbnail_url, tile_manifest, drawing_sheets!inner(id, sheet_number, sheet_title)",
+      )
+      .eq("org_id", orgId)
+      .eq("drawing_revision_id", revisionId)
+      .order("page_index", { ascending: true })
+      .limit(DRAFT_SHEET_PREVIEW_CAP)
+
+    if (error) {
+      throw new Error(`Failed to load draft revision sheets: ${error.message}`)
+    }
+
+    return (data ?? []).map((row) => {
+      const version = row as unknown as {
+        id: string
+        page_index: number | null
+        thumb_path: string | null
+        thumbnail_url: string | null
+        tile_manifest: Record<string, unknown> | null
+        drawing_sheets: {
+          id: string
+          sheet_number: string
+          sheet_title: string | null
+        }
+      }
+      return {
+        version_id: version.id,
+        sheet_id: version.drawing_sheets.id,
+        page_index: version.page_index ?? 0,
+        sheet_number: version.drawing_sheets.sheet_number,
+        sheet_title: version.drawing_sheets.sheet_title,
+        thumbnail_url:
+          buildDrawingsImageUrl(version.thumb_path) ?? version.thumbnail_url,
+        tiles_ready: Boolean(version.tile_manifest),
+      }
+    })
+  })
+}
+
+/** How far back the review dialog looks for deleted sheet numbers. */
+const DELETED_SHEET_HISTORY_CAP = 300
+
+/**
+ * Sheet numbers that were deleted from this project's register, newest first.
+ * The revision review uses it to say why a sheet is coming back as new — a
+ * sheet someone deleted last week otherwise reads as deleted data resurrecting.
+ */
+export async function listRecentlyDeletedSheetNumbersAction(
+  projectId: string,
+): Promise<ActionResult<string[]>> {
+  return run(async () => {
+    const { supabase, orgId, userId } = await requireOrgContext()
+    await requirePermission("drawing.read", { supabase, orgId, userId })
+    const service = createServiceSupabaseClient()
+
+    const { data, error } = await service
+      .from("audit_log")
+      .select("before_data")
+      .eq("org_id", orgId)
+      .eq("entity_type", "drawing_sheet")
+      .eq("action", "delete")
+      .eq("before_data->>project_id", projectId)
+      .order("created_at", { ascending: false })
+      .limit(DELETED_SHEET_HISTORY_CAP)
+
+    if (error) {
+      throw new Error(`Failed to load deleted sheet history: ${error.message}`)
+    }
+
+    const sheetNumbers = new Set<string>()
+    for (const row of data ?? []) {
+      const before = (row as { before_data: { sheet_number?: unknown } | null })
+        .before_data
+      const sheetNumber =
+        typeof before?.sheet_number === "string" ? before.sheet_number.trim() : ""
+      if (sheetNumber) sheetNumbers.add(sheetNumber)
+    }
+    return [...sheetNumbers]
+  })
 }
 
 export async function searchSheetContentAction(

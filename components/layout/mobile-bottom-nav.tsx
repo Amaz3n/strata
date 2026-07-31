@@ -292,7 +292,6 @@ export function MobileBottomNav({
         label: "Build",
         items: [
           { title: "Starts", url: "/starts", icon: CalendarDays, isActive: pathname.startsWith("/starts"), requiredAny: ["start.read"] },
-          { title: "My Houses", url: "/my-houses", icon: HardHat, isActive: pathname.startsWith("/my-houses"), requiredAny: ["start.read"] },
           { title: "Warranty", url: "/warranty", icon: ShieldCheck, isActive: pathname.startsWith("/warranty"), requiredAny: ["warranty.read"] },
         ],
       }] : []),

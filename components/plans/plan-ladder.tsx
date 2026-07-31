@@ -15,12 +15,12 @@ import { cn } from "@/lib/utils"
  * horizontal gaps are the sizes nobody is selling.
  */
 
-/** Minimum horizontal separation between columns, as a share of plot width. */
-const MIN_GAP_PCT = 9
 const COLUMN_PX = 56
+const COLUMN_GAP_PX = 24
+const MIN_PLOT_PX = 720
 
 export type LadderRung = PlanLadderRungDto & {
-  cycle_median_days: number | null
+  cycle_median_days?: number | null
 }
 
 type Plotted = {
@@ -60,17 +60,17 @@ function axisLabel(cents: number): string {
 }
 
 /** Spread columns that would otherwise collide, preserving left-to-right order. */
-function deoverlap(positions: number[]): number[] {
+function deoverlap(positions: number[], minimumGapPct: number): number[] {
   const spread = [...positions]
   for (let index = 1; index < spread.length; index += 1) {
-    const minimum = spread[index - 1] + MIN_GAP_PCT
+    const minimum = spread[index - 1] + minimumGapPct
     if (spread[index] < minimum) spread[index] = minimum
   }
   const overflow = spread[spread.length - 1] - 100
   if (overflow > 0) {
     for (let index = spread.length - 1; index >= 0; index -= 1) {
       spread[index] -= overflow
-      if (index > 0 && spread[index] - spread[index - 1] >= MIN_GAP_PCT) break
+      if (index > 0 && spread[index] - spread[index - 1] >= minimumGapPct) break
     }
   }
   return spread
@@ -81,14 +81,21 @@ export function PlanLadder({ rungs }: { rungs: LadderRung[] }) {
   const [hovered, setHovered] = useState<string | null>(null)
   const [showDraft, setShowDraft] = useState(true)
 
-  const { plotted, unplaced, domainMin, domainMax, gridlines } = useMemo(() => {
+  const { plotted, unplaced, domainMin, domainMax, gridlines, plotWidth } = useMemo(() => {
     const placeable = rungs.filter(
       (rung) => rung.heated_sqft != null && rung.base_price_min_cents != null && rung.base_price_max_cents != null,
     )
     const placeableIds = new Set(placeable.map((rung) => rung.id))
     const rest = rungs.filter((rung) => !placeableIds.has(rung.id))
     if (placeable.length === 0) {
-      return { plotted: [] as Plotted[], unplaced: rest, domainMin: 0, domainMax: 0, gridlines: [] as number[] }
+      return {
+        plotted: [] as Plotted[],
+        unplaced: rest,
+        domainMin: 0,
+        domainMax: 0,
+        gridlines: [] as number[],
+        plotWidth: MIN_PLOT_PX,
+      }
     }
 
     const sqfts = placeable.map((rung) => rung.heated_sqft as number)
@@ -100,7 +107,8 @@ export function PlanLadder({ rungs }: { rungs: LadderRung[] }) {
 
     const ordered = [...placeable].sort((a, b) => (a.heated_sqft as number) - (b.heated_sqft as number))
     const rawX = ordered.map((rung) => (((rung.heated_sqft as number) - xLow) / (xHigh - xLow)) * 100)
-    const xs = deoverlap(rawX)
+    const width = Math.max(MIN_PLOT_PX, ordered.length * (COLUMN_PX + COLUMN_GAP_PX))
+    const xs = deoverlap(rawX, ((COLUMN_PX + COLUMN_GAP_PX) / width) * 100)
 
     const values = ordered.flatMap((rung) => {
       const lot = rung.lot_basis_cents
@@ -150,6 +158,7 @@ export function PlanLadder({ rungs }: { rungs: LadderRung[] }) {
       domainMin: min,
       domainMax: max,
       gridlines: lines,
+      plotWidth: width,
     }
   }, [rungs])
 
@@ -196,8 +205,9 @@ export function PlanLadder({ rungs }: { rungs: LadderRung[] }) {
         </div>
       </div>
 
-      <div className="px-4 pb-2 pt-5">
-        <div className="flex">
+      <div className="overflow-x-auto">
+        <div className="px-4 pb-2 pt-5" style={{ minWidth: plotWidth + 80 }}>
+          <div className="flex">
           <div className="relative w-12 shrink-0" style={{ height: 260 }}>
             {gridlines.map((value) => (
               <span
@@ -336,20 +346,21 @@ export function PlanLadder({ rungs }: { rungs: LadderRung[] }) {
           </div>
         </div>
 
-        <div className="relative ml-12 h-12">
-          {plotted.map((item) => (
-            <div
-              key={item.rung.id}
-              className="absolute top-1.5 text-center"
-              style={{ left: `calc(${item.xPct}% - ${COLUMN_PX / 2}px)`, width: COLUMN_PX }}
-            >
-              <p className="truncate font-mono text-[11px] font-medium">{item.rung.code}</p>
-              <p className="truncate text-[10px] text-muted-foreground">{item.rung.name}</p>
-              <p className="text-[10px] tabular-nums text-muted-foreground">
-                {item.rung.heated_sqft?.toLocaleString()} sf
-              </p>
-            </div>
-          ))}
+          <div className="relative ml-12 h-12">
+            {plotted.map((item) => (
+              <div
+                key={item.rung.id}
+                className="absolute top-1.5 text-center"
+                style={{ left: `calc(${item.xPct}% - ${COLUMN_PX / 2}px)`, width: COLUMN_PX }}
+              >
+                <p className="truncate font-mono text-[11px] font-medium">{item.rung.code}</p>
+                <p className="truncate text-[10px] text-muted-foreground">{item.rung.name}</p>
+                <p className="text-[10px] tabular-nums text-muted-foreground">
+                  {item.rung.heated_sqft?.toLocaleString()} sf
+                </p>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 

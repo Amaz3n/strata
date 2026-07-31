@@ -3,6 +3,7 @@ import { NextResponse } from "next/server"
 
 import { findOrgIdByInboundRecipients } from "@/lib/services/payables-email-ingest"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
+import { findProjectByInboundRecipients } from "@/lib/services/project-email-ingest"
 
 /**
  * Resend inbound-email webhook (`email.received`) for the bills address
@@ -82,7 +83,18 @@ export async function POST(request: Request) {
 
   const to = Array.isArray(data.to) ? (data.to as string[]) : typeof data.to === "string" ? [data.to] : []
   const receivedFor = Array.isArray(data.received_for) ? (data.received_for as string[]) : []
-  const org = await findOrgIdByInboundRecipients([...to, ...receivedFor])
+  const recipients = [...to, ...receivedFor]
+  const project = await findProjectByInboundRecipients(recipients)
+  if (project) {
+    await enqueueOutboxJob({
+      orgId: project.orgId,
+      jobType: "process_inbound_project_email",
+      payload: { email_id: emailId, project_id: project.projectId },
+      dedupeByPayloadKeys: ["email_id"],
+    })
+    return NextResponse.json({ received: true, routed: true, route: "project_correspondence" })
+  }
+  const org = await findOrgIdByInboundRecipients(recipients)
   if (!org) {
     // Unknown slug (typo, spam probe). Acknowledge so Resend doesn't retry.
     console.warn("resend-inbound: no org matched recipients", { to, receivedFor })

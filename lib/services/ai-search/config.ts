@@ -169,10 +169,14 @@ export const FINANCIAL_ENTITY_TYPES: SearchEntityType[] = [
   "proposal",
   "pay_application",
   "certified_payroll_report",
+  "takeoff_condition",
 ]
 export const DOCUMENT_ENTITY_TYPES: SearchEntityType[] = ["rfi", "submittal", "spec_section", "meeting", "meeting_transcript", "transmittal", "drawing_set", "drawing_sheet", "file"]
 export const FIELD_ENTITY_TYPES: SearchEntityType[] = ["task", "schedule_item", "daily_log", "punch_item", "photo", "inspection", "safety_incident", "observation", "project_location"]
 export const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
+  change_event: "/projects/{project_id}/change-orders?event={id}",
+  project_email: "/projects/{project_id}/correspondence?email={id}",
+  takeoff_condition: "/projects/{project_id}/drawings?condition={id}",
   warranty_request: "/warranty?request={id}",
   warranty_backcharge: "/warranty?backcharge={id}",
   closing: "/projects/{project_id}/closing",

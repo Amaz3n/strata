@@ -41,9 +41,16 @@ import {
 } from "@/lib/submittal-review-workflow"
 
 const SUBMITTAL_SELECT =
-  "id, org_id, project_id, submittal_number, revision, supersedes_submittal_id, superseded_by_id, title, description, status, spec_section, spec_section_id, submittal_type, due_date, required_on_site, lead_time_days, assigned_company_id, submitted_by_company_id, submitted_by_contact_id, submitted_at, reviewed_by, review_notes, reviewed_at, attachment_file_id, last_item_submitted_at, decision_status, decision_note, decision_by_user_id, decision_by_contact_id, decision_at, decision_via_portal, decision_portal_token_id, current_review_step_id, ball_in_court, stamped_file_id, created_at, updated_at"
+  "id, org_id, project_id, submittal_number, revision, current_revision_id, supersedes_submittal_id, superseded_by_id, title, description, status, spec_section, spec_section_id, submittal_type, due_date, required_on_site, lead_time_days, assigned_company_id, submitted_by_company_id, submitted_by_contact_id, submitted_at, reviewed_by, review_notes, reviewed_at, attachment_file_id, last_item_submitted_at, decision_status, decision_note, decision_by_user_id, decision_by_contact_id, decision_at, decision_via_portal, decision_portal_token_id, current_review_step_id, ball_in_court, stamped_file_id, created_at, updated_at"
 
 const SUBMITTAL_NUMBER_CONFLICT_CONSTRAINT = "submittals_project_id_number_revision_key"
+
+async function ensureFirstClassSubmittalRevision(supabase: SupabaseClient, orgId: string, submittal: Submittal, actorId?: string | null) {
+  const { data: revision, error } = await supabase.from("submittal_revisions").upsert({ org_id: orgId, project_id: submittal.project_id, submittal_id: submittal.id, revision_number: submittal.revision ?? 0, status: submittal.status === "submitted" ? "pending" : submittal.status, attachment_file_id: submittal.attachment_file_id ?? null, stamped_file_id: submittal.stamped_file_id ?? null, submitted_at: submittal.submitted_at ?? null, submitted_by_user_id: actorId ?? null }, { onConflict: "submittal_id,revision_number" }).select("id").single()
+  if (error || !revision) throw new Error(`Failed to create submittal revision: ${error?.message}`)
+  await supabase.from("submittals").update({ current_revision_id: revision.id }).eq("org_id", orgId).eq("id", submittal.id)
+  return revision.id
+}
 const ORG_LIST_CAP = 500
 
 export async function listSubmittals(orgId?: string, projectId?: string): Promise<Submittal[]> {
@@ -198,6 +205,8 @@ export async function createSubmittal({ input, orgId }: { input: SubmittalInput;
     entityId: data.id,
     after: insertPayload,
   })
+
+  await ensureFirstClassSubmittalRevision(supabase, resolvedOrgId, data, userId)
 
   if (payload.attachment_file_id) {
     try {
@@ -457,6 +466,7 @@ async function finalizeSubmittalDecision({
   if (error || !data) {
     throw new Error(`Failed to record submittal decision: ${error?.message}`)
   }
+  if (data.current_revision_id) await supabase.from("submittal_revisions").update({ status: decisionStatus, decision: decisionStatus, decision_notes: decisionNote ?? null, decided_at: decisionAt }).eq("org_id", orgId).eq("id", data.current_revision_id)
 
   // Revise & resubmit puts the ball back in the subcontractor's court.
   if (decisionStatus === "revise_resubmit") {
@@ -554,6 +564,7 @@ export async function resubmitSubmittal({ submittalId, orgId }: { submittalId: s
   if (createError || !created) {
     throw new Error(`Failed to create revision: ${createError?.message}`)
   }
+  await ensureFirstClassSubmittalRevision(supabase, resolvedOrgId, created, userId)
 
   const { error: supersedeError } = await supabase
     .from("submittals")
@@ -1439,7 +1450,7 @@ async function notifyReviewStepAssigned({
       .maybeSingle(),
     supabase
       .from("submittals")
-      .select("id, project_id, submittal_number, revision, title, description, spec_section, due_date, required_on_site, project:projects(name)")
+      .select("id, project_id, submittal_number, revision, current_revision_id, title, description, spec_section, due_date, required_on_site, project:projects(name)")
       .eq("id", submittalId)
       .eq("org_id", orgId)
       .maybeSingle(),
@@ -1468,6 +1479,7 @@ async function notifyReviewStepAssigned({
       const { data: portalToken } = await supabase.from("portal_access_tokens").select("id").eq("org_id", orgId).eq("token", token).maybeSingle()
       if (portalToken) {
         await supabase.from("submittal_review_steps").update({ portal_token_id: portalToken.id }).eq("org_id", orgId).eq("id", stepId)
+        if (submittal.current_revision_id) await supabase.from("portal_access_tokens").update({ scoped_submittal_revision_id: submittal.current_revision_id }).eq("org_id", orgId).eq("id", portalToken.id)
       }
     }
     actionLabel = "Open Review Portal"

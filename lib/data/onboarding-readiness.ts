@@ -9,7 +9,7 @@ export const ONBOARDING_READINESS_ITEMS = [
   ["search", "Global search and bulk indexing"],
   ["notifications", "Notification and email silence"],
   ["navigation_badges", "Navigation badges"],
-  ["my_work", "My Work and My Houses"],
+  ["my_work", "My Work and the Home field band"],
   ["portal_tokens", "Portal token volume"],
   ["events_outbox", "Events, audit, and outbox throughput"],
   ["reports", "Org-wide reports"],

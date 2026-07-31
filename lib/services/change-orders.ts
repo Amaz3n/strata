@@ -1105,6 +1105,8 @@ export type ChangeExposure = {
   pending_cost_cents: number
   proposed_price_cents: number
   approved_contract_delta_cents: number
+  open_event_exposure_cents: number
+  total_uncommitted_exposure_cents: number
   by_lifecycle: Record<ChangeOrderLifecycle, { count: number; cost_cents: number; price_cents: number }>
 }
 
@@ -1119,12 +1121,20 @@ export async function getChangeExposure(projectId: string, orgId?: string): Prom
     resourceType: "project",
     resourceId: projectId,
   })
-  const { data, error } = await supabase
-    .from("change_orders")
-    .select("lifecycle, cost_total_cents, total_cents")
-    .eq("org_id", resolvedOrgId)
-    .eq("project_id", projectId)
-  if (error) throw new Error(`Failed to load change exposure: ${error.message}`)
+  const [{ data, error }, { data: eventRows, error: eventError }] = await Promise.all([
+    supabase
+      .from("change_orders")
+      .select("lifecycle, cost_total_cents, total_cents")
+      .eq("org_id", resolvedOrgId)
+      .eq("project_id", projectId),
+    supabase
+      .from("change_events")
+      .select("rom_cents, latest_price_cents")
+      .eq("org_id", resolvedOrgId)
+      .eq("project_id", projectId)
+      .in("status", ["open", "pricing", "pending_approval"]),
+  ])
+  if (error || eventError) throw new Error(`Failed to load change exposure: ${error?.message ?? eventError?.message}`)
   const stages: ChangeOrderLifecycle[] = ["draft", "pricing", "proposed", "approved", "rejected", "void"]
   const byLifecycle = Object.fromEntries(stages.map((stage) => [stage, { count: 0, cost_cents: 0, price_cents: 0 }])) as ChangeExposure["by_lifecycle"]
   for (const row of data ?? []) {
@@ -1133,10 +1143,17 @@ export async function getChangeExposure(projectId: string, orgId?: string): Prom
     byLifecycle[lifecycle].cost_cents += Number(row.cost_total_cents ?? 0)
     byLifecycle[lifecycle].price_cents += Number(row.total_cents ?? 0)
   }
+  const pendingCostCents = ["draft", "pricing", "proposed"].reduce((sum, stage) => sum + byLifecycle[stage as ChangeOrderLifecycle].cost_cents, 0)
+  const openEventExposureCents = (eventRows ?? []).reduce((sum, event) => {
+    const priced = Number(event.latest_price_cents ?? 0)
+    return sum + (priced > 0 ? priced : Number(event.rom_cents ?? 0))
+  }, 0)
   return {
-    pending_cost_cents: ["draft", "pricing", "proposed"].reduce((sum, stage) => sum + byLifecycle[stage as ChangeOrderLifecycle].cost_cents, 0),
+    pending_cost_cents: pendingCostCents,
     proposed_price_cents: byLifecycle.proposed.price_cents,
     approved_contract_delta_cents: byLifecycle.approved.price_cents,
+    open_event_exposure_cents: openEventExposureCents,
+    total_uncommitted_exposure_cents: pendingCostCents + openEventExposureCents,
     by_lifecycle: byLifecycle,
   }
 }

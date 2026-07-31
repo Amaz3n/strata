@@ -19,6 +19,7 @@ import { recordESignEvent } from "@/lib/services/esign-events"
 import { buildOrgScopedPath, createFilesDownloadUrl, downloadFilesObject, uploadFilesObject } from "@/lib/storage/files-storage"
 import { PRICING_DISPLAY_MODES, type PricingDisplayMode } from "@/lib/validation/estimates"
 import { formatLocalDate } from "@/lib/utils"
+import { buildDrawingsImageUrl } from "@/lib/storage/drawings-urls"
 
 export type EstimateDecision = "approved" | "rejected" | "changes_requested"
 
@@ -474,6 +475,11 @@ export type EstimatePortalLine = {
   is_optional: boolean
   /** Allowance line: included in the total as a placeholder budget. */
   is_allowance: boolean
+  /**
+   * Set when this quantity was measured off the plans AND the builder made the
+   * condition client-visible. Drives the portal's "show me on the plans" link.
+   */
+  takeoff_condition_id: string | null
   /** Computed extended amount (qty × unit + markup). */
   amount_cents: number | null
 }
@@ -536,6 +542,12 @@ function mapEstimatePortalData(
       notes: typeof it.metadata?.notes === "string" ? it.metadata.notes : null,
       is_optional: it.metadata?.is_optional === true,
       is_allowance: it.metadata?.is_allowance === true,
+      // Only a live link is exposed: a detached line's condition no longer
+      // exists, so offering "show me" would open onto nothing.
+      takeoff_condition_id:
+        it.metadata?.takeoff?.detached === true
+          ? null
+          : (it.metadata?.takeoff?.condition_id as string | undefined) ?? null,
       amount_cents: lineAmountCents(it),
     }))
 
@@ -2499,4 +2511,153 @@ export async function addClientEstimateComment(input: {
     entityId: estimate.id,
     payload: { author_type: "client" },
   })
+}
+
+// ---------------------------------------------------------------------------
+// Takeoff evidence ("show me on the plans")
+// ---------------------------------------------------------------------------
+
+/**
+ * The geometry behind one estimate line, for the client portal.
+ *
+ * This is the transparency play: a client taps a line and sees the exact plan
+ * regions the number was measured from. Three things keep it safe:
+ *
+ *   1. The token resolves the estimate. A token from another org resolves to a
+ *      different estimate (or nothing), so it can never reach this one's plans.
+ *   2. The condition must actually be referenced by a line ON THIS ESTIMATE.
+ *   3. The builder must have marked the CONDITION client-visible. Per-markup
+ *      share flags are irrelevant here — the condition setting is the switch,
+ *      so turning one off hides it everywhere at once.
+ *
+ * Only the condition's own geometry is returned. Other markups on the same
+ * sheet — internal notes, other trades' measurements — never leave the server.
+ */
+export type TakeoffEvidenceSheet = {
+  drawing_sheet_id: string
+  sheet_number: string
+  sheet_title: string | null
+  image_url: string | null
+  image_width: number | null
+  image_height: number | null
+  /** Geometry in normalized sheet coordinates, ready for the overlay. */
+  shapes: Array<{
+    id: string
+    type: string
+    points: Array<[number, number]>
+    quantity: number | null
+  }>
+}
+
+export type TakeoffEvidence = {
+  condition_id: string
+  condition_name: string
+  color: string
+  uom: string
+  total_quantity: number
+  sheets: TakeoffEvidenceSheet[]
+}
+
+/** Sheets shown per line. Beyond this the client is scrolling, not verifying. */
+const TAKEOFF_EVIDENCE_SHEET_CAP = 12
+
+export async function loadTakeoffEvidenceByToken(
+  token: string,
+  conditionId: string,
+): Promise<TakeoffEvidence | null> {
+  const supabase = createServiceSupabaseClient()
+  const tokenHash = hashToken(token)
+
+  const { data: estimate } = await supabase
+    .from("estimates")
+    .select("id, org_id, items:estimate_items(id, metadata)")
+    .eq("token_hash", tokenHash)
+    .maybeSingle()
+
+  if (!estimate) return null
+
+  const referenced = ((estimate as any).items ?? []).some(
+    (item: any) => item?.metadata?.takeoff?.condition_id === conditionId,
+  )
+  if (!referenced) return null
+
+  const { data: condition } = await supabase
+    .from("takeoff_conditions")
+    .select("id, name, color, uom, waste_pct, share_with_clients, project_id")
+    .eq("org_id", estimate.org_id)
+    .eq("id", conditionId)
+    .maybeSingle()
+
+  if (!condition || condition.share_with_clients !== true) return null
+
+  const { data: markups } = await supabase
+    .from("drawing_markups")
+    .select(
+      "id, data, quantity, sheet_version_id, drawing_sheet_id, drawing_sheets!inner(id, sheet_number, sheet_title, project_id, current_revision_id)",
+    )
+    .eq("org_id", estimate.org_id)
+    .eq("condition_id", conditionId)
+    .eq("is_private", false)
+    .limit(2000)
+
+  if (!markups || markups.length === 0) return null
+
+  // Only the current revision: a client must never be shown geometry measured
+  // against a superseded sheet as if it were today's plan.
+  const versionIds = Array.from(
+    new Set(markups.map((row: any) => row.sheet_version_id).filter(Boolean)),
+  ) as string[]
+
+  const { data: versions } = versionIds.length
+    ? await supabase
+        .from("drawing_sheet_versions")
+        .select("id, drawing_sheet_id, drawing_revision_id, full_path, full_url, image_width, image_height")
+        .eq("org_id", estimate.org_id)
+        .in("id", versionIds)
+    : { data: [] as any[] }
+
+  const versionById = new Map((versions ?? []).map((v: any) => [v.id as string, v]))
+  const bySheet = new Map<string, TakeoffEvidenceSheet>()
+  let total = 0
+
+  for (const row of markups as any[]) {
+    const sheet = row.drawing_sheets
+    const version = row.sheet_version_id ? versionById.get(row.sheet_version_id) : null
+    if (version && version.drawing_revision_id !== sheet?.current_revision_id) continue
+
+    const points = Array.isArray(row.data?.points) ? row.data.points : []
+    if (points.length === 0) continue
+
+    const quantity = row.quantity === null || row.quantity === undefined ? null : Number(row.quantity)
+    total += quantity ?? 0
+
+    const existing = bySheet.get(row.drawing_sheet_id)
+    const shape = { id: row.id as string, type: String(row.data?.type ?? ""), points, quantity }
+    if (existing) {
+      existing.shapes.push(shape)
+    } else {
+      bySheet.set(row.drawing_sheet_id, {
+        drawing_sheet_id: row.drawing_sheet_id,
+        sheet_number: sheet?.sheet_number ?? "—",
+        sheet_title: sheet?.sheet_title ?? null,
+        image_url: buildDrawingsImageUrl(version?.full_path) ?? version?.full_url ?? null,
+        image_width: version?.image_width ?? null,
+        image_height: version?.image_height ?? null,
+        shapes: [shape],
+      })
+    }
+  }
+
+  if (bySheet.size === 0) return null
+
+  const wasted = total * (1 + Number(condition.waste_pct ?? 0) / 100)
+
+  return {
+    condition_id: condition.id as string,
+    condition_name: condition.name as string,
+    color: condition.color as string,
+    uom: condition.uom as string,
+    total_quantity: Math.round(wasted * 100) / 100,
+    sheets: Array.from(bySheet.values()).slice(0, TAKEOFF_EVIDENCE_SHEET_CAP),
+  }
 }

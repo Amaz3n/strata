@@ -9,7 +9,7 @@ import { triggerDrawingsPipeline } from "@/lib/services/drawings-pipeline-trigge
 import { withCronRun } from "@/lib/services/job-runs"
 
 export const runtime = "nodejs"
-export const maxDuration = 300
+export const maxDuration = 800
 
 const CRON_SECRET = process.env.CRON_SECRET
 
@@ -40,7 +40,7 @@ async function handle(request: NextRequest) {
   // (upload actions, sibling invocations) never block on processing.
   after(async () => {
     try {
-      const summary = await runDrawingsPipeline({ deadlineMs: Date.now() + 270_000 })
+      const summary = await runDrawingsPipeline({ deadlineMs: Date.now() + 770_000 })
       console.log(
         `[drawings-pipeline] Run finished: ${summary.processed} processed, ${summary.failed} failed, ${summary.remaining} remaining`,
       )

@@ -1,7 +1,6 @@
 import { notFound } from "next/navigation"
 
 import { CommunitySettingsForm } from "@/components/communities/community-settings-form"
-import { CommunityStructure } from "@/components/communities/community-structure"
 import { CommunityTeam } from "@/components/communities/community-team"
 import { listCommunityAssignments } from "@/lib/services/community-assignments"
 import { getCommunity } from "@/lib/services/communities"
@@ -11,6 +10,7 @@ import { listTeamMembers } from "@/lib/services/team"
 
 export const dynamic = "force-dynamic"
 
+/** Only what you configure once. Phases and takedowns moved to the Land tab. */
 export default async function CommunitySettingsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const [community, divisions, permissions, assignments, members] = await Promise.all([
@@ -26,9 +26,8 @@ export default async function CommunitySettingsPage({ params }: { params: Promis
   )
 
   return (
-    <div className="space-y-10 p-4">
+    <div className="max-w-3xl space-y-10 p-4">
       <CommunitySettingsForm community={community} divisions={divisions} canWrite={canWrite} />
-      <CommunityStructure community={community} canWrite={canWrite} />
       <CommunityTeam
         communityId={id}
         assignments={assignments}

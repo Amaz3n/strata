@@ -18,6 +18,24 @@ export const LOT_STATUS_META: Record<LotStatus, { label: string; barClass: strin
   closed: { label: "Closed", barClass: "bg-chart-4" },
 }
 
+/**
+ * Statuses a land manager may set by hand. Everything past `developed` is the
+ * consequence of an owning event — a hold on the Sales desk, a release from
+ * Starts, a settlement at closing — so the community workbench reads those but
+ * never sets them.
+ */
+export const LAND_SETTABLE_LOT_STATUSES = ["controlled", "owned", "developed"] as const
+
+/**
+ * The key lots with no phase are grouped under. Shared by the phase counts and
+ * the Land tab that renders them, so the client never imports the service.
+ */
+export const UNPHASED_KEY = "unphased"
+
+export function isLotStatus(value: string | undefined | null): value is LotStatus {
+  return value != null && (LOT_STATUSES as readonly string[]).includes(value)
+}
+
 const STATUS_INDEX = new Map<LotStatus, number>(LOT_STATUSES.map((status, index) => [status, index]))
 
 export function assertLotStatusTransition({

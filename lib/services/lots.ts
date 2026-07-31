@@ -10,11 +10,9 @@ import { requirePermission } from "@/lib/services/permissions"
 import {
   bulkLotPatchSchema,
   createLotsInputSchema,
-  lotListFiltersSchema,
   lotStatusSchema,
   lotUpdateSchema,
   type LotCreateInput,
-  type LotListFilters,
   type LotUpdateInput,
 } from "@/lib/validation/lots"
 
@@ -47,13 +45,6 @@ export interface LotDTO {
   projectId: string | null
   projectName: string | null
   notes: string | null
-}
-
-export interface LotListPage {
-  lots: LotDTO[]
-  total: number
-  page: number
-  pageSize: number
 }
 
 export interface ProjectLotContextDTO {
@@ -98,7 +89,7 @@ function optionalNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
-function mapDimensions(value: Record<string, unknown> | null): LotDimensions {
+export function mapDimensions(value: Record<string, unknown> | null): LotDimensions {
   return {
     widthFt: optionalNumber(value?.width_ft ?? value?.widthFt),
     depthFt: optionalNumber(value?.depth_ft ?? value?.depthFt),
@@ -131,9 +122,19 @@ function mapLot(row: LotRow): LotDTO {
   }
 }
 
-function dimensionsPayload(dimensions: LotCreateInput["dimensions"] | undefined) {
+/**
+ * The column is stored snake_case and carries more than the four measurements —
+ * the lot importer also files city, state, and postal code in here. Spreading
+ * the stored value first keeps those alive; rebuilding the object from the DTO
+ * alone would silently drop them on any dimension edit.
+ */
+function dimensionsPayload(
+  dimensions: LotCreateInput["dimensions"] | undefined,
+  existing?: Record<string, unknown> | null,
+) {
   if (dimensions === undefined) return undefined
   return {
+    ...(existing ?? {}),
     width_ft: dimensions.widthFt,
     depth_ft: dimensions.depthFt,
     acreage: dimensions.acreage,
@@ -141,14 +142,14 @@ function dimensionsPayload(dimensions: LotCreateInput["dimensions"] | undefined)
   }
 }
 
-function lotPayload(input: Partial<LotUpdateInput>) {
+function lotPayload(input: Partial<LotUpdateInput>, existingDimensions?: Record<string, unknown> | null) {
   const patch: Record<string, unknown> = {}
   if (input.lotNumber !== undefined) patch.lot_number = input.lotNumber
   if (input.block !== undefined) patch.block = input.block || null
   if (input.phaseId !== undefined) patch.community_phase_id = input.phaseId
   if (input.status !== undefined) patch.status = input.status
   if (input.address !== undefined) patch.address = input.address || null
-  if (input.dimensions !== undefined) patch.dimensions = dimensionsPayload(input.dimensions)
+  if (input.dimensions !== undefined) patch.dimensions = dimensionsPayload(input.dimensions, existingDimensions)
   if (input.swing !== undefined) patch.swing = input.swing
   if (input.premiumCents !== undefined) patch.premium_cents = input.premiumCents
   if (input.costBasisCents !== undefined) patch.cost_basis_cents = input.costBasisCents
@@ -193,109 +194,8 @@ async function assertCommunityRelations(
   }
 }
 
-export async function listLots(
-  communityId: string,
-  filters: Partial<LotListFilters> = {},
-  orgId?: string,
-): Promise<LotListPage> {
-  const parsed = lotListFiltersSchema.parse(filters)
-  const context = await requireOrgContext(orgId)
-  await requirePermission("community.read", context)
-  await getCommunity(communityId, context.orgId)
-  let query = context.supabase
-    .from("lots")
-    .select(LOT_SELECT, { count: "exact" })
-    .eq("org_id", context.orgId)
-    .eq("community_id", communityId)
-  if (parsed.status) query = query.eq("status", parsed.status)
-  if (parsed.phaseId) query = query.eq("community_phase_id", parsed.phaseId)
-  if (parsed.search) {
-    const safeSearch = parsed.search.replace(/[,%()]/g, " ").trim()
-    if (safeSearch) query = query.or(`lot_number.ilike.%${safeSearch}%,address.ilike.%${safeSearch}%`)
-  }
-  const from = (parsed.page - 1) * parsed.pageSize
-  const to = from + parsed.pageSize - 1
-  const { data, error, count } = await query
-    .order("block", { ascending: true, nullsFirst: true })
-    .order("lot_number", { ascending: true })
-    .range(from, to)
-  if (error) throw new Error(`Failed to list lots: ${error.message}`)
-  return {
-    lots: (data ?? []).map((row) => mapLot(row as LotRow)),
-    total: count ?? 0,
-    page: parsed.page,
-    pageSize: parsed.pageSize,
-  }
-}
-
-/** The plat draws the whole community at once, so it reads every lot — but only
- *  the fields a tile shows, and never more than one screen's worth of dirt. */
-const PLAT_LOT_CAP = 600
 /** The attach-a-home picker is a dropdown; past this it needs a search, not a longer list. */
 const ATTACHABLE_PROJECT_CAP = 500
-
-export interface PlatLotDTO {
-  id: string
-  lotNumber: string
-  block: string | null
-  phaseId: string | null
-  phaseName: string | null
-  takedownId: string | null
-  takedownName: string | null
-  status: LotStatus
-  address: string | null
-  premiumCents: number
-  projectId: string | null
-  projectName: string | null
-  planName: string | null
-  /** Grid position on the community plat. Null means it has never been arranged. */
-  platX: number | null
-  platY: number | null
-}
-
-export interface PlatLots {
-  lots: PlatLotDTO[]
-  total: number
-  truncated: boolean
-}
-
-export async function listLotsForPlat(communityId: string, orgId?: string): Promise<PlatLots> {
-  const context = await requireOrgContext(orgId)
-  await requirePermission("community.read", context)
-  await getCommunity(communityId, context.orgId)
-  const { data, error, count } = await context.supabase
-    .from("lots")
-    .select(
-      "id, lot_number, block, community_phase_id, takedown_id, status, address, premium_cents, project_id, plat_x, plat_y, phase:community_phases(name), project:projects(name), takedown:lot_takedowns(name), plan:house_plans(name)",
-      { count: "exact" },
-    )
-    .eq("org_id", context.orgId)
-    .eq("community_id", communityId)
-    .order("block", { ascending: true, nullsFirst: true })
-    .order("lot_number", { ascending: true })
-    .limit(PLAT_LOT_CAP)
-  if (error) throw new Error(`Failed to load the plat: ${error.message}`)
-  const relation = <T>(value: T | T[] | null): T | null => (Array.isArray(value) ? value[0] ?? null : value)
-  const lots = (data ?? []).map((row) => ({
-    id: row.id as string,
-    lotNumber: row.lot_number as string,
-    block: (row.block as string | null) ?? null,
-    phaseId: (row.community_phase_id as string | null) ?? null,
-    phaseName: relation(row.phase as { name?: string | null } | Array<{ name?: string | null }> | null)?.name ?? null,
-    takedownId: (row.takedown_id as string | null) ?? null,
-    takedownName: relation(row.takedown as { name?: string | null } | Array<{ name?: string | null }> | null)?.name ?? null,
-    status: row.status as LotStatus,
-    address: (row.address as string | null) ?? null,
-    premiumCents: Number(row.premium_cents ?? 0),
-    projectId: (row.project_id as string | null) ?? null,
-    projectName: relation(row.project as { name?: string | null } | Array<{ name?: string | null }> | null)?.name ?? null,
-    planName: relation(row.plan as { name?: string | null } | Array<{ name?: string | null }> | null)?.name ?? null,
-    platX: row.plat_x == null ? null : Number(row.plat_x),
-    platY: row.plat_y == null ? null : Number(row.plat_y),
-  }))
-  const total = count ?? lots.length
-  return { lots, total, truncated: total > lots.length }
-}
 
 /**
  * Persist a plat arrangement. Somebody drags a community's lots into the shape
@@ -449,7 +349,7 @@ export async function updateLot(id: string, input: Partial<LotUpdateInput>, orgI
   await getCommunity(before.community_id, context.orgId)
   await assertCommunityRelations(context.supabase, context.orgId, before.community_id, parsed)
   if (parsed.status) assertLotStatusTransition({ from: before.status, to: parsed.status, hasProject: Boolean(before.project_id) })
-  const { data, error } = await context.supabase.from("lots").update(lotPayload(parsed)).eq("org_id", context.orgId).eq("id", id).select(LOT_SELECT).single()
+  const { data, error } = await context.supabase.from("lots").update(lotPayload(parsed, before.dimensions)).eq("org_id", context.orgId).eq("id", id).select(LOT_SELECT).single()
   if (error) throw new Error(`Failed to update lot: ${error.message}`)
   await logLotMutation({ orgId: context.orgId, userId: context.userId, eventType: "lot.updated", entityId: id, action: "update", before, after: data, payload: { community_id: before.community_id, lot_number: data.lot_number } })
   return mapLot(data as LotRow)

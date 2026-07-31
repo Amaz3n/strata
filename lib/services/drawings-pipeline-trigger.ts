@@ -14,10 +14,13 @@ interface TriggerResult {
 }
 
 function resolveAppBaseUrl(): string | null {
+  // Dev first: NEXT_PUBLIC_APP_URL often points at a tunnel (ngrok) that may
+  // be dead, and a failed kick silently strands local pipeline work on the
+  // production cron. The local server is the one running this code — kick it.
+  if (process.env.NODE_ENV !== "production") return "http://localhost:3000"
   const explicit = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL
   if (explicit?.trim()) return explicit.trim().replace(/\/$/, "")
   if (process.env.VERCEL_URL?.trim()) return `https://${process.env.VERCEL_URL.trim()}`.replace(/\/$/, "")
-  if (process.env.NODE_ENV !== "production") return "http://localhost:3000"
   return null
 }
 

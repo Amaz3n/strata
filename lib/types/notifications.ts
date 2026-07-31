@@ -17,6 +17,8 @@ export type NotificationType =
   | "change_order_created"
   | "change_order_published"
   | "change_order_approved"
+  | "change_event_rfq_invite"
+  | "change_event_rfq_response"
   | "invoice_created"
   | "invoice_updated"
   | "invoice_sent"
@@ -100,8 +102,24 @@ export type NotificationType =
   | "warranty_visit_completed"
   | "warranty_backcharge_disputed"
   | "warranty_sla_breached"
+  | "scheduled_report_ready"
 
 export const EMAIL_NOTIFICATION_TYPES = [
+  {
+    key: "change_event_rfq_invite",
+    label: "Change-event RFQ invite",
+    description: "Email subcontractors when a pricing request is sent.",
+  },
+  {
+    key: "change_event_rfq_response",
+    label: "Change-event RFQ response",
+    description: "Email me when a subcontractor responds to a pricing request.",
+  },
+  {
+    key: "scheduled_report_ready",
+    label: "Scheduled report delivery",
+    description: "Email scheduled report files when they are ready.",
+  },
   {
     key: "warranty_visit_assigned",
     label: "Warranty visit assigned",

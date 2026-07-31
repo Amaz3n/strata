@@ -17,6 +17,30 @@ const {
   assertBillingPeriodStatusAllowsEdit,
   assertBillingPeriodStatusAllowsInvoice,
 } = require("../lib/financials/billing-period-rules")
+const { compareForecastSnapshotLines, distributeForecastAcrossMonths } = require("../lib/financials/forecasting")
+
+test("forecast snapshot comparison and time phasing preserve integer-cent totals", () => {
+  assert.deepEqual(compareForecastSnapshotLines(
+    [{ cost_code_id: "a", cost_code: "03", adjusted_budget_cents: 10000 }],
+    [{ cost_code_id: "a", cost_code: "03", estimate_at_completion_cents: 13500 }, { cost_code_id: "b", cost_code: "09", estimate_at_completion_cents: 2500 }],
+  ).map((line) => line.variance_cents), [3500, 2500])
+  for (const curve of ["linear", "front_loaded", "back_loaded"]) {
+    const phased = distributeForecastAcrossMonths({ start: "2026-01-15", end: "2026-04-02", amount_cents: 10001, curve })
+    assert.equal(Object.values(phased).reduce((sum, cents) => sum + cents, 0), 10001)
+  }
+})
+
+test("parity financial gates are registered at their enforcement points", () => {
+  const bills = fs.readFileSync(path.join(__dirname, "../lib/services/vendor-bills.ts"), "utf8")
+  const holds = fs.readFileSync(path.join(__dirname, "../lib/services/payment-holds.ts"), "utf8")
+  const changes = fs.readFileSync(path.join(__dirname, "../lib/services/change-events.ts"), "utf8")
+  assert.match(bills, /evaluateHolds\(billId/)
+  assert.match(bills, /Payment is on hold/)
+  assert.match(holds, /fundingReceived/)
+  assert.match(holds, /payment_hold_overridden/)
+  assert.match(changes, /convertChangeEventToChangeOrder/)
+  assert.match(changes, /change_event_converted/)
+})
 
 test("fixed-price projects cannot create approved-cost invoices", () => {
   assert.throws(
@@ -147,8 +171,11 @@ test("cost-plus guardrails cover locked costs, direct change orders, manual adju
 
 test("reconciliation report has a real route and trust center stays retired", () => {
   const reconciliationSource = fs.readFileSync(path.join(__dirname, "../lib/services/reports/reconciliation.ts"), "utf8")
-  const reconciliationPage = fs.readFileSync(
-    path.join(__dirname, "../app/(app)/projects/[id]/reports/reconciliation/page.tsx"),
+  // Reports are registry-driven: the slug in lib/reports/definitions/financial.ts
+  // is what makes /projects/[id]/reports/reconciliation resolve.
+  const financialDefinitions = fs.readFileSync(path.join(__dirname, "../lib/reports/definitions/financial.ts"), "utf8")
+  const projectReportRoute = fs.readFileSync(
+    path.join(__dirname, "../app/(app)/projects/[id]/reports/[slug]/page.tsx"),
     "utf8",
   )
   const trustCenterPage = fs.readFileSync(
@@ -158,7 +185,9 @@ test("reconciliation report has a real route and trust center stays retired", ()
   const projectNav = fs.readFileSync(path.join(__dirname, "../components/layout/project-nav-items.ts"), "utf8")
 
   assert.match(reconciliationSource, /incurred_billable_tieout/)
-  assert.match(reconciliationPage, /ReconciliationReportView/)
+  assert.match(financialDefinitions, /slug: "reconciliation"/)
+  assert.match(financialDefinitions, /getProjectReconciliationReport/)
+  assert.match(projectReportRoute, /getReportDefinition/)
   // Trust Center was deliberately removed from nav (navigation-scopes refactor);
   // its route must stay a redirect into the reconciliation report.
   assert.match(trustCenterPage, /redirect\(/)

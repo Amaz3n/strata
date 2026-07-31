@@ -4,18 +4,31 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { requireAnyPermissionGuard } from "@/lib/auth/guards"
 import { Skeleton } from "@/components/ui/skeleton"
 import { OpsClient } from "@/components/admin/ops-client"
-import { getCronHealth, getOutboxHealth, getQboConnectionHealth } from "@/lib/services/ops"
+import {
+  getCronHealth,
+  getOutboxHealth,
+  getQboConnectionHealth,
+  listStuckOutboxJobs,
+} from "@/lib/services/ops"
 
 export const dynamic = "force-dynamic"
 
 async function OpsData() {
-  const [cronHealth, outboxHealth, qboHealth] = await Promise.all([
+  const [cronHealth, outboxHealth, stuckHealth, qboHealth] = await Promise.all([
     getCronHealth(),
     getOutboxHealth(),
+    listStuckOutboxJobs(),
     getQboConnectionHealth(),
   ])
 
-  return <OpsClient cronHealth={cronHealth} outboxHealth={outboxHealth} qboHealth={qboHealth} />
+  return (
+    <OpsClient
+      cronHealth={cronHealth}
+      outboxHealth={outboxHealth}
+      stuckHealth={stuckHealth}
+      qboHealth={qboHealth}
+    />
+  )
 }
 
 export default async function OpsPage() {
@@ -45,8 +58,8 @@ function OpsSkeleton() {
         <Skeleton className="h-5 w-16" />
         <Skeleton className="h-8 w-24" />
       </div>
-      <div className="grid grid-cols-2 gap-px border-b bg-border sm:grid-cols-5">
-        {Array.from({ length: 5 }).map((_, i) => (
+      <div className="grid grid-cols-2 gap-px border-b bg-border sm:grid-cols-3 lg:grid-cols-6">
+        {Array.from({ length: 6 }).map((_, i) => (
           <div key={i} className="bg-card px-4 py-4">
             <Skeleton className="h-3 w-20" />
             <Skeleton className="mt-2 h-7 w-10" />

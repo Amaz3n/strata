@@ -183,6 +183,9 @@ export const TEAM_PERMISSION_OPTIONS: PermissionOption[] = [
   { key: "inspection.write", label: "Run inspections", category: "Field Operations" },
   { key: "safety.read", label: "View safety incidents", category: "Field Operations" },
   { key: "safety.write", label: "Record safety incidents & observations", category: "Field Operations" },
+  { key: "quick_capture.create", label: "Use field quick capture", category: "Field Operations" },
+  { key: "forms.read", label: "View structured forms", category: "Field Operations" },
+  { key: "forms.write", label: "Manage structured forms", category: "Field Operations" },
   { key: "warranty.read", label: "View warranty requests", category: "Field Operations" },
   { key: "warranty.write", label: "Manage warranty requests and visits", category: "Field Operations" },
   { key: "warranty.manage", label: "Manage warranty coverage and SLAs", category: "Field Operations" },
@@ -194,6 +197,9 @@ export const TEAM_PERMISSION_OPTIONS: PermissionOption[] = [
   { key: "commitment.write", label: "Manage commitments", category: "Financials" },
   { key: "commitment.approve", label: "Approve commitments", category: "Financials" },
   { key: "change_order.approve", label: "Approve change orders", category: "Financials" },
+  { key: "change_events.read", label: "View change events", category: "Financials" },
+  { key: "change_events.write", label: "Manage change events and RFQs", category: "Financials" },
+  { key: "change_events.convert", label: "Convert change events", category: "Financials" },
   { key: "invoice.read", label: "View invoices", category: "Financials" },
   { key: "invoice.write", label: "Create/edit invoices", category: "Financials" },
   { key: "invoice.approve", label: "Approve invoices", category: "Financials" },
@@ -202,6 +208,7 @@ export const TEAM_PERMISSION_OPTIONS: PermissionOption[] = [
   { key: "bill.write", label: "Create/edit bills", category: "Financials" },
   { key: "bill.approve", label: "Approve bills", category: "Financials" },
   { key: "payment.release", label: "Release payments", category: "Financials" },
+  { key: "payments.override_hold", label: "Override payment holds", category: "Financials" },
   { key: "draw.approve", label: "Approve draws", category: "Financials" },
   { key: "sov.write", label: "Edit schedule of values", category: "Financials" },
   { key: "payapp.write", label: "Manage pay applications", category: "Financials" },
@@ -218,6 +225,10 @@ export const TEAM_PERMISSION_OPTIONS: PermissionOption[] = [
   { key: "signature.read", label: "View signatures", category: "Business Ops" },
   { key: "signature.send", label: "Send signatures", category: "Business Ops" },
   { key: "report.read", label: "View reports", category: "Business Ops" },
+  { key: "report.schedule", label: "Schedule report delivery", category: "Business Ops" },
+  { key: "report.export.manage", label: "Manage report export tokens", category: "Business Ops" },
+  { key: "correspondence.read", label: "View project correspondence", category: "Documents & Sharing" },
+  { key: "correspondence.write", label: "Manage project correspondence", category: "Documents & Sharing" },
 ]
 
 const CUSTOMIZABLE_PERMISSION_KEYS = new Set(TEAM_PERMISSION_OPTIONS.map((option) => option.key))

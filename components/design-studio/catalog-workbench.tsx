@@ -35,7 +35,6 @@ interface Props {
   catalog: CatalogDto
   matrix: PlanPricingMatrix
   communityId?: string
-  communities: Array<{ id: string; name: string }>
   canManage: boolean
 }
 
@@ -44,7 +43,7 @@ function money(cents: number | null | undefined) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(cents / 100)
 }
 
-export function CatalogWorkbench({ catalog, matrix, communityId, communities, canManage }: Props) {
+export function CatalogWorkbench({ catalog, matrix, communityId, canManage }: Props) {
   const router = useRouter()
   const [view, setView] = useState<View>("grid")
   const [categoryId, setCategoryId] = useState(catalog.categories[0]?.id ?? "")
@@ -127,26 +126,23 @@ export function CatalogWorkbench({ catalog, matrix, communityId, communities, ca
   return (
     <StudioShell
       active="catalog"
-      communityId={communityId}
-      communities={communities}
       action={
-        <div className="flex items-center gap-1.5">
-          <Button
-            size="sm"
-            variant={view === "grid" ? "default" : "outline"}
-            className="h-8 rounded-none"
-            onClick={() => setView("grid")}
-          >
-            Grid
-          </Button>
-          <Button
-            size="sm"
-            variant={view === "pricing" ? "default" : "outline"}
-            className="h-8 rounded-none"
-            onClick={() => setView("pricing")}
-          >
-            Pricing
-          </Button>
+        // A view toggle, not a primary action — it borrows the tab vocabulary
+        // rather than the brand colour, which belongs to things that mutate.
+        <div className="flex items-center border border-border" role="group" aria-label="Catalog view">
+          {(["grid", "pricing"] as const).map((key) => (
+            <button
+              key={key}
+              type="button"
+              aria-pressed={view === key}
+              onClick={() => setView(key)}
+              className={`px-3 py-1 text-[12.5px] capitalize transition-colors ${
+                view === key ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {key}
+            </button>
+          ))}
         </div>
       }
     >

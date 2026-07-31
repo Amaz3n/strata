@@ -83,6 +83,14 @@
     {
       "path": "/api/jobs/warranty-sla-sweep",
       "schedule": "5 * * * *"
+    },
+    {
+      "path": "/api/jobs/forecast-snapshots",
+      "schedule": "15 4 * * *"
+    },
+    {
+      "path": "/api/jobs/report-schedules",
+      "schedule": "0 * * * *"
     }
   ],
   "functions": {
@@ -93,7 +101,7 @@
       "maxDuration": 300
     },
     "app/api/jobs/drawings-pipeline/route.ts": {
-      "maxDuration": 300
+      "maxDuration": 800
     },
     "app/api/jobs/specs-pipeline/route.ts": {
       "maxDuration": 300
@@ -148,6 +156,12 @@
     },
     "app/api/jobs/warranty-sla-sweep/route.ts": {
       "maxDuration": 120
+    },
+    "app/api/jobs/forecast-snapshots/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/jobs/report-schedules/route.ts": {
+      "maxDuration": 300
     }
   }
 }

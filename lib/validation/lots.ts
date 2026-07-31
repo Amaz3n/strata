@@ -47,9 +47,16 @@ export const bulkLotPatchSchema = z.object({
 export const lotRangeSchema = z.object({
   fromNumber: z.number().int().min(0),
   toNumber: z.number().int().min(0),
-  prefix: z.string().trim().max(20).optional(),
+  block: z.string().trim().max(40).optional().nullable(),
   phaseId: z.string().uuid().optional().nullable(),
   takedownId: z.string().uuid().optional().nullable(),
+  status: lotStatusValueSchema.default("controlled"),
+  street: z.string().trim().max(200).optional().nullable(),
+  addressFrom: z.number().int().min(0).optional().nullable(),
+  addressStep: z.number().int().min(1).max(100).default(1),
+  widthFt: z.number().positive().optional().nullable(),
+  depthFt: z.number().positive().optional().nullable(),
+  costBasisCents: z.number().int().min(0).optional().nullable(),
 }).refine((value) => value.toNumber >= value.fromNumber, {
   message: "The ending lot number must be greater than or equal to the starting number.",
   path: ["toNumber"],
@@ -63,14 +70,5 @@ export const lotStatusSchema = z.object({
   force: z.boolean().default(false),
 })
 
-export const lotListFiltersSchema = z.object({
-  page: z.number().int().positive().default(1),
-  pageSize: z.number().int().min(1).max(100).default(100),
-  status: lotStatusValueSchema.optional(),
-  phaseId: z.string().uuid().optional(),
-  search: z.string().trim().max(100).optional(),
-})
-
 export type LotCreateInput = z.infer<typeof lotCreateSchema>
 export type LotUpdateInput = z.infer<typeof lotUpdateSchema>
-export type LotListFilters = z.infer<typeof lotListFiltersSchema>

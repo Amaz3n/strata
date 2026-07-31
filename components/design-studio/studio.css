@@ -3,97 +3,222 @@
    hairlines and type all come from the global tokens, so light and dark mode
    are handled once, in one place. Nothing here defines a colour of its own.
 
-   The three tokens below are the exception, and they are derivations rather
-   than new colours: the runway needs tinted fills for time pressure, and the
-   global palette ships the semantic hues without background variants. */
+   The tokens below are the exception, and they are derivations rather than new
+   colours: the runway needs tinted fills for time pressure, and the global
+   palette ships the semantic hues without background variants. The `-band`
+   pair are the weakest of them — wide regions need far less saturation than a
+   chip does to read as the same state. */
 
 .studio {
   --studio-late: var(--destructive);
   --studio-late-bg: color-mix(in oklab, var(--destructive) 12%, var(--card));
+  --studio-late-band: color-mix(in oklab, var(--destructive) 8%, var(--card));
   --studio-soon: var(--warning);
   --studio-soon-bg: color-mix(in oklab, var(--warning) 14%, var(--card));
   --studio-done: var(--success);
   --studio-done-bg: color-mix(in oklab, var(--success) 12%, var(--card));
 }
 
-/* ===== Runway ===== */
+/* ===== Runway =====
 
-/* Height is set inline from the number of rows a lane had to pack into. */
-.studio-track {
-  position: relative;
-  background-image: repeating-linear-gradient(
-    to right,
-    var(--border) 0 1px,
-    transparent 1px 25%
-  );
+   Selection groups down the side, time-to-cutoff across the top. Fixed layout
+   so the columns stay comparable between lanes; the whole table scrolls
+   sideways rather than crushing a column below the width of a lot label. */
+
+.studio-matrix {
+  width: 100%;
+  min-width: 1000px;
+  border-collapse: collapse;
+  table-layout: fixed;
 }
 
-.studio-today {
-  position: absolute;
-  inset-block: 0;
-  width: 2px;
-  background: var(--primary);
+.studio-matrix th,
+.studio-matrix td {
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  vertical-align: top;
 }
 
-.studio-gutter {
-  position: absolute;
-  inset-block: 0;
-  left: 0;
-  background: var(--studio-late-bg);
+.studio-matrix th:last-child,
+.studio-matrix td:last-child {
+  border-right: 0;
+}
+
+.studio-matrix thead th {
+  padding: 8px 10px;
+  border-bottom-color: var(--line-strong);
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+.studio-matrix-corner,
+.studio-matrix-lane {
+  width: 180px;
+}
+
+.studio-matrix-lane {
+  padding: 10px 12px;
+  text-align: left;
+  font-weight: 400;
+  background: var(--muted);
+}
+
+.studio-matrix thead th[data-tone="late"] {
+  color: var(--studio-late);
+}
+
+.studio-matrix thead th[data-tone="soon"] {
+  color: var(--studio-soon);
+}
+
+/* Only the bucket that is actually broken gets a fill. "No cutoff date" is a
+   data gap rather than a deadline, so it reads as inert rather than urgent. */
+.studio-matrix td[data-tone="late"] {
+  background: var(--studio-late-band);
+}
+
+.studio-matrix td[data-tone="none"] {
+  background: var(--muted);
+}
+
+.studio-col-count {
+  float: right;
+  color: var(--foreground);
+}
+
+.studio-matrix td {
+  padding: 7px;
 }
 
 .studio-chip {
-  position: absolute;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 5px 9px 5px 5px;
+  position: relative;
+  display: block;
+  padding: 5px 7px 7px;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--line-strong);
   background: var(--card);
-  border: 1px solid var(--line-strong);
   color: var(--foreground);
-  white-space: nowrap;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.studio-chip + .studio-chip {
+  margin-top: 5px;
 }
 
 .studio-chip:hover,
 .studio-chip:focus-visible {
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px color-mix(in oklab, var(--foreground) 18%, transparent);
-  z-index: 2;
+  background: var(--muted);
+  border-color: var(--line-strong);
 }
 
 .studio-chip[data-state="overdue"] {
-  border-color: var(--studio-late);
-  background: var(--studio-late-bg);
-  color: var(--studio-late);
+  border-left-color: var(--studio-late);
 }
 
 .studio-chip[data-state="due_soon"] {
-  border-color: var(--studio-soon);
-  background: var(--studio-soon-bg);
-  color: var(--studio-soon);
+  border-left-color: var(--studio-soon);
 }
 
+/* No date resolved is not a deadline that passed — it must not borrow the
+   vocabulary of one. A dashed edge says "we could not compute this". */
 .studio-chip[data-state="unresolved"] {
-  border-style: dashed;
+  border-left-style: dashed;
+  border-left-color: var(--line-strong);
+}
+
+/* Last, so it wins: a late group with everything chosen is paperwork, not a
+   buyer who has not come in. They must not look the same. */
+.studio-chip[data-complete="true"] {
+  border-left-color: var(--studio-done);
+}
+
+.studio-chip-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.studio-chip-meta {
+  display: block;
+  margin-top: 1px;
+  font-size: 10.5px;
   color: var(--muted-foreground);
 }
 
-.studio-chip[data-dimmed="true"] {
-  opacity: 0.25;
+/* How much of this group the buyer has actually decided, read as a fill rather
+   than a glyph — the number above it says the same thing in words. */
+.studio-chip-bar {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--border);
 }
 
-/* Completion ring: how much of this group the buyer has actually decided.
-   A late chip with a full ring is paperwork; a late chip with an empty ring is
-   a buyer who has not come in. They must not look the same. */
-.studio-ring {
-  width: 20px;
-  height: 20px;
+.studio-chip-bar::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: calc(var(--studio-progress) * 100%);
+  background: var(--muted-foreground);
+}
+
+.studio-chip[data-complete="true"] .studio-chip-bar::after {
+  background: var(--studio-done);
+}
+
+.studio-cell-more {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  padding: 3px 0;
+  font-size: 10.5px;
+  color: var(--muted-foreground);
+  text-align: left;
+}
+
+.studio-cell-more:hover {
+  color: var(--foreground);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.studio-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 20px 14px;
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+}
+
+.studio-legend-mark {
+  display: inline-block;
   flex: none;
-  border-radius: 50%;
-  background: conic-gradient(currentColor calc(var(--studio-progress) * 360deg), transparent 0);
-  -webkit-mask: radial-gradient(circle, transparent 5.5px, #000 6px);
-  mask: radial-gradient(circle, transparent 5.5px, #000 6px);
+  margin-left: 8px;
+}
+
+.studio-legend-mark[data-mark="bar"] {
+  width: 22px;
+  height: 2px;
+  background: linear-gradient(
+    to right,
+    var(--muted-foreground) 0 60%,
+    var(--border) 60% 100%
+  );
+}
+
+.studio-legend-mark[data-mark="dashed"] {
+  width: 0;
+  height: 13px;
+  border-left: 2px dashed var(--line-strong);
 }
 
 .studio-counter {
@@ -114,10 +239,47 @@
   background: var(--muted);
 }
 
+/* The value carries the counter's own hue, and only while there is something
+   to act on — a zero is not a warning. The active state tints to match, so
+   filtering to "ready to sign" never paints the desk with the late colour. */
+.studio-counter-value {
+  color: var(--foreground);
+}
+
+.studio-counter[data-live="false"] .studio-counter-value {
+  color: var(--muted-foreground);
+}
+
+.studio-counter[data-tone="late"][data-live="true"] .studio-counter-value {
+  color: var(--studio-late);
+}
+
+.studio-counter[data-tone="soon"][data-live="true"] .studio-counter-value {
+  color: var(--studio-soon);
+}
+
+.studio-counter[data-tone="none"][data-live="true"] .studio-counter-value {
+  color: var(--studio-done);
+}
+
 .studio-counter[data-active="true"] {
+  background: var(--muted);
+  box-shadow: inset 0 -2px 0 var(--foreground);
+}
+
+.studio-counter[data-tone="late"][data-active="true"] {
   background: var(--studio-late-bg);
   box-shadow: inset 0 -2px 0 var(--studio-late);
-  color: var(--studio-late);
+}
+
+.studio-counter[data-tone="soon"][data-active="true"] {
+  background: var(--studio-soon-bg);
+  box-shadow: inset 0 -2px 0 var(--studio-soon);
+}
+
+.studio-counter[data-tone="none"][data-active="true"] {
+  background: var(--studio-done-bg);
+  box-shadow: inset 0 -2px 0 var(--studio-done);
 }
 
 /* ===== Selection sheet ===== */
@@ -146,13 +308,12 @@
   border: 1px solid var(--border);
   background: var(--card);
   text-align: left;
-  transition: box-shadow 0.15s ease, transform 0.15s ease;
+  transition: border-color 0.15s ease;
 }
 
 .studio-option:hover:not(:disabled),
 .studio-option:focus-visible {
-  transform: translateY(-2px);
-  box-shadow: 0 3px 10px color-mix(in oklab, var(--foreground) 16%, transparent);
+  border-color: var(--line-strong);
 }
 
 .studio-option[data-picked="true"] {
@@ -275,10 +436,5 @@
   .studio-land,
   .studio-tick {
     animation: none;
-  }
-
-  .studio-chip:hover,
-  .studio-option:hover:not(:disabled) {
-    transform: none;
   }
 }

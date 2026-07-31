@@ -826,6 +826,7 @@ export interface PortalAccessToken {
   contact_id?: string | null
   company_id?: string | null      // For sub portals
   scoped_rfi_id?: string | null
+  scoped_change_event_rfq_id?: string | null
   token: string
   name: string
   portal_type: PortalType         // Explicit portal type
@@ -1597,6 +1598,7 @@ export interface Submittal {
   submittal_number: number
   display_number?: string
   revision: number
+  current_revision_id?: string | null
   supersedes_submittal_id?: string | null
   superseded_by_id?: string | null
   title: string

@@ -20,6 +20,7 @@ import {
   assignCommunityMember,
   removeCommunityAssignment,
 } from "@/lib/services/community-assignments"
+import { listCommunityInventoryLotIds } from "@/lib/services/community-inventory"
 import { logCommunityTraffic } from "@/lib/services/community-traffic"
 import {
   attachProjectToLot,
@@ -46,6 +47,7 @@ import {
   createLotsInputSchema,
   lotRangeSchema,
   lotStatusSchema,
+  lotStatusValueSchema,
   lotUpdateSchema,
 } from "@/lib/validation/lots"
 
@@ -82,7 +84,11 @@ export async function removeCommunityAssignmentAction(id: string) {
 
 export async function logCommunityTrafficAction(input: unknown) {
   const parsed = communityTrafficInputSchema.parse(input)
-  return run(() => logCommunityTraffic(parsed), ["/communities", `/communities/${parsed.communityId}`])
+  return run(() => logCommunityTraffic(parsed), [
+    "/communities",
+    `/communities/${parsed.communityId}`,
+    `/communities/${parsed.communityId}/offering`,
+  ])
 }
 
 export async function createCommunityPhaseAction(communityId: string, input: unknown) {
@@ -118,13 +124,32 @@ export async function createLotsAction(communityId: string, input: unknown) {
 export async function createLotRangeAction(communityId: string, input: unknown) {
   return run(() => {
     const parsed = lotRangeSchema.parse(input)
-    const lots = expandLotRange(parsed).map((lot) => ({ ...lot, status: "controlled" as const, dimensions: {}, swing: "either" as const, premiumCents: 0 }))
+    // Swing and premium genuinely vary lot to lot, so they stay inspector edits
+    // rather than a value applied to a whole range.
+    const lots = expandLotRange(parsed).map((lot) => ({ ...lot, swing: "either" as const, premiumCents: 0 }))
     return createLots(z.string().uuid().parse(communityId), { lots })
   }, [`/communities/${communityId}`])
 }
 
 export async function updateLotAction(id: string, communityId: string, input: unknown) {
   return run(() => updateLot(z.string().uuid().parse(id), lotUpdateSchema.parse(input)), [`/communities/${communityId}`])
+}
+
+const inventorySelectionSchema = z.object({
+  status: lotStatusValueSchema.optional(),
+  phaseId: z.string().uuid().optional(),
+  search: z.string().trim().max(60).optional(),
+})
+
+/**
+ * The ids behind "select all matching". The inventory table pages, so without
+ * this a bulk edit could only ever reach the hundred rows on screen — and
+ * re-phasing a release tranche is exactly the edit that spans pages.
+ */
+export async function listMatchingLotIdsAction(communityId: string, input: unknown) {
+  return run(() =>
+    listCommunityInventoryLotIds(z.string().uuid().parse(communityId), inventorySelectionSchema.parse(input)),
+  )
 }
 
 export async function bulkUpdateLotsAction(communityId: string, input: unknown) {

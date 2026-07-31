@@ -27,6 +27,12 @@ interface ChangeOrderFormProps {
   budgetLines?: BudgetLineOption[]
   costCodesEnabled?: boolean
   changeOrder?: ChangeOrder | null
+  /**
+   * Seeds a NEW change order (ignored when editing). Used by deep links that
+   * arrive with the reason already known — e.g. a takeoff quantity that moved
+   * after a drawing revision.
+   */
+  initialDraft?: { title?: string | null; notes?: string | null } | null
 }
 
 type LineDraft = {
@@ -100,6 +106,7 @@ export function ChangeOrderForm({
   budgetLines = [],
   costCodesEnabled = true,
   changeOrder,
+  initialDraft,
 }: ChangeOrderFormProps) {
   const [title, setTitle] = useState("")
   const [daysImpact, setDaysImpact] = useState("")
@@ -197,8 +204,11 @@ export function ChangeOrderForm({
       )
     } else if (open) {
       reset()
+      // A deep link knows why the CO exists; the human still writes the rest.
+      if (initialDraft?.title) setTitle(initialDraft.title)
+      if (initialDraft?.notes) setNotes(initialDraft.notes)
     }
-  }, [open, changeOrder])
+  }, [open, changeOrder, initialDraft])
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()

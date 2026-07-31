@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
+import type { PaymentHoldEvaluation } from "@/lib/services/payment-holds"
 import type { BudgetLineOption, ComplianceRules, ComplianceStatusSummary, CostCode } from "@/lib/types"
 import {
   getPayablesAccountingContextAction,
@@ -50,6 +51,7 @@ export function ProjectPayablesClient({
   complianceStatusByCompanyId,
   toolbarLeading,
   fullBleed = false,
+  holdEvaluations = {},
 }: {
   projectId: string
   vendorBills: VendorBillSummary[]
@@ -61,6 +63,7 @@ export function ProjectPayablesClient({
   complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>
   toolbarLeading?: ReactNode
   fullBleed?: boolean
+  holdEvaluations?: Record<string, PaymentHoldEvaluation>
 }) {
   const router = useRouter()
   const [, startTransition] = useTransition()
@@ -312,6 +315,7 @@ export function ProjectPayablesClient({
         complianceRules={complianceRules}
         complianceStatusByCompanyId={complianceStatusByCompanyId}
         onChanged={() => router.refresh()}
+        holdEvaluations={holdEvaluations}
       />
 
       <AlertDialog open={Boolean(deleteBill)} onOpenChange={(open) => !open && setDeleteBill(null)}>

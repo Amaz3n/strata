@@ -314,13 +314,6 @@ function buildWorkspaceGroups(
             },
             homesItem,
             {
-              title: "My Houses",
-              url: "/my-houses",
-              icon: HardHat,
-              isActive: pathname.startsWith("/my-houses"),
-              requiredAny: ["start.read"],
-            },
-            {
               title: "Warranty",
               url: "/warranty",
               icon: ShieldCheck,

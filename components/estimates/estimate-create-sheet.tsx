@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Calendar } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { Receipt, CalendarDays, ChevronsUpDown, Trash2, Plus, LayoutGrid, ImageIcon, X, ChevronUp, ChevronDown, Loader2 } from "@/components/icons"
+import { Receipt, CalendarDays, ChevronsUpDown, Trash2, Plus, LayoutGrid, ImageIcon, X, ChevronUp, ChevronDown, Loader2, Ruler, ExternalLink } from "@/components/icons"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { uploadEstimatePhotoAction } from "@/app/(app)/estimates/actions"
@@ -34,6 +34,12 @@ type LineDraft = {
   is_optional: boolean
   is_allowance: boolean
   source_bid_submission_id?: string
+  /**
+   * Provenance from other surfaces (today: `takeoff`). Carried verbatim so
+   * editing an estimate never severs a synced line from the measurement it
+   * came from — a severed line would resync as a duplicate.
+   */
+  metadata?: Record<string, any>
 }
 
 type PhotoDraft = { path: string; url: string; caption: string }
@@ -54,6 +60,7 @@ export type EstimateTemplateOption = {
     cost_code_id?: string | null
     is_optional?: boolean | null
     is_allowance?: boolean | null
+    metadata?: Record<string, any> | null
   }>
 }
 
@@ -83,6 +90,7 @@ export type EstimateSheetInitial = {
     cost_code_id?: string | null
     is_optional?: boolean | null
     is_allowance?: boolean | null
+    metadata?: Record<string, any> | null
   }>
 }
 
@@ -162,6 +170,7 @@ export function EstimateCreateSheet({
           cost_code_id: line.cost_code_id ?? undefined,
           is_optional: line.is_optional ?? false,
           is_allowance: line.is_allowance ?? false,
+          metadata: line.metadata ?? undefined,
         }))
       : [newLine()]
 
@@ -383,6 +392,7 @@ export function EstimateCreateSheet({
         is_optional: line.item_type === "group" ? undefined : line.is_optional,
         is_allowance: line.item_type === "group" ? undefined : line.is_allowance,
         source_bid_submission_id: line.item_type === "group" ? undefined : line.source_bid_submission_id,
+        metadata: line.metadata,
       })),
     }
 
@@ -657,6 +667,7 @@ export function EstimateCreateSheet({
 
                     return (
                       <div key={idx} className={cn("border bg-muted/20 p-3 space-y-3", line.is_optional && "border-primary/40 bg-primary/5")}>
+                        <TakeoffLineBadge line={line} projectId={projectId} />
                         {/* Row 1: reorder · description · qty · unit cost */}
                         <div className="flex items-end gap-2">
                           {Reorder}
@@ -875,5 +886,59 @@ export function EstimateCreateSheet({
         </form>
       </SheetContent>
     </Sheet>
+  )
+}
+
+/**
+ * "This number was measured, not typed."
+ *
+ * Shown on any line carrying `metadata.takeoff`, with a deep link back to the
+ * drawings viewer in takeoff mode with the condition armed. If the quantity has
+ * since been hand-edited, the badge says so — otherwise a re-sync would look
+ * like it lost someone's change.
+ */
+function TakeoffLineBadge({
+  line,
+  projectId,
+}: {
+  line: LineDraft
+  projectId: string
+}) {
+  const takeoff = line.metadata?.takeoff as
+    | { condition_id?: string; measured_quantity?: number; uom?: string; detached?: boolean }
+    | undefined
+  if (!takeoff?.condition_id) return null
+
+  const measured = Number(takeoff.measured_quantity ?? 0)
+  const current = Number(line.quantity) || 0
+  const handEdited = Math.abs(current - measured) > 0.005
+  const unit = (takeoff.uom ?? "").toUpperCase()
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-[11px]">
+      <span className="inline-flex items-center gap-1 text-muted-foreground">
+        <Ruler className="h-3 w-3" />
+        Measured{" "}
+        <span className="tabular-nums">
+          {measured.toLocaleString("en-US", { maximumFractionDigits: 1 })} {unit}
+        </span>
+      </span>
+      {takeoff.detached ? (
+        <span className="text-muted-foreground">Takeoff condition deleted</span>
+      ) : handEdited ? (
+        <span className="text-warning">Edited since the takeoff</span>
+      ) : null}
+      {projectId && !takeoff.detached && (
+        <a
+          href={`/projects/${projectId}/drawings?condition=${takeoff.condition_id}`}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-0.5 text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+        >
+          Show on plans
+          <ExternalLink className="h-2.5 w-2.5" />
+        </a>
+      )}
+    </div>
   )
 }
