@@ -80,9 +80,15 @@ export interface Plan3dPanelProps {
    * Null means the source is ready and the button is live.
    */
   blockedReason?: string | null
+  /**
+   * Fill the page instead of the workbench's fixed 560px band. The dedicated
+   * model route is a viewer, not a panel — the model gets every pixel the
+   * layout has.
+   */
+  fill?: boolean
 }
 
-export function Plan3dPanel({ target, title, status, canWrite, planId, blockedReason }: Plan3dPanelProps) {
+export function Plan3dPanel({ target, title, status, canWrite, planId, blockedReason, fill = false }: Plan3dPanelProps) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [record, setRecord] = useState<FloorplanModelDto | null>(status)
@@ -251,7 +257,7 @@ export function Plan3dPanel({ target, title, status, canWrite, planId, blockedRe
   const hasGeometry = !!model && model.levels.some((item) => item.walls.length > 0)
 
   return (
-    <section id="plan-3d" className="border-t border-border">
+    <section id="plan-3d" className={cn("border-t border-border", fill && "flex min-h-0 flex-1 flex-col")}>
       <header className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-6">
         <div className="flex items-center gap-2">
           <Box className="h-4 w-4 text-muted-foreground" />
@@ -351,7 +357,7 @@ export function Plan3dPanel({ target, title, status, canWrite, planId, blockedRe
         </div>
       ) : null}
 
-      <div className="h-[560px] border-t border-border">
+      <div className={cn("border-t border-border", fill ? "min-h-0 flex-1" : "h-[560px]")}>
         {loadError && !model ? (
           <EmptyState
             icon={<AlertTriangle className="h-5 w-5 text-warning" />}

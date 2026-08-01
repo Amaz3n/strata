@@ -12,7 +12,6 @@ import { listVendorBillsForProject } from "@/lib/services/vendor-bills"
 import { getProjectBuyoutStatus } from "@/lib/services/bids"
 import { getComplianceRules } from "@/lib/services/compliance"
 import { getCompaniesComplianceStatus } from "@/lib/services/compliance-documents"
-import { upsertProjectOwnComplianceDocument } from "@/lib/services/project-own-compliance"
 import {
   createManualBillableAdjustment,
   generateInvoiceFromCosts,
@@ -404,23 +403,6 @@ export async function generateOwnerBillingPackageAction(input: { projectId: stri
       revalidatePath(`/projects/${input.projectId}/financials/review`)
       revalidatePath(`/projects/${input.projectId}/financials/receivables`)
       return summarizeOwnerBillingPackage(pkg)
-  })
-}
-
-export async function saveProjectOwnComplianceAction(input: {
-  projectId: string
-  documentTypeId: string
-  fileId: string
-  effectiveDate?: string | null
-  expiryDate?: string | null
-  policyNumber?: string | null
-  carrierName?: string | null
-  coverageAmountCents?: number | null
-}) {
-  return run(async () => {
-    const document = await upsertProjectOwnComplianceDocument(input)
-    revalidatePath(`/projects/${input.projectId}/financials/receivables`)
-    return document
   })
 }
 

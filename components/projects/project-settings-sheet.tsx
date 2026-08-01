@@ -31,7 +31,9 @@ import {
 } from "@/components/projects/project-financial-setup-fields"
 import { DistributionListManager } from "@/components/projects/distribution-list-manager"
 import { ProjectLocationsManager } from "@/components/locations/project-locations-manager"
+import { ProjectComplianceManager } from "@/components/projects/project-compliance-manager"
 import { listLocationsAction } from "@/app/(app)/projects/[id]/locations/actions"
+import { listProjectComplianceAction, type ProjectComplianceSettings } from "@/app/(app)/projects/[id]/actions"
 import { getCostCodingSettingsAction } from "@/app/(app)/settings/cost-coding/actions"
 import type { ProjectLocation } from "@/lib/services/locations"
 import { listProjectQboClassesAction, searchProjectQboCustomersAction, createProjectQboCustomerAction } from "@/app/(app)/projects/actions"
@@ -145,6 +147,8 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
   const [requireSubtierWaivers, setRequireSubtierWaivers] = useState<boolean>(project.require_subtier_waivers ?? false)
   const [moduleOverrides, setModuleOverrides] = useState<Record<string, boolean>>(project.module_overrides ?? {})
   const [projectLocations, setProjectLocations] = useState<ProjectLocation[]>([])
+  // null until the fetch resolves, so the manager can show a loading row instead of a false "none yet".
+  const [projectCompliance, setProjectCompliance] = useState<ProjectComplianceSettings | null>(null)
   const [pendingModuleKey, setPendingModuleKey] = useState<ProjectModuleKey | null>(null)
   const [financialSetup, setFinancialSetup] = useState<FinancialSetupValue>(() => financialSetupFromProject(project, contract))
   const [orgCostCodesDefault, setOrgCostCodesDefault] = useState(true)
@@ -220,6 +224,18 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
     listLocationsAction(project.id, true)
       .then((locations) => { if (!cancelled) setProjectLocations(locations) })
       .catch(() => { if (!cancelled) setProjectLocations([]) })
+    return () => { cancelled = true }
+  }, [open, project.id])
+
+  useEffect(() => {
+    if (!open) {
+      setProjectCompliance(null)
+      return
+    }
+    let cancelled = false
+    listProjectComplianceAction(project.id)
+      .then((compliance) => { if (!cancelled) setProjectCompliance(compliance) })
+      .catch(() => { if (!cancelled) setProjectCompliance({ documents: [], documentTypes: [] }) })
     return () => { cancelled = true }
   }, [open, project.id])
 
@@ -938,6 +954,8 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
                 </div>
                 <Switch id="require-subtier-waivers" checked={requireSubtierWaivers} onCheckedChange={setRequireSubtierWaivers} className="mt-0.5 shrink-0" />
               </div>
+
+              <ProjectComplianceManager projectId={project.id} compliance={projectCompliance} />
 
               <div className="border-t pt-5">
                 <DistributionListManager projectId={project.id} contacts={contacts} />

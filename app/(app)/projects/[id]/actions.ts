@@ -87,6 +87,12 @@ import {
   removeDistributionMember,
 } from "@/lib/services/distribution-lists"
 import { addDistributionMemberSchema } from "@/lib/validation/distribution-lists"
+import { listComplianceDocumentTypes } from "@/lib/services/compliance-documents"
+import {
+  listProjectOwnComplianceDocuments,
+  upsertProjectOwnComplianceDocument,
+  type ProjectOwnComplianceDocument,
+} from "@/lib/services/project-own-compliance"
 
 async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   try {
@@ -254,6 +260,39 @@ export async function setProjectModuleOverrideAction(
     const updated = await setProjectModuleOverride({ projectId, moduleKey, enabled })
     revalidatePath(`/projects/${projectId}`)
     return updated
+  })
+}
+
+export interface ProjectComplianceSettings {
+  documents: ProjectOwnComplianceDocument[]
+  documentTypes: { id: string; name: string; has_expiry: boolean }[]
+}
+
+export async function listProjectComplianceAction(projectId: string): Promise<ProjectComplianceSettings> {
+  const [documents, types] = await Promise.all([
+    listProjectOwnComplianceDocuments(projectId),
+    listComplianceDocumentTypes(),
+  ])
+  return {
+    documents,
+    documentTypes: types.map((type) => ({ id: type.id, name: type.name, has_expiry: type.has_expiry })),
+  }
+}
+
+export async function saveProjectComplianceDocumentAction(input: {
+  projectId: string
+  documentTypeId: string
+  fileId: string
+  effectiveDate?: string | null
+  expiryDate?: string | null
+  policyNumber?: string | null
+  carrierName?: string | null
+  coverageAmountCents?: number | null
+}) {
+  return run(async () => {
+    const document = await upsertProjectOwnComplianceDocument(input)
+    revalidatePath(`/projects/${input.projectId}`)
+    return document
   })
 }
 

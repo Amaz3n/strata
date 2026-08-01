@@ -57,6 +57,7 @@ export default async function ProjectFloorplanModelPage({
         title={project.name}
         status={record}
         canWrite={canWrite}
+        fill
       />
     </PageLayout>
   )
