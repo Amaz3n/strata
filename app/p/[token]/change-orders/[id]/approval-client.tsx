@@ -78,10 +78,10 @@ function lineAmount(line: NonNullable<ChangeOrder["lines"]>[number]) {
 function StatusNotice({ changeOrder }: { changeOrder: ChangeOrder }) {
   if (changeOrder.status === "approved") {
     return (
-      <div className="flex items-start gap-2.5 border border-emerald-500/30 bg-emerald-500/5 p-3">
-        <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" />
+      <div className="flex items-start gap-2.5 border border-success/30 bg-success/5 p-3">
+        <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-success" />
         <div className="text-sm">
-          <p className="font-semibold text-emerald-700">Approved</p>
+          <p className="font-semibold text-success">Approved</p>
           <p className="text-muted-foreground">
             {changeOrder.approved_at ? `Approved on ${formatDate(changeOrder.approved_at)}` : "This change order is complete."}
           </p>
@@ -92,10 +92,10 @@ function StatusNotice({ changeOrder }: { changeOrder: ChangeOrder }) {
 
   if (changeOrder.status === "requested_changes") {
     return (
-      <div className="flex items-start gap-2.5 border border-amber-500/30 bg-amber-500/5 p-3">
-        <MessageSquare className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+      <div className="flex items-start gap-2.5 border border-warning/30 bg-warning/5 p-3">
+        <MessageSquare className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
         <div className="text-sm">
-          <p className="font-semibold text-amber-700">Changes requested</p>
+          <p className="font-semibold text-warning">Changes requested</p>
           <p className="text-muted-foreground">Your builder has the note and can revise this change order.</p>
         </div>
       </div>
@@ -142,7 +142,7 @@ function ChangeOrderDocumentView({
                 <p className="text-base font-semibold leading-none">{org?.name ?? "Arc"}</p>
               </div>
             </div>
-            <p className="text-xs font-semibold uppercase leading-none tracking-[0.18em] text-blue-600">
+            <p className="text-xs font-semibold uppercase leading-none tracking-[0.18em] text-primary">
               Change Order
               {changeOrder.co_number ? <span className="text-foreground/70"> · {changeOrder.co_number}</span> : null}
             </p>
@@ -195,7 +195,7 @@ function ChangeOrderDocumentView({
           ) : null}
 
           <div className="mt-8">
-            <div className="flex items-baseline justify-between border-b border-blue-600 pb-2">
+            <div className="flex items-baseline justify-between border-b border-primary pb-2">
               <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
                 Cost breakdown
               </span>
@@ -251,9 +251,9 @@ function ChangeOrderDocumentView({
             </div>
           ) : null}
 
-          <div className="mt-6 flex items-center justify-between border-t-2 border-blue-600 pt-5">
+          <div className="mt-6 flex items-center justify-between border-t-2 border-primary pt-5">
             <span className="text-sm font-semibold uppercase tracking-[0.1em] text-muted-foreground">Total change</span>
-            <span className="text-2xl font-bold tracking-tight text-blue-600 tabular-nums sm:text-3xl">
+            <span className="text-2xl font-bold tracking-tight text-primary tabular-nums sm:text-3xl">
               {money(changeOrder.total_cents)}
             </span>
           </div>
@@ -355,7 +355,7 @@ export function ChangeOrderApprovalClient({ token, changeOrder, org, project }: 
         <CardContent className="space-y-5 p-5">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Total change</p>
-            <p className="mt-1 text-3xl font-bold tracking-tight text-blue-600 tabular-nums">{money(changeOrder.total_cents)}</p>
+            <p className="mt-1 text-3xl font-bold tracking-tight text-primary tabular-nums">{money(changeOrder.total_cents)}</p>
             {project?.name ? <p className="mt-1 text-xs text-muted-foreground">{project.name}</p> : null}
           </div>
 
@@ -474,7 +474,7 @@ export function ChangeOrderApprovalClient({ token, changeOrder, org, project }: 
               ) : (
                 <div className="grid grid-cols-2 gap-2">
                   <Button
-                    className="h-16 flex-col gap-1.5 border-emerald-500/40 bg-emerald-950 text-emerald-400 hover:bg-emerald-900"
+                    className="h-16 flex-col gap-1.5 border-success/40 bg-success text-success-foreground hover:bg-success/90"
                     onClick={() => setSignatureOpen(true)}
                   >
                     <PenLine className="h-5 w-5" />

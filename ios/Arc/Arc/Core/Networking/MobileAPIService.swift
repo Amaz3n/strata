@@ -190,13 +190,19 @@ final class MobileAPIService {
             organizationID: organizationID
         )
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        let fileData = try Data(contentsOf: fileURL, options: .mappedIfSafe)
+
+        // Photos are resampled before they leave the device; the server would
+        // downscale them anyway, and full-resolution originals are the single
+        // biggest thing the field app pushes over a job-site connection.
+        let downscaled = PhotoUploadDownscaler.downscale(fileURL: fileURL, fileName: fileName)
+        let fileData = try downscaled?.data ?? Data(contentsOf: fileURL, options: .mappedIfSafe)
+
         var body = Data()
         body.appendMultipartField(name: "client_id", value: clientID.uuidString, boundary: boundary)
         body.appendMultipartFile(
             name: "file",
-            fileName: fileName,
-            mimeType: mimeType,
+            fileName: downscaled?.fileName ?? fileName,
+            mimeType: downscaled?.mimeType ?? mimeType,
             data: fileData,
             boundary: boundary
         )

@@ -13,6 +13,7 @@ import {
   Contact,
   CreditCard,
   FolderOpen,
+  FileSpreadsheet,
   HardHat,
   Home,
   LogOut,
@@ -35,6 +36,7 @@ import type { ProductTier } from "@/lib/product-tier"
 import { terminology } from "@/lib/terminology"
 import { cn } from "@/lib/utils"
 import { useSidebarProjects } from "./use-sidebar-projects"
+import { useNavigationBadges } from "./navigation-badge-context"
 import {
   buildProjectNavGroups,
   getProjectIdFromPath,
@@ -45,17 +47,13 @@ import {
 
 interface MobileBottomNavProps {
   user?: User | null
-  pipelineBadgeCount?: number
-  myWorkBadgeCount?: number
-  readyToBillBadgeCount?: number
-  projectReviewBadgeCounts?: Record<string, number>
   canAccessPlatform?: boolean
   permissions?: string[]
-  whatsNewUnreadCount?: number
   productTier?: ProductTier
   showProductionNavigation?: boolean
   showPipelineNavigation?: boolean
   showPurchasingNavigation?: boolean
+  booksEnabled?: boolean
 }
 
 type NavSubItem = ProjectNavSubItem
@@ -101,18 +99,21 @@ function toMobileNavItem(item: ProjectNavItem): NavItem | null {
 
 export function MobileBottomNav({
   user,
-  pipelineBadgeCount,
-  myWorkBadgeCount,
-  readyToBillBadgeCount,
-  projectReviewBadgeCounts = {},
   canAccessPlatform,
   permissions = [],
-  whatsNewUnreadCount = 0,
   productTier = "residential",
   showProductionNavigation = false,
   showPipelineNavigation = true,
   showPurchasingNavigation = false,
+  booksEnabled = false,
 }: MobileBottomNavProps) {
+  const {
+    pipelineBadgeCount,
+    myWorkBadgeCount,
+    readyToBillBadgeCount,
+    projectReviewBadgeCounts,
+    whatsNewUnreadCount,
+  } = useNavigationBadges()
   const pathname = useOptimisticPathname()
   const searchParams = useSearchParams()
   const { action } = useMobileAction()
@@ -328,11 +329,18 @@ export function MobileBottomNav({
             isActive: pathname.startsWith("/directory"),
             requiredAny: ["directory.read", "directory.write"],
           },
+          ...(booksEnabled ? [{
+            title: "Books",
+            url: "/books",
+            icon: FileSpreadsheet,
+            isActive: pathname.startsWith("/books"),
+            requiredAny: ["books.read"],
+          }] : []),
         ],
       },
     ]
     return { primary: workspacePrimary, menuSections: workspaceMenu }
-  }, [pathname, projectId, isProject, section, currentProject, projectReviewBadgeCounts, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, productTier, showProductionNavigation, showPipelineNavigation, showPurchasingNavigation])
+  }, [pathname, projectId, isProject, section, currentProject, projectReviewBadgeCounts, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, productTier, showProductionNavigation, showPipelineNavigation, showPurchasingNavigation, booksEnabled])
 
   const visiblePrimary = useMemo(
     () =>

@@ -446,8 +446,8 @@ export function SubmittalsClient({ submittals, projects, companies, initialSubmi
           </TableHeader>
           <TableBody>
             {filtered.map((submittal) => (
-              <TableRow 
-                key={submittal.id} 
+              <TableRow
+                key={submittal.id}
                 className="group cursor-pointer hover:bg-muted/30 h-[64px]"
                 onClick={() => handleSubmittalClick(submittal)}
               >

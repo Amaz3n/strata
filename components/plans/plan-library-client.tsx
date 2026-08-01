@@ -1,9 +1,12 @@
 "use client"
 
 import Link from "next/link"
-import { useMemo, useState } from "react"
+import { useMemo, useState, useTransition } from "react"
+import { toast } from "sonner"
 
-import { AlertTriangle, Home, ImageIcon, Search } from "@/components/icons"
+import { interpretAllActivePlansAction } from "@/app/(app)/floorplan/actions"
+import { AlertTriangle, Box, Home, ImageIcon, Loader2, Search } from "@/components/icons"
+import { HashImage } from "@/components/files/hash-image"
 import { NewPlanSheet } from "@/components/plans/new-plan-sheet"
 import { PlanStatusBadge } from "@/components/plans/plan-badges"
 import { Button } from "@/components/ui/button"
@@ -12,7 +15,9 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import type { DivisionDTO } from "@/lib/services/divisions"
 import type { CommunityListItemDTO } from "@/lib/services/communities"
+import type { FloorplanModelDto } from "@/lib/services/floorplan-models"
 import type { PlanAttentionDto, PlanLadderRungDto } from "@/lib/services/house-plans"
+import { unwrapAction } from "@/lib/action-result"
 import { MARGIN_BAND_META, grossMarginPct, marginBand } from "@/lib/plans/margin"
 import { cn } from "@/lib/utils"
 
@@ -81,26 +86,21 @@ function PlanThumb({ rung }: { rung: PlanLadderRungDto }) {
       </div>
     )
   }
-  return (
-    /* eslint-disable-next-line @next/next/no-img-element -- files are streamed through an authenticated org-scoped route, not a static asset host */
-    <img
-      src={`/api/files/${fileId}/raw`}
-      alt=""
-      className="h-12 w-16 shrink-0 border object-cover"
-      loading="lazy"
-    />
-  )
+  return <HashImage fileId={fileId} alt="" sizes="64px" className="h-12 w-16 shrink-0 border" />
 }
 
 export function PlanLibraryClient({
   rungs,
   divisions,
   communities,
+  floorplanModels,
   canWrite,
 }: {
   rungs: PlanLadderRungDto[]
   divisions: DivisionDTO[]
   communities: CommunityListItemDTO[]
+  /** 3D model status keyed by released edition id. */
+  floorplanModels: Map<string, FloorplanModelDto>
   canWrite: boolean
 }) {
   const [query, setQuery] = useState("")
@@ -131,6 +131,7 @@ export function PlanLibraryClient({
   const attentionCounts = useMemo(() => buildAttentionCounts(rungs), [rungs])
 
   const createControl = canWrite ? <NewPlanSheet divisions={divisions} /> : null
+  const modelControl = canWrite ? <InterpretAllButton /> : null
 
   if (rungs.length === 0) {
     return (
@@ -237,7 +238,10 @@ export function PlanLibraryClient({
             {filtered.length === 1 ? "1 plan" : `${filtered.length} plans`}
           </span>
         </div>
-        {createControl}
+        <div className="flex items-center gap-2">
+          {modelControl}
+          {createControl}
+        </div>
       </div>
 
       {filtered.length === 0 ? (
@@ -343,7 +347,10 @@ export function PlanLibraryClient({
                       hint={`${rung.lots_building} building · ${rung.lots_closed} closed`}
                     />
                   </div>
-                  <div className="col-start-2 flex justify-start xl:col-auto xl:justify-end">
+                  <div className="col-start-2 flex items-center justify-start gap-2 xl:col-auto xl:justify-end">
+                    <ModelChip
+                      model={rung.released_version_id ? (floorplanModels.get(rung.released_version_id) ?? null) : null}
+                    />
                     <PlanStatusBadge status={rung.status} />
                   </div>
                 </Link>
@@ -353,6 +360,76 @@ export function PlanLibraryClient({
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * Where each plan stands on having a walkable model.
+ *
+ * Only published means a buyer can see it, so that is the only state drawn in
+ * full contrast; drafts and failures read as work, not as a feature.
+ */
+function ModelChip({ model }: { model: FloorplanModelDto | null }) {
+  if (!model) return null
+  const label =
+    model.status === "published"
+      ? "3D"
+      : model.status === "processing"
+        ? "3D queued"
+        : model.status === "failed"
+          ? "3D failed"
+          : "3D draft"
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 border px-1.5 py-0.5 text-[10px]",
+        model.status === "published"
+          ? "border-success/50 bg-success/10 text-success"
+          : model.status === "failed"
+            ? "border-border bg-muted text-muted-foreground"
+            : "border-border bg-muted text-muted-foreground",
+      )}
+      title={model.error ?? undefined}
+    >
+      <Box className="h-3 w-3" />
+      {label}
+    </span>
+  )
+}
+
+/**
+ * Bulk interpretation.
+ *
+ * Editions that already carry human corrections are skipped by the service
+ * rather than force-run, and the toast says how many — a library-wide button
+ * that quietly destroyed a morning's review work would be used exactly once.
+ */
+function InterpretAllButton() {
+  const [pending, startTransition] = useTransition()
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      className="h-8 gap-1.5 rounded-none text-xs"
+      disabled={pending}
+      onClick={() =>
+        startTransition(async () => {
+          try {
+            const result = unwrapAction(await interpretAllActivePlansAction())
+            toast.success(
+              result.queued === 0
+                ? "Every active plan already has a current model"
+                : `Interpreting ${result.queued} ${result.queued === 1 ? "plan" : "plans"}${result.skipped > 0 ? ` · ${result.skipped} skipped` : ""}`,
+            )
+          } catch (error) {
+            toast.error(error instanceof Error ? error.message : "Could not queue interpretation")
+          }
+        })
+      }
+    >
+      {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Box className="h-3.5 w-3.5" />}
+      Interpret 3D models
+    </Button>
   )
 }
 

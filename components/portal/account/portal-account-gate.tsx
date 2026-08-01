@@ -89,7 +89,7 @@ export function PortalAccountGate({
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,hsl(var(--primary)/0.12),transparent_40%),linear-gradient(135deg,hsl(var(--muted)/0.3),transparent_60%)]" />
           <div className="relative space-y-6">
             <Badge variant="outline" className="w-fit border-primary/30 bg-primary/10 text-primary">
-              {tokenType === "bid" ? "Bid portal invite" : "Project portal invite"}
+              {tokenType === "bid" ? "Invitation to bid" : "Project invitation"}
             </Badge>
             <div className="space-y-3">
               <h1 className="max-w-xl text-3xl font-semibold tracking-tight sm:text-4xl">{title}</h1>
@@ -123,10 +123,7 @@ export function PortalAccountGate({
 
         <Card className="w-full">
           <CardHeader>
-            <div className="flex items-center justify-between gap-2">
-              <CardTitle className="text-xl">{title}</CardTitle>
-              <Badge variant="outline">{tokenType === "bid" ? "Bid portal" : "Project portal"}</Badge>
-            </div>
+            <CardTitle className="text-xl">{title}</CardTitle>
             <p className="text-sm text-muted-foreground">{description}</p>
           </CardHeader>
           <CardContent className="space-y-4">

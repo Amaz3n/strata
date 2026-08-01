@@ -263,6 +263,81 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     return uniqUserIds((memberships ?? []).map((row: any) => row.user_id)).filter((id) => id !== actorId)
   }
 
+  const paymentSecurityEvents = new Set([
+    "funding_source_review_requested",
+    "funding_source_change_approved",
+    "funding_source_change_rejected",
+    "funding_source_activated",
+    "funding_source_activation_failed",
+    // A vendor mapping their global payout entity onto one of this builder's
+    // company records is the moment a future payment's destination is decided.
+    // The people who own the rail see it, even though they do not approve it.
+    "vendor_payment_relationship_claimed",
+  ])
+  if (paymentSecurityEvents.has(event.event_type)) {
+    const { data: roleRows } = await supabase.from("role_permissions")
+      .select("role_id")
+      .in("permission_key", ["payments.manage_rail", "payments.approve_run"])
+    const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
+    if (roleIds.length === 0) return []
+    const { data: memberships } = await supabase.from("memberships")
+      .select("user_id")
+      .eq("org_id", orgId)
+      .eq("status", "active")
+      .in("role_id", roleIds)
+    return uniqUserIds((memberships ?? []).map((row) => row.user_id)).filter((id) => id !== actorId)
+  }
+
+  const paymentOperationalEvents = new Set([
+    "payment_run_execution_failed",
+    "vendor_payment_returned",
+    "payment_reconciliation_completed",
+  ])
+  if (paymentOperationalEvents.has(event.event_type)) {
+    const permissionKeys = event.event_type === "payment_reconciliation_completed"
+      ? ["payment.reconcile"]
+      : ["payment.release", "payment.reconcile"]
+    const { data: roleRows } = await supabase.from("role_permissions").select("role_id").in("permission_key", permissionKeys)
+    const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
+    if (roleIds.length === 0) return []
+    const { data: memberships } = await supabase.from("memberships").select("user_id").eq("org_id", orgId).eq("status", "active").in("role_id", roleIds)
+    return uniqUserIds((memberships ?? []).map((row) => row.user_id)).filter((id) => id !== actorId)
+  }
+
+  if (event.event_type === "accounting_reconciliation_drift") {
+    const { data: roleRows } = await supabase
+      .from("role_permissions")
+      .select("role_id")
+      .eq("permission_key", "books.reconcile")
+    const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
+    if (roleIds.length === 0) return []
+    const { data: memberships } = await supabase
+      .from("memberships")
+      .select("user_id")
+      .eq("org_id", orgId)
+      .eq("status", "active")
+      .in("role_id", roleIds)
+    return uniqUserIds((memberships ?? []).map((row) => row.user_id)).filter((id) => id !== actorId)
+  }
+
+  const paymentRunEvents = new Set([
+    "payment_run_submitted",
+    "payment_run_approval_recorded",
+    "payment_run_approved",
+    "payment_run_rejected",
+  ])
+  if (paymentRunEvents.has(event.event_type) && event.entity_id) {
+    if (event.event_type !== "payment_run_submitted") {
+      const { data: run } = await supabase.from("payment_runs").select("requested_by").eq("org_id", orgId).eq("id", event.entity_id).maybeSingle()
+      return run?.requested_by && run.requested_by !== actorId ? [run.requested_by] : []
+    }
+    const { data: roleRows } = await supabase.from("role_permissions").select("role_id").eq("permission_key", "payments.approve_run")
+    const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
+    if (roleIds.length === 0) return []
+    const { data: memberships } = await supabase.from("memberships").select("user_id").eq("org_id", orgId).eq("status", "active").in("role_id", roleIds)
+    return uniqUserIds((memberships ?? []).map((row) => row.user_id)).filter((id) => id !== actorId)
+  }
+
   const projectScopedEvents = new Set<string>([
     "task_created",
     "task_updated",
@@ -906,6 +981,8 @@ function titleForEventType(eventType: string): string {
       return "PO completion approved"
     case "po_completion.rejected":
       return "PO completion rejected"
+    case "vendor_payment_relationship_claimed":
+      return "Vendor connected a payout account"
     default:
       return eventType.replace(/_/g, " ")
   }

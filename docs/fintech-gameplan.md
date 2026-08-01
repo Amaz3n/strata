@@ -1,473 +1,507 @@
 # Fintech Gameplan — Arc's Money Layer
 
-**Status:** Awaiting execution. Written 2026-07-31.
-**Audience:** an LLM executor. Follow the directives literally. Where this doc says
-STOP, stop and ask the human. Do not improvise around a STOP.
-**Companions:** `docs/arc-books-gameplan.md` (ledger of record — reads this doc's
-outputs), `docs/procore-parity-gameplan.md` (WS-02 payment holds — already shipped,
-this doc builds on it), `docs/tech-frontier-gameplan.md` WS-F4 (virtual cards — this
-doc SUPERSEDES and expands F4; when you build cards, follow THIS doc).
+**Status:** Foundation schema, services, provider adapter, controls, portal, operations
+UI, event handling, ledger, and reconciliation are implemented in code. The foundation
+migration has been applied. Money movement is disabled, no org has the rail enabled,
+and the external STOP gates remain closed.
+**Updated:** 2026-08-01.
+**Audience:** product, engineering, operations, risk, and legal.
+**Companions:** `docs/arc-books-gameplan.md`, `docs/procore-parity-gameplan.md`, and
+`docs/tech-frontier-gameplan.md`.
+
+This document is an execution contract. A **STOP** means the executor must stop and
+obtain the named approval. Do not route around a STOP with a different provider or a
+temporary production implementation.
+
+### Implementation snapshot
+
+Implemented against the pending schema:
+
+- global vendor identities, explicit builder-company claims, Arc-wide vendor entities,
+  cross-builder relationship/payment visibility, and Stripe Express onboarding;
+- provider-neutral payment rails with Stripe funding setup and recipient sync;
+- org-selectable sole/dual run approval, immutable approval evidence, two-person
+  funding changes, recent-MFA checks, and cooling periods;
+- atomic draft creation, submission, cancellation, approval/rejection, AP payment,
+  AP reversal, sensitive control decisions, and ledger posting;
+- shared bill-release checks, frozen run evidence and fees, automated risk signals,
+  provider event normalization, return handling, and daily reconciliation;
+- payment settings, payment-run operations, vendor-portal payment setup/status, RBAC,
+  notifications, cron registration, and platform/per-org execution kill switches.
+
+Not enabled or represented as complete:
+
+- live customer movement, live payout-bank edits, Stripe program configuration, fee
+  pricing, Florida-generated waiver language, and QA acceptance;
+- vendor-identity recovery and vendor-admin step-up, whose authentication/recovery
+  channel must be selected before implementation;
+- cards, capital/early pay, and treasury, which remain later gated programs.
 
 ---
 
-## 0. Strategy in three paragraphs (read before any code)
+## 1. Product thesis
 
-Arc adopts the Ramp playbook translated to construction. Ramp's theses: give software
-away, monetize money movement (interchange + float); enforce policy at the moment money
-moves, not in a report afterward; make bookkeeping disappear; land with one money
-product, expand to the whole finance office. The translation: construction spend is
-85–95% commitments (contract-bound, waiver-gated, paid against pay apps) — so cards can
-only capture the tail (field spend, materials runs). **Arc's "card swipe" is the bill
-release and the draw.** Arc already enforces policy at that moment (payment holds,
-shipped July 2026). This plan adds: (A) the outbound payment rail so subs get paid
-*through* Arc, (B) fee revenue on money movement, (C) virtual/physical cards for the
-spend tail, (D) early-pay discounting, (E) the underwriting data feed that powers
-partner capital products, (F) treasury/float as a later horizon.
+Arc's strongest fintech wedge is construction accounts payable, not cards. Most
+construction spend is governed by commitments, pay applications, compliance,
+retainage, and lien waivers. Arc already knows when a bill is eligible for release.
+The money product should extend that control point:
 
-Flow-of-funds doctrine (**Model A — never deviate without a STOP**): money always moves
-between the builder's own bank account and the counterparty's own bank account, through
-Stripe's regulated infrastructure. Arc orchestrates and records; Arc never holds funds,
-never owns an FBO account, never takes credit risk. This keeps Arc out of
-money-transmitter licensing. Any design that parks money in an Arc-owned account is a
-STOP.
+1. A builder prepares a payment run from approved, releasable bills.
+2. Arc re-evaluates holds and captures immutable evidence.
+3. One or two people other than the preparer approve the run, by org policy.
+4. A regulated provider debits the builder and pays each vendor.
+5. Arc reconciles every provider event to an append-only, double-entry subledger.
+6. Arc Books consumes the resulting accounting events; it does not infer them from
+   mutable payment status fields.
 
-Revenue model this plan implements: per-transaction fees on AP disbursements (flat,
-cheap, visible), the existing AR processing-fee gross-up (already live), card
-interchange (Stripe Issuing revenue share), and early-pay discount spread. Referral
-fees on partner capital products ride the underwriting feed but the partnerships
-themselves are human-led — this plan only builds the data product.
+This creates a defensible system of control and record around the moment money moves.
+Cards, early pay, capital referrals, and treasury are possible expansions, but they
+must follow a reliable AP rail rather than compete with it for initial focus.
 
----
+### What Arc is and is not
 
-## 1. Ground truth — what exists today (verified 2026-07-31)
+Arc is the workflow, control, orchestration, and evidence layer. A regulated partner
+is the payment rail. Arc does not intentionally hold customer funds or operate an
+Arc-owned FBO account in this plan.
 
-The executor MUST read these files before writing code. Facts you can rely on:
+That architecture reduces regulatory scope; it does **not** justify claims that Arc
+has no payment, return, fraud, dispute, reserve, credit, or licensing exposure.
+Destination-charge and ACH-return allocation depends on the final provider contract
+and account configuration. Marketing and contracts must describe the approved model,
+not an architectural aspiration.
 
-- **Stripe client:** `lib/integrations/payments/stripe.ts`. Singleton `getStripe()`
-  reads `STRIPE_SECRET_KEY`, API version pinned `2025-02-24.acacia`. Payment Intents
-  with `payment_method_types: ["us_bank_account", "card"]` (ACH first-class, instant
-  verification via Financial Connections). Connect accounts created with a
-  **controller object** (`fees.payer: "account"`, `losses.payments: "stripe"`,
-  `requirement_collection: "stripe"`, full Stripe dashboard), capabilities
-  `card_payments` + `transfers`. Charges are **direct on the connected account**
-  (`{ stripeAccount }`, `charge_type: "direct"`).
-- **Connected accounts:** `lib/services/stripe-connected-accounts.ts`; table
-  `stripe_connected_accounts` (one per org, `org_id` unique). Today only ORGS have
-  connected accounts (receivables). Vendors/subs have nothing.
-- **Webhooks:** `app/api/webhooks/stripe/route.ts`; verifies against
-  `STRIPE_WEBHOOK_SECRET` + `STRIPE_CONNECT_WEBHOOK_SECRET`; idempotency via
-  `webhook_events` table; handles payment_intent.succeeded/failed, charge.succeeded
-  (backfills real fees from expanded balance_transaction), refunds, disputes,
-  account.updated, subscription events.
-- **Fees today:** `lib/payments/fees.ts` — org policy in
-  `org_settings.settings.payment_fee_policy`; ACH 0.8% capped $5, card 2.9%+$0.30;
-  gross-up math (`grossedUpTotal = ceil((balance + fixed) / (1 - rate))`); applied ONLY
-  on the public invoice portal (`createPublicInvoicePaymentIntent` in
-  `lib/services/payments.ts:685`). **`calculateFees` in
-  `lib/integrations/payments/stripe.ts:411` is dead code with zero call sites** — a
-  platform-fee stub that was never wired. Every `payment_intents` insert writes
-  `application_fee_amount: 0`.
-- **AP mark-paid:** `updateVendorBillStatus` in `lib/services/vendor-bills.ts:635` —
-  permission `payment.release`, then `evaluateHolds(billId, orgId)` (THROWS if not
-  releasable), then sub-tier waiver gate, then compliance rules, then inserts a manual
-  `payments` row (`provider: "manual"`, `method: "check"` default). **There is no
-  electronic AP rail today — no `transfers.create`, no `payouts.create` anywhere.**
-- **Payment holds (shipped):** `lib/services/payment-holds.ts` — pure
-  `evaluatePaymentHoldFacts`, `evaluateHolds`, `overridePaymentHold` (permission
-  `payments.override_hold`, reason ≥8 chars), `sendVendorBillWaiverChase`. Tables
-  `payment_hold_policies` (org + per-project rows, project wins wholesale) and
-  `payment_hold_overrides`. Hold kinds: `insurance_current`, `waiver_signed`,
-  `compliance_docs_approved` (block); `retainage_rules_met`, `funding_received` (warn).
-  `vendor_bills.funding_invoice_id` → pay-when-paid linkage exists at `warn` level.
-- **Payments table serves both sides:** `payments` rows carry `invoice_id` (AR) or
-  `bill_id` (AP); `provider: "manual" | "stripe"`; fee columns
-  (`gross_cents/fee_cents/processor_fee_cents/platform_fee_cents/net_cents`) populated
-  from `charge.succeeded`.
-- **Sub portal:** `app/s/[token]` with `external-portal-auth`; subs already submit
-  invoices, sign waivers (`waivers/[billId]`), see commitments/POs.
-- **Outbox:** enqueue pattern per `lib/services/outbox.ts`; drained by
-  `app/api/jobs/process-outbox/route.ts`; job type `chase_vendor_bill_waiver` is a good
-  reference for a payments-adjacent job.
-- **No metering anywhere** (no Stripe billing meters / usage records).
-
-Known gotchas (do not rediscover these the hard way):
-- `mapStripeEventToDomain` hardcodes `fee_cents: 0`; real fees arrive only via the
-  `charge.succeeded` branch. Any new money flow must replicate that two-step.
-- `payment_hold_policies` project row replaces the org row wholesale (no per-key merge).
-- Legacy `qbo_*` columns coexist with `accounting_coding` jsonb; never add new `qbo_*`
-  columns (CLAUDE.md rule).
-- Server actions return `{ success, error }` — thrown errors get redacted in prod.
-- Vercel Cron sends GET. Every new cron handler must handle GET.
-- New public API routes (webhooks!) must be added to `PUBLIC_API_ROUTES` in `proxy.ts`
-  or they 307 to signin.
+**STOP — provider and legal approval:** No customer money may move until Stripe (or a
+replacement provider), payments counsel, finance, and risk approve the exact flow of
+funds, controller properties, return allocation, reserves, disclosures, and prohibited
+use cases.
 
 ---
 
-## WS-P1 — Outbound AP rail: pay subs through Arc
+## 2. Decisions already approved
 
-### What this is
-Today "mark paid" records that a check went out. This workstream makes Arc actually
-move the money: builder clicks Pay → their bank account is ACH-debited → funds land in
-the sub's own bank account. Stripe is the regulated rail; Arc never holds funds.
+These decisions are settled for the foundation and should not be silently changed:
 
-### Stripe mechanics (decision already made — implement exactly this)
-- **Vendor onboarding:** create a Connect account per paid vendor company —
-  `controller: { fees: { payer: "application" }, losses: { payments: "application" },
-  requirement_collection: "stripe", stripe_dashboard: { type: "none" } }` with the
-  `transfers` capability only. This is the "recipient" configuration: the vendor never
-  sees a Stripe dashboard; they just link a bank account through an embedded/hosted
-  onboarding flow reached FROM THE SUB PORTAL.
-- **Builder debit:** the org adds a funding bank account via Stripe Financial
-  Connections (instant verification — the same mechanism buyers already use to pay
-  invoices). Store as a payment method on an org-level Stripe Customer.
-- **Money movement per payment run:** create a PaymentIntent that debits the org's
-  bank account (`us_bank_account`, on the PLATFORM account, not the org's connected
-  account) with `transfer_data: { destination: <vendor_connect_account> }` and
-  `transfer_group` per payment batch. Stripe handles debit → settle → transfer →
-  payout to the vendor's bank. ACH debit settlement is 1–4 business days; the vendor
-  payout releases after settlement. Surface this timing honestly in the UI
-  ("arrives in 2–4 business days").
-- **Fees:** set `application_fee_amount` OR use a separate fee mechanism — for
-  destination charges use `application_fee_amount` on the PaymentIntent. Fee policy in
-  §WS-P2.
-- STOP conditions: if Stripe account review requires a platform-profile change, or if
-  the `losses.payments: "application"` configuration is rejected for this use case,
-  stop and surface to the human — this is a Stripe program-approval conversation, not
-  a code problem.
+- **Vendor onboarding:** Stripe Connect Express is the first provider adapter.
+- **One-time vendor onboarding:** a vendor legal entity creates one Arc-wide recipient
+  account, then explicitly claims relationships with individual builders.
+- **The claim is a mapping, not a gate.** Authorization to act for a builder's vendor
+  record is established entirely by the portal session — token, invited email,
+  password, and grant. The claim contributes no additional proof, so it is resolved
+  inside the single payout-setup action rather than presented as a step the vendor
+  confirms separately. The one genuine decision it carries — *which* global vendor
+  entity this builder's company record maps to — is asked only when the vendor already
+  administers more than one, and never inferred by name, email, or EIN.
+- **Portal identity:** onboarding is tied to the authenticated vendor portal. Existing
+  `/s/[token]` links become invitations to claim access, not permanent bearer-token
+  identity.
+- **No automatic entity merging:** never join vendors across builders using email,
+  company name, EIN fragments, bank fingerprints, or fuzzy matching alone.
+- **Provider-neutral core:** payment runs, controls, events, ledger, fees, and
+  reconciliation are Arc concepts. Stripe IDs are adapter references.
+- **Approval choice:** each org selects `sole` or `dual`. Sole means one approver;
+  dual means two distinct approvers. The payment-run preparer cannot approve their
+  own run in either mode.
+- **Default approval mode:** dual.
+- **Sensitive changes:** funding-source and payout-destination changes require two
+  independent approvals, recent authentication, notifications, and a cooling period,
+  regardless of the org's payment-run approval mode.
+- **Initial pricing:** subscription plus provider costs passed through at cost. No
+  unvalidated flat per-payment markup is enabled by default.
+- **Lien waivers:** Florida first. Other jurisdictions stay disabled until separately
+  reviewed and implemented.
+- **Go-live sequence:** provider-neutral foundation first; Stripe test mode only for
+  the QA org after the migration and external approvals.
 
-### Schema (one migration; write to `supabase/migrations/`, then STOP for approval)
-```sql
--- vendor payout accounts: one per company per org
-create table public.vendor_payout_accounts (
-  id uuid primary key default gen_random_uuid(),
-  org_id uuid not null references public.orgs(id) on delete cascade,
-  company_id uuid not null references public.companies(id) on delete cascade,
-  stripe_account_id text not null unique,
-  status text not null default 'onboarding'
-    check (status in ('onboarding','ready','disabled')),
-  payouts_enabled boolean not null default false,
-  requirements_currently_due jsonb not null default '[]',
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (org_id, company_id)
-);
+### One decision intentionally deferred
 
--- org funding sources (the builder's own bank account, tokenized at Stripe)
-create table public.org_funding_sources (
-  id uuid primary key default gen_random_uuid(),
-  org_id uuid not null references public.orgs(id) on delete cascade,
-  stripe_customer_id text not null,
-  stripe_payment_method_id text not null,
-  bank_name text,
-  last4 text,
-  status text not null default 'active' check (status in ('active','disabled')),
-  is_default boolean not null default false,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
+Before live payout-bank changes, choose the second-reviewer operating model:
 
--- disbursements: one row per outbound payment attempt (the AP mirror of payment_intents)
-create table public.disbursements (
-  id uuid primary key default gen_random_uuid(),
-  org_id uuid not null references public.orgs(id) on delete cascade,
-  project_id uuid references public.projects(id) on delete set null,
-  bill_id uuid not null references public.vendor_bills(id) on delete restrict,
-  vendor_payout_account_id uuid not null references public.vendor_payout_accounts(id),
-  funding_source_id uuid not null references public.org_funding_sources(id),
-  amount_cents bigint not null check (amount_cents > 0),
-  fee_cents bigint not null default 0,
-  currency text not null default 'usd',
-  status text not null default 'created' check (status in
-    ('created','debiting','settling','transferred','paid_out','failed','returned','canceled')),
-  provider_intent_id text unique,
-  provider_transfer_id text,
-  failure_reason text,
-  initiated_by uuid not null references public.app_users(id),
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-create index disbursements_org_project_idx on public.disbursements (org_id, project_id);
-create index disbursements_bill_idx on public.disbursements (bill_id);
+- a second administrator of the same vendor entity, or
+- an Arc payments-operations reviewer under a documented verification playbook.
+
+The schema supports either. Engineering must not choose between them implicitly.
+
+**STOP — bank-change operating model:** No live payout-destination edit can be enabled
+until the human selects the reviewer model and operations documents recovery,
+escalation, and fraud-loss ownership.
+
+---
+
+## 3. Existing product ground truth
+
+Read the current implementation before modifying it:
+
+- `lib/integrations/payments/stripe.ts` owns the Stripe client and existing AR flows.
+- `lib/services/stripe-connected-accounts.ts` manages org receivables accounts.
+- `app/api/webhooks/stripe/route.ts` verifies platform and Connect events and uses
+  `webhook_events` for current idempotency.
+- `lib/services/vendor-bills.ts` owns manual AP payment recording.
+- `lib/services/payment-holds.ts` evaluates release controls.
+- `lib/services/lien-waivers.ts` contains conditional/unconditional waiver building
+  blocks.
+- `app/s/[token]` is the vendor portal.
+- `lib/services/external-portal-auth.ts` already provides password authentication,
+  session cookies, token claiming, and builder-scoped portal grants.
+- `external_portal_accounts` is currently org-scoped. It cannot by itself represent
+  one identity across builders.
+- `payments` serves AR and AP history, but mutable rows are not a sufficient provider
+  event log or accounting subledger.
+
+The global identity migration must layer onto existing portal accounts. It must not
+merge existing records by email during migration. A vendor links a legacy builder
+profile to a global identity only after authenticating and explicitly accepting the
+claim.
+
+---
+
+## 4. Target architecture
+
+### 4.1 Identity model
+
+Keep people, legal entities, and builder records separate:
+
+- `vendor_portal_identities`: a human's global Arc vendor login.
+- `vendor_entities`: a vendor's global legal/business identity.
+- `vendor_entity_memberships`: humans authorized to administer a vendor entity.
+- `external_portal_accounts`: existing org-scoped compatibility profiles.
+- `vendor_company_claims`: explicit mapping from one builder's `companies` row to a
+  global vendor entity.
+- `vendor_payment_relationships`: payment eligibility and status for that specific
+  builder/vendor relationship.
+- `payment_recipient_accounts`: provider onboarding and payout readiness for the
+  global vendor entity.
+
+A human can administer multiple vendor entities. One vendor entity can work with many
+builders. Each builder retains authority over its own relationship and bills; it does
+not own or edit the vendor's global payout account.
+
+### 4.2 Provider adapter boundary
+
+The application service boundary should expose provider-neutral operations:
+
+```ts
+interface PaymentRailProvider {
+  createRecipientOnboarding(input: RecipientOnboardingInput): Promise<OnboardingLink>
+  syncRecipient(input: SyncRecipientInput): Promise<RecipientSnapshot>
+  createFundingSetup(input: FundingSetupInput): Promise<FundingSetupSession>
+  submitDisbursement(input: SubmitDisbursementInput): Promise<ProviderDisbursement>
+  parseWebhook(input: RawWebhookInput): Promise<NormalizedProviderEvent>
+  fetchReconciliation(input: ReconciliationInput): Promise<ProviderBalanceActivity[]>
+}
 ```
-RLS: copy the policy shape from `payment_hold_overrides` (same migration family, recent
-neighbor), org-scoped, `(select auth.uid())` everywhere. `updated_at` triggers on all
-three tables. RBAC: reuse `payment.release` for initiating; add `payments.manage_rail`
-(funding sources + vendor account admin) seeded to admin + bookkeeper via the
-catalog-as-code migration pattern.
 
-### Service plan
-Create `lib/services/disbursements.ts` (mirror the service exemplar shape —
-`requireOrgContext` → `requirePermission` → logic → `recordEvent` + `recordAudit` →
-DTO):
-- `createVendorPayoutOnboarding(companyId)` — creates/fetches Connect account, returns
-  hosted onboarding URL. Called from a new sub-portal section ("Get paid by direct
-  deposit") — extend `app/s/[token]` with a `payments` page; token capability via
-  `portal-links`.
-- `addOrgFundingSource()` — SetupIntent flow (Financial Connections) from
-  `/settings?tab=invoicing` area (Payments settings live with the money settings; do
-  NOT create a new top-level settings page — add a "Payments" group).
-- `initiateDisbursement({ billId, fundingSourceId })` — MUST call the exact same gate
-  chain as `updateVendorBillStatus`: `payment.release` permission, `evaluateHolds`
-  (throw if not releasable), sub-tier waiver gate, compliance rules. Extract that gate
-  chain from `updateVendorBillStatus` into a shared
-  `assertBillReleasable(billId, orgId)` in `lib/services/payment-holds.ts` and call it
-  from BOTH paths — do not copy-paste the checks (they will drift).
-  Then: create the PaymentIntent (idempotency key = disbursement id), insert the
-  `disbursements` row (`status: 'debiting'`), do NOT touch the bill status yet.
-- Webhook extensions in `app/api/webhooks/stripe/route.ts`: on
-  `payment_intent.succeeded` for a disbursement intent → `status: 'settling'`; on
-  `transfer.created` → `'transferred'`; on the destination `payout.paid` (Connect
-  event) → `'paid_out'` AND ONLY THEN insert the `payments` row
-  (`provider: 'stripe'`, `method: 'ach'`, `bill_id`) and advance the bill via the
-  existing paid/partial math in `updateVendorBillStatus` (refactor: extract the
-  "record payment + recompute status" block into `applyBillPayment(...)` used by both
-  the manual path and the webhook). On `payment_intent.payment_failed` or ACH return
-  (R01 etc. arrive as `charge.failed`/dispute-like events) → `'failed'`/`'returned'`,
-  notify initiator (email type must be added to `EMAIL_NOTIFICATION_TYPES`).
-- Statuses must be monotonic; write a small state machine guard
-  (`assertDisbursementTransition(from, to)`) with unit tests.
+The Stripe implementation may use PaymentIntents, transfers, payouts, Connect
+accounts, and Financial Connections, but those object types must not become the
+domain status vocabulary.
 
-### UI plan
-- Payables workbench + `/payables` desk: bills that are releasable AND have a ready
-  vendor payout account show a **Pay by ACH** primary action next to the existing
-  manual mark-paid (which stays, relabeled "Record external payment"). Bills paying
-  electronically show a status chip (Debiting → In transit → Paid) driven by
-  `disbursements.status`.
-- Vendor detail sheet (companies): payout account status + "invite to direct deposit"
-  (sends portal link — email type registration required).
-- Empty/loading/error/dark on every new surface; money in `tabular-nums`.
+### 4.3 Operational records versus accounting evidence
 
-### Phases
-1. Migration + vendor onboarding via portal + org funding source setup. (No money
-   moves yet.) STOP after migration is written.
-2. `initiateDisbursement` + webhook lifecycle + bill status integration, behind a
-   platform feature flag (`feature-flags` service), enabled only for the QA org.
-   Test end-to-end in Stripe test mode. STOP before enabling for any customer org.
-3. Batch payment run UX on `/payables` (select N releasable bills → one confirm →
-   N disbursements with one `transfer_group`).
+The core model has four layers:
 
-### Acceptance
-- A held bill can NEVER create a disbursement (unit + integration test on
-  `assertBillReleasable`).
-- Webhook replay-safe: reprocessing any event is a no-op (dedupe on
-  `webhook_events.provider_event_id` — already exists; extend coverage).
-- ACH return after payout reverses cleanly: bill returns to `approved`, `payments` row
-  reversed via the existing `recordPaymentReversal` machinery, humans notified.
-- `pnpm lint && npx tsc --noEmit` clean; `pnpm test:financials` extended and passing.
+1. `payment_runs`, items, payees, and approvals describe human intent and control.
+2. `disbursements` describe provider-neutral movement attempts.
+3. `payment_provider_events` store immutable provider facts with deduplication.
+4. `payment_ledger_transactions` and entries store balanced accounting evidence.
+
+Provider events and ledger rows are append-only. Corrections use new processing
+attempts, reversal transactions, and entries. No webhook handler may rewrite history.
+
+### 4.4 State model
+
+Use monotonic domain transitions, with explicit return/reversal paths:
+
+```text
+created
+  -> submitted
+  -> debit_pending
+  -> funds_available
+  -> transfer_pending
+  -> payout_pending
+  -> paid
+
+created/submitted/debit_pending -> failed | canceled
+funds_available/transfer_pending/payout_pending/paid -> returned | reversed
+```
+
+Do not mark a vendor bill paid merely because the builder debit succeeded. The
+payment service records the appropriate paid/settled state only at the provider event
+approved by accounting policy. The UI must distinguish “builder debited,” “in
+transit,” and “vendor paid.”
 
 ---
 
-## WS-P2 — Fee engine: monetize the movement
+## 5. Payment controls
 
-### What this is
-One coherent fee layer replacing today's single-purpose gross-up, covering: AR
-processing fees (exists), AP disbursement fees (new), card interchange bookkeeping
-(WS-P3), and early-pay spread (WS-P4). Revenue must be *visible to Arc* (platform
-scorecard) and *predictable to the builder* (published, flat, no surprises).
+### 5.1 Release gates
 
-### Directives
-1. **Delete the dead code:** `calculateFees` in `lib/integrations/payments/stripe.ts`
-   has zero call sites. Remove it in the first PR of this workstream (leave-no-trash).
-2. Create `lib/payments/fee-engine.ts` as the single choke point:
-   `quoteFee(kind, amountCents, orgPolicy) -> { feeCents, payer, description }` where
-   `kind ∈ 'ar_ach' | 'ar_card' | 'ap_disbursement' | 'early_pay_spread'`.
-   Move the existing gross-up math here; `lib/payments/fees.ts` becomes a thin re-export
-   during migration, then delete it and update the two call sites
-   (`app/i/[token]/page.tsx`, `createPublicInvoicePaymentIntent`).
-3. **AP disbursement fee:** flat per-payment (default $1.50, org-configurable range
-   $0–$5 by platform admin only — this is a platform revenue lever, not an org
-   setting). Charged to the ORG (payer of record), implemented as
-   `application_fee_amount` on the disbursement PaymentIntent. Show it on the pay
-   confirmation ("$1.50 processing").
-4. **Fee ledger:** platform-side revenue visibility. New table `platform_fee_events`
-   (org_id, kind, source_type/source_id, fee_cents, provider ref, created_at) written
-   by the webhook fee-backfill branch (the `charge.succeeded` handler already extracts
-   `application_fee_amount` — extend it to insert here). Surface: a new band on
-   `/admin/analytics` (platform staff only) — monthly fee revenue by kind by org.
-5. Do NOT invent per-org negotiated pricing tables yet. One default + platform-admin
-   override per org (a `fee_policy` jsonb on the org's platform record) is enough.
+Extract one shared `assertBillReleasable` service used by manual payment recording and
+electronic runs. It must cover:
 
-### Acceptance
-Every dollar of fee revenue appears exactly once in `platform_fee_events`, reconciles
-against Stripe's application fee reporting (manual spot-check note in PR), and the
-public invoice portal quotes are byte-identical to today's for unchanged policies
-(regression fixture).
+- payment permission;
+- policy holds and approved overrides;
+- compliance-document state;
+- conditional/unconditional waiver state;
+- sub-tier waivers when applicable;
+- retainage and partial-payment math;
+- pay-when-paid/funding state;
+- duplicate/in-flight payment detection;
+- vendor relationship and recipient readiness.
 
----
+Evaluate gates when adding a bill to a run and again immediately before submission.
+Persist hold and waiver snapshots on each run item so reviewers can see what they
+approved.
 
-## WS-P3 — Cards: Stripe Issuing with budget-line authorization
+### 5.2 Maker/checker
 
-### What this is
-Virtual (and later physical) cards scoped to a project, commitment, or budget line.
-The authorization webhook approves/declines each swipe in real time against the
-remaining budget. Approved swipes auto-create coded expenses. Interchange revenue
-accrues to Arc via Stripe Issuing revenue share. This SUPERSEDES tech-frontier WS-F4 —
-build from this spec.
+- The preparer submits a frozen run.
+- Changing bills, amounts, payees, destinations, funding source, fees, or evidence
+  invalidates existing approvals and returns the run to draft.
+- Approvers need `payments.approve_run` and recent step-up authentication.
+- One rejection closes the run; the preparer creates a new revision/run.
+- Dual mode requires two distinct approvers.
+- Approval rows are immutable evidence.
 
-### Pre-work (human, not executor)
-Stripe Issuing requires program approval. STOP at the start of this workstream: the
-human must enable Issuing on the platform account and accept Stripe's Issuing terms.
-The executor may build everything in test mode meanwhile.
+### 5.3 Fraud controls
 
-### Mechanics (implement exactly)
-- Cardholders: `Issuing.Cardholder` per team member (name, billing address = org
-  address). Cards: `Issuing.Card` virtual, linked to cardholder, spending controls set
-  to a generous ceiling (real control lives in OUR webhook, not Stripe's static
-  controls — but set `spending_controls.spending_limits` as a backstop at 2× the scope
-  limit).
-- **Funding:** Issuing balance is prepaid from the org's funding source
-  (`org_funding_sources` from WS-P1). Auto-top-up rule: when balance < 20% of
-  outstanding card limits, debit the default funding source. STOP: confirm with the
-  human whether orgs share one platform Issuing balance (simpler, Arc fronts float —
-  NO, violates doctrine) or per-org Connected-account Issuing (each org's own balance
-  — YES, this is the Model-A-compliant shape; cards are issued on the org's connected
-  account). Default to per-org connected-account Issuing.
-- **Authorization webhook:** `issuing_authorization.request` arrives with ~2s budget.
-  Handler must be FAST: single indexed lookup of the card's scope → remaining =
-  scope_limit − (posted job costs + pending card auths for that scope) → approve if
-  `amount <= remaining`, else decline with reason. Precompute "remaining" into a
-  `spend_card_state` row updated on every auth/expense event so the webhook does one
-  point read (no aggregate query in the hot path). Respond via
-  `approve()`/`decline()` API within the window. Log every decision to
-  `card_authorization_events`.
-- **Expense creation:** on `issuing_authorization.updated` (captured) /
-  `issuing_transaction.created` → create a `project_expenses` row through the EXISTING
-  expenses service (do not write raw rows), status `pending_receipt`, coded to the
-  card's scope (project + cost_code/budget_line). Push APNs (via `lib/services/apns.ts`)
-  to the cardholder: "Snap the receipt for $214.85 at HD Supply" → deep link to the
-  mobile `expenses/scan` OCR flow (exists). Unmatched receipts age into the financials
-  review queue after 5 days.
-- Declines push an APNs with the reason ("Budget line Framing Materials has $180
-  remaining").
+Before submission, evaluate and persist:
 
-### Schema sketch (one migration, then STOP)
-`spend_cards` (org_id, cardholder app_user, scope kind/ref, limit_cents, period,
-stripe ids, status), `spend_card_state` (card_id pk, reserved_cents, spent_cents,
-updated_at), `card_authorization_events` (auth id, card_id, amount_cents, decision,
-reason, latency_ms). RLS org-scoped; permissions: `cards.manage` (admin/bookkeeper),
-`cards.use` (cardholder sees own card + transactions).
+- per-payment, per-run, and daily limits;
+- new or recently changed funding/payout destinations;
+- velocity and repeated-failure signals;
+- duplicate amount/vendor/bill patterns;
+- dormant or newly claimed vendor relationships;
+- unusual location/device/session signals when available;
+- provider restrictions and requirements due.
 
-### UI
-Settings → Payments group: card program enrollment, card list, issue-card dialog
-(member, scope picker reusing the budget-line picker from expenses, limit, period).
-Project financials: a "Card spend" filter on expenses (it's just expenses with
-`metadata.source = 'card'` — no parallel list). Mobile: card detail (number reveal via
-Stripe's ephemeral-key flow — PAN never touches Arc's servers), transaction feed,
-receipt chase.
+Bank and funding changes require recent authentication, two independent approvals,
+out-of-band notifications to every affected party, and a configurable 24–168 hour
+cooling period (72 hours by default). Never include full bank data in Arc logs,
+notifications, or general org-readable tables.
 
-### Hard rules
-- PAN/CVV never stored, logged, or proxied — use Stripe's issuing-elements/ephemeral
-  key mechanism only. Any code path that would touch raw card numbers is a STOP.
-- The authorization webhook must have a fail-safe: on any internal error, DECLINE (fail
-  closed) and alert. Money leaks are worse than a super's declined swipe.
-- Webhook p99 decision latency < 800ms; add a `latency_ms` column and an `/admin/ops`
-  stat.
+### 5.4 Joint checks, partial payments, and retainage
 
-### Phases
-1. Test-mode: schema, issuance, auth webhook with scope math, expense creation.
-2. QA-org live pilot (one card, platform staff). STOP before customer rollout.
-3. Receipt-chase loop + review-queue aging + decline UX polish.
-4. Physical cards + Apple Wallet provisioning (later; needs no new architecture).
+One run item can have multiple payees. A joint payee can be paid by an external check
+until an approved electronic joint-payee flow exists. The sum of payees must equal the
+vendor amount, enforced in the service transaction. Partial payments create new runs
+after the prior attempt reaches a terminal state. Retainage is explicit and never
+folded into a generic fee field.
 
 ---
 
-## WS-P4 — Early-pay discounting (builder-funded first)
+## 6. Florida waiver workstream
 
-### What this is
-A sub with an approved bill sitting on net-30 terms opts to be paid today at a small
-discount (e.g., 1.5%). Phase 1 is funded by the builder's own cash: the builder earns
-the discount as yield on money they'd pay anyway; the sub gets liquidity; Arc takes a
-slice of the spread. No third-party capital, no credit risk, Model A intact.
+Florida is the only enabled jurisdiction for the first release. Build a state-aware
+waiver policy rather than a boolean `waiver_signed` shortcut:
 
-### Mechanics
-- Eligibility: bill `approved`, releasable per `assertBillReleasable`, vendor payout
-  account ready (WS-P1), org has early-pay enabled with a funded cap
-  (`early_pay_policy` on org settings: enabled, discount_bps default 150,
-  arc_share_bps default 30, monthly_cap_cents).
-- Offer surface: **sub portal** bill row shows "Get paid today — $X instead of $Y on
-  <due date>". Accepting creates an `early_pay_agreements` row (bill_id, original
-  amount, discount_cents, arc_fee_cents, accepted_at, portal actor) and immediately
-  initiates a WS-P1 disbursement for `amount − discount`.
-- Accounting: the discount is income to the builder. Book it as a credit against the
-  bill (bill considered paid in full at `amount`; `payments` row for `amount −
-  discount`; a `job_cost_entries` adjustment or a dedicated discount line — DECISION:
-  book as negative expense adjustment via a `manual_adjustment` job-cost entry with
-  metadata `{ source: 'early_pay_discount' }`; do NOT invent a new ledger concept).
-  Arc's share is an `application_fee_amount` on the disbursement (flows through
-  WS-P2's `platform_fee_events`).
-- Builder control: `/payables` desk gets an "Early pay" band — pending offers, accepted
-  agreements, yield-to-date this quarter. Org setting to auto-approve offers under a
-  threshold vs. require per-offer approval (default: require approval).
+- conditional progress waiver;
+- unconditional progress waiver after confirmed payment;
+- conditional final waiver;
+- unconditional final waiver after confirmed final payment;
+- required signer/authority evidence;
+- document version and template provenance;
+- payment amount, through-date, project, payer, payee, and exceptions;
+- sub-tier waiver collection when policy requires it.
 
-### Phase 2 (design only, do not build): third-party capital funds the early payment
-via the underwriting feed (WS-P5); builder pays the funder at due date. This changes
-the flow of funds and requires human-led partner + legal work. STOP boundary.
+The payment-run item stores a snapshot of the waiver evidence reviewed. Signed source
+documents remain immutable.
 
-### Acceptance
-Spread math property-tested (discount + arc fee + net payout ≡ original amount, all
-integer cents, no rounding leaks); sub-side offer only renders when truly releasable;
-`pnpm test:financials` extended.
+**STOP — Florida legal approval:** Before generating customer-facing waiver language,
+Florida construction counsel must approve templates, timing, electronic-signature
+language, retention, and the exact relationship between payment confirmation and an
+unconditional waiver. The product may collect uploaded waivers before approval, but
+must not represent generated language as legally sufficient.
 
 ---
 
-## WS-P5 — The underwriting feed (data product, no lending)
+## 7. Pricing and revenue
 
-### What this is
-A consented, org-scoped, point-in-time data package that any capital/insurance partner
-can consume: schedule velocity, draw history, AR/AP aging, payment lags, concentration,
-compliance posture, WIP position. Arc builds the feed once; draw advances, materials
-financing, sub factoring, bonding, and insurance pricing are all downstream consumers
-negotiated by humans.
+### Initial model
 
-### Directives
-- `lib/services/underwriting-feed.ts`: `buildUnderwritingPackage(orgId, options)`
-  composing EXISTING report services (do not re-derive): WIP (`reports/wip-over-under`),
-  AR/AP aging (`reports/aging`), draw status (`reports/draw-status`), payments ledger,
-  cycle-time (production), plus derived metrics: median owner-payment lag (invoice
-  sent→paid from `payments`), bill-payment lag, % draws funded on time, change-order
-  frequency, compliance-current % of active vendors. Output: one versioned JSON
-  document (schema version field from day one) + a generated PDF summary (existing PDF
-  stack).
-- Consent + delivery: org admin explicitly shares a package from a new
-  Settings → Payments → "Financial data sharing" panel — generates a time-boxed signed
-  URL (reuse `file-share-links` machinery) OR (later) a scoped MCP/API token. Every
-  generation and access recorded (`recordAudit` + `file_access_events`). NEVER an
-  always-on firehose in v1 — point-in-time packages only.
-- No scores in v1. Report facts; let partners model. (An "Arc score" is a product
-  decision with adverse-action implications — STOP if asked to build one.)
+- Arc subscription revenue remains the primary fee.
+- Provider processing costs are itemized and passed through at cost where contracts
+  and applicable law permit.
+- AP platform markup defaults to zero.
+- All fee quotes are frozen on the run before approval.
+- Every recognized platform fee produces one idempotent `platform_fee_events` row and
+  balanced ledger entries.
 
-### Acceptance
-Package generates in <30s for a 200-project org; numbers tie to the corresponding
-in-app reports exactly (same service calls, same day); share links expire and revoke.
+Do not launch a flat `$1.50` fee merely because it appeared in an earlier draft. Price
+only after measuring provider cost, ACH returns, support, fraud loss, reserves,
+reconciliation operations, and willingness to pay.
+
+### Fee engine
+
+Create one fee engine for AR ACH, AR card, AP disbursement, card interchange, and
+early-pay spread. Migrate existing AR gross-up math without changing current customer
+quotes. Delete the existing dead fee helper only after call-site coverage proves it is
+unused.
 
 ---
 
-## WS-P6 — Treasury horizon (design notes only — DO NOT BUILD)
+## 8. Delivery sequence and STOP gates
 
-Recorded so the endgame stays coherent; every item here is a human-led, regulated
-decision:
-- Retainage in interest-bearing escrow (partner bank; state rules vary; float share).
-- Buyer deposit/earnest-money trust accounts (state-mandated in several states).
-- Org idle-cash sweep (Stripe Treasury or partner).
-- FBO instant-disbursement rail (only if WS-P1's 2–4 day timing proves to be a real
-  deal-loser at volume; it is a different regulatory business).
-Any executor asked to implement anything in WS-P6: STOP.
+### Phase 0 — Foundation migration (applied)
+
+Migration: `supabase/migrations/20260731221030_fintech_payment_foundation.sql`
+
+It establishes global vendor identity/entity claims, recipients, relationships,
+funding sources, approval policy, payment runs, multiple payees, disbursements,
+provider events, an append-only ledger, fees, risk reviews, reconciliation, RLS, and
+RBAC.
+
+The schema exists in production. It carries no rows and no org has
+`payment_rail_policies.enabled` set, so every vendor- and builder-facing payment
+surface still fails closed on that flag.
+
+### Phase 1 — Identity and portal claims (implemented)
+
+1. Add global vendor identity login/session support using the existing portal UX and
+   security controls as the migration bridge.
+2. Turn `/s/[token]` account gates into explicit claim invitations.
+3. Let a verified identity create/select a vendor entity and map the builder's company
+   record onto it, as part of starting payout verification rather than before it.
+4. Show all builder relationships in `/access`, with clear boundaries between them.
+5. Source-level guard tests assert that portal authorization, invitation-email
+   matching, vendor-entity administrator membership, and hash-based token resolution
+   remain in the claim path, and that no second credential prompt returns to it.
+   End-to-end cross-builder isolation remains part of QA acceptance.
+
+Still gated: vendor-entity membership administration, recovery, vendor-admin step-up,
+and the associated security notifications require an approved vendor authentication
+and recovery channel. The builder-side payment MFA path is implemented.
+
+### Phase 2 — Recipient onboarding and builder setup (implemented; live use gated)
+
+1. Implement the provider interface and Stripe Connect Express adapter.
+2. Launch hosted onboarding from the authenticated vendor portal.
+3. Sync requirements and readiness from signed provider webhooks.
+4. Add builder funding setup with provider-hosted bank collection; store only tokens
+   and masked metadata.
+5. Implement sensitive-change requests, dual review, cooling periods, and
+   notifications.
+6. Add Payments settings inside the existing settings information architecture.
+
+No money moves in this phase.
+
+**STOP — Stripe program configuration:** Confirm the exact supported Connect account
+controller configuration, platform liability, ACH debit flow, transfers, payouts,
+webhook routing, reserves, and pricing in writing. Do not reuse an unsupported
+controller combination from an older draft.
+
+### Phase 3 — Payment runs and ledger (implemented; execution gated)
+
+1. Implement shared bill-release assertions.
+2. Implement draft, submit, approve/reject, preparer cancel, and execute services with
+   atomic database functions and idempotency.
+3. Implement the fee quote snapshot and risk decision.
+4. Normalize provider webhooks into append-only provider events and processing
+   attempts.
+5. Post balanced ledger transactions for every lifecycle event.
+6. Reconcile provider activity, internal movement attempts, ledger entries, and bill
+   payments.
+7. Add return/reversal handling that reopens the payable state and notifies humans.
+8. Keep “Record external payment” alongside electronic payment.
+
+### Phase 4 — QA-only Stripe test flow (not run)
+
+Enable with a platform-controlled flag for the QA org only. Test:
+
+- one and two approver flows;
+- preparer self-approval rejection;
+- onboarding reuse across two builders;
+- held bills and stale approval invalidation;
+- partial payment, retainage, and joint external check;
+- duplicate webhooks and out-of-order events;
+- ACH failure before settlement;
+- return/reversal after apparent success;
+- bank-change cooling period and notifications;
+- reconciliation balanced and exception cases;
+- least-privilege/RLS isolation.
+
+**STOP — customer enablement:** A human reviews QA evidence, provider/legal approvals,
+incident runbooks, reconciliation ownership, support procedures, and feature-flag
+scope before any customer org is enabled.
+
+### Phase 5 — Florida waiver automation
+
+After Florida legal approval, add versioned templates and the conditional → payment
+confirmed → unconditional workflow. Do not silently expand to another state.
+
+### Phase 6 — Existing-card ingestion
+
+Before issuing Arc cards, ingest and reconcile customers' existing corporate-card
+transactions. Auto-suggest project, cost code, commitment, receipt, and accounting
+coding. This delivers spend visibility without immediately taking on a card program.
+
+### Phase 7 — Arc cards
+
+Cards are a gated later expansion for field spend and controlled material purchases,
+not the primary construction-spend rail. Require issuer/program approval and a
+provider-specific design for funding, fraud, disputes, cardholder verification,
+authorization latency, and loss ownership.
+
+**STOP — cards:** Do not build or promise live Issuing until a human approves the
+program partner and commercial/risk model. Never assume Arc can fund a shared balance
+or front customer spend.
+
+### Phase 8 — Capital and early pay
+
+Build a permissioned underwriting data package for selected partners: contract,
+change-order, draw, receivable, payable, schedule, variance, and payment-performance
+signals with lineage. Start with partner referrals and customer consent.
+
+Do not lend from Arc's balance sheet. Do not launch early-pay discounting until legal,
+accounting, tax, disclosure, credit-loss, and partner-funding models are approved.
+
+### Phase 9 — Treasury
+
+Do not build treasury, deposits, or an Arc-owned FBO account. Revisit only with a bank
+partner, a clear customer problem, proven AP volume, legal analysis, and board-level
+risk approval.
 
 ---
 
-## Sequencing & dependencies
+## 9. Implementation invariants
 
-| Order | WS | Depends on | Gate |
-|---|---|---|---|
-| 1 | P2 phases 1–2 (fee engine consolidation) | — | none |
-| 2 | P1 (AP rail) | P2 | STOP at migration; STOP before customer enable |
-| 3 | P4 (early pay, builder-funded) | P1 | none beyond P1's |
-| 4 | P3 (cards) | P1 funding sources | STOP for Issuing program approval |
-| 5 | P5 (underwriting feed) | — (parallel any time) | none |
-| — | P6 | — | permanently gated |
+- Integer cents only; no JavaScript floating-point money math.
+- Every org-owned query is explicitly org-scoped.
+- All provider requests and event processing are idempotent.
+- Webhook signatures are verified before parsing or persistence.
+- Provider events are stored once and never mutated.
+- Ledger corrections are reversals, never edits or deletes.
+- Debit and credit totals must balance before a ledger transaction is committed.
+- No full account/routing numbers, tax IDs, secrets, or raw identity documents in
+  general application tables, logs, analytics, or notifications.
+- Server services re-check permission and state; UI visibility is not authorization.
+- Run approvals bind to a frozen content/control hash. Any material change invalidates
+  them.
+- A vendor recipient account can be reused across builders only through explicit,
+  authenticated claims.
+- One builder cannot see another builder's bills, payments, claims, or relationship
+  metadata.
+- “Paid” labels must state whose state they describe: builder debit, funds available,
+  transfer, payout, or reconciled vendor payment.
 
-Global definition of done for every WS: `pnpm lint && npx tsc --noEmit` clean,
-`pnpm test:financials` green, empty/loading/error/dark verified, org-scoped +
-permission-checked + event/audit on every mutation, migration written-not-applied with
-an explicit note to the human, and anything obsoleted (starting with `calculateFees`)
-deleted in the same change.
+---
+
+## 10. Minimum production readiness
+
+Production enablement requires all of the following:
+
+- provider and payments-counsel sign-off;
+- approved bank-change reviewer model;
+- Florida waiver approval for any generated waiver feature;
+- QA evidence for sole and dual approvals;
+- tested ACH return and reversal paths;
+- daily automated reconciliation with owned exception queues;
+- audited least-privilege access and secret handling;
+- incident, fraud, account-takeover, and vendor-support runbooks;
+- limits, alerts, kill switch, and per-org feature flags;
+- clear customer disclosures for fees, timing, returns, and support;
+- measured unit economics and approved pricing;
+- accounting export behavior verified with Arc Books.
+
+The launch metric is not payment volume alone. Track activation, percent of eligible
+bills paid through Arc, time from approval to vendor receipt, return/failure rate,
+manual exception rate, reconciliation breaks, support contacts, fraud loss, gross
+margin, and vendor onboarding reuse across builders.

@@ -13,6 +13,7 @@ import { upsertSubscriptionFromStripe } from "@/lib/services/subscriptions"
 import { authorize } from "@/lib/services/authorization"
 import { logger } from "@/lib/logging/logger"
 import { syncStripeConnectedAccountFromStripeAccount } from "@/lib/services/stripe-connected-accounts"
+import { processStripeApEvent } from "@/lib/services/payment-provider-events"
 
 function resolveActorUserId(metadata: unknown): string | undefined {
   if (!metadata || typeof metadata !== "object") {
@@ -93,6 +94,16 @@ export async function POST(request: NextRequest) {
   const domainEvent = mapStripeEventToDomain(event)
 
   try {
+    const apResult = await processStripeApEvent(event)
+    if (apResult.handled) {
+      await supabase
+        .from("webhook_events")
+        .update({ status: "processed", processed_at: new Date().toISOString() })
+        .eq("provider", "stripe")
+        .eq("provider_event_id", event.id)
+      return NextResponse.json({ received: true, duplicate: apResult.duplicate ?? false })
+    }
+
     if (event.type === "account.updated") {
       await syncStripeConnectedAccountFromStripeAccount(event.data.object as Stripe.Account)
       await supabase

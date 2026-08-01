@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation"
 
+import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { loadSelectionsAction } from "./actions"
 import { SelectionsPortalClient } from "./selections-client"
@@ -23,5 +24,13 @@ export default async function SelectionsPortalPage({ params }: Params) {
 
   const data = await loadSelectionsAction(token)
 
-  return <SelectionsPortalClient token={token} data={data} />
+  return (
+    <>
+      <PortalPageHeader
+        title="Choose your finishes"
+        description="Complete each group before its deadline. Your builder reviews the choices you confirm."
+      />
+      <SelectionsPortalClient token={token} data={data} />
+    </>
+  )
 }

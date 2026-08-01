@@ -46,6 +46,7 @@ const OPERATIONS = [
   { title: "Customers", description: "Orgs, subscriptions, status", href: "/admin/customers", icon: Users },
   { title: "User activity", description: "Who's using Arc, last active", href: "/admin/users", icon: User },
   { title: "Subscription plans", description: "Plans & pricing for Arc customers", href: "/admin/subscription-plans", icon: DollarSign },
+  { title: "Payment fees", description: "Processor costs, Arc fees, org overrides", href: "/admin/payment-fees", icon: DollarSign },
   { title: "Support contracts", description: "Support agreements", href: "/admin/support", icon: Shield },
   { title: "Feature flags", description: "Toggle system features", href: "/admin/features", icon: Settings },
   { title: "Analytics", description: "Usage and metrics", href: "/admin/analytics", icon: BarChart3 },

@@ -1,3 +1,4 @@
+import { cache } from "react"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { requireOrgMembership } from "@/lib/auth/context"
@@ -333,13 +334,15 @@ export async function getReleaseNotesOverview(limit = 50): Promise<ReleaseNotesO
   return { notes, unreadCount, announcement }
 }
 
-export async function getReleaseNotesSummary() {
+// Cached: the app shell reads this twice per render — once for the sidebar's
+// unread count, once for the announcement dialog — and they must not be two queries.
+export const getReleaseNotesSummary = cache(async () => {
   const overview = await getReleaseNotesOverview(20)
   return {
     unreadCount: overview.unreadCount,
     announcement: overview.announcement,
   }
-}
+})
 
 async function upsertReleaseNoteViews(
   releaseNoteIds: string[],

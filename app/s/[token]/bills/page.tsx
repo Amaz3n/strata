@@ -1,27 +1,23 @@
 import { notFound } from "next/navigation"
 import Link from "next/link"
-import { ArrowLeft, CheckCircle2, FileSignature } from "lucide-react"
+import { CheckCircle2, FileSignature } from "lucide-react"
 
-import { assertPortalActionAccess, loadSubPortalData } from "@/lib/services/portal-access"
-import { PortalHeader } from "@/components/portal/portal-header"
+import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
+import { SubmitInvoiceButton } from "@/components/portal/sub/sub-invoice-dialog"
+import {
+  assertPortalActionAccess,
+  loadSubPortalData,
+  loadSubPortalShellContext,
+} from "@/lib/services/portal-access"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { formatLocalDate, formatMoneyCents } from "@/lib/utils"
 
 interface SubBillsPageProps {
   params: Promise<{ token: string }>
 }
 
 export const revalidate = 0
-
-function formatCurrency(cents: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(cents / 100)
-}
 
 function canSignWaiver(status: string, lienWaiverStatus?: string | null): boolean {
   return (status === "approved" || status === "partial") && lienWaiverStatus !== "received"
@@ -48,70 +44,78 @@ export default async function SubBillsPage({ params }: SubBillsPageProps) {
     permissions: access.permissions,
   })
 
-  return (
-    <div className="min-h-screen flex flex-col bg-background">
-      <PortalHeader orgName={data.org.name} project={data.project} />
+  const invoiceableCommitments = data.commitments.filter(
+    (commitment) => commitment.status === "approved" && commitment.remaining_cents > 0,
+  )
+  const shell = await loadSubPortalShellContext({
+    orgId: access.org_id,
+    projectId: access.project_id,
+    companyId: access.company_id,
+    permissions: access.permissions,
+  })
+  const complianceBlocked = shell.blocksPaymentOnCompliance && !shell.isCompliant
 
-      <main className="flex-1 mx-auto w-full max-w-xl px-4 py-6 space-y-4">
-        <div>
-          <Button variant="ghost" size="sm" asChild className="-ml-2 mb-2">
-            <Link href={`/s/${token}`}>
-              <ArrowLeft className="h-4 w-4 mr-1" />
-              Back to Dashboard
-            </Link>
-          </Button>
-          <h1 className="text-xl font-semibold">Invoices</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Track submitted invoices and their status.
+  return (
+    <>
+      <PortalPageHeader
+        title="Invoices"
+        description="Every invoice you have submitted on this project, and where each one stands."
+        actions={
+          access.permissions.can_submit_invoices && invoiceableCommitments.length > 0 ? (
+            <SubmitInvoiceButton
+              token={token}
+              commitments={invoiceableCommitments}
+              companyName={data.company.name}
+              complianceBlocked={complianceBlocked}
+            />
+          ) : null
+        }
+      />
+
+      {data.bills.length === 0 ? (
+        <div className="border border-border bg-card px-4 py-12 text-center">
+          <p className="text-sm font-medium">No invoices submitted yet</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Invoices you submit against your contracts appear here.
           </p>
         </div>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">All Invoices</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {data.bills.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No invoices submitted yet</p>
-            ) : (
-              data.bills.map((bill) => (
-                <div key={bill.id} className="flex items-center justify-between gap-3 py-2 border-b last:border-0">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium truncate">{bill.bill_number}</p>
-                    <p className="text-xs text-muted-foreground truncate">{bill.commitment_title}</p>
-                    {bill.due_date && (
-                      <p className="text-xs text-muted-foreground">Due {new Date(bill.due_date).toLocaleDateString()}</p>
-                    )}
-                    {bill.lien_waiver_status === "received" && (
-                      <p className="mt-1 flex items-center gap-1 text-xs text-success">
-                        <CheckCircle2 className="h-3 w-3" />
-                        Waiver received
-                      </p>
-                    )}
-                  </div>
-                  <div className="shrink-0 text-right">
-                    <Badge
-                      variant={bill.status === "paid" ? "secondary" : bill.status === "approved" ? "outline" : "outline"}
-                      className="capitalize text-xs mb-1"
-                    >
-                      {bill.status}
-                    </Badge>
-                    <p className="text-sm font-medium">{formatCurrency(bill.total_cents)}</p>
-                    {canSignWaiver(bill.status, bill.lien_waiver_status) && (
-                      <Button asChild size="sm" className="mt-2 h-8">
-                        <Link href={`/s/${token}/waivers/${bill.id}`}>
-                          <FileSignature className="mr-1 h-3.5 w-3.5" />
-                          Sign waiver
-                        </Link>
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              ))
-            )}
-          </CardContent>
-        </Card>
-      </main>
-    </div>
+      ) : (
+        <ul className="divide-y divide-border border border-border bg-card">
+          {data.bills.map((bill) => (
+            <li key={bill.id} className="flex items-start justify-between gap-4 px-4 py-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">{bill.bill_number}</p>
+                <p className="truncate text-xs text-muted-foreground">{bill.commitment_title}</p>
+                {bill.due_date ? (
+                  <p className="text-xs tabular-nums text-muted-foreground">
+                    Due {formatLocalDate(bill.due_date, "MMM d, yyyy")}
+                  </p>
+                ) : null}
+                {bill.lien_waiver_status === "received" ? (
+                  <p className="mt-1 flex items-center gap-1 text-xs text-success">
+                    <CheckCircle2 className="size-3" />
+                    Waiver received
+                  </p>
+                ) : null}
+              </div>
+              <div className="shrink-0 text-right">
+                <Badge variant="outline" className="mb-1 text-xs capitalize">
+                  {bill.status}
+                </Badge>
+                <p className="text-sm font-medium tabular-nums">{formatMoneyCents(bill.total_cents)}</p>
+                {canSignWaiver(bill.status, bill.lien_waiver_status) ? (
+                  <Button asChild size="sm" className="mt-2 h-8">
+                    <Link href={`/s/${token}/waivers/${bill.id}`}>
+                      <FileSignature className="mr-1 size-3.5" />
+                      Sign waiver
+                    </Link>
+                  </Button>
+                ) : null}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
   )
 }

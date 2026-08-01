@@ -2,20 +2,15 @@
 
 import { useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
-import { Bell, FileText, Home, MessageSquare, Send } from "lucide-react"
-import { useIsMobile } from "@/components/ui/use-mobile"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { ExternalWorkspaceSwitcher } from "@/components/portal/external-workspace-switcher"
-import { BidBottomNav, type BidPortalTab } from "@/components/bid-portal/bid-bottom-nav"
 import { BidHomeTab } from "@/components/bid-portal/tabs/bid-home-tab"
 import { BidDocumentsTab } from "@/components/bid-portal/tabs/bid-documents-tab"
 import { BidAddendaTab } from "@/components/bid-portal/tabs/bid-addenda-tab"
 import { BidRfisTab } from "@/components/bid-portal/tabs/bid-rfis-tab"
-import { BidSubmitTab } from "@/components/bid-portal/tabs/bid-submit-tab"
 import { BidForm } from "@/components/bid-portal/bid-form"
 import { BidPortalPinGate } from "@/components/bid-portal/bid-portal-pin-gate"
-import { ExternalPortalShell } from "@/components/portal/external-portal-shell"
 import { cn } from "@/lib/utils"
 import { formatDeadline, getCountdown, packageStatusStyles } from "@/components/bid-portal/lib"
 import type {
@@ -43,34 +38,14 @@ export function BidPortalClient({
 }: BidPortalClientProps) {
   const router = useRouter()
   const [pinVerified, setPinVerified] = useState(!pinRequired)
-  const [activeTab, setActiveTab] = useState<BidPortalTab>("home")
   const [currentSubmission, setCurrentSubmission] = useState<BidPortalSubmission | undefined>(
     data.currentSubmission
   )
   const [addenda, setAddenda] = useState<BidPortalAddendum[]>(data.addenda)
-  const isMobile = useIsMobile()
 
   const unacknowledgedAddenda = useMemo(
     () => addenda.filter((a) => !a.acknowledged_at).length,
     [addenda]
-  )
-
-  const project = useMemo(
-    () => ({
-      id: access.project.id,
-      name: access.project.name,
-      status: access.project.status as
-        | "planning"
-        | "bidding"
-        | "active"
-        | "on_hold"
-        | "completed"
-        | "cancelled",
-      org_id: access.org_id,
-      created_at: "",
-      updated_at: "",
-    }),
-    [access.project, access.org_id]
   )
 
   const handleSubmissionChange = (submission: BidPortalSubmission) => setCurrentSubmission(submission)
@@ -104,77 +79,23 @@ export function BidPortalClient({
     )
   }
 
-  // ---- Mobile: tabbed shell ----
-  if (isMobile) {
-    const tabs = [
-      { id: "home" as const, label: "Home", icon: Home },
-      { id: "documents" as const, label: "Files", icon: FileText },
-      {
-        id: "addenda" as const,
-        label: "Addenda",
-        icon: Bell,
-        indicator:
-          unacknowledgedAddenda > 0 ? (
-            <span className="ml-1 h-2 w-2 rounded-full bg-destructive" />
-          ) : null,
-      },
-      { id: "rfis" as const, label: "RFIs", icon: MessageSquare },
-      {
-        id: "submit" as const,
-        label: "Submit",
-        icon: Send,
-        indicator: !currentSubmission ? <span className="ml-1 h-2 w-2 rounded-full bg-primary" /> : null,
-      },
-    ]
-
-    const renderTab = (tab: BidPortalTab) => {
-      if (tab === "home") return <BidHomeTab access={access} currentSubmission={currentSubmission} />
-      if (tab === "documents") return <BidDocumentsTab files={data.packageFiles} />
-      if (tab === "addenda")
-        return <BidAddendaTab addenda={addenda} token={token} onAddendaChange={handleAddendaChange} />
-      if (tab === "rfis") return <BidRfisTab token={token} initialRfis={data.rfis} />
-      return <BidSubmitTab {...bidFormProps} />
-    }
-
-    return (
-      <ExternalPortalShell
-        orgName={access.org.name}
-        project={project}
-        workspace={workspace}
-        logoUrl={access.org.logo_url}
-        isMobile
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        tabs={tabs}
-        renderTab={renderTab}
-        token={token}
-        tokenType="bid"
-        email={access.invite.invite_email ?? access.invite.contact?.email ?? access.invite.company?.email ?? ""}
-        suggestedFullName={access.invite.contact?.full_name ?? ""}
-        mobileNav={
-          <BidBottomNav
-            activeTab={activeTab}
-            onTabChange={setActiveTab}
-            unacknowledgedAddenda={unacknowledgedAddenda}
-            hasSubmission={!!currentSubmission}
-          />
-        }
-      />
-    )
-  }
-
-  // ---- Desktop: single scrollable page ----
+  // Responding to a bid is a linear task, not a workspace: one scrollable page
+  // at every size, so nothing a bidder must read before pricing hides in a tab.
   return (
     <div className="min-h-screen bg-background font-sans">
       <BidStickyHeader access={access} workspace={workspace} currentSubmission={currentSubmission} />
-      <main className="mx-auto w-full max-w-4xl space-y-12 px-6 py-8">
+      <main className="mx-auto w-full max-w-4xl space-y-10 px-4 py-6 sm:px-6 sm:py-8 md:space-y-12">
         <PortalSection id="brief" title="Package brief">
           <BidHomeTab access={access} currentSubmission={currentSubmission} />
         </PortalSection>
         <PortalSection id="documents" title="Documents">
           <BidDocumentsTab files={data.packageFiles} />
         </PortalSection>
-        <PortalSection id="addenda" title="Addenda">
+        <PortalSection
+          id="addenda"
+          title="Addenda"
+          badge={unacknowledgedAddenda > 0 ? `${unacknowledgedAddenda} to acknowledge` : undefined}
+        >
           <BidAddendaTab addenda={addenda} token={token} onAddendaChange={handleAddendaChange} />
         </PortalSection>
         <PortalSection id="questions" title="Questions & answers">
@@ -191,17 +112,26 @@ export function BidPortalClient({
 function PortalSection({
   id,
   title,
+  badge,
   children,
 }: {
   id: string
   title: string
+  badge?: string
   children: React.ReactNode
 }) {
   return (
     <section id={id} className="scroll-mt-28 space-y-4">
-      <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-        {title}
-      </h2>
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+          {title}
+        </h2>
+        {badge ? (
+          <Badge variant="outline" className="border-warning/30 bg-warning/10 text-[11px] text-warning">
+            {badge}
+          </Badge>
+        ) : null}
+      </div>
       {children}
     </section>
   )

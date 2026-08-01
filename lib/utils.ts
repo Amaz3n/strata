@@ -14,6 +14,21 @@ export function formatMoneyCents(cents?: number | null): string {
   return dollars.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
 }
 
+/**
+ * Exact USD to the cent, e.g. 123456 -> "$1,234.56". Use wherever the figure is
+ * the operative amount on a document someone signs or pays against — lien
+ * waivers, payment authorisations — where rounding to whole dollars would
+ * misstate it.
+ */
+export function formatMoneyCentsExact(cents?: number | null): string {
+  return ((cents ?? 0) / 100).toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}
+
 export function formatPhone(phone?: string | null): string {
   if (!phone) return ""
   const digits = phone.replace(/\D/g, "")

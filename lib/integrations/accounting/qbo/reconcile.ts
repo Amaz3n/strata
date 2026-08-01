@@ -6,6 +6,7 @@ import { extractIntuitEntityEvents, verifyIntuitWebhookSignature } from "@/lib/i
 import { qboPurchaseIsCredit } from "@/lib/integrations/accounting/qbo/import-rules"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { logQBO } from "@/lib/services/accounting-logger"
+import { recordEvent } from "@/lib/services/events"
 import { rememberAccountingInvoiceNumberCursor } from "@/lib/services/invoice-numbers"
 
 const CDC_ENTITIES = ["Invoice", "Payment", "Purchase", "Bill", "BillPayment"]
@@ -772,6 +773,17 @@ export async function ingestQboCdcChanges(input: {
     .maybeSingle()
   if (!connection?.org_id) return { scanned: 0, inserted: 0 }
 
+  const { data: booksPosture, error: booksPostureError } = await supabase
+    .from("books_settings")
+    .select("ledger_authority, external_sync_posture")
+    .eq("org_id", connection.org_id)
+    .maybeSingle()
+  // During the additive migration rollout the table may not exist yet. Preserve
+  // existing external-authoritative behavior in that one compatibility case.
+  if (!booksPostureError && booksPosture?.ledger_authority === "arc") {
+    return { scanned: 0, inserted: 0 }
+  }
+
   const settings = (connection.settings as Record<string, unknown> | null) ?? {}
   const storedCursor = typeof settings.qbo_cdc_last_synced_at === "string" ? settings.qbo_cdc_last_synced_at : null
   const cursorMs =
@@ -915,6 +927,25 @@ export async function drainQboInboundEvents(input: { limit: number }): Promise<{
 
       if (!connection?.org_id || !connection?.id) {
         await markEventProcessed(supabase, row.id, "ignored", "No active org connection for realm")
+        processed += 1
+        continue
+      }
+
+      const { data: booksPosture, error: booksPostureError } = await supabase
+        .from("books_settings")
+        .select("ledger_authority, external_sync_posture")
+        .eq("org_id", connection.org_id)
+        .maybeSingle()
+      if (!booksPostureError && booksPosture?.ledger_authority === "arc") {
+        await markEventProcessed(supabase, row.id, "ignored", "Arc is authoritative; external changes are drift-only")
+        await recordEvent({
+          orgId: connection.org_id,
+          eventType: "books.external_drift_detected",
+          entityType: "accounting_connection",
+          entityId: connection.id,
+          payload: { provider: "qbo", entity_name: row.entity_name, external_id: row.entity_qbo_id, operation: row.operation },
+          channel: "notification",
+        })
         processed += 1
         continue
       }

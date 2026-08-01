@@ -15,6 +15,7 @@ import {
   listPlanLots,
   listSelectionTemplateCategories,
 } from "@/lib/services/house-plans"
+import { listFloorplanModelStatuses } from "@/lib/services/floorplan-models"
 import { listChecklistTemplates } from "@/lib/services/inspections"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { listTemplates } from "@/lib/services/schedule"
@@ -58,6 +59,11 @@ export default async function PlanDetailPage({ params }: { params: Promise<{ id:
   if (!plan) notFound()
   const permissions = permissionResult.permissions
   const elevated = permissions.includes("*") || permissions.includes("org.admin")
+  // Status only: model geometry is fetched by the panel for the edition on
+  // screen, so a plan with four editions does not ship four models.
+  const floorplanModels = await listFloorplanModelStatuses(
+    (plan.versions ?? []).map((version) => version.id),
+  ).catch(() => new Map())
   return (
     <PageLayout
       title={`${plan.code} — ${plan.name}`}
@@ -78,6 +84,7 @@ export default async function PlanDetailPage({ params }: { params: Promise<{ id:
         communities={communities}
         availability={availability}
         cycleMedianDays={cycle.find((row) => row.groupKey === id)?.medianDays ?? null}
+        floorplanModels={floorplanModels}
         canWrite={elevated || permissions.includes("plan.write")}
         canRelease={elevated || permissions.includes("plan.release")}
       />

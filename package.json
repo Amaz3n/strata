@@ -9,7 +9,7 @@
     "db:schema:check": "bash ./scripts/check-schema-sync.sh",
     "lint": "eslint . --quiet",
     "lint:tokens": "eslint app components --ext .tsx --format compact",
-    "test:financials": "node --test tests/financials-regression.test.js tests/qbo-import-reliability.test.js tests/accounting-abstraction.test.js tests/accounting-qbo-adapter.test.js tests/pay-app-math.test.js tests/change-order-math.test.js tests/budget-transfer-math.test.js tests/plan-pricing.test.js tests/takeoff-import.test.js tests/takeoff-measure.test.js tests/takeoff-scale.test.js tests/option-catalog-design-studio.test.js tests/price-resolution.test.js tests/po-generation-math.test.js tests/vpo-approval-thresholds.test.js tests/purchase-agreement-pricing.test.js tests/warranty-service.test.js",
+    "test:financials": "node --test tests/financials-regression.test.js tests/qbo-import-reliability.test.js tests/accounting-abstraction.test.js tests/accounting-qbo-adapter.test.js tests/pay-app-math.test.js tests/change-order-math.test.js tests/budget-transfer-math.test.js tests/plan-pricing.test.js tests/takeoff-import.test.js tests/takeoff-measure.test.js tests/takeoff-scale.test.js tests/option-catalog-design-studio.test.js tests/price-resolution.test.js tests/po-generation-math.test.js tests/vpo-approval-thresholds.test.js tests/purchase-agreement-pricing.test.js tests/warranty-service.test.js tests/fintech-payment-domain.test.js tests/arc-books.test.js",
     "test:auth": "node --test tests/authorization-policy.test.js",
     "test:mobile": "node --test tests/mobile-api-contract.test.js",
     "test:schedule": "node --test tests/schedule-calc.test.js",
@@ -17,6 +17,7 @@
     "test:starts": "node --test tests/starts.test.js",
     "test:onboarding": "node --test tests/onboarding-imports.test.js",
     "test:drawings": "node --test tests/drawing-viewer-scene.test.js tests/takeoff-snap.test.js tests/takeoff-vector-merge.test.js",
+    "test:floorplan": "node --test tests/floorplan-interpret.test.js tests/floorplan-geometry.test.js tests/floorplan-golden.test.js tests/floorplan-vision.test.js",
     "start": "next start"
   },
   "dependencies": {
@@ -108,6 +109,8 @@
     "stripe": "^17.6.0",
     "tailwind-merge": "^2.5.5",
     "tailwindcss-animate": "^1.0.7",
+    "three": "^0.180.0",
+    "thumbhash": "^0.1.1",
     "vaul": "^1.1.2",
     "zod": "3.25.76"
   },
@@ -117,6 +120,7 @@
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/three": "^0.180.0",
     "@webgpu/types": "^0.1.71",
     "eslint": "^8.57.1",
     "eslint-config-next": "^15.0.4",

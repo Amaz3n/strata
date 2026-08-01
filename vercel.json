@@ -61,6 +61,10 @@
       "schedule": "30 13 * * *"
     },
     {
+      "path": "/api/jobs/payment-controls",
+      "schedule": "35 13 * * *"
+    },
+    {
       "path": "/api/jobs/task-reminders",
       "schedule": "*/15 * * * *"
     },
@@ -89,8 +93,28 @@
       "schedule": "15 4 * * *"
     },
     {
+      "path": "/api/jobs/books-projection",
+      "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/jobs/books-maintenance",
+      "schedule": "15 5 * * *"
+    },
+    {
+      "path": "/api/jobs/accounting-reconciliation",
+      "schedule": "45 4 * * *"
+    },
+    {
+      "path": "/api/jobs/bank-feed-sync",
+      "schedule": "*/15 * * * *"
+    },
+    {
       "path": "/api/jobs/report-schedules",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/jobs/session-cleanup",
+      "schedule": "45 3 * * *"
     }
   ],
   "functions": {
@@ -142,6 +166,9 @@
     "app/api/jobs/late-fees/route.ts": {
       "maxDuration": 120
     },
+    "app/api/jobs/payment-controls/route.ts": {
+      "maxDuration": 300
+    },
     "app/api/jobs/task-reminders/route.ts": {
       "maxDuration": 120
     },
@@ -158,6 +185,12 @@
       "maxDuration": 120
     },
     "app/api/jobs/forecast-snapshots/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/jobs/books-projection/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/jobs/books-maintenance/route.ts": {
       "maxDuration": 300
     },
     "app/api/jobs/report-schedules/route.ts": {

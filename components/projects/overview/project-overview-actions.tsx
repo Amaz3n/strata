@@ -9,7 +9,7 @@ import type {
   Project,
   Contact,
   PortalAccessToken,
-  ExternalPortalAccount,
+  ExternalIdentity,
   Proposal,
   Contract,
   DrawSchedule,
@@ -96,7 +96,7 @@ export function ProjectOverviewActions({
   const [manageTeamOpen, setManageTeamOpen] = useState(false)
 
   const [portalTokensState, setPortalTokensState] = useState<PortalAccessToken[]>(initialPortalTokens)
-  const [externalAccounts, setExternalAccounts] = useState<ExternalPortalAccount[]>([])
+  const [externalAccounts, setExternalAccounts] = useState<ExternalIdentity[]>([])
   const [sharingLoading, setSharingLoading] = useState(false)
   const [sharingInitialized, setSharingInitialized] = useState(Boolean(initialPortalTokens.length))
   const [accountsInitialized, setAccountsInitialized] = useState(false)

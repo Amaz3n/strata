@@ -131,15 +131,9 @@ export function SelectionsPortalClient({ token, data }: Props) {
   }
 
   return (
-    <main className="min-h-screen bg-background px-4 py-8">
-      <div className="mx-auto max-w-4xl space-y-6">
-        <header className="border-b pb-4">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Project selections</p>
-          <h1 className="mt-1 text-2xl font-semibold">Choose and confirm your finishes</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Complete each group before its deadline. Your builder will review the confirmed choices.</p>
-        </header>
-
-        {grouped.length === 0 && <div className="border p-8 text-center text-sm text-muted-foreground">No selections have been assigned yet.</div>}
+    <div>
+      <div className="space-y-6">
+        {grouped.length === 0 && <div className="border border-border p-8 text-center text-sm text-muted-foreground">No selections have been assigned yet.</div>}
 
         {grouped.map((group) => {
           const selectedCount = group.items.filter((item) => item.selected_option_id).length
@@ -199,6 +193,6 @@ export function SelectionsPortalClient({ token, data }: Props) {
           )
         })}
       </div>
-    </main>
+    </div>
   )
 }

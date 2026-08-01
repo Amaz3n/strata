@@ -40,6 +40,8 @@ import { processQuickCaptureDraft } from "@/lib/services/quick-capture"
 import { processPhotoCaption } from "@/lib/services/photo-intelligence"
 import { classifyProjectEmail, processInboundProjectEmail } from "@/lib/services/project-email-ingest"
 import { sendVendorBillWaiverChase } from "@/lib/services/payment-holds"
+import { FLOORPLAN_INTERPRET_JOB, runFloorplanInterpretation } from "@/lib/services/floorplan-models"
+import { floorplanTargetSchema } from "@/lib/validation/floorplan"
 import type { SearchEntityType } from "@/lib/services/search-config"
 
 // Use @napi-rs/canvas's DOMMatrix, DOMPoint, DOMRect, ImageData, Path2D for PDF.js
@@ -468,7 +470,7 @@ async function processOutboxQueue(request: NextRequest) {
   const { data: jobs, error } = await supabase
     .from("outbox")
     .select("*")
-    .in("job_type", ["deliver_notification", "deliver_push", "send_daily_log_mention_email", "send_esign_executed_email", "send_bid_email", "process_esign_execution_side_effects", "refresh_drawing_sheets_list", "index_file", "generate_file_preview", "reindex_search", "remove_search_index", "process_inbound_bill_email", "selection_cutoff_recompute", "warranty_enroll_coverage", "reanchor_takeoff_markups", "process_quick_capture", "caption_photo", "process_inbound_project_email", "classify_project_email", "chase_vendor_bill_waiver"])
+    .in("job_type", ["deliver_notification", "deliver_push", "send_daily_log_mention_email", "send_esign_executed_email", "send_bid_email", "process_esign_execution_side_effects", "refresh_drawing_sheets_list", "index_file", "generate_file_preview", "reindex_search", "remove_search_index", "process_inbound_bill_email", "selection_cutoff_recompute", "warranty_enroll_coverage", "reanchor_takeoff_markups", "process_quick_capture", "caption_photo", "process_inbound_project_email", "classify_project_email", "chase_vendor_bill_waiver", FLOORPLAN_INTERPRET_JOB])
     .eq("status", "pending")
     .lte("run_at", now)
     .order("created_at", { ascending: false })
@@ -550,6 +552,10 @@ async function processOutboxQueue(request: NextRequest) {
         const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
         if (!billId) throw new Error("Waiver chase is missing bill_id")
         await sendVendorBillWaiverChase(job.org_id, billId)
+      } else if (job.job_type === FLOORPLAN_INTERPRET_JOB) {
+        const target = floorplanTargetSchema.safeParse(job.payload?.target)
+        if (!target.success) throw new Error("Floorplan interpretation has no valid target")
+        await runFloorplanInterpretation({ orgId: job.org_id, target: target.data })
       } else {
         await supabase
           .from("outbox")
@@ -1439,14 +1445,57 @@ async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceS
       return
     }
 
+    const safeBaseName = file.file_name.replace(/[^a-zA-Z0-9.-]/g, "_")
+    const previewDir = `${file.org_id}/${file.project_id ?? "general"}/documents/previews/${file.id}`
+    const stamp = Date.now()
+
+    // Images get the full responsive ladder plus a thumbhash placeholder; HEIC
+    // is normalized to JPEG first because sharp cannot decode it directly here.
+    if (mimeType.startsWith("image/") || isHeic) {
+      const normalized = isHeic ? await heicToJpegBuffer(sourceBytes) : sourceBytes
+      const previewSet = await generateImagePreviewSet(normalized)
+
+      const sizes: Array<{ width: number; path: string; content_type: string }> = []
+      for (const variant of previewSet.variants) {
+        const path = `${previewDir}/${stamp}_${variant.width}_${safeBaseName}.${variant.extension}`
+        await uploadFilesObject({
+          supabase,
+          orgId: file.org_id,
+          path,
+          bytes: variant.bytes,
+          contentType: variant.contentType,
+          cacheControl: "private, max-age=86400",
+        })
+        sizes.push({ width: variant.width, path, content_type: variant.contentType })
+      }
+
+      // `thumbnail_path` keeps pointing at a single WebP so every existing
+      // reader keeps working; `sizes` is what the responsive readers use.
+      const primary =
+        previewSet.variants.find((v) => v.contentType === "image/webp" && v.width >= 960) ??
+        previewSet.variants.find((v) => v.contentType === "image/webp") ??
+        previewSet.variants[0]
+      const primaryPath = sizes.find(
+        (entry) => entry.width === primary.width && entry.content_type === primary.contentType,
+      )?.path
+
+      await updateFilePreviewMetadata(supabase, file.id, metadata, {
+        status: "ready",
+        thumbnail_path: primaryPath,
+        width: previewSet.width,
+        height: previewSet.height,
+        thumbhash: previewSet.thumbhash,
+        sizes,
+        content_type: primary.contentType,
+        generated_at: new Date().toISOString(),
+      })
+      return
+    }
+
     const preview =
-      mimeType.startsWith("image/") || isHeic
-        ? isHeic
-          ? await generateHeicJpegPreview(sourceBytes)
-          : await generateImageThumbnail(sourceBytes)
-        : mimeType === "application/pdf"
-          ? await generatePdfThumbnail(sourceBytes, file.file_name)
-          : null
+      mimeType === "application/pdf"
+        ? await generatePdfThumbnail(sourceBytes, file.file_name)
+        : null
 
     if (!preview) {
       await updateFilePreviewMetadata(supabase, file.id, metadata, {
@@ -1457,9 +1506,8 @@ async function generateFilePreviewJob(supabase: ReturnType<typeof createServiceS
       return
     }
 
-    const safeBaseName = file.file_name.replace(/[^a-zA-Z0-9.-]/g, "_")
     const extension = preview.contentType === "image/jpeg" ? "jpg" : "webp"
-    const thumbnailPath = `${file.org_id}/${file.project_id ?? "general"}/documents/previews/${file.id}/${Date.now()}_${safeBaseName}.${extension}`
+    const thumbnailPath = `${previewDir}/${stamp}_${safeBaseName}.${extension}`
     await uploadFilesObject({
       supabase,
       orgId: file.org_id,
@@ -1508,27 +1556,87 @@ async function updateFilePreviewMetadata(
   }
 }
 
-async function generateImageThumbnail(
-  sourceBytes: Buffer
-): Promise<{ bytes: Uint8Array; width: number; height: number; contentType: string }> {
-  const sharp = (await import("sharp")).default
-  const result = await sharp(sourceBytes, { limitInputPixels: false })
-    .rotate()
-    .resize(640, 640, { fit: "inside", withoutEnlargement: true })
-    .webp({ quality: 78 })
-    .toBuffer({ resolveWithObject: true })
+/** Ladder rungs, in CSS pixels: grid thumb, detail view, full-bleed. */
+const PREVIEW_LADDER_WIDTHS = [320, 960, 2048] as const
 
-  return {
-    bytes: new Uint8Array(result.data),
-    width: result.info.width,
-    height: result.info.height,
-    contentType: "image/webp",
-  }
+interface PreviewVariant {
+  width: number
+  bytes: Uint8Array
+  contentType: string
+  extension: string
 }
 
-async function generateHeicJpegPreview(
-  sourceBytes: Buffer
-): Promise<{ bytes: Uint8Array; width: number; height: number; contentType: string }> {
+interface ImagePreviewSet {
+  /** Source dimensions, after EXIF rotation — what callers reserve space with. */
+  width: number
+  height: number
+  /** base64 thumbhash (~28 bytes decoded) for the instant placeholder. */
+  thumbhash: string
+  variants: PreviewVariant[]
+}
+
+/**
+ * One decode, everything the front end needs: source dimensions (so grids can
+ * reserve aspect ratio and stop shifting), a thumbhash placeholder, and a
+ * WebP + AVIF ladder so a 48-photo grid fetches thumbnails rather than
+ * full-resolution originals.
+ */
+async function generateImagePreviewSet(sourceBytes: Buffer): Promise<ImagePreviewSet> {
+  const sharp = (await import("sharp")).default
+  const { rgbaToThumbHash } = await import("thumbhash")
+
+  const source = sharp(sourceBytes, { limitInputPixels: false }).rotate()
+  const metadata = await source.metadata()
+  const sourceWidth = metadata.width ?? 0
+  const sourceHeight = metadata.height ?? 0
+
+  // thumbhash takes a max-100x100 RGBA raster.
+  const hashRaster = await source
+    .clone()
+    .resize(100, 100, { fit: "inside", withoutEnlargement: true })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+  const thumbhash = Buffer.from(
+    rgbaToThumbHash(hashRaster.info.width, hashRaster.info.height, hashRaster.data),
+  ).toString("base64")
+
+  const variants: PreviewVariant[] = []
+  for (const target of PREVIEW_LADDER_WIDTHS) {
+    // Never upscale — but always emit the smallest rung so tiny sources still
+    // have a grid thumbnail.
+    if (sourceWidth && target > sourceWidth && target !== PREVIEW_LADDER_WIDTHS[0]) continue
+
+    const resized = source
+      .clone()
+      .resize(target, null, { fit: "inside", withoutEnlargement: true })
+
+    // AVIF effort is capped at 4: higher settings triple job time for a few
+    // percent of file size, and this runs inside the outbox worker.
+    const [webp, avif] = await Promise.all([
+      resized.clone().webp({ quality: 78 }).toBuffer({ resolveWithObject: true }),
+      resized.clone().avif({ quality: 50, effort: 4 }).toBuffer({ resolveWithObject: true }),
+    ])
+
+    variants.push({
+      width: webp.info.width,
+      bytes: new Uint8Array(webp.data),
+      contentType: "image/webp",
+      extension: "webp",
+    })
+    variants.push({
+      width: avif.info.width,
+      bytes: new Uint8Array(avif.data),
+      contentType: "image/avif",
+      extension: "avif",
+    })
+  }
+
+  return { width: sourceWidth, height: sourceHeight, thumbhash, variants }
+}
+
+/** sharp cannot decode HEIC in this build, so normalize to JPEG bytes first. */
+async function heicToJpegBuffer(sourceBytes: Buffer): Promise<Buffer> {
   const convertModule = await import("heic-convert")
   const convert = (convertModule as any).default ?? convertModule
   const jpegBytes = await convert({
@@ -1536,20 +1644,7 @@ async function generateHeicJpegPreview(
     format: "JPEG",
     quality: 0.92,
   })
-
-  const sharp = (await import("sharp")).default
-  const result = await sharp(Buffer.from(jpegBytes), { limitInputPixels: false })
-    .rotate()
-    .resize(2048, 2048, { fit: "inside", withoutEnlargement: true })
-    .jpeg({ quality: 86, mozjpeg: true })
-    .toBuffer({ resolveWithObject: true })
-
-  return {
-    bytes: new Uint8Array(result.data),
-    width: result.info.width,
-    height: result.info.height,
-    contentType: "image/jpeg",
-  }
+  return Buffer.from(jpegBytes)
 }
 
 async function generatePdfThumbnail(

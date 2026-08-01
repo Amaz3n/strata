@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { AnimatePresence, motion } from "framer-motion"
-import { OptimisticLink, useOptimisticPathname } from "@/lib/navigation/optimistic-pathname"
+import { OptimisticLink, useOptimisticNavigate, useOptimisticPathname } from "@/lib/navigation/optimistic-pathname"
 import {
   ArrowLeft,
   BarChart3,
@@ -55,6 +55,7 @@ import type { User } from "@/lib/types"
 import type { ProductTier } from "@/lib/product-tier"
 import { terminology } from "@/lib/terminology"
 import { useSidebarProjects } from "./use-sidebar-projects"
+import { useNavigationBadges } from "./navigation-badge-context"
 import {
   buildProjectNavGroups,
   getProjectIdFromPath,
@@ -66,18 +67,14 @@ import {
 
 interface AppSidebarProps {
   user?: User | null
-  pipelineBadgeCount?: number
-  myWorkBadgeCount?: number
-  readyToBillBadgeCount?: number
-  projectReviewBadgeCounts?: Record<string, number>
   canAccessPlatform?: boolean
   permissions?: string[]
-  whatsNewUnreadCount?: number
   productTier?: ProductTier
   hasDivisions?: boolean
   showProductionNavigation?: boolean
   showPurchasingNavigation?: boolean
   showPipelineNavigation?: boolean
+  booksEnabled?: boolean
 }
 
 type SidebarNavSubItem = ProjectNavSubItem
@@ -110,8 +107,10 @@ const settingsSections: SidebarNavSection[] = [
     label: "Financial",
     items: [
       { title: "Invoicing", url: "/settings?tab=invoicing", icon: Receipt },
+      { title: "Accounting", url: "/settings?tab=accounting", icon: FileSpreadsheet },
       { title: "Cost coding", url: "/settings/cost-coding", icon: Tag },
       { title: "Vendor compliance", url: "/settings?tab=compliance", icon: ShieldCheck },
+      { title: "Vendor payments", url: "/settings?tab=payments", icon: Wallet, requiredAny: ["payment.release"] },
       { title: "Integrations", url: "/settings?tab=integrations", icon: Link2 },
     ],
   },
@@ -248,6 +247,13 @@ function buildWorkspaceGroups(
       isActive: pathname.startsWith("/reports"),
       requiredAny: ["report.read"],
     },
+    {
+      title: "Books",
+      url: "/books",
+      icon: FileSpreadsheet,
+      isActive: pathname.startsWith("/books"),
+      requiredAny: ["books.read"],
+    },
   ]
 
   if (productTier === "commercial") {
@@ -354,21 +360,25 @@ function buildWorkspaceGroups(
 
 export function AppSidebar({
   user,
-  pipelineBadgeCount,
-  myWorkBadgeCount,
-  readyToBillBadgeCount,
-  projectReviewBadgeCounts = {},
   canAccessPlatform,
   permissions = [],
-  whatsNewUnreadCount = 0,
   productTier = "residential",
   hasDivisions = false,
   showProductionNavigation = false,
   showPurchasingNavigation = false,
   showPipelineNavigation = true,
+  booksEnabled = false,
 }: AppSidebarProps) {
+  const {
+    pipelineBadgeCount,
+    myWorkBadgeCount,
+    readyToBillBadgeCount,
+    projectReviewBadgeCounts,
+    whatsNewUnreadCount,
+  } = useNavigationBadges()
   const pathname = useOptimisticPathname()
   const router = useRouter()
+  const navigate = useOptimisticNavigate()
   const searchParams = useSearchParams()
   const isSettings = pathname.startsWith("/settings")
   const projectId = getProjectIdFromPath(pathname)
@@ -400,7 +410,7 @@ export function AppSidebar({
       return
     }
 
-    router.push(item.url)
+    navigate(item.url)
   }
   useEffect(() => {
     setActiveSettingsTab(searchParams.get("tab") ?? "profile")
@@ -420,11 +430,15 @@ export function AppSidebar({
         permissionSet,
       )
     }
-    return filterGroups(
+    const groups = filterGroups(
       buildWorkspaceGroups(pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, productTier, showProductionNavigation, showPurchasingNavigation, showPipelineNavigation),
       permissionSet,
     )
-  }, [isSettings, isProject, projectId, section, currentProject, pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, permissionSet, projectReviewBadgeCounts, productTier, showProductionNavigation, showPurchasingNavigation, showPipelineNavigation])
+    return groups.map((group) => ({
+      ...group,
+      items: group.items.filter((item) => item.title !== "Books" || booksEnabled),
+    })).filter((group) => group.items.length > 0)
+  }, [isSettings, isProject, projectId, section, currentProject, pathname, pipelineBadgeCount, myWorkBadgeCount, readyToBillBadgeCount, canAccessPlatform, permissionSet, projectReviewBadgeCounts, productTier, showProductionNavigation, showPurchasingNavigation, showPipelineNavigation, booksEnabled])
 
   const navMain = navGroups.map((group) => ({
     ...group,
@@ -470,7 +484,7 @@ export function AppSidebar({
                   <SidebarMenuButton
                     tooltip="Back"
                     onClick={() => {
-                      router.push(settingsReturnTo)
+                      navigate(settingsReturnTo)
                     }}
                     className="h-10 text-xs uppercase tracking-wider text-sidebar-foreground/70 hover:text-sidebar-foreground"
                   >

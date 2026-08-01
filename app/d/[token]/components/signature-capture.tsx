@@ -10,6 +10,14 @@ import { Label } from "@/components/ui/label"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 
+/**
+ * Ink for the rasterised signature. Deliberately a fixed dark value rather than
+ * a theme token: the canvas is exported to PNG and stamped onto white PDF
+ * pages, so a signer in dark mode must not produce near-white ink that
+ * disappears on the executed document.
+ */
+const SIGNATURE_INK = "oklch(0.14 0.02 260)"
+
 type SignatureTab = "draw" | "type" | "upload"
 
 type FontOption = {
@@ -80,7 +88,7 @@ export function SignatureCapture({ fieldLabel, adoptedSignature, onApply }: Sign
     context.lineWidth = 2
     context.lineJoin = "round"
     context.lineCap = "round"
-    context.strokeStyle = "#0f172a"
+    context.strokeStyle = SIGNATURE_INK
     contextRef.current = context
   }
 
@@ -204,7 +212,7 @@ export function SignatureCapture({ fieldLabel, adoptedSignature, onApply }: Sign
     if (!context) return null
 
     context.clearRect(0, 0, canvas.width, canvas.height)
-    context.fillStyle = "#0f172a"
+    context.fillStyle = SIGNATURE_INK
     context.font = `116px ${selectedFont.family}`
     context.textBaseline = "middle"
     context.fillText(typedName.trim(), 44, canvas.height / 2)

@@ -1,4 +1,5 @@
-import { createHmac, randomBytes } from "crypto"
+import { randomBytes } from "crypto"
+import { hashBidToken } from "@/lib/services/portal-credentials"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
@@ -367,14 +368,6 @@ function mapBidSubmissionBenchmark(row: any): BidSubmissionBenchmark {
   }
 }
 
-function requireBidPortalSecret() {
-  const secret = process.env.BID_PORTAL_SECRET
-  if (!secret) {
-    throw new Error("Missing BID_PORTAL_SECRET environment variable")
-  }
-  return secret
-}
-
 function getAppUrl() {
   const url =
     process.env.NEXT_PUBLIC_APP_URL ||
@@ -415,10 +408,10 @@ async function createBidInviteLink({
   markSent: boolean
   revokeExisting?: boolean
 }): Promise<{ url: string; token: string }> {
-  const secret = requireBidPortalSecret()
+
   const now = new Date().toISOString()
   const token = randomBytes(32).toString("hex")
-  const tokenHash = createHmac("sha256", secret).update(token).digest("hex")
+  const tokenHash = hashBidToken(token)
 
   const { data: invite, error: inviteError } = await supabase
     .from("bid_invites")
@@ -1793,7 +1786,7 @@ export async function listBidInvites(bidPackageId: string, orgId?: string): Prom
 
   if (allTokenIds.length > 0) {
     const { data: grantRows, error: grantError } = await supabase
-      .from("external_portal_account_grants")
+      .from("external_identity_grants")
       .select("bid_access_token_id, status")
       .eq("org_id", resolvedOrgId)
       .in("bid_access_token_id", allTokenIds)

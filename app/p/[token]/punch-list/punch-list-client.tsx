@@ -112,14 +112,8 @@ export function PunchListPortalClient({ token, items: initialItems }: Props) {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-background to-muted px-4 py-6">
-      <div className="mx-auto max-w-4xl space-y-4">
-        <header className="space-y-1 text-center">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">Punch List</p>
-          <h1 className="text-2xl font-bold">Add and track items</h1>
-          <p className="text-sm text-muted-foreground">Create items during walkthroughs with photos later.</p>
-        </header>
-
+    <div>
+      <div className="space-y-4">
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Add new item</CardTitle>

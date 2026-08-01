@@ -29,6 +29,7 @@ export const CRON_JOBS: CronJobDefinition[] = [
   { name: "compliance-autopilot", path: "/api/jobs/compliance-autopilot", schedule: "20 13 * * *", scheduleLabel: "Daily 13:20 UTC", expectedIntervalMinutes: 1440 },
   { name: "esign", path: "/api/jobs/esign", schedule: "25 13 * * *", scheduleLabel: "Daily 13:25 UTC", expectedIntervalMinutes: 1440 },
   { name: "late-fees", path: "/api/jobs/late-fees", schedule: "30 13 * * *", scheduleLabel: "Daily 13:30 UTC", expectedIntervalMinutes: 1440 },
+  { name: "payment-controls", path: "/api/jobs/payment-controls", schedule: "35 13 * * *", scheduleLabel: "Daily 13:35 UTC", expectedIntervalMinutes: 1440 },
   { name: "task-reminders", path: "/api/jobs/task-reminders", schedule: "*/15 * * * *", scheduleLabel: "Every 15 min", expectedIntervalMinutes: 15 },
   { name: "selection-cutoff-sweep", path: "/api/jobs/selection-cutoff-sweep", schedule: "45 12 * * *", scheduleLabel: "Daily 12:45 UTC", expectedIntervalMinutes: 1440 },
   { name: "purchasing-maintenance", path: "/api/jobs/purchasing-maintenance", schedule: "50 12 * * *", scheduleLabel: "Daily 12:50 UTC", expectedIntervalMinutes: 1440 },
@@ -36,7 +37,12 @@ export const CRON_JOBS: CronJobDefinition[] = [
   { name: "warranty-sla-sweep", path: "/api/jobs/warranty-sla-sweep", schedule: "5 * * * *", scheduleLabel: "Hourly", expectedIntervalMinutes: 60 },
   { name: "invoice-schedules", path: "/api/jobs/invoice-schedules", schedule: "40 13 * * *", scheduleLabel: "Daily 13:40 UTC", expectedIntervalMinutes: 1440 },
   { name: "forecast-snapshots", path: "/api/jobs/forecast-snapshots", schedule: "15 4 * * *", scheduleLabel: "Daily 04:15 UTC", expectedIntervalMinutes: 1440 },
+  { name: "books-projection", path: "/api/jobs/books-projection", schedule: "*/10 * * * *", scheduleLabel: "Every 10 min", expectedIntervalMinutes: 10 },
+  { name: "books-maintenance", path: "/api/jobs/books-maintenance", schedule: "15 5 * * *", scheduleLabel: "Daily 05:15 UTC", expectedIntervalMinutes: 1440 },
+  { name: "accounting-reconciliation", path: "/api/jobs/accounting-reconciliation", schedule: "45 4 * * *", scheduleLabel: "Daily 04:45 UTC", expectedIntervalMinutes: 1440 },
+  { name: "bank-feed-sync", path: "/api/jobs/bank-feed-sync", schedule: "*/15 * * * *", scheduleLabel: "Every 15 min", expectedIntervalMinutes: 15 },
   { name: "report-schedules", path: "/api/jobs/report-schedules", schedule: "0 * * * *", scheduleLabel: "Hourly", expectedIntervalMinutes: 60 },
+  { name: "session-cleanup", path: "/api/jobs/session-cleanup", schedule: "45 3 * * *", scheduleLabel: "Daily 3:45 UTC", expectedIntervalMinutes: 1440 },
 ]
 
 const RETENTION_DAYS = 60

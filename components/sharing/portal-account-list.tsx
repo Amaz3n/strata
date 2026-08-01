@@ -2,10 +2,10 @@
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import type { ExternalPortalAccount } from "@/lib/types"
+import type { ExternalIdentity } from "@/lib/types"
 
 interface PortalAccountListProps {
-  accounts: ExternalPortalAccount[]
+  accounts: ExternalIdentity[]
   isLoading?: boolean
   onSetStatus: (accountId: string, status: "active" | "paused" | "revoked") => Promise<void> | void
 }

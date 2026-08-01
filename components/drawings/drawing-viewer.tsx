@@ -1599,6 +1599,7 @@ export function DrawingViewer({
               interactive={!readOnly && activeTool !== "pan"}
               onPinClick={handlePinActivate}
               feetPerImagePx={feetPerImagePx}
+              showTakeoff={takeoffMode}
               selectedConditionId={
                 takeoffMode ? hoveredConditionId ?? selectedConditionId : null
               }

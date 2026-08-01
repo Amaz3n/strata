@@ -1,6 +1,12 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 import type { PortalType, ReviewerRole } from "@/lib/types"
+import {
+  decryptPortalToken,
+  encryptPortalToken,
+  generatePortalToken,
+  hashPortalToken,
+} from "@/lib/services/portal-credentials"
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"
 
@@ -91,7 +97,7 @@ export async function ensurePortalLink({
 
   let query = supabase
     .from("portal_access_tokens")
-    .select(`token, expires_at, scoped_rfi_id, reviewer_role, ${PORTAL_CAPABILITY_KEYS.join(", ")}`)
+    .select(`token_encrypted, expires_at, scoped_rfi_id, reviewer_role, ${PORTAL_CAPABILITY_KEYS.join(", ")}`)
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .eq("portal_type", portalType)
@@ -116,13 +122,17 @@ export async function ensurePortalLink({
     if ((candidate.reviewer_role ?? null) !== (reviewerRole ?? null)) return false
     return PORTAL_CAPABILITY_KEYS.every((key) => candidate[key] === wanted[key])
   })
-  if (existing && typeof existing.token === "string") {
-    return portalUrl(portalType, existing.token)
+  if (existing) {
+    const reusable = decryptPortalToken(typeof existing.token_encrypted === "string" ? existing.token_encrypted : null)
+    if (reusable) return portalUrl(portalType, reusable)
   }
 
+  const plaintextToken = generatePortalToken()
   const { data: created, error } = await supabase
     .from("portal_access_tokens")
     .insert({
+      token_hash: hashPortalToken(plaintextToken),
+      token_encrypted: encryptPortalToken(plaintextToken),
       org_id: orgId,
       project_id: projectId,
       portal_type: portalType,
@@ -133,15 +143,15 @@ export async function ensurePortalLink({
       reviewer_role: reviewerRole ?? null,
       ...wanted,
     })
-    .select("token")
+    .select("id")
     .single()
 
-  if (error || !created?.token) {
+  if (error || !created) {
     console.warn("Failed to create portal token", error)
     return `${APP_URL}${fallbackPath}`
   }
 
-  return portalUrl(portalType, created.token)
+  return portalUrl(portalType, plaintextToken)
 }
 
 /**

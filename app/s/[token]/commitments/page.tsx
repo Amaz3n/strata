@@ -1,10 +1,7 @@
 import { notFound } from "next/navigation"
-import Link from "next/link"
-import { ArrowLeft } from "lucide-react"
 
+import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { assertPortalActionAccess, loadSubPortalData } from "@/lib/services/portal-access"
-import { PortalHeader } from "@/components/portal/portal-header"
-import { Button } from "@/components/ui/button"
 import { SubContractsCard } from "@/components/portal/sub/sub-contracts-card"
 
 interface SubCommitmentsPageProps {
@@ -35,40 +32,31 @@ export default async function SubCommitmentsPage({ params }: SubCommitmentsPageP
   })
 
   return (
-    <div className="min-h-screen flex flex-col bg-background">
-      <PortalHeader orgName={data.org.name} project={data.project} />
+    <>
+      <PortalPageHeader
+        title="Contracts"
+        description="The scopes you have been awarded on this project, what you have billed, and what is left to bill."
+      />
 
-      <main className="flex-1 mx-auto w-full max-w-xl px-4 py-6 space-y-4">
-        <div>
-          <Button variant="ghost" size="sm" asChild className="-ml-2 mb-2">
-            <Link href={`/s/${token}`}>
-              <ArrowLeft className="h-4 w-4 mr-1" />
-              Back to Dashboard
-            </Link>
-          </Button>
-          <h1 className="text-xl font-semibold">My Commitments</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Awarded scopes, billed amounts, and remaining commitment balance for this project.
+      {data.commitments.length === 0 ? (
+        <div className="border border-border bg-card px-4 py-12 text-center">
+          <p className="text-sm font-medium">No contracts yet</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Scopes the builder awards to your company appear here.
           </p>
         </div>
-
-        {data.commitments.length === 0 ? (
-          <div className="rounded-lg border p-6 text-center text-muted-foreground">
-            No commitments assigned yet.
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {data.commitments.map((commitment) => (
-              <SubContractsCard
-                key={commitment.id}
-                commitment={commitment}
-                token={token}
-                canSubmitInvoice={access.permissions.can_submit_invoices ?? true}
-              />
-            ))}
-          </div>
-        )}
-      </main>
-    </div>
+      ) : (
+        <div className="space-y-3">
+          {data.commitments.map((commitment) => (
+            <SubContractsCard
+              key={commitment.id}
+              commitment={commitment}
+              token={token}
+              canSubmitInvoice={access.permissions.can_submit_invoices ?? true}
+            />
+          ))}
+        </div>
+      )}
+    </>
   )
 }

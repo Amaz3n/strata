@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react"
 
 import { ImageIcon, PencilRuler } from "@/components/icons"
+import { HashImage } from "@/components/files/hash-image"
 import { centsToCompact, centsToDollars, signedDollars } from "@/components/plans/plan-badges"
 import { PlanProductEditor } from "@/components/plans/plan-product-editor"
 import { Button } from "@/components/ui/button"
@@ -89,8 +90,12 @@ export function PlanProductPanel({
         <div className="min-w-0">
           <div className="relative aspect-[4/3] overflow-hidden border bg-muted/40">
             {coverFileId ? (
-              /* eslint-disable-next-line @next/next/no-img-element -- streamed through the authenticated org-scoped file route */
-              <img src={`/api/files/${coverFileId}/raw`} alt="" className="h-full w-full object-cover" />
+              <HashImage
+                fileId={coverFileId}
+                alt=""
+                sizes="(min-width: 1280px) 160px, 128px"
+                className="h-full w-full"
+              />
             ) : (
               <div className="flex h-full flex-col items-center justify-center gap-1 text-muted-foreground">
                 <ImageIcon className="h-4 w-4" />

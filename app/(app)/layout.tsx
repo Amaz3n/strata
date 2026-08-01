@@ -1,4 +1,4 @@
-import type React from "react"
+import React, { Suspense } from "react"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 
 import type { User } from "@/lib/types"
@@ -13,6 +13,10 @@ import { OrgInactiveScreen } from "@/components/layout/org-inactive-screen"
 import { TrialStatusBanner } from "@/components/layout/trial-status-banner"
 import { DemoUsageTracker } from "@/components/layout/demo-usage-tracker"
 import { OptimisticPathProvider } from "@/lib/navigation/optimistic-pathname"
+import {
+  NavigationBadgeProvider,
+  type NavigationBadgeValues,
+} from "@/components/layout/navigation-badge-context"
 import { getCurrentUserAction } from "../actions/user"
 import { getCrmDashboardStats } from "@/lib/services/crm"
 import { getOrgAccessState, type OrgAccessState } from "@/lib/services/access"
@@ -26,18 +30,55 @@ import { getAmbientDeskContext } from "@/lib/services/desk-context"
 import { orgHasProductionProjects } from "@/lib/services/production-desk-scope"
 import { shouldShowProductionOrgNavigation } from "@/lib/product-tier"
 import { orgHasPriceAgreements } from "@/lib/services/price-book"
+import { isBooksWorkspaceEnabled } from "@/lib/services/books/module"
 
 export const dynamic = "force-dynamic"
+
+/**
+ * Badge counts and the What's New announcement are shell decoration, not shell
+ * structure — the nav tree is byte-identical without them. They are loaded off
+ * the critical path so first paint is gated only on what decides *what the chrome
+ * is*: identity, access, permissions, posture and ambient scope.
+ */
+async function loadNavigationBadges(): Promise<NavigationBadgeValues> {
+  const [crmStats, releaseNotesSummary, navigationBadgeCounts] = await Promise.all([
+    getCrmDashboardStats().catch(() => null),
+    getReleaseNotesSummary().catch(() => ({ unreadCount: 0, announcement: null })),
+    getNavigationBadgeCounts().catch(() => ({
+      myWorkBadgeCount: 0,
+      readyToBillBadgeCount: 0,
+      projectReviewBadgeCounts: {} as Record<string, number>,
+    })),
+  ])
+
+  return {
+    pipelineBadgeCount: crmStats ? crmStats.followUpsOverdue + crmStats.followUpsDueToday : 0,
+    myWorkBadgeCount: navigationBadgeCounts.myWorkBadgeCount,
+    readyToBillBadgeCount: navigationBadgeCounts.readyToBillBadgeCount,
+    projectReviewBadgeCounts: navigationBadgeCounts.projectReviewBadgeCounts,
+    whatsNewUnreadCount: releaseNotesSummary.unreadCount,
+  }
+}
+
+async function ReleaseNotesAnnouncementSlot() {
+  const summary = await getReleaseNotesSummary().catch(() => ({
+    unreadCount: 0,
+    announcement: null,
+  }))
+  return <ReleaseNotesAnnouncement announcement={summary.announcement} />
+}
 
 export default async function AppLayout({
   children,
 }: {
   children: React.ReactNode
 }) {
+  // Started, deliberately not awaited: streams to the client behind the shell.
+  const navigationBadgesPromise = loadNavigationBadges()
+
   // Fetch user data once at the layout level for the persistent shell
-  const [currentUser, crmStats, access, platformAccess, permissionResult, platformSessionState, releaseNotesSummary, navigationBadgeCounts, productTier, ambientContext, hasProductionProjects, hasPriceAgreements] = await Promise.all([
+  const [currentUser, access, platformAccess, permissionResult, platformSessionState, productTier, ambientContext, hasProductionProjects, hasPriceAgreements, booksEnabled] = await Promise.all([
     getCurrentUserAction(),
-    getCrmDashboardStats().catch(() => null),
     getOrgAccessState().catch((): OrgAccessState => ({ status: "unknown", locked: false })),
     getCurrentPlatformAccess().catch(() => ({ canAccessPlatform: false, roles: [], isEnvSuperadmin: false })),
     getCurrentUserPermissions().catch(() => ({ permissions: [] as string[] })),
@@ -45,19 +86,13 @@ export default async function AppLayout({
       platformContext: { active: false, orgId: null, orgName: null, startedAt: null },
       impersonation: { active: false, targetUserId: null, targetName: null, targetEmail: null, expiresAt: null }
     })),
-    getReleaseNotesSummary().catch(() => ({ unreadCount: 0, announcement: null })),
-    getNavigationBadgeCounts().catch(() => ({
-      myWorkBadgeCount: 0,
-      readyToBillBadgeCount: 0,
-      projectReviewBadgeCounts: {} as Record<string, number>,
-    })),
     getOrgProductTier().catch(() => "residential" as const),
     getAmbientDeskContext().catch(() => ({ divisions: [], divisionId: undefined, communities: [], communityId: undefined, pinnableCommunities: [] })),
     orgHasProductionProjects().catch(() => false),
     orgHasPriceAgreements().catch(() => false),
+    isBooksWorkspaceEnabled().catch(() => false),
   ])
 
-  const pipelineBadgeCount = crmStats ? crmStats.followUpsOverdue + crmStats.followUpsDueToday : 0
   const showProductionNavigation = shouldShowProductionOrgNavigation(productTier, hasProductionProjects)
   const showPurchasingNavigation = showProductionNavigation || hasPriceAgreements
 
@@ -76,54 +111,50 @@ export default async function AppLayout({
   return (
     <SidebarProvider className="h-svh max-h-svh overflow-hidden">
       <OptimisticPathProvider>
-        <DemoUsageTracker />
-        <ReleaseNotesAnnouncement announcement={releaseNotesSummary.announcement} />
-        <AppSidebar
-          user={currentUser}
-          pipelineBadgeCount={pipelineBadgeCount}
-          myWorkBadgeCount={navigationBadgeCounts.myWorkBadgeCount}
-          readyToBillBadgeCount={navigationBadgeCounts.readyToBillBadgeCount}
-          projectReviewBadgeCounts={navigationBadgeCounts.projectReviewBadgeCounts}
-          canAccessPlatform={platformAccess.canAccessPlatform}
-          permissions={permissionResult.permissions}
-          whatsNewUnreadCount={releaseNotesSummary.unreadCount}
-          productTier={productTier}
-          hasDivisions={ambientContext.divisions.length > 0}
-          showProductionNavigation={showProductionNavigation}
-          showPurchasingNavigation={showPurchasingNavigation}
-          showPipelineNavigation={productTier !== "production"}
-        />
-        <MobileActionProvider>
-          <SidebarInset className="h-svh max-h-svh min-w-0 min-h-0 overflow-hidden">
-            <PageTitleProvider productTier={productTier}>
-              <AppHeader
-                divisions={ambientContext.divisions}
-                divisionId={ambientContext.divisionId}
-                communities={ambientContext.pinnableCommunities}
-                communityId={ambientContext.communityId}
-                showCommunityScope={showProductionNavigation}
-                platformAccess={platformAccess}
-                platformSessionState={platformSessionState}
-              />
-              <TrialStatusBanner access={access} />
-              <AppPageContent>{children}</AppPageContent>
-            </PageTitleProvider>
-          </SidebarInset>
-          <MobileBottomNav
+        <NavigationBadgeProvider valuesPromise={navigationBadgesPromise}>
+          <DemoUsageTracker />
+          <Suspense fallback={null}>
+            <ReleaseNotesAnnouncementSlot />
+          </Suspense>
+          <AppSidebar
             user={currentUser}
-            pipelineBadgeCount={pipelineBadgeCount}
-            myWorkBadgeCount={navigationBadgeCounts.myWorkBadgeCount}
-            readyToBillBadgeCount={navigationBadgeCounts.readyToBillBadgeCount}
-            projectReviewBadgeCounts={navigationBadgeCounts.projectReviewBadgeCounts}
             canAccessPlatform={platformAccess.canAccessPlatform}
             permissions={permissionResult.permissions}
-            whatsNewUnreadCount={releaseNotesSummary.unreadCount}
             productTier={productTier}
+            hasDivisions={ambientContext.divisions.length > 0}
             showProductionNavigation={showProductionNavigation}
-            showPipelineNavigation={productTier !== "production"}
             showPurchasingNavigation={showPurchasingNavigation}
+            showPipelineNavigation={productTier !== "production"}
+            booksEnabled={booksEnabled}
           />
-        </MobileActionProvider>
+          <MobileActionProvider>
+            <SidebarInset className="h-svh max-h-svh min-w-0 min-h-0 overflow-hidden">
+              <PageTitleProvider productTier={productTier}>
+                <AppHeader
+                  divisions={ambientContext.divisions}
+                  divisionId={ambientContext.divisionId}
+                  communities={ambientContext.pinnableCommunities}
+                  communityId={ambientContext.communityId}
+                  showCommunityScope={showProductionNavigation}
+                  platformAccess={platformAccess}
+                  platformSessionState={platformSessionState}
+                />
+                <TrialStatusBanner access={access} />
+                <AppPageContent>{children}</AppPageContent>
+              </PageTitleProvider>
+            </SidebarInset>
+            <MobileBottomNav
+              user={currentUser}
+              canAccessPlatform={platformAccess.canAccessPlatform}
+              permissions={permissionResult.permissions}
+              productTier={productTier}
+              showProductionNavigation={showProductionNavigation}
+              showPipelineNavigation={productTier !== "production"}
+              showPurchasingNavigation={showPurchasingNavigation}
+              booksEnabled={booksEnabled}
+            />
+          </MobileActionProvider>
+        </NavigationBadgeProvider>
       </OptimisticPathProvider>
     </SidebarProvider>
   )

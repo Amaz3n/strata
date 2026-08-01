@@ -23,7 +23,50 @@ function isHeicPreviewCandidate(file: {
   )
 }
 
-export async function GET(_req: Request, { params }: { params: Promise<{ fileId: string }> }) {
+interface PreviewSize {
+  width: number
+  path: string
+  content_type: string
+}
+
+function isPreviewSize(value: unknown): value is PreviewSize {
+  if (!value || typeof value !== "object") return false
+  const size = value as Record<string, unknown>
+  return (
+    typeof size.width === "number" &&
+    typeof size.path === "string" &&
+    typeof size.content_type === "string"
+  )
+}
+
+/**
+ * Pick a ladder rung for the requested width, preferring AVIF when the browser
+ * says it can take it. Falls back to the single legacy thumbnail when a file
+ * predates the ladder.
+ */
+function selectLadderPath(
+  sizes: unknown,
+  requestedWidth: number | null,
+  acceptsAvif: boolean,
+): string | null {
+  if (!Array.isArray(sizes)) return null
+  const entries = sizes.filter(isPreviewSize)
+  if (entries.length === 0) return null
+
+  const preferred = acceptsAvif ? "image/avif" : "image/webp"
+  const candidates = entries.filter((entry) => entry.content_type === preferred)
+  const pool = candidates.length > 0 ? candidates : entries
+
+  const widths = [...new Set(pool.map((entry) => entry.width))].sort((a, b) => a - b)
+  const target =
+    requestedWidth === null
+      ? widths[widths.length - 1]
+      : widths.find((width) => width >= requestedWidth) ?? widths[widths.length - 1]
+
+  return pool.find((entry) => entry.width === target)?.path ?? null
+}
+
+export async function GET(req: Request, { params }: { params: Promise<{ fileId: string }> }) {
   try {
     const { fileId } = await params
     const svc = createServiceSupabaseClient()
@@ -46,7 +89,15 @@ export async function GET(_req: Request, { params }: { params: Promise<{ fileId:
 
     const metadata = file.metadata && typeof file.metadata === "object" ? file.metadata as any : {}
     const preview = metadata.preview && typeof metadata.preview === "object" ? metadata.preview : {}
-    let thumbnailPath = typeof preview.thumbnail_path === "string" ? preview.thumbnail_path : null
+
+    const requestedWidthRaw = new URL(req.url).searchParams.get("w")
+    const parsedWidth = requestedWidthRaw ? Number.parseInt(requestedWidthRaw, 10) : Number.NaN
+    const requestedWidth = Number.isFinite(parsedWidth) && parsedWidth > 0 ? parsedWidth : null
+    const acceptsAvif = (req.headers.get("accept") ?? "").includes("image/avif")
+
+    let thumbnailPath =
+      selectLadderPath(preview.sizes, requestedWidth, acceptsAvif) ??
+      (typeof preview.thumbnail_path === "string" ? preview.thumbnail_path : null)
 
     if (!thumbnailPath && isHeicPreviewCandidate(file)) {
       thumbnailPath = await generateAndStoreHeicPreview(svc, file)
@@ -65,6 +116,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ fileId:
     const headers = new Headers()
     headers.set("Content-Type", object.contentType ?? "image/webp")
     headers.set("Cache-Control", "private, max-age=3600")
+    // The response body depends on the client's image-format support, so it
+    // must not be reused across browsers with different Accept headers.
+    headers.set("Vary", "Accept")
     headers.set("X-Content-Type-Options", "nosniff")
     if (object.etag) headers.set("ETag", object.etag)
     if (object.contentLength !== undefined) {

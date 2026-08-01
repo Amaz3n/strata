@@ -6,6 +6,7 @@ import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { renderEmailTemplate, sendEmail, getOrgSenderEmail } from "@/lib/services/mailer"
 import { attachFile, attachFileWithServiceRole } from "@/lib/services/file-links"
+import { hashPortalToken } from "@/lib/services/portal-credentials"
 import { insertWithProjectNumberRetry } from "@/lib/services/project-sequence"
 import {
   ensurePortalLink,
@@ -1476,7 +1477,7 @@ async function notifyReviewStepAssigned({
     })
     const token = actionHref.split("/").filter(Boolean).at(-1)
     if (token) {
-      const { data: portalToken } = await supabase.from("portal_access_tokens").select("id").eq("org_id", orgId).eq("token", token).maybeSingle()
+      const { data: portalToken } = await supabase.from("portal_access_tokens").select("id").eq("org_id", orgId).eq("token_hash", hashPortalToken(token)).maybeSingle()
       if (portalToken) {
         await supabase.from("submittal_review_steps").update({ portal_token_id: portalToken.id }).eq("org_id", orgId).eq("id", stepId)
         if (submittal.current_revision_id) await supabase.from("portal_access_tokens").update({ scoped_submittal_revision_id: submittal.current_revision_id }).eq("org_id", orgId).eq("id", portalToken.id)

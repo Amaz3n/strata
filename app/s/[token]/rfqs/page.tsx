@@ -1,4 +1,6 @@
 import { notFound } from "next/navigation"
+
+import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { getPortalChangeEventRfq } from "@/lib/services/change-events"
 import { RfqResponseForm } from "./rfq-response-form"
 
@@ -9,5 +11,32 @@ export default async function RfqPage({ params }: { params: Promise<{ token: str
   const portal = await getPortalChangeEventRfq(token)
   if (!portal) notFound()
   const event = Array.isArray(portal.rfq.change_event) ? portal.rfq.change_event[0] : portal.rfq.change_event
-  return <main className="min-h-screen bg-muted/30 p-4 sm:p-10"><div className="mx-auto max-w-2xl border bg-background p-6 sm:p-8"><p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Request for pricing · CE-{String(event?.event_number ?? "").padStart(3, "0")}</p><h1 className="mt-2 text-2xl font-semibold">{event?.title}</h1><p className="mt-4 whitespace-pre-wrap text-sm text-muted-foreground">{event?.description || "No additional scope notes were provided."}</p>{portal.rfq.due_date && <p className="mt-4 text-sm"><strong>Due:</strong> {portal.rfq.due_date}</p>}<div className="my-6 border-t" /><RfqResponseForm token={token} status={portal.rfq.status} initialAmount={portal.rfq.response_amount_cents} initialNotes={portal.rfq.response_notes} /></div></main>
+  const eventNumber = String(event?.event_number ?? "").padStart(3, "0")
+
+  return (
+    <>
+      <PortalPageHeader
+        title={event?.title || "Request for pricing"}
+        description={`Change event CE-${eventNumber}. Price the scope below and send your response back to the builder.`}
+      />
+
+      <div className="space-y-4 border border-border bg-card p-4 sm:p-6">
+        <p className="whitespace-pre-wrap text-sm text-muted-foreground">
+          {event?.description || "No additional scope notes were provided."}
+        </p>
+        {portal.rfq.due_date ? (
+          <p className="text-sm tabular-nums">
+            <strong>Due:</strong> {portal.rfq.due_date}
+          </p>
+        ) : null}
+        <div className="border-t border-border" />
+        <RfqResponseForm
+          token={token}
+          status={portal.rfq.status}
+          initialAmount={portal.rfq.response_amount_cents}
+          initialNotes={portal.rfq.response_notes}
+        />
+      </div>
+    </>
+  )
 }

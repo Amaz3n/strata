@@ -6,6 +6,7 @@ import { Fragment, useMemo, useState, useTransition } from "react"
 import { toast } from "sonner"
 
 import { bulkRepriceCommunityPlansAction, setCommunityPlanPriceAction } from "@/app/(app)/sales/actions"
+import { Plan3dDialog } from "@/components/plans/plan-3d-dialog"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -132,6 +133,7 @@ export function OfferingPriceSheet({
   lotBasisCents,
   buildCostByPlanId,
   lotsTruncated,
+  plansWith3d,
   canManage,
 }: {
   communityId: string
@@ -144,6 +146,8 @@ export function OfferingPriceSheet({
   lotBasisCents: number | null
   buildCostByPlanId: Record<string, number>
   lotsTruncated: boolean
+  /** Plan ids with a published 3D model — the rows that get a "3D" button. */
+  plansWith3d: ReadonlySet<string>
   canManage: boolean
 }) {
   const router = useRouter()
@@ -323,11 +327,20 @@ export function OfferingPriceSheet({
                       <TableRow key={row.key} className={cn("text-xs", !isLast && "border-b-0")}>
                         <TableCell className="font-medium">
                           {index === 0 ? (
-                            <Link className="hover:underline" href={`/plans/${row.planId}`}>
-                              {row.planCode ? <span className="font-mono">{row.planCode}</span> : null}
-                              {row.planCode ? " · " : ""}
-                              {row.planName}
-                            </Link>
+                            <span className="flex items-center gap-1">
+                              <Link className="hover:underline" href={`/plans/${row.planId}`}>
+                                {row.planCode ? <span className="font-mono">{row.planCode}</span> : null}
+                                {row.planCode ? " · " : ""}
+                                {row.planName}
+                              </Link>
+                              {plansWith3d.has(row.planId) ? (
+                                <Plan3dDialog
+                                  planId={row.planId}
+                                  planLabel={`${row.planCode ? `${row.planCode} — ` : ""}${row.planName}`}
+                                  className="h-6 gap-1 rounded-none px-1.5 text-[10px]"
+                                />
+                              ) : null}
+                            </span>
                           ) : null}
                         </TableCell>
                         <TableCell className="text-muted-foreground">

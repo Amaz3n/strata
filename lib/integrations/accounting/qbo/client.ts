@@ -832,6 +832,11 @@ export class QBOClient {
     return result.BillPayment
   }
 
+  async createJournalEntry(journalEntry: any): Promise<any> {
+    const result = await this.request<{ JournalEntry: any }>("POST", "journalentry", journalEntry)
+    return result.JournalEntry
+  }
+
   async getBillPaymentById(billPaymentId: string): Promise<any | null> {
     const normalizedId = String(billPaymentId ?? "").trim()
     if (!normalizedId) return null

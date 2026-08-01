@@ -5,8 +5,10 @@ const AUTH_ROUTES = ["/auth/signin", "/auth/signup", "/auth/forgot-password", "/
 const PUBLIC_ROUTES = ["/proposal", "/e/", "/i/", "/p/", "/s/", "/r/", "/b/", "/d/", "/f/", "/access", "/terms", "/privacy", "/esign-terms"]
 const PUBLIC_API_ROUTES = [
   "/api/esign/executed/",
+  "/api/jobs/session-cleanup",
   "/api/jobs/process-outbox",
   "/api/jobs/backfill-search-index",
+  "/api/jobs/backfill-image-previews",
   "/api/jobs/rbac-evidence",
   "/api/webhooks/stripe",
   // Resend inbound-email webhook (emailed vendor bills) — self-authenticates
@@ -47,6 +49,10 @@ const PUBLIC_API_ROUTES = [
   // Recurring invoice generator — cron only, self-authenticates via CRON_SECRET.
   "/api/jobs/invoice-schedules",
   "/api/jobs/forecast-snapshots",
+  "/api/jobs/books-projection",
+  "/api/jobs/books-maintenance",
+  "/api/jobs/accounting-reconciliation",
+  "/api/jobs/bank-feed-sync",
   "/api/jobs/report-schedules",
   "/api/exports/reports/",
   // Scheduled jobs — no user session; each route self-authenticates via CRON_SECRET.
@@ -57,6 +63,7 @@ const PUBLIC_API_ROUTES = [
   "/api/jobs/compliance-autopilot",
   "/api/jobs/esign",
   "/api/jobs/late-fees",
+  "/api/jobs/payment-controls",
   // Portal drawing sheet PDFs — self-authenticate via the portal access token
   // in the path (no session cookie on client/sub portals).
   "/api/portal/drawings/",
@@ -64,6 +71,7 @@ const PUBLIC_API_ROUTES = [
   "/api/portal/log-file-access",
   "/api/portal/s/",
   "/api/portal/b/",
+  "/api/webhooks/plaid",
 ]
 const PUBLIC_FILE_EXTENSIONS = [
   ".svg",
@@ -148,9 +156,12 @@ export async function proxy(request: NextRequest) {
     },
   )
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  // getClaims verifies the session JWT locally when the project uses asymmetric
+  // signing keys (no network), and falls back to the Auth server otherwise —
+  // never slower than the getUser() round-trip this replaced. Expired tokens
+  // still refresh here, writing the new cookies onto the response.
+  const { data: claimsData } = await supabase.auth.getClaims()
+  const user = claimsData?.claims ?? null
 
   const pathname = request.nextUrl.pathname
   const isAuthRoute = pathname.startsWith("/auth")

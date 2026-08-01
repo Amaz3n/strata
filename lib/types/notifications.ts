@@ -103,8 +103,92 @@ export type NotificationType =
   | "warranty_backcharge_disputed"
   | "warranty_sla_breached"
   | "scheduled_report_ready"
+  | "funding_source_review_requested"
+  | "funding_source_change_approved"
+  | "funding_source_change_rejected"
+  | "funding_source_activated"
+  | "funding_source_activation_failed"
+  | "payment_run_submitted"
+  | "payment_run_approval_recorded"
+  | "payment_run_approved"
+  | "payment_run_rejected"
+  | "payment_run_execution_failed"
+  | "vendor_payment_returned"
+  | "payment_reconciliation_completed"
+  | "vendor_payment_relationship_claimed"
+  | "accounting_reconciliation_drift"
 
 export const EMAIL_NOTIFICATION_TYPES = [
+  {
+    key: "accounting_reconciliation_drift",
+    label: "Accounting reconciliation drift",
+    description: "Email me when Arc detects a new accounting connection or ledger discrepancy.",
+  },
+  {
+    key: "vendor_payment_relationship_claimed",
+    label: "Vendor connected a payout account",
+    description: "Email me when a vendor links one of our company records to their Arc payout account.",
+  },
+  {
+    key: "funding_source_review_requested",
+    label: "Funding bank review requested",
+    description: "Email me when a new vendor-payment funding bank needs independent approval.",
+  },
+  {
+    key: "payment_run_submitted",
+    label: "Payment run needs approval",
+    description: "Email me when an electronic vendor-payment run is submitted for approval.",
+  },
+  {
+    key: "payment_run_approval_recorded",
+    label: "Payment run approval recorded",
+    description: "Email me when an approver records a decision on my payment run.",
+  },
+  {
+    key: "payment_run_approved",
+    label: "Payment run approved",
+    description: "Email me when my electronic payment run reaches approval quorum.",
+  },
+  {
+    key: "payment_run_rejected",
+    label: "Payment run rejected",
+    description: "Email me when an approver rejects my electronic payment run.",
+  },
+  {
+    key: "funding_source_change_approved",
+    label: "Funding bank approval",
+    description: "Email me when a reviewer approves a funding-bank change.",
+  },
+  {
+    key: "funding_source_change_rejected",
+    label: "Funding bank rejection",
+    description: "Email me when a reviewer rejects a funding-bank change.",
+  },
+  {
+    key: "funding_source_activated",
+    label: "Funding bank activated",
+    description: "Email me when an approved funding bank finishes its cooling period.",
+  },
+  {
+    key: "funding_source_activation_failed",
+    label: "Funding bank activation failed",
+    description: "Email me when an approved funding bank cannot be activated after its cooling period.",
+  },
+  {
+    key: "payment_run_execution_failed",
+    label: "Payment run failed",
+    description: "Email me when a vendor payment run fails during provider submission.",
+  },
+  {
+    key: "vendor_payment_returned",
+    label: "Vendor payment returned",
+    description: "Email me when a provider reports a vendor payment return or reversal.",
+  },
+  {
+    key: "payment_reconciliation_completed",
+    label: "Payment reconciliation complete",
+    description: "Email me when daily vendor-payment reconciliation finishes, including with exceptions.",
+  },
   {
     key: "change_event_rfq_invite",
     label: "Change-event RFQ invite",

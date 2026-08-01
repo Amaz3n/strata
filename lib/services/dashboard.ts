@@ -1,3 +1,4 @@
+import { cache } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { requireOrgContext } from "@/lib/services/context";
@@ -189,19 +190,15 @@ export interface BudgetHealth {
   items: BudgetHealthItem[];
 }
 
+/**
+ * The shape of the control tower desk. Produced by the band loaders below
+ * rather than by any single call — component props reference slices of this
+ * (`ControlTowerData["financials"]` and friends).
+ */
 export interface ControlTowerData {
   portfolioHealth: PortfolioHealth;
   projects: {
-    total: number;
     byStatus: Record<string, number>;
-    active: Array<{
-      id: string;
-      name: string;
-      status: string;
-      start_date?: string;
-      end_date?: string;
-      total_value?: number;
-    }>;
   };
   tasks: {
     total: number;
@@ -249,17 +246,6 @@ export interface ControlTowerData {
     atRiskItems: number;
     behindItems: number;
   };
-  pipeline: {
-    byStatus: Record<string, number>;
-    totalValue: number;
-  };
-  activity: Array<{
-    id: string;
-    type: string;
-    title: string;
-    meta?: string;
-    createdAt: string;
-  }>;
 }
 
 function monthLabel(key: string): string {
@@ -333,148 +319,229 @@ type BudgetRollupRow = {
   actual_cents: number;
 };
 
-export async function getControlTowerData(
-  orgId?: string,
-): Promise<ControlTowerData> {
+// --- Control tower bands ---
+//
+// This desk used to be a single `getControlTowerData()` await: 16 parallel
+// queries plus a 17th (`dashboard_budget_rollup`) that could not start until the
+// other 16 had landed, because it needs the active project ids. TTFB was the
+// slowest query in the whole set and nothing painted until every one finished.
+//
+// It is now cached slices plus the bands composed from them. Each band is
+// awaited inside its own Suspense boundary, so the shell paints immediately and
+// bands land on their own clocks; `cache()` keeps the shared slices to exactly
+// one query per request no matter how many bands read them.
+
+type ControlTowerContext = {
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"];
+  orgId: string;
+  excludedProjectIds: string[];
+  /** Keep rows with no project (org-level invoices, unassigned costs); drop only
+   *  rows belonging to an excluded project. */
+  keep: (projectId: string | null | undefined) => boolean;
+  /** One clock for the whole request, so bands can't disagree about "overdue". */
+  now: Date;
+  weekFromNow: Date;
+};
+
+const getControlTowerContext = cache(async (orgId?: string): Promise<ControlTowerContext> => {
   const context = await requireOrgContext(orgId);
   const { supabase, orgId: resolvedOrgId } = context;
-
   // Projects flagged out of reporting (test / friends-and-family jobs) are
-  // dropped from every financial rollup below so they don't skew the numbers.
+  // dropped from every rollup below so they don't skew the numbers.
   const excludedProjectIds = await getReportingExcludedProjectIds(supabase, resolvedOrgId);
+  const excludedSet = new Set(excludedProjectIds);
+  const now = new Date();
 
-  // Invoice totals/series/aging and per-project budget actuals are aggregated
-  // in SQL (dashboard_invoice_rollup / dashboard_budget_rollup) — invoice and
-  // job-cost history grow without bound, so only aggregates cross the wire.
-  // Tasks and schedule items are fetched without their closed rows (done /
-  // completed), which are the unbounded part; closed counts come from head
-  // counts so the by-status totals stay exact.
-  const todayKeyUtc = new Date().toISOString().slice(0, 10);
+  return {
+    supabase,
+    orgId: resolvedOrgId,
+    excludedProjectIds,
+    keep: (projectId) => !projectId || !excludedSet.has(projectId),
+    now,
+    weekFromNow: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
+  };
+});
 
-  const [
-    projectsResult,
-    tasksResult,
-    tasksDoneResult,
-    invoiceRollupResult,
-    overdueInvoiceCandidatesResult,
-    rfisResult,
-    submittalsResult,
-    changeOrdersResult,
-    punchResult,
-    scheduleResult,
-    scheduleCompletedResult,
-    scheduleCriticalResult,
-    opportunitiesResult,
-    vendorBillsResult,
-    billableCostsResult,
-    eventsResult,
-  ] = await Promise.all([
-    supabase
-      .from("projects")
-      .select("id, name, status, start_date, end_date, total_value")
-      .eq("org_id", resolvedOrgId),
-    supabase
+const getProjectsSlice = cache(async (orgId?: string) => {
+  const ctx = await getControlTowerContext(orgId);
+  const { data } = await ctx.supabase
+    .from("projects")
+    .select("id, name, status, start_date, end_date, total_value")
+    .eq("org_id", ctx.orgId);
+
+  const projects = (data ?? []).filter((p) => ctx.keep(p.id));
+  const projectsByStatus: Record<string, number> = {};
+  for (const p of projects) {
+    projectsByStatus[p.status] = (projectsByStatus[p.status] ?? 0) + 1;
+  }
+  const activeProjects = projects.filter((p) => ["active", "on_hold"].includes(p.status));
+
+  return {
+    projects,
+    projectsByStatus,
+    activeProjects,
+    activeProjectIds: activeProjects.map((p) => p.id),
+    activeProjectSet: new Set(activeProjects.map((p) => p.id)),
+  };
+});
+
+const getTasksSlice = cache(async (orgId?: string) => {
+  const ctx = await getControlTowerContext(orgId);
+  // Fetched rows exclude 'done' — that is the unbounded part; the done count
+  // comes from a head count so byStatus/total stay exact.
+  const [tasksResult, tasksDoneResult] = await Promise.all([
+    ctx.supabase
       .from("tasks")
       .select("id, status, due_date, title, project_id, project:projects(name)")
-      .eq("org_id", resolvedOrgId)
+      .eq("org_id", ctx.orgId)
       .neq("status", "done"),
     applyReportingExclusion(
-      supabase
+      ctx.supabase
         .from("tasks")
         .select("id", { count: "exact", head: true })
-        .eq("org_id", resolvedOrgId)
+        .eq("org_id", ctx.orgId)
         .eq("status", "done"),
-      excludedProjectIds,
+      ctx.excludedProjectIds,
     ),
-    supabase.rpc("dashboard_invoice_rollup", {
-      p_org_id: resolvedOrgId,
-      p_excluded_project_ids: excludedProjectIds,
+  ]);
+
+  const tasks = (tasksResult.data ?? []).filter((t) =>
+    ctx.keep((t as { project_id?: string | null }).project_id),
+  );
+  const doneTasksCount = tasksDoneResult.count ?? 0;
+
+  const tasksByStatus: Record<string, number> = {};
+  let tasksDueThisWeek = 0;
+  let tasksOverdue = 0;
+  for (const t of tasks) {
+    tasksByStatus[t.status] = (tasksByStatus[t.status] ?? 0) + 1;
+    if (t.due_date) {
+      const due = new Date(t.due_date);
+      if (due < ctx.now) tasksOverdue++;
+      if (due >= ctx.now && due <= ctx.weekFromNow) tasksDueThisWeek++;
+    }
+  }
+  if (doneTasksCount > 0) {
+    tasksByStatus["done"] = doneTasksCount;
+  }
+
+  return { tasks, doneTasksCount, tasksByStatus, tasksDueThisWeek, tasksOverdue };
+});
+
+const getScheduleSlice = cache(async (orgId?: string) => {
+  const ctx = await getControlTowerContext(orgId);
+  // Fetched rows exclude completed/cancelled; completed and critical-path
+  // counts come from head counts.
+  const [scheduleResult, scheduleCompletedResult, scheduleCriticalResult] = await Promise.all([
+    ctx.supabase
+      .from("schedule_items")
+      .select("id, project_id, status, is_critical_path, progress, start_date, end_date, name, item_type, trade, assigned_to, phase, project:projects(name)")
+      .eq("org_id", ctx.orgId)
+      .not("status", "in", "(cancelled,completed)"),
+    applyReportingExclusion(
+      ctx.supabase
+        .from("schedule_items")
+        .select("id", { count: "exact", head: true })
+        .eq("org_id", ctx.orgId)
+        .eq("status", "completed"),
+      ctx.excludedProjectIds,
+    ),
+    applyReportingExclusion(
+      ctx.supabase
+        .from("schedule_items")
+        .select("id", { count: "exact", head: true })
+        .eq("org_id", ctx.orgId)
+        .neq("status", "cancelled")
+        .eq("is_critical_path", true),
+      ctx.excludedProjectIds,
+    ),
+  ]);
+
+  const scheduleItems = (scheduleResult.data ?? []).filter((s) =>
+    ctx.keep((s as { project_id?: string | null }).project_id),
+  );
+
+  let atRiskItems = 0;
+  let behindItems = 0;
+  for (const s of scheduleItems) {
+    if (s.status === "at_risk") atRiskItems++;
+    if (s.status === "blocked") behindItems++;
+  }
+
+  return {
+    scheduleItems,
+    completedItems: scheduleCompletedResult.count ?? 0,
+    criticalPathItems: scheduleCriticalResult.count ?? 0,
+    atRiskItems,
+    behindItems,
+  };
+});
+
+export interface ControlTowerMoneyBand {
+  financials: ControlTowerData["financials"];
+  budgetHealth: BudgetHealth;
+  unpaidApprovedBillsCents: number;
+}
+
+/**
+ * Invoice totals/series/aging and per-project budget actuals are aggregated in
+ * SQL (`dashboard_invoice_rollup` / `dashboard_budget_rollup`) — invoice and
+ * job-cost history grow without bound, so only aggregates cross the wire.
+ */
+export const getControlTowerMoneyBand = cache(async (orgId?: string): Promise<ControlTowerMoneyBand> => {
+  const ctx = await getControlTowerContext(orgId);
+  const todayKeyUtc = ctx.now.toISOString().slice(0, 10);
+
+  const [
+    projectsSlice,
+    invoiceRollupResult,
+    overdueInvoiceCandidatesResult,
+    vendorBillsResult,
+    billableCostsResult,
+  ] = await Promise.all([
+    getProjectsSlice(orgId),
+    ctx.supabase.rpc("dashboard_invoice_rollup", {
+      p_org_id: ctx.orgId,
+      p_excluded_project_ids: ctx.excludedProjectIds,
     }),
-    supabase
+    ctx.supabase
       .from("invoices")
       .select(
         "id, status, total_cents, balance_due_cents, due_date, invoice_number, project_id, project:projects(name)",
       )
-      .eq("org_id", resolvedOrgId)
+      .eq("org_id", ctx.orgId)
       .neq("status", "void")
       .gt("balance_due_cents", 0)
       .or(`status.eq.overdue,due_date.lte.${todayKeyUtc}`)
       .order("due_date", { ascending: true, nullsFirst: false })
       .limit(24),
-    supabase
-      .from("rfis")
-      .select("id", { count: "exact", head: true })
-      .eq("org_id", resolvedOrgId)
-      .in("status", ["open", "pending", "in_review"]),
-    supabase
-      .from("submittals")
-      .select("id", { count: "exact", head: true })
-      .eq("org_id", resolvedOrgId)
-      .in("status", ["open", "pending", "in_review", "submitted"]),
-    supabase
-      .from("change_orders")
-      .select("id", { count: "exact", head: true })
-      .eq("org_id", resolvedOrgId)
-      .eq("status", "pending"),
-    supabase
-      .from("punch_items")
-      .select("id", { count: "exact", head: true })
-      .eq("org_id", resolvedOrgId)
-      .in("status", ["open", "in_progress"]),
-    supabase
-      .from("schedule_items")
-      .select("id, project_id, status, is_critical_path, progress, start_date, end_date, name, item_type, trade, assigned_to, phase, project:projects(name)")
-      .eq("org_id", resolvedOrgId)
-      .not("status", "in", "(cancelled,completed)"),
-    applyReportingExclusion(
-      supabase
-        .from("schedule_items")
-        .select("id", { count: "exact", head: true })
-        .eq("org_id", resolvedOrgId)
-        .eq("status", "completed"),
-      excludedProjectIds,
-    ),
-    applyReportingExclusion(
-      supabase
-        .from("schedule_items")
-        .select("id", { count: "exact", head: true })
-        .eq("org_id", resolvedOrgId)
-        .neq("status", "cancelled")
-        .eq("is_critical_path", true),
-      excludedProjectIds,
-    ),
-    supabase
-      .from("opportunities")
-      .select("id, status, budget_range")
-      .eq("org_id", resolvedOrgId),
-    supabase
+    ctx.supabase
       .from("vendor_bills")
       .select("id, project_id, status, amount_cents, balance_due_cents")
-      .eq("org_id", resolvedOrgId)
+      .eq("org_id", ctx.orgId)
       .in("status", ["approved", "partial"]),
-    supabase
+    ctx.supabase
       .from("billable_costs")
       .select("id, project_id, billable_cents")
-      .eq("org_id", resolvedOrgId)
+      .eq("org_id", ctx.orgId)
       .eq("status", "open")
       .eq("is_billable", true),
-    supabase
-      .from("events")
-      .select("id, event_type, payload, created_at")
-      .eq("org_id", resolvedOrgId)
-      .order("created_at", { ascending: false })
-      .limit(20),
   ]);
 
-  const excludedSet = new Set(excludedProjectIds);
-  // Keep rows with no project (org-level invoices, unassigned costs); drop only
-  // rows belonging to an excluded project.
-  const keep = (projectId: string | null | undefined) => !projectId || !excludedSet.has(projectId);
-  const projects = (projectsResult.data ?? []).filter((p) => !excludedSet.has(p.id));
-  const tasks = (tasksResult.data ?? []).filter((t) => keep((t as { project_id?: string | null }).project_id));
-  const overdueInvoiceCandidates = (overdueInvoiceCandidatesResult.data ?? []).filter((i) =>
-    keep((i as { project_id?: string | null }).project_id),
-  );
+  // Budget health — latest budget vs posted job-cost actuals, for active jobs
+  // only. This is the one genuinely sequential step: it needs the active
+  // project ids. It now waits on the projects slice alone rather than on every
+  // other query the desk makes.
+  const budgetRollupRows: BudgetRollupRow[] =
+    projectsSlice.activeProjectIds.length === 0
+      ? []
+      : (
+          await ctx.supabase.rpc("dashboard_budget_rollup", {
+            p_org_id: ctx.orgId,
+            p_project_ids: projectsSlice.activeProjectIds,
+          })
+        ).data ?? [];
+
   const emptyInvoiceRollup: InvoiceRollupPayload = {
     total_invoiced: 0,
     total_collected: 0,
@@ -490,37 +557,15 @@ export async function getControlTowerData(
     },
   };
   const invoiceRollup: InvoiceRollupPayload = invoiceRollupResult.data ?? emptyInvoiceRollup;
-  const scheduleItems = (scheduleResult.data ?? []).filter((s) => keep((s as { project_id?: string | null }).project_id));
-  const opportunities = opportunitiesResult.data ?? [];
-  const vendorBills = (vendorBillsResult.data ?? []).filter((b) => keep((b as { project_id?: string | null }).project_id));
-  const billableCosts = (billableCostsResult.data ?? []).filter((c) => keep((c as { project_id?: string | null }).project_id));
-  const events = eventsResult.data ?? [];
-
-  const now = new Date();
-  const weekFromNow = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-
-  // Projects
-  const projectsByStatus: Record<string, number> = {};
-  for (const p of projects) {
-    projectsByStatus[p.status] = (projectsByStatus[p.status] ?? 0) + 1;
-  }
-  const activeProjects = projects.filter((p) =>
-    ["active", "on_hold"].includes(p.status),
+  const overdueInvoiceCandidates = (overdueInvoiceCandidatesResult.data ?? []).filter((i) =>
+    ctx.keep((i as { project_id?: string | null }).project_id),
   );
-
-  // Budget health — latest budget vs posted job-cost actuals, for active jobs
-  // only. Aggregated in SQL: job-cost history is the largest table this
-  // dashboard touches.
-  const activeProjectIds = activeProjects.map((p) => p.id);
-  const budgetRollupRows: BudgetRollupRow[] =
-    activeProjectIds.length === 0
-      ? []
-      : (
-          await supabase.rpc("dashboard_budget_rollup", {
-            p_org_id: resolvedOrgId,
-            p_project_ids: activeProjectIds,
-          })
-        ).data ?? [];
+  const vendorBills = (vendorBillsResult.data ?? []).filter((b) =>
+    ctx.keep((b as { project_id?: string | null }).project_id),
+  );
+  const billableCosts = (billableCostsResult.data ?? []).filter((c) =>
+    ctx.keep((c as { project_id?: string | null }).project_id),
+  );
 
   const budgetByProject = new Map<string, number>();
   const actualByProject = new Map<string, number>();
@@ -538,7 +583,7 @@ export async function getControlTowerData(
   let trackedBudgetTotal = 0;
   let trackedActualTotal = 0;
 
-  for (const project of activeProjects) {
+  for (const project of projectsSlice.activeProjects) {
     const budget = budgetByProject.get(project.id) ?? 0;
     const actual = actualByProject.get(project.id) ?? 0;
     if (budget <= 0) {
@@ -583,59 +628,19 @@ export async function getControlTowerData(
     items: budgetHealthItems.slice(0, 10),
   };
 
-  // Tasks — fetched rows exclude 'done'; the done count comes from the head
-  // count so byStatus/total stay exact.
-  const doneTasksCount = tasksDoneResult.count ?? 0;
-  const tasksByStatus: Record<string, number> = {};
-  let tasksDueThisWeek = 0;
-  let tasksOverdue = 0;
-  for (const t of tasks) {
-    tasksByStatus[t.status] = (tasksByStatus[t.status] ?? 0) + 1;
-    if (t.due_date) {
-      const due = new Date(t.due_date);
-      if (due < now) tasksOverdue++;
-      if (due >= now && due <= weekFromNow) tasksDueThisWeek++;
-    }
-  }
-  if (doneTasksCount > 0) {
-    tasksByStatus["done"] = doneTasksCount;
-  }
-
-  // Financials — aggregated by dashboard_invoice_rollup.
   const totalInvoiced = invoiceRollup.total_invoiced;
   const totalCollected = invoiceRollup.total_collected;
   const totalOverdue = invoiceRollup.total_overdue;
-  const outstandingAR = totalInvoiced - totalCollected;
   const revenueSeries = (invoiceRollup.revenue_series ?? []).map((point) => ({
     key: point.key,
     month: monthLabel(point.key),
     revenueCents: point.revenue_cents,
   }));
-  const arAging = {
-    current: invoiceRollup.ar_aging.current,
-    oneToThirty: invoiceRollup.ar_aging.one_to_thirty,
-    thirtyOneToSixty: invoiceRollup.ar_aging.thirty_one_to_sixty,
-    sixtyOneToNinety: invoiceRollup.ar_aging.sixty_one_to_ninety,
-    overNinety: invoiceRollup.ar_aging.over_ninety,
-    noDueDate: invoiceRollup.ar_aging.no_due_date,
-  };
-
-  // Schedule — fetched rows exclude completed/cancelled; completed and
-  // critical-path counts come from the head counts.
-  const completedItems = scheduleCompletedResult.count ?? 0;
-  const criticalPathItems = scheduleCriticalResult.count ?? 0;
-  let atRiskItems = 0;
-  let behindItems = 0;
-  for (const s of scheduleItems) {
-    if (s.status === "at_risk") atRiskItems++;
-    if (s.status === "blocked") behindItems++;
-  }
 
   // Vendor bills — unpaid approved
   let unpaidApprovedBillsCents = 0;
   for (const bill of vendorBills) {
-    unpaidApprovedBillsCents +=
-      bill.balance_due_cents ?? bill.amount_cents ?? 0;
+    unpaidApprovedBillsCents += bill.balance_due_cents ?? bill.amount_cents ?? 0;
   }
 
   // Approved costs earned but not yet invoiced (ready to bill)
@@ -644,7 +649,6 @@ export async function getControlTowerData(
     readyToInvoiceCents += (cost as { billable_cents?: number | null }).billable_cents ?? 0;
   }
 
-  // Detail lists for the KPI sheets — the actual items behind each headline number
   const daysBetween = (from: Date, to: Date) =>
     Math.max(0, Math.floor((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24)));
 
@@ -665,7 +669,7 @@ export async function getControlTowerData(
         projectName: i.project?.name ?? null,
         balanceCents: inv.balance_due_cents ?? 0,
         dueDate: inv.due_date ?? null,
-        daysOverdue: inv.due_date ? daysBetween(new Date(inv.due_date), now) : 0,
+        daysOverdue: inv.due_date ? daysBetween(new Date(inv.due_date), ctx.now) : 0,
         href: projectId
           ? `/projects/${projectId}/financials/receivables?invoice=${inv.id}`
           : "/invoices",
@@ -673,6 +677,82 @@ export async function getControlTowerData(
     })
     .sort((a, b) => b.daysOverdue - a.daysOverdue)
     .slice(0, 8);
+
+  return {
+    financials: {
+      totalInvoiced,
+      totalCollected,
+      totalOverdue,
+      outstandingAR: totalInvoiced - totalCollected,
+      readyToInvoiceCents,
+      overdueInvoices,
+      revenueSeries,
+      arAging: {
+        current: invoiceRollup.ar_aging.current,
+        oneToThirty: invoiceRollup.ar_aging.one_to_thirty,
+        thirtyOneToSixty: invoiceRollup.ar_aging.thirty_one_to_sixty,
+        sixtyOneToNinety: invoiceRollup.ar_aging.sixty_one_to_ninety,
+        overNinety: invoiceRollup.ar_aging.over_ninety,
+        noDueDate: invoiceRollup.ar_aging.no_due_date,
+      },
+    },
+    budgetHealth,
+    unpaidApprovedBillsCents,
+  };
+});
+
+/** Open-item head counts. No row ever crosses the wire — the fastest band. */
+export const getControlTowerExceptionsBand = cache(async (orgId?: string) => {
+  const ctx = await getControlTowerContext(orgId);
+  const [rfisResult, submittalsResult, changeOrdersResult, punchResult] = await Promise.all([
+    ctx.supabase
+      .from("rfis")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", ctx.orgId)
+      .in("status", ["open", "pending", "in_review"]),
+    ctx.supabase
+      .from("submittals")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", ctx.orgId)
+      .in("status", ["open", "pending", "in_review", "submitted"]),
+    ctx.supabase
+      .from("change_orders")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", ctx.orgId)
+      .eq("status", "pending"),
+    ctx.supabase
+      .from("punch_items")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", ctx.orgId)
+      .in("status", ["open", "in_progress"]),
+  ]);
+
+  const openItems: ControlTowerData["openItems"] = {
+    rfis: rfisResult.count ?? 0,
+    submittals: submittalsResult.count ?? 0,
+    changeOrders: changeOrdersResult.count ?? 0,
+    punchItems: punchResult.count ?? 0,
+  };
+  return { openItems };
+});
+
+export interface ControlTowerScheduleBand {
+  schedule: ControlTowerData["schedule"];
+  operationsLookahead: OperationsLookahead;
+  dueItems: ControlTowerData["dueItems"];
+}
+
+export const getControlTowerScheduleBand = cache(async (orgId?: string): Promise<ControlTowerScheduleBand> => {
+  const ctx = await getControlTowerContext(orgId);
+  const [projectsSlice, tasksSlice, scheduleSlice] = await Promise.all([
+    getProjectsSlice(orgId),
+    getTasksSlice(orgId),
+    getScheduleSlice(orgId),
+  ]);
+  const { tasks } = tasksSlice;
+  const { scheduleItems } = scheduleSlice;
+  const { activeProjectSet } = projectsSlice;
+  const { now, weekFromNow } = ctx;
 
   const dueTasks: DueWorkItem[] = tasks
     .filter((t) => {
@@ -740,7 +820,6 @@ export async function getControlTowerData(
     };
   });
   const lookaheadByDay = new Map(lookaheadDays.map((day) => [day.key, day]));
-  const activeProjectSet = new Set(activeProjects.map((project) => project.id));
 
   const addLookaheadItem = (item: OperationsLookaheadItem) => {
     const day = lookaheadByDay.get(item.date);
@@ -952,101 +1031,86 @@ export async function getControlTowerData(
     days: lookaheadDays,
   };
 
-  // Portfolio health
-  const projectsAtRisk =
-    atRiskItems > 0 || behindItems > 0
-      ? new Set(
-          scheduleItems
-            .filter((s) => s.status === "at_risk" || s.status === "blocked")
-            .map((s) => (s as any).project_id)
-            .filter(Boolean),
-        ).size
-      : 0;
-  const totalBlockers =
-    (rfisResult.count ?? 0) + (changeOrdersResult.count ?? 0) + tasksOverdue;
-  const itemsDueNext7Days =
-    tasksDueThisWeek +
-    scheduleItems.filter((s) => {
-      const end = (s as { end_date?: string | null }).end_date;
-      if (!end) return false;
-      const endDate = new Date(end);
-      return endDate >= now && endDate <= weekFromNow;
-    }).length;
-
-  const portfolioHealth: PortfolioHealth = {
-    activeProjects: activeProjects.length,
-    projectsAtRisk,
-    cashRiskCents: totalOverdue + unpaidApprovedBillsCents,
-    overdueARCents: totalOverdue,
-    unpaidApprovedBillsCents,
-    totalBlockers,
-    itemsDueNext7Days,
-  };
-
-  // Pipeline
-  const pipelineByStatus: Record<string, number> = {};
-  for (const o of opportunities) {
-    pipelineByStatus[o.status] = (pipelineByStatus[o.status] ?? 0) + 1;
-  }
-
-  // Activity
-  const activity = events.map((e) => ({
-    id: e.id,
-    type: e.event_type,
-    title: formatEventTitle(e.event_type, e.payload),
-    meta: e.payload?.name ?? e.payload?.title ?? undefined,
-    createdAt: e.created_at,
-  }));
-
   return {
-    portfolioHealth,
-    projects: {
-      total: projects.length,
-      byStatus: projectsByStatus,
-      active: activeProjects,
+    schedule: {
+      totalItems: scheduleItems.length + scheduleSlice.completedItems,
+      completedItems: scheduleSlice.completedItems,
+      criticalPathItems: scheduleSlice.criticalPathItems,
+      atRiskItems: scheduleSlice.atRiskItems,
+      behindItems: scheduleSlice.behindItems,
     },
-    tasks: {
-      total: tasks.length + doneTasksCount,
-      dueThisWeek: tasksDueThisWeek,
-      overdue: tasksOverdue,
-      byStatus: tasksByStatus,
-    },
-    financials: {
-      totalInvoiced,
-      totalCollected,
-      totalOverdue,
-      outstandingAR,
-      readyToInvoiceCents,
-      overdueInvoices,
-      revenueSeries,
-      arAging,
-    },
-    openItems: {
-      rfis: rfisResult.count ?? 0,
-      submittals: submittalsResult.count ?? 0,
-      changeOrders: changeOrdersResult.count ?? 0,
-      punchItems: punchResult.count ?? 0,
-    },
+    operationsLookahead,
     dueItems: {
       tasks: dueTasks,
       scheduleItems: dueScheduleItems,
     },
-    operationsLookahead,
-    budgetHealth,
-    schedule: {
-      totalItems: scheduleItems.length + completedItems,
-      completedItems,
-      criticalPathItems,
-      atRiskItems,
-      behindItems,
-    },
-    pipeline: {
-      byStatus: pipelineByStatus,
-      totalValue: 0,
-    },
-    activity,
   };
-}
+});
+
+/**
+ * The KPI strip's headline numbers. Genuinely cross-band — it reads money,
+ * exceptions and the shared slices — so it is composed from the cached bands
+ * rather than issuing its own queries.
+ */
+export const getControlTowerPortfolioHealth = cache(async (orgId?: string): Promise<PortfolioHealth> => {
+  const ctx = await getControlTowerContext(orgId);
+  const [projectsSlice, tasksSlice, scheduleSlice, money, exceptions] = await Promise.all([
+    getProjectsSlice(orgId),
+    getTasksSlice(orgId),
+    getScheduleSlice(orgId),
+    getControlTowerMoneyBand(orgId),
+    getControlTowerExceptionsBand(orgId),
+  ]);
+
+  const projectsAtRisk =
+    scheduleSlice.atRiskItems > 0 || scheduleSlice.behindItems > 0
+      ? new Set(
+          scheduleSlice.scheduleItems
+            .filter((s) => s.status === "at_risk" || s.status === "blocked")
+            .map((s) => (s as { project_id?: string | null }).project_id)
+            .filter(Boolean),
+        ).size
+      : 0;
+
+  const totalBlockers =
+    exceptions.openItems.rfis + exceptions.openItems.changeOrders + tasksSlice.tasksOverdue;
+
+  const itemsDueNext7Days =
+    tasksSlice.tasksDueThisWeek +
+    scheduleSlice.scheduleItems.filter((s) => {
+      const end = (s as { end_date?: string | null }).end_date;
+      if (!end) return false;
+      const endDate = new Date(end);
+      return endDate >= ctx.now && endDate <= ctx.weekFromNow;
+    }).length;
+
+  return {
+    activeProjects: projectsSlice.activeProjects.length,
+    projectsAtRisk,
+    cashRiskCents: money.financials.totalOverdue + money.unpaidApprovedBillsCents,
+    overdueARCents: money.financials.totalOverdue,
+    unpaidApprovedBillsCents: money.unpaidApprovedBillsCents,
+    totalBlockers,
+    itemsDueNext7Days,
+  };
+});
+
+/** Project status mix + task rollup for the KPI strip's sheets. */
+export const getControlTowerProjectsBand = cache(async (orgId?: string) => {
+  const [projectsSlice, tasksSlice] = await Promise.all([
+    getProjectsSlice(orgId),
+    getTasksSlice(orgId),
+  ]);
+  return {
+    projectsByStatus: projectsSlice.projectsByStatus,
+    tasks: {
+      total: tasksSlice.tasks.length + tasksSlice.doneTasksCount,
+      dueThisWeek: tasksSlice.tasksDueThisWeek,
+      overdue: tasksSlice.tasksOverdue,
+      byStatus: tasksSlice.tasksByStatus,
+    },
+  };
+});
 
 // --- Lifecycle Stage Board ---
 
@@ -1875,9 +1939,11 @@ export interface WatchlistProject {
   signals: WatchlistSignal[];
 }
 
-export async function getWatchlist(
+// Cached: the KPI strip and the watch panel are separate Suspense bands that
+// both read the watchlist, and they must not become two queries.
+export const getWatchlist = cache(async (
   orgId?: string,
-): Promise<WatchlistProject[]> {
+): Promise<WatchlistProject[]> => {
   const context = await requireOrgContext(orgId);
   const { supabase, orgId: resolvedOrgId } = context;
 
@@ -2110,7 +2176,7 @@ export async function getWatchlist(
     .filter((p) => p.signals.some((s) => s.status !== "ok"))
     .sort((a, b) => b.riskScore - a.riskScore)
     .slice(0, 5);
-}
+});
 
 function formatCentsCurrency(cents: number): string {
   return new Intl.NumberFormat("en-US", {

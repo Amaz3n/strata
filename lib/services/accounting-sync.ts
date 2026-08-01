@@ -17,6 +17,15 @@ const ENTITY_CONFIG: Record<AccountingPushEntityType, { payloadKey: string; jobT
   bill_payment: { payloadKey: "payment_id", jobType: "accounting_push_bill_payment", paymentSetting: true },
 }
 
+async function operationalPushAllowed(orgId: string) {
+  const supabase = createServiceSupabaseClient()
+  const { data, error } = await supabase.from("books_settings").select("ledger_authority, external_sync_posture").eq("org_id", orgId).maybeSingle()
+  // Additive-rollout compatibility: before the Books migration exists, preserve
+  // the existing provider integration behavior.
+  if (error) return true
+  return !data || data.ledger_authority === "external"
+}
+
 async function resolveProjectId(orgId: string, entityType: AccountingPushEntityType, entityId: string): Promise<string | null> {
   const supabase = createServiceSupabaseClient()
   if (entityType === "invoice" || entityType === "project_expense" || entityType === "vendor_bill") {
@@ -36,10 +45,12 @@ async function resolveProjectId(orgId: string, entityType: AccountingPushEntityT
 }
 
 export async function enqueueAccountingPush(input: { orgId: string; entityType: AccountingPushEntityType; entityId: string }) {
+  if (!await operationalPushAllowed(input.orgId)) return { queued: false as const, reason: "books_authoritative" as const }
   const supabase = createServiceSupabaseClient()
   const projectId = await resolveProjectId(input.orgId, input.entityType, input.entityId)
   const target = await resolveAccountingTarget({ orgId: input.orgId, projectId })
   if (!target) return { queued: false as const, reason: "unconnected" as const }
+  if (typeof target.connection.settings.cutover_freeze_run_id === "string") return { queued: false as const, reason: "cutover_freeze" as const }
 
   const ledgerType = input.entityType === "vendor_bill" ? "bill" : input.entityType
   const { data: existingRows } = await supabase
@@ -92,6 +103,7 @@ export async function markAccountingSyncError(orgId: string, entityType: string,
 }
 
 export async function processAccountingPush(input: { orgId: string; entityType: AccountingPushEntityType; entityId: string }): Promise<PushResult> {
+  if (!await operationalPushAllowed(input.orgId)) return { externalId: null, skipped: true }
   const projectId = await resolveProjectId(input.orgId, input.entityType, input.entityId)
   const target = await resolveAccountingTarget({ orgId: input.orgId, projectId })
   if (!target) throw new Error("No accounting connection is mapped to this transaction")

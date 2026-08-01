@@ -1,5 +1,6 @@
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 export type Vendor1099Row = {
   company_id: string
@@ -25,11 +26,22 @@ export async function getVendor1099Report({ year, orgId }: { year?: number; orgI
   if (!Number.isInteger(taxYear) || taxYear < 2000 || taxYear > 2200) throw new Error("Invalid tax year")
   const start = `${taxYear}-01-01T00:00:00.000Z`
   const end = `${taxYear + 1}-01-01T00:00:00.000Z`
-  const thresholdCents = 60_000
+  const service = createServiceSupabaseClient()
+  const { data: policies, error: policyError } = await service
+    .from("tax_policy_versions")
+    .select("org_id, threshold_cents, source_url")
+    .eq("tax_year", taxYear)
+    .eq("form_type", "1099-NEC")
+    .eq("jurisdiction", "US")
+    .or(`org_id.eq.${resolvedOrgId},org_id.is.null`)
+  if (policyError) throw new Error(`Failed to load 1099 policy: ${policyError.message}`)
+  const policy = (policies ?? []).sort((left, right) => Number(Boolean(right.org_id)) - Number(Boolean(left.org_id)))[0]
+  if (!policy) throw new Error(`No approved 1099-NEC policy exists for tax year ${taxYear}`)
+  const thresholdCents = Number(policy.threshold_cents)
 
   const [companiesResult, allocationsResult, billsResult, expensesResult] = await Promise.all([
     supabase.from("companies").select("id, name, tax_id_last4, tax_entity_type, is_1099_eligible, w9_file_id").eq("org_id", resolvedOrgId).eq("is_1099_eligible", true),
-    supabase.from("payment_allocations").select("amount_cents, bill_id, payment:payments!inner(received_at, status), bill:vendor_bills!inner(company_id)").eq("org_id", resolvedOrgId).not("bill_id", "is", null).gte("payment.received_at", start).lt("payment.received_at", end).in("payment.status", ["succeeded", "completed", "paid"]),
+    supabase.from("payment_allocations").select("amount_cents, bill_id, payment:payments!inner(received_at, status, method), bill:vendor_bills!inner(company_id)").eq("org_id", resolvedOrgId).not("bill_id", "is", null).gte("payment.received_at", start).lt("payment.received_at", end).in("payment.status", ["succeeded", "completed", "paid"]),
     supabase.from("vendor_bills").select("id, company_id, paid_cents, paid_at, status").eq("org_id", resolvedOrgId).not("company_id", "is", null).gte("paid_at", start).lt("paid_at", end),
     supabase.from("project_expenses").select("vendor_company_id, amount_cents, tax_cents, expense_date, status, payment_method, qbo_transaction_type").eq("org_id", resolvedOrgId).not("vendor_company_id", "is", null).gte("expense_date", `${taxYear}-01-01`).lte("expense_date", `${taxYear}-12-31`).in("status", ["approved", "locked"]),
   ])
@@ -46,7 +58,9 @@ export async function getVendor1099Report({ year, orgId }: { year?: number; orgI
   const allocatedBillIds = new Set<string>()
   for (const allocation of allocationsResult.data ?? []) {
     const bill = Array.isArray(allocation.bill) ? allocation.bill[0] : allocation.bill
+    const payment = Array.isArray(allocation.payment) ? allocation.payment[0] : allocation.payment
     if (!bill?.company_id) continue
+    if (payment?.method && new Set(["credit_card", "company_card", "card"]).has(payment.method)) continue
     allocatedBillIds.add(allocation.bill_id as string)
     paidByCompany.set(bill.company_id, (paidByCompany.get(bill.company_id) ?? 0) + Number(allocation.amount_cents ?? 0))
   }
@@ -60,6 +74,7 @@ export async function getVendor1099Report({ year, orgId }: { year?: number; orgI
     // Direct-paid expenses are cash-basis. AP/bill transactions belong in the
     // payment-allocation stream and must not leak into 1099 totals on approval.
     if (!expense.payment_method || expense.qbo_transaction_type === "bill") continue
+    if (new Set(["credit_card", "company_card", "card"]).has(expense.payment_method)) continue
     paidByCompany.set(expense.vendor_company_id, (paidByCompany.get(expense.vendor_company_id) ?? 0) + Number(expense.amount_cents ?? 0) + Number(expense.tax_cents ?? 0))
   }
 

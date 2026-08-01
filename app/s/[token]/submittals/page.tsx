@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation"
+import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { loadSubmittalsAction } from "./actions"
 import { SubmittalsPortalClient } from "./submittals-client"
@@ -22,5 +23,14 @@ export default async function SubmittalsPortalPage({ params }: Params) {
   }
 
   const submittals = await loadSubmittalsAction(token)
-  return <SubmittalsPortalClient submittals={submittals} token={token} />
+
+  return (
+    <>
+      <PortalPageHeader
+        title="Submittals"
+        description="Material and product submittals assigned to your company, and the builder's decisions."
+      />
+      <SubmittalsPortalClient submittals={submittals} token={token} />
+    </>
+  )
 }

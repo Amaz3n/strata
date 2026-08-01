@@ -6,6 +6,7 @@ import { OfferingSummary } from "@/components/communities/offering-summary"
 import { getCommunityLane } from "@/lib/services/community-portfolio"
 import { getCommunityOfferingCosts, getCommunityPriceSheet, listSpecInventory } from "@/lib/services/community-sales"
 import { listCommunityTraffic } from "@/lib/services/community-traffic"
+import { listPlansWithPublishedModels } from "@/lib/services/floorplan-models"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { grossMarginPct } from "@/lib/plans/margin"
 import { isIncentiveLive, offeringPrice, type OfferingIncentive } from "@/lib/sales/offering"
@@ -41,6 +42,9 @@ export default async function CommunityOfferingPage({ params }: { params: Promis
   const canManage = permissions.permissions.some((permission) =>
     ["sales.manage", "org.admin", "*"].includes(permission),
   )
+  const plansWith3d = await listPlansWithPublishedModels([
+    ...new Set(sheet.rows.map((row) => row.planId)),
+  ]).catch(() => new Set<string>())
 
   const rows: OfferingPlanRow[] = sheet.rows.map((row, index) => ({
     key: `${row.planId}:${row.elevationId ?? index}`,
@@ -151,6 +155,7 @@ export default async function CommunityOfferingPage({ params }: { params: Promis
           lotBasisCents={costs?.lotBasisCents ?? null}
           buildCostByPlanId={costs?.buildCostByPlanId ?? {}}
           lotsTruncated={sheet.lotsTruncated}
+          plansWith3d={plansWith3d}
           canManage={canManage}
         />
         <OfferingIncentives

@@ -78,16 +78,8 @@ export function DecisionsPortalClient({
   const decided = decisions.filter((d) => d.status !== "pending")
 
   return (
-    <div className="min-h-screen bg-background px-4 py-6">
-      <div className="mx-auto max-w-3xl space-y-6">
-        <header className="space-y-1">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">Decisions</p>
-          <h1 className="text-2xl font-bold">Your decisions</h1>
-          <p className="text-sm text-muted-foreground">
-            Approvals your builder needs from you to keep the project moving.
-          </p>
-        </header>
-
+    <div>
+      <div className="space-y-6">
         {decisions.length === 0 && (
           <Card>
             <CardContent className="p-6 text-center text-muted-foreground">

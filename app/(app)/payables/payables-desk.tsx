@@ -131,7 +131,12 @@ export function PayablesDesk({ data }: { data: OrgPayablesDeskData }) {
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-4 pb-6 pt-6 sm:px-6 lg:h-full lg:min-h-0 lg:gap-5 lg:pb-4 lg:px-8">
       {/* ── Header: the total owed ─────────────────────────────── */}
       <header className="desk-rise" style={{ "--desk-stagger": 0 } as React.CSSProperties}>
-        <div className="microlabel">Owed to vendors</div>
+        <div className="flex items-center justify-between gap-4">
+          <div className="microlabel">Owed to vendors</div>
+          <Link href="/payables/payment-runs" className="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground">
+            Manage payment runs
+          </Link>
+        </div>
         <div className="mt-1.5 font-mono text-4xl tabular-nums tracking-tight sm:text-5xl">
           {money(stats.outstandingCents)}
         </div>

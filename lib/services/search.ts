@@ -57,14 +57,15 @@ const SEARCH_DOCUMENT_BACKFILL_MAX_BATCH = 12
 const searchDocumentBackfillSeenAt = new Map<string, number>()
 
 // Entity sets used when the caller does not request specific types.
-const DEFAULT_SEARCH_ENTITY_TYPES: SearchEntityType[] = ["project", "house_plan", "budget_template", "price_agreement", "task", "file", "contact", "company", "payable", "expense", "prospect"]
+const DEFAULT_SEARCH_ENTITY_TYPES: SearchEntityType[] = ["project", "house_plan", "budget_template", "price_agreement", "task", "file", "contact", "company", "payment_run", "payable", "expense", "prospect"]
 // Live ("preferFast") header search: widened to surface the records users expect to find
 // instantly — contacts, companies, and invoices — not just project/task/file.
-const FAST_SEARCH_ENTITY_TYPES: SearchEntityType[] = ["project", "house_plan", "budget_template", "price_agreement", "task", "file", "contact", "company", "invoice", "payment", "payable", "expense", "prospect"]
+const FAST_SEARCH_ENTITY_TYPES: SearchEntityType[] = ["project", "house_plan", "budget_template", "price_agreement", "task", "file", "contact", "company", "invoice", "payment", "payment_run", "payable", "expense", "prospect"]
 // Money-bearing entities, used when the query is a bare amount/amount range.
 const MONEY_ENTITY_TYPES: SearchEntityType[] = [
   "invoice",
   "payment",
+  "payment_run",
   "estimate",
   "budget",
   "commitment",
@@ -78,6 +79,7 @@ const MONEY_ENTITY_TYPES: SearchEntityType[] = [
 const AMOUNT_FIELD_BY_ENTITY: Partial<Record<SearchEntityType, string>> = {
   invoice: "total_cents",
   payment: "amount_cents",
+  payment_run: "total_debit_cents",
   estimate: "total_cents",
   budget: "total_cents",
   commitment: "total_cents",

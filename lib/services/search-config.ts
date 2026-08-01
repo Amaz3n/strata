@@ -13,6 +13,7 @@ export type SearchEntityType =
   | 'company'
   | 'invoice'
   | 'payment'
+  | 'payment_run'
   | 'budget'
   | 'estimate'
   | 'commitment'
@@ -340,6 +341,13 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     searchableFields: ['reference', 'method'],
     hrefTemplate: '/payments/{id}',
     joins: ['LEFT JOIN projects p ON pay.project_id = p.id'],
+  },
+  payment_run: {
+    table: 'payment_runs',
+    titleField: 'id',
+    subtitleFields: ['status', 'payment_count', 'total_debit_cents'],
+    searchableFields: ['status', 'currency', 'idempotency_key'],
+    hrefTemplate: '/payables/payment-runs?run={id}',
   },
   budget: {
     table: 'budgets',

@@ -161,7 +161,7 @@ export default async function DocumentSigningPage({ params }: Params) {
         title="You're all set"
         description="This document has been signed successfully. No further action is required."
         documentTitle={signingRequest.document.title}
-        icon={<CheckCircle2 className="h-7 w-7 text-emerald-700" />}
+        icon={<CheckCircle2 className="h-7 w-7 text-success" />}
         action={
           downloadUrl ? (
             <Button asChild>

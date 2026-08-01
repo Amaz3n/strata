@@ -12,6 +12,8 @@ import { listComplianceDocumentTypes } from "@/lib/services/compliance-documents
 import { getCurrentUserAction } from "@/app/actions/user"
 import { listDivisions } from "@/lib/services/divisions"
 import { getDocumentNumbering } from "@/lib/services/document-numbering"
+import { getPaymentRailSettings } from "@/lib/services/payment-rail-setup"
+import { getBooksModuleSettings } from "@/lib/services/books/module"
 import type { ComplianceRules } from "@/lib/types"
 
 const DEFAULT_COMPLIANCE_RULES: ComplianceRules = {
@@ -54,14 +56,17 @@ async function SettingsData({ searchParams }: SettingsPageProps) {
   const canManageCompliance =
     permissions.includes("org.admin") ||
     permissions.includes("billing.manage")
+  const canManageAccounting = permissions.includes("org.admin") || permissions.includes("*")
 
-  const [complianceRules, complianceRequirementDefaults, complianceDocumentTypes, documentNumbering] = isLocked
-    ? [DEFAULT_COMPLIANCE_RULES, [], [], null]
+  const [complianceRules, complianceRequirementDefaults, complianceDocumentTypes, documentNumbering, paymentRailSettings, booksSettings] = isLocked
+    ? [DEFAULT_COMPLIANCE_RULES, [], [], null, null, { enabled: false, settings: null, canDisable: true, connections: [] }]
     : await Promise.all([
         getComplianceRules().catch(() => DEFAULT_COMPLIANCE_RULES),
         getDefaultComplianceRequirements().catch(() => []),
         listComplianceDocumentTypes().catch(() => []),
         getDocumentNumbering().catch(() => null),
+        getPaymentRailSettings().catch(() => null),
+        getBooksModuleSettings({ includeConnections: canManageAccounting }),
       ])
 
   return (
@@ -82,6 +87,10 @@ async function SettingsData({ searchParams }: SettingsPageProps) {
       canManageCompliance={canManageCompliance}
       initialComplianceRequirementDefaults={complianceRequirementDefaults}
       complianceDocumentTypes={complianceDocumentTypes}
+      initialPaymentRailSettings={paymentRailSettings}
+      stripePublishableKey={process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? null}
+      initialBooksSettings={booksSettings}
+      canManageAccounting={canManageAccounting}
     />
   )
 }

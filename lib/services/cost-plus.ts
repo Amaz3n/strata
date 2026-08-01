@@ -2,36 +2,17 @@ import { checkVarianceAlerts } from "@/lib/services/budgets"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { createHash, randomBytes, randomUUID } from "crypto"
 
-import {
-  assertApprovalAllowed,
-  getExpenseApprovalBlockingReasons,
-  getTimeEntryApprovalBlockingReasons,
-  loadApprovalGateSettings,
-} from "@/lib/financials/approval-gates"
+import { assertApprovalAllowed, getExpenseApprovalBlockingReasons, getTimeEntryApprovalBlockingReasons, loadApprovalGateSettings } from "@/lib/financials/approval-gates"
 import { assertCostSourceCanEnterBillableLedger } from "@/lib/financials/billable-ledger-rules"
 import { resolveGmpClassificationForCostSource } from "@/lib/financials/gmp-classification"
-import {
-  resolveContractFeePresentation,
-  resolveProjectBillingModel,
-  shouldExposeOpenBookCostDetail,
-  type FeePresentation,
-} from "@/lib/financials/billing-model"
+import { resolveContractFeePresentation, resolveProjectBillingModel, shouldExposeOpenBookCostDetail, type FeePresentation } from "@/lib/financials/billing-model"
 import { recordAudit } from "@/lib/services/audit"
 import { createApprovedCostInvoiceFromPreview } from "@/lib/services/approved-cost-invoicing"
-import {
-  assertBillingPeriodCanInvoice,
-  getProjectBillingPeriod,
-  linkInvoiceToBillingPeriod,
-} from "@/lib/services/billing-periods"
+import { assertBillingPeriodCanInvoice, getProjectBillingPeriod, linkInvoiceToBillingPeriod } from "@/lib/services/billing-periods"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { buildAccountingCoding } from "@/lib/services/accounting-coding"
-import {
-  getProjectFeeBillingSummary,
-  prepareProjectFeeBillingForOwnerInvoice,
-  recordProjectFeeBillingForInvoice,
-  type PreparedProjectFeeBilling,
-} from "@/lib/services/fee-billing"
+import { getProjectFeeBillingSummary, prepareProjectFeeBillingForOwnerInvoice, recordProjectFeeBillingForInvoice, type PreparedProjectFeeBilling } from "@/lib/services/fee-billing"
 import {
   calculateTimeEntryCostCents,
   postJobCostEntryFromProjectExpense,
@@ -40,10 +21,7 @@ import {
   postJobCostEntryFromBillLine,
   voidJobCostEntryForSource,
 } from "@/lib/services/job-cost-actuals"
-import {
-  resolveTimeAndMaterialsMaterialMarkup,
-  resolveTimeAndMaterialsRateForTimeEntry,
-} from "@/lib/services/billing-rate-schedules"
+import { resolveTimeAndMaterialsMaterialMarkup, resolveTimeAndMaterialsRateForTimeEntry } from "@/lib/services/billing-rate-schedules"
 import { sendEmail, getOrgSenderEmail, renderStandardEmailLayout } from "@/lib/services/mailer"
 import { getNextInvoiceNumber } from "@/lib/services/invoice-numbers"
 import { enqueueProjectExpenseSync } from "@/lib/services/accounting-sync"
@@ -54,6 +32,7 @@ import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { supportsApprovedCostInvoicing } from "@/lib/financials/billing-model"
 import { getProjectPosture } from "@/lib/product-tier"
 import { terminology } from "@/lib/terminology"
+import { learnCodingRule, suggestCoding } from "@/lib/services/books/coding-rules"
 import {
   approvalDecisionSchema,
   generateInvoiceFromCostsInputSchema,
@@ -70,16 +49,7 @@ import {
   type TimeEntryUpdateInput,
 } from "@/lib/validation/cost-plus"
 
-type MarkupSource =
-  | "line"
-  | "cost_code"
-  | "contract"
-  | "org"
-  | "default"
-  | "tm_rate_schedule"
-  | "tm_material_schedule"
-  | "tm_project_override"
-  | "tm_membership_fallback"
+type MarkupSource = "line" | "cost_code" | "contract" | "org" | "default" | "tm_rate_schedule" | "tm_material_schedule" | "tm_project_override" | "tm_membership_fallback"
 type CostSourceType = "vendor_bill_line" | "project_expense" | "project_expense_line" | "time_entry" | "manual_adjustment" | "allowance_overage"
 
 export interface BillableCost {
@@ -197,11 +167,7 @@ function isInvoiceDraftFeeLine(line: InvoiceDraftLine) {
   return line.unit === "fee" || Boolean(line.metadata?.fee_line_kind)
 }
 
-function applyRetainageToInvoiceDraft(
-  draft: InvoiceDraft,
-  retainagePercent: number | null | undefined,
-  retainageAppliesToFee = false,
-): InvoiceDraft {
+function applyRetainageToInvoiceDraft(draft: InvoiceDraft, retainagePercent: number | null | undefined, retainageAppliesToFee = false): InvoiceDraft {
   const effectivePercent = Number(retainagePercent ?? 0)
   if (!Number.isFinite(effectivePercent) || effectivePercent <= 0 || draft.totals.billable_cents <= 0) return draft
 
@@ -342,15 +308,24 @@ export async function createMarkupRule(input: MarkupRuleInput, orgId?: string): 
     effective_to: parsed.effectiveTo ? toDateOnly(parsed.effectiveTo) : null,
   }
 
-  const { data, error } = await supabase
-    .from("markup_rules")
-    .insert(payload)
-    .select("*, contract:contracts(id, title), cost_code:cost_codes(id, code, name)")
-    .single()
+  const { data, error } = await supabase.from("markup_rules").insert(payload).select("*, contract:contracts(id, title), cost_code:cost_codes(id, code, name)").single()
 
   if (error || !data) throw new Error(`Failed to create markup rule: ${error?.message}`)
-  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "insert", entityType: "markup_rule", entityId: data.id, after: data })
-  await recordEvent({ orgId: resolvedOrgId, eventType: "markup_rule_created", entityType: "markup_rule", entityId: data.id, payload: { scope: parsed.scope } })
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "insert",
+    entityType: "markup_rule",
+    entityId: data.id,
+    after: data,
+  })
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "markup_rule_created",
+    entityType: "markup_rule",
+    entityId: data.id,
+    payload: { scope: parsed.scope },
+  })
   return mapMarkupRule(data)
 }
 
@@ -366,17 +341,19 @@ export async function deleteMarkupRule(ruleId: string, orgId?: string) {
     resourceId: ruleId,
   })
 
-  const { data: before, error: beforeError } = await supabase
-    .from("markup_rules")
-    .select("*")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", ruleId)
-    .maybeSingle()
+  const { data: before, error: beforeError } = await supabase.from("markup_rules").select("*").eq("org_id", resolvedOrgId).eq("id", ruleId).maybeSingle()
   if (beforeError || !before) throw new Error("Markup rule not found")
 
   const { error } = await supabase.from("markup_rules").delete().eq("org_id", resolvedOrgId).eq("id", ruleId)
   if (error) throw new Error(`Failed to delete markup rule: ${error.message}`)
-  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "delete", entityType: "markup_rule", entityId: ruleId, before })
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "delete",
+    entityType: "markup_rule",
+    entityId: ruleId,
+    before,
+  })
 }
 
 async function requireProjectFinancialAccess({
@@ -407,7 +384,9 @@ async function requireProjectFinancialAccess({
 export async function getProjectCostContract(supabase: SupabaseClient, orgId: string, projectId: string) {
   const { data, error } = await supabase
     .from("contracts")
-    .select("id, status, contract_type, markup_percent, gmp_cents, fixed_fee_cents, fee_presentation, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, requires_client_cost_approval, open_book, retainage_percent, retainage_applies_to_fee, rate_schedule_id, snapshot, projects!inner(property_type)")
+    .select(
+      "id, status, contract_type, markup_percent, gmp_cents, fixed_fee_cents, fee_presentation, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, requires_client_cost_approval, open_book, retainage_percent, retainage_applies_to_fee, rate_schedule_id, snapshot, projects!inner(property_type)",
+    )
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .eq("status", "active")
@@ -505,10 +484,7 @@ async function ensureAllowanceOverageBillableCosts({
 
   for (const allowance of allowances ?? []) {
     const rawOverageCents = Number(allowance.used_cents ?? 0) - Number(allowance.budget_cents ?? 0)
-    const overageCents =
-      allowance.overage_handling === "absorb" || allowance.overage_handling === "client_direct"
-        ? 0
-        : Math.max(0, rawOverageCents)
+    const overageCents = allowance.overage_handling === "absorb" || allowance.overage_handling === "client_direct" ? 0 : Math.max(0, rawOverageCents)
 
     const { data: existingRows, error: existingError } = await supabase
       .from("billable_costs")
@@ -519,9 +495,7 @@ async function ensureAllowanceOverageBillableCosts({
       .neq("status", "voided")
 
     if (existingError) throw new Error(`Failed to load allowance overage ledger rows: ${existingError.message}`)
-    const allowanceRows = (existingRows ?? []).filter(
-      (row: any) => row.source_id === allowance.id || row.metadata?.allowance_id === allowance.id,
-    )
+    const allowanceRows = (existingRows ?? []).filter((row: any) => row.source_id === allowance.id || row.metadata?.allowance_id === allowance.id)
     const postedOverageCents = allowanceRows.reduce((sum: number, row: any) => sum + Number(row.cost_cents ?? 0), 0)
     const deltaCents = overageCents - postedOverageCents
     if (deltaCents === 0) continue
@@ -570,12 +544,7 @@ async function ensureAllowanceOverageBillableCosts({
       },
     }
 
-    await insertOrReturnBillableCost(
-      supabase,
-      orgId,
-      payload,
-      "allowance_overage",
-    )
+    await insertOrReturnBillableCost(supabase, orgId, payload, "allowance_overage")
   }
 }
 
@@ -617,25 +586,14 @@ export async function resolveMarkupPercentsBatch(args: {
 }): Promise<Array<{ percent: number; source: MarkupSource }>> {
   if (args.costs.length === 0) return []
 
-  const costCodeIds = Array.from(
-    new Set(args.costs.map((cost) => cost.costCodeId).filter((id): id is string => Boolean(id))),
-  )
+  const costCodeIds = Array.from(new Set(args.costs.map((cost) => cost.costCodeId).filter((id): id is string => Boolean(id))))
 
   const [costCodesResult, contractResult, rulesResult] = await Promise.all([
     costCodeIds.length
-      ? args.supabase
-          .from("cost_codes")
-          .select("id, default_markup_percent, category")
-          .eq("org_id", args.orgId)
-          .in("id", costCodeIds)
+      ? args.supabase.from("cost_codes").select("id, default_markup_percent, category").eq("org_id", args.orgId).in("id", costCodeIds)
       : Promise.resolve({ data: [], error: null }),
     args.contractId
-      ? args.supabase
-          .from("contracts")
-          .select("id, markup_percent")
-          .eq("org_id", args.orgId)
-          .eq("id", args.contractId)
-          .maybeSingle()
+      ? args.supabase.from("contracts").select("id, markup_percent").eq("org_id", args.orgId).eq("id", args.contractId).maybeSingle()
       : Promise.resolve({ data: null, error: null }),
     args.supabase
       .from("markup_rules")
@@ -669,13 +627,12 @@ export async function resolveMarkupPercentsBatch(args: {
     const costWithCategory = { ...cost, costCodeCategory }
 
     if (args.contractId) {
-      const contractRule = rules.find(
-        (rule: any) =>
-          rule.scope === "contract" &&
-          rule.contract_id === args.contractId &&
-          matchesRule(rule, costWithCategory),
-      )
-      if (contractRule) return { percent: Number(contractRule.markup_percent), source: "contract" }
+      const contractRule = rules.find((rule: any) => rule.scope === "contract" && rule.contract_id === args.contractId && matchesRule(rule, costWithCategory))
+      if (contractRule)
+        return {
+          percent: Number(contractRule.markup_percent),
+          source: "contract",
+        }
 
       const rawContractMarkup = (contractResult.data as any)?.markup_percent
       const contractMarkup = Number(rawContractMarkup)
@@ -690,13 +647,12 @@ export async function resolveMarkupPercentsBatch(args: {
     }
 
     if (cost.costCodeId) {
-      const costCodeRule = rules.find(
-        (rule: any) =>
-          rule.scope === "cost_code" &&
-          rule.cost_code_id === cost.costCodeId &&
-          matchesRule(rule, costWithCategory),
-      )
-      if (costCodeRule) return { percent: Number(costCodeRule.markup_percent), source: "cost_code" }
+      const costCodeRule = rules.find((rule: any) => rule.scope === "cost_code" && rule.cost_code_id === cost.costCodeId && matchesRule(rule, costWithCategory))
+      if (costCodeRule)
+        return {
+          percent: Number(costCodeRule.markup_percent),
+          source: "cost_code",
+        }
     }
 
     const orgRule = rules.find((rule: any) => rule.scope === "org" && matchesRule(rule, costWithCategory))
@@ -706,17 +662,8 @@ export async function resolveMarkupPercentsBatch(args: {
   })
 }
 
-async function insertOrReturnBillableCost(
-  supabase: SupabaseClient,
-  orgId: string,
-  payload: Record<string, any>,
-  sourceLabel: CostSourceType,
-) {
-  const { data, error } = await supabase
-    .from("billable_costs")
-    .insert(payload)
-    .select("*, cost_code:cost_codes(code, name)")
-    .single()
+async function insertOrReturnBillableCost(supabase: SupabaseClient, orgId: string, payload: Record<string, any>, sourceLabel: CostSourceType) {
+  const { data, error } = await supabase.from("billable_costs").insert(payload).select("*, cost_code:cost_codes(code, name)").single()
 
   if (!error && data) {
     await recordEvent({
@@ -724,12 +671,20 @@ async function insertOrReturnBillableCost(
       eventType: "cost_ledger_row_created",
       entityType: "billable_cost",
       entityId: data.id,
-      payload: { source_type: sourceLabel, cost_cents: data.cost_cents, project_id: data.project_id },
+      payload: {
+        source_type: sourceLabel,
+        cost_cents: data.cost_cents,
+        project_id: data.project_id,
+      },
     })
     return mapBillableCost(data)
   }
 
-  const duplicate = error?.code === "23505" || String(error?.message ?? "").toLowerCase().includes("duplicate")
+  const duplicate =
+    error?.code === "23505" ||
+    String(error?.message ?? "")
+      .toLowerCase()
+      .includes("duplicate")
   if (!duplicate) throw new Error(`Failed to create billable cost: ${error?.message}`)
 
   const { data: existing, error: existingError } = await supabase
@@ -750,11 +705,13 @@ export async function upsertBillableCostFromBillLine(args: { billLineId: string;
 
   const { data: line, error } = await supabase
     .from("bill_lines")
-    .select(`
+    .select(
+      `
       id, org_id, bill_id, project_id, cost_code_id, budget_line_id, description, quantity, unit_cost_cents, metadata,
       cost_code:cost_codes(id, category, is_reimbursable_default),
       bill:vendor_bills(id, org_id, project_id, bill_number, bill_date, status, commitment:commitments(company_id))
-    `)
+    `,
+    )
     .eq("org_id", resolvedOrgId)
     .eq("id", args.billLineId)
     .maybeSingle()
@@ -782,9 +739,7 @@ export async function upsertBillableCostFromBillLine(args: { billLineId: string;
     costCodeCategory: (line as any).cost_code?.category ?? null,
     occurredOn: new Date(bill.bill_date ?? new Date()),
   })
-  const isBillable =
-    (line as any).metadata?.billable_to_customer === true &&
-    (line as any).cost_code?.is_reimbursable_default !== false
+  const isBillable = (line as any).metadata?.billable_to_customer === true && (line as any).cost_code?.is_reimbursable_default !== false
   const gmpClassification = await resolveGmpClassificationForCostSource({
     supabase,
     orgId: resolvedOrgId,
@@ -905,11 +860,13 @@ export async function upsertBillableCostFromExpenseLine(args: { expenseLineId: s
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(args.orgId)
   const { data: line, error } = await supabase
     .from("project_expense_lines")
-    .select(`
+    .select(
+      `
       id, org_id, expense_id, project_id, cost_code_id, budget_line_id, description, amount_cents,
       cost_code:cost_codes(id, category, is_reimbursable_default),
       expense:project_expenses(id, org_id, project_id, expense_date, status, is_billable, markup_percent_override, vendor_company_id, vendor_name_text, description, receipt_file_id)
-    `)
+    `,
+    )
     .eq("org_id", resolvedOrgId)
     .eq("id", args.expenseLineId)
     .maybeSingle()
@@ -1091,56 +1048,49 @@ export async function upsertBillableCostFromTimeEntry(args: { timeEntryId: strin
   return billable
 }
 
-export async function propagateApprovalToLedger(args: {
-  source: "vendor_bill" | "project_expense" | "time_entry"
-  sourceId: string
-  orgId?: string
-}): Promise<void> {
+export async function propagateApprovalToLedger(args: { source: "vendor_bill" | "project_expense" | "time_entry"; sourceId: string; orgId?: string }): Promise<void> {
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(args.orgId)
   const scanVariance = async (projectIds: Array<string | null | undefined>) => {
     for (const projectId of Array.from(new Set(projectIds.filter((id): id is string => Boolean(id))))) {
       await checkVarianceAlerts(projectId, resolvedOrgId).catch((error) => {
-        console.error("Variance scan after ledger post failed", { projectId, error })
+        console.error("Variance scan after ledger post failed", {
+          projectId,
+          error,
+        })
       })
     }
   }
 
   if (args.source === "vendor_bill") {
-    const { data: bill, error: billError } = await supabase
-      .from("vendor_bills")
-      .select("id, project_id")
-      .eq("org_id", resolvedOrgId)
-      .eq("id", args.sourceId)
-      .maybeSingle()
+    const { data: bill, error: billError } = await supabase.from("vendor_bills").select("id, project_id").eq("org_id", resolvedOrgId).eq("id", args.sourceId).maybeSingle()
 
     if (billError || !bill) throw new Error("Vendor bill not found")
     const contract = await getProjectCostContract(supabase, resolvedOrgId, bill.project_id)
     const shouldPostBillableCosts = isCostPlusContract(contract)
 
-    const { data: lines, error } = await supabase
-      .from("bill_lines")
-      .select("id")
-      .eq("org_id", resolvedOrgId)
-      .eq("bill_id", args.sourceId)
+    const { data: lines, error } = await supabase.from("bill_lines").select("id").eq("org_id", resolvedOrgId).eq("bill_id", args.sourceId)
 
     if (error) throw new Error(`Failed to load bill lines: ${error.message}`)
-    await Promise.all((lines ?? []).map(async (line) => {
-      if (shouldPostBillableCosts) {
-        await upsertBillableCostFromBillLine({ billLineId: line.id, orgId: resolvedOrgId })
-      }
-      await postJobCostEntryFromBillLine({ billLineId: line.id, orgId: resolvedOrgId })
-    }))
+    await Promise.all(
+      (lines ?? []).map(async (line) => {
+        if (shouldPostBillableCosts) {
+          await upsertBillableCostFromBillLine({
+            billLineId: line.id,
+            orgId: resolvedOrgId,
+          })
+        }
+        await postJobCostEntryFromBillLine({
+          billLineId: line.id,
+          orgId: resolvedOrgId,
+        })
+      }),
+    )
     await scanVariance([bill.project_id])
     return
   }
 
   if (args.source === "project_expense") {
-    const { data: expense, error } = await supabase
-      .from("project_expenses")
-      .select("id, project_id")
-      .eq("org_id", resolvedOrgId)
-      .eq("id", args.sourceId)
-      .maybeSingle()
+    const { data: expense, error } = await supabase.from("project_expenses").select("id, project_id").eq("org_id", resolvedOrgId).eq("id", args.sourceId).maybeSingle()
 
     if (error || !expense) throw new Error("Expense not found")
 
@@ -1163,46 +1113,67 @@ export async function propagateApprovalToLedger(args: {
         }),
       )
       const contractByProject = new Map<string, boolean>(contractEntries)
-      await Promise.all(lines!.map(async (line) => {
-        const projectId = line.project_id ?? expense.project_id
-        if (contractByProject.get(projectId)) {
-          await upsertBillableCostFromExpenseLine({ expenseLineId: line.id, orgId: resolvedOrgId })
-        }
-        await postJobCostEntryFromExpenseLine({ expenseLineId: line.id, orgId: resolvedOrgId })
-      }))
+      await Promise.all(
+        lines!.map(async (line) => {
+          const projectId = line.project_id ?? expense.project_id
+          if (contractByProject.get(projectId)) {
+            await upsertBillableCostFromExpenseLine({
+              expenseLineId: line.id,
+              orgId: resolvedOrgId,
+            })
+          }
+          await postJobCostEntryFromExpenseLine({
+            expenseLineId: line.id,
+            orgId: resolvedOrgId,
+          })
+        }),
+      )
       await scanVariance(lines!.map((line) => line.project_id ?? expense.project_id))
       return
     }
 
     const contract = await getProjectCostContract(supabase, resolvedOrgId, expense.project_id)
     if (isCostPlusContract(contract)) {
-      await upsertBillableCostFromExpense({ expenseId: args.sourceId, orgId: resolvedOrgId })
+      await upsertBillableCostFromExpense({
+        expenseId: args.sourceId,
+        orgId: resolvedOrgId,
+      })
     }
-    await postJobCostEntryFromProjectExpense({ expenseId: args.sourceId, orgId: resolvedOrgId })
+    await postJobCostEntryFromProjectExpense({
+      expenseId: args.sourceId,
+      orgId: resolvedOrgId,
+    })
     await scanVariance([expense.project_id])
     return
   }
 
-  const { data: entry, error } = await supabase
-    .from("time_entries")
-    .select("id, project_id")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", args.sourceId)
-    .maybeSingle()
+  const { data: entry, error } = await supabase.from("time_entries").select("id, project_id").eq("org_id", resolvedOrgId).eq("id", args.sourceId).maybeSingle()
 
   if (error || !entry) throw new Error("Time entry not found")
   const contract = await getProjectCostContract(supabase, resolvedOrgId, entry.project_id)
   if (isCostPlusContract(contract)) {
-    await upsertBillableCostFromTimeEntry({ timeEntryId: args.sourceId, orgId: resolvedOrgId })
+    await upsertBillableCostFromTimeEntry({
+      timeEntryId: args.sourceId,
+      orgId: resolvedOrgId,
+    })
   }
-  await postJobCostEntryFromTimeEntry({ timeEntryId: args.sourceId, orgId: resolvedOrgId })
+  await postJobCostEntryFromTimeEntry({
+    timeEntryId: args.sourceId,
+    orgId: resolvedOrgId,
+  })
   await scanVariance([entry.project_id])
 }
 
 export async function createTimeEntry(input: TimeEntryInput, orgId?: string) {
   const parsed = timeEntryInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireProjectFinancialAccess({ supabase, orgId: resolvedOrgId, userId, projectId: parsed.projectId, permission: "time.write" })
+  await requireProjectFinancialAccess({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    projectId: parsed.projectId,
+    permission: "time.write",
+  })
 
   const contract = await getProjectCostContract(supabase, resolvedOrgId, parsed.projectId)
   let burdenMultiplier = parsed.burdenMultiplier ?? Number(contract?.labor_burden_multiplier ?? 1)
@@ -1213,11 +1184,7 @@ export async function createTimeEntry(input: TimeEntryInput, orgId?: string) {
   let workerUserId = parsed.workerUserId ?? null
   if (!workerName) {
     workerUserId = workerUserId ?? userId
-    const { data: profile } = await supabase
-      .from("app_users")
-      .select("full_name, email")
-      .eq("id", workerUserId)
-      .maybeSingle()
+    const { data: profile } = await supabase.from("app_users").select("full_name, email").eq("id", workerUserId).maybeSingle()
     workerName = profile?.full_name?.trim() || profile?.email || "Crew member"
   }
 
@@ -1264,8 +1231,21 @@ export async function createTimeEntry(input: TimeEntryInput, orgId?: string) {
   const { data, error } = await supabase.from("time_entries").insert(payload).select("*").single()
   if (error || !data) throw new Error(`Failed to create time entry: ${error?.message}`)
 
-  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "insert", entityType: "time_entry", entityId: data.id, after: data })
-  await recordEvent({ orgId: resolvedOrgId, eventType: "time_entry_submitted", entityType: "time_entry", entityId: data.id, payload: { project_id: parsed.projectId, hours: parsed.hours } })
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "insert",
+    entityType: "time_entry",
+    entityId: data.id,
+    after: data,
+  })
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "time_entry_submitted",
+    entityType: "time_entry",
+    entityId: data.id,
+    payload: { project_id: parsed.projectId, hours: parsed.hours },
+  })
   return data
 }
 
@@ -1273,14 +1253,15 @@ export async function updateTimeEntry(timeEntryId: string, input: TimeEntryUpdat
   const parsed = timeEntryUpdateSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
 
-  const { data: before, error: beforeError } = await supabase
-    .from("time_entries")
-    .select("*")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", timeEntryId)
-    .maybeSingle()
+  const { data: before, error: beforeError } = await supabase.from("time_entries").select("*").eq("org_id", resolvedOrgId).eq("id", timeEntryId).maybeSingle()
   if (beforeError || !before) throw new Error("Time entry not found")
-  await requireProjectFinancialAccess({ supabase, orgId: resolvedOrgId, userId, projectId: before.project_id, permission: "time.write" })
+  await requireProjectFinancialAccess({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    projectId: before.project_id,
+    permission: "time.write",
+  })
 
   const updates: Record<string, unknown> = {}
   if (parsed.costCodeId !== undefined) updates.cost_code_id = parsed.costCodeId ?? null
@@ -1298,16 +1279,9 @@ export async function updateTimeEntry(timeEntryId: string, input: TimeEntryUpdat
 
   const impactsPostedLedger =
     before.status === "pm_approved" || before.status === "client_approved"
-      ? [
-          "cost_code_id",
-          "base_rate_cents",
-          "burden_multiplier",
-          "is_billable",
-          "is_overtime",
-          "ot_multiplier",
-          "is_double_time",
-          "dt_multiplier",
-        ].some((key) => Object.prototype.hasOwnProperty.call(updates, key))
+      ? ["cost_code_id", "base_rate_cents", "burden_multiplier", "is_billable", "is_overtime", "ot_multiplier", "is_double_time", "dt_multiplier"].some((key) =>
+          Object.prototype.hasOwnProperty.call(updates, key),
+        )
       : false
 
   if (impactsPostedLedger) {
@@ -1325,19 +1299,25 @@ export async function updateTimeEntry(timeEntryId: string, input: TimeEntryUpdat
     }
   }
 
-  const { data, error } = await supabase
-    .from("time_entries")
-    .update(updates)
-    .eq("org_id", resolvedOrgId)
-    .eq("id", timeEntryId)
-    .select("*")
-    .single()
+  const { data, error } = await supabase.from("time_entries").update(updates).eq("org_id", resolvedOrgId).eq("id", timeEntryId).select("*").single()
   if (error || !data) throw new Error(`Failed to update time entry: ${error?.message}`)
 
-  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "time_entry", entityId: data.id, before, after: data })
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "time_entry",
+    entityId: data.id,
+    before,
+    after: data,
+  })
 
   if (impactsPostedLedger) {
-    await voidJobCostEntryForSource({ sourceType: "time_entry", sourceId: data.id, orgId: resolvedOrgId })
+    await voidJobCostEntryForSource({
+      sourceType: "time_entry",
+      sourceId: data.id,
+      orgId: resolvedOrgId,
+    })
     const { error: voidCostError } = await supabase
       .from("billable_costs")
       .update({ status: "voided" })
@@ -1349,10 +1329,13 @@ export async function updateTimeEntry(timeEntryId: string, input: TimeEntryUpdat
     if (voidCostError) throw new Error(`Failed to void time entry billable cost: ${voidCostError.message}`)
 
     const contract = await getProjectCostContract(supabase, resolvedOrgId, data.project_id)
-    const canPostApprovedTime =
-      data.status === "client_approved" || (data.status === "pm_approved" && !contract?.requires_client_cost_approval)
+    const canPostApprovedTime = data.status === "client_approved" || (data.status === "pm_approved" && !contract?.requires_client_cost_approval)
     if (canPostApprovedTime) {
-      await propagateApprovalToLedger({ source: "time_entry", sourceId: data.id, orgId: resolvedOrgId })
+      await propagateApprovalToLedger({
+        source: "time_entry",
+        sourceId: data.id,
+        orgId: resolvedOrgId,
+      })
     }
   }
 
@@ -1361,17 +1344,22 @@ export async function updateTimeEntry(timeEntryId: string, input: TimeEntryUpdat
 
 export async function approveTimeEntry(timeEntryId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  const { data: before, error: beforeError } = await supabase
-    .from("time_entries")
-    .select("*")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", timeEntryId)
-    .maybeSingle()
+  const { data: before, error: beforeError } = await supabase.from("time_entries").select("*").eq("org_id", resolvedOrgId).eq("id", timeEntryId).maybeSingle()
 
   if (beforeError || !before) throw new Error("Time entry not found")
-  await requireProjectFinancialAccess({ supabase, orgId: resolvedOrgId, userId, projectId: before.project_id, permission: "bill.approve" })
+  await requireProjectFinancialAccess({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    projectId: before.project_id,
+    permission: "bill.approve",
+  })
 
-  const gateSettings = await loadApprovalGateSettings({ supabase, orgId: resolvedOrgId, projectId: before.project_id })
+  const gateSettings = await loadApprovalGateSettings({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: before.project_id,
+  })
   assertApprovalAllowed(getTimeEntryApprovalBlockingReasons(before, gateSettings))
 
   const contract = await getProjectCostContract(supabase, resolvedOrgId, before.project_id)
@@ -1380,18 +1368,40 @@ export async function approveTimeEntry(timeEntryId: string, orgId?: string) {
   const nextStatus = "pm_approved"
   const { data, error } = await supabase
     .from("time_entries")
-    .update({ status: nextStatus, approved_by_pm_at: new Date().toISOString(), approved_by_pm_user_id: userId })
+    .update({
+      status: nextStatus,
+      approved_by_pm_at: new Date().toISOString(),
+      approved_by_pm_user_id: userId,
+    })
     .eq("org_id", resolvedOrgId)
     .eq("id", timeEntryId)
     .select("*")
     .single()
 
   if (error || !data) throw new Error(`Failed to approve time entry: ${error?.message}`)
-  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "time_entry", entityId: data.id, before, after: data })
-  await recordEvent({ orgId: resolvedOrgId, eventType: "time_entry_pm_approved", entityType: "time_entry", entityId: data.id, payload: { project_id: data.project_id } })
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "time_entry",
+    entityId: data.id,
+    before,
+    after: data,
+  })
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "time_entry_pm_approved",
+    entityType: "time_entry",
+    entityId: data.id,
+    payload: { project_id: data.project_id },
+  })
 
   if (!contract?.requires_client_cost_approval) {
-    await propagateApprovalToLedger({ source: "time_entry", sourceId: data.id, orgId: resolvedOrgId })
+    await propagateApprovalToLedger({
+      source: "time_entry",
+      sourceId: data.id,
+      orgId: resolvedOrgId,
+    })
   }
   return data
 }
@@ -1399,44 +1409,67 @@ export async function approveTimeEntry(timeEntryId: string, orgId?: string) {
 export async function rejectTimeEntry(timeEntryId: string, input: { rejectionReason?: string | null } = {}, orgId?: string) {
   const parsed = approvalDecisionSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  const { data: before, error: beforeError } = await supabase
-    .from("time_entries")
-    .select("*")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", timeEntryId)
-    .maybeSingle()
+  const { data: before, error: beforeError } = await supabase.from("time_entries").select("*").eq("org_id", resolvedOrgId).eq("id", timeEntryId).maybeSingle()
 
   if (beforeError || !before) throw new Error("Time entry not found")
-  await requireProjectFinancialAccess({ supabase, orgId: resolvedOrgId, userId, projectId: before.project_id, permission: "bill.approve" })
+  await requireProjectFinancialAccess({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    projectId: before.project_id,
+    permission: "bill.approve",
+  })
 
   const { data, error } = await supabase
     .from("time_entries")
-    .update({ status: "rejected", rejection_reason: parsed.rejectionReason ?? null })
+    .update({
+      status: "rejected",
+      rejection_reason: parsed.rejectionReason ?? null,
+    })
     .eq("org_id", resolvedOrgId)
     .eq("id", timeEntryId)
     .select("*")
     .single()
 
   if (error || !data) throw new Error(`Failed to reject time entry: ${error?.message}`)
-  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "time_entry", entityId: data.id, before, after: data })
-  await recordEvent({ orgId: resolvedOrgId, eventType: "time_entry_rejected", entityType: "time_entry", entityId: data.id, payload: { project_id: data.project_id } })
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "time_entry",
+    entityId: data.id,
+    before,
+    after: data,
+  })
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "time_entry_rejected",
+    entityType: "time_entry",
+    entityId: data.id,
+    payload: { project_id: data.project_id },
+  })
   if (["pm_approved", "client_approved", "locked"].includes(String(before.status))) {
-    await voidJobCostEntryForSource({ sourceType: "time_entry", sourceId: data.id, orgId: resolvedOrgId })
+    await voidJobCostEntryForSource({
+      sourceType: "time_entry",
+      sourceId: data.id,
+      orgId: resolvedOrgId,
+    })
   }
   return data
 }
 
 export async function createTimeEntryApprovalLink(timeEntryId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  const { data: entry, error } = await supabase
-    .from("time_entries")
-    .select("id, project_id, status")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", timeEntryId)
-    .maybeSingle()
+  const { data: entry, error } = await supabase.from("time_entries").select("id, project_id, status").eq("org_id", resolvedOrgId).eq("id", timeEntryId).maybeSingle()
 
   if (error || !entry) throw new Error("Time entry not found")
-  await requireProjectFinancialAccess({ supabase, orgId: resolvedOrgId, userId, projectId: entry.project_id, permission: "bill.approve" })
+  await requireProjectFinancialAccess({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    projectId: entry.project_id,
+    permission: "bill.approve",
+  })
 
   if (!["submitted", "pm_approved"].includes(entry.status)) {
     throw new Error("Only submitted or PM-approved time entries can be sent for client approval")
@@ -1479,7 +1512,13 @@ export async function sendTimeEntryClientApprovalEmail(timeEntryId: string, orgI
   ])
 
   if (error || !entry) throw new Error("Time entry not found")
-  await requireProjectFinancialAccess({ supabase, orgId: resolvedOrgId, userId, projectId: entry.project_id, permission: "bill.approve" })
+  await requireProjectFinancialAccess({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    projectId: entry.project_id,
+    permission: "bill.approve",
+  })
 
   const approval = await createTimeEntryApprovalLink(timeEntryId, resolvedOrgId)
   const { data: tokenRow } = await supabase
@@ -1501,7 +1540,7 @@ export async function sendTimeEntryClientApprovalEmail(timeEntryId: string, orgI
 
   const projectName = Array.isArray((entry as any).project) ? (entry as any).project[0]?.name : (entry as any).project?.name
   const amount = `$${(Number(entry.cost_cents ?? 0) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-  
+
   const title = `Time Entry Approval Requested`
   const messageHtml = `
     <p style="margin: 0 0 12px 0; font-size: 14px; line-height: 1.6; color: #2f2f2f;">${contact?.full_name ? `Hi ${contact.full_name},` : "Hi,"}</p>
@@ -1515,12 +1554,16 @@ export async function sendTimeEntryClientApprovalEmail(timeEntryId: string, orgI
       <p style="margin: 0; color: #424242; font-size: 13px; line-height: 1.5;"><span style="color: #6a6a6a; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px;">Cost:</span> <span style="color: #111111; font-weight: 700;">${amount}</span></p>
     </div>
     
-    ${entry.notes ? `
+    ${
+      entry.notes
+        ? `
       <div style="margin-top: 16px; padding: 16px; border: 1px solid #e1e1e1; background-color: #ffffff;">
         <p style="margin: 0 0 8px 0; color: #626262; font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px;">Notes</p>
         <p style="margin: 0; color: #222222; font-size: 13px; line-height: 1.6; white-space: pre-wrap;">${entry.notes}</p>
       </div>
-    ` : ""}
+    `
+        : ""
+    }
   `
   const html = renderStandardEmailLayout({
     title,
@@ -1543,7 +1586,12 @@ export async function sendTimeEntryClientApprovalEmail(timeEntryId: string, orgI
     eventType: "time_entry_client_approval_sent",
     entityType: "time_entry",
     entityId: timeEntryId,
-    payload: { project_id: entry.project_id, sent_to: recipientEmail, delivered_to_provider: sent, expires_at: approval.expiresAt },
+    payload: {
+      project_id: entry.project_id,
+      sent_to: recipientEmail,
+      delivered_to_provider: sent,
+      expires_at: approval.expiresAt,
+    },
     channel: "notification",
   })
 
@@ -1553,11 +1601,7 @@ export async function sendTimeEntryClientApprovalEmail(timeEntryId: string, orgI
 export async function approveTimeEntryByToken(token: string) {
   const supabase = createServiceSupabaseClient()
   const tokenHash = hashToken(token)
-  const { data: entry, error } = await supabase
-    .from("time_entries")
-    .select("*")
-    .eq("approval_token_hash", tokenHash)
-    .maybeSingle()
+  const { data: entry, error } = await supabase.from("time_entries").select("*").eq("approval_token_hash", tokenHash).maybeSingle()
 
   if (error || !entry) throw new Error("Approval link is invalid")
   if (entry.approval_token_expires_at && new Date(entry.approval_token_expires_at) < new Date()) {
@@ -1586,7 +1630,11 @@ export async function approveTimeEntryByToken(token: string) {
     entityId: data.id,
     payload: { project_id: data.project_id },
   })
-  await propagateApprovalToLedger({ source: "time_entry", sourceId: data.id, orgId: data.org_id })
+  await propagateApprovalToLedger({
+    source: "time_entry",
+    sourceId: data.id,
+    orgId: data.org_id,
+  })
   return data
 }
 
@@ -1605,11 +1653,7 @@ export interface ProjectExpenseLineInput {
  * Lines must sum to the expense total (amount + tax). Passing an empty array clears
  * the splits and reverts the expense to its single-line behaviour.
  */
-export async function replaceProjectExpenseLines(args: {
-  expenseId: string
-  lines: ProjectExpenseLineInput[]
-  orgId?: string
-}) {
+export async function replaceProjectExpenseLines(args: { expenseId: string; lines: ProjectExpenseLineInput[]; orgId?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(args.orgId)
 
   const { data: expense, error: expenseError } = await supabase
@@ -1620,15 +1664,17 @@ export async function replaceProjectExpenseLines(args: {
     .maybeSingle()
   if (expenseError || !expense) throw new Error("Expense not found")
 
-  await requireProjectFinancialAccess({ supabase, orgId: resolvedOrgId, userId, projectId: expense.project_id, permission: "bill.write" })
+  await requireProjectFinancialAccess({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    projectId: expense.project_id,
+    permission: "bill.write",
+  })
 
   // Capture the previous splits up-front: if the expense already posted to the cost
   // ledger we must void those rows and re-post against the new allocation.
-  const { data: priorLines } = await supabase
-    .from("project_expense_lines")
-    .select("id")
-    .eq("org_id", resolvedOrgId)
-    .eq("expense_id", args.expenseId)
+  const { data: priorLines } = await supabase.from("project_expense_lines").select("id").eq("org_id", resolvedOrgId).eq("expense_id", args.expenseId)
   const priorLineIds = (priorLines ?? []).map((line) => line.id as string)
   const alreadyPosted = ["approved", "locked"].includes(String(expense.status))
 
@@ -1661,26 +1707,16 @@ export async function replaceProjectExpenseLines(args: {
       throw new Error(`Splits must total ${(totalCents / 100).toFixed(2)} (currently ${(allocated / 100).toFixed(2)})`)
     }
 
-    const costCodeIds = Array.from(
-      new Set(lines.map((line) => line.cost_code_id).filter((id): id is string => typeof id === "string" && id.length > 0)),
-    )
+    const costCodeIds = Array.from(new Set(lines.map((line) => line.cost_code_id).filter((id): id is string => typeof id === "string" && id.length > 0)))
     if (costCodeIds.length > 0) {
-      const { data: costCodes, error: costCodeError } = await supabase
-        .from("cost_codes")
-        .select("id")
-        .eq("org_id", resolvedOrgId)
-        .in("id", costCodeIds)
+      const { data: costCodes, error: costCodeError } = await supabase.from("cost_codes").select("id").eq("org_id", resolvedOrgId).in("id", costCodeIds)
       if (costCodeError || (costCodes ?? []).length !== costCodeIds.length) {
         throw new Error("Cost code not found")
       }
     }
   }
 
-  const { error: deleteError } = await supabase
-    .from("project_expense_lines")
-    .delete()
-    .eq("org_id", resolvedOrgId)
-    .eq("expense_id", args.expenseId)
+  const { error: deleteError } = await supabase.from("project_expense_lines").delete().eq("org_id", resolvedOrgId).eq("expense_id", args.expenseId)
   if (deleteError) throw new Error(`Failed to update expense splits: ${deleteError.message}`)
 
   if (lines.length > 0) {
@@ -1732,20 +1768,28 @@ export async function replaceProjectExpenseLines(args: {
 async function resyncApprovedExpenseLedger(
   supabase: SupabaseClient,
   orgId: string,
-  args: { expenseId: string; expenseProjectId: string; priorLineIds: string[]; hasNewLines: boolean; canPostBillable: boolean },
+  args: {
+    expenseId: string
+    expenseProjectId: string
+    priorLineIds: string[]
+    hasNewLines: boolean
+    canPostBillable: boolean
+  },
 ) {
   // 1. Void the previous ledger rows (whole-expense + every prior split).
-  await voidJobCostEntryForSource({ sourceType: "project_expense", sourceId: args.expenseId, orgId })
-  await supabase
-    .from("billable_costs")
-    .update({ status: "voided" })
-    .eq("org_id", orgId)
-    .eq("source_type", "project_expense")
-    .eq("source_id", args.expenseId)
-    .is("invoice_id", null)
+  await voidJobCostEntryForSource({
+    sourceType: "project_expense",
+    sourceId: args.expenseId,
+    orgId,
+  })
+  await supabase.from("billable_costs").update({ status: "voided" }).eq("org_id", orgId).eq("source_type", "project_expense").eq("source_id", args.expenseId).is("invoice_id", null)
 
   for (const lineId of args.priorLineIds) {
-    await voidJobCostEntryForSource({ sourceType: "project_expense_line", sourceId: lineId, orgId })
+    await voidJobCostEntryForSource({
+      sourceType: "project_expense_line",
+      sourceId: lineId,
+      orgId,
+    })
   }
   if (args.priorLineIds.length > 0) {
     await supabase
@@ -1778,7 +1822,10 @@ async function resyncApprovedExpenseLedger(
     for (const line of newLines ?? []) {
       const projectId = line.project_id ?? args.expenseProjectId
       if (args.canPostBillable && (await isCostPlusProject(projectId))) {
-        await upsertBillableCostFromExpenseLine({ expenseLineId: line.id, orgId })
+        await upsertBillableCostFromExpenseLine({
+          expenseLineId: line.id,
+          orgId,
+        })
       }
       await postJobCostEntryFromExpenseLine({ expenseLineId: line.id, orgId })
     }
@@ -1789,7 +1836,10 @@ async function resyncApprovedExpenseLedger(
   if (args.canPostBillable && (await isCostPlusProject(args.expenseProjectId))) {
     await upsertBillableCostFromExpense({ expenseId: args.expenseId, orgId })
   }
-  await postJobCostEntryFromProjectExpense({ expenseId: args.expenseId, orgId })
+  await postJobCostEntryFromProjectExpense({
+    expenseId: args.expenseId,
+    orgId,
+  })
 }
 
 export const DUPLICATE_EXPENSE_ERROR_PREFIX = "POSSIBLE_DUPLICATE_EXPENSE:"
@@ -1797,7 +1847,22 @@ export const DUPLICATE_EXPENSE_ERROR_PREFIX = "POSSIBLE_DUPLICATE_EXPENSE:"
 export async function createProjectExpense(input: ProjectExpenseInput, orgId?: string) {
   const parsed = projectExpenseInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireProjectFinancialAccess({ supabase, orgId: resolvedOrgId, userId, projectId: parsed.projectId, permission: "bill.write" })
+  await requireProjectFinancialAccess({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    projectId: parsed.projectId,
+    permission: "bill.write",
+  })
+  const codingSuggestion = await suggestCoding({
+    companyId: parsed.vendorCompanyId,
+    vendorName: parsed.vendorNameText ?? parsed.qboVendorName,
+    memo: parsed.description,
+    projectId: parsed.projectId,
+    orgId: resolvedOrgId,
+  })
+  const hasExplicitAccountingCoding = Boolean(parsed.qboExpenseAccountId || parsed.qboPaymentAccountId || parsed.qboApAccountId)
+  const shouldApplySuggestion = Boolean(codingSuggestion?.autoApply && !parsed.costCodeId && !hasExplicitAccountingCoding)
 
   // The same receipt snapped twice (two field users, or a retry) is the most
   // common real-world duplicate: same project, date, and amount, with a
@@ -1820,18 +1885,14 @@ export async function createProjectExpense(input: ProjectExpenseInput, orgId?: s
       return !normalizedVendor || !existingVendor || existingVendor === normalizedVendor
     })
     if (duplicate) {
-      throw new Error(
-        `${DUPLICATE_EXPENSE_ERROR_PREFIX} An expense for ${
-          duplicate.vendor_name_text ?? "this vendor"
-        } on this date with the same amount already exists.`,
-      )
+      throw new Error(`${DUPLICATE_EXPENSE_ERROR_PREFIX} An expense for ${duplicate.vendor_name_text ?? "this vendor"} on this date with the same amount already exists.`)
     }
   }
 
   const payload = {
     org_id: resolvedOrgId,
     project_id: parsed.projectId,
-    cost_code_id: parsed.costCodeId ?? null,
+    cost_code_id: parsed.costCodeId ?? (shouldApplySuggestion ? codingSuggestion?.costCodeId : null) ?? null,
     vendor_company_id: parsed.vendorCompanyId ?? null,
     vendor_name_text: parsed.vendorNameText ?? null,
     expense_date: toDateOnly(parsed.expenseDate),
@@ -1842,17 +1903,19 @@ export async function createProjectExpense(input: ProjectExpenseInput, orgId?: s
     receipt_file_id: parsed.receiptFileId ?? null,
     is_billable: parsed.isBillable,
     markup_percent_override: parsed.markupPercentOverride ?? null,
-    accounting_coding: buildAccountingCoding({
-      transactionType: parsed.qboTransactionType,
-      expenseAccountId: parsed.qboExpenseAccountId,
-      expenseAccountName: parsed.qboExpenseAccountName,
-      paymentAccountId: parsed.qboPaymentAccountId,
-      paymentAccountName: parsed.qboPaymentAccountName,
-      apAccountId: parsed.qboApAccountId,
-      apAccountName: parsed.qboApAccountName,
-      counterpartyId: parsed.qboVendorId,
-      counterpartyName: parsed.qboVendorName,
-    }),
+    accounting_coding: shouldApplySuggestion
+      ? (codingSuggestion?.accountingCoding ?? {})
+      : buildAccountingCoding({
+          transactionType: parsed.qboTransactionType,
+          expenseAccountId: parsed.qboExpenseAccountId,
+          expenseAccountName: parsed.qboExpenseAccountName,
+          paymentAccountId: parsed.qboPaymentAccountId,
+          paymentAccountName: parsed.qboPaymentAccountName,
+          apAccountId: parsed.qboApAccountId,
+          apAccountName: parsed.qboApAccountName,
+          counterpartyId: parsed.qboVendorId,
+          counterpartyName: parsed.qboVendorName,
+        }),
     qbo_transaction_type: parsed.qboTransactionType ?? null,
     qbo_expense_account_id: parsed.qboExpenseAccountId ?? null,
     qbo_expense_account_name: parsed.qboExpenseAccountName ?? null,
@@ -1868,38 +1931,88 @@ export async function createProjectExpense(input: ProjectExpenseInput, orgId?: s
 
   const { data, error } = await supabase.from("project_expenses").insert(payload).select("*").single()
   if (error || !data) throw new Error(`Failed to create project expense: ${error?.message}`)
-  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "insert", entityType: "project_expense", entityId: data.id, after: data })
-  await recordEvent({ orgId: resolvedOrgId, eventType: "expense_submitted", entityType: "project_expense", entityId: data.id, payload: { project_id: parsed.projectId, amount_cents: parsed.amountCents } })
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "insert",
+    entityType: "project_expense",
+    entityId: data.id,
+    after: data,
+  })
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "expense_submitted",
+    entityType: "project_expense",
+    entityId: data.id,
+    payload: { project_id: parsed.projectId, amount_cents: parsed.amountCents },
+  })
+  if (parsed.costCodeId || hasExplicitAccountingCoding) {
+    await learnCodingRule({
+      companyId: parsed.vendorCompanyId,
+      vendorName: parsed.vendorNameText ?? parsed.qboVendorName,
+      costCodeId: parsed.costCodeId,
+      accountingCoding: payload.accounting_coding,
+      projectId: parsed.projectId,
+      orgId: resolvedOrgId,
+    })
+  }
   return data
 }
 
 export async function approveProjectExpense(expenseId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  const { data: before, error: beforeError } = await supabase
-    .from("project_expenses")
-    .select("*")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", expenseId)
-    .maybeSingle()
+  const { data: before, error: beforeError } = await supabase.from("project_expenses").select("*").eq("org_id", resolvedOrgId).eq("id", expenseId).maybeSingle()
 
   if (beforeError || !before) throw new Error("Expense not found")
-  await requireProjectFinancialAccess({ supabase, orgId: resolvedOrgId, userId, projectId: before.project_id, permission: "bill.approve" })
+  await requireProjectFinancialAccess({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    projectId: before.project_id,
+    permission: "bill.approve",
+  })
 
-  const gateSettings = await loadApprovalGateSettings({ supabase, orgId: resolvedOrgId, projectId: before.project_id })
+  const gateSettings = await loadApprovalGateSettings({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: before.project_id,
+  })
   assertApprovalAllowed(getExpenseApprovalBlockingReasons(before, gateSettings))
 
   const { data, error } = await supabase
     .from("project_expenses")
-    .update({ status: "approved", approved_by_pm_at: new Date().toISOString(), approved_by_pm_user_id: userId })
+    .update({
+      status: "approved",
+      approved_by_pm_at: new Date().toISOString(),
+      approved_by_pm_user_id: userId,
+    })
     .eq("org_id", resolvedOrgId)
     .eq("id", expenseId)
     .select("*")
     .single()
 
   if (error || !data) throw new Error(`Failed to approve expense: ${error?.message}`)
-  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "project_expense", entityId: data.id, before, after: data })
-  await recordEvent({ orgId: resolvedOrgId, eventType: "expense_approved", entityType: "project_expense", entityId: data.id, payload: { project_id: data.project_id, amount_cents: data.amount_cents } })
-  await propagateApprovalToLedger({ source: "project_expense", sourceId: data.id, orgId: resolvedOrgId })
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "project_expense",
+    entityId: data.id,
+    before,
+    after: data,
+  })
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "expense_approved",
+    entityType: "project_expense",
+    entityId: data.id,
+    payload: { project_id: data.project_id, amount_cents: data.amount_cents },
+  })
+  await propagateApprovalToLedger({
+    source: "project_expense",
+    sourceId: data.id,
+    orgId: resolvedOrgId,
+  })
   await enqueueProjectExpenseSync(data.id, resolvedOrgId)
   return data
 }
@@ -1907,36 +2020,58 @@ export async function approveProjectExpense(expenseId: string, orgId?: string) {
 export async function rejectProjectExpense(expenseId: string, input: { rejectionReason?: string | null } = {}, orgId?: string) {
   const parsed = approvalDecisionSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  const { data: before, error: beforeError } = await supabase
-    .from("project_expenses")
-    .select("*")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", expenseId)
-    .maybeSingle()
+  const { data: before, error: beforeError } = await supabase.from("project_expenses").select("*").eq("org_id", resolvedOrgId).eq("id", expenseId).maybeSingle()
 
   if (beforeError || !before) throw new Error("Expense not found")
-  await requireProjectFinancialAccess({ supabase, orgId: resolvedOrgId, userId, projectId: before.project_id, permission: "bill.approve" })
+  await requireProjectFinancialAccess({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    projectId: before.project_id,
+    permission: "bill.approve",
+  })
 
   const { data, error } = await supabase
     .from("project_expenses")
-    .update({ status: "rejected", rejection_reason: parsed.rejectionReason ?? null })
+    .update({
+      status: "rejected",
+      rejection_reason: parsed.rejectionReason ?? null,
+    })
     .eq("org_id", resolvedOrgId)
     .eq("id", expenseId)
     .select("*")
     .single()
 
   if (error || !data) throw new Error(`Failed to reject expense: ${error?.message}`)
-  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "project_expense", entityId: data.id, before, after: data })
-  await recordEvent({ orgId: resolvedOrgId, eventType: "expense_rejected", entityType: "project_expense", entityId: data.id, payload: { project_id: data.project_id } })
+  await recordAudit({
+    orgId: resolvedOrgId,
+    actorId: userId,
+    action: "update",
+    entityType: "project_expense",
+    entityId: data.id,
+    before,
+    after: data,
+  })
+  await recordEvent({
+    orgId: resolvedOrgId,
+    eventType: "expense_rejected",
+    entityType: "project_expense",
+    entityId: data.id,
+    payload: { project_id: data.project_id },
+  })
   if (["approved", "locked"].includes(String(before.status))) {
-    await voidJobCostEntryForSource({ sourceType: "project_expense", sourceId: data.id, orgId: resolvedOrgId })
-    const { data: lines } = await supabase
-      .from("project_expense_lines")
-      .select("id")
-      .eq("org_id", resolvedOrgId)
-      .eq("expense_id", data.id)
+    await voidJobCostEntryForSource({
+      sourceType: "project_expense",
+      sourceId: data.id,
+      orgId: resolvedOrgId,
+    })
+    const { data: lines } = await supabase.from("project_expense_lines").select("id").eq("org_id", resolvedOrgId).eq("expense_id", data.id)
     for (const line of lines ?? []) {
-      await voidJobCostEntryForSource({ sourceType: "project_expense_line", sourceId: line.id, orgId: resolvedOrgId })
+      await voidJobCostEntryForSource({
+        sourceType: "project_expense_line",
+        sourceId: line.id,
+        orgId: resolvedOrgId,
+      })
     }
   }
   return data
@@ -1948,7 +2083,10 @@ export async function createTimeEntryFromPortal({ token, input }: { token: strin
     requireCompany: true,
     permission: "can_submit_time",
   })
-  const parsed = timeEntryInputSchema.parse({ ...input, projectId: portalToken.project_id })
+  const parsed = timeEntryInputSchema.parse({
+    ...input,
+    projectId: portalToken.project_id,
+  })
   const supabase = createServiceSupabaseClient()
   const payload = {
     org_id: portalToken.org_id,
@@ -1972,7 +2110,13 @@ export async function createTimeEntryFromPortal({ token, input }: { token: strin
   }
   const { data, error } = await supabase.from("time_entries").insert(payload).select("*").single()
   if (error || !data) throw new Error(`Failed to submit time entry: ${error?.message}`)
-  await recordEvent({ orgId: portalToken.org_id, eventType: "time_entry_submitted", entityType: "time_entry", entityId: data.id, payload: { project_id: portalToken.project_id, via_portal: true } })
+  await recordEvent({
+    orgId: portalToken.org_id,
+    eventType: "time_entry_submitted",
+    entityType: "time_entry",
+    entityId: data.id,
+    payload: { project_id: portalToken.project_id, via_portal: true },
+  })
   return data
 }
 
@@ -1982,7 +2126,11 @@ export async function createProjectExpenseFromPortal({ token, input }: { token: 
     requireCompany: true,
     permission: "can_submit_expenses",
   })
-  const parsed = projectExpenseInputSchema.parse({ ...input, projectId: portalToken.project_id, vendorCompanyId: portalToken.company_id })
+  const parsed = projectExpenseInputSchema.parse({
+    ...input,
+    projectId: portalToken.project_id,
+    vendorCompanyId: portalToken.company_id,
+  })
   const supabase = createServiceSupabaseClient()
   const payload = {
     org_id: portalToken.org_id,
@@ -2003,13 +2151,25 @@ export async function createProjectExpenseFromPortal({ token, input }: { token: 
   }
   const { data, error } = await supabase.from("project_expenses").insert(payload).select("*").single()
   if (error || !data) throw new Error(`Failed to submit expense: ${error?.message}`)
-  await recordEvent({ orgId: portalToken.org_id, eventType: "expense_submitted", entityType: "project_expense", entityId: data.id, payload: { project_id: portalToken.project_id, via_portal: true } })
+  await recordEvent({
+    orgId: portalToken.org_id,
+    eventType: "expense_submitted",
+    entityType: "project_expense",
+    entityId: data.id,
+    payload: { project_id: portalToken.project_id, via_portal: true },
+  })
   return data
 }
 
 export async function listProjectTimeEntries(projectId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireProjectFinancialAccess({ supabase, orgId: resolvedOrgId, userId, projectId, permission: "time.read" })
+  await requireProjectFinancialAccess({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    projectId,
+    permission: "time.read",
+  })
 
   const [reviewableTimeEntries, recentTimeEntries] = await Promise.all([
     supabase
@@ -2032,14 +2192,18 @@ export async function listProjectTimeEntries(projectId: string, orgId?: string) 
   if (reviewableTimeEntries.error) throw new Error(`Failed to load reviewable time entries: ${reviewableTimeEntries.error.message}`)
   if (recentTimeEntries.error) throw new Error(`Failed to load recent time entries: ${recentTimeEntries.error.message}`)
 
-  return Array.from(
-    new Map([...(reviewableTimeEntries.data ?? []), ...(recentTimeEntries.data ?? [])].map((entry: any) => [entry.id, entry])).values(),
-  )
+  return Array.from(new Map([...(reviewableTimeEntries.data ?? []), ...(recentTimeEntries.data ?? [])].map((entry: any) => [entry.id, entry])).values())
 }
 
 export async function listCostPlusTabData(projectId: string, orgId?: string) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireProjectFinancialAccess({ supabase, orgId: resolvedOrgId, userId, projectId, permission: "invoice.read" })
+  await requireProjectFinancialAccess({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    projectId,
+    permission: "invoice.read",
+  })
 
   const [billableCosts, reviewableTimeEntries, recentTimeEntries, reviewableExpenses, recentExpenses, gmpSummary] = await Promise.all([
     supabase
@@ -2088,12 +2252,8 @@ export async function listCostPlusTabData(projectId: string, orgId?: string) {
   if (reviewableExpenses.error) throw new Error(`Failed to load reviewable expenses: ${reviewableExpenses.error.message}`)
   if (recentExpenses.error) throw new Error(`Failed to load recent expenses: ${recentExpenses.error.message}`)
 
-  const timeRows = Array.from(
-    new Map([...(reviewableTimeEntries.data ?? []), ...(recentTimeEntries.data ?? [])].map((entry: any) => [entry.id, entry])).values(),
-  )
-  const expenseRows = Array.from(
-    new Map([...(reviewableExpenses.data ?? []), ...(recentExpenses.data ?? [])].map((expense: any) => [expense.id, expense])).values(),
-  )
+  const timeRows = Array.from(new Map([...(reviewableTimeEntries.data ?? []), ...(recentTimeEntries.data ?? [])].map((entry: any) => [entry.id, entry])).values())
+  const expenseRows = Array.from(new Map([...(reviewableExpenses.data ?? []), ...(recentExpenses.data ?? [])].map((expense: any) => [expense.id, expense])).values())
   const expenseIds = expenseRows.map((expense) => expense.id).filter(Boolean)
   const linesByExpense = new Map<string, any[]>()
   if (expenseIds.length > 0) {
@@ -2114,20 +2274,15 @@ export async function listCostPlusTabData(projectId: string, orgId?: string) {
   return {
     billableCosts: (billableCosts.data ?? []).map(mapBillableCost),
     timeEntries: timeRows,
-    expenses: expenseRows.map((expense) => ({ ...expense, lines: linesByExpense.get(expense.id) ?? [] })),
+    expenses: expenseRows.map((expense) => ({
+      ...expense,
+      lines: linesByExpense.get(expense.id) ?? [],
+    })),
     gmpSummary,
   }
 }
 
-export async function listOpenBookCostDetailsForInvoice({
-  invoiceId,
-  orgId,
-  projectId,
-}: {
-  invoiceId: string
-  orgId: string
-  projectId: string
-}) {
+export async function listOpenBookCostDetailsForInvoice({ invoiceId, orgId, projectId }: { invoiceId: string; orgId: string; projectId: string }) {
   const supabase = createServiceSupabaseClient()
   const contract = await getProjectCostContract(supabase, orgId, projectId)
   if (!shouldExposeOpenBookCostDetail(contract?.open_book)) return []
@@ -2154,11 +2309,7 @@ export async function listOpenBookCostDetailsForInvoice({
       ? supabase.from("project_expenses").select("id, status, receipt_file_id").eq("org_id", orgId).in("id", expenseIds)
       : Promise.resolve({ data: [], error: null }),
     billLineIds.length
-      ? supabase
-          .from("bill_lines")
-          .select("id, bill:vendor_bills(id, status, file_id)")
-          .eq("org_id", orgId)
-          .in("id", billLineIds)
+      ? supabase.from("bill_lines").select("id, bill:vendor_bills(id, status, file_id)").eq("org_id", orgId).in("id", billLineIds)
       : Promise.resolve({ data: [], error: null }),
   ])
   if (timeEntries.error) throw new Error(`Failed to load time proof: ${timeEntries.error.message}`)
@@ -2169,7 +2320,7 @@ export async function listOpenBookCostDetailsForInvoice({
   for (const row of timeEntries.data ?? []) {
     sourceProofById.set(`time_entry:${row.id}`, {
       status: row.status ?? null,
-      proof_file_id: Array.isArray(row.attached_file_ids) ? row.attached_file_ids[0] ?? null : null,
+      proof_file_id: Array.isArray(row.attached_file_ids) ? (row.attached_file_ids[0] ?? null) : null,
     })
   }
   for (const row of expenses.data ?? []) {
@@ -2196,14 +2347,15 @@ export async function listOpenBookCostDetailsForInvoice({
 
 export async function voidBillableCostsForVendorBill({ billId, orgId }: { billId: string; orgId?: string }) {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  const { data: bill, error: billError } = await supabase
-    .from("vendor_bills")
-    .select("id, project_id, status")
-    .eq("org_id", resolvedOrgId)
-    .eq("id", billId)
-    .maybeSingle()
+  const { data: bill, error: billError } = await supabase.from("vendor_bills").select("id, project_id, status").eq("org_id", resolvedOrgId).eq("id", billId).maybeSingle()
   if (billError || !bill) throw new Error("Vendor bill not found")
-  await requireProjectFinancialAccess({ supabase, orgId: resolvedOrgId, userId, projectId: bill.project_id, permission: "bill.approve" })
+  await requireProjectFinancialAccess({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    projectId: bill.project_id,
+    permission: "bill.approve",
+  })
 
   const { data: costs, error } = await supabase
     .from("billable_costs")
@@ -2244,20 +2396,13 @@ export async function voidBillableCostsForVendorBill({ billId, orgId }: { billId
       }
       await insertOrReturnBillableCost(supabase, resolvedOrgId, creditPayload, "manual_adjustment")
     } else {
-      const { error: voidError } = await supabase
-        .from("billable_costs")
-        .update({ status: "voided" })
-        .eq("org_id", resolvedOrgId)
-        .eq("id", cost.id)
+      const { error: voidError } = await supabase.from("billable_costs").update({ status: "voided" }).eq("org_id", resolvedOrgId).eq("id", cost.id)
       if (voidError) throw new Error(`Failed to void billable cost: ${voidError.message}`)
     }
   }
 }
 
-export async function createManualBillableAdjustment(
-  input: ManualBillableAdjustmentInput,
-  orgId?: string,
-): Promise<BillableCost> {
+export async function createManualBillableAdjustment(input: ManualBillableAdjustmentInput, orgId?: string): Promise<BillableCost> {
   const parsed = manualBillableAdjustmentInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireProjectFinancialAccess({
@@ -2349,11 +2494,9 @@ export function buildInvoiceDraft({
   const separatesFee = feePresentation === "separate_total" || feePresentation === "separate_by_code"
 
   for (const cost of costs) {
-    const key = groupBy === "detail" ? cost.id : cost.cost_code_id ?? "uncoded"
-    const feeKey = feePresentation === "separate_by_code" ? cost.cost_code_id ?? "uncoded" : "builder_fee"
-    const fallbackDescription = cost.cost_code_code
-      ? `${cost.cost_code_code} ${cost.cost_code_name ?? "Cost code"}`
-      : "Uncoded costs"
+    const key = groupBy === "detail" ? cost.id : (cost.cost_code_id ?? "uncoded")
+    const feeKey = feePresentation === "separate_by_code" ? (cost.cost_code_id ?? "uncoded") : "builder_fee"
+    const fallbackDescription = cost.cost_code_code ? `${cost.cost_code_code} ${cost.cost_code_name ?? "Cost code"}` : "Uncoded costs"
     const current =
       lineMap.get(key) ??
       ({
@@ -2379,16 +2522,13 @@ export function buildInvoiceDraft({
     lineMap.set(key, current)
 
     if (separatesFee && cost.markup_cents !== 0) {
-      const feeDescription =
-        feePresentation === "separate_by_code"
-          ? `${feeLabel} - ${fallbackDescription}`
-          : feeLabel
+      const feeDescription = feePresentation === "separate_by_code" ? `${feeLabel} - ${fallbackDescription}` : feeLabel
       const feeLine =
         feeLineMap.get(feeKey) ??
         ({
-          cost_code_id: feePresentation === "separate_by_code" ? cost.cost_code_id ?? null : null,
-          cost_code_code: feePresentation === "separate_by_code" ? cost.cost_code_code ?? null : null,
-          cost_code_name: feePresentation === "separate_by_code" ? cost.cost_code_name ?? null : null,
+          cost_code_id: feePresentation === "separate_by_code" ? (cost.cost_code_id ?? null) : null,
+          cost_code_code: feePresentation === "separate_by_code" ? (cost.cost_code_code ?? null) : null,
+          cost_code_name: feePresentation === "separate_by_code" ? (cost.cost_code_name ?? null) : null,
           description: feeDescription,
           unit: "fee",
           cost_cents: 0,
@@ -2408,18 +2548,20 @@ export function buildInvoiceDraft({
       feeLine.billable_cents += cost.markup_cents
       const relatedIds = (feeLine.metadata?.related_billable_cost_ids ?? []) as string[]
       relatedIds.push(cost.id)
-      feeLine.metadata = { ...(feeLine.metadata ?? {}), related_billable_cost_ids: relatedIds }
+      feeLine.metadata = {
+        ...(feeLine.metadata ?? {}),
+        related_billable_cost_ids: relatedIds,
+      }
       feeLineMap.set(feeKey, feeLine)
     }
   }
 
-  const costLines = Array.from(lineMap.values()).sort((a, b) =>
-    `${a.cost_code_code ?? ""}${a.description}`.localeCompare(`${b.cost_code_code ?? ""}${b.description}`),
-  )
-  const feeLines = Array.from(feeLineMap.values()).sort((a, b) =>
-    `${a.cost_code_code ?? ""}${a.description}`.localeCompare(`${b.cost_code_code ?? ""}${b.description}`),
-  )
-  const lines = [...costLines, ...feeLines].map((line, index) => ({ ...line, sort_order: index }))
+  const costLines = Array.from(lineMap.values()).sort((a, b) => `${a.cost_code_code ?? ""}${a.description}`.localeCompare(`${b.cost_code_code ?? ""}${b.description}`))
+  const feeLines = Array.from(feeLineMap.values()).sort((a, b) => `${a.cost_code_code ?? ""}${a.description}`.localeCompare(`${b.cost_code_code ?? ""}${b.description}`))
+  const lines = [...costLines, ...feeLines].map((line, index) => ({
+    ...line,
+    sort_order: index,
+  }))
   const totals = lines.reduce(
     (sum, line) => ({
       cost_cents: sum.cost_cents + line.cost_cents,
@@ -2473,13 +2615,16 @@ function appendEarnedFeeLineToDraft(draft: InvoiceDraft, amountCents: number): I
   }
 }
 
-export async function generateInvoiceFromCosts(
-  input: GenerateInvoiceFromCostsInput,
-  orgId?: string,
-): Promise<GenerateInvoiceFromCostsResult> {
+export async function generateInvoiceFromCosts(input: GenerateInvoiceFromCostsInput, orgId?: string): Promise<GenerateInvoiceFromCostsResult> {
   const parsed = generateInvoiceFromCostsInputSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId, productTier } = await requireOrgContext(orgId)
-  await requireProjectFinancialAccess({ supabase, orgId: resolvedOrgId, userId, projectId: parsed.projectId, permission: "invoice.write" })
+  await requireProjectFinancialAccess({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    projectId: parsed.projectId,
+    permission: "invoice.write",
+  })
 
   const billingPeriod = parsed.billingPeriodId
     ? await getProjectBillingPeriod({
@@ -2503,9 +2648,7 @@ export async function generateInvoiceFromCosts(
   const billingModel = resolveProjectBillingModel(contract as any)
   const feePresentation = resolveContractFeePresentation(contract as any)
   const contractProject = Array.isArray(contract.projects) ? contract.projects[0] : contract.projects
-  const feeLabel = terminology(
-    getProjectPosture(contractProject?.property_type, productTier),
-  ).fee
+  const feeLabel = terminology(getProjectPosture(contractProject?.property_type, productTier)).fee
 
   if (parsed.includeAllowanceVariances) {
     await ensureAllowanceOverageBillableCosts({
@@ -2562,17 +2705,9 @@ export async function generateInvoiceFromCosts(
   if (error) throw new Error(`Failed to load billable costs: ${error.message}`)
 
   const refreshedCosts: BillableCost[] = []
-  const snapshotMarkupSources = new Set([
-    "line",
-    "tm_rate_schedule",
-    "tm_material_schedule",
-    "tm_project_override",
-    "tm_membership_fallback",
-  ])
+  const snapshotMarkupSources = new Set(["line", "tm_rate_schedule", "tm_material_schedule", "tm_project_override", "tm_membership_fallback"])
   const costsNeedingMarkupRefresh = (rawCosts ?? []).filter(
-    (rawCost: any) =>
-      !snapshotMarkupSources.has(rawCost.metadata?.markup_source) &&
-      rawCost.metadata?.billing_method !== "time_and_materials_rate",
+    (rawCost: any) => !snapshotMarkupSources.has(rawCost.metadata?.markup_source) && rawCost.metadata?.billing_method !== "time_and_materials_rate",
   )
   const refreshedMarkups = await resolveMarkupPercentsBatch({
     supabase,
@@ -2586,18 +2721,21 @@ export async function generateInvoiceFromCosts(
   })
   let refreshedMarkupIndex = 0
   for (const rawCost of rawCosts ?? []) {
-    if (
-      snapshotMarkupSources.has(rawCost.metadata?.markup_source) ||
-      rawCost.metadata?.billing_method === "time_and_materials_rate"
-    ) {
+    if (snapshotMarkupSources.has(rawCost.metadata?.markup_source) || rawCost.metadata?.billing_method === "time_and_materials_rate") {
       refreshedCosts.push(mapBillableCost(rawCost))
       continue
     }
 
-    const markup = refreshedMarkups[refreshedMarkupIndex++] ?? { percent: 0, source: "default" as MarkupSource }
+    const markup = refreshedMarkups[refreshedMarkupIndex++] ?? {
+      percent: 0,
+      source: "default" as MarkupSource,
+    }
     const markupCents = calculateMarkupCents(rawCost.cost_cents ?? 0, markup.percent)
     const billableCents = Number(rawCost.cost_cents ?? 0) + markupCents
-    const refreshedMetadata = { ...(rawCost.metadata ?? {}), markup_source: markup.source }
+    const refreshedMetadata = {
+      ...(rawCost.metadata ?? {}),
+      markup_source: markup.source,
+    }
 
     if (
       Number(rawCost.markup_percent_resolved ?? 0) !== markup.percent ||
@@ -2678,7 +2816,11 @@ export async function generateInvoiceFromCosts(
     contract.retainage_percent,
     Boolean(contract.retainage_applies_to_fee ?? contract.snapshot?.retainage_applies_to_fee ?? false),
   )
-  const warnings: Array<{ code: string; message: string; billableCostId?: string }> = []
+  const warnings: Array<{
+    code: string
+    message: string
+    billableCostId?: string
+  }> = []
   let gmpCapOverridden = false
 
   if (billingModel === "cost_plus_gmp") {
@@ -2695,13 +2837,8 @@ export async function generateInvoiceFromCosts(
     ])
     if (billedInsideGmp.error) throw new Error(`Failed to load billed GMP costs: ${billedInsideGmp.error.message}`)
 
-    const alreadyBilledInsideGmpCents = (billedInsideGmp.data ?? []).reduce(
-      (sum: number, row: any) => sum + Number(row.billable_cents ?? 0),
-      0,
-    )
-    const invoiceInsideGmpCents = refreshedCosts
-      .filter((cost) => cost.gmp_classification !== "outside_gmp")
-      .reduce((sum, cost) => sum + Number(cost.billable_cents ?? 0), 0)
+    const alreadyBilledInsideGmpCents = (billedInsideGmp.data ?? []).reduce((sum: number, row: any) => sum + Number(row.billable_cents ?? 0), 0)
+    const invoiceInsideGmpCents = refreshedCosts.filter((cost) => cost.gmp_classification !== "outside_gmp").reduce((sum, cost) => sum + Number(cost.billable_cents ?? 0), 0)
     const cumulativeInsideGmpCents = alreadyBilledInsideGmpCents + invoiceInsideGmpCents
     const overageCents = cumulativeInsideGmpCents - Number(gmpSummary.revised_gmp_cents ?? 0)
 

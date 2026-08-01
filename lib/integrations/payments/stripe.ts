@@ -407,15 +407,3 @@ function mapPaymentMethodType(stripeType: string): string {
       return stripeType
   }
 }
-
-export function calculateFees(amount_cents: number, method: "ach" | "card") {
-  if (method === "ach") {
-    const stripeFee = Math.min(Math.round(amount_cents * 0.008), 500)
-    const platformFee = 50
-    return { stripe_fee: stripeFee, platform_fee: platformFee, total_fee: stripeFee + platformFee }
-  }
-
-  const stripeFee = Math.round(amount_cents * 0.029) + 30
-  const platformFee = Math.round(amount_cents * 0.005)
-  return { stripe_fee: stripeFee, platform_fee: platformFee, total_fee: stripeFee + platformFee }
-}

@@ -1,4 +1,4 @@
-import { authorize } from "@/lib/services/authorization"
+import { authorizeMany } from "@/lib/services/authorization"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { hasPermission } from "@/lib/services/permissions"
 
@@ -50,24 +50,34 @@ async function rowsFromResult<T extends ProjectRow>(
   return result.value.data ?? []
 }
 
-async function canReviewProjectFinancialQueue(ctx: OrgServiceContext, projectId: string) {
-  const decisions = await Promise.all([
-    authorize({
+/**
+ * Which of these projects the user may act on the financial review queue for.
+ *
+ * Two batched evaluations total, regardless of project count — this used to be
+ * two `authorize()` calls *per project*, which on a 200-project org meant 400
+ * round-trips on every sidebar render.
+ */
+async function filterToReviewableProjects(ctx: OrgServiceContext, projectIds: string[]) {
+  if (projectIds.length === 0) return new Set<string>()
+
+  const [invoiceWrite, billApprove] = await Promise.all([
+    authorizeMany({
       permission: "invoice.write",
       userId: ctx.userId,
       orgId: ctx.orgId,
-      projectId,
-      supabase: ctx.supabase,
+      projectIds,
     }),
-    authorize({
+    authorizeMany({
       permission: "bill.approve",
       userId: ctx.userId,
       orgId: ctx.orgId,
-      projectId,
-      supabase: ctx.supabase,
+      projectIds,
     }),
   ])
-  return decisions.some((decision) => decision.allowed)
+
+  return new Set(
+    projectIds.filter((projectId) => invoiceWrite.get(projectId) || billApprove.get(projectId)),
+  )
 }
 
 /**
@@ -111,14 +121,14 @@ export async function getProjectFinancialReviewBreakdown(
   bumpBreakdown(breakdowns, "bills", await rowsFromResult(vendorBills))
   bumpBreakdown(breakdowns, "costs", await rowsFromResult(billableCosts))
 
-  const visible: Record<string, ProjectReviewBreakdown> = {}
-  await Promise.all(
-    Object.entries(breakdowns).map(async ([projectId, breakdown]) => {
-      if (await canReviewProjectFinancialQueue(ctx, projectId).catch(() => false)) {
-        visible[projectId] = breakdown
-      }
-    }),
+  const reviewable = await filterToReviewableProjects(ctx, Object.keys(breakdowns)).catch(
+    () => new Set<string>(),
   )
+
+  const visible: Record<string, ProjectReviewBreakdown> = {}
+  for (const [projectId, breakdown] of Object.entries(breakdowns)) {
+    if (reviewable.has(projectId)) visible[projectId] = breakdown
+  }
   return visible
 }
 

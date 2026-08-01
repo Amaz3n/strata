@@ -67,11 +67,9 @@ export default async function BidPortalPage({ params }: BidPortalPageProps) {
           tokenType="bid"
           orgName={gateContext?.orgName ?? access.org.name}
           projectName={gateContext?.projectName ?? access.project.name}
-          defaultMode={gateContext?.defaultMode}
           initialEmail={gateContext?.expectedEmail ?? ""}
           suggestedFullName={gateContext?.suggestedFullName ?? ""}
           emailLocked={gateContext?.emailLocked}
-          hasExistingAccount={gateContext?.hasExistingAccount}
         />
       )
     }

@@ -1,3 +1,5 @@
+import type { SupabaseClient } from "@supabase/supabase-js"
+
 import { requireOrgContext } from "@/lib/services/context"
 import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 import { recordAudit } from "@/lib/services/audit"
@@ -45,6 +47,27 @@ function mergeRules(raw?: Partial<ComplianceRules> | null): ComplianceRules {
         ? Math.round(source.prequalification_validity_days)
         : defaultRules.prequalification_validity_days,
   }
+}
+
+/**
+ * Rules for a caller that already holds a scoped client — the token portals,
+ * which have no authenticated user to derive org context from. Read-only.
+ */
+export async function getComplianceRulesWithClient(
+  supabase: SupabaseClient,
+  orgId: string,
+): Promise<ComplianceRules> {
+  const { data, error } = await supabase
+    .from("orgs")
+    .select("compliance_rules")
+    .eq("id", orgId)
+    .maybeSingle()
+
+  if (error) {
+    throw new Error(`Failed to load compliance rules: ${error.message}`)
+  }
+
+  return mergeRules((data?.compliance_rules ?? {}) as ComplianceRules)
 }
 
 export async function getComplianceRules(orgId?: string): Promise<ComplianceRules> {

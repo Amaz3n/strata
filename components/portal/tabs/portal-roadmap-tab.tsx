@@ -87,7 +87,7 @@ export function PortalRoadmapTab({ data }: PortalRoadmapTabProps) {
                 {/* Timeline node */}
                 <div className={cn(
                   "absolute -left-[31px] rounded-full p-1 border bg-background",
-                  isCompleted ? "border-emerald-500 text-emerald-500" : 
+                  isCompleted ? "border-success text-success" :
                   isNext ? "border-primary text-primary" : "border-muted-foreground/30 text-muted-foreground/30"
                 )}>
                   {isCompleted ? <CheckCircle2 className="h-4 w-4" /> : 
@@ -104,7 +104,7 @@ export function PortalRoadmapTab({ data }: PortalRoadmapTabProps) {
                         <Badge variant={item.item_type === "milestone" ? "default" : "secondary"} className="capitalize text-[10px]">
                           {item.item_type}
                         </Badge>
-                        {isCompleted && <Badge variant="outline" className="text-emerald-600 bg-emerald-50 border-emerald-200 text-[10px]">Completed</Badge>}
+                        {isCompleted && <Badge variant="outline" className="text-success bg-success/15 border-success/30 text-[10px]">Completed</Badge>}
                         {isNext && <Badge variant="outline" className="text-primary bg-primary/10 border-primary/20 text-[10px]">In Progress</Badge>}
                       </div>
                       <h3 className={cn("font-semibold", isCompleted && "text-muted-foreground")}>{item.name}</h3>

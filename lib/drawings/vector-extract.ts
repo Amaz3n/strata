@@ -40,8 +40,10 @@ const VECTORS_BIN_VERSION = 2
  *   2: collinear chain-merge before the noise filter (recovers walls that
  *      exporters shred into sub-point fragments)
  *   3: dash-chain attribution and vectors.bin v2 stroke attributes
+ *   4: positioned text runs (text-runs.json) written alongside vectors.bin,
+ *      which floorplan interpretation needs to label rooms
  */
-export const VECTOR_EXTRACT_ALGO = 3
+export const VECTOR_EXTRACT_ALGO = 4
 
 export interface ExtractedVectors {
   /** Filtered, normalized segments encoded per the vectors.bin contract. */

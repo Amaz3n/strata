@@ -56,8 +56,8 @@ export function ExternalAccessLogin() {
                 One Arc sign-in for every project this builder has shared with you.
               </h1>
               <p className="max-w-xl text-sm leading-6 text-muted-foreground sm:text-base">
-                Once you claim access from an invite link, you can come back here to reopen client portals, sub portals,
-                and bid workspaces from one place.
+                Once you claim access from an invite link, you can come back here to reopen every project
+                and bid invitation from one place.
               </p>
             </div>
 

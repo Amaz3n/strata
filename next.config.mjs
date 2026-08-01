@@ -1,4 +1,13 @@
+import { fileURLToPath } from "node:url"
+import { dirname } from "node:path"
+
 import { withSentryConfig } from "@sentry/nextjs"
+
+// Turbopack infers the workspace root from the nearest lockfile. There is a
+// stray ~/pnpm-lock.yaml above this project, so it was inferring the entire home
+// directory as the root and trying to resolve a module graph across all of it —
+// which pegs every core and never finishes compiling a route. Pin it.
+const projectRoot = dirname(fileURLToPath(import.meta.url))
 
 /** @type {import('next').NextConfig} */
 const securityHeaders = [
@@ -25,6 +34,9 @@ const securityHeaders = [
 ]
 
 const nextConfig = {
+  turbopack: {
+    root: projectRoot,
+  },
   allowedDevOrigins: ['unreproachably-preparoxysmal-talon.ngrok-free.dev', '*.ngrok-free.dev'],
   typescript: {
     ignoreBuildErrors: true,
@@ -67,6 +79,15 @@ const nextConfig = {
       bodySizeLimit: '100mb',
     },
     webpackMemoryOptimizations: true,
+    // Client router cache: reuse fetched segments (including the app shell
+    // layout and its ~9 identity/permission queries) for 30s of client-side
+    // navigation instead of refetching the whole tree on every click. Server
+    // actions still invalidate via revalidatePath/revalidateTag, so mutations
+    // are unaffected; this only stops nav-to-nav refetch churn.
+    staleTimes: {
+      dynamic: 30,
+      static: 180,
+    },
   },
   async headers() {
     return [

@@ -1,3 +1,5 @@
+import { Suspense } from "react"
+
 import { PageLayout } from "@/components/layout/page-layout"
 import { DealBoard } from "@/components/sales/deal-board"
 import { NewInquirySheet } from "@/components/sales/new-inquiry-sheet"
@@ -6,6 +8,7 @@ import { isDealFilter, type DealFilter } from "@/lib/sales/next-action"
 import { getAmbientDeskContext } from "@/lib/services/desk-context"
 import { listLostReasons, listSalesDeals } from "@/lib/services/sales-deals"
 import { listTeamMembers } from "@/lib/services/team"
+import { SalesBoardSkeleton } from "./loading"
 
 export const dynamic = "force-dynamic"
 
@@ -22,46 +25,63 @@ interface SalesPageProps {
  * scope is ambient across every desk at once.
  */
 export default async function SalesPage({ searchParams }: SalesPageProps) {
-  const [params, ambient] = await Promise.all([searchParams, getAmbientDeskContext()])
+  const params = await searchParams
   const view: DealView = isDealView(params.view) ? params.view : "open"
   const filter: DealFilter = isDealFilter(params.due) ? params.due : "all"
 
-  const deals = await listSalesDeals({
-    divisionId: ambient.divisionId,
-    communityId: ambient.communityId,
-    includeClosed: view !== "open",
-    limit: ROW_CAP,
-  })
+  return (
+    <PageLayout title="Sales">
+      <Suspense fallback={<SalesBoardSkeleton />}>
+        <SalesBoardBand view={view} filter={filter} />
+      </Suspense>
+    </PageLayout>
+  )
+}
 
-  const [teamMembers, lostReasons] = await Promise.all([
+async function SalesBoardBand({ view, filter }: { view: DealView; filter: DealFilter }) {
+  // Ambient scope is a true dependency of the deal query, so it stays
+  // sequential. The team roster is not — it only ever fed the owner lookup, and
+  // waiting for the board to land before starting it was a pure waterfall.
+  const ambient = await getAmbientDeskContext()
+  const [deals, teamMembers] = await Promise.all([
+    listSalesDeals({
+      divisionId: ambient.divisionId,
+      communityId: ambient.communityId,
+      includeClosed: view !== "open",
+      limit: ROW_CAP,
+    }),
     listTeamMembers().catch(() => []),
-    view === "lost"
-      ? listLostReasons(deals.flatMap((deal) => (deal.stage === "lost" && deal.prospectId ? [deal.prospectId] : [])))
-      : Promise.resolve(new Map<string, string>()),
   ])
+
+  // Lost reasons are keyed off the prospects on the board, so this one genuinely
+  // has to follow the deals.
+  const lostReasons =
+    view === "lost"
+      ? await listLostReasons(
+          deals.flatMap((deal) => (deal.stage === "lost" && deal.prospectId ? [deal.prospectId] : [])),
+        )
+      : new Map<string, string>()
 
   const communityOptions = ambient.communities.map(({ id, name }) => ({ id, name }))
   const owners = Object.fromEntries(teamMembers.map((member) => [member.user.id, member.user.full_name]))
 
   return (
-    <PageLayout title="Sales">
-      <DealBoard
-        deals={deals}
-        view={view}
-        filter={filter}
-        owners={owners}
-        lostReasons={Object.fromEntries(lostReasons)}
-        communities={communityOptions}
-        truncated={deals.length >= ROW_CAP}
-        now={new Date()}
-        actions={
-          <NewInquirySheet
-            communities={communityOptions}
-            teamMembers={teamMembers.map((member) => ({ id: member.user.id, name: member.user.full_name }))}
-            defaultCommunityId={ambient.communityId}
-          />
-        }
-      />
-    </PageLayout>
+    <DealBoard
+      deals={deals}
+      view={view}
+      filter={filter}
+      owners={owners}
+      lostReasons={Object.fromEntries(lostReasons)}
+      communities={communityOptions}
+      truncated={deals.length >= ROW_CAP}
+      now={new Date()}
+      actions={
+        <NewInquirySheet
+          communities={communityOptions}
+          teamMembers={teamMembers.map((member) => ({ id: member.user.id, name: member.user.full_name }))}
+          defaultCommunityId={ambient.communityId}
+        />
+      }
+    />
   )
 }

@@ -137,14 +137,9 @@ export function LoginForm({
         return
       }
 
-      if (result.status === "setup") {
-        setEmail(result.email)
-        directionRef.current = 1
-        setStep("setup")
-        return
-      }
-
-      setLookupError(result.message ?? "We could not find an active account for that email.")
+      setEmail(result.email)
+      directionRef.current = 1
+      setStep("setup")
     })
   }
 
@@ -289,7 +284,7 @@ export function LoginForm({
             <form action={formAction} className="grid gap-4">
               <input type="hidden" name="email" value={email} />
 
-              <WorkspaceRow orgName={accountState?.orgName} email={email} onChange={goBackToEmail} />
+              <WorkspaceRow email={email} onChange={goBackToEmail} />
 
               <div className="grid gap-2">
                 <div className="flex items-center">
@@ -335,7 +330,7 @@ export function LoginForm({
 
           {step === "setup" && (
             <div className="grid gap-4">
-              <WorkspaceRow orgName={accountState?.orgName} email={email} onChange={goBackToEmail} />
+              <WorkspaceRow email={email} onChange={goBackToEmail} />
 
               <div className="border border-primary/20 bg-primary/5 px-4 py-3">
                 <div className="flex items-start gap-3">
@@ -464,11 +459,9 @@ export function LoginForm({
 
 /** Which workspace you're signing into, with the account underneath it. */
 function WorkspaceRow({
-  orgName,
   email,
   onChange,
 }: {
-  orgName?: string | null
   email: string
   onChange: () => void
 }) {
@@ -478,8 +471,7 @@ function WorkspaceRow({
         <Building2 className="size-5" />
       </div>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-base font-medium">{orgName ?? email}</p>
-        {orgName && <p className="truncate text-sm text-muted-foreground">{email}</p>}
+        <p className="truncate text-base font-medium">{email}</p>
       </div>
       <button
         type="button"

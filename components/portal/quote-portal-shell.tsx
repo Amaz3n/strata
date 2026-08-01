@@ -10,10 +10,10 @@ export type PortalStatusTone = "neutral" | "info" | "success" | "warning" | "dan
 
 const toneStyles: Record<PortalStatusTone, string> = {
   neutral: "bg-muted text-muted-foreground border-muted",
-  info: "bg-blue-500/15 text-blue-600 border-blue-500/30",
-  success: "bg-emerald-500/15 text-emerald-600 border-emerald-500/30",
-  warning: "bg-amber-500/15 text-amber-600 border-amber-500/30",
-  danger: "bg-red-500/15 text-red-600 border-red-500/30",
+  info: "bg-primary/15 text-primary border-primary/30",
+  success: "bg-success/15 text-success border-success/30",
+  warning: "bg-warning/15 text-warning border-warning/30",
+  danger: "bg-destructive/15 text-destructive border-destructive/30",
 }
 
 interface QuotePortalShellProps {

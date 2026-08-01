@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation"
 
+import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { loadPortalDecisionsAction } from "./actions"
 import { DecisionsPortalClient } from "./decisions-client"
@@ -23,5 +24,13 @@ export default async function DecisionsPortalPage({ params }: Params) {
 
   const decisions = await loadPortalDecisionsAction(token)
 
-  return <DecisionsPortalClient token={token} decisions={decisions} />
+  return (
+    <>
+      <PortalPageHeader
+        title="Your decisions"
+        description="Approvals your builder needs from you to keep the project moving."
+      />
+      <DecisionsPortalClient token={token} decisions={decisions} />
+    </>
+  )
 }

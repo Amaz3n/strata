@@ -160,7 +160,7 @@ export function PdfFieldViewer({
               "absolute overflow-hidden rounded-sm border text-[10px] font-medium uppercase tracking-wide transition-all duration-200",
               belongsToCurrentSigner && !filled && "hover:bg-primary/5",
               isActive && "z-20 border-primary bg-primary/10 text-primary ring-1 ring-primary/35",
-              !isActive && filled && "border-emerald-500/70 bg-emerald-500/10 text-emerald-700",
+              !isActive && filled && "border-success/70 bg-success/10 text-success",
               !isActive && !filled && belongsToCurrentSigner && "border-border border-dashed bg-background/85 text-foreground",
               !belongsToCurrentSigner && "border-border bg-muted/50 text-muted-foreground",
             )
@@ -234,7 +234,7 @@ export function PdfFieldViewer({
                       className={cn(
                         "inline-flex h-[78%] w-[78%] items-center justify-center rounded-[2px] border",
                         rawValue === true
-                          ? "border-emerald-600 bg-emerald-600/15 text-emerald-700"
+                          ? "border-success bg-success/15 text-success"
                           : "border-muted-foreground/40 bg-background/80 text-transparent",
                       )}
                     >

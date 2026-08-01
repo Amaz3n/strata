@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation"
+import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { loadRfisAction } from "./actions"
 import { RfisPortalClient } from "./rfis-client"
@@ -22,5 +23,14 @@ export default async function RfisPortalPage({ params }: Params) {
   }
 
   const rfis = await loadRfisAction(token)
-  return <RfisPortalClient rfis={rfis} token={token} />
+
+  return (
+    <>
+      <PortalPageHeader
+        title="RFIs"
+        description="Questions the builder has sent you, and any you need to ask them."
+      />
+      <RfisPortalClient rfis={rfis} token={token} />
+    </>
+  )
 }

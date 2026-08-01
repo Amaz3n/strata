@@ -1,5 +1,6 @@
 import { takeBudgetSnapshot } from "@/lib/services/budgets"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { captureProjectPocSnapshot } from "@/lib/services/poc"
 
 const PROJECT_BATCH_SIZE = 10
 const DAILY_RETENTION_DAYS = 90
@@ -34,10 +35,16 @@ export async function captureNightlyForecastSnapshots(): Promise<NightlySnapshot
   const result: NightlySnapshotResult = { attempted: rows.length, captured: 0, failed: [], pruned: 0 }
   for (let offset = 0; offset < rows.length; offset += PROJECT_BATCH_SIZE) {
     const batch = rows.slice(offset, offset + PROJECT_BATCH_SIZE)
-    const settled = await Promise.allSettled(batch.map((project) => takeBudgetSnapshot(project.id, project.org_id, { source: "nightly" })))
+    const settled = await Promise.allSettled(batch.map(async (project) => {
+      const [budgetSnapshot, pocSnapshot] = await Promise.all([
+        takeBudgetSnapshot(project.id, project.org_id, { source: "nightly" }),
+        captureProjectPocSnapshot(project.id, project.org_id),
+      ])
+      return { budgetSnapshot, pocSnapshot }
+    }))
     settled.forEach((entry, index) => {
       if (entry.status === "fulfilled") {
-        if (entry.value) result.captured += 1
+        if (entry.value.budgetSnapshot || entry.value.pocSnapshot) result.captured += 1
       } else {
         result.failed.push({ project_id: batch[index].id, error: entry.reason instanceof Error ? entry.reason.message : String(entry.reason) })
       }

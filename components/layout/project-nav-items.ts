@@ -12,6 +12,7 @@ export type ProjectSection =
   | "overview"
   | "documents"
   | "drawings"
+  | "drawings-model"
   | "bids"
   | "signatures"
   | "schedule"
@@ -111,7 +112,7 @@ export const BUILD_SECTIONS = new Set<ProjectSection>([
   "selections",
 ])
 
-export const PLAN_SECTIONS = new Set<ProjectSection>(["documents", "drawings", "specs", "bids", "signatures"])
+export const PLAN_SECTIONS = new Set<ProjectSection>(["documents", "drawings", "drawings-model", "specs", "bids", "signatures"])
 
 export function getProjectIdFromPath(pathname: string): string | null {
   const segments = pathname.split("?")[0]?.split("/").filter(Boolean) ?? []
@@ -147,6 +148,10 @@ export function getProjectSection(pathname: string): ProjectSection {
         return "financials"
     }
   }
+
+  // The 3D model is a sub-route of drawings, so it needs its own section or
+  // the nav would highlight Drawings while you are looking at the model.
+  if (segment === "drawings" && subSegment === "model") return "drawings-model"
 
   switch (segment) {
     case "documents":
@@ -312,6 +317,17 @@ export function buildProjectNavGroups({
       url: url("/drawings"),
       isActive: section === "drawings",
       requiredAny: ["drawing.read", "docs.read"],
+    },
+    {
+      // Production projects get their model at the PLAN, where one
+      // interpretation serves every lot; anchoring a second one here would
+      // describe the same house twice.
+      title: "3D model",
+      moduleKey: "drawings",
+      url: url("/drawings/model"),
+      isActive: section === "drawings-model",
+      requiredAny: ["drawing.read", "docs.read"],
+      postures: ["residential", "commercial"],
     },
     {
       title: "Specifications",

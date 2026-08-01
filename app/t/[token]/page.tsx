@@ -32,7 +32,7 @@ export default async function TmTicketSigningPage({ params, searchParams }: Page
       <StatusPanel
         title="Ticket signed"
         description="Thank you. The signed T&M ticket has been sent back to the project team for billing."
-        icon={<CheckCircle2 className="h-7 w-7 text-emerald-700" />}
+        icon={<CheckCircle2 className="h-7 w-7 text-success" />}
       />
     )
   }

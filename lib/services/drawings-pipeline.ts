@@ -47,6 +47,7 @@ import {
   VECTOR_EXTRACT_ALGO,
   type ExtractedVectors,
 } from "@/lib/drawings/vector-extract"
+import { encodeTextRuns, TEXT_RUNS_FILE, type TextRun } from "@/lib/drawings/text-runs"
 import {
   buildCalibrationProposal,
   crossCheckDimensionChains,
@@ -207,6 +208,56 @@ export function extractPageTextLines(page: any): string[] {
     return lines.filter(Boolean)
   } catch (error) {
     console.warn("[drawings-pipeline] Failed to extract page text:", error)
+    return []
+  }
+}
+
+/**
+ * Extract text WITH position, in the same normalized image space vectors use.
+ *
+ * `extractPageTextLines` throws the coordinates away because content search
+ * only wants words. Floorplan interpretation needs to know that "KITCHEN" sits
+ * at the middle of a particular room polygon, so this second walk keeps each
+ * line's bounding box and maps it through the exact transform `encodeVectors`
+ * applies to segments — same origin, same scale, same 0..1 y-down space.
+ */
+export function extractPageTextRuns(
+  page: any,
+  args: {
+    pageToImageScale: number
+    imageWidth: number
+    imageHeight: number
+    pageOriginX: number
+    pageOriginY: number
+  },
+): TextRun[] {
+  const { pageToImageScale, imageWidth, imageHeight, pageOriginX, pageOriginY } = args
+  if (!(imageWidth > 0) || !(imageHeight > 0)) return []
+  try {
+    const stext = JSON.parse(page.toStructuredText("preserve-whitespace").asJSON())
+    const runs: TextRun[] = []
+    for (const block of stext.blocks ?? []) {
+      for (const line of block.lines ?? []) {
+        const raw =
+          typeof line.text === "string"
+            ? line.text
+            : Array.isArray(line.spans)
+              ? line.spans.map((span: any) => span.text ?? "").join("")
+              : ""
+        const text = normalizeWhitespace(raw).trim()
+        if (!text) continue
+        const bbox = normalizeStextBbox(line.bbox)
+        if (!bbox) continue
+        const x0 = ((Math.min(bbox.x0, bbox.x1) - pageOriginX) * pageToImageScale) / imageWidth
+        const y0 = ((Math.min(bbox.y0, bbox.y1) - pageOriginY) * pageToImageScale) / imageHeight
+        const x1 = ((Math.max(bbox.x0, bbox.x1) - pageOriginX) * pageToImageScale) / imageWidth
+        const y1 = ((Math.max(bbox.y0, bbox.y1) - pageOriginY) * pageToImageScale) / imageHeight
+        runs.push({ text, x: x0, y: y0, w: x1 - x0, h: y1 - y0 })
+      }
+    }
+    return runs
+  } catch (error) {
+    console.warn("[drawings-pipeline] Failed to extract text runs:", error)
     return []
   }
 }
@@ -1257,6 +1308,9 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
   // the page: the sheet just has no snap layer.
   let vectors: ExtractedVectors | null = null
   let vectorAligned = false
+  // Positioned text shares the vector transform exactly, so it is extracted in
+  // the same pass and stored under the same alignment gate.
+  let textRuns: TextRun[] = []
   try {
     const segments = walkPageSegments(mupdf, page)
     if (segments.length > 0) {
@@ -1270,13 +1324,15 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
         boundsW > 0 &&
         boundsH > 0 &&
         Math.abs(width / height - boundsW / boundsH) < 0.02
-      vectors = encodeVectors(segments, {
+      const transform = {
         pageToImageScale: boundsW > 0 ? width / boundsW : 1,
         imageWidth: width,
         imageHeight: height,
         pageOriginX: Math.min(bounds[0], bounds[2]),
         pageOriginY: Math.min(bounds[1], bounds[3]),
-      })
+      }
+      vectors = encodeVectors(segments, transform)
+      if (vectorAligned) textRuns = extractPageTextRuns(page, transform)
     }
   } catch (error) {
     console.warn(`[drawings-pipeline] Vector extraction failed for page ${pageNumber}:`, error)
@@ -1297,6 +1353,18 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
     } catch (error) {
       console.warn(`[drawings-pipeline] Failed to upload vectors for page ${pageNumber}:`, error)
       vectorAligned = false
+    }
+  }
+  if (vectorAligned && textRuns.length > 0) {
+    try {
+      await uploadTilesObject({
+        supabase,
+        path: `${basePath}/${TEXT_RUNS_FILE}`,
+        bytes: Buffer.from(encodeTextRuns(textRuns), "utf8"),
+        contentType: "application/json",
+      })
+    } catch (error) {
+      console.warn(`[drawings-pipeline] Failed to upload text runs for page ${pageNumber}:`, error)
     }
   }
 
@@ -1323,8 +1391,6 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
     width,
     height,
   })
-  if (vectors && vectorAligned) {
-  }
 
   // Weak text detection → queue AI-vision enrichment off the critical path.
   if (visionPending) {
@@ -2241,6 +2307,21 @@ async function handleExtractDrawingVectors(supabase: SupabaseClient, job: Claime
             bytes: extracted.bin,
             contentType: "application/octet-stream",
           })
+          const textRuns = extractPageTextRuns(page, {
+            pageToImageScale: boundsW > 0 ? imageWidth / boundsW : 1,
+            imageWidth: Math.max(1, imageWidth),
+            imageHeight: Math.max(1, imageHeight),
+            pageOriginX: Math.min(bounds[0], bounds[2]),
+            pageOriginY: Math.min(bounds[1], bounds[3]),
+          })
+          if (textRuns.length > 0) {
+            await uploadTilesObject({
+              supabase,
+              path: `${version.tiles_base_path}/${TEXT_RUNS_FILE}`,
+              bytes: Buffer.from(encodeTextRuns(textRuns), "utf8"),
+              contentType: "application/json",
+            })
+          }
         }
 
         await supabase
@@ -2253,8 +2334,6 @@ async function handleExtractDrawingVectors(supabase: SupabaseClient, job: Claime
           })
           .eq("org_id", orgId)
           .eq("id", version.id)
-        if (aligned && extracted.storedSegmentCount > 0) {
-        }
       } finally {
         page.destroy?.()
         doc.destroy?.()
@@ -2700,6 +2779,36 @@ async function detectSheetMetadataWithVision(input: {
       : null
 
   return { sheetNumber, sheetTitle, discipline, confidence, notes, statedScale }
+}
+
+/** Is a drawings-vision provider configured for this deployment? */
+export function drawingsVisionConfigured(): boolean {
+  return getVisionApiKey(getVisionProvider()) !== null
+}
+
+/**
+ * One prompt + images → raw model text on the configured drawings-vision
+ * provider. The floorplan interpreter's vision assist rides the SAME provider,
+ * key and model resolution as title-block enrichment — one knob, not two.
+ */
+export async function runDrawingsVisionPrompt(input: {
+  prompt: string
+  images: Array<{ dataUrl: string }>
+  signal?: AbortSignal
+}): Promise<string | null> {
+  const provider = getVisionProvider()
+  const apiKey = getVisionApiKey(provider)
+  if (!apiKey) return null
+  const model = getVisionModel(provider)
+  return generateVisionResponseText({
+    provider,
+    apiKey,
+    model,
+    prompt: input.prompt,
+    images: input.images,
+    pageNumber: 0,
+    signal: input.signal,
+  })
 }
 
 function getPayloadVisionConfig(payload?: Record<string, any>): { provider?: VisionProvider; model?: string } {

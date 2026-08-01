@@ -40,66 +40,79 @@ function formatMoneyFromCents(cents?: number | null) {
   return value.toLocaleString("en-US", { style: "currency", currency: "USD" })
 }
 
+// Stripe renders its form in an iframe, so page-level CSS variables cannot
+// cascade into it. Resolve each token to its current computed value instead.
+function readToken(name: string): string {
+  if (typeof document === "undefined") return ""
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+}
+
 // Stripe appearance customization to match app design
 function getStripeAppearance(isDark: boolean): Appearance {
+  const primary = readToken("--primary")
+  const border = readToken("--border")
+  const lineStrong = readToken("--line-strong")
+  const destructive = readToken("--destructive")
+  const mutedForeground = readToken("--muted-foreground")
+
   return {
     theme: isDark ? "night" : "stripe",
     variables: {
-      colorPrimary: isDark ? "#7c93c4" : "#5a6fa8",
-      colorBackground: isDark ? "#1a1d24" : "#ffffff",
-      colorText: isDark ? "#e8e9eb" : "#1a1d24",
-      colorTextSecondary: isDark ? "#8b8f96" : "#6b7280",
-      colorDanger: "#dc2626",
+      colorPrimary: primary,
+      colorBackground: readToken("--card"),
+      colorText: readToken("--foreground"),
+      colorTextSecondary: mutedForeground,
+      colorDanger: destructive,
       fontFamily: '"Geist", system-ui, sans-serif',
       fontSizeBase: "14px",
       spacingUnit: "4px",
       borderRadius: "0px",
       focusBoxShadow: "none",
-      focusOutline: isDark ? "2px solid #7c93c4" : "2px solid #5a6fa8",
+      focusOutline: `2px solid ${primary}`,
     },
     rules: {
       ".Input": {
-        border: isDark ? "1px solid #2d3139" : "1px solid #e5e7eb",
+        border: `1px solid ${border}`,
         boxShadow: "none",
         padding: "12px",
         transition: "border-color 0.15s ease",
       },
       ".Input:focus": {
-        border: isDark ? "1px solid #7c93c4" : "1px solid #5a6fa8",
+        border: `1px solid ${primary}`,
         boxShadow: "none",
       },
       ".Input:hover": {
-        border: isDark ? "1px solid #3d4149" : "1px solid #d1d5db",
+        border: `1px solid ${lineStrong}`,
       },
       ".Input--invalid": {
-        border: "1px solid #dc2626",
+        border: `1px solid ${destructive}`,
       },
       ".Label": {
         fontWeight: "500",
         fontSize: "13px",
         marginBottom: "6px",
-        color: isDark ? "#a1a5ad" : "#4b5563",
+        color: mutedForeground,
       },
       ".Tab": {
-        border: isDark ? "1px solid #2d3139" : "1px solid #e5e7eb",
+        border: `1px solid ${border}`,
         borderRadius: "0px",
         boxShadow: "none",
       },
       ".Tab:hover": {
-        border: isDark ? "1px solid #3d4149" : "1px solid #d1d5db",
+        border: `1px solid ${lineStrong}`,
       },
       ".Tab--selected": {
-        border: isDark ? "1px solid #7c93c4" : "1px solid #5a6fa8",
-        backgroundColor: isDark ? "#1f2229" : "#f9fafb",
+        border: `1px solid ${primary}`,
+        backgroundColor: readToken("--muted"),
       },
       ".TabIcon": {
-        fill: isDark ? "#a1a5ad" : "#6b7280",
+        fill: mutedForeground,
       },
       ".TabIcon--selected": {
-        fill: isDark ? "#7c93c4" : "#5a6fa8",
+        fill: primary,
       },
       ".Block": {
-        border: isDark ? "1px solid #2d3139" : "1px solid #e5e7eb",
+        border: `1px solid ${border}`,
         borderRadius: "0px",
         boxShadow: "none",
       },
@@ -107,7 +120,7 @@ function getStripeAppearance(isDark: boolean): Appearance {
         borderRadius: "0px",
       },
       ".CheckboxInput--checked": {
-        backgroundColor: isDark ? "#7c93c4" : "#5a6fa8",
+        backgroundColor: primary,
       },
     },
   }
@@ -182,13 +195,13 @@ function PaymentForm({
       />
 
       {message && (
-        <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-900 p-3">
+        <div className="flex items-center gap-2 text-sm text-success bg-success/10 border border-success/30 p-3">
           <CheckCircle2 className="size-4 shrink-0" />
           <span>{message}</span>
         </div>
       )}
       {error && (
-        <div className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 p-3">
+        <div className="text-sm text-destructive bg-destructive/10 border border-destructive/30 p-3">
           {error}
         </div>
       )}
@@ -349,7 +362,7 @@ function PaymentSection({
         </div>
       )}
       {intentError && (
-        <div className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900 p-3">
+        <div className="text-sm text-destructive bg-destructive/10 border border-destructive/30 p-3">
           {intentError}
         </div>
       )}
@@ -443,12 +456,12 @@ export function InvoicePortalClient({ token, invoice, portalType = "client", pay
 
       <div className="mx-auto px-4 py-8 sm:px-6" style={{ maxWidth: containerMaxWidth }}>
         {proofErrors.length > 0 ? (
-          <div className="mb-4 border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          <div className="mb-4 border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
             <div className="flex gap-2">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
               <div>
                 <p className="font-medium">Some invoice proof could not load.</p>
-                <p className="mt-1 text-amber-800">{proofErrors.join(" · ")}</p>
+                <p className="mt-1 text-muted-foreground">{proofErrors.join(" · ")}</p>
               </div>
             </div>
           </div>
@@ -464,7 +477,7 @@ export function InvoicePortalClient({ token, invoice, portalType = "client", pay
           <div className="flex items-center gap-2">
             <Badge
               variant={isPaid ? "default" : "secondary"}
-              className={`capitalize ${isPaid ? "bg-green-600 hover:bg-green-600" : ""}`}
+              className={`capitalize ${isPaid ? "bg-success text-success-foreground hover:bg-success" : ""}`}
             >
               {isPaid ? "Paid" : invoice.status}
             </Badge>
@@ -630,16 +643,16 @@ export function InvoicePortalClient({ token, invoice, portalType = "client", pay
 
         {/* Receipt Download (if paid) */}
         {isPaid && receiptList.length > 0 && (
-          <div className="mt-6 border bg-green-50 dark:bg-green-950/20 p-6">
+          <div className="mt-6 border bg-success/10 p-6">
             <div className="flex items-start gap-4">
-              <div className="flex size-10 items-center justify-center bg-green-100 dark:bg-green-900/40">
-                <CheckCircle2 className="size-5 text-green-600 dark:text-green-400" />
+              <div className="flex size-10 items-center justify-center bg-success/15">
+                <CheckCircle2 className="size-5 text-success" />
               </div>
               <div className="flex-1">
-                <h3 className="font-semibold text-green-900 dark:text-green-100">
+                <h3 className="font-semibold text-success">
                   Payment received
                 </h3>
-                <p className="mt-1 text-sm text-green-700 dark:text-green-300">
+                <p className="mt-1 text-sm text-muted-foreground">
                   Thank you for your payment. Download your receipt below.
                 </p>
                 <div className="mt-4 flex flex-wrap gap-2">

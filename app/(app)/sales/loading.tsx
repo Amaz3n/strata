@@ -1,7 +1,7 @@
 import { Skeleton } from "@/components/ui/skeleton"
 
 /** Mirrors the board's real shape — action bar, search, attention rail, rows. */
-export default function SalesLoading() {
+export function SalesBoardSkeleton() {
   return (
     <div>
       <div className="flex items-center justify-between gap-3 border-b px-4 py-2">
@@ -35,4 +35,9 @@ export default function SalesLoading() {
       </div>
     </div>
   )
+}
+
+/** Route-level fallback. Same shape — the page's own band reuses the export above. */
+export default function SalesLoading() {
+  return <SalesBoardSkeleton />
 }

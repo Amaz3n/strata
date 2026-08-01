@@ -6,6 +6,7 @@ import { PlanBill } from "@/components/plans/plan-bill"
 import { PlanEditions } from "@/components/plans/plan-editions"
 import { PlanManifest } from "@/components/plans/plan-manifest"
 import { PlanMarket } from "@/components/plans/plan-market"
+import { Plan3dPanel } from "@/components/plans/plan-3d-panel"
 import { PlanProductPanel } from "@/components/plans/plan-product-panel"
 import { PlanStatusBand } from "@/components/plans/plan-status-band"
 import {
@@ -19,6 +20,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { buildOfferingRows } from "@/lib/plans/offering"
+import type { FloorplanModelDto } from "@/lib/services/floorplan-models"
 import type { BudgetTemplateDto } from "@/lib/services/budget-templates"
 import type { CommunityListItemDTO } from "@/lib/services/communities"
 import type { ChecklistTemplate } from "@/lib/services/inspections"
@@ -51,6 +53,7 @@ export function PlanSheet({
   communities,
   availability,
   cycleMedianDays,
+  floorplanModels,
   canWrite,
   canRelease,
 }: {
@@ -67,6 +70,8 @@ export function PlanSheet({
   communities: CommunityListItemDTO[]
   availability: CommunityPlanAvailabilityDto[]
   cycleMedianDays: number | null
+  /** Interpretation status per edition id; the geometry loads on demand. */
+  floorplanModels: Map<string, FloorplanModelDto>
   canWrite: boolean
   canRelease: boolean
 }) {
@@ -197,6 +202,20 @@ export function PlanSheet({
             checklistTemplates={checklistTemplates}
             selectionCategories={selectionCategories}
             editable={canWrite && version.status === "draft"}
+          />
+
+          <Plan3dPanel
+            key={`model-${version.id}`}
+            target={{ kind: "plan", housePlanVersionId: version.id }}
+            title={`${plan.code} — ${plan.name}`}
+            planId={plan.id}
+            status={floorplanModels.get(version.id) ?? null}
+            canWrite={canWrite}
+            blockedReason={
+              version.drawing_source_file_id
+                ? null
+                : "Attach a plan-set PDF to this edition first — the model is traced from its floorplan sheets."
+            }
           />
         </>
       ) : null}

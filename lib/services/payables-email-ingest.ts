@@ -4,6 +4,7 @@ import { attachFileWithServiceRole } from "@/lib/services/file-links"
 import { recordEvent } from "@/lib/services/events"
 import { NotificationService } from "@/lib/services/notifications"
 import { extractPayableInvoiceFromFile } from "@/lib/services/receipt-extraction"
+import { suggestCodingForService } from "@/lib/services/books/coding-rules"
 
 /**
  * Inbound bill ingest: subs email their invoice to the org's bills address.
@@ -68,9 +69,7 @@ export function resolveInboundOrgSlug(recipients: Array<string | null | undefine
   return null
 }
 
-export async function findOrgIdByInboundRecipients(
-  recipients: Array<string | null | undefined>,
-): Promise<{ orgId: string; slug: string } | null> {
+export async function findOrgIdByInboundRecipients(recipients: Array<string | null | undefined>): Promise<{ orgId: string; slug: string } | null> {
   const slug = resolveInboundOrgSlug(recipients)
   if (!slug) return null
   const supabase = createServiceSupabaseClient()
@@ -110,11 +109,7 @@ async function resendGet<T>(path: string): Promise<T> {
 function isInvoiceAttachment(attachment: ResendAttachment) {
   const type = (attachment.content_type ?? "").toLowerCase()
   const name = attachment.filename.toLowerCase()
-  return (
-    type === "application/pdf" ||
-    type.startsWith("image/") ||
-    /\.(pdf|jpe?g|png|webp|heic|heif)$/.test(name)
-  )
+  return type === "application/pdf" || type.startsWith("image/") || /\.(pdf|jpe?g|png|webp|heic|heif)$/.test(name)
 }
 
 function bareAddress(value: string) {
@@ -125,20 +120,9 @@ function normalizeName(value?: string | null) {
   return value?.trim().replace(/\s+/g, " ").toLowerCase() ?? ""
 }
 
-async function notifyOrgMembers(args: {
-  orgId: string
-  title: string
-  message: string
-  projectId?: string | null
-  entityType?: string
-  entityId?: string
-}) {
+async function notifyOrgMembers(args: { orgId: string; title: string; message: string; projectId?: string | null; entityType?: string; entityId?: string }) {
   const supabase = createServiceSupabaseClient()
-  const { data: members } = await supabase
-    .from("memberships")
-    .select("user_id")
-    .eq("org_id", args.orgId)
-    .eq("status", "active")
+  const { data: members } = await supabase.from("memberships").select("user_id").eq("org_id", args.orgId).eq("status", "active")
   const notificationService = new NotificationService()
   const seen = new Set<string>()
   for (const member of members ?? []) {
@@ -176,9 +160,7 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
   const subject = email.subject?.trim() || null
 
   // ── Attachment ─────────────────────────────────────────────────────────
-  const attachmentList = await resendGet<{ data: ResendAttachment[] }>(
-    `/emails/receiving/${encodeURIComponent(emailId)}/attachments`,
-  )
+  const attachmentList = await resendGet<{ data: ResendAttachment[] }>(`/emails/receiving/${encodeURIComponent(emailId)}/attachments`)
   const attachment = (attachmentList.data ?? []).find(isInvoiceAttachment)
 
   if (!attachment) {
@@ -194,10 +176,14 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
   if (!download.ok) throw new Error(`Failed to download inbound attachment: ${download.status}`)
   const bytes = Buffer.from(await download.arrayBuffer())
   const contentType = attachment.content_type || "application/pdf"
-  const invoiceFile = new File([bytes], attachment.filename || "invoice.pdf", { type: contentType })
+  const invoiceFile = new File([bytes], attachment.filename || "invoice.pdf", {
+    type: contentType,
+  })
 
   // ── Understand the invoice ─────────────────────────────────────────────
-  const extraction = await extractPayableInvoiceFromFile(invoiceFile, { orgId }).catch((error) => {
+  const extraction = await extractPayableInvoiceFromFile(invoiceFile, {
+    orgId,
+  }).catch((error) => {
     console.error("payables-email-ingest: extraction failed", error)
     return null
   })
@@ -223,11 +209,7 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
   }
 
   if (!companyId && extraction?.vendorName) {
-    const { data: companies } = await supabase
-      .from("companies")
-      .select("id, name")
-      .eq("org_id", orgId)
-      .in("company_type", ["subcontractor", "supplier", "other"])
+    const { data: companies } = await supabase.from("companies").select("id, name").eq("org_id", orgId).in("company_type", ["subcontractor", "supplier", "other"])
     const wanted = normalizeName(extraction.vendorName)
     const match = (companies ?? []).find((company) => normalizeName(company.name) === wanted)
     if (match) {
@@ -271,7 +253,7 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
       .eq("org_id", orgId)
       .eq("company_id", companyId)
       .eq("status", "approved")
-    const open = args.preferredProjectId ? (commitments ?? []).filter((row) => row.project_id === args.preferredProjectId) : commitments ?? []
+    const open = args.preferredProjectId ? (commitments ?? []).filter((row) => row.project_id === args.preferredProjectId) : (commitments ?? [])
     if (open.length === 1) {
       commitmentId = open[0].id as string
       projectId = open[0].project_id as string
@@ -348,12 +330,7 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
     const [{ data: commitment }, { data: existingBills }, { data: approvedCcos }] = await Promise.all([
       supabase.from("commitments").select("total_cents").eq("org_id", orgId).eq("id", commitmentId).maybeSingle(),
       supabase.from("vendor_bills").select("total_cents").eq("org_id", orgId).eq("commitment_id", commitmentId),
-      supabase
-        .from("commitment_change_orders")
-        .select("total_cents")
-        .eq("org_id", orgId)
-        .eq("commitment_id", commitmentId)
-        .eq("status", "approved"),
+      supabase.from("commitment_change_orders").select("total_cents").eq("org_id", orgId).eq("commitment_id", commitmentId).eq("status", "approved"),
     ])
     const billedCents = (existingBills ?? []).reduce((sum, row) => sum + (row.total_cents ?? 0), 0)
     const ccoCents = (approvedCcos ?? []).reduce((sum, row) => sum + (row.total_cents ?? 0), 0)
@@ -362,9 +339,13 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
     overBudget = amountCents > 0 && amountCents > remaining
   }
 
-  const { data: company } = companyId
-    ? await supabase.from("companies").select("qbo_vendor_id, qbo_vendor_name, name").eq("id", companyId).maybeSingle()
-    : { data: null }
+  const { data: company } = companyId ? await supabase.from("companies").select("qbo_vendor_id, qbo_vendor_name, name").eq("id", companyId).maybeSingle() : { data: null }
+  const codingSuggestion = await suggestCodingForService({
+    orgId,
+    companyId,
+    vendorName: companyName ?? extraction?.vendorName,
+    memo: extraction?.description ?? subject,
+  })
 
   const { data: bill, error: billError } = await supabase
     .from("vendor_bills")
@@ -392,12 +373,37 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
         routing_note: routingNote,
         over_budget: overBudget,
         vendor_name: companyName ?? extraction?.vendorName ?? null,
+        coding_source: codingSuggestion?.autoApply ? "rule" : null,
+        coding_rule_id: codingSuggestion?.ruleId ?? null,
+        coding_confidence: codingSuggestion?.confidence ?? null,
       },
+      accounting_coding: codingSuggestion?.autoApply ? codingSuggestion.accountingCoding : {},
     })
     .select("id")
     .single()
   if (billError || !bill) throw new Error(`Failed to create emailed payable: ${billError?.message}`)
   const billId = bill.id as string
+
+  if (codingSuggestion?.autoApply && codingSuggestion.costCodeId) {
+    const amountCents = Math.round((extraction?.totalDollars ?? 0) * 100)
+    const { error: codingError } = await supabase.from("bill_lines").insert({
+      org_id: orgId,
+      bill_id: billId,
+      project_id: projectId,
+      cost_code_id: codingSuggestion.costCodeId,
+      budget_line_id: codingSuggestion.budgetLineId,
+      description: extraction?.description ?? subject ?? "Emailed vendor bill",
+      quantity: 1,
+      unit: "LS",
+      unit_cost_cents: amountCents,
+      sort_order: 0,
+      metadata: {
+        source: "email_ingest",
+        coding_rule_id: codingSuggestion.ruleId,
+      },
+    })
+    if (codingError) throw new Error(`Failed to apply learned coding: ${codingError.message}`)
+  }
 
   await supabase.from("files").update({ project_id: projectId }).eq("org_id", orgId).eq("id", fileId)
   await attachFileWithServiceRole({

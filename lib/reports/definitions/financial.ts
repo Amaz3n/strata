@@ -15,11 +15,10 @@ import { getProjectProfitabilityReport, type ProfitabilitySection } from "@/lib/
 import { getProjectReconciliationReport } from "@/lib/services/reports/reconciliation"
 import { RECONCILIATION_QUEUE_LABELS } from "@/lib/services/reports/reconciliation-types"
 import { getVendor1099Report } from "@/lib/services/reports/vendor-1099"
-import {
-  getOrgWipOverUnderReport,
-  getProjectWipOverUnderReport,
-  type WipOverUnderRow,
-} from "@/lib/services/reports/wip-over-under"
+import { requireOrgContext } from "@/lib/services/context"
+import { buildBalanceSheet, buildCashFlowStatement, buildGeneralLedger, buildProfitAndLoss, buildTrialBalance } from "@/lib/services/books/statements"
+import { getPocJournalReview } from "@/lib/services/accounting-export"
+import { getOrgWipOverUnderReport, getProjectWipOverUnderReport, type WipOverUnderRow } from "@/lib/services/reports/wip-over-under"
 
 const BUCKET_LABELS: Record<AgingBucket, string> = {
   current: "Current",
@@ -38,6 +37,268 @@ const BILLING_MODEL_LABELS: Record<string, string> = {
   cost_plus_gmp: "GMP",
   time_and_materials: "T&M",
   unknown: "Unknown",
+}
+
+async function booksOrgId() {
+  return (await requireOrgContext()).orgId
+}
+
+const booksTrialBalance: ReportDefinition = {
+  slug: "books-trial-balance",
+  title: "Trial Balance",
+  summary: "Posted debit and credit balances by Arc Books account, with the balance proof visible.",
+  group: "financial",
+  scopes: ["org"],
+  permissions: ["books.read"],
+  available: (ctx) => ctx.hasArcBooks,
+  params: [{ key: "asOf", kind: "date", label: "As of" }],
+  run: async (ctx) => {
+    const asOf = ctx.params.asOf
+    const report = await buildTrialBalance(await booksOrgId(), asOf)
+    return {
+      subtitle: `As of ${asOf}`,
+      stats: [
+        { key: "debits", label: "Debits", value: formatMoneyCents(report.totalDebitCents) },
+        { key: "credits", label: "Credits", value: formatMoneyCents(report.totalCreditCents) },
+        {
+          key: "difference",
+          label: "Difference",
+          value: formatMoneyCents(report.totalDebitCents - report.totalCreditCents),
+          tone: report.totalDebitCents === report.totalCreditCents ? "positive" : "negative",
+        },
+      ],
+      tables: [
+        {
+          key: "accounts",
+          columns: [
+            { key: "code", header: "Account" },
+            { key: "name", header: "Name" },
+            { key: "debit", header: "Debit", type: "money" },
+            { key: "credit", header: "Credit", type: "money" },
+            { key: "balance", header: "Balance", type: "money" },
+          ],
+          rows: report.rows.map((row) => ({
+            key: row.accountId,
+            cells: { code: row.code, name: row.name, debit: row.debitCents, credit: row.creditCents, balance: row.balanceCents },
+          })),
+          totals: { name: "Total", debit: report.totalDebitCents, credit: report.totalCreditCents },
+        },
+      ],
+    }
+  },
+}
+
+const booksProfitAndLoss: ReportDefinition = {
+  slug: "books-profit-loss",
+  title: "Profit & Loss",
+  summary: "Accrual revenue, direct cost, operating expense, and net income from the posted journal.",
+  group: "financial",
+  scopes: ["org"],
+  permissions: ["books.read"],
+  available: (ctx) => ctx.hasArcBooks,
+  params: [{ key: "period", kind: "period", label: "Period" }],
+  run: async (ctx) => {
+    const range = periodRange(ctx.params.period ?? "ytd")
+    const start = range.from ?? "1900-01-01"
+    const end = range.to ?? new Date().toISOString().slice(0, 10)
+    const report = await buildProfitAndLoss(await booksOrgId(), start, end)
+    return {
+      subtitle: `${start} through ${end} · accrual`,
+      stats: [
+        { key: "revenue", label: "Revenue", value: formatMoneyCents(report.revenueCents) },
+        { key: "gross", label: "Gross profit", value: formatMoneyCents(report.grossProfitCents) },
+        { key: "net", label: "Net income", value: formatMoneyCents(report.netIncomeCents) },
+      ],
+      tables: [
+        {
+          key: "accounts",
+          columns: [
+            { key: "code", header: "Account" },
+            { key: "name", header: "Name" },
+            { key: "type", header: "Type", type: "status" },
+            { key: "balance", header: "Amount", type: "money" },
+          ],
+          rows: report.rows.map((row) => ({ key: row.accountId, cells: { code: row.code, name: row.name, type: row.accountType, balance: row.balanceCents } })),
+          totals: { name: "Net income", balance: report.netIncomeCents },
+        },
+      ],
+    }
+  },
+}
+
+const booksBalanceSheet: ReportDefinition = {
+  slug: "books-balance-sheet",
+  title: "Balance Sheet",
+  summary: "Assets, liabilities, equity, and current earnings from Arc’s posted ledger.",
+  group: "financial",
+  scopes: ["org"],
+  permissions: ["books.read"],
+  available: (ctx) => ctx.hasArcBooks,
+  params: [{ key: "asOf", kind: "date", label: "As of" }],
+  run: async (ctx) => {
+    const asOf = ctx.params.asOf
+    const report = await buildBalanceSheet(await booksOrgId(), asOf)
+    return {
+      subtitle: `As of ${asOf}`,
+      stats: [
+        { key: "assets", label: "Assets", value: formatMoneyCents(report.assetCents) },
+        { key: "liabilities", label: "Liabilities", value: formatMoneyCents(report.liabilityCents) },
+        { key: "equity", label: "Equity", value: formatMoneyCents(report.equityCents) },
+        { key: "difference", label: "Difference", value: formatMoneyCents(report.differenceCents), tone: report.differenceCents === 0 ? "positive" : "negative" },
+      ],
+      tables: [
+        {
+          key: "accounts",
+          columns: [
+            { key: "code", header: "Account" },
+            { key: "name", header: "Name" },
+            { key: "type", header: "Type", type: "status" },
+            { key: "balance", header: "Balance", type: "money" },
+          ],
+          rows: report.rows.map((row) => ({ key: row.accountId, cells: { code: row.code, name: row.name, type: row.accountType, balance: row.balanceCents } })),
+        },
+      ],
+    }
+  },
+}
+
+const booksCashFlow: ReportDefinition = {
+  slug: "books-cash-flow",
+  title: "Cash Flow Statement",
+  summary: "Cash movements classified as operating, investing, and financing activity.",
+  group: "financial",
+  scopes: ["org"],
+  permissions: ["books.read"],
+  available: (ctx) => ctx.hasArcBooks,
+  params: [{ key: "period", kind: "period", label: "Period" }],
+  run: async (ctx) => {
+    const range = periodRange(ctx.params.period ?? "ytd")
+    const start = range.from ?? "1900-01-01"
+    const end = range.to ?? new Date().toISOString().slice(0, 10)
+    const report = await buildCashFlowStatement(await booksOrgId(), start, end)
+    const rows = [
+      { key: "operating", label: "Operating activities", amount: report.operatingCents },
+      { key: "investing", label: "Investing activities", amount: report.investingCents },
+      { key: "financing", label: "Financing activities", amount: report.financingCents },
+    ]
+    return {
+      subtitle: `${start} through ${end}`,
+      stats: [{ key: "change", label: "Net change in cash", value: formatMoneyCents(report.netChangeInCashCents) }],
+      tables: [
+        {
+          key: "categories",
+          columns: [
+            { key: "category", header: "Category" },
+            { key: "amount", header: "Cash change", type: "money" },
+          ],
+          rows: rows.map((row) => ({ key: row.key, cells: { category: row.label, amount: row.amount } })),
+          totals: { category: "Net change", amount: report.netChangeInCashCents },
+        },
+      ],
+    }
+  },
+}
+
+const booksGeneralLedger: ReportDefinition = {
+  slug: "books-general-ledger",
+  title: "General Ledger",
+  summary: "Posted journal-line detail with account, date, source memo, and project/company dimensions.",
+  group: "financial",
+  scopes: ["org"],
+  permissions: ["books.read"],
+  available: (ctx) => ctx.hasArcBooks,
+  params: [{ key: "period", kind: "period", label: "Period" }],
+  run: async (ctx) => {
+    const range = periodRange(ctx.params.period ?? "ytd")
+    const start = range.from ?? "1900-01-01"
+    const end = range.to ?? new Date().toISOString().slice(0, 10)
+    const report = await buildGeneralLedger(await booksOrgId(), start, end)
+    return {
+      subtitle: `${start} through ${end}`,
+      tables: [
+        {
+          key: "lines",
+          columns: [
+            { key: "date", header: "Date", type: "date" },
+            { key: "account", header: "Account" },
+            { key: "memo", header: "Memo" },
+            { key: "debit", header: "Debit", type: "money" },
+            { key: "credit", header: "Credit", type: "money" },
+            { key: "project_id", header: "project_id", exportOnly: true },
+            { key: "company_id", header: "company_id", exportOnly: true },
+          ],
+          rows: report.rows.map((row) => ({
+            key: row.id,
+            cells: {
+              date: row.entry?.entry_date ?? null,
+              account: row.account ? `${row.account.code} ${row.account.name}` : row.account_id,
+              memo: row.description ?? row.entry?.memo ?? null,
+              debit: row.debit_cents,
+              credit: row.credit_cents,
+              project_id: row.project_id,
+              company_id: row.company_id,
+            },
+          })),
+          emptyMessage: "No posted journal lines in this period.",
+        },
+      ],
+    }
+  },
+}
+
+const booksPocJournal: ReportDefinition = {
+  slug: "books-poc-journal",
+  title: "Monthly POC Journal Review",
+  summary: "Reviewable percentage-of-completion true-up entries, with CSV and PDF exports for the accountant.",
+  group: "financial",
+  scopes: ["org"],
+  permissions: ["books.read"],
+  available: (ctx) => ctx.hasArcBooks,
+  params: [{ key: "asOf", kind: "date", label: "As of" }],
+  run: async (ctx) => {
+    const report = await getPocJournalReview({ asOf: ctx.params.asOf })
+    const debitCents = report.rows.reduce((sum, row) => sum + row.debitCents, 0)
+    const creditCents = report.rows.reduce((sum, row) => sum + row.creditCents, 0)
+    return {
+      subtitle: `As of ${report.asOf} · accrual`,
+      notice: { tone: "info", message: "Review-only adjusting entry. This report never posts or pushes a journal to an accounting provider." },
+      stats: [
+        { key: "debits", label: "Debits", value: formatMoneyCents(debitCents) },
+        { key: "credits", label: "Credits", value: formatMoneyCents(creditCents) },
+        { key: "difference", label: "Difference", value: formatMoneyCents(debitCents - creditCents), tone: debitCents === creditCents ? "positive" : "negative" },
+      ],
+      tables: [
+        {
+          key: "entries",
+          columns: [
+            { key: "date", header: "Date", type: "date" },
+            { key: "account", header: "Account" },
+            { key: "dimension", header: "Project" },
+            { key: "memo", header: "Memo" },
+            { key: "debit", header: "Debit", type: "money" },
+            { key: "credit", header: "Credit", type: "money" },
+            { key: "source_id", header: "source_id", exportOnly: true },
+            { key: "inputs_hash", header: "inputs_hash", exportOnly: true },
+          ],
+          rows: report.rows.map((row) => ({
+            key: row.key,
+            cells: {
+              date: row.date,
+              account: row.account,
+              dimension: row.dimension,
+              memo: row.memo,
+              debit: row.debitCents,
+              credit: row.creditCents,
+              source_id: row.sourceId,
+              inputs_hash: row.inputsHash,
+            },
+          })),
+          totals: { memo: "Total", debit: debitCents, credit: creditCents },
+          emptyMessage: "No POC true-up is needed for this month.",
+        },
+      ],
+    }
+  },
 }
 
 function titleCase(value: string | null | undefined) {
@@ -86,8 +347,7 @@ function wipRow(row: WipOverUnderRow, scope: string): ReportRow {
       },
       balance_status: {
         value: row.balance_status,
-        label:
-          row.balance_status === "over_billed" ? "Over" : row.balance_status === "under_billed" ? "Under" : "Even",
+        label: row.balance_status === "over_billed" ? "Over" : row.balance_status === "under_billed" ? "Under" : "Even",
         tone: row.balance_status === "over_billed" ? "positive" : row.balance_status === "under_billed" ? "warning" : "muted",
       },
       forecast_gross_margin_percent: row.forecast_gross_margin_percent,
@@ -440,8 +700,7 @@ const drawStatus: ReportDefinition = {
 const payAppRegister: ReportDefinition = {
   slug: "pay-app-register",
   title: "Pay Application Register",
-  summary:
-    "Every pay application with completed work, retainage held, and balance to finish — the progress-billing ledger across jobs.",
+  summary: "Every pay application with completed work, retainage held, and balance to finish — the progress-billing ledger across jobs.",
   group: "financial",
   scopes: ["org", "project"],
   permissions: ["report.read"],
@@ -528,10 +787,7 @@ const payAppRegister: ReportDefinition = {
             retainage_cents: totals.retainage_held_cents,
             balance_to_finish_cents: totals.balance_to_finish_cents,
           },
-          cap:
-            report.total_count > report.rows.length
-              ? { shown: report.rows.length, total: report.total_count }
-              : undefined,
+          cap: report.total_count > report.rows.length ? { shown: report.rows.length, total: report.total_count } : undefined,
           emptyMessage: "No pay applications in this scope.",
         },
       ],
@@ -636,12 +892,8 @@ const forecastCtc: ReportDefinition = {
     const variance = sum("variance_at_completion_cents")
 
     return {
-      subtitle: report.budget_version
-        ? `As of ${report.as_of} · budget v${report.budget_version}`
-        : `As of ${report.as_of}`,
-      notice: report.budget_id
-        ? undefined
-        : { tone: "warning", message: "This project has no budget, so there is nothing to forecast against." },
+      subtitle: report.budget_version ? `As of ${report.as_of} · budget v${report.budget_version}` : `As of ${report.as_of}`,
+      notice: report.budget_id ? undefined : { tone: "warning", message: "This project has no budget, so there is nothing to forecast against." },
       stats: [
         { key: "budget", label: "Adjusted budget", value: formatMoneyCents(sum("adjusted_budget_cents")) },
         { key: "committed", label: "Committed", value: formatMoneyCents(sum("committed_cents")) },
@@ -738,9 +990,7 @@ function profitabilitySectionRows(section: ProfitabilitySection, prefix: string)
       amount_cents: section.total_cents,
       budget_cents: section.budget_total_cents ?? null,
       variance_cents:
-        typeof section.variance_total_cents === "number"
-          ? { value: section.variance_total_cents, label: formatMoneyCents(section.variance_total_cents, { signed: true }) }
-          : null,
+        typeof section.variance_total_cents === "number" ? { value: section.variance_total_cents, label: formatMoneyCents(section.variance_total_cents, { signed: true }) } : null,
     },
   })
   return rows
@@ -859,10 +1109,7 @@ const reconciliation: ReportDefinition = {
       key: "queue",
       kind: "select",
       label: "Queue",
-      options: [
-        { value: "all", label: "All exceptions" },
-        ...Object.entries(RECONCILIATION_QUEUE_LABELS).map(([value, label]) => ({ value, label })),
-      ],
+      options: [{ value: "all", label: "All exceptions" }, ...Object.entries(RECONCILIATION_QUEUE_LABELS).map(([value, label]) => ({ value, label }))],
     },
   ],
   run: async (ctx) => {
@@ -871,9 +1118,7 @@ const reconciliation: ReportDefinition = {
     const exceptions = queue === "all" ? report.exceptions : report.exceptions.filter((row) => row.kind === queue)
 
     return {
-      subtitle: report.is_clean
-        ? "All checks clean"
-        : `${report.total_exception_count} exception${report.total_exception_count === 1 ? "" : "s"} found`,
+      subtitle: report.is_clean ? "All checks clean" : `${report.total_exception_count} exception${report.total_exception_count === 1 ? "" : "s"} found`,
       notice:
         report.failed_checks.length > 0
           ? {
@@ -925,9 +1170,7 @@ const reconciliation: ReportDefinition = {
               amount_cents: row.amount_cents > 0 ? row.amount_cents : null,
             },
           })),
-          emptyMessage: report.is_clean
-            ? "No financial exceptions found. All reconciliation checks are clean."
-            : "No exceptions in this queue.",
+          emptyMessage: report.is_clean ? "No financial exceptions found. All reconciliation checks are clean." : "No exceptions in this queue.",
         },
       ],
     }
@@ -1213,6 +1456,12 @@ function taxYearOptions() {
 }
 
 export const FINANCIAL_REPORTS: ReportDefinition[] = [
+  booksTrialBalance,
+  booksProfitAndLoss,
+  booksBalanceSheet,
+  booksCashFlow,
+  booksGeneralLedger,
+  booksPocJournal,
   wipOverUnder,
   projectProfitability,
   forecastCtc,

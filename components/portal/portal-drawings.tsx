@@ -299,7 +299,7 @@ function PortalSheetViewer({
   const downloadName = `${sheet.sheet_number || "sheet"}.pdf`.replace(/[^\w.-]+/g, "-")
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-neutral-900">
+    <div className="fixed inset-0 z-50 flex flex-col bg-sidebar">
       {/* Toolbar: close / sheet identity / prev-next / download */}
       <div className="flex h-12 shrink-0 items-center gap-1 border-b border-white/10 px-2 text-white">
         <Button

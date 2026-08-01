@@ -24,7 +24,7 @@ interface ReviewerRfisTabProps {
 
 const statusColors: Record<string, string> = {
   open: "bg-warning/20 text-warning border-warning/30",
-  pending: "bg-blue-500/20 text-blue-500 border-blue-500/30",
+  pending: "bg-primary/20 text-primary border-primary/30",
   answered: "bg-success/20 text-success border-success/30",
   closed: "bg-muted text-muted-foreground",
 }

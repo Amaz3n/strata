@@ -15,10 +15,10 @@ export function SuccessScreen({ title, signerEmail, signedAt, executedDocumentUr
     <div className="mx-auto flex min-h-[70vh] w-full max-w-4xl items-center justify-center px-4 py-12">
       <Card className="w-full max-w-2xl rounded-lg">
         <CardHeader className="items-center text-center">
-          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-emerald-300 bg-emerald-100 text-emerald-700">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-success/40 bg-success/15 text-success">
             <CheckCircle2 className="h-8 w-8" />
           </div>
-          <Badge className="bg-emerald-600 text-white">Signed</Badge>
+          <Badge className="bg-success text-success-foreground">Signed</Badge>
           <CardTitle className="text-2xl">Document signed successfully</CardTitle>
         </CardHeader>
 

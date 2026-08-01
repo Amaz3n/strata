@@ -7,6 +7,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { listProjects } from "@/lib/services/projects"
 import { getReportingExcludedProjectIds } from "@/lib/services/reporting-scope"
 import { todayIsoDateOnly } from "@/lib/services/reports/dates"
+import { computeProjectPoc } from "@/lib/services/poc"
 
 const BILLED_INVOICE_STATUSES = ["sent", "partial", "paid", "overdue"]
 const INCLUDED_PROJECT_STATUSES = new Set(["planning", "active", "on_hold", "completed"])
@@ -227,13 +228,16 @@ async function buildWipRow({
   const summaryEacCents = numberValue(summary?.total_eac_cents)
   const adjustedBudgetCents = numberValue(summary?.adjusted_budget_cents)
   const eacCents = summaryEacCents || Math.max(adjustedBudgetCents, actualCostCents)
-  const percentCompleteRatio = eacCents > 0 ? Math.min(1, Math.max(0, actualCostCents / eacCents)) : 0
-  const earnedRevenueCents = Math.round(revisedContractCents * percentCompleteRatio)
   const billedToDateCents = rollups.billedByProject.get(project.id) ?? numberValue(summary?.total_invoiced_cents)
-  const overUnderBillingCents = billedToDateCents - earnedRevenueCents
-  const forecastGrossProfitCents = revisedContractCents - eacCents
-
-  if (eacCents <= 0) issues.push("missing_eac")
+  const poc = computeProjectPoc({
+    originalContractCents,
+    approvedChangeOrdersCents,
+    revisedContractCents,
+    actualCostCents,
+    eacCents,
+    billedCents: billedToDateCents,
+  })
+  issues.push(...poc.warnings)
 
   return {
     project_id: project.id,
@@ -245,19 +249,19 @@ async function buildWipRow({
     revised_contract_cents: revisedContractCents,
     actual_cost_cents: actualCostCents,
     eac_cents: eacCents,
-    cost_to_complete_cents: Math.max(0, eacCents - actualCostCents),
-    percent_complete: Math.round(percentCompleteRatio * 1000) / 10,
-    earned_revenue_cents: earnedRevenueCents,
+    cost_to_complete_cents: poc.costToCompleteCents,
+    percent_complete: Math.round(poc.percentComplete * 1000) / 10,
+    earned_revenue_cents: poc.earnedRevenueCents,
     billed_to_date_cents: billedToDateCents,
-    over_under_billing_cents: overUnderBillingCents,
-    over_billed_cents: Math.max(0, overUnderBillingCents),
-    under_billed_cents: Math.max(0, -overUnderBillingCents),
-    forecast_gross_profit_cents: forecastGrossProfitCents,
-    forecast_gross_margin_percent: marginPercent(forecastGrossProfitCents, revisedContractCents),
+    over_under_billing_cents: poc.overUnderCents,
+    over_billed_cents: Math.max(0, poc.overUnderCents),
+    under_billed_cents: Math.max(0, -poc.overUnderCents),
+    forecast_gross_profit_cents: poc.forecastGrossProfitCents,
+    forecast_gross_margin_percent: poc.forecastGrossMarginPercent,
     balance_status:
-      overUnderBillingCents > 0
+      poc.overUnderCents > 0
         ? "over_billed"
-        : overUnderBillingCents < 0
+        : poc.overUnderCents < 0
           ? "under_billed"
           : "in_balance",
     issues: Array.from(new Set(issues)),

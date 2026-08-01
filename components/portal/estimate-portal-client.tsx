@@ -239,17 +239,17 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
           </div>
 
           {!estimate.is_current_version ? (
-            <div className="flex items-start gap-2.5 border border-amber-500/30 bg-amber-500/5 p-3 text-sm">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+            <div className="flex items-start gap-2.5 border border-warning/30 bg-warning/5 p-3 text-sm">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
               <p className="text-muted-foreground">A newer version has been issued — please use the latest link from your builder.</p>
             </div>
           ) : null}
 
           {isApproved ? (
-            <div className="flex items-start gap-2.5 border border-emerald-500/30 bg-emerald-500/5 p-3">
-              <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" />
+            <div className="flex items-start gap-2.5 border border-success/30 bg-success/5 p-3">
+              <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-success" />
               <div className="text-sm">
-                <p className="font-semibold text-emerald-700">
+                <p className="font-semibold text-success">
                   {isExecuted ? "Executed" : isClientSigned ? "Signed" : "Approved"}
                 </p>
                 <p className="text-muted-foreground">
@@ -258,21 +258,21 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
               </div>
             </div>
           ) : isDeclined ? (
-            <div className="flex items-start gap-2.5 border border-red-500/30 bg-red-500/5 p-3">
-              <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
+            <div className="flex items-start gap-2.5 border border-destructive/30 bg-destructive/5 p-3">
+              <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
               <div className="text-sm">
-                <p className="font-semibold text-red-700">Declined</p>
+                <p className="font-semibold text-destructive">Declined</p>
                 <p className="text-muted-foreground">Your builder has been notified.</p>
               </div>
             </div>
           ) : expired ? (
-            <div className="flex items-start gap-2.5 border border-amber-500/30 bg-amber-500/5 p-3 text-sm">
-              <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+            <div className="flex items-start gap-2.5 border border-warning/30 bg-warning/5 p-3 text-sm">
+              <Clock className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
               <p className="text-muted-foreground">This estimate has expired. Please contact your builder for an updated copy.</p>
             </div>
           ) : estimate.status === "changes_requested" ? (
-            <div className="flex items-start gap-2.5 border border-amber-500/30 bg-amber-500/5 p-3 text-sm">
-              <MessageSquare className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+            <div className="flex items-start gap-2.5 border border-warning/30 bg-warning/5 p-3 text-sm">
+              <MessageSquare className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
               <p className="text-muted-foreground">Your change requests were sent to {estimate.org_name || "your builder"}.</p>
             </div>
           ) : null}
@@ -432,7 +432,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
                     type="button"
                     disabled={pending}
                     onClick={() => setSignatureOpen(true)}
-                    className="flex flex-col items-center justify-center gap-1.5 border border-emerald-500/40 bg-emerald-950 p-4 text-xs font-semibold text-emerald-400 transition-colors hover:bg-emerald-900 disabled:opacity-50"
+                    className="flex flex-col items-center justify-center gap-1.5 border border-success/40 bg-success/15 p-4 text-xs font-semibold text-success transition-colors hover:bg-success/25 disabled:opacity-50"
                   >
                     <CheckCircle2 className="h-5 w-5" />
                     Sign
@@ -441,7 +441,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
                     type="button"
                     disabled={pending}
                     onClick={() => setChangesOpen(true)}
-                    className="flex flex-col items-center justify-center gap-1.5 border border-blue-500/40 bg-blue-950 p-4 text-xs font-semibold text-blue-400 transition-colors hover:bg-blue-900 disabled:opacity-50"
+                    className="flex flex-col items-center justify-center gap-1.5 border border-primary/40 bg-primary/15 p-4 text-xs font-semibold text-primary transition-colors hover:bg-primary/25 disabled:opacity-50"
                   >
                     <MessageSquare className="h-5 w-5" />
                     Changes
@@ -450,7 +450,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
                     type="button"
                     disabled={pending}
                     onClick={() => runDecision("rejected")}
-                    className="flex flex-col items-center justify-center gap-1.5 border border-red-500/40 bg-red-950 p-4 text-xs font-semibold text-red-400 transition-colors hover:bg-red-900 disabled:opacity-50"
+                    className="flex flex-col items-center justify-center gap-1.5 border border-destructive/40 bg-destructive/15 p-4 text-xs font-semibold text-destructive transition-colors hover:bg-destructive/25 disabled:opacity-50"
                   >
                     <XCircle className="h-5 w-5" />
                     Decline

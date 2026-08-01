@@ -168,6 +168,8 @@ export interface ReportAvailabilityContext {
   hasDrawSchedules: boolean
   /** True when the org has prequalified at least one company. */
   hasPrequalifications: boolean
+  /** True only when the optional Arc Books workspace is enabled. */
+  hasArcBooks: boolean
 }
 
 export interface ReportDefinition {

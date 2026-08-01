@@ -1,6 +1,4 @@
-import { createHmac } from "node:crypto"
 import { compare, hash } from "bcryptjs"
-import { cookies } from "next/headers"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import type {
@@ -31,33 +29,23 @@ import { listDecisionsForPortal } from "@/lib/services/decisions"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
 import { hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
+import {
+  clearPinVerification,
+  decryptPortalToken,
+  encryptPortalToken,
+  generatePortalToken,
+  hashPortalToken,
+  isPinVerified,
+  markPinVerified,
+} from "@/lib/services/portal-credentials"
+import { getCompanyComplianceStatusWithClient } from "@/lib/services/compliance-documents"
+import { getLatestPrequalificationWithClient } from "@/lib/services/prequalification"
+import { getComplianceRulesWithClient } from "@/lib/services/compliance"
+import { getProjectFinancialFeatureConfig } from "@/lib/financials/billing-model"
 
 const PIN_SALT_ROUNDS = 10
 const MAX_PIN_ATTEMPTS = 5
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000
-const PORTAL_PIN_COOKIE_PREFIX = "portal_pin"
-const PORTAL_PIN_COOKIE_TTL_SECONDS = 60 * 60 * 12
-
-function getPortalAccessSecret() {
-  const secret =
-    process.env.PORTAL_ACCESS_SECRET ??
-    process.env.BID_PORTAL_SECRET ??
-    process.env.DOCUMENT_SIGNING_SECRET ??
-    process.env.SUPABASE_SERVICE_ROLE_KEY
-  if (!secret) {
-    throw new Error("Missing PORTAL_ACCESS_SECRET or another server-side portal secret")
-  }
-  return secret
-}
-
-function getPortalPinCookieName(token: string) {
-  const hash = createHmac("sha256", getPortalAccessSecret()).update(`portal:${token}`).digest("hex")
-  return `${PORTAL_PIN_COOKIE_PREFIX}_${hash.slice(0, 16)}`
-}
-
-function signPortalPinCookie(token: string) {
-  return createHmac("sha256", getPortalAccessSecret()).update(`portal-pin:${token}`).digest("hex")
-}
 
 function mapPermissions(row: any): PortalPermissions {
   return {
@@ -103,7 +91,7 @@ function mapAccessToken(row: any): PortalAccessToken {
     company_id: row.company_id ?? null,
     scoped_rfi_id: row.scoped_rfi_id ?? null,
     scoped_change_event_rfq_id: row.scoped_change_event_rfq_id ?? null,
-    token: row.token,
+    token: decryptPortalToken(row.token_encrypted) ?? "",
     name: row.name,
     portal_type: row.portal_type,
     reviewer_role: row.reviewer_role ?? null,
@@ -150,7 +138,10 @@ export async function createPortalAccessToken({
   await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
   const serviceClient = createServiceSupabaseClient()
 
+  const plaintextToken = generatePortalToken()
   const payload: Record<string, unknown> = {
+    token_hash: hashPortalToken(plaintextToken),
+    token_encrypted: encryptPortalToken(plaintextToken),
     org_id: resolvedOrgId,
     project_id: projectId,
     portal_type: portalType,
@@ -232,7 +223,7 @@ export async function validatePortalToken(token: string) {
   const { data, error } = await supabase
     .from("portal_access_tokens")
     .select("*, contact:contacts(id, full_name, email), company:companies(id, name, company_type)")
-    .eq("token", token)
+    .eq("token_hash", hashPortalToken(token))
     .is("revoked_at", null)
     .maybeSingle()
 
@@ -427,7 +418,7 @@ export async function validatePortalPin({
   const { data, error } = await supabase
     .from("portal_access_tokens")
     .select("id, pin_hash, pin_attempts, pin_locked_until, paused_at, revoked_at")
-    .eq("token", token)
+    .eq("token_hash", hashPortalToken(token))
     .is("revoked_at", null)
     .maybeSingle()
 
@@ -470,35 +461,15 @@ export async function validatePortalPin({
 }
 
 export async function markPortalPinVerified(token: string) {
-  const store = await cookies()
-  store.set({
-    name: getPortalPinCookieName(token),
-    value: signPortalPinCookie(token),
-    path: "/",
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    maxAge: PORTAL_PIN_COOKIE_TTL_SECONDS,
-  })
+  await markPinVerified(`portal:${token}`)
 }
 
 export async function clearPortalPinVerification(token: string) {
-  const store = await cookies()
-  store.set({
-    name: getPortalPinCookieName(token),
-    value: "",
-    path: "/",
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    maxAge: 0,
-  })
+  await clearPinVerification(`portal:${token}`)
 }
 
 export async function isPortalPinVerified(token: string): Promise<boolean> {
-  const store = await cookies()
-  const cookieValue = store.get(getPortalPinCookieName(token))?.value
-  return !!cookieValue && cookieValue === signPortalPinCookie(token)
+  return isPinVerified(`portal:${token}`)
 }
 
 export async function assertPortalActionAccess(
@@ -1239,6 +1210,293 @@ export async function loadSubPortalData({
     pendingSubmittalCount,
     pendingPunchCount,
   }
+}
+
+export interface SubPortalShellContext {
+  org: { id: string; name: string; logo_url?: string | null }
+  project: { id: string; name: string; address?: string | null }
+  company: { id: string; name: string; trade?: string | null }
+  /**
+   * Reimbursable time and expense capture only exists on cost-driven billing
+   * models. On a fixed-price commitment the sub bills against the contract, so
+   * offering these would invite entries the builder's own financials hide.
+   */
+  features: { showTime: boolean; showExpenses: boolean }
+  /** True when every required compliance document is current. */
+  isCompliant: boolean
+  /** The builder holds invoice payment while compliance is incomplete. */
+  blocksPaymentOnCompliance: boolean
+  counts: {
+    rfis: number
+    submittals: number
+    punch: number
+    compliance: number
+    prequalification: number
+    warranty: number
+  }
+}
+
+/**
+ * Identity and badge counts for the sub portal chrome — everything the layout
+ * needs and nothing it doesn't. Counts run as `head` queries so the layout
+ * never pulls the rows themselves; the page that owns a section loads those.
+ *
+ * Kept separate from `loadSubPortalData` on purpose: the layout renders on
+ * every navigation within the portal, and paying for the full portal blob on
+ * each one is what made the old single-page shell slow.
+ */
+export async function loadSubPortalShellContext({
+  orgId,
+  projectId,
+  companyId,
+  permissions,
+}: {
+  orgId: string
+  projectId: string
+  companyId: string
+  permissions: PortalPermissions
+}): Promise<SubPortalShellContext> {
+  const supabase = createServiceSupabaseClient()
+
+  const zero = Promise.resolve({ count: 0 })
+
+  const [
+    orgResult,
+    projectResult,
+    companyResult,
+    rfiCount,
+    submittalCount,
+    punchCount,
+    warrantyCount,
+  ] = await Promise.all([
+    supabase.from("orgs").select("id, name, logo_url").eq("id", orgId).single(),
+    supabase
+      .from("projects")
+      .select("id, name, address, property_type, financial_settings")
+      .eq("id", projectId)
+      .single(),
+    supabase.from("companies").select("id, name, metadata").eq("id", companyId).single(),
+
+    permissions.can_view_rfis
+      ? supabase
+          .from("rfis")
+          .select("id", { count: "exact", head: true })
+          .eq("org_id", orgId)
+          .eq("project_id", projectId)
+          .eq("assigned_company_id", companyId)
+          .in("status", ["open", "pending"])
+      : zero,
+
+    permissions.can_view_submittals
+      ? supabase
+          .from("submittals")
+          .select("id", { count: "exact", head: true })
+          .eq("org_id", orgId)
+          .eq("project_id", projectId)
+          .eq("assigned_company_id", companyId)
+          .in("status", ["pending", "in_review"])
+      : zero,
+
+    permissions.can_view_punch_items
+      ? supabase
+          .from("punch_items")
+          .select("id", { count: "exact", head: true })
+          .eq("org_id", orgId)
+          .eq("project_id", projectId)
+          .eq("assigned_company_id", companyId)
+          .not("status", "in", "(closed,ready_for_review)")
+      : zero,
+
+    supabase
+      .from("warranty_service_visits")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .eq("assigned_company_id", companyId)
+      .in("status", ["scheduled", "confirmed"]),
+  ])
+
+  const [complianceStatus, prequalification, complianceRules, contractResult] = await Promise.all([
+    getCompanyComplianceStatusWithClient(supabase, orgId, companyId),
+    getLatestPrequalificationWithClient(supabase, orgId, companyId),
+    getComplianceRulesWithClient(supabase, orgId),
+    supabase
+      .from("contracts")
+      .select("*")
+      .eq("org_id", orgId)
+      .eq("project_id", projectId)
+      .eq("status", "active")
+      .maybeSingle(),
+  ])
+
+  const features = getProjectFinancialFeatureConfig(
+    {
+      property_type: projectResult.data?.property_type ?? undefined,
+      financial_settings: projectResult.data?.financial_settings ?? null,
+    },
+    contractResult.data ?? null,
+  )
+
+  return {
+    org: {
+      id: orgResult.data?.id ?? orgId,
+      name: orgResult.data?.name ?? "",
+      logo_url: orgResult.data?.logo_url,
+    },
+    project: {
+      id: projectResult.data?.id ?? projectId,
+      name: projectResult.data?.name ?? "",
+      address: projectResult.data?.address ?? null,
+    },
+    company: {
+      id: companyResult.data?.id ?? companyId,
+      name: companyResult.data?.name ?? "",
+      trade: companyResult.data?.metadata?.trade ?? null,
+    },
+    features: { showTime: features.showTime, showExpenses: features.showExpenses },
+    isCompliant: complianceStatus.is_compliant,
+    blocksPaymentOnCompliance: complianceRules.block_payment_on_missing_docs ?? true,
+    counts: {
+      rfis: rfiCount.count ?? 0,
+      submittals: submittalCount.count ?? 0,
+      punch: punchCount.count ?? 0,
+      compliance:
+        complianceStatus.missing.length +
+        complianceStatus.expired.length +
+        complianceStatus.deficiencies.length,
+      prequalification: prequalification?.status === "requested" ? 1 : 0,
+      warranty: warrantyCount.count ?? 0,
+    },
+  }
+}
+
+export interface ClientPortalShellContext {
+  org: { id: string; name: string; logo_url?: string | null }
+  project: { id: string; name: string; address?: string | null }
+  counts: { actions: number }
+  hasInvoices: boolean
+  roadmapLabel: string
+}
+
+/**
+ * Identity and badge counts for the client portal chrome. Same reasoning as
+ * `loadSubPortalShellContext` — the layout re-renders on every navigation and
+ * must not pay for the full portal payload each time.
+ */
+export async function loadClientPortalShellContext({
+  orgId,
+  projectId,
+}: {
+  orgId: string
+  projectId: string
+}): Promise<ClientPortalShellContext> {
+  const supabase = createServiceSupabaseClient()
+
+  const [orgResult, projectResult, changeOrderCount, selectionCount, decisionCount, invoiceCount] =
+    await Promise.all([
+      supabase.from("orgs").select("id, name, logo_url").eq("id", orgId).single(),
+      supabase.from("projects").select("id, name, address, property_type").eq("id", projectId).single(),
+      supabase
+        .from("change_orders")
+        .select("id", { count: "exact", head: true })
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .eq("client_visible", true)
+        .eq("status", "pending_approval"),
+      supabase
+        .from("selections")
+        .select("id", { count: "exact", head: true })
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .eq("status", "pending"),
+      supabase
+        .from("decisions")
+        .select("id", { count: "exact", head: true })
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .eq("status", "pending"),
+      supabase
+        .from("invoices")
+        .select("id", { count: "exact", head: true })
+        .eq("org_id", orgId)
+        .eq("project_id", projectId)
+        .eq("client_visible", true),
+    ])
+
+  return {
+    org: {
+      id: orgResult.data?.id ?? orgId,
+      name: orgResult.data?.name ?? "",
+      logo_url: orgResult.data?.logo_url,
+    },
+    project: {
+      id: projectResult.data?.id ?? projectId,
+      name: projectResult.data?.name ?? "",
+      address: projectResult.data?.address ?? null,
+    },
+    counts: {
+      actions:
+        (changeOrderCount.count ?? 0) + (selectionCount.count ?? 0) + (decisionCount.count ?? 0),
+    },
+    hasInvoices: (invoiceCount.count ?? 0) > 0,
+    roadmapLabel: projectResult.data?.property_type === "production" ? "Milestones" : "Roadmap",
+  }
+}
+
+/** Files the builder has shared with subs on this project. */
+export async function loadSubPortalSharedFiles({
+  orgId,
+  projectId,
+  portalToken,
+}: {
+  orgId: string
+  projectId: string
+  portalToken: string
+}) {
+  const supabase = createServiceSupabaseClient()
+  const { data, error } = await supabase
+    .from("files")
+    .select("*")
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("share_with_subs", true)
+    .order("created_at", { ascending: false })
+
+  if (error) {
+    throw new Error(`Failed to load shared files: ${error.message}`)
+  }
+
+  return (data ?? []).map((file) => mapFileMetadata(file, portalToken))
+}
+
+/** Punch items dispatched to this company and not yet closed. */
+export async function loadSubPortalPunchItems({
+  orgId,
+  projectId,
+  companyId,
+}: {
+  orgId: string
+  projectId: string
+  companyId: string
+}): Promise<PunchItem[]> {
+  const supabase = createServiceSupabaseClient()
+  const { data, error } = await supabase
+    .from("punch_items")
+    .select(
+      "id, org_id, project_id, title, description, status, due_date, severity, location, resolved_at, assigned_company_id, dispatched_at, sub_completed_at, verification_notes",
+    )
+    .eq("org_id", orgId)
+    .eq("project_id", projectId)
+    .eq("assigned_company_id", companyId)
+    .neq("status", "closed")
+    .order("due_date", { ascending: true, nullsFirst: false })
+    .order("created_at", { ascending: false })
+
+  if (error) {
+    throw new Error(`Failed to load punch items: ${error.message}`)
+  }
+
+  return (data ?? []) as PunchItem[]
 }
 
 /**

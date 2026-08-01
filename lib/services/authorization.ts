@@ -495,6 +495,98 @@ export async function authorize(input: AuthorizeInput): Promise<AuthorizationDec
   return decision
 }
 
+/**
+ * Evaluate one permission across many projects in a fixed number of queries.
+ *
+ * `authorize()` resolves project membership per call, so gating N projects cost
+ * N `project_members` round-trips even though every other input (org role,
+ * overrides, platform membership) is identical across them. This batches the
+ * project lookup into a single `in(...)` query and then runs the *same*
+ * `decideAuthorization` policy per project, so a project's verdict here is
+ * always identical to `authorize({ permission, projectId })`.
+ *
+ * Decisions are not audit-logged: this is a read-side visibility filter for
+ * desks and badges, not an access gate on a mutation. Gate mutations with
+ * `requireAuthorization`.
+ */
+export async function authorizeMany({
+  permission,
+  userId,
+  orgId,
+  projectIds,
+}: {
+  permission: string
+  userId: string
+  orgId: string
+  projectIds: string[]
+}): Promise<Map<string, boolean>> {
+  const verdicts = new Map<string, boolean>()
+  const uniqueProjectIds = unique(projectIds.filter(Boolean))
+  if (uniqueProjectIds.length === 0) return verdicts
+
+  const settle = (allowed: boolean) => {
+    for (const projectId of uniqueProjectIds) verdicts.set(projectId, allowed)
+    return verdicts
+  }
+
+  if (!userId || !permission || !orgId) return settle(false)
+
+  const supabase = createServiceSupabaseClient()
+  if (!(await permissionExists(supabase, permission))) return settle(false)
+  if (isPlatformAdminId(userId, undefined)) return settle(true)
+
+  const [orgResult, platformResult] = await Promise.all([
+    fetchOrgPermissionsCached(orgId, userId),
+    fetchPlatformPermissionsCached(userId),
+  ])
+
+  const hasPlatformOrgAccess =
+    platformResult.permissions.includes("*") ||
+    platformResult.permissions.includes("platform.org.access")
+  if (hasPlatformOrgAccess) return settle(true)
+
+  // The one query that used to be N.
+  const { data, error } = await supabase
+    .from("project_members")
+    .select("project_id, role:roles!inner(permissions:role_permissions(permission_key))")
+    .in("project_id", uniqueProjectIds)
+    .eq("user_id", userId)
+    .eq("status", "active")
+
+  if (error) {
+    throw new Error(`Unable to load project permissions: ${error.message}`)
+  }
+
+  const projectPermissions = new Map<string, string[]>()
+  for (const row of (data ?? []) as (ProjectPermissionRow & { project_id?: string })[]) {
+    const projectId = row.project_id
+    if (!projectId) continue
+    const existing = projectPermissions.get(projectId) ?? []
+    projectPermissions.set(projectId, existing.concat(normalizePermissionRow(row)))
+  }
+
+  const orgPermissionSet = [...orgResult.permissions, ...orgResult.grants]
+  const platformPermissions = platformResult.hasMembership ? platformResult.permissions : []
+
+  for (const projectId of uniqueProjectIds) {
+    const projectGrants = projectPermissions.get(projectId) ?? []
+    const { allowed } = decideAuthorization({
+      permission,
+      hasProjectScope: true,
+      hasResolvedOrg: true,
+      permissionSet: [...projectGrants, ...orgPermissionSet, ...platformPermissions],
+      orgPermissionSet,
+      deniedPermissions: orgResult.denies,
+      hasProjectMembership: projectPermissions.has(projectId),
+      hasOrgMembership: orgResult.hasMembership,
+      assignedOnly: orgResult.assignedOnly,
+    })
+    verdicts.set(projectId, allowed)
+  }
+
+  return verdicts
+}
+
 export async function requireAuthorization(input: AuthorizeInput): Promise<AuthorizationDecision> {
   const decision = await authorize(input)
   if (!decision.allowed) {

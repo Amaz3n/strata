@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation"
+import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { loadPunchItemsAction } from "./actions"
 import { PunchListPortalClient } from "./punch-list-client"
@@ -21,5 +22,14 @@ export default async function PunchListPortalPage({ params }: Params) {
   }
 
   const items = await loadPunchItemsAction(token)
-  return <PunchListPortalClient token={token} items={items} />
+
+  return (
+    <>
+      <PortalPageHeader
+        title="Punch list"
+        description="Note anything that needs attention during a walkthrough. You can add photos later."
+      />
+      <PunchListPortalClient token={token} items={items} />
+    </>
+  )
 }

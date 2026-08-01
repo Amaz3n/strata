@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useTransition } from "react"
 import { format } from "date-fns"
-import { formatLocalDate } from "@/lib/utils"
+import { HelpCircle } from "lucide-react"
+import { cn, formatLocalDate } from "@/lib/utils"
 
 import type { Rfi, RfiResponse } from "@/lib/types"
 import {
@@ -22,6 +23,13 @@ import { Spinner } from "@/components/ui/spinner"
 interface RfisPortalClientProps {
   rfis: Rfi[]
   token: string
+}
+
+const STATUS_CLASS: Record<string, string> = {
+  open: "bg-warning/20 text-warning border-warning/30",
+  pending: "bg-primary/20 text-primary border-primary/30",
+  answered: "bg-success/20 text-success border-success/30",
+  closed: "bg-muted text-muted-foreground",
 }
 
 export function RfisPortalClient({ rfis, token }: RfisPortalClientProps) {
@@ -80,62 +88,62 @@ export function RfisPortalClient({ rfis, token }: RfisPortalClientProps) {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-background to-muted px-4 py-6">
-      <div className="mx-auto max-w-5xl space-y-4">
-        <header className="space-y-1 text-center">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">RFIs</p>
-          <h1 className="text-2xl font-bold">Requests for Information</h1>
-          <p className="text-sm text-muted-foreground">Review RFIs assigned to this project.</p>
-        </header>
+    <div className="space-y-4">
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Ask a new question</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <Textarea placeholder="Subject" rows={1} value={subject} onChange={(e) => setSubject(e.target.value)} />
+          <Textarea placeholder="Question" rows={3} value={question} onChange={(e) => setQuestion(e.target.value)} />
+          <div className="flex justify-end">
+            <Button onClick={handleCreateRfi} disabled={isPending || !subject.trim() || !question.trim()}>
+              Submit RFI
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Submit New RFI</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            <Textarea placeholder="Subject" rows={1} value={subject} onChange={(e) => setSubject(e.target.value)} />
-            <Textarea placeholder="Question" rows={3} value={question} onChange={(e) => setQuestion(e.target.value)} />
-            <div className="flex justify-end">
-              <Button onClick={handleCreateRfi} disabled={isPending || !subject.trim() || !question.trim()}>
-                Submit RFI
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        {items.length === 0 && (
-          <Card>
-            <CardContent className="p-6 text-center text-muted-foreground">No RFIs yet.</CardContent>
-          </Card>
-        )}
-
+      {items.length === 0 ? (
+        <div className="border border-border bg-card px-4 py-12 text-center">
+          <HelpCircle className="mx-auto mb-3 size-8 text-muted-foreground" />
+          <p className="text-sm font-medium">No RFIs assigned to you</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Requests for information appear here when the builder assigns them.
+          </p>
+        </div>
+      ) : (
         <div className="space-y-3">
           {items.map((rfi) => (
             <Card key={rfi.id}>
-              <CardHeader className="flex flex-row items-center justify-between">
+              <CardHeader className="flex flex-row items-center justify-between pb-2">
                 <CardTitle className="text-base">RFI #{rfi.display_number ?? rfi.rfi_number}</CardTitle>
-                <Badge variant="secondary" className="capitalize text-[11px]">
+                <Badge variant="outline" className={cn("text-xs capitalize", STATUS_CLASS[rfi.status])}>
                   {rfi.status}
                 </Badge>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div className="space-y-2">
-                  <p className="text-sm font-semibold">{rfi.subject}</p>
-                  <p className="text-sm text-muted-foreground">{rfi.question}</p>
-                  {rfi.due_date && (
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">{rfi.subject}</p>
+                  <p className="line-clamp-2 text-sm text-muted-foreground">{rfi.question}</p>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  {rfi.due_date ? (
                     <p className="text-xs text-muted-foreground">
                       Due {formatLocalDate(rfi.due_date, "MMM d, yyyy")}
                     </p>
+                  ) : (
+                    <span />
                   )}
+                  <Button variant="outline" size="sm" onClick={() => setSelected(rfi)}>
+                    View &amp; respond
+                  </Button>
                 </div>
-                <Button variant="outline" size="sm" onClick={() => setSelected(rfi)}>
-                  View responses
-                </Button>
               </CardContent>
             </Card>
           ))}
         </div>
-      </div>
+      )}
 
       <Dialog open={!!selected} onOpenChange={(open) => (open ? null : setSelected(null))}>
         <DialogContent className="max-w-2xl">

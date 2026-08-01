@@ -46,19 +46,19 @@ export function ReviewStep({
       </div>
 
       {missingRequired.length > 0 ? (
-        <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+        <div className="mt-4 rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm text-warning">
           <div className="flex items-start gap-2">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <div>
               <p className="font-semibold">Complete required fields before signing</p>
-              <p className="mt-1 text-xs text-amber-800">
+              <p className="mt-1 text-xs text-muted-foreground">
                 Missing: {missingRequired.map((field) => normalizeFieldLabel(field)).join(", ")}
               </p>
             </div>
           </div>
         </div>
       ) : (
-        <div className="mt-4 flex items-center justify-center gap-2 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+        <div className="mt-4 flex items-center justify-center gap-2 rounded-xl border border-success/40 bg-success/10 px-3 py-2 text-sm text-success">
           <CheckCircle2 className="h-4 w-4" />
           All required fields are complete.
         </div>

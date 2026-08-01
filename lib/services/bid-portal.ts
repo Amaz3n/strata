@@ -1,17 +1,14 @@
-import { createHmac } from "node:crypto"
 import { compare } from "bcryptjs"
-import { cookies } from "next/headers"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import type { FileMetadata, Rfi } from "@/lib/types"
 import { getCurrentExternalPortalSession, hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
+import { clearPinVerification, hashBidToken, isPinVerified, markPinVerified } from "@/lib/services/portal-credentials"
 import { recordEvent } from "@/lib/services/events"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 
 const MAX_PIN_ATTEMPTS = 5
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000
-const BID_PORTAL_PIN_COOKIE_PREFIX = "bid_portal_pin"
-const BID_PORTAL_PIN_COOKIE_TTL_SECONDS = 60 * 60 * 12
 const BID_PORTAL_GRANT_ACCESS_PREFIX = "grant_"
 
 const BID_PORTAL_ACCESS_SELECT = `
@@ -148,18 +145,6 @@ export interface BidPortalData {
   draft: Record<string, unknown> | null
 }
 
-function getBidPortalSecret() {
-  const secret = process.env.BID_PORTAL_SECRET
-  if (!secret) {
-    throw new Error("Missing BID_PORTAL_SECRET environment variable")
-  }
-  return secret
-}
-
-function hashBidToken(token: string) {
-  return createHmac("sha256", getBidPortalSecret()).update(token).digest("hex")
-}
-
 function getBidPortalGrantId(token: string) {
   return token.startsWith(BID_PORTAL_GRANT_ACCESS_PREFIX)
     ? token.slice(BID_PORTAL_GRANT_ACCESS_PREFIX.length)
@@ -169,15 +154,6 @@ function getBidPortalGrantId(token: string) {
 function resolveBidPortalPinScope(token: string) {
   const grantId = getBidPortalGrantId(token)
   return grantId ? `grant:${grantId}` : `token:${hashBidToken(token)}`
-}
-
-function getBidPortalPinCookieName(scope: string) {
-  const scopeHash = createHmac("sha256", getBidPortalSecret()).update(scope).digest("hex")
-  return `${BID_PORTAL_PIN_COOKIE_PREFIX}_${scopeHash.slice(0, 16)}`
-}
-
-function signBidPortalPinCookie(scope: string) {
-  return createHmac("sha256", getBidPortalSecret()).update(`pin:${scope}`).digest("hex")
 }
 
 function resolveRelation<T>(value: T | T[] | null | undefined): T | null {
@@ -194,11 +170,10 @@ async function loadBidPortalTokenRecord<T>(token: string, selectClause: string):
     if (!session) return null
 
     const { data } = await supabase
-      .from("external_portal_account_grants")
+      .from("external_identity_grants")
       .select(`token:bid_access_tokens!inner(${selectClause})`)
       .eq("id", grantId)
-      .eq("org_id", session.org_id)
-      .eq("account_id", session.account.id)
+      .eq("identity_id", session.identity.id)
       .eq("status", "active")
       .is("paused_at", null)
       .is("revoked_at", null)
@@ -219,39 +194,15 @@ async function loadBidPortalTokenRecord<T>(token: string, selectClause: string):
 }
 
 export async function markBidPortalPinVerified(token: string) {
-  const scope = resolveBidPortalPinScope(token)
-  const store = await cookies()
-  store.set({
-    name: getBidPortalPinCookieName(scope),
-    value: signBidPortalPinCookie(scope),
-    path: "/",
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    maxAge: BID_PORTAL_PIN_COOKIE_TTL_SECONDS,
-  })
+  await markPinVerified(`bid:${resolveBidPortalPinScope(token)}`)
 }
 
 export async function clearBidPortalPinVerification(token: string) {
-  const scope = resolveBidPortalPinScope(token)
-  const store = await cookies()
-  store.set({
-    name: getBidPortalPinCookieName(scope),
-    value: "",
-    path: "/",
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    maxAge: 0,
-  })
+  await clearPinVerification(`bid:${resolveBidPortalPinScope(token)}`)
 }
 
 export async function isBidPortalPinVerified(token: string): Promise<boolean> {
-  const scope = resolveBidPortalPinScope(token)
-  const store = await cookies()
-  const cookieValue = store.get(getBidPortalPinCookieName(scope))?.value
-  if (!cookieValue) return false
-  return cookieValue === signBidPortalPinCookie(scope)
+  return isPinVerified(`bid:${resolveBidPortalPinScope(token)}`)
 }
 
 export async function assertBidPortalActionAccess(token: string): Promise<BidPortalAccess> {

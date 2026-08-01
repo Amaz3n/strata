@@ -844,12 +844,17 @@ export interface PortalAccessToken {
   created_at: string
 }
 
-export interface ExternalPortalAccount {
+/**
+ * A person outside any builder org — sub, client, reviewer, bid invitee.
+ * Global by design: one person, one identity, however many builders they work
+ * for. Org scoping lives on the grants, never here.
+ */
+export interface ExternalIdentity {
   id: string
-  org_id: string
   email: string
   full_name?: string | null
   status: "active" | "paused" | "revoked"
+  email_verified_at?: string | null
   last_login_at?: string | null
   paused_at?: string | null
   revoked_at?: string | null
@@ -864,7 +869,7 @@ export interface ExternalPortalWorkspaceItem {
   token_id: string
   href: string
   kind: ExternalPortalWorkspaceKind
-  label: string
+  /** Who the access belongs to — a company or contact name, never a portal type. */
   subtitle: string
   org_id: string
   org_name: string
@@ -878,9 +883,16 @@ export interface ExternalPortalWorkspaceItem {
   last_accessed_at?: string | null
 }
 
+export interface ExternalPortalWorkspaceOrg {
+  id: string
+  name: string
+  items: ExternalPortalWorkspaceItem[]
+}
+
 export interface ExternalPortalWorkspaceContext {
-  account: Pick<ExternalPortalAccount, "id" | "email" | "full_name" | "last_login_at">
-  org: { id: string; name: string }
+  identity: Pick<ExternalIdentity, "id" | "email" | "full_name" | "last_login_at" | "email_verified_at">
+  /** Every builder this identity holds a live grant with, never just one. */
+  orgs: ExternalPortalWorkspaceOrg[]
   items: ExternalPortalWorkspaceItem[]
 }
 

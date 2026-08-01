@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import { FileCheck2, Paperclip } from "lucide-react"
 import { toast } from "sonner"
 
@@ -34,10 +35,10 @@ const decisionLabels: Record<string, string> = {
 interface ReviewerSubmittalsTabProps {
   initialQueue: ReviewerQueueEntry[]
   token: string
-  onQueueChange?: (count: number) => void
 }
 
-export function ReviewerSubmittalsTab({ initialQueue, token, onQueueChange }: ReviewerSubmittalsTabProps) {
+export function ReviewerSubmittalsTab({ initialQueue, token }: ReviewerSubmittalsTabProps) {
+  const router = useRouter()
   const [queue, setQueue] = useState<ReviewerQueueEntry[]>(initialQueue)
   const [itemsBySubmittal, setItemsBySubmittal] = useState<Record<string, SubmittalItem[]>>({})
   const [decisionByStep, setDecisionByStep] = useState<Record<string, string>>({})
@@ -77,7 +78,7 @@ export function ReviewerSubmittalsTab({ initialQueue, token, onQueueChange }: Re
         })
         const refreshed = await loadReviewerQueueAction(token)
         setQueue(refreshed)
-        onQueueChange?.(refreshed.filter((item) => !item.is_history).length)
+        router.refresh()
       } catch (error) {
         toast.error("Failed to return review", {
           description: error instanceof Error ? error.message : "Please try again.",

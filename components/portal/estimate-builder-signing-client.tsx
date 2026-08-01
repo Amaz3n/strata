@@ -160,19 +160,19 @@ export function EstimateBuilderSigningClient({
           </div>
 
           {isComplete ? (
-            <div className="flex items-start gap-2.5 border border-emerald-500/30 bg-emerald-500/5 p-3">
-              <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" />
+            <div className="flex items-start gap-2.5 border border-success/30 bg-success/5 p-3">
+              <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-success" />
               <div className="text-sm">
-                <p className="font-semibold text-emerald-700">Estimate executed</p>
+                <p className="font-semibold text-success">Estimate executed</p>
                 <p className="text-muted-foreground">Your signature has been recorded and the executed PDF was generated.</p>
               </div>
             </div>
           ) : (
             <>
-              <div className="flex items-start gap-2.5 border border-emerald-500/30 bg-emerald-500/5 p-3">
-                <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600" />
+              <div className="flex items-start gap-2.5 border border-success/30 bg-success/5 p-3">
+                <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-success" />
                 <div className="text-sm">
-                  <p className="font-semibold text-emerald-700">Client signed</p>
+                  <p className="font-semibold text-success">Client signed</p>
                   <p className="text-muted-foreground">Review the estimate, then countersign to fully execute it.</p>
                 </div>
               </div>

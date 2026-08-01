@@ -1,8 +1,74 @@
 # Plan-to-3D Gameplan — 2D Floorplans → Walkable Models
 
-**Status:** Awaiting execution. Written 2026-07-31.
+**Status:** WS-3D1 → WS-3D3 built and both migrations applied 2026-08-01, for
+BOTH postures. WS-3D4 remains gated; it still needs product design before anyone
+starts it — EXCEPT GLB export, which shipped (viewer toolbar, internal surfaces).
+
+**2026-08-01 second pass** (algo_version 2):
+
+- *Interpreter recall:* perimeter-gap bridging (`closePerimeterGaps` — add-only
+  low-confidence bridge walls, before the component filter), filled-face
+  pairing boost for poché walls, and a golden-fixture accuracy suite
+  (`tests/floorplan-golden.test.js`) enforcing the ≥85% recall / ≥90% precision
+  bar on a realistic synthetic sheet, with a loader for real hand-labeled
+  fixtures in `tests/fixtures/floorplans/*.json` (exporting a customer sheet
+  into the repo is a human decision).
+- *Vision-hybrid interpretation:* `lib/drawings/floorplan-vision.ts` (pure
+  reconciler: vision proposes in normalized image space, vectors keep
+  precision; agreement boosts confidence, novel walls land at 0.45) +
+  `lib/services/floorplan-vision-assist.ts` (tile-pyramid stitcher + call via
+  the existing drawings-vision provider). Scanned sheets with a scale set are
+  now traced vision-only, flagged in `model.warnings`.
+- *Viewer:* door leaves/jambs, window glass/frames, exterior-wall material
+  split, room-tinted floors, floor-painted labels (orbit) vs billboards
+  (walk), dollhouse cut, soft shadows, doorway-aware collision (walk through
+  doors works), double-click/tap teleport, walk-mode mini-map with teleport,
+  measure tool, GLB export.
+
+Still open, in order: roof massing + exterior elevation work (blocked on
+perimeter accuracy holding up on real plans), selections-in-model (still
+gated on `surface_kind`), splat fusion.
 **Audience:** an LLM executor. Follow directives literally; STOP means stop and ask
 the human.
+
+## What shipped, and where it deviates
+
+| Piece | Home |
+|---|---|
+| Positioned text (`text-runs.json`) | `lib/drawings/text-runs.ts` + `drawings-pipeline.ts` (`extractPageTextRuns`); `VECTOR_EXTRACT_ALGO` bumped to 4 so the backfill re-emits it for existing sheets |
+| Model shape, planar face extraction, edit reducer | `lib/drawings/floorplan-model.ts` |
+| Interpretation (walls → openings → rooms → labels) | `lib/drawings/floorplan-interpret.ts` |
+| Persistence + job + portal read | `lib/services/floorplan-models.ts`, `supabase/migrations/20260801144429_floorplan_models.sql` + `20260801183810_floorplan_models_project_anchor.sql` |
+| Review + correction UI | `components/plans/plan-3d-panel.tsx`, `components/plans/floorplan-review.tsx` |
+| Walkable viewer | `components/plans/plan-3d-viewer.tsx` + `lib/plans/floorplan-geometry.ts` |
+| Surfaces | plan workbench (production), `/projects/[id]/drawings/model` (residential + commercial), `/communities/[id]/offering` (3D button per row), `app/p/[token]/model` |
+| Tests | `pnpm test:floorplan` |
+
+Four deliberate deviations from the text above, each argued at its call site:
+
+0. **Two anchors, not one.** The gameplan is written entirely around plan
+   versions, which is right for production and impossible for residential — a
+   custom home has no plan version. `floorplan_models` therefore carries a
+   `project_id` anchor too (XOR-constrained), and the service threads a
+   `FloorplanTarget` discriminated union. Everything below the anchor — the
+   interpreter, the review UI, the geometry build, the viewer — is posture-blind
+   and shared. Production projects deliberately do NOT get a project-anchored
+   model: their drawings ARE the released plan set, so the plan-level one already
+   describes that house.
+1. **Sheet source.** Interpretation reads the sheets the drawings pipeline ALREADY
+   produced from the plan version's PDF (followed back through
+   `files.metadata.source_plan_version_id`, which `queuePlanDrawings` stamps),
+   rather than re-running split/vector under a plan-scoped path. `drawing_sets`
+   requires a `project_id`, so a plan-scoped set would have meant a schema change
+   plus a second render and tile pyramid of the same PDF. The result is still
+   stored on the PLAN VERSION, so the production leverage is unchanged; a plan
+   whose PDF has never been pipelined says so instead of silently failing.
+2. **One model row per plan version**, not `(version, algo_version)` — see the
+   migration's comment.
+3. **Normalization runs in feet**, not by re-running `collapseDashChains` /
+   `mergeCollinearChains`, whose constants are page-unit-tuned and would mean
+   different things at 96 vs 150 DPI. The dash attribution those passes produce is
+   already carried in the stored `vectors.bin` flags, so nothing is lost.
 
 ---
 

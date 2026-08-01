@@ -62,6 +62,7 @@ scoping filters layered on `org_id`; they never replace it and never isolate.
    | Service | `lib/services/change-orders.ts`, `lib/services/house-plans.ts` |
    | Server action + form | `app/(app)/projects/[id]/expenses/` |
    | Detail sheet | `components/invoices/invoice-detail-sheet.tsx` |
+   | Token portal | `app/s/[token]/` — layout gates + renders `PortalShell`, each section is a route |
    | Per-project numbering | `lib/services/project-sequence.ts` (copy the RFI impl) |
    | PDF | `lib/services/reports/pay-application.ts`, `lib/pdfs/esign.ts` |
    | Email | `lib/emails/` + `lib/services/mailer.ts` (`rfi-notification-email`) |
@@ -205,6 +206,7 @@ Then the suites your change touches:
 | Posture, terminology, land foundation | `pnpm test:land` |
 | Starts / even-flow | `pnpm test:starts` |
 | Importers / onboarding | `pnpm test:onboarding` |
+| Floorplan interpretation / 3D geometry | `pnpm test:floorplan` |
 | Schema drift | `pnpm db:schema:check` |
 
 ## Definition of done
@@ -232,6 +234,12 @@ Then the suites your change touches:
   upload, never delete old sheets.
 - **Portals** are token-based public routes: `app/p` (client/buyer), `app/s`
   (sub), `app/b` (bid), `app/proposal`, `app/i` (invoice), plus `app/d`, `app/e`,
-  `app/f`, `app/r`, `app/t`.
+  `app/f`, `app/r`, `app/t`. The workspace portals (`p`, `s`, `r`) share one
+  chrome: the route layout runs `resolvePortalGate()` (`lib/portal/gate.tsx`) for
+  the token → account → PIN sequence, then renders `PortalShell` with a nav built
+  by `buildXPortalNav()`. Every section is a real route so it can be deep-linked
+  from a notification email — never add a client-side tab switcher. Only the
+  portal **root** calls `recordPortalAccess()`; `max_access_count` limits link
+  uses, so counting on each page would let one visit burn several.
 - **Acceptance testing runs in the dedicated QA org.** There is no staging
   environment. Never run acceptance scenarios in a customer org.

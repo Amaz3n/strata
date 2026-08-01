@@ -31,16 +31,17 @@ async function getReportAvailability(): Promise<ReportScopeResolution["availabil
     return !error && (count ?? 0) > 0
   }
 
-  const [hasCommunities, hasPayApplications, hasDrawSchedules, hasPrequalifications] = await Promise.all([
+  const [hasCommunities, hasPayApplications, hasDrawSchedules, hasPrequalifications, hasArcBooks] = await Promise.all([
     exists(
       supabase.from("communities").select("id", { count: "exact", head: true }).eq("org_id", orgId).is("archived_at", null),
     ),
     exists(supabase.from("pay_applications").select("id", { count: "exact", head: true }).eq("org_id", orgId)),
     exists(supabase.from("draw_schedules").select("id", { count: "exact", head: true }).eq("org_id", orgId)),
     exists(supabase.from("prequalifications").select("id", { count: "exact", head: true }).eq("org_id", orgId)),
+    exists(supabase.from("books_settings").select("id", { count: "exact", head: true }).eq("org_id", orgId).eq("workspace_enabled", true)),
   ])
 
-  return { hasCommunities, hasPayApplications, hasDrawSchedules, hasPrequalifications }
+  return { hasCommunities, hasPayApplications, hasDrawSchedules, hasPrequalifications, hasArcBooks }
 }
 
 export async function resolveOrgReportScope(): Promise<ReportScopeResolution> {

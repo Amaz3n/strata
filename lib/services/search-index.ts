@@ -31,6 +31,7 @@ const AUDIT_ENTITY_TYPE_TO_SEARCH: Record<string, SearchEntityType> = {
   company: "company",
   invoice: "invoice",
   payment: "payment",
+  payment_run: "payment_run",
   budget: "budget",
   estimate: "estimate",
   commitment: "commitment",
@@ -135,7 +136,7 @@ function coerceRelationText(relation: unknown, fields: string[]) {
 
 function formatSubtitlePart(field: string, value: unknown): string | null {
   if (value === null || value === undefined) return null
-  if (field === "total_cents" || field === "amount_cents") {
+  if (field === "total_cents" || field === "amount_cents" || field === "total_debit_cents") {
     return `$${(Number(value) / 100).toLocaleString()}`
   }
   if (field === "size_bytes") {

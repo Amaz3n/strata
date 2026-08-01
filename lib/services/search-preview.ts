@@ -71,6 +71,7 @@ const CATEGORY_BY_TYPE: Record<SearchEntityType, PreviewCategory> = {
   bid_package: "financial",
   invoice: "financial",
   payment: "financial",
+  payment_run: "financial",
   budget: "financial",
   budget_transfer: "financial",
   estimate: "financial",

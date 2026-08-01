@@ -10,7 +10,7 @@ import { NotificationPreferences } from "@/components/settings/notification-pref
 import { ComplianceSettings } from "@/components/settings/compliance-settings"
 import { OrganizationPanel } from "@/components/settings/organization-panel"
 import { IntegrationsPanel } from "@/components/integrations/integrations-panel"
-import { Bell, Building2, CreditCard, Link2, Receipt, ShieldCheck, User as UserIcon, Users } from "@/components/icons"
+import { Bell, Building2, CreditCard, FileSpreadsheet, Link2, Receipt, ShieldCheck, User as UserIcon, Users, Wallet } from "@/components/icons"
 import { getTeamSettingsDataAction } from "@/app/(app)/settings/actions"
 import { useIsMobile } from "@/hooks/use-mobile"
 import type { StripeConnectedAccount } from "@/lib/services/stripe-connected-accounts"
@@ -20,7 +20,11 @@ import type { DivisionDTO } from "@/lib/services/divisions"
 import type { DocumentNumberingSettings } from "@/lib/document-number"
 import { ProfilePanel } from "@/components/settings/profile-panel"
 import { BillingPanel } from "@/components/settings/billing-panel"
+import { PaymentRailPanel } from "@/components/settings/payment-rail-panel"
 import { InvoicingPanel } from "@/components/settings/invoicing-panel"
+import { AccountingSettingsPanel } from "@/components/settings/accounting-settings-panel"
+import type { getBooksModuleSettings } from "@/lib/services/books/module"
+import type { PaymentRailSettings } from "@/lib/services/payment-rail-setup"
 import { cn } from "@/lib/utils"
 
 const sections = [
@@ -47,6 +51,18 @@ const sections = [
     label: "Billing",
     description: "Subscription details",
     icon: CreditCard,
+  },
+  {
+    value: "accounting",
+    label: "Accounting",
+    description: "Books and ledger strategy",
+    icon: FileSpreadsheet,
+  },
+  {
+    value: "payments",
+    label: "Vendor payments",
+    description: "ACH funding and approvals",
+    icon: Wallet,
   },
   {
     value: "notifications",
@@ -99,6 +115,10 @@ interface SettingsWindowProps {
   canManageCompliance?: boolean
   initialComplianceRequirementDefaults?: ComplianceRequirementTemplateItem[]
   complianceDocumentTypes?: ComplianceDocumentType[]
+  initialPaymentRailSettings?: PaymentRailSettings | null
+  stripePublishableKey?: string | null
+  initialBooksSettings: Awaited<ReturnType<typeof getBooksModuleSettings>>
+  canManageAccounting?: boolean
 }
 
 function getInitials(user: User | null) {
@@ -133,6 +153,10 @@ export function SettingsWindow({
   initialComplianceRequirementDefaults = [],
   complianceDocumentTypes = [],
   canManageCompliance = false,
+  initialPaymentRailSettings = null,
+  stripePublishableKey = null,
+  initialBooksSettings,
+  canManageAccounting = false,
 }: SettingsWindowProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -290,6 +314,10 @@ export function SettingsWindow({
               <BillingPanel canManageBilling={canManageBilling} />
             </TabsContent>
 
+            <TabsContent value="payments" className="m-0 mt-0 outline-none focus-visible:outline-none">
+              <PaymentRailPanel initialSettings={initialPaymentRailSettings} publishableKey={stripePublishableKey} />
+            </TabsContent>
+
             <div className="w-full">
               <TabsContent value="profile" className="m-0 mt-0 outline-none focus-visible:outline-none">
                 <ProfilePanel user={user} roleLabel={userRoleLabel} roleLoading={loadingTeam && !userRoleLabel} />
@@ -309,6 +337,10 @@ export function SettingsWindow({
 
               <TabsContent value="integrations" className="m-0 mt-0 outline-none focus-visible:outline-none">
                 <IntegrationsPanel initialStripe={initialStripeConnection} />
+              </TabsContent>
+
+              <TabsContent value="accounting" className="m-0 mt-0 outline-none focus-visible:outline-none">
+                <AccountingSettingsPanel initialSettings={initialBooksSettings} canManage={canManageAccounting} />
               </TabsContent>
 
               <TabsContent value="compliance" className="m-0 mt-0 outline-none focus-visible:outline-none">

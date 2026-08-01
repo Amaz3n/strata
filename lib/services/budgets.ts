@@ -578,6 +578,11 @@ export async function getBudgetWithActuals(projectId: string, orgId?: string) {
   return getBudgetWithActualsCached(projectId, resolvedOrgId)
 }
 
+/** Trusted worker entry point. Callers must already possess an org-scoped service context. */
+export async function getBudgetWithActualsForService(projectId: string, orgId: string) {
+  return getBudgetWithActualsInternal(createServiceSupabaseClient(), projectId, orgId)
+}
+
 export type BudgetBucketChangeOrder = {
   id: string
   title: string

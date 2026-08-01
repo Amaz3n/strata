@@ -4,6 +4,7 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { PlanLibraryClient } from "@/components/plans/plan-library-client"
 import { Skeleton } from "@/components/ui/skeleton"
 import { listDivisions } from "@/lib/services/divisions"
+import { listFloorplanModelStatuses } from "@/lib/services/floorplan-models"
 import { getPlanLadder } from "@/lib/services/house-plans"
 import { listCommunities } from "@/lib/services/communities"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
@@ -23,7 +24,18 @@ async function PlanLibraryData() {
     permissions.permissions.includes("*") ||
     permissions.permissions.includes("org.admin") ||
     permissions.permissions.includes("plan.write")
-  return <PlanLibraryClient rungs={ladder.rungs} divisions={divisions} communities={communities} canWrite={canWrite} />
+  const floorplanModels = await listFloorplanModelStatuses(
+    ladder.rungs.map((rung) => rung.released_version_id).filter((id): id is string => Boolean(id)),
+  ).catch(() => new Map())
+  return (
+    <PlanLibraryClient
+      rungs={ladder.rungs}
+      divisions={divisions}
+      communities={communities}
+      floorplanModels={floorplanModels}
+      canWrite={canWrite}
+    />
+  )
 }
 
 export default function PlansPage() {

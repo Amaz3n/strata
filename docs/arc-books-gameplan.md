@@ -1,12 +1,14 @@
 # Arc Books Gameplan — Ledger of Record → Construction-Native GL
 
-**Status:** Awaiting execution. Written 2026-07-31.
+**Status:** Implemented in code on 2026-08-01; foundation and workspace opt-in migrations applied to the linked Supabase project. CPA policy approval, sandbox validation, and staged authority-cutover gates remain required.
 **Audience:** an LLM executor. Follow directives literally; STOP means stop and ask the
 human. This is a multi-quarter arc — each phase must ship standalone value and each
 phase gate is a human decision.
 **Companions:** `docs/fintech-gameplan.md` (rails and fees — Books consumes its
 `payments`/`disbursements` data), `docs/platform-foundations-gameplan.md` WS-T2
 (temporal tables — Books' as-of queries ride it).
+
+> Implementation note (2026-08-01): B1 through the corrected B5.8 roadmap are represented in the application, services, jobs, tests, and additive migrations. Plaid is the initial bank-feed provider behind a provider-neutral boundary. Arc Books is bundled but disabled by default, and an organization admin opts in from Settings → Accounting. Disabling it preserves every Books record and never disconnects or pauses QBO or a future accounting provider. B5.8 remains optional and organization-scoped: external-authoritative and Arc-authoritative outbound-mirror modes are both permanent supported postures. The first release is accrual-only; cash-basis statements, payroll processing, tax-return preparation/filing, inventory, multi-entity consolidation, and multi-currency remain outside the support boundary. “Implemented” does not waive the human gates in this document.
 
 ---
 
@@ -17,8 +19,9 @@ approved, selection locked, draw funded, bill released, deposit taken — and ea
 carries its double-entry consequence the moment it happens. The general ledger becomes
 a **derived artifact**: a projection computed from Arc's records, always current,
 always reconciled by construction. Month-end close stops being an event. QBO shrinks
-from "the truth" to "the tax mirror," and for small builders eventually to nothing
-("Arc Books" subscription tier). The construction-specific moat: **WIP and
+from "the truth" to "the tax mirror," and for small builders eventually to nothing.
+Arc Books is part of the Arc subscription, but the workspace is explicitly opt-in.
+The construction-specific moat: **WIP and
 percentage-of-completion revenue recognition computed continuously from the schedule
 and the ledger** — the thing generic GLs are worst at and Arc is uniquely positioned
 to own, because no accounting product knows what a schedule is.
@@ -63,7 +66,8 @@ later phase ships.
   `lib/reports/definitions/financial.ts`.
 
 Doctrine: money integer cents; every query org-scoped; services own logic; migrations
-written-not-applied; no `qbo_*` columns ever again.
+are additive and released only through an explicitly authorized deployment; no `qbo_*`
+columns ever again.
 
 ---
 
@@ -236,18 +240,21 @@ non-negotiable definition of done.
 
 ---
 
-## Phase B5 — Arc Books, the product (QBO replacement for small builders)
+## Phase B5 — Arc Books, the optional product workspace (QBO replacement for small builders)
 
 ### What this is
-The subscription tier where QBO is disconnected: bank feeds, the compliance tail
-(1099s exist; sales-tax export), CPA access, and statements as the org's official
-books. Gated on B4 running silently-correct in production for a full quarter across
-multiple orgs.
+The bundled, optional workspace that can eventually let a small builder disconnect
+QBO: bank feeds, the compliance tail (1099s exist; sales-tax export), CPA access, and
+statements as the org's official books. An organization may instead remain
+external-authoritative forever. Enabling the workspace never changes ledger authority,
+and disabling it never changes external sync. Arc-authoritative organizations require
+a controlled rollback or migration and cannot simply toggle their official ledger off.
+Authority cutover remains gated on B4 running silently-correct in production for a full
+quarter across multiple orgs.
 
 ### Scope directives (design-level; each item is its own workstream when the gate opens)
-- **Bank feeds:** transaction import via an aggregation partner (Plaid-class or
-  Stripe Financial Connections, which Arc already uses for payment rails —
-  prefer it: one vendor). Matching engine: bank txn ↔ journal cash lines
+- **Bank feeds:** transaction import through Plaid behind Arc's provider-neutral
+  banking boundary. Matching engine: bank txn ↔ journal cash lines
   (disbursements, payments, card settlements from fintech WS-P3 make most
   transactions pre-matched by construction). Unmatched → a review tray. This is
   where "Operating cash (per Arc)" becomes real reconciled cash.
@@ -262,8 +269,9 @@ multiple orgs.
 - Migration UX: "Start Books on <date>" — opening balances entered once (guided from
   the QBO trial balance), history stays in QBO. Never attempt full historical
   migration.
-- STOP: pricing/packaging of the Books tier, the decision to market it, and any
-  filing integrations are human decisions.
+- Settings → Accounting owns workspace enablement, fiscal policy, external connection
+  posture, and the clear explanation of which system is authoritative. Authority
+  cutover and any filing integrations remain human-gated decisions.
 
 ---
 
@@ -275,8 +283,8 @@ multiple orgs.
 | B2 continuous reconciliation | none (parallel with B1) | trust + "close in a day" |
 | B3 continuous POC | B1/B2 helpful, not required | CFO/CPA flagship, sells alone |
 | B4 journal projection | B3 shipped; human sign-off on posting rules | statements, CPA wow |
-| B5 Arc Books tier | B4 silent-correct for a quarter; human go decision | QBO replacement revenue |
+| B5 Arc Books workspace | B4 silent-correct for a quarter; human authority decision | optional QBO independence inside Arc |
 
 Every phase: `pnpm lint && npx tsc --noEmit` clean, `pnpm test:financials` extended,
-migrations written-not-applied, entity registration checklist for every new table,
+migrations additive and explicitly released, entity registration checklist for every new table,
 empty/loading/error/dark on every surface, and no `qbo_*` columns EVER.

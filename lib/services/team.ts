@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
-import { randomBytes } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 
 import type { MemberPermissionOverride, PermissionOption, TeamMember, OrgRole, OrgRoleOption } from "@/lib/types"
 import {
@@ -96,6 +96,7 @@ export const ASSIGNABLE_ORG_ROLE_KEYS = [
   "org_admin",
   "org_office_admin",
   "org_bookkeeper",
+  "org_accountant",
   "org_project_lead",
   "org_design_studio_coordinator",
   "org_estimator",
@@ -114,6 +115,7 @@ function defaultRoleDescription(roleKey: string) {
     org_admin: "Full company access, including settings, billing, team, all projects, approvals, and financial workflows.",
     org_office_admin: "Administrative control across projects, members, and business operations.",
     org_bookkeeper: "Accounts payable/receivable. Enters bills and invoices, but cannot approve payments or release funds.",
+    org_accountant: "Reviews Arc Books, reconciliations, close, tax readiness, and controlled adjustments without operational administration.",
     org_project_lead: "Project delivery and field coordination across projects.",
     org_design_studio_coordinator: "Option catalogs, buyer selections, cutoffs, appointments, and selection change orders.",
     org_estimator: "Preconstruction: bids, proposals, and the sales pipeline. No active-job financials.",
@@ -208,12 +210,24 @@ export const TEAM_PERMISSION_OPTIONS: PermissionOption[] = [
   { key: "bill.write", label: "Create/edit bills", category: "Financials" },
   { key: "bill.approve", label: "Approve bills", category: "Financials" },
   { key: "payment.release", label: "Release payments", category: "Financials" },
+  { key: "payments.approve_run", label: "Approve electronic payment runs", category: "Financials" },
+  { key: "payments.manage_rail", label: "Manage payment rail settings", category: "Financials" },
+  { key: "payment.reconcile", label: "Reconcile electronic payments", category: "Financials" },
   { key: "payments.override_hold", label: "Override payment holds", category: "Financials" },
   { key: "draw.approve", label: "Approve draws", category: "Financials" },
   { key: "sov.write", label: "Edit schedule of values", category: "Financials" },
   { key: "payapp.write", label: "Manage pay applications", category: "Financials" },
   { key: "payroll.write", label: "Manage certified payroll", category: "Financials" },
   { key: "retainage.manage", label: "Manage retainage", category: "Financials" },
+  { key: "books.read", label: "View Arc Books and statements", category: "Arc Books" },
+  { key: "books.manage", label: "Manage Books setup and opening balances", category: "Arc Books" },
+  { key: "books.adjust", label: "Create and approve accounting adjustments", category: "Arc Books" },
+  { key: "books.reconcile", label: "Manage bank and accounting reconciliations", category: "Arc Books" },
+  { key: "books.close", label: "Review and close accounting periods", category: "Arc Books" },
+  { key: "books.reopen", label: "Reopen closed accounting periods", category: "Arc Books" },
+  { key: "books.cutover", label: "Approve ledger-authority cutover", category: "Arc Books" },
+  { key: "books.export", label: "Export books and accountant packages", category: "Arc Books" },
+  { key: "books.tax", label: "Manage tax readiness", category: "Arc Books" },
   { key: "pipeline.read", label: "View pipeline", category: "Business Ops" },
   { key: "pipeline.write", label: "Manage pipeline", category: "Business Ops" },
   { key: "directory.write", label: "Manage directory", category: "Business Ops" },
@@ -346,6 +360,14 @@ function generateInviteToken() {
   return randomBytes(32).toString("base64url")
 }
 
+/**
+ * Invite links live only in the invitation email, so the row stores a lookup
+ * hash and never the credential itself.
+ */
+function hashInviteToken(token: string) {
+  return createHash("sha256").update(token).digest("hex")
+}
+
 function getInviteLink(token: string) {
   const baseUrl = getAuthRedirectBaseUrl()
   return `${baseUrl}/auth/accept-invite?token=${token}`
@@ -418,7 +440,7 @@ export async function createOrgMemberInvite(input: {
       role_id: roleId,
       status: "invited",
       invited_by: input.actorUserId,
-      invite_token: inviteToken,
+      invite_token_hash: hashInviteToken(inviteToken),
       invite_token_expires_at: inviteTokenExpiresAt.toISOString(),
     })
     .select(
@@ -935,7 +957,7 @@ export async function inviteTeamMember({
       project_scope: parsed.projectScope,
       division_scope: parsed.divisionScope,
       invited_by: userId,
-      invite_token: inviteToken,
+      invite_token_hash: hashInviteToken(inviteToken),
       invite_token_expires_at: inviteTokenExpiresAt.toISOString(),
     })
     .select(
@@ -1283,7 +1305,7 @@ export async function resendInvite(membershipId: string, orgId?: string) {
   const { error: updateError } = await serviceClient
     .from("memberships")
     .update({
-      invite_token: inviteToken,
+      invite_token_hash: hashInviteToken(inviteToken),
       invite_token_expires_at: inviteTokenExpiresAt.toISOString(),
     })
     .eq("id", membershipId)
@@ -1383,7 +1405,7 @@ export async function getInviteDetailsByToken(token: string): Promise<{
       orgs!inner(name),
       user:app_users!memberships_user_id_fkey(email)
     `)
-    .eq("invite_token", token)
+    .eq("invite_token_hash", hashInviteToken(token))
     .eq("status", "invited")
     .maybeSingle()
 
@@ -1452,7 +1474,7 @@ export async function acceptInviteByToken(
     .from("memberships")
     .update({
       status: "active",
-      invite_token: null,
+      invite_token_hash: null,
       invite_token_expires_at: null,
     })
     .eq("id", inviteDetails.membershipId)

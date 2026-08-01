@@ -117,7 +117,10 @@ test("routing guards, settings, and CDC scheduling are provider-aware", () => {
   const fs = require("node:fs")
   const path = require("node:path")
   const target = fs.readFileSync(path.join(__dirname, "../lib/services/accounting-target.ts"), "utf8")
-  const panel = fs.readFileSync(path.join(__dirname, "../components/integrations/accounting-connections-panel.tsx"), "utf8")
+  const panel = [
+    "../components/integrations/accounting-connection-sheet.tsx",
+    "../components/integrations/accounting-routing-dialog.tsx",
+  ].map((file) => fs.readFileSync(path.join(__dirname, file), "utf8")).join("\n")
   const cdc = fs.readFileSync(path.join(__dirname, "../app/api/accounting/process-changes/route.ts"), "utf8")
 
   assert.match(target, /countSyncedTransactionsForScope/)

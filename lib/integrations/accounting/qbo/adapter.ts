@@ -2073,6 +2073,47 @@ async function requireQboClient(connectionId: string) {
   return client
 }
 
+async function pushBooksJournalToQbo(input: { orgId: string; connectionId: string; journalId: string }): Promise<PushResult> {
+  const supabase = createServiceSupabaseClient()
+  const { data: existing } = await supabase.from("accounting_sync_records").select("external_id, external_version, status").eq("org_id", input.orgId).eq("connection_id", input.connectionId).eq("entity_type", "journal_entry").eq("entity_id", input.journalId).maybeSingle()
+  if (existing?.status === "synced" && existing.external_id) return { externalId: existing.external_id, externalVersion: existing.external_version, skipped: true }
+  const { data: journal, error } = await supabase.from("journal_entries")
+    .select("id, entry_date, memo, status")
+    .eq("org_id", input.orgId)
+    .eq("id", input.journalId)
+    .eq("status", "posted")
+    .single()
+  if (error || !journal) throw new Error(`Unable to load mapped Arc journal: ${error?.message ?? "not found"}`)
+  const { data: linesData, error: linesError } = await supabase.from("journal_lines").select("line_no, debit_cents, credit_cents, description, account_id").eq("org_id", input.orgId).eq("entry_id", input.journalId).order("line_no")
+  if (linesError) throw new Error(`Unable to load Arc journal lines: ${linesError.message}`)
+  const lines = linesData ?? []
+  if (lines.length < 2) throw new Error("Journal entry has no mapped lines")
+  const accountIds = Array.from(new Set(lines.map((line) => line.account_id)))
+  const { data: mappingsData, error: mappingsError } = await supabase.from("accounting_account_mappings").select("gl_account_id, external_account_id, external_account_name").eq("org_id", input.orgId).eq("connection_id", input.connectionId).in("gl_account_id", accountIds)
+  if (mappingsError) throw new Error(`Unable to load QuickBooks account mappings: ${mappingsError.message}`)
+  const mappingByAccount = new Map((mappingsData ?? []).map((mapping) => [mapping.gl_account_id, mapping]))
+  const qboLines = lines.map((line) => {
+    const mapping = mappingByAccount.get(line.account_id)
+    if (!mapping) throw new Error(`Journal account ${line.account_id} is not mapped to QuickBooks`)
+    const debit = Number(line.debit_cents ?? 0)
+    const credit = Number(line.credit_cents ?? 0)
+    return {
+      Amount: (debit || credit) / 100,
+      Description: line.description ?? undefined,
+      DetailType: "JournalEntryLineDetail",
+      JournalEntryLineDetail: {
+        PostingType: debit > 0 ? "Debit" : "Credit",
+        AccountRef: { value: mapping.external_account_id, name: mapping.external_account_name ?? undefined },
+      },
+    }
+  })
+  const client = await requireQboClient(input.connectionId)
+  const created = await client.createJournalEntry({ TxnDate: journal.entry_date, PrivateNote: `Arc mirror · ${journal.memo}`, Line: qboLines })
+  if (!created?.Id) throw new Error("QuickBooks did not return the mirrored journal id")
+  await upsertSyncRecord({ orgId: input.orgId, connectionId: input.connectionId, entityId: input.journalId, qboId: String(created.Id), syncToken: created.SyncToken ? String(created.SyncToken) : undefined, entityType: "journal_entry" })
+  return { externalId: String(created.Id), externalVersion: created.SyncToken ? String(created.SyncToken) : null, raw: created }
+}
+
 export const qboProvider: AccountingProvider = {
   key: "qbo",
   capabilities: {
@@ -2085,7 +2126,7 @@ export const qboProvider: AccountingProvider = {
     supportsCDC: true,
     supportsWebhooks: true,
     supportsAttachments: true,
-    supportsJournalEntryPush: false,
+    supportsJournalEntryPush: true,
     supportsVendorCredits: true,
     updateConcurrency: "sync_token",
     dimensions: ["class", "customer"],
@@ -2118,6 +2159,7 @@ export const qboProvider: AccountingProvider = {
   async pushBillPayment(input) {
     return requirePushResult(await syncBillPaymentToQBO(input.paymentId, input.orgId, { connectionId: input.connectionId }))
   },
+  pushJournalEntry: pushBooksJournalToQbo,
   async listDimensionValues(input) {
     const client = await requireQboClient(input.connectionId)
     if (input.kind === "class") return (await client.listClasses()).map((item) => ({ id: item.id, name: item.name }))

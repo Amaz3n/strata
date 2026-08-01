@@ -42,6 +42,12 @@ import { unwrapAction } from "@/lib/action-result"
 
 const FLAG_PRESETS = [
   {
+    key: "fintech_ap_payments",
+    label: "Fintech AP Payments",
+    description: "Allow this organization to execute approved electronic vendor payment runs when the platform payment gate is also enabled.",
+    config: { rail: "ach", provider: "stripe" },
+  },
+  {
     key: "billing_autopilot",
     label: "Arc Autopilot",
     description: "Experimental billing analysis and review workspace.",

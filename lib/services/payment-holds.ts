@@ -3,12 +3,14 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { recordAudit } from "@/lib/services/audit"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { getCompanyComplianceStatusWithClient } from "@/lib/services/compliance-documents"
+import { getComplianceRules } from "@/lib/services/compliance"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { ensurePortalLink } from "@/lib/services/portal-links"
 import { getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
+import { listMissingSubtierWaiversForBill } from "@/lib/services/lien-waivers"
 import {
   paymentHoldOverrideSchema,
   type PaymentHoldKind,
@@ -43,6 +45,17 @@ export interface PaymentHoldEvaluation {
   releasable: boolean
   warningCount: number
   blockingCount: number
+}
+
+export interface PaymentReleaseEvidence {
+  billId: string
+  projectId: string
+  companyId: string | null
+  holdEvaluation: PaymentHoldEvaluation
+  subtierWaiversRequired: boolean
+  missingSubtierWaiverCount: number
+  complianceRequired: boolean
+  capturedAt: string
 }
 
 const DEFAULT_POLICY: Record<PaymentHoldKind, PaymentHoldLevel> = {
@@ -140,6 +153,112 @@ export async function evaluateHolds(billId: string, orgId?: string): Promise<Pay
     await enqueueOutboxJob({ orgId: resolvedOrgId, jobType: "chase_vendor_bill_waiver", payload: { bill_id: billId, project_id: bill.project_id }, dedupeByPayloadKeys: ["bill_id"] })
   }
   return evaluation
+}
+
+/**
+ * Canonical electronic/manual AP release gate. Every path that can create an
+ * outbound payment or mark a bill paid must call this function immediately
+ * before committing the payment-side mutation.
+ */
+export async function assertBillReleasable(
+  billId: string,
+  orgId?: string,
+  options: { excludePaymentRunId?: string } = {},
+): Promise<PaymentReleaseEvidence> {
+  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { data: bill, error } = await supabase
+    .from("vendor_bills")
+    .select("id,project_id,company_id,commitment_id,bill_date,due_date,metadata,lien_waiver_status")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", billId)
+    .maybeSingle()
+  if (error || !bill) throw new Error("Vendor bill not found")
+
+  const holdEvaluation = await evaluateHolds(billId, resolvedOrgId)
+  if (!holdEvaluation.releasable) {
+    const reasons = holdEvaluation.holds
+      .filter((hold) => hold.level === "block" && !hold.overridden)
+      .map((hold) => hold.message)
+    throw new Error(`Payment is on hold: ${reasons.join("; ")}`)
+  }
+
+  const companyId = await resolveBillCompany(
+    supabase,
+    resolvedOrgId,
+    bill.company_id ?? null,
+    bill.commitment_id ?? null,
+  )
+  let inFlightQuery = supabase
+    .from("payment_run_items")
+    .select("id,run_id,status")
+    .eq("org_id", resolvedOrgId)
+    .eq("bill_id", billId)
+    .in("status", ["draft", "pending_approval", "approved", "processing", "partially_paid"])
+    .limit(1)
+  if (options.excludePaymentRunId) inFlightQuery = inFlightQuery.neq("run_id", options.excludePaymentRunId)
+  const [{ data: projectControls }, rules, { data: inFlightPaymentItems, error: inFlightError }] = await Promise.all([
+    supabase
+      .from("projects")
+      .select("require_subtier_waivers")
+      .eq("org_id", resolvedOrgId)
+      .eq("id", bill.project_id)
+      .maybeSingle(),
+    getComplianceRules(resolvedOrgId).catch(() => ({
+      require_lien_waiver: false,
+      block_payment_on_missing_docs: true,
+      warn_subcontract_execution_on_missing_docs: true,
+      block_subcontract_execution_on_missing_docs: false,
+    })),
+    inFlightQuery,
+  ])
+  if (inFlightError) throw new Error(`Unable to validate in-flight bill payments: ${inFlightError.message}`)
+  if ((inFlightPaymentItems ?? []).length > 0) throw new Error("This bill already belongs to an active payment run")
+
+  let missingSubtierWaiverCount = 0
+  if (projectControls?.require_subtier_waivers) {
+    if (bill.lien_waiver_status !== "received") {
+      throw new Error("First-tier lien waiver required before payment")
+    }
+    if (!bill.commitment_id) {
+      throw new Error("A commitment is required to validate sub-tier lien waivers before payment")
+    }
+    const metadata = (bill.metadata as Record<string, unknown> | null) ?? {}
+    const periodEnd = String(metadata.billing_period_end ?? bill.due_date ?? bill.bill_date ?? "")
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(periodEnd)) {
+      throw new Error("Set the payable period end before validating sub-tier lien waivers")
+    }
+    const missing = await listMissingSubtierWaiversForBill({
+      orgId: resolvedOrgId,
+      projectId: bill.project_id,
+      commitmentId: bill.commitment_id,
+      periodEnd,
+    })
+    missingSubtierWaiverCount = missing.length
+    if (missing.length > 0) {
+      throw new Error(`Sub-tier lien waivers required before payment: ${missing.map((row) => row.claimant_company_name).join(", ")}`)
+    }
+  }
+
+  if (rules.block_payment_on_missing_docs) {
+    if (rules.require_lien_waiver && bill.lien_waiver_status !== "received") {
+      throw new Error("Lien waiver required before payment")
+    }
+    if (companyId) {
+      const compliance = await getCompanyComplianceStatusWithClient(supabase, resolvedOrgId, companyId)
+      if (!compliance.is_compliant) throw new Error("Compliance documents required before payment")
+    }
+  }
+
+  return {
+    billId,
+    projectId: bill.project_id,
+    companyId,
+    holdEvaluation,
+    subtierWaiversRequired: Boolean(projectControls?.require_subtier_waivers),
+    missingSubtierWaiverCount,
+    complianceRequired: Boolean(rules.block_payment_on_missing_docs),
+    capturedAt: new Date().toISOString(),
+  }
 }
 
 export async function overridePaymentHold(input: PaymentHoldOverrideInput, orgId?: string): Promise<PaymentHoldEvaluation> {

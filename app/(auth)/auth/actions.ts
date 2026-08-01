@@ -1,11 +1,16 @@
 "use server"
 
 import { cookies, headers } from "next/headers"
-import { randomBytes } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import { redirect } from "next/navigation"
 import { z } from "zod"
 
 import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server"
+import { enforceAuthRateLimit } from "@/lib/services/auth-rate-limit"
+import {
+  startExternalPortalSession,
+  verifyExternalIdentityPassword,
+} from "@/lib/services/external-portal-auth"
 import { sendInviteEmail, sendPasswordResetEmail } from "@/lib/services/mailer"
 
 export interface AuthState {
@@ -14,13 +19,11 @@ export interface AuthState {
   mfaRequired?: boolean
 }
 
-export type SignInAccountStatus = "password" | "setup" | "missing" | "inactive"
+export type SignInAccountStatus = "password" | "setup"
 
 export interface SignInAccountState {
   status: SignInAccountStatus
   email: string
-  orgName?: string | null
-  message?: string
 }
 
 const signInSchema = z.object({
@@ -71,7 +74,15 @@ export async function signInAction(_prevState: AuthState, formData: FormData): P
   const { error } = await supabase.auth.signInWithPassword(parsed.data)
 
   if (error) {
-    return { error: error.message }
+    // Not an org member — they may still be a sub, client or reviewer with an
+    // Arc identity. Routing happens only after a password actually verifies, so
+    // a failed attempt never reveals which kind of account (if any) exists.
+    const identity = await verifyExternalIdentityPassword(parsed.data).catch(() => null)
+    if (identity) {
+      await startExternalPortalSession(identity.id)
+      redirect("/access")
+    }
+    return { error: "Invalid email or password." }
   }
 
   const {
@@ -114,14 +125,17 @@ export async function lookupSignInAccountAction(emailInput: string): Promise<Sig
   const parsed = lookupAccountSchema.safeParse({ email: emailInput })
 
   if (!parsed.success) {
-    return {
-      status: "missing",
-      email: "",
-      message: "Enter a valid work email.",
-    }
+    return { status: "password", email: "" }
   }
 
   const email = parsed.data.email.trim().toLowerCase()
+
+  try {
+    await enforceAuthRateLimit("account_lookup", email)
+  } catch {
+    return { status: "password", email }
+  }
+
   const serviceClient = createServiceSupabaseClient()
 
   const { data: userRow, error: userError } = await serviceClient
@@ -130,72 +144,41 @@ export async function lookupSignInAccountAction(emailInput: string): Promise<Sig
     .ilike("email", email)
     .maybeSingle()
 
+  // Everything below narrows to "ask for a password" unless we can prove the
+  // caller is mid-invite. This endpoint is unauthenticated: it previously
+  // reported whether any email had an Arc account, its state, and — worst —
+  // the builder's org name, so anyone could probe a competitor's address.
   if (userError) {
     console.error("Failed to look up sign-in account", userError)
-    return {
-      status: "missing",
-      email,
-      message: "We could not check that account. Try again.",
-    }
+    return { status: "password", email }
   }
 
   if (!userRow?.id) {
-    return {
-      status: "missing",
-      email,
-      message: "No Arc account was found for that email.",
-    }
+    return { status: "password", email }
   }
 
   const { data: memberships, error: membershipError } = await serviceClient
     .from("memberships")
-    .select("status, invite_token_expires_at, org:orgs(name)")
+    .select("status, invite_token_expires_at")
     .eq("user_id", userRow.id)
     .in("status", ["active", "invited", "suspended"])
     .order("created_at", { ascending: true })
 
   if (membershipError) {
     console.error("Failed to load sign-in memberships", membershipError)
-    return {
-      status: "missing",
-      email,
-      message: "We could not check that account. Try again.",
-    }
+    return { status: "password", email }
   }
 
-  const activeMembership = memberships?.find((membership) => membership.status === "active")
-  if (activeMembership) {
-    return {
-      status: "password",
-      email,
-      orgName: resolveMembershipOrgName(activeMembership),
-    }
-  }
-
+  // "setup" is the one branch that must stay distinguishable: an invited user
+  // has no password yet, so asking for one is a dead end. It reveals only that
+  // an invitation is outstanding, and the caller already holds the invite email.
   const invitedMembership = memberships?.find((membership) => membership.status === "invited")
-  if (invitedMembership) {
-    return {
-      status: "setup",
-      email,
-      orgName: resolveMembershipOrgName(invitedMembership),
-    }
+  const hasActiveMembership = memberships?.some((membership) => membership.status === "active")
+  if (invitedMembership && !hasActiveMembership) {
+    return { status: "setup", email }
   }
 
-  const suspendedMembership = memberships?.find((membership) => membership.status === "suspended")
-  if (suspendedMembership) {
-    return {
-      status: "inactive",
-      email,
-      orgName: resolveMembershipOrgName(suspendedMembership),
-      message: "This account has been archived. Contact your organization admin to restore access.",
-    }
-  }
-
-  return {
-    status: "missing",
-    email,
-    message: "No active Arc workspace is assigned to that email.",
-  }
+  return { status: "password", email }
 }
 
 export async function sendFirstPasswordSetupAction(emailInput: string): Promise<AuthState> {
@@ -206,6 +189,15 @@ export async function sendFirstPasswordSetupAction(emailInput: string): Promise<
   }
 
   const email = parsed.data.email.trim().toLowerCase()
+
+  // Unauthenticated and it sends mail on demand, so it is an email-bombing
+  // primitive without a throttle. The neutral copy below is returned either way.
+  try {
+    await enforceAuthRateLimit("password_setup", email)
+  } catch {
+    return { message: "If setup is available for that account, we sent a secure setup link." }
+  }
+
   const serviceClient = createServiceSupabaseClient()
 
   try {
@@ -240,7 +232,7 @@ export async function sendFirstPasswordSetupAction(emailInput: string): Promise<
     const { error: updateError } = await serviceClient
       .from("memberships")
       .update({
-        invite_token: inviteToken,
+        invite_token_hash: createHash("sha256").update(inviteToken).digest("hex"),
         invite_token_expires_at: inviteTokenExpiresAt.toISOString(),
       })
       .eq("id", membership.id)
@@ -523,11 +515,6 @@ async function resolveMembershipState(supabase: Awaited<ReturnType<typeof create
     activeOrgId: null,
     hasSuspendedMembership: Boolean(suspendedMembership?.id),
   }
-}
-
-function resolveMembershipOrgName(row: { org?: unknown }) {
-  const org = Array.isArray(row.org) ? row.org[0] : row.org
-  return typeof org === "object" && org && "name" in org ? (org.name as string | null) : null
 }
 
 async function fetchOwnerRoleId(serviceClient: ReturnType<typeof createServiceSupabaseClient>) {

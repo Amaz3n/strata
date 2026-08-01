@@ -373,8 +373,8 @@ export function RfisClient({ rfis, projects, companies, contacts, initialRfiId }
               </TableHeader>
               <TableBody>
                 {filtered.map((rfi) => (
-                  <TableRow 
-                    key={rfi.id} 
+                  <TableRow
+                    key={rfi.id}
                     className="group cursor-pointer hover:bg-muted/30 h-[64px]"
                     onClick={() => handleRfiClick(rfi)}
                   >
