@@ -279,17 +279,14 @@ export class GpuDrawingViewer {
         // at the wrong scale — skip it and say so. Legacy single-image
         // pyramids are exempt (their manifest dims are only nominal).
         if (pyramid.levelCount > 1) {
-          const levelScale = pyramid.levelScale(placement.level)
-          const expectedW = placement.rect.width * levelScale
-          const expectedH = placement.rect.height * levelScale
           if (
-            Math.abs(texture.width - expectedW) > 1.5 ||
-            Math.abs(texture.height - expectedH) > 1.5
+            Math.abs(texture.width - placement.size.width) > 1 ||
+            Math.abs(texture.height - placement.size.height) > 1
           ) {
             if (!this.mismatchedTiles.has(placement.url)) {
               this.mismatchedTiles.add(placement.url)
               console.warn(
-                `[viewer] Tile geometry mismatch (stale pyramid generation?): ${placement.url} is ${texture.width}×${texture.height}, expected ${Math.round(expectedW)}×${Math.round(expectedH)}`,
+                `[viewer] Tile geometry mismatch (stale pyramid generation?): ${placement.url} is ${texture.width}×${texture.height}, expected ${placement.size.width}×${placement.size.height}`,
               )
             }
             continue

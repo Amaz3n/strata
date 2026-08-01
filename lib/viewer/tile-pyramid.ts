@@ -18,6 +18,8 @@ export interface TilePlacement {
   url: string
   /** Where this tile's bitmap lands, in image px (overlap included). */
   rect: Rect
+  /** The tile bitmap's own pixel dimensions at its own level. */
+  size: Size
 }
 
 function normalizeFormat(value?: string): string {
@@ -53,8 +55,25 @@ export class TilePyramid {
   }
 
   /** Image px per level px: 2^(level - max); the top level is 1. */
-  levelScale(level: number): number {
+  private levelScale(level: number): number {
     return 2 ** (level - (this.levelCount - 1))
+  }
+
+  /**
+   * Level px → image px, per axis. NOT `1 / levelScale(level)`: level sizes
+   * are ceil-rounded, so a coarse level's pixel grid covers slightly *more*
+   * than a clean power-of-two shrink (level 0 of a 3456×2304 sheet is a single
+   * pixel standing in for the whole image, not for 4096×4096 of it). Scaling
+   * by the power of two pushes the last row and column past the image edge,
+   * and since coarse levels are drawn underneath the target level, that
+   * overhang paints a blank band down the right and bottom of the sheet.
+   */
+  private levelToImage(level: number): { x: number; y: number } {
+    const size = this.levelSize(level)
+    return {
+      x: this.imageSize.width / size.width,
+      y: this.imageSize.height / size.height,
+    }
   }
 
   levelSize(level: number): Size {
@@ -102,31 +121,38 @@ export class TilePyramid {
       levelH - sy,
       this.tileSize + (y > 0 ? this.overlap : 0) + (y < rows - 1 ? this.overlap : 0),
     )
-    // Level px → image px.
-    const inv = 1 / this.levelScale(level)
+    const toImage = this.levelToImage(level)
     return {
       level,
       x,
       y,
       url: this.tileUrl(level, x, y),
-      rect: { x: sx * inv, y: sy * inv, width: sw * inv, height: sh * inv },
+      rect: {
+        x: sx * toImage.x,
+        y: sy * toImage.y,
+        width: sw * toImage.x,
+        height: sh * toImage.y,
+      },
+      size: { width: sw, height: sh },
     }
   }
 
   /** Tiles of a level intersecting an image-space rect, row-major. */
   tilesInRect(level: number, rect: Rect): TilePlacement[] {
-    const scale = this.levelScale(level)
+    const toImage = this.levelToImage(level)
+    const scaleX = 1 / toImage.x
+    const scaleY = 1 / toImage.y
     const cols = this.columns(level)
     const rows = this.rows(level)
-    const x0 = Math.max(0, Math.floor((rect.x * scale) / this.tileSize))
-    const y0 = Math.max(0, Math.floor((rect.y * scale) / this.tileSize))
+    const x0 = Math.max(0, Math.floor((rect.x * scaleX) / this.tileSize))
+    const y0 = Math.max(0, Math.floor((rect.y * scaleY) / this.tileSize))
     const x1 = Math.min(
       cols - 1,
-      Math.floor(((rect.x + rect.width) * scale) / this.tileSize),
+      Math.floor(((rect.x + rect.width) * scaleX) / this.tileSize),
     )
     const y1 = Math.min(
       rows - 1,
-      Math.floor(((rect.y + rect.height) * scale) / this.tileSize),
+      Math.floor(((rect.y + rect.height) * scaleY) / this.tileSize),
     )
     const placements: TilePlacement[] = []
     for (let y = y0; y <= y1; y++) {

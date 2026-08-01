@@ -1,6 +1,6 @@
 "use client"
 
-import { memo, useImperativeHandle, useLayoutEffect, useRef } from "react"
+import { memo, useImperativeHandle, useLayoutEffect, useMemo, useRef } from "react"
 import type { Ref } from "react"
 import type { ImageToScreenMatrix } from "./tiled-drawing-viewer"
 import { cn } from "@/lib/utils"
@@ -38,6 +38,14 @@ export interface SVGOverlayProps {
   onPinClick?: (pin: DrawingPin) => void
   /** Sheet calibration: measurement labels render in real units when set. */
   feetPerImagePx?: number | null
+  /**
+   * Render takeoff geometry — the markups bound to a condition. Off by
+   * default: an estimator's areas, lines, and counts are working geometry, not
+   * annotation, and outside takeoff mode nothing selects a condition, so they
+   * would draw at full opacity over a sheet everyone else reads for
+   * coordination. Only the takeoff surface passes this.
+   */
+  showTakeoff?: boolean
   /**
    * Takeoff mode. When a condition is selected, its geometry stays fully
    * opaque and everything else recedes, so an estimator can see exactly what
@@ -142,6 +150,7 @@ export function SVGOverlay({
   interactive = false,
   onPinClick,
   feetPerImagePx = null,
+  showTakeoff = false,
   selectedConditionId = null,
   highlightedMarkupIds,
   onMarkupClick,
@@ -149,6 +158,11 @@ export function SVGOverlay({
 }: SVGOverlayProps) {
   const gRef = useRef<SVGGElement>(null)
   const matrixRef = useRef<ImageToScreenMatrix | null>(null)
+
+  const visibleMarkups = useMemo(
+    () => (showTakeoff ? markups : markups.filter((m) => !m.condition_id)),
+    [markups, showTakeoff]
+  )
 
   const applyTransform = () => {
     const g = gRef.current
@@ -206,7 +220,7 @@ export function SVGOverlay({
       <g ref={gRef} style={{ visibility: "hidden" }}>
         {/* Markups */}
         {showMarkups &&
-          markups.map((m) => (
+          visibleMarkups.map((m) => (
             <MarkupShape
               key={m.id}
               markup={m}

@@ -131,6 +131,36 @@ test("interior tiles carry overlap on shared edges only", () => {
   assert.deepEqual(last.rect, { x: 1535, y: 511, width: 513, height: 513 })
 })
 
+test("every level tiles the image exactly, with no overhang past its edges", () => {
+  // 3456×2304 at 13 levels is the common sheet render. Level sizes are
+  // ceil-rounded (level 0 is 1×1), so mapping level px back to image px by
+  // 2^(max - level) used to stretch the coarse backing quads out to 4096×4096
+  // — a blank band down the right and bottom of every sheet when zoomed out.
+  const pyramid = new TilePyramid("https://cdn/x", makeManifest(3456, 2304, 13))
+  for (let level = 0; level < pyramid.levelCount; level++) {
+    const first = pyramid.placement(level, 0, 0)
+    assert.equal(first.rect.x, 0)
+    assert.equal(first.rect.y, 0)
+    const last = pyramid.placement(
+      level,
+      pyramid.columns(level) - 1,
+      pyramid.rows(level) - 1,
+    )
+    assert.equal(last.rect.x + last.rect.width, 3456, `level ${level} right edge`)
+    assert.equal(last.rect.y + last.rect.height, 2304, `level ${level} bottom edge`)
+  }
+})
+
+test("placement reports the tile bitmap's own pixel size", () => {
+  // The pipeline tiles with no overlap, so a tile is exactly its level slice.
+  const pyramid = new TilePyramid("https://cdn/x", makeManifest(3456, 2304, 13, 512, 0))
+  // Level 0 of this pyramid is a single 1×1 px tile standing in for the sheet.
+  assert.deepEqual(pyramid.placement(0, 0, 0).size, { width: 1, height: 1 })
+  // Full res: 7×5 tiles of 512, last column/row are the remainders.
+  assert.deepEqual(pyramid.placement(12, 0, 0).size, { width: 512, height: 512 })
+  assert.deepEqual(pyramid.placement(12, 6, 4).size, { width: 384, height: 256 })
+})
+
 test("legacy manifests resolve to a single full-size tile", () => {
   const pyramid = new TilePyramid("https://cdn/x", {
     Image: {
