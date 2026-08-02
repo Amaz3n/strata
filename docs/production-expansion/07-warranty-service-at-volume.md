@@ -1,5 +1,10 @@
 # Workstream 07 — Warranty & Service at Volume
 
+> **Status: SHIPPED (QA acceptance pending) — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for production
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 > **STATUS: REPOSITORY + LIVE DATABASE IMPLEMENTATION COMPLETE (2026-07-18).**
 > Manual QA and the accounting-provider limitation below remain open.
 >

@@ -1,5 +1,10 @@
 # Workstream 09 — Deferred Platform Items + Arc Production Design Constraints
 
+> **Status: SHIPPED — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for commercial
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 > This doc is mostly RECORD, not build. It exists so (a) deferred decisions are
 > explicit and don't get accidentally half-built inside other workstreams, and (b) the
 > future Production tier doesn't get designed out by accident. The only buildable

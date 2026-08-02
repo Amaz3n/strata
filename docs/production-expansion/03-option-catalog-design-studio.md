@@ -1,5 +1,10 @@
 # Workstream 03 — Option Catalog & Design Studio
 
+> **Status: SHIPPED (QA acceptance pending) — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for production
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 > **Implementation status (2026-07-18):** Repository implementation and live
 > database deployment are complete. The catalog, RBAC, and advisor-driven
 > FK-index hardening migrations are recorded in production as `20260718192207`,

@@ -1,5 +1,10 @@
 # Workstream 05 — Project Document Suite: Meeting Minutes, Transmittals, Numbering, PDF Exports
 
+> **Status: SHIPPED — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for commercial
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 > **STATUS (2026-07-10): CODE + MIGRATION COMPLETE; MANUAL QA PENDING.** Shared
 > document PDF kit and RFI/submittal/register/daily-report/punch exporters, formatted
 > numbering settings, meeting minutes with carry-forward/task/finalize/distribution,

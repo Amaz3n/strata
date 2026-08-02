@@ -2,7 +2,7 @@
 
 > **Status: harness shipped, verdict NOT signed off.**
 > Phase 6 depends on the verdict below. It is open decision #3 in
-> `docs/takeoff-gameplan.md` and belongs to the human, not to an agent.
+> `docs/archive/takeoff-gameplan.md` and belongs to the human, not to an agent.
 
 ## 1. The question
 

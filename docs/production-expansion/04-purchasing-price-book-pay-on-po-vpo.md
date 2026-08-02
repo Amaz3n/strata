@@ -1,5 +1,10 @@
 # Workstream 04 — Purchasing: Price Book, Auto-PO, Pay-on-PO, VPO/Variance
 
+> **Status: SHIPPED (QA acceptance pending) — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for production
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 > **STATUS: IMPLEMENTED AND DEPLOYED — MANUAL QA/ACCEPTANCE PENDING**
 >
 > Implemented and deployed 2026-07-18 across four additive feature migrations,

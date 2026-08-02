@@ -1,5 +1,10 @@
 # Workstream 02 — Plan Library, Template Bundles, and the Instantiation Engine
 
+> **Status: SHIPPED (QA acceptance pending) — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for production
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 > Prereq: `00-MASTER-production-expansion.md` (read FULLY first) + workstream 01
 > (divisions/communities/lots) shipped. Workstream 08 is independent. This doc is
 > self-contained for a fresh executor: every schema/code claim below was verified

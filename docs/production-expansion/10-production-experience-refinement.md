@@ -1,5 +1,10 @@
 # Workstream 10 — Production Experience Refinement
 
+> **Status: SHIPPED (QA acceptance pending) — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for production
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 > **Audience:** an LLM executing agent. Read `00-MASTER-production-expansion.md` FIRST —
 > its rules (posture choke points, desk/workbench doctrine, design language, scale design
 > case, leave-no-trash) bind here verbatim. This workstream is the IA/experience pass

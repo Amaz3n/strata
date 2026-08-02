@@ -1,5 +1,10 @@
 # Production Expansion — Master Gameplan
 
+> **Status: SHIPPED (QA acceptance pending) — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for production
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 > **Audience:** an LLM executing agent. Read this file FIRST, fully, before opening any
 > workstream doc. Every workstream doc in this folder assumes you have internalized the
 > rules and context here. Do not skip to the code. This suite is the successor to

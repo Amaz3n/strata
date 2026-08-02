@@ -1,6 +1,6 @@
 # WS-F5 spike — Gaussian splats from a phone walkthrough
 
-Companion to `docs/tech-frontier-gameplan.md` § WS-F5. This spike exists to answer
+Companion to `docs/plans/tech-frontier-gameplan.md` § WS-F5. This spike exists to answer
 two questions **before** any product code (tables, outbox jobs, iOS capture UX,
 viewer route) gets built:
 

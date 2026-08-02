@@ -1,5 +1,10 @@
 # Workstream 03 — Change Management Lifecycle (PCO → OCO, Cost vs Price)
 
+> **Status: SHIPPED — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for commercial
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 > **STATUS (2026-07-10): CODE COMPLETE; MIGRATION + MANUAL QA PENDING.** Lifecycle
 > dual-write, cost/price math, hard RFI/CCO links, Change Events exposure UI, budget
 > pending-change exposure, owner-data sanitization, and lifecycle-approved SOV/G702

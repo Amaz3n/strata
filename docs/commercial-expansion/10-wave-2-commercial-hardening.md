@@ -1,5 +1,10 @@
 # Wave 2 — Commercial Hardening & Field Gameplan
 
+> **Status: SHIPPED — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for commercial
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 > **Audience:** an LLM executing agent. Read `00-MASTER-commercial-expansion.md` FIRST —
 > every rule there (sections 4–7) applies here verbatim, with ONE amendment (§2 below).
 > This doc extends the commercial expansion with the gaps identified in the July 2026

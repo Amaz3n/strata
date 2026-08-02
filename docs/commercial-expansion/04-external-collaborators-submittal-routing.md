@@ -1,5 +1,10 @@
 # Workstream 04 — External Collaborator Seats + Submittal Review Routing + Ball-in-Court
 
+> **Status: SHIPPED — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for commercial
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 > **STATUS (2026-07-10): CODE COMPLETE + MIGRATIONS APPLIED; MANUAL QA PENDING.**
 > All five phases implemented (`pnpm lint` clean). All three migrations applied to
 > production 2026-07-10 via Supabase MCP and verified (schema, RLS policies,

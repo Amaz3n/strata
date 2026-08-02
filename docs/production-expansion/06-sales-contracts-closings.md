@@ -1,5 +1,10 @@
 # Workstream 06 — Sales, Purchase Agreements & Closings
 
+> **Status: SHIPPED (QA acceptance pending) — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for production
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 ## STATUS — IMPLEMENTED AND DEPLOYED; MANUAL QA PENDING
 
 Implemented 2026-07-18 across four additive migrations, the reservation/spec
