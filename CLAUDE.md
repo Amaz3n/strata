@@ -219,6 +219,24 @@ Then the suites your change touches:
 - New entity? The registration checklist above is complete.
 - You searched for and deleted anything your change obsoleted.
 
+## docs/ — what is authoritative
+
+`docs/README.md` is the map; read it before reading anything else in `docs/`.
+
+- **Reference** — the `docs/` top level and the two expansion suites. True now,
+  maintained. Safe to rely on.
+- **`docs/plans/**`** — INTENT, never truth. Nothing in there is guaranteed to
+  exist. Read it when you are about to execute that plan; **never** cite it as
+  how Arc behaves.
+- **`docs/archive/**`** — off-limits. Executed or superseded plans, kept only for
+  historical rationale. Do not read unless the human explicitly asks for history,
+  and never use one as an implementation guide.
+- **Where a doc and the code disagree, the code wins.** For schema, the live
+  Supabase MCP `list_tables` beats `docs/database-overview.md`.
+- **When a plan ships, delete it in the same change** (the "Leave no trash" rule,
+  applied to docs). Fold anything durable into a reference doc or this file
+  first; git keeps the rest.
+
 ## Deep dives (read the doc BEFORE touching the area)
 
 - **Expansion gameplans** — `docs/commercial-expansion/00-MASTER-*.md` and

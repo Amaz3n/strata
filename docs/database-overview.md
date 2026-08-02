@@ -1,8 +1,8 @@
-# Strata Database Overview
+# Arc Database Overview
 
 ## Overview
 
-Strata is a comprehensive construction management platform built on Supabase (PostgreSQL). This document provides a complete overview of the database structure, permissions, storage, and all related components.
+Arc is a comprehensive construction management platform built on Supabase (PostgreSQL). This document provides a complete overview of the database structure, permissions, storage, and all related components.
 
 **Project URL:** https://gzlfiskfkvqgpzqldnwk.supabase.co
 
@@ -430,5 +430,5 @@ RFIs     Submittals  Dailies  Photos    Closeout
 
 ---
 
-This document provides a comprehensive overview of the Strata database architecture. For specific implementation details, refer to the individual table schemas and migration files.
+This document provides a comprehensive overview of the Arc database architecture. For specific implementation details, refer to the individual table schemas and migration files.
 
