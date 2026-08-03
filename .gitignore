@@ -54,3 +54,6 @@ logs
 .DS_Store
 Thumbs.db
 .vercel
+
+# Local env backups (contain production credentials)
+.env*.bak*
