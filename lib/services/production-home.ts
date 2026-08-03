@@ -304,7 +304,7 @@ async function resolveScopedProjectIds(
   filters: { divisionId?: string; communityId?: string },
   authorizedIds: string[] | null,
 ) {
-  let query = context.supabase.from("projects").select("id").eq("org_id", context.orgId).eq("property_type", "production").eq("status", "active")
+  let query = context.supabase.from("projects").select("id").eq("org_id", context.orgId).eq("phase", "delivery").eq("property_type", "production").eq("status", "active")
   if (filters.divisionId) query = query.eq("division_id", filters.divisionId)
   if (authorizedIds) query = query.in("id", authorizedIds.length ? authorizedIds : ["00000000-0000-0000-0000-000000000000"])
   const { data } = await query.limit(500)

@@ -187,6 +187,7 @@ export interface Project {
   name: string
   address?: string
   status: ProjectStatus
+  phase: ProjectPhase
   start_date?: string
   end_date?: string
   budget?: number
@@ -219,6 +220,7 @@ export interface ProjectNavigationItem {
   org_id: string
   name: string
   status: ProjectStatus
+  phase: ProjectPhase
   property_type?: ProjectPropertyType
   module_overrides?: Record<string, boolean>
   financial_settings?: Pick<ProjectFinancialSettings, "billing_model"> | null
@@ -254,6 +256,11 @@ export interface ProjectFinancialSettings {
 }
 
 export type ProjectStatus = "planning" | "bidding" | "active" | "on_hold" | "completed" | "cancelled"
+
+// A precon-phase project is a prospect's pricing workspace: drawings, takeoff,
+// bids, and estimates attach to it, but it is invisible on every
+// project-enumerating surface until activation flips it to "delivery".
+export type ProjectPhase = "precon" | "delivery"
 export type ProjectPropertyType = "residential" | "commercial" | "production"
 export type ProjectWorkType = "new_construction" | "remodel" | "addition" | "renovation" | "repair"
 export type ProjectVendorRole = "subcontractor" | "supplier" | "consultant" | "architect" | "engineer" | "client"
@@ -842,6 +849,80 @@ export interface PortalAccessToken {
   paused_at?: string | null
   revoked_at?: string | null
   created_at: string
+}
+
+export type ProjectAccessStatus = "active" | "paused" | "revoked" | "expired"
+
+/**
+ * One person with access to one project — the unit the share sheet works in.
+ * The token is a delivery mechanism carried on this record, not a separate kind
+ * of thing, so `revoke` means "this person loses access" whichever way they got in.
+ */
+export interface ProjectAccessPerson {
+  token_id: string
+  /**
+   * Null when the stored token cannot be decrypted — the row still describes real
+   * access, but this deployment cannot rebuild the URL (usually a
+   * `PORTAL_ACCESS_SECRET` mismatch between environments). Never render a copy
+   * affordance from a null token: it produces a silently broken link.
+   */
+  token: string | null
+  portal_type: PortalType
+  reviewer_role?: ReviewerRole | null
+  name: string
+  email: string | null
+  company_name: string | null
+  /** How they get in today. Claiming an account flips this from link to account. */
+  access_mode: "account" | "link"
+  status: ProjectAccessStatus
+  identity_id: string | null
+  identity_email_verified: boolean
+  pin_required: boolean
+  require_account: boolean
+  permissions: PortalPermissions
+  last_accessed_at: string | null
+  expires_at: string | null
+  created_at: string
+}
+
+/** One project an external person can reach, inside the org-wide directory. */
+export interface OrgExternalAccessProject {
+  token_id: string
+  project_id: string
+  project_name: string
+  portal_type: PortalType
+  status: ProjectAccessStatus
+}
+
+/**
+ * One external person across the whole org. The project share sheet answers
+ * "who can reach this job"; this answers "what can this person reach", which is
+ * the question you have when someone leaves a trade partner.
+ */
+export interface OrgExternalPerson {
+  /** Identity when they have an account, else the contact, else the token. */
+  key: string
+  identity_id: string | null
+  contact_id: string | null
+  name: string
+  email: string | null
+  company_name: string | null
+  access_mode: "account" | "link"
+  projects: OrgExternalAccessProject[]
+  last_accessed_at: string | null
+}
+
+/** A vendor contact this builder already works with, offered when inviting. */
+export interface KnownExternalContact {
+  identity_id: string
+  email: string
+  full_name: string | null
+  company_name: string | null
+  /** Carried from an existing grant so inviting them reuses the same records. */
+  contact_id: string | null
+  company_id: string | null
+  portal_type: PortalType | null
+  project_names: string[]
 }
 
 /**
@@ -1565,6 +1646,24 @@ export interface RfiResponse {
   portal_token_id?: string | null
   created_via_portal?: boolean | null
   actor_ip?: string | null
+}
+
+export interface RfiAttachment {
+  file_id: string
+  file_name: string
+  mime_type?: string | null
+  size_bytes?: number | null
+}
+
+export interface RfiThreadMessage extends RfiResponse {
+  attachment: RfiAttachment | null
+}
+
+/** An RFI conversation with its files resolved, for portal readers. */
+export interface RfiThread {
+  messages: RfiThreadMessage[]
+  /** The file that rode the original question, if any. */
+  attachment: RfiAttachment | null
 }
 
 export interface SubmittalDecision {

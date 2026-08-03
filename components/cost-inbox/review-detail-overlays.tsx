@@ -236,8 +236,6 @@ export function ReviewDetailOverlays({
           qboExpenseAccounts={payablesAccounting.expenseAccounts ?? []}
           qboApAccounts={payablesAccounting.apAccounts ?? []}
           qboDefaults={payablesAccounting.defaults ?? {}}
-          complianceRules={payables.complianceRules}
-          complianceStatusByCompanyId={payables.complianceStatusByCompanyId}
           onChanged={handleChanged}
         />
       ) : null}

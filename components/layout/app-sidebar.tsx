@@ -20,10 +20,12 @@ import {
   Gavel,
   HardHat,
   Home,
+  KeyRound,
   Link2,
   Layers,
   MapPin,
   Receipt,
+  Ruler,
   Shield,
   ShieldCheck,
   SlidersHorizontal,
@@ -99,6 +101,7 @@ const settingsSections: SidebarNavSection[] = [
     items: [
       { title: "Organization", url: "/settings?tab=organization", icon: Building2 },
       { title: "Team", url: "/settings?tab=team", icon: Users },
+      { title: "External access", url: "/settings?tab=external-access", icon: KeyRound, requiredAny: ["project.manage"] },
       { title: "Divisions", url: "/settings/divisions", icon: Layers },
       { title: "Billing", url: "/settings?tab=billing", icon: CreditCard },
     ],
@@ -118,6 +121,7 @@ const settingsSections: SidebarNavSection[] = [
     label: "Operations",
     items: [
       { title: "Templates", url: "/settings/templates", icon: FileText },
+      { title: "Takeoff", url: "/settings/takeoff", icon: Ruler, requiredAny: ["takeoff.read"] },
       { title: "Warranty", url: "/settings/warranty", icon: ClipboardCheck, requiredAny: ["warranty.manage"] },
       { title: "Data imports", url: "/settings/imports", icon: FileSpreadsheet, requiredAny: ["import.manage"] },
     ],

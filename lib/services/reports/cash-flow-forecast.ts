@@ -8,7 +8,7 @@ function month(date: string | null | undefined) {
 export async function getCashFlowForecast(input: { projectId?: string; divisionId?: string; communityId?: string; orgId?: string }) {
   const context = await requireOrgContext(input.orgId)
   await requirePermission("report.read", context)
-  let projectsQuery = context.supabase.from("projects").select("id,name,start_date,end_date").eq("org_id", context.orgId).in("status", ["active","planning","on_hold"])
+  let projectsQuery = context.supabase.from("projects").select("id,name,start_date,end_date").eq("org_id", context.orgId).eq("phase", "delivery").in("status", ["active","planning","on_hold"])
   if (input.projectId) projectsQuery = projectsQuery.eq("id", input.projectId)
   if (input.divisionId) projectsQuery = projectsQuery.eq("division_id", input.divisionId)
   if (input.communityId) projectsQuery = projectsQuery.eq("community_id", input.communityId)

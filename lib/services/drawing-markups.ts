@@ -20,7 +20,7 @@ import {
   drawingPinListFiltersSchema,
 } from "@/lib/validation/drawings"
 import { requireOrgContext } from "@/lib/services/context"
-import { requirePermission } from "@/lib/services/permissions"
+import { hasPermission, requirePermission } from "@/lib/services/permissions"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { enqueueSheetsListRefresh } from "@/lib/services/drawings"
@@ -275,6 +275,10 @@ export async function getDrawingMarkup(
     throw new Error(`Failed to get drawing markup: ${error.message}`)
   }
 
+  // Privacy on the single-get path mirrors the list path: a private markup
+  // exists only for the person who drew it.
+  if (data.is_private && data.created_by !== userId) return null
+
   return mapDrawingMarkup(data)
 }
 
@@ -384,6 +388,22 @@ export async function updateDrawingMarkup(
     throw new Error("Drawing markup not found")
   }
 
+  // Ownership: only the creator edits a markup. A private markup is invisible
+  // to everyone else, so a non-creator gets the same answer as a missing row.
+  if (existing.is_private && existing.created_by !== userId) {
+    throw new Error("Drawing markup not found")
+  }
+  if (existing.created_by !== userId) {
+    // A row with no recorded creator can only be maintained by someone trusted
+    // to manage the drawing register itself.
+    const canManageOwnerless =
+      existing.created_by === null &&
+      (await hasPermission("drawing.upload", { supabase, orgId: resolvedOrgId, userId }))
+    if (!canManageOwnerless) {
+      throw new Error("Only the markup's creator can edit this markup")
+    }
+  }
+
   const updateData: Record<string, any> = {}
   if (parsed.data !== undefined) updateData.data = parsed.data
   if (parsed.label !== undefined) updateData.label = parsed.label
@@ -464,6 +484,20 @@ export async function deleteDrawingMarkup(markupId: string, orgId?: string): Pro
     throw new Error("Drawing markup not found")
   }
 
+  // A private markup can only be deleted by its creator — and stays invisible
+  // to everyone else. A shared markup can additionally be removed by someone
+  // holding drawing.upload, the register-management capability: whoever is
+  // trusted to publish the sheets can also clean up what is drawn on them.
+  if (existing.is_private && existing.created_by !== userId) {
+    throw new Error("Drawing markup not found")
+  }
+  if (existing.created_by !== userId) {
+    const canManage = await hasPermission("drawing.upload", { supabase, orgId: resolvedOrgId, userId })
+    if (!canManage) {
+      throw new Error("Only the markup's creator or a drawing manager can delete this markup")
+    }
+  }
+
   const { error } = await supabase
     .from("drawing_markups")
     .delete()
@@ -484,30 +518,6 @@ export async function deleteDrawingMarkup(markupId: string, orgId?: string): Pro
   })
 
   await enqueueSheetsListRefresh(resolvedOrgId)
-}
-
-/**
- * Bulk delete markups for a sheet
- */
-export async function deleteMarkupsForSheet(
-  sheetId: string,
-  orgId?: string
-): Promise<number> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("drawing.markup", { supabase, orgId: resolvedOrgId, userId })
-
-  const { data, error } = await supabase
-    .from("drawing_markups")
-    .delete()
-    .eq("org_id", resolvedOrgId)
-    .eq("drawing_sheet_id", sheetId)
-    .select("id")
-
-  if (error) {
-    throw new Error(`Failed to delete markups: ${error.message}`)
-  }
-
-  return data?.length ?? 0
 }
 
 // ============================================================================
@@ -594,20 +604,19 @@ export async function listDrawingPinsWithEntities(
     submittal: [],
     daily_log: [],
     observation: [],
-    issue: [],
     photo: [],
   }
 
   for (const pin of pins) {
-    pinsByType[pin.entity_type].push(pin)
+    // Rows may carry `issue`, retired because it never had an entity of its
+    // own; those skip enrichment and fall back to the pin label below.
+    pinsByType[pin.entity_type]?.push(pin)
   }
 
-  // Fetch entity titles for each type in parallel.
-  // NOTE: `observation` and `issue` are in the pin enum but have no backing
-  // tables in the schema yet; their pins fall back to the pin label.
   const entityMap = new Map<string, { title: string; status?: string }>()
 
-  const [tasks, rfis, punchItems, submittals, dailyLogs, photos] = await Promise.all([
+  const [tasks, rfis, punchItems, submittals, dailyLogs, observations, photos] =
+    await Promise.all([
     pinsByType.task.length > 0
       ? supabase
           .from("tasks")
@@ -646,6 +655,15 @@ export async function listDrawingPinsWithEntities(
           .select("id, log_date, summary")
           .eq("org_id", resolvedOrgId)
           .in("id", pinsByType.daily_log.map((p) => p.entity_id))
+          .then(({ data }) => data ?? [])
+      : Promise.resolve([]),
+    // Observations carry no title column — the description is the record.
+    pinsByType.observation.length > 0
+      ? supabase
+          .from("observations")
+          .select("id, description, status")
+          .eq("org_id", resolvedOrgId)
+          .in("id", pinsByType.observation.map((p) => p.entity_id))
           .then(({ data }) => data ?? [])
       : Promise.resolve([]),
     // Photos: title is the underlying file name (the pin's own label carries
@@ -694,6 +712,12 @@ export async function listDrawingPinsWithEntities(
   for (const log of dailyLogs) {
     entityMap.set(log.id, {
       title: log.summary || `Daily Log ${log.log_date ?? ""}`.trim(),
+    })
+  }
+  for (const observation of observations) {
+    entityMap.set(observation.id, {
+      title: observation.description,
+      status: observation.status,
     })
   }
   for (const photo of photos) {

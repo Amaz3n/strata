@@ -79,6 +79,7 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
           amount_cents: it.amount_cents,
           notes: it.notes,
           is_optional: it.is_optional,
+          option_group: it.option_group ?? null,
           badges: it.is_allowance ? ["Allowance"] : undefined,
           takeoff_condition_id: it.takeoff_condition_id ?? null,
         }
@@ -96,8 +97,17 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
     [estimate.items],
   )
   const [selectedOptionalIds, setSelectedOptionalIds] = useState<string[]>(estimate.accepted_options?.ids ?? [])
+  // Alternates in the same option group are pick-one: selecting one drops the rest.
   const toggleOptional = (id: string) =>
-    setSelectedOptionalIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+    setSelectedOptionalIds((prev) => {
+      if (prev.includes(id)) return prev.filter((x) => x !== id)
+      const group = estimate.items.find((it) => it.id === id)?.option_group ?? null
+      const siblings = group
+        ? new Set(estimate.items.filter((it) => it.option_group === group && it.id !== id).map((it) => it.id))
+        : null
+      const kept = siblings ? prev.filter((x) => !siblings.has(x)) : prev
+      return [...kept, id]
+    })
 
   const baseTotal = estimate.total_cents ?? 0
   const selectedOptionalSubtotal = selectedOptionalIds.reduce(
@@ -200,8 +210,14 @@ export function EstimatePortalClient({ token, estimate, pdfUrl, expired }: Props
           intro={estimate.intro}
           summary={estimate.summary}
           terms={estimate.terms}
+          inclusions={estimate.inclusions}
+          exclusions={estimate.exclusions}
           lines={viewLines}
           totalCents={displayTotal}
+          contingencyCents={
+            (estimate.total_cents ?? 0) - (estimate.subtotal_cents ?? 0) - (estimate.tax_cents ?? 0)
+          }
+          contingencyPercent={estimate.contingency_percent}
           accentColor={estimate.accent_color}
           fontFamily={estimate.font_family}
           pricingDisplay={estimate.pricing_display}

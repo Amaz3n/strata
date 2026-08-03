@@ -9,7 +9,8 @@ import {
   decidePaymentControlChange,
   updatePaymentRailPolicy,
 } from "@/lib/services/payment-rail-setup"
-import type { UpdatePaymentRailPolicyInput } from "@/lib/validation/fintech-payments"
+import { setPaymentRunApprovers, type PaymentRunApprover } from "@/lib/services/payment-approvers"
+import type { SetPaymentRunApproversInput, UpdatePaymentRailPolicyInput } from "@/lib/validation/fintech-payments"
 
 async function run<T>(operation: () => Promise<T>): Promise<ActionResult<T>> {
   try {
@@ -26,6 +27,10 @@ export async function updatePaymentRailPolicyAction(input: UpdatePaymentRailPoli
     await updatePaymentRailPolicy(input)
     return { saved: true }
   })
+}
+
+export async function setPaymentRunApproversAction(input: SetPaymentRunApproversInput): Promise<ActionResult<PaymentRunApprover[]>> {
+  return run(() => setPaymentRunApprovers(input))
 }
 
 export async function createOrgFundingSetupAction(): Promise<ActionResult<{ providerSetupId: string; clientSecret: string }>> {

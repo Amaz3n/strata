@@ -104,6 +104,7 @@ export function attachGestures(
   const pinchState = { distance: 0, midpoint: { x: 0, y: 0 } }
 
   const refreshPinch = () => {
+    if (pointers.size !== 2) return
     const [a, b] = [...pointers.values()]
     pinchState.distance = Math.hypot(b.x - a.x, b.y - a.y)
     pinchState.midpoint = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
@@ -162,7 +163,18 @@ export function attachGestures(
   const onPointerEnd = (event: PointerEvent) => {
     const wasTracked = pointers.delete(event.pointerId)
     if (!wasTracked) return
-    if (pointers.size === 1) refreshPinch()
+    if (pointers.size === 2) refreshPinch()
+    if (pointers.size === 1) {
+      // 2 → 1: the pinch is over. Reset it and re-seed single-pointer state
+      // from the surviving finger so it pans on cleanly — no coordinate jump
+      // (its tracked position is already current) and no phantom flick from
+      // stale velocity when it lifts.
+      pinchState.distance = 0
+      const [survivor] = pointers.values()
+      pressStart = { x: survivor.x, y: survivor.y, time: performance.now() }
+      lastVelocity = { x: 0, y: 0 }
+      lastMoveTime = performance.now()
+    }
     if (pointers.size > 0) return
 
     const press = pressStart

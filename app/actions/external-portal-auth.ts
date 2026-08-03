@@ -2,17 +2,15 @@
 
 import {
   authenticateExternalPortalAccountWithToken,
-  signInExternalPortalAccount,
   signOutExternalPortalAccount,
 } from "@/lib/services/external-portal-auth"
-import { authenticateExternalPortalAccountSchema, signInExternalPortalAccountSchema } from "@/lib/validation/external-portal-auth"
+import { authenticateExternalPortalAccountSchema } from "@/lib/validation/external-portal-auth"
 
 export async function authenticateExternalPortalAccountAction(input: unknown) {
   const parsed = authenticateExternalPortalAccountSchema.parse(input)
   await authenticateExternalPortalAccountWithToken({
     token: parsed.token,
     tokenType: parsed.token_type,
-    mode: parsed.mode,
     email: parsed.email,
     fullName: parsed.full_name,
     password: parsed.password,
@@ -22,11 +20,5 @@ export async function authenticateExternalPortalAccountAction(input: unknown) {
 
 export async function signOutExternalPortalAccountAction() {
   await signOutExternalPortalAccount()
-  return { success: true }
-}
-
-export async function signInExternalPortalAccountAction(input: unknown) {
-  const parsed = signInExternalPortalAccountSchema.parse(input)
-  await signInExternalPortalAccount(parsed)
   return { success: true }
 }

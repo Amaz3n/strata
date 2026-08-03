@@ -16,7 +16,7 @@ function toCsv(headers: string[], rows: unknown[][]) {
 
 async function projectIdsForScope(supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"], orgId: string, mapId?: string | null) {
   if (!mapId) {
-    const { data } = await supabase.from("projects").select("id").eq("org_id", orgId)
+    const { data } = await supabase.from("projects").select("id").eq("org_id", orgId).eq("phase", "delivery")
     return (data ?? []).map((row) => row.id)
   }
   const { data: map, error } = await supabase.from("accounting_entity_map").select("project_id,community_id,division_id").eq("org_id", orgId).eq("id", mapId).maybeSingle()
@@ -26,7 +26,7 @@ async function projectIdsForScope(supabase: Awaited<ReturnType<typeof requireOrg
     const { data } = await supabase.from("lots").select("project_id").eq("org_id", orgId).eq("community_id", map.community_id).not("project_id", "is", null)
     return (data ?? []).map((row) => row.project_id).filter((id): id is string => Boolean(id))
   }
-  let query = supabase.from("projects").select("id").eq("org_id", orgId)
+  let query = supabase.from("projects").select("id").eq("org_id", orgId).eq("phase", "delivery")
   if (map.division_id) query = query.eq("division_id", map.division_id)
   const { data } = await query
   return (data ?? []).map((row) => row.id)

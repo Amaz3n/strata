@@ -4,9 +4,10 @@ import { PortalAccountGate } from "@/components/portal/account/portal-account-ga
 import { PortalPinGate } from "@/components/portal/portal-pin-gate"
 import { isPortalPinVerified, validatePortalToken } from "@/lib/services/portal-access"
 import {
+  ensureExternalPortalAccessForToken,
   getExternalPortalGateContext,
   getExternalPortalWorkspaceContext,
-  hasExternalPortalGrantForToken,
+  isExternalAccessClaimed,
 } from "@/lib/services/external-portal-auth"
 import type {
   ExternalPortalWorkspaceContext,
@@ -56,15 +57,27 @@ export async function resolvePortalGate({
     return { status: "wrong-portal", access }
   }
 
-  const workspace = await getExternalPortalWorkspaceContext({ orgId: access.org_id })
+  // Once someone has an Arc account, the link stops being a credential and
+  // becomes a pointer to a sign-in. `require_account` remains the builder's
+  // independent override for people who have not claimed one.
+  const [workspace, claimed] = await Promise.all([
+    getExternalPortalWorkspaceContext({ orgId: access.org_id }),
+    access.require_account
+      ? Promise.resolve(true)
+      : isExternalAccessClaimed({ token, tokenType: "portal" }),
+  ])
 
-  if (access.require_account) {
-    const hasAccountAccess = await hasExternalPortalGrantForToken({
+  let identityVerified = false
+
+  if (access.require_account || claimed) {
+    identityVerified = await ensureExternalPortalAccessForToken({
       orgId: access.org_id,
       tokenId: access.id,
       tokenType: "portal",
+      token,
     })
-    if (!hasAccountAccess) {
+
+    if (!identityVerified) {
       const context = await getExternalPortalGateContext({ token, tokenType: "portal" })
       return {
         status: "blocked",
@@ -77,13 +90,16 @@ export async function resolvePortalGate({
             initialEmail={context?.expectedEmail ?? ""}
             suggestedFullName={context?.suggestedFullName ?? ""}
             emailLocked={context?.emailLocked}
+            hasExistingAccount={claimed}
           />
         ),
       }
     }
   }
 
-  if (access.pin_required && !(await isPortalPinVerified(token))) {
+  // A verified identity is strictly stronger proof than a shared PIN, so the PIN
+  // only guards the link-only path. Asking for both was friction, not security.
+  if (!identityVerified && access.pin_required && !(await isPortalPinVerified(token))) {
     const context = await getExternalPortalGateContext({ token, tokenType: "portal" })
     return {
       status: "blocked",

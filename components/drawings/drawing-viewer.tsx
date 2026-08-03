@@ -51,6 +51,11 @@ import {
   Calculator,
   Check,
   Loader2,
+  Minus,
+  Sparkles,
+  AlertTriangle,
+  Search,
+  Link2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -62,8 +67,10 @@ import {
 } from "@/components/ui/dialog"
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
@@ -111,6 +118,8 @@ import {
   setSheetVersionCalibrationAction,
   createPhotoFromDrawingAction,
   getPhotoForPinAction,
+  reportBrokenSheetTilesAction,
+  getSheetCalloutLinksAction,
 } from "@/app/(app)/drawings/actions"
 import { uploadDocumentFileDirect } from "@/lib/services/files-client"
 import { useDrawingKeyboardShortcuts } from "./use-drawing-keyboard-shortcuts"
@@ -124,14 +133,26 @@ import type { GpuDrawingViewer } from "@/lib/viewer"
 import { SVGOverlay, type SVGOverlayHandle } from "./viewer/svg-overlay"
 import { useMeasureTools, type MeasureToolType, type NormPoint } from "./viewer/use-measure-tools"
 import { useSheetVectors } from "./viewer/use-sheet-vectors"
+import { useSheetTextRuns } from "./viewer/use-sheet-text-runs"
+import { SheetTextSearch } from "./viewer/sheet-text-search"
+import type { TextRunMatch } from "@/lib/drawings/text-runs"
+import {
+  detectLocalScaleDisagreement,
+  extractDimensionTokens,
+} from "@/lib/drawings/scale"
 import {
   snapPoint,
   type VectorIndex,
 } from "@/lib/drawings/vector-snap"
+import { findSymbolMatches } from "@/lib/drawings/symbol-match"
+import { ASSIST_MAX_SYMBOL_MATCHES } from "@/lib/validation/takeoff"
 import { TakeoffPanel } from "./takeoff-panel"
 import {
+  acceptSymbolMatchesAction,
   assignMarkupsToConditionAction,
+  findSymbolMatchesByVisionAction,
   getConditionRollupAction,
+  symbolVisionAvailableAction,
 } from "@/app/(app)/drawings/takeoff-actions"
 import type { TakeoffCondition } from "@/lib/services/takeoff"
 import type { ConditionRollup } from "@/lib/services/takeoff"
@@ -195,6 +216,132 @@ const MARKUP_TOOLS: Array<{
 // Takeoff measuring tools. Kept apart from MARKUP_TOOLS because they behave
 // differently (multi-click, commit-on-finish, priced) and appear only in
 // takeoff mode.
+/** Click this close (rendered-image px) to a proposed point and you mean it. */
+const PROPOSAL_HIT_RADIUS_PX = 14
+
+/**
+ * The count-by-example review band.
+ *
+ * It says three things and nothing else: how many were found, that they are a
+ * proposal, and how to fix it. The number is deliberately not called a count
+ * until someone has accepted it — an unaccepted proposal is evidence, not a
+ * quantity.
+ */
+function SymbolCountBar({
+  proposal,
+  conditionName,
+  visionAvailable,
+  onAccept,
+  onDismiss,
+}: {
+  proposal: SymbolProposalState | null
+  conditionName: string | null
+  visionAvailable: boolean
+  onAccept: () => void
+  onDismiss: () => void
+}) {
+  const shell =
+    "flex items-center gap-3 rounded-xl border bg-background/95 px-3 py-2 shadow-lg backdrop-blur-md"
+
+  if (!proposal) {
+    return (
+      <div className={shell}>
+        <Sparkles className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="text-xs">
+          Click one of them on the sheet — Arc finds the rest.
+        </span>
+        <Button size="sm" variant="ghost" className="h-7" onClick={onDismiss}>
+          Cancel
+        </Button>
+      </div>
+    )
+  }
+
+  if (proposal.status === "matching") {
+    return (
+      <div className={shell}>
+        <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+        <span className="text-xs">
+          {proposal.source === "vision"
+            ? "No linework to match here — looking at the sheet…"
+            : "Matching that symbol across the sheet…"}
+        </span>
+      </div>
+    )
+  }
+
+  if (proposal.status === "empty") {
+    return (
+      <div className={shell}>
+        <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
+        <div className="text-xs">
+          <div>Nothing else on this sheet matches that.</div>
+          <div className="text-muted-foreground">
+            {visionAvailable
+              ? "Try clicking the symbol itself rather than its leader or tag."
+              : "This sheet has no usable linework — count these by hand."}
+          </div>
+        </div>
+        <Button size="sm" variant="ghost" className="h-7" onClick={onDismiss}>
+          Close
+        </Button>
+      </div>
+    )
+  }
+
+  return (
+    <div className={shell}>
+      <span className="text-sm font-semibold tabular-nums">{proposal.points.length}</span>
+      <div className="text-xs">
+        <div>
+          found{conditionName ? ` for ${conditionName}` : ""}
+          {proposal.source === "vision" && (
+            <span className="text-muted-foreground"> · read from the image</span>
+          )}
+        </div>
+        <div className="text-muted-foreground">
+          Click a dot to drop it, anywhere else to add one
+          {proposal.truncated && " · more than the search will return"}
+        </div>
+      </div>
+      <Button
+        size="sm"
+        className="h-7"
+        disabled={proposal.status === "saving" || proposal.points.length === 0}
+        onClick={onAccept}
+      >
+        {proposal.status === "saving" && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
+        Accept
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-7"
+        disabled={proposal.status === "saving"}
+        onClick={onDismiss}
+      >
+        Discard
+      </Button>
+    </div>
+  )
+}
+
+/**
+ * A count-by-example proposal, mid-review.
+ *
+ * `points` always includes the exemplar the user clicked — it is one of the
+ * things being counted, and leaving it out is an off-by-one in a number that
+ * ends up on an estimate.
+ */
+interface SymbolProposalState {
+  status: "matching" | "ready" | "empty" | "saving"
+  points: NormPoint[]
+  /** Which path produced it, so the review bar can say so plainly. */
+  source: "geometry" | "vision"
+  /** The search hit its ceiling; the count is a floor, not a total. */
+  truncated: boolean
+}
+
 const MEASURE_TOOLS: Array<{
   type: MeasureToolType
   icon: React.ElementType
@@ -429,6 +576,16 @@ export function DrawingViewer({
   const [takeoffRefreshToken, setTakeoffRefreshToken] = useState(0)
   const [initialRollup, setInitialRollup] = useState<Promise<ConditionRollup[]> | null>(null)
   const selectedConditionId = selectedCondition?.id ?? null
+  /**
+   * The next area subtracts instead of adding — a window out of a drywall wall,
+   * a stairwell out of a slab. A mode rather than a separate tool, because the
+   * gesture is identical and an estimator deducting six windows should not have
+   * to switch tools six times.
+   */
+  const [deductMode, setDeductMode] = useState(false)
+  /** Armed for count-by-example: the next click picks the symbol to look for. */
+  const [countingByExample, setCountingByExample] = useState(false)
+  const [symbolProposal, setSymbolProposal] = useState<SymbolProposalState | null>(null)
 
   // Refs
   const containerRef = useRef<HTMLDivElement>(null)
@@ -528,9 +685,34 @@ export function DrawingViewer({
   const takeoffAvailable = !!(takeoffPlanVersionId || takeoffProjectId) && !readOnly
   const feetPerImagePx = calibration?.feet_per_image_px ?? null
   // Measurements persist the moment a shape is finished — the panel's rollup
+  /**
+   * Quick measure: a ruler available to anyone who can read the sheet.
+   * Results live only in this session — clearing them or leaving the sheet
+   * throws them away, which is exactly what a spot-check wants.
+   */
+  const [quickMeasureMode, setQuickMeasureMode] = useState(false)
+  const [quickMeasurements, setQuickMeasurements] = useState<
+    Array<{ type: MeasureToolType; points: Array<[number, number]> }>
+  >([])
+
   // has to be live, so there is no "draft then save" batch here.
   const commitMeasurement = useCallback(
-    async (payload: { type: MeasureToolType; points: Array<[number, number]> }) => {
+    async (payload: {
+      type: MeasureToolType
+      points: Array<[number, number]>
+      deduction: boolean
+    }) => {
+      // Quick measure is a ruler, not a takeoff: nothing is persisted, nothing
+      // rolls up, and it needs no condition. A super checking a clearance
+      // should not have to enter estimating mode to do it.
+      if (quickMeasureMode) {
+        setQuickMeasurements((prev) => [
+          ...prev,
+          { type: payload.type, points: payload.points },
+        ])
+        return
+      }
+
       const save = onSaveMeasurement ?? onSaveMarkup
       if (!save) throw new Error("Measurements cannot be saved here")
       await save({
@@ -541,6 +723,10 @@ export function DrawingViewer({
           points: payload.points,
           color: selectedCondition?.color ?? MARKUP_COLORS[4],
           strokeWidth: 2,
+          // Only set when true: the flag is what makes the server store a
+          // negative quantity, and an explicit `false` on every ordinary area
+          // would put a meaningless key on every markup in the database.
+          ...(payload.deduction ? { style: { deduction: true } } : {}),
         },
         is_private: false,
         share_with_clients: false,
@@ -548,8 +734,10 @@ export function DrawingViewer({
         condition_id: selectedConditionId,
       })
       setTakeoffRefreshToken((token) => token + 1)
+      checkLocalScaleRef.current(payload.points)
     },
     [
+      quickMeasureMode,
       onSaveMeasurement,
       onSaveMarkup,
       sheet.id,
@@ -558,6 +746,187 @@ export function DrawingViewer({
       selectedConditionId,
     ],
   )
+
+  // -------------------------------------------------------------------------
+  // Local scale check — the multi-scale sheet
+  // -------------------------------------------------------------------------
+
+  /**
+   * A sheet is calibrated once, but a real sheet is not drawn at one scale: a
+   * 1/4" floor plan shares the page with 1/2" wall sections and 3" details.
+   * Measure inside a detail and the answer is wrong by a factor of two to
+   * twelve, it looks entirely plausible, and the first time anyone finds out is
+   * when the material arrives.
+   *
+   * So after each measurement, the dimensions PRINTED inside the region it
+   * covers get a vote. Advisory only, and one-directional — it never re-scales
+   * anything, it just refuses to let the disagreement stay invisible.
+   */
+  const [localScaleWarning, setLocalScaleWarning] = useState<string | null>(null)
+  // Find-in-sheet. Opening it is the other reason to want the sheet's text, so
+  // it joins takeoff's local-scale check in arming the loader.
+  const [textSearchOpen, setTextSearchOpen] = useState(false)
+  const [textMatches, setTextMatches] = useState<TextRunMatch[]>([])
+  const [activeTextMatchIndex, setActiveTextMatchIndex] = useState(0)
+
+  const sheetTextRuns = useSheetTextRuns({
+    tileBaseUrl,
+    active: textSearchOpen || (takeoffMode && !!feetPerImagePx),
+  })
+  const textRunsRef = useRef(sheetTextRuns.runs)
+  textRunsRef.current = sheetTextRuns.runs
+
+  const handleTextMatchesChange = useCallback(
+    (matches: TextRunMatch[], index: number) => {
+      setTextMatches(matches)
+      setActiveTextMatchIndex(index)
+    },
+    [],
+  )
+
+  const handleRevealTextMatch = useCallback(
+    (rect: { x: number; y: number; w: number; h: number }) => {
+      if (!gpuViewer || !tiledImageSize) return
+      gpuViewer.revealImageRect(
+        {
+          x: rect.x * tiledImageSize.width,
+          y: rect.y * tiledImageSize.height,
+          width: rect.w * tiledImageSize.width,
+          height: rect.h * tiledImageSize.height,
+        },
+        // Legible-text zoom: a hit found while zoomed way out is useless.
+        { minScale: 1 },
+      )
+    },
+    [gpuViewer, tiledImageSize],
+  )
+
+  /**
+   * Callout hyperlinks. Off by default and loaded on demand: a plan sheet can
+   * carry dozens, and drawn always they would compete with the drawing.
+   */
+  const [calloutLinksOn, setCalloutLinksOn] = useState(false)
+  const [calloutLinks, setCalloutLinks] = useState<
+    Array<{
+      x: number
+      y: number
+      w: number
+      h: number
+      targetSheetId: string
+      targetSheetNumber: string
+    }>
+  >([])
+
+  useEffect(() => {
+    if (!calloutLinksOn) return
+    let cancelled = false
+    getSheetCalloutLinksAction(sheet.id)
+      .then((result) => {
+        if (cancelled) return
+        if (result.success) setCalloutLinks(result.data)
+        else {
+          setCalloutLinks([])
+          toast.error(result.error)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setCalloutLinks([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [calloutLinksOn, sheet.id])
+
+  const handleCalloutLinkClick = useCallback(
+    (targetSheetId: string) => {
+      const target = sheets.find((candidate) => candidate.id === targetSheetId)
+      if (!target) {
+        toast.error("That sheet is not in this set")
+        return
+      }
+      onNavigateSheet?.(target)
+    },
+    [sheets, onNavigateSheet],
+  )
+
+  const closeTextSearch = useCallback(() => {
+    setTextSearchOpen(false)
+    setTextMatches([])
+    setActiveTextMatchIndex(0)
+  }, [])
+
+  // Cmd/Ctrl-F inside the viewer means find-in-sheet, not find-in-page.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault()
+        setTextSearchOpen(true)
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [])
+
+  // A different sheet has different text; stale hits would point nowhere.
+  useEffect(() => {
+    setTextMatches([])
+    setActiveTextMatchIndex(0)
+  }, [tileBaseUrl])
+
+  const checkLocalScale = useCallback(
+    (points: Array<[number, number]>) => {
+      const runs = textRunsRef.current
+      if (runs.length === 0 || !feetPerImagePx || points.length < 2) return
+
+      const xs = points.map(([x]) => x)
+      const ys = points.map(([, y]) => y)
+      const region = {
+        x0: Math.min(...xs),
+        y0: Math.min(...ys),
+        x1: Math.max(...xs),
+        y1: Math.max(...ys),
+      }
+
+      // Dimension strings and their positions, in the same normalized space the
+      // markup points use — so "feet per unit" here is feet per normalized unit.
+      const tokens = runs.flatMap((run) =>
+        extractDimensionTokens(run.text, {
+          x0: run.x,
+          y0: run.y,
+          x1: run.x + run.w,
+          y1: run.y + run.h,
+        }),
+      )
+
+      const size = rasterImageSizeRef.current
+      if (!size) return
+      const disagreement = detectLocalScaleDisagreement({
+        tokens,
+        region,
+        // The sheet's scale expressed per normalized unit along x, which is the
+        // axis `extractDimensionTokens` spreads a chain across.
+        sheetFeetPerUnit: feetPerImagePx * size.width,
+      })
+      if (!disagreement) return
+
+      const factor = disagreement.ratio
+      setLocalScaleWarning(
+        `The dimensions printed here read about ${factor.toFixed(1)}× the sheet's scale — ` +
+          `this looks like a detail drawn at its own scale. Check this measurement before pricing it.`,
+      )
+    },
+    [feetPerImagePx],
+  )
+
+  // Held in a ref because `commitMeasurement` is memoised on the save handlers
+  // and must not churn every time the text runs finish loading.
+  const checkLocalScaleRef = useRef(checkLocalScale)
+  checkLocalScaleRef.current = checkLocalScale
+
+  // A warning is about one measurement; changing sheets retires it.
+  useEffect(() => {
+    setLocalScaleWarning(null)
+  }, [sheet.id])
 
   // -------------------------------------------------------------------------
   // Vector snapping (extracted PDF linework, when the sheet has any)
@@ -596,18 +965,18 @@ export function DrawingViewer({
   const measureTools = useMeasureTools({
     imageSize: rasterImageSize,
     feetPerImagePx,
+    deduction: deductMode,
     onCommit: commitMeasurement,
     snap: snapMeasurePoint,
   })
 
-  // Vectors load lazily, only once a measuring tool is armed; a sheet without
-  // vectors.bin resolves to "unavailable" and everything behaves as before.
+  // Vectors load lazily, once a measuring tool is armed or the user asks to
+  // count by example; a sheet without vectors.bin resolves to "unavailable" and
+  // everything behaves as before.
   const sheetVectors = useSheetVectors({
     tileBaseUrl,
     imageSize: rasterImageSize,
-    active:
-      takeoffMode &&
-      !!measureTools.activeTool,
+    active: takeoffMode && (!!measureTools.activeTool || countingByExample),
   })
   vectorIndexRef.current = sheetVectors.index
 
@@ -624,6 +993,196 @@ export function DrawingViewer({
   // the listener effect below from re-subscribing on every rubber-band frame.
   const measureToolsRef = useRef(measureTools)
   measureToolsRef.current = measureTools
+
+  // -------------------------------------------------------------------------
+  // Count by example
+  // -------------------------------------------------------------------------
+
+  /** Whether the vision fallback is configured, asked once when takeoff opens. */
+  const [symbolVisionReady, setSymbolVisionReady] = useState(false)
+  useEffect(() => {
+    if (!takeoffMode) return
+    let cancelled = false
+    symbolVisionAvailableAction()
+      .then((available) => {
+        if (!cancelled) setSymbolVisionReady(available)
+      })
+      .catch(() => {
+        if (!cancelled) setSymbolVisionReady(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [takeoffMode])
+
+  /**
+   * Click one outlet, get the rest.
+   *
+   * The match runs HERE, in the browser, against the same vectors the snapping
+   * already downloaded — so it costs no round trip and no tokens, and it comes
+   * back before the user has let go of the mouse. The vision fallback only runs
+   * when the sheet's linework cannot support a match, which on the sheets the
+   * vector spike sampled was none of them.
+   *
+   * Nothing is saved. The matches become an ordinary count draft that the
+   * estimator trims, adds to, and then accepts — the proposal is a suggestion
+   * until a person says otherwise.
+   */
+  const runSymbolMatch = useCallback(
+    async (click: NormPoint) => {
+      const size = rasterImageSizeRef.current
+      if (!size) return
+      setSymbolProposal({ status: "matching", points: [], source: "geometry", truncated: false })
+
+      const segments = sheetVectors.segments
+      const geometric = segments
+        ? findSymbolMatches(segments, size, click, {
+            maxMatches: ASSIST_MAX_SYMBOL_MATCHES,
+            region: null,
+          })
+        : null
+
+      if (geometric && geometric.matches.length > 0) {
+        // The matcher already includes the clicked symbol's own placement, and
+        // at a better point than the raw click. Adding it back would count it
+        // twice — an off-by-one straight into an estimate.
+        const points = geometric.matches.map((match) => match.point)
+        setSymbolProposal({
+          status: "ready",
+          points,
+          source: "geometry",
+          truncated: geometric.truncated,
+        })
+        measureToolsRef.current.setDraftPoints("count", points)
+        return
+      }
+
+      // No usable linework here. Say so before spending a model call, and only
+      // offer the fallback when one is actually configured.
+      if (!symbolVisionReady) {
+        setSymbolProposal({
+          status: "empty",
+          points: [],
+          source: "geometry",
+          truncated: false,
+        })
+        return
+      }
+
+      setSymbolProposal({ status: "matching", points: [], source: "vision", truncated: false })
+      try {
+        const proposal = unwrapAction(
+          await findSymbolMatchesByVisionAction({
+            sheet_version_id: calibration?.sheet_version_id as string,
+            drawing_sheet_id: sheet.id,
+            x: click.x,
+            y: click.y,
+          }),
+        )
+        if (!proposal || proposal.points.length === 0) {
+          setSymbolProposal({ status: "empty", points: [], source: "vision", truncated: false })
+          return
+        }
+        // Unlike the geometric path, the vision prompt asks for every OTHER
+        // occurrence — a model told to include the example tends to return it
+        // twice — so the click is added back here.
+        const points = [click, ...proposal.points.map(([x, y]) => ({ x, y }))]
+        setSymbolProposal({
+          status: "ready",
+          points,
+          source: "vision",
+          truncated: proposal.truncated,
+        })
+        measureToolsRef.current.setDraftPoints("count", points)
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Could not search this sheet")
+        setSymbolProposal(null)
+      }
+    },
+    [sheetVectors.segments, symbolVisionReady, calibration?.sheet_version_id, sheet.id],
+  )
+
+  /**
+   * While reviewing, a click near a proposed point removes it and a click
+   * anywhere else adds one. That is the whole editing model: the false
+   * positives you can see are the ones you delete, and the misses you spot are
+   * the ones you click.
+   */
+  const editProposal = useCallback((click: NormPoint) => {
+    const size = rasterImageSizeRef.current
+    setSymbolProposal((prev) => {
+      if (!prev || prev.status !== "ready") return prev
+      let nearestIndex = -1
+      let nearestDistance = Number.POSITIVE_INFINITY
+      if (size) {
+        prev.points.forEach((point, index) => {
+          const dx = (point.x - click.x) * size.width
+          const dy = (point.y - click.y) * size.height
+          const distance = Math.hypot(dx, dy)
+          if (distance < nearestDistance) {
+            nearestDistance = distance
+            nearestIndex = index
+          }
+        })
+      }
+      const points =
+        nearestIndex >= 0 && nearestDistance <= PROPOSAL_HIT_RADIUS_PX
+          ? prev.points.filter((_, index) => index !== nearestIndex)
+          : [...prev.points, click]
+      measureToolsRef.current.setDraftPoints("count", points)
+      return { ...prev, points }
+    })
+  }, [])
+
+  const acceptProposal = useCallback(async () => {
+    const proposal = symbolProposal
+    if (!proposal || proposal.points.length === 0) return
+    const versionId = calibration?.sheet_version_id
+    if (!versionId) {
+      toast.error("This sheet version can't take a count yet")
+      return
+    }
+    setSymbolProposal({ ...proposal, status: "saving" })
+    try {
+      const result = unwrapAction(
+        await acceptSymbolMatchesAction({
+          drawing_sheet_id: sheet.id,
+          sheet_version_id: versionId,
+          condition_id: selectedConditionId,
+          points: proposal.points.map((point) => [point.x, point.y] as [number, number]),
+        }),
+      )
+      toast.success(
+        selectedCondition
+          ? `Counted ${result.quantity} into ${selectedCondition.name}`
+          : `Counted ${result.quantity} — assign it to a condition to price it`,
+      )
+      measureToolsRef.current.setDraftPoints("count", [])
+      setSymbolProposal(null)
+      setCountingByExample(false)
+      setTakeoffRefreshToken((token) => token + 1)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to save the count")
+      setSymbolProposal({ ...proposal, status: "ready" })
+    }
+  }, [symbolProposal, calibration?.sheet_version_id, sheet.id, selectedConditionId, selectedCondition])
+
+  const dismissProposal = useCallback(() => {
+    measureToolsRef.current.setDraftPoints("count", [])
+    setSymbolProposal(null)
+    setCountingByExample(false)
+  }, [])
+
+  // Read through a ref inside the capture-phase pointer listener, which is
+  // subscribed once per tool change rather than once per proposal edit.
+  const symbolProposalRef = useRef(symbolProposal)
+  symbolProposalRef.current = symbolProposal
+
+  // Arming a measuring tool ends a review, and vice versa — two things both
+  // claiming the next click is how a proposal gets silently discarded.
+  useEffect(() => {
+    if (measureTools.activeTool && countingByExample) dismissProposal()
+  }, [measureTools.activeTool, countingByExample, dismissProposal])
 
   /**
    * Reassignment gesture: in takeoff mode with a condition armed and no tool
@@ -881,6 +1440,7 @@ export function DrawingViewer({
       strokeWidth: number
       text?: string
       label?: string | null
+      style?: Record<string, unknown> | null
     }> = [
       ...localMarkups.map((m) => ({
         type: m.type as string,
@@ -914,6 +1474,27 @@ export function DrawingViewer({
         strokeWidth: 2,
         text: undefined,
         label: measureTools.draftLabel,
+        // Carried onto the draft so a deduction hatches WHILE it is traced —
+        // finding out an area subtracts only after committing it is exactly the
+        // surprise the hatch exists to prevent.
+        style: measureDraft.deduction ? { deduction: true } : null,
+      })
+    }
+
+    // Committed quick measurements. Drafts rather than markups because they
+    // are never persisted — they exist for as long as the question does.
+    for (const measurement of quickMeasurements) {
+      drafts.push({
+        type: measurement.type,
+        points: measurement.points.map(([x, y]) => toPx({ x, y })),
+        color: MARKUP_COLORS[4],
+        strokeWidth: 2,
+        text: undefined,
+        label: measurementLabel(
+          { type: measurement.type, points: measurement.points },
+          rasterImageSize,
+          feetPerImagePx,
+        ),
       })
     }
 
@@ -963,6 +1544,7 @@ export function DrawingViewer({
     measureTools.draft,
     measureTools.draftLabel,
     selectedCondition,
+    quickMeasurements,
   ])
 
   /**
@@ -984,7 +1566,7 @@ export function DrawingViewer({
    * Only attached while a tool actually needs raw clicks, so ordinary panning
    * and zooming are untouched the rest of the time.
    */
-  const capturingClicks = !!measureTools.activeTool || calibrating
+  const capturingClicks = !!measureTools.activeTool || calibrating || countingByExample
 
   useEffect(() => {
     const element = containerRef.current
@@ -1024,6 +1606,14 @@ export function DrawingViewer({
           }
           return next
         })
+        return
+      }
+
+      if (countingByExample) {
+        // First click picks the exemplar; every click after that edits the
+        // proposal, so the same gesture both starts and refines the count.
+        if (symbolProposalRef.current?.status === "ready") editProposal(coords)
+        else if (symbolProposalRef.current?.status !== "matching") void runSymbolMatch(coords)
         return
       }
 
@@ -1448,6 +2038,33 @@ export function DrawingViewer({
     return [...pins, ...photoPins.filter((p) => !seen.has(p.id))]
   }, [pins, photoPins])
 
+  /**
+   * Which pin layers are drawn. A sheet on an active job carries RFIs, punch
+   * items, photos and tasks at once; a super walking punch wants punch only.
+   * Only types actually present are offered, so the control stays honest.
+   */
+  const pinTypesPresent = useMemo(() => {
+    const types = new Set<string>()
+    for (const pin of allPins) types.add(pin.entity_type)
+    return Array.from(types).sort()
+  }, [allPins])
+
+  const [hiddenPinTypes, setHiddenPinTypes] = useState<ReadonlySet<string>>(new Set())
+
+  const visiblePins = useMemo(() => {
+    if (hiddenPinTypes.size === 0) return allPins
+    return allPins.filter((pin) => !hiddenPinTypes.has(pin.entity_type))
+  }, [allPins, hiddenPinTypes])
+
+  const togglePinType = useCallback((entityType: string) => {
+    setHiddenPinTypes((prev) => {
+      const next = new Set(prev)
+      if (next.has(entityType)) next.delete(entityType)
+      else next.add(entityType)
+      return next
+    })
+  }, [])
+
   // Photo pins open in-viewer; everything else defers to the parent handler.
   const handlePinActivate = useCallback(
     (pin: DrawingPin) => {
@@ -1576,6 +2193,18 @@ export function DrawingViewer({
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
       >
+        {textSearchOpen && (
+          <div className="absolute right-3 top-3 z-20">
+            <SheetTextSearch
+              runs={sheetTextRuns.runs}
+              loading={sheetTextRuns.status === "loading"}
+              unavailable={sheetTextRuns.status === "unavailable"}
+              onClose={closeTextSearch}
+              onMatchesChange={handleTextMatchesChange}
+              onReveal={handleRevealTextMatch}
+            />
+          </div>
+        )}
         {hasTiles && tileBaseUrl && tileManifest && tiledImageSize ? (
           <div className="absolute inset-0">
             <TiledDrawingViewer
@@ -1585,6 +2214,11 @@ export function DrawingViewer({
               className="absolute inset-0"
               onReady={handleViewerReady}
               onTransformChange={handleViewerTransformChange}
+              // Tiles that never arrive are a server-side problem. Ask the
+              // pipeline to rebuild this sheet; it rate-limits and dedupes.
+              onTileLoadFailure={() => {
+                void reportBrokenSheetTilesAction(sheet.id)
+              }}
             />
             <SVGOverlay
               ref={setOverlayHandle}
@@ -1592,13 +2226,17 @@ export function DrawingViewer({
               imageSize={tiledImageSize}
               markups={markups}
               draftMarkups={tiledDraftMarkups}
-              pins={allPins}
+              pins={visiblePins}
               showMarkups={showMarkups}
               showPins={showPins}
               highlightedPinId={highlightedPinId}
               interactive={!readOnly && activeTool !== "pan"}
               onPinClick={handlePinActivate}
               feetPerImagePx={feetPerImagePx}
+              textMatches={textSearchOpen ? textMatches.map((m) => m.run) : undefined}
+              activeTextMatchIndex={activeTextMatchIndex}
+              calloutLinks={calloutLinksOn ? calloutLinks : undefined}
+              onCalloutLinkClick={handleCalloutLinkClick}
               showTakeoff={takeoffMode}
               selectedConditionId={
                 takeoffMode ? hoveredConditionId ?? selectedConditionId : null
@@ -1678,6 +2316,52 @@ export function DrawingViewer({
               setCalibrating(true)
               setCalibrationPoints([])
             }}
+          />
+        </div>
+      )}
+
+      {/* The measurement you just took disagrees with the dimensions printed
+          around it. Dismissible, never blocking — it is a second opinion, and
+          sometimes the detail really is at the sheet scale. */}
+      {panelOpen && localScaleWarning && (
+        <div
+          className={cn(
+            "absolute top-20 left-1/2 z-20 -translate-x-1/2 max-md:left-4 max-md:right-4 max-md:translate-x-0",
+            chromeClass,
+          )}
+        >
+          <div className="flex max-w-lg items-start gap-2.5 rounded-xl border border-warning/40 bg-background/95 px-3 py-2 shadow-lg backdrop-blur-md">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+            <p className="text-xs">{localScaleWarning}</p>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-6 w-6 shrink-0"
+              aria-label="Dismiss scale warning"
+              onClick={() => setLocalScaleWarning(null)}
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Count-by-example review. Sits under the scale bar, in the same band,
+          because it is the same kind of statement: what the numbers on screen
+          currently rest on. */}
+      {panelOpen && countingByExample && (
+        <div
+          className={cn(
+            "absolute top-20 left-1/2 z-20 -translate-x-1/2 max-md:left-4 max-md:translate-x-0",
+            chromeClass,
+          )}
+        >
+          <SymbolCountBar
+            proposal={symbolProposal}
+            conditionName={selectedCondition?.name ?? null}
+            visionAvailable={symbolVisionReady}
+            onAccept={() => void acceptProposal()}
+            onDismiss={dismissProposal}
           />
         </div>
       )}
@@ -1919,6 +2603,88 @@ export function DrawingViewer({
           >
             <Maximize2 className="h-4 w-4" />
           </Button>
+          <Button
+            variant={textSearchOpen ? "secondary" : "ghost"}
+            size="icon"
+            className="h-9 w-9"
+            onClick={() => (textSearchOpen ? closeTextSearch() : setTextSearchOpen(true))}
+            title="Find in sheet (⌘F)"
+          >
+            <Search className="h-4 w-4" />
+          </Button>
+          {/* Tap a detail bubble to open the sheet it names — the single most
+              frequent thing anyone does with a set of drawings. */}
+          <Button
+            variant={calloutLinksOn ? "secondary" : "ghost"}
+            size="icon"
+            className="h-9 w-9"
+            onClick={() => setCalloutLinksOn((on) => !on)}
+            title={
+              calloutLinksOn
+                ? `Hide sheet links${calloutLinks.length > 0 ? ` (${calloutLinks.length})` : ""}`
+                : "Show sheet links"
+            }
+          >
+            <Link2 className="h-4 w-4" />
+          </Button>
+          {/* A ruler for everyone. Takeoff mode owns priced measurement; this
+              is the spot-check, and it needs no estimating permission. */}
+          {!takeoffMode && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant={quickMeasureMode ? "secondary" : "ghost"}
+                  size="icon"
+                  className="h-9 w-9"
+                  disabled={!feetPerImagePx}
+                  title={
+                    feetPerImagePx
+                      ? "Measure (results are not saved)"
+                      : "Set this sheet's scale before measuring"
+                  }
+                >
+                  <Ruler className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="center" className="w-44">
+                <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
+                  Measure — not saved
+                </DropdownMenuLabel>
+                <DropdownMenuItem
+                  onClick={() => {
+                    setQuickMeasureMode(true)
+                    setActiveTool("pan")
+                    measureTools.setActiveTool("polyline")
+                  }}
+                >
+                  Distance
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => {
+                    setQuickMeasureMode(true)
+                    setActiveTool("pan")
+                    measureTools.setActiveTool("area")
+                  }}
+                >
+                  Area
+                </DropdownMenuItem>
+                {(quickMeasureMode || quickMeasurements.length > 0) && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onClick={() => {
+                        setQuickMeasureMode(false)
+                        measureTools.setActiveTool(null)
+                        setQuickMeasurements([])
+                      }}
+                    >
+                      Clear and exit
+                    </DropdownMenuItem>
+                  </>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
 
         <div className="hidden items-center gap-0.5 rounded-xl border bg-background/95 backdrop-blur-md shadow-lg p-1 md:flex">
@@ -1942,6 +2708,45 @@ export function DrawingViewer({
                 {showMarkups ? "Hide" : "Show"} markups
               </TooltipContent>
             </Tooltip>
+
+            {pinTypesPresent.length > 1 && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant={hiddenPinTypes.size > 0 ? "secondary" : "ghost"}
+                    size="icon"
+                    className="h-9 w-9"
+                    title="Pin layers"
+                  >
+                    <Layers className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="center" className="w-48">
+                  <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
+                    Show on sheet
+                  </DropdownMenuLabel>
+                  {pinTypesPresent.map((entityType) => {
+                    const count = allPins.filter((p) => p.entity_type === entityType).length
+                    return (
+                      <DropdownMenuCheckboxItem
+                        key={entityType}
+                        checked={!hiddenPinTypes.has(entityType)}
+                        onCheckedChange={() => togglePinType(entityType)}
+                      >
+                        <span className="flex-1">
+                          {PIN_ENTITY_TYPE_LABELS[
+                            entityType as keyof typeof PIN_ENTITY_TYPE_LABELS
+                          ] ?? entityType}
+                        </span>
+                        <span className="ml-2 text-xs text-muted-foreground tabular-nums">
+                          {count}
+                        </span>
+                      </DropdownMenuCheckboxItem>
+                    )
+                  })}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
 
             {allPins.length > 0 && (
               <Tooltip>
@@ -2289,6 +3094,60 @@ export function DrawingViewer({
                         </TooltipContent>
                       </Tooltip>
                     ))}
+                    {/* Deduct applies to the area tool only — a run or a count
+                        cannot be subtracted, so the toggle appears with the
+                        tool it belongs to rather than sitting there greyed. */}
+                    {measureTools.activeTool === "area" && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant={deductMode ? "secondary" : "ghost"}
+                            size="icon"
+                            className="h-10 w-10"
+                            aria-pressed={deductMode}
+                            disabled={!canWriteTakeoff || !selectedCondition}
+                            onClick={() => setDeductMode((mode) => !mode)}
+                          >
+                            <Minus className="h-4 w-4" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top">
+                          <div className="font-medium">
+                            {deductMode ? "Deducting" : "Deduct"}
+                          </div>
+                          <div className="text-xs opacity-80">
+                            Areas you trace subtract — a window out of the wall
+                          </div>
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
+
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant={countingByExample ? "secondary" : "ghost"}
+                          size="icon"
+                          className="h-10 w-10"
+                          aria-pressed={countingByExample}
+                          disabled={!canWriteTakeoff || !selectedCondition}
+                          onClick={() => {
+                            setActiveTool("pan")
+                            measureTools.setActiveTool(null)
+                            if (countingByExample) dismissProposal()
+                            else setCountingByExample(true)
+                          }}
+                        >
+                          <Sparkles className="h-4 w-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">
+                        <div className="font-medium">Count by example</div>
+                        <div className="text-xs opacity-80">
+                          Click one outlet — Arc finds the rest for you to check
+                        </div>
+                      </TooltipContent>
+                    </Tooltip>
+
                     {measureTools.saving && (
                       <Loader2 className="mx-1 h-4 w-4 animate-spin text-muted-foreground" />
                     )}

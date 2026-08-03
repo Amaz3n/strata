@@ -9,7 +9,9 @@ import {
   createPaymentRun,
   decidePaymentRun,
   executePaymentRun,
+  getPaymentRunSetupData,
   submitPaymentRun,
+  type PaymentRunSetupData,
 } from "@/lib/services/payment-runs"
 import type { CreatePaymentRunInput, DecidePaymentRunInput } from "@/lib/validation/fintech-payments"
 
@@ -24,11 +26,30 @@ async function run<T>(operation: () => Promise<T>): Promise<ActionResult<T>> {
   }
 }
 
-export async function createPaymentRunAction(input: CreatePaymentRunInput): Promise<ActionResult<{ id: string }>> {
+export async function createPaymentRunAction(
+  input: CreatePaymentRunInput,
+): Promise<ActionResult<{ id: string; status: string; totalDebitCents: number; requiredApprovals: number }>> {
   return run(async () => {
     const result = await createPaymentRun(input)
-    return { id: result.id }
+    return {
+      id: result.id,
+      status: result.status,
+      totalDebitCents: result.totalDebitCents,
+      requiredApprovals: result.requiredApprovals,
+    }
   })
+}
+
+/**
+ * Funding sources and payment-ready bills for building a run — fetched on demand
+ * by the workspace's in-pane pay flow, which opens far less often than the desk.
+ */
+export async function getPaymentRunSetupAction(): Promise<ActionResult<PaymentRunSetupData>> {
+  try {
+    return { success: true, data: await getPaymentRunSetupData() }
+  } catch (error) {
+    return actionError(error)
+  }
 }
 
 export async function submitPaymentRunAction(runId: string): Promise<ActionResult<{ id: string; status: string }>> {

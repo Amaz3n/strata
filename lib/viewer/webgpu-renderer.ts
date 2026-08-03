@@ -1,3 +1,10 @@
+import {
+  INK_ADDED_TINT,
+  INK_COMMON_TINT,
+  INK_LUMA,
+  INK_REMOVED_TINT,
+  vec3Literal,
+} from "./ink-diff"
 import type {
   DrawQuad,
   FrameSpec,
@@ -11,8 +18,9 @@ import type {
  * WebGPU backend. One pipeline draws textured tile quads (premultiplied
  * blending); the difference mode rasterizes base and overlay revisions into
  * two offscreen targets with the same projection, then combines them with an
- * ink-diff pass — unchanged linework gray, removed red, added blue. Keep the
- * diff math in sync with webgl2-renderer.ts.
+ * ink-diff pass — unchanged linework gray, removed red, added blue. The diff
+ * constants are interpolated from ink-diff.ts, the single source of truth
+ * shared with webgl2-renderer.ts.
  *
  * Per-draw data (transform, quad rect, opacity) lives in 256-byte slots of a
  * single dynamic-offset uniform buffer, rewritten each frame. Each uploaded
@@ -64,7 +72,8 @@ const TILE_WGSL = `${SHARED_WGSL}
 }
 `
 
-const DIFF_WGSL = `${SHARED_WGSL}
+/** Exported for the shader-sync test only. */
+export const DIFF_WGSL = `${SHARED_WGSL}
 @group(1) @binding(0) var baseTexture: texture_2d<f32>;
 @group(1) @binding(1) var overlayTexture: texture_2d<f32>;
 @group(1) @binding(2) var diffSampler: sampler;
@@ -73,16 +82,16 @@ const DIFF_WGSL = `${SHARED_WGSL}
   let screenUv = in.pos.xy / U.misc.yz;
   let a = textureSample(baseTexture, diffSampler, screenUv).rgb;
   let b = textureSample(overlayTexture, diffSampler, screenUv).rgb;
-  let luma = vec3<f32>(0.299, 0.587, 0.114);
+  let luma = ${vec3Literal("wgsl", INK_LUMA)};
   let inkBase = 1.0 - dot(a, luma);
   let inkOverlay = 1.0 - dot(b, luma);
   let commonInk = min(inkBase, inkOverlay);
   let removed = clamp(inkBase - commonInk, 0.0, 1.0);
   let added = clamp(inkOverlay - commonInk, 0.0, 1.0);
   let color = vec3<f32>(1.0)
-    - commonInk * vec3<f32>(0.62, 0.62, 0.62)
-    - removed * vec3<f32>(0.14, 0.86, 0.80)
-    - added * vec3<f32>(0.86, 0.55, 0.08);
+    - commonInk * ${vec3Literal("wgsl", INK_COMMON_TINT)}
+    - removed * ${vec3Literal("wgsl", INK_REMOVED_TINT)}
+    - added * ${vec3Literal("wgsl", INK_ADDED_TINT)};
   return vec4<f32>(clamp(color, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
 }
 `
@@ -119,7 +128,9 @@ function slotData(
 
 export class WebGPURenderer implements SceneRenderer {
   readonly backend = "webgpu" as const
+  onDeviceLost: ((reason: string) => void) | null = null
 
+  private destroyed = false
   private readonly context: GPUCanvasContext
   private readonly format: GPUTextureFormat
   private readonly sampler: GPUSampler
@@ -147,8 +158,14 @@ export class WebGPURenderer implements SceneRenderer {
     context.configure({ device, format: this.format, alphaMode: "premultiplied" })
 
     // Validation failures are async and otherwise silent — make them loud.
-    device.addEventListener("uncapturederror", (event) => {
-      console.error("[WebGPURenderer] Uncaptured GPU error:", event.error.message)
+    device.addEventListener("uncapturederror", this.handleUncapturedError)
+
+    // A resolved `lost` promise with any reason but "destroyed" means the
+    // device died under us (driver reset, GPU process crash) and every
+    // resource on it is gone.
+    void device.lost.then((info) => {
+      if (this.destroyed || info.reason === "destroyed") return
+      this.onDeviceLost?.(info.message)
     })
 
     this.sampler = device.createSampler({ magFilter: "linear", minFilter: "linear" })
@@ -214,6 +231,10 @@ export class WebGPURenderer implements SceneRenderer {
     this.uniformCapacitySlots = 256
     this.uniformBuffer = this.createUniformBuffer(this.uniformCapacitySlots)
     this.uniformBindGroup = this.createUniformBindGroup()
+  }
+
+  private readonly handleUncapturedError = (event: GPUUncapturedErrorEvent): void => {
+    console.error("[WebGPURenderer] Uncaptured GPU error:", event.error.message)
   }
 
   private createUniformBuffer(slots: number): GPUBuffer {
@@ -423,9 +444,14 @@ export class WebGPURenderer implements SceneRenderer {
   }
 
   destroy(): void {
+    this.destroyed = true
     this.disposeOffscreen()
     this.uniformBuffer.destroy()
+    this.device.removeEventListener("uncapturederror", this.handleUncapturedError)
     this.context.unconfigure()
+    // Frees every remaining device resource (tile textures included) and
+    // resolves `lost` with reason "destroyed", which the handler ignores.
+    this.device.destroy()
   }
 }
 

@@ -141,7 +141,7 @@ async function countSyncedTransactionsForScope(input: {
   let projectIds: string[] = []
   if (input.projectId) projectIds = [input.projectId]
   else if (input.divisionId) {
-    const { data } = await supabase.from("projects").select("id").eq("org_id", input.orgId).eq("division_id", input.divisionId)
+    const { data } = await supabase.from("projects").select("id").eq("org_id", input.orgId).eq("phase", "delivery").eq("division_id", input.divisionId)
     projectIds = (data ?? []).map((row) => row.id)
   } else if (input.communityId) {
     const { data } = await supabase.from("lots").select("project_id").eq("org_id", input.orgId).eq("community_id", input.communityId).not("project_id", "is", null)

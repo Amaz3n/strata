@@ -23,6 +23,8 @@ export interface EstimateMoneyLine {
 
 export interface EstimateTotals {
   subtotal: number
+  /** Contingency on the base subtotal; 0 when the estimate carries none. */
+  contingency: number
   tax: number
   total: number
 }
@@ -46,14 +48,48 @@ export function estimateLineAmountCents(line: EstimateMoneyLine): number | null 
   return Math.round(base + (base * (line.markup_pct ?? 0)) / 100)
 }
 
-/** Base document totals: optional add-ons and group headers never contribute. */
-export function calculateEstimateTotals(lines: EstimateMoneyLine[], taxRate = 0): EstimateTotals {
+/**
+ * Base document totals: optional add-ons and group headers never contribute.
+ * Contingency is a percentage of the base subtotal, added before tax so it is
+ * taxed like any other scope; optional add-ons never carry contingency.
+ */
+export function calculateEstimateTotals(
+  lines: EstimateMoneyLine[],
+  taxRate = 0,
+  contingencyPct = 0,
+): EstimateTotals {
   const subtotal = lines.reduce((sum, line) => {
     if (line.is_optional) return sum
     return sum + (estimateLineAmountCents(line) ?? 0)
   }, 0)
-  const tax = Math.round((subtotal * (taxRate ?? 0)) / 100)
-  return { subtotal, tax, total: subtotal + tax }
+  const contingency = Math.round((subtotal * (contingencyPct ?? 0)) / 100)
+  const tax = Math.round(((subtotal + contingency) * (taxRate ?? 0)) / 100)
+  return { subtotal, contingency, tax, total: subtotal + contingency + tax }
+}
+
+/**
+ * Alternates: optional add-ons in the same `metadata.option_group` are
+ * mutually exclusive ("pick one of three"). Returns an error message when the
+ * selection violates that, else null. Runs server-side before acceptance.
+ */
+export function validateOptionGroups(
+  items: Array<{ id: string; item_type?: string | null; metadata?: Record<string, unknown> | null }>,
+  selectedIds: string[],
+): string | null {
+  const selected = new Set(selectedIds)
+  const seenGroups = new Map<string, string>()
+  for (const item of items ?? []) {
+    if ((item.item_type ?? "line") === "group") continue
+    if (!item.metadata?.is_optional || !selected.has(item.id)) continue
+    const group = typeof item.metadata?.option_group === "string" ? item.metadata.option_group.trim() : ""
+    if (!group) continue
+    const prior = seenGroups.get(group)
+    if (prior) {
+      return `Choose one option in “${group}” — not more than one.`
+    }
+    seenGroups.set(group, item.id)
+  }
+  return null
 }
 
 export function estimateOptionTaxCents(optionalSubtotalCents: number, taxRate = 0): number {

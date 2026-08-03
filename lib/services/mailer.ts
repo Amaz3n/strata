@@ -7,6 +7,8 @@ import { InvoiceReminderEmail } from "@/lib/emails/invoice-reminder-email"
 import { ProjectPortalInviteEmail } from "@/lib/emails/project-portal-invite-email"
 import { InviteTeamMemberEmail } from "@/lib/emails/invite-team-member-email"
 import { PasswordResetEmail } from "@/lib/emails/password-reset-email"
+import { ExternalPasswordResetEmail } from "@/lib/emails/external-password-reset-email"
+import { ExternalVerifyEmail } from "@/lib/emails/external-verify-email"
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY
 const RESEND_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev"
@@ -306,6 +308,51 @@ export async function sendPasswordResetEmail(payload: PasswordResetEmailPayload)
     subject: `Reset your ${payload.orgName ?? "Arc"} password`,
     html,
     from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
+  })
+}
+
+export interface ExternalPasswordResetEmailPayload {
+  to: string
+  resetLink: string
+}
+
+/** Arc-branded, not builder-branded — an external identity spans every builder. */
+export async function sendExternalPasswordResetEmail(
+  payload: ExternalPasswordResetEmailPayload,
+): Promise<void> {
+  const html = await renderEmailTemplate(
+    ExternalPasswordResetEmail({
+      recipientEmail: payload.to,
+      resetLink: payload.resetLink,
+    }),
+  )
+
+  await sendEmail({
+    to: [payload.to],
+    subject: "Reset your Arc password",
+    html,
+  })
+}
+
+export interface ExternalVerifyEmailPayload {
+  to: string
+  verifyLink: string
+  orgName?: string | null
+}
+
+export async function sendExternalVerifyEmail(payload: ExternalVerifyEmailPayload): Promise<void> {
+  const html = await renderEmailTemplate(
+    ExternalVerifyEmail({
+      recipientEmail: payload.to,
+      orgName: payload.orgName,
+      verifyLink: payload.verifyLink,
+    }),
+  )
+
+  await sendEmail({
+    to: [payload.to],
+    subject: "Confirm your Arc email",
+    html,
   })
 }
 
@@ -617,6 +664,50 @@ export async function sendBidDateUpdateEmail(payload: BidDateUpdateEmailPayload)
   await sendEmail({
     to: [payload.to],
     subject: `Bid Deadline Update: ${payload.bidPackageTitle}`,
+    html,
+    from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
+  })
+}
+
+export interface VendorPaymentInviteEmailPayload {
+  to: string[]
+  recipientName?: string | null
+  companyName: string
+  orgName: string
+  orgSlug?: string | null
+  orgLogoUrl?: string | null
+  setupUrl: string
+}
+
+/**
+ * Asks a vendor to set up electronic payment. Deliberately does not promise a
+ * short flow: a vendor who already verified with another Arc builder only has
+ * to confirm the company, but one starting fresh goes through Stripe.
+ */
+export async function sendVendorPaymentInviteEmail(payload: VendorPaymentInviteEmailPayload): Promise<boolean> {
+  if (payload.to.length === 0) return false
+  const orgName = escapeMessage(payload.orgName)
+  const greeting = payload.recipientName
+    ? `<p style="margin:0 0 14px 0;">Hi ${escapeMessage(payload.recipientName)},</p>`
+    : ""
+
+  const html = renderStandardEmailLayout({
+    title: `Get paid electronically by ${payload.orgName}`,
+    messageHtml: `
+      ${greeting}
+      <p style="margin:0 0 14px 0;">${orgName} pays subcontractors through Arc and would like to pay ${escapeMessage(payload.companyName)} by direct deposit instead of by check.</p>
+      <p style="margin:0 0 14px 0;">You verify your business and payout bank once. The same account then works with every Arc builder you work with, so if you have already done this for another builder there is nothing to set up again — just confirm your company.</p>
+      <p style="margin:0;">${orgName} never sees or enters your bank details.</p>
+    `,
+    buttonText: "Set up direct deposit",
+    buttonUrl: payload.setupUrl,
+    orgName: payload.orgName,
+    orgLogoUrl: payload.orgLogoUrl,
+  })
+
+  return sendEmail({
+    to: payload.to,
+    subject: `${payload.orgName} would like to pay you by direct deposit`,
     html,
     from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
   })

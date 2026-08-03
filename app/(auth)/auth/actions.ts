@@ -8,10 +8,16 @@ import { z } from "zod"
 import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server"
 import { enforceAuthRateLimit } from "@/lib/services/auth-rate-limit"
 import {
+  completeExternalIdentityPasswordReset,
+  issueExternalIdentityPasswordReset,
   startExternalPortalSession,
   verifyExternalIdentityPassword,
 } from "@/lib/services/external-portal-auth"
-import { sendInviteEmail, sendPasswordResetEmail } from "@/lib/services/mailer"
+import {
+  sendExternalPasswordResetEmail,
+  sendInviteEmail,
+  sendPasswordResetEmail,
+} from "@/lib/services/mailer"
 
 export interface AuthState {
   error?: string
@@ -369,6 +375,57 @@ export async function signOutAction() {
   redirect("/auth/signin")
 }
 
+/**
+ * The external half of the one reset door. Never throws and never reports what it
+ * found — `requestPasswordResetAction` must answer identically whether the email
+ * belongs to an org member, an external identity, or nobody at all.
+ */
+async function sendExternalResetIfIdentityExists(email: string) {
+  try {
+    const issued = await issueExternalIdentityPasswordReset(email)
+    if (!issued) return
+
+    const resetUrl = new URL("/auth/reset", getSiteUrl())
+    resetUrl.searchParams.set("external_token", issued.token)
+
+    await sendExternalPasswordResetEmail({
+      to: issued.identity.email,
+      resetLink: resetUrl.toString(),
+    })
+  } catch (error) {
+    console.error("Failed to send external password reset email", error)
+  }
+}
+
+export async function completeExternalPasswordResetAction(
+  _prevState: AuthState,
+  formData: FormData,
+): Promise<AuthState> {
+  const token = formData.get("token")
+  const parsed = updatePasswordSchema.safeParse({
+    password: formData.get("password"),
+    confirmPassword: formData.get("confirmPassword"),
+  })
+
+  if (!parsed.success) {
+    return { error: parsed.error.errors.at(0)?.message ?? "Please check the form fields." }
+  }
+  if (typeof token !== "string" || !token) {
+    return { error: "Your reset link is invalid or has expired." }
+  }
+
+  const completed = await completeExternalIdentityPasswordReset({
+    token,
+    password: parsed.data.password,
+  })
+
+  if (!completed) {
+    return { error: "Your reset link is invalid or has expired." }
+  }
+
+  return { message: "Password updated. Sign in with your new password." }
+}
+
 export async function requestPasswordResetAction(_prevState: AuthState, formData: FormData): Promise<AuthState> {
   const parsed = resetRequestSchema.safeParse({
     email: formData.get("email"),
@@ -392,7 +449,10 @@ export async function requestPasswordResetAction(_prevState: AuthState, formData
     })
 
     if (error || !data?.properties) {
-      console.error("Failed to generate password recovery link", error)
+      // Not a Supabase auth user. They may still be a sub, buyer, or reviewer
+      // with an Arc identity — one reset door serves both populations, and the
+      // response below is identical either way so neither reveals the other.
+      await sendExternalResetIfIdentityExists(email)
       return { message: genericMessage }
     }
 

@@ -15,6 +15,25 @@ export const updatePaymentRailPolicySchema = z.object({
   }
 })
 
+export const setPaymentRunApproversSchema = z.object({
+  approvers: z
+    .array(
+      z.object({
+        user_id: z.string().uuid(),
+        approval_limit_cents: z.number().int().positive().nullable().optional(),
+      }),
+    )
+    .max(50)
+    .superRefine((approvers, context) => {
+      const userIds = new Set(approvers.map((approver) => approver.user_id))
+      if (userIds.size !== approvers.length) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: "Each approver can only be listed once" })
+      }
+    }),
+})
+
+export type SetPaymentRunApproversInput = z.infer<typeof setPaymentRunApproversSchema>
+
 export const paymentRunItemSchema = z.object({
   bill_id: z.string().uuid(),
   amount_cents: z.number().int().positive(),

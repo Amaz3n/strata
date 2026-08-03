@@ -5,7 +5,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { getBudgetWithActuals } from "@/lib/services/budgets"
 import { getProjectJobCostActualsByCostCode } from "@/lib/services/job-cost-actuals"
 import { getProjectContract } from "@/lib/services/contracts"
-import type { Project, ScheduleItem, Task, DrawSchedule, Rfi, Submittal, PunchItem, CloseoutItem, WarrantyRequest, FileMetadata, PortalAccessToken, Proposal, Contract } from "@/lib/types"
+import type { Project, ScheduleItem, Task, DrawSchedule, Rfi, Submittal, PunchItem, CloseoutItem, WarrantyRequest, FileMetadata, Proposal, Contract } from "@/lib/types"
 import { differenceInCalendarDays, parseISO, isBefore, isAfter, addDays, subDays } from "date-fns"
 import type { ProjectActivity } from "./actions"
 
@@ -72,7 +72,6 @@ export interface ProjectOverviewDTO {
   contract: Contract | null
   draws: DrawSchedule[]
   scheduleItemCount: number
-  portalTokens: PortalAccessToken[]
   // Timeline data
   daysRemaining: number
   daysElapsed: number
@@ -140,7 +139,6 @@ export async function getProjectOverviewAction(projectId: string): Promise<Proje
     contractData,
     drawsData,
     scheduleItemCountData,
-    portalTokensData,
     approvedCOTotal,
     budgetData,
   ] = await Promise.all([
@@ -159,7 +157,6 @@ export async function getProjectOverviewAction(projectId: string): Promise<Proje
     getProjectContract(projectId),
     getDraws(supabase, orgId, projectId),
     getScheduleItemCount(supabase, orgId, projectId),
-    getPortalTokens(supabase, projectId),
     getApprovedChangeOrderTotal(supabase, orgId, projectId),
     getBudgetSummary(orgId, projectId),
   ])
@@ -227,7 +224,6 @@ export async function getProjectOverviewAction(projectId: string): Promise<Proje
     contract: contractData,
     draws: drawsData,
     scheduleItemCount: scheduleItemCountData,
-    portalTokens: portalTokensData,
     daysRemaining,
     daysElapsed,
     daysUntilStart,
@@ -251,6 +247,7 @@ function mapProject(row: any): Project {
     org_id: row.org_id,
     name: row.name,
     status: row.status,
+    phase: row.phase ?? "delivery",
     start_date: row.start_date ?? undefined,
     end_date: row.end_date ?? undefined,
     budget: row.budget ?? undefined,
@@ -708,16 +705,6 @@ async function getScheduleItemCount(supabase: any, orgId: string, projectId: str
     .eq("project_id", projectId)
 
   return count ?? 0
-}
-
-async function getPortalTokens(supabase: any, projectId: string): Promise<PortalAccessToken[]> {
-  const { data } = await supabase
-    .from("portal_access_tokens")
-    .select("id, project_id, portal_type, contact_id, label, expires_at, revoked_at, pin_required, created_at")
-    .eq("project_id", projectId)
-    .order("created_at", { ascending: false })
-
-  return data ?? []
 }
 
 async function getApprovedChangeOrderTotal(supabase: any, orgId: string, projectId: string): Promise<number> {

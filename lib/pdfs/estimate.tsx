@@ -25,6 +25,10 @@ type EstimatePdfData = {
   subtotalCents?: number | null
   taxCents?: number | null
   totalCents?: number | null
+  contingencyCents?: number | null
+  contingencyPercent?: number | null
+  inclusions?: string | null
+  exclusions?: string | null
   validUntil?: string | null
   documentLabel?: string | null
   signers?: QuoteSigner[]
@@ -59,6 +63,10 @@ export async function renderEstimatePdf(data: EstimatePdfData): Promise<Buffer> 
     subtotalCents: data.subtotalCents,
     taxCents: data.taxCents,
     totalCents: data.totalCents,
+    contingencyCents: data.contingencyCents,
+    contingencyPercent: data.contingencyPercent,
+    inclusions: data.inclusions,
+    exclusions: data.exclusions,
     validUntil: data.validUntil,
     signers: data.signers,
     lines: data.lines,

@@ -52,7 +52,7 @@ export function PayableDocumentPane({
   projectId,
   className,
 }: PayableDocumentPaneProps) {
-  const [activeTab, setActiveTab] = useState<"receipt" | "docs">("receipt")
+  const [activeTab, setActiveTab] = useState<"invoice" | "docs">("invoice")
   const [activeId, setActiveId] = useState<string | null>(attachments[0]?.id ?? null)
   const [zoom, setZoom] = useState(1)
   const [rotation, setRotation] = useState(0)
@@ -210,14 +210,14 @@ export function PayableDocumentPane({
         <div className="flex gap-6 h-full items-center">
           <button
             type="button"
-            onClick={() => setActiveTab("receipt")}
+            onClick={() => setActiveTab("invoice")}
             className={cn(
               "relative flex h-full items-center text-sm font-semibold transition-colors focus:outline-none",
-              activeTab === "receipt" ? "text-primary" : "text-muted-foreground hover:text-foreground"
+              activeTab === "invoice" ? "text-primary" : "text-muted-foreground hover:text-foreground"
             )}
           >
-            Receipt
-            {activeTab === "receipt" && (
+            Invoice
+            {activeTab === "invoice" && (
               <span className="absolute bottom-0 left-0 right-0 h-[2px] bg-primary" />
             )}
           </button>
@@ -266,21 +266,21 @@ export function PayableDocumentPane({
           <div className="flex flex-1 items-center justify-center">
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
-        ) : activeTab === "receipt" ? (
-          // Receipt View
+        ) : activeTab === "invoice" ? (
+          // Invoice view
           !active ? (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center p-6 bg-background/30">
               <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
                 <FileText className="h-7 w-7" />
               </span>
               <div>
-                <p className="text-sm font-semibold">No receipt attached</p>
+                <p className="text-sm font-semibold">No invoice attached</p>
                 <p className="text-xs text-muted-foreground mt-1 max-w-[280px]">
-                  Go to the Documents tab or click below to upload a receipt/invoice.
+                  Go to the Documents tab or click below to upload the vendor&apos;s invoice.
                 </p>
                 <Button onClick={handleReplaceClick} className="mt-4" size="sm">
                   <Upload className="mr-2 h-4 w-4" />
-                  Upload receipt
+                  Upload invoice
                 </Button>
               </div>
             </div>
@@ -548,7 +548,7 @@ export function PayableDocumentPane({
                           className="h-8 w-8 hover:bg-muted"
                           onClick={() => {
                             setActiveId(file.id)
-                            setActiveTab("receipt")
+                            setActiveTab("invoice")
                           }}
                           title="View file"
                         >

@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { format, formatDistanceToNow } from "date-fns"
 import { toast } from "sonner"
@@ -181,11 +182,16 @@ export function OpsClient({ cronHealth, outboxHealth, stuckHealth, qboHealth }: 
               {outboxHealth.oldestPendingAt ? ` · oldest pending ${relative(outboxHealth.oldestPendingAt)}` : ""}
             </span>
           </h2>
-          {outboxHealth.failedCount > 0 ? (
-            <Button variant="outline" size="sm" className="h-7 text-xs" disabled={retryingAll} onClick={handleRetryAll}>
-              {retryingAll ? "Retrying…" : `Retry all failed (${outboxHealth.failedCount})`}
+          <div className="flex items-center gap-2">
+            <Button asChild variant="ghost" size="sm" className="h-7 text-xs">
+              <Link href="/admin/ops/drawings">Drawings dead letters</Link>
             </Button>
-          ) : null}
+            {outboxHealth.failedCount > 0 ? (
+              <Button variant="outline" size="sm" className="h-7 text-xs" disabled={retryingAll} onClick={handleRetryAll}>
+                {retryingAll ? "Retrying…" : `Retry all failed (${outboxHealth.failedCount})`}
+              </Button>
+            ) : null}
+          </div>
         </div>
         <div className="border-y">
           {outboxHealth.failedItems.length === 0 ? (

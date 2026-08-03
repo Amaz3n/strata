@@ -206,6 +206,7 @@ Then the suites your change touches:
 | Posture, terminology, land foundation | `pnpm test:land` |
 | Starts / even-flow | `pnpm test:starts` |
 | Importers / onboarding | `pnpm test:onboarding` |
+| Takeoff: rollup, axis factors, deductions, drift, symbol matching | `pnpm test:takeoff` |
 | Floorplan interpretation / 3D geometry | `pnpm test:floorplan` |
 | Schema drift | `pnpm db:schema:check` |
 
@@ -247,6 +248,14 @@ Then the suites your change touches:
 - **QBO / accounting** — sharp edges everywhere (SyncToken backfill, no complex
   columns in QBO queries — use `SELECT *`, proxy routes). Workstream 08's cutover
   is mid-flight behind release gates; ask before touching sync.
+- **Takeoff** — `docs/takeoff-model.md`. A condition's REPORTING unit
+  (`lf/sf/ea/cy/sy/sq/ton`) is not what its members MEASURE (`lf/sf/ea`); the gap
+  is closed by an axis factor (depth, wall height, roof pitch, density) and
+  `conditionSourceUom()` is the only thing that knows which. The unit enum and
+  the factor rules live in THREE places that must move together (DB check, Zod,
+  `lib/drawings/measure.ts`). Rollup math is pure in
+  `lib/drawings/condition-rollup.ts` — keep it that way, it is how money gets
+  tested. Stale, pending-review and unscaled members are excluded on purpose.
 - **Drawings pipeline** — `lib/services/drawings-pipeline.ts`: re-uploads stack
   versions onto ONE canonical sheet set per project. Never create a set per
   upload, never delete old sheets.
@@ -259,5 +268,19 @@ Then the suites your change touches:
   from a notification email — never add a client-side tab switcher. Only the
   portal **root** calls `recordPortalAccess()`; `max_access_count` limits link
   uses, so counting on each page would let one visit burn several.
+- **External access: the person is the unit, the link is a field.** A
+  `portal_access_tokens` row IS one person's access to one project — the token
+  string is a delivery mechanism on that row, not a separate thing. **One status
+  governs both layers:** `revokePortalToken` / `pausePortalToken` /
+  `resumePortalToken` cascade to `external_identity_grants`, and `upsertGrant`
+  never resurrects a paused or revoked grant. Never kill one layer alone.
+  Once someone has claimed an Arc account the token stops being a credential and
+  becomes a pointer to a sign-in (`isExternalAccessClaimed`, keyed on the identity
+  behind the token's bound contact email so reissuing a link cannot hand back
+  bearer access). A verified identity subsumes the PIN. Externals authenticate
+  through `/auth/*` alongside builders — one sign-in, one forgot-password, one
+  reset — but `external_identities` stays a separate store from Supabase auth by
+  design: RLS assumes `auth.uid()` is an org member. `/access` is a router, not a
+  hub. Builder-facing roster: `listProjectAccessRoster()`.
 - **Acceptance testing runs in the dedicated QA org.** There is no staging
   environment. Never run acceptance scenarios in a customer org.

@@ -103,7 +103,6 @@ async function ProjectData({ id }: { id: string }) {
     contract,
     draws,
     scheduleItemCount,
-    portalTokens,
     daysRemaining,
     daysElapsed,
     daysUntilStart,
@@ -124,7 +123,6 @@ async function ProjectData({ id }: { id: string }) {
         companies={companies}
         team={team}
         projectVendors={projectVendors}
-        portalTokens={portalTokens}
         proposals={proposals}
         contract={contract}
         draws={draws}

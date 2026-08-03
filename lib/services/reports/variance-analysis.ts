@@ -25,7 +25,7 @@ export async function getVarianceAnalysis({
   await requireAuthorization({ permission: "price_book.read", userId, orgId: resolvedOrgId, supabase, logDecision: true })
   const authorizedIds = await getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase })
   if (divisionId || authorizedIds !== null) {
-    let projectsQuery = supabase.from("projects").select("id").eq("org_id", resolvedOrgId)
+    let projectsQuery = supabase.from("projects").select("id").eq("org_id", resolvedOrgId).eq("phase", "delivery")
     if (divisionId) projectsQuery = projectsQuery.eq("division_id", divisionId)
     if (authorizedIds) projectsQuery = projectsQuery.in("id", authorizedIds.length ? authorizedIds : ["00000000-0000-0000-0000-000000000000"])
     const { data: projects, error: projectError } = await projectsQuery.limit(1000)

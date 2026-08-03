@@ -7,10 +7,14 @@ import type {
   DailyLog,
   DrawSchedule,
   Invoice,
+  KnownExternalContact,
+  OrgExternalPerson,
   PortalAccessToken,
   PortalFinancialSummary,
   PortalPermissions,
   PortalType,
+  ProjectAccessPerson,
+  ProjectAccessStatus,
   PunchItem,
   ReviewerPortalData,
   ReviewerRole,
@@ -28,7 +32,10 @@ import { listProjectScheduleItemsWithClient } from "@/lib/services/schedule"
 import { listDecisionsForPortal } from "@/lib/services/decisions"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
-import { hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
+import {
+  cascadeGrantStatusForPortalToken,
+  hasExternalPortalGrantForToken,
+} from "@/lib/services/external-portal-auth"
 import {
   clearPinVerification,
   decryptPortalToken,
@@ -172,6 +179,45 @@ export async function createPortalAccessToken({
   return mapAccessToken(data)
 }
 
+/**
+ * Applies expiry and permission choices to an access record that already exists.
+ * Re-inviting someone reuses their record rather than minting a second one, so
+ * without this the options chosen at invite time would be silently discarded for
+ * everyone the builder had already shared with.
+ */
+export async function updatePortalTokenAccessOptions({
+  tokenId,
+  expiresAt,
+  permissions,
+  orgId,
+}: {
+  tokenId: string
+  expiresAt?: string | null
+  permissions?: Partial<PortalPermissions>
+  orgId?: string
+}): Promise<PortalAccessToken> {
+  const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
+  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  const serviceClient = createServiceSupabaseClient()
+
+  const { data, error } = await serviceClient
+    .from("portal_access_tokens")
+    .update({
+      expires_at: expiresAt ?? null,
+      ...permissionsToColumns(permissions),
+    })
+    .eq("id", tokenId)
+    .eq("org_id", resolvedOrgId)
+    .select("*")
+    .single()
+
+  if (error || !data) {
+    throw new Error(`Failed to update portal access options: ${error?.message}`)
+  }
+
+  return mapAccessToken(data)
+}
+
 export async function findReusablePortalAccessToken({
   projectId,
   portalType,
@@ -249,6 +295,11 @@ export async function validatePortalToken(token: string) {
   return mapAccessToken(data)
 }
 
+/**
+ * Revoke/pause/resume act on the access record as a whole: the delivery token AND
+ * any account grants hanging off it. Killing only the token left a claimed sub
+ * signed in; killing only the grant left the link working. One status, both layers.
+ */
 export async function revokePortalToken(tokenId: string, orgId?: string) {
   const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
   await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
@@ -262,6 +313,8 @@ export async function revokePortalToken(tokenId: string, orgId?: string) {
   if (error) {
     throw new Error(`Failed to revoke portal token: ${error.message}`)
   }
+
+  await cascadeGrantStatusForPortalToken({ orgId: resolvedOrgId, tokenId, status: "revoked" })
 }
 
 export async function pausePortalToken(tokenId: string, orgId?: string) {
@@ -278,6 +331,8 @@ export async function pausePortalToken(tokenId: string, orgId?: string) {
   if (error) {
     throw new Error(`Failed to pause portal token: ${error.message}`)
   }
+
+  await cascadeGrantStatusForPortalToken({ orgId: resolvedOrgId, tokenId, status: "paused" })
 }
 
 export async function resumePortalToken(tokenId: string, orgId?: string) {
@@ -294,6 +349,8 @@ export async function resumePortalToken(tokenId: string, orgId?: string) {
   if (error) {
     throw new Error(`Failed to resume portal token: ${error.message}`)
   }
+
+  await cascadeGrantStatusForPortalToken({ orgId: resolvedOrgId, tokenId, status: "active" })
 }
 
 export async function setPortalTokenRequireAccount({
@@ -319,22 +376,291 @@ export async function setPortalTokenRequireAccount({
   }
 }
 
-export async function listPortalTokens(projectId: string, orgId?: string): Promise<PortalAccessToken[]> {
+function resolveAccessStatus(row: {
+  revoked_at?: string | null
+  paused_at?: string | null
+  expires_at?: string | null
+}): ProjectAccessStatus {
+  if (row.revoked_at) return "revoked"
+  if (row.paused_at) return "paused"
+  if (row.expires_at && new Date(row.expires_at) < new Date()) return "expired"
+  return "active"
+}
+
+/**
+ * Everyone with access to this project, as people rather than as links. Joins the
+ * access record to whatever identity has claimed it, so the builder sees one row
+ * per person with one status — not a link in one list and an account in another.
+ */
+export async function listProjectAccessRoster(
+  projectId: string,
+  orgId?: string,
+): Promise<ProjectAccessPerson[]> {
   const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
   await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
   const serviceClient = createServiceSupabaseClient()
-  const { data, error } = await serviceClient
+
+  const { data: tokenRows, error } = await serviceClient
     .from("portal_access_tokens")
-    .select("*")
+    .select("*, contact:contacts(full_name, email), company:companies(name)")
     .eq("org_id", resolvedOrgId)
     .eq("project_id", projectId)
+    .is("scoped_rfi_id", null)
+    .is("scoped_change_event_rfq_id", null)
+    .is("scoped_submittal_revision_id", null)
     .order("created_at", { ascending: false })
 
   if (error) {
-    throw new Error(`Failed to list portal tokens: ${error.message}`)
+    throw new Error(`Failed to load project access: ${error.message}`)
   }
 
-  return (data ?? []).map(mapAccessToken)
+  const rows = (tokenRows ?? []) as any[]
+  if (rows.length === 0) return []
+
+  const { data: grantRows, error: grantError } = await serviceClient
+    .from("external_identity_grants")
+    .select("portal_access_token_id, status, identity:external_identities(id, email, full_name, email_verified_at)")
+    .eq("org_id", resolvedOrgId)
+    .in(
+      "portal_access_token_id",
+      rows.map((row) => row.id),
+    )
+    .is("revoked_at", null)
+
+  if (grantError) {
+    throw new Error(`Failed to load project access accounts: ${grantError.message}`)
+  }
+
+  const grantByToken = new Map<string, any>()
+  for (const grant of (grantRows ?? []) as any[]) {
+    const identity = Array.isArray(grant.identity) ? grant.identity[0] : grant.identity
+    if (identity) grantByToken.set(grant.portal_access_token_id, identity)
+  }
+
+  return rows.map((row) => {
+    const contact = Array.isArray(row.contact) ? row.contact[0] : row.contact
+    const company = Array.isArray(row.company) ? row.company[0] : row.company
+    const identity = grantByToken.get(row.id) ?? null
+    const email = identity?.email ?? contact?.email ?? null
+
+    return {
+      token_id: row.id,
+      token: decryptPortalToken(row.token_encrypted),
+      portal_type: row.portal_type,
+      reviewer_role: row.reviewer_role ?? null,
+      name: identity?.full_name || contact?.full_name || company?.name || email || "Unnamed",
+      email,
+      company_name: company?.name ?? null,
+      access_mode: identity ? ("account" as const) : ("link" as const),
+      status: resolveAccessStatus(row),
+      identity_id: identity?.id ?? null,
+      identity_email_verified: !!identity?.email_verified_at,
+      pin_required: !!row.pin_required,
+      require_account: row.require_account ?? false,
+      permissions: mapPermissions(row),
+      last_accessed_at: row.last_accessed_at ?? null,
+      expires_at: row.expires_at ?? null,
+      created_at: row.created_at,
+    }
+  })
+}
+
+/**
+ * Vendor contacts this builder already works with, for the "add someone you've
+ * worked with" path. Deliberately scoped to identities holding a live grant in
+ * THIS org: a free-text search over `external_identities` would let any builder
+ * probe whether an arbitrary email has an Arc account.
+ */
+/** Cap before the directory needs real pagination rather than a longer page. */
+const ORG_EXTERNAL_DIRECTORY_CAP = 500
+
+/**
+ * Every external person in the org, with all the projects each one can reach.
+ * The share sheet is per-project by design; this is the view you need when a
+ * project manager leaves a trade partner and you have to find every job they
+ * were ever given access to.
+ */
+export async function listOrgExternalAccess(
+  orgId?: string,
+): Promise<{ people: OrgExternalPerson[]; truncated: boolean }> {
+  const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
+  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  const serviceClient = createServiceSupabaseClient()
+
+  const { data: tokenRows, error } = await serviceClient
+    .from("portal_access_tokens")
+    .select("*, contact:contacts(id, full_name, email), company:companies(name), project:projects(id, name)")
+    .eq("org_id", resolvedOrgId)
+    .is("scoped_rfi_id", null)
+    .is("scoped_change_event_rfq_id", null)
+    .is("scoped_submittal_revision_id", null)
+    .order("created_at", { ascending: false })
+    .limit(ORG_EXTERNAL_DIRECTORY_CAP + 1)
+
+  if (error) {
+    throw new Error(`Failed to load external access: ${error.message}`)
+  }
+
+  const all = (tokenRows ?? []) as any[]
+  const truncated = all.length > ORG_EXTERNAL_DIRECTORY_CAP
+  const rows = truncated ? all.slice(0, ORG_EXTERNAL_DIRECTORY_CAP) : all
+  if (rows.length === 0) return { people: [], truncated: false }
+
+  const { data: grantRows, error: grantError } = await serviceClient
+    .from("external_identity_grants")
+    .select("portal_access_token_id, identity:external_identities(id, email, full_name)")
+    .eq("org_id", resolvedOrgId)
+    .in(
+      "portal_access_token_id",
+      rows.map((row) => row.id),
+    )
+    .is("revoked_at", null)
+
+  if (grantError) {
+    throw new Error(`Failed to load external accounts: ${grantError.message}`)
+  }
+
+  const identityByToken = new Map<string, any>()
+  for (const grant of (grantRows ?? []) as any[]) {
+    const identity = Array.isArray(grant.identity) ? grant.identity[0] : grant.identity
+    if (identity) identityByToken.set(grant.portal_access_token_id, identity)
+  }
+
+  const byPerson = new Map<string, OrgExternalPerson>()
+
+  for (const row of rows) {
+    const contact = Array.isArray(row.contact) ? row.contact[0] : row.contact
+    const company = Array.isArray(row.company) ? row.company[0] : row.company
+    const project = Array.isArray(row.project) ? row.project[0] : row.project
+    const identity = identityByToken.get(row.id) ?? null
+    const email = identity?.email ?? contact?.email ?? null
+
+    // Group on the identity when there is one, so a vendor who claimed an
+    // account collapses into a single row across every project.
+    const key = identity?.id
+      ? `identity:${identity.id}`
+      : contact?.id
+        ? `contact:${contact.id}`
+        : `token:${row.id}`
+
+    const existing = byPerson.get(key)
+    const entry: OrgExternalPerson = existing ?? {
+      key,
+      identity_id: identity?.id ?? null,
+      contact_id: contact?.id ?? null,
+      name: identity?.full_name || contact?.full_name || company?.name || email || "Unnamed",
+      email,
+      company_name: company?.name ?? null,
+      access_mode: identity ? "account" : "link",
+      projects: [],
+      last_accessed_at: null,
+    }
+
+    if (identity && entry.access_mode !== "account") entry.access_mode = "account"
+    if (!entry.company_name && company?.name) entry.company_name = company.name
+
+    entry.projects.push({
+      token_id: row.id,
+      project_id: project?.id ?? row.project_id,
+      project_name: project?.name ?? "Unknown project",
+      portal_type: row.portal_type,
+      status: resolveAccessStatus(row),
+    })
+
+    if (
+      row.last_accessed_at &&
+      (!entry.last_accessed_at || new Date(row.last_accessed_at) > new Date(entry.last_accessed_at))
+    ) {
+      entry.last_accessed_at = row.last_accessed_at
+    }
+
+    byPerson.set(key, entry)
+  }
+
+  const people = Array.from(byPerson.values()).sort((a, b) => a.name.localeCompare(b.name))
+  return { people, truncated }
+}
+
+/**
+ * Removes one person from every project in the org. Loops the per-token revoke
+ * rather than doing a bulk update so each access record still gets its own
+ * grant cascade, event and audit entry.
+ */
+export async function revokeOrgExternalPersonAccess({
+  tokenIds,
+  orgId,
+}: {
+  tokenIds: string[]
+  orgId?: string
+}): Promise<number> {
+  const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
+  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+
+  for (const tokenId of tokenIds) {
+    await revokePortalToken(tokenId, resolvedOrgId)
+  }
+
+  return tokenIds.length
+}
+
+export async function listKnownExternalContacts(orgId?: string): Promise<KnownExternalContact[]> {
+  const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
+  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
+  const serviceClient = createServiceSupabaseClient()
+
+  const { data, error } = await serviceClient
+    .from("external_identity_grants")
+    .select(
+      `
+      identity:external_identities!inner(id, email, full_name),
+      token:portal_access_tokens!inner(
+        contact_id, company_id, portal_type,
+        company:companies(name), project:projects(name)
+      )
+    `,
+    )
+    .eq("org_id", resolvedOrgId)
+    .eq("status", "active")
+    .is("paused_at", null)
+    .is("revoked_at", null)
+
+  if (error) {
+    throw new Error(`Failed to load known contacts: ${error.message}`)
+  }
+
+  const byIdentity = new Map<string, KnownExternalContact>()
+  for (const row of (data ?? []) as any[]) {
+    const identity = Array.isArray(row.identity) ? row.identity[0] : row.identity
+    const token = Array.isArray(row.token) ? row.token[0] : row.token
+    if (!identity) continue
+
+    const company = Array.isArray(token?.company) ? token.company[0] : token?.company
+    const project = Array.isArray(token?.project) ? token.project[0] : token?.project
+
+    const existing = byIdentity.get(identity.id)
+    if (existing) {
+      if (project?.name && !existing.project_names.includes(project.name)) {
+        existing.project_names.push(project.name)
+      }
+      existing.company_name = existing.company_name ?? company?.name ?? null
+      continue
+    }
+
+    byIdentity.set(identity.id, {
+      identity_id: identity.id,
+      email: identity.email,
+      full_name: identity.full_name ?? null,
+      company_name: company?.name ?? null,
+      contact_id: token?.contact_id ?? null,
+      company_id: token?.company_id ?? null,
+      portal_type: token?.portal_type ?? null,
+      project_names: project?.name ? [project.name] : [],
+    })
+  }
+
+  return Array.from(byIdentity.values()).sort((a, b) =>
+    (a.full_name || a.email).localeCompare(b.full_name || b.email),
+  )
 }
 
 export async function recordPortalAccess(tokenId: string) {
@@ -784,7 +1110,7 @@ export async function loadClientPortalData({
     supabase.from("orgs").select("id, name, logo_url").eq("id", orgId).single(),
     supabase
       .from("projects")
-      .select("id, org_id, name, status, start_date, end_date, location, property_type, created_at, updated_at")
+      .select("id, org_id, name, status, phase, start_date, end_date, location, property_type, created_at, updated_at")
       .eq("id", projectId)
       .single(),
     supabase
@@ -856,6 +1182,7 @@ export async function loadClientPortalData({
       org_id: projectRow.data.org_id,
       name: projectRow.data.name,
       status: projectRow.data.status,
+      phase: projectRow.data.phase ?? "delivery",
       start_date: projectRow.data.start_date ?? undefined,
       end_date: projectRow.data.end_date ?? undefined,
       address: (projectRow.data.location as any)?.address,
@@ -1277,6 +1604,9 @@ export async function loadSubPortalShellContext({
       .single(),
     supabase.from("companies").select("id, name, metadata").eq("id", companyId).single(),
 
+    // The nav badge counts what the sub owes an answer on. RFIs the sub raised
+    // are assigned back to their own company so they can read them, so they
+    // have to be excluded or the badge counts the sub's own questions.
     permissions.can_view_rfis
       ? supabase
           .from("rfis")
@@ -1285,6 +1615,7 @@ export async function loadSubPortalShellContext({
           .eq("project_id", projectId)
           .eq("assigned_company_id", companyId)
           .in("status", ["open", "pending"])
+          .or(`submitted_by_company_id.is.null,submitted_by_company_id.neq.${companyId}`)
       : zero,
 
     permissions.can_view_submittals
@@ -1818,6 +2149,7 @@ function mapProject(data: any) {
     org_id: data.org_id,
     name: data.name,
     status: data.status,
+    phase: data.phase ?? "delivery",
     start_date: data.start_date ?? undefined,
     end_date: data.end_date ?? undefined,
     address: (data.location as any)?.address,

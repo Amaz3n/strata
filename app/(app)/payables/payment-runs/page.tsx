@@ -12,9 +12,15 @@ import { PaymentRunsClient } from "./payment-runs-client"
 
 export const dynamic = "force-dynamic"
 
-export default async function PaymentRunsPage() {
+export default async function PaymentRunsPage({ searchParams }: { searchParams: Promise<{ bills?: string }> }) {
+  const { bills } = await searchParams
+  const preselectedBillIds = bills ? bills.split(",").filter(Boolean) : []
   let error: string | null = null
-  let setup: PaymentRunSetupData = { fundingSources: [], eligibleBills: [] }
+  let setup: PaymentRunSetupData = {
+    fundingSources: [],
+    eligibleBills: [],
+    routing: { rosterConfigured: false, approvers: [], viewerMayApprove: false, viewerUserId: "" },
+  }
   let runs: PaymentRunListRow[] = []
   let reconciliations: PaymentReconciliationSummary[] = []
   const [setupResult, runsResult, reconciliationResult] = await Promise.allSettled([
@@ -33,5 +39,5 @@ export default async function PaymentRunsPage() {
   if (coreFailure) {
     error = coreFailure instanceof Error ? coreFailure.message : "Unable to load payment operations"
   }
-  return <PageLayout fullBleed><PaymentRunsClient setup={setup} runs={runs} reconciliations={reconciliations} canReconcile={reconciliationResult.status === "fulfilled"} error={error} /></PageLayout>
+  return <PageLayout fullBleed><PaymentRunsClient setup={setup} runs={runs} reconciliations={reconciliations} canReconcile={reconciliationResult.status === "fulfilled"} error={error} preselectedBillIds={preselectedBillIds} /></PageLayout>
 }

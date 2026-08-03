@@ -331,6 +331,12 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
       const { data: run } = await supabase.from("payment_runs").select("requested_by").eq("org_id", orgId).eq("id", event.entity_id).maybeSingle()
       return run?.requested_by && run.requested_by !== actorId ? [run.requested_by] : []
     }
+    // An org that designated approvers has said who owns this decision; mailing
+    // everyone who merely holds the permission would train them to ignore it.
+    const { data: designated } = await supabase.from("payment_run_approvers").select("user_id").eq("org_id", orgId)
+    if ((designated ?? []).length > 0) {
+      return uniqUserIds((designated ?? []).map((row) => row.user_id)).filter((id) => id !== actorId)
+    }
     const { data: roleRows } = await supabase.from("role_permissions").select("role_id").eq("permission_key", "payments.approve_run")
     const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
     if (roleIds.length === 0) return []
@@ -834,6 +840,52 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
       }
     }
 
+    // Payment approvals: the recipient has to know what they are releasing (or
+    // what was released on their behalf) from the email alone.
+    case "payment_run_submitted":
+    case "payment_run_approved":
+    case "payment_run_approval_recorded":
+    case "payment_run_rejected": {
+      const vendor = typeof safePayload.vendor_name === "string" ? safePayload.vendor_name : "a vendor"
+      const billNumber = typeof safePayload.bill_number === "string" ? safePayload.bill_number : null
+      const project = typeof safePayload.project_name === "string" ? safePayload.project_name : null
+      const amount = typeof safePayload.total_debit_cents === "number"
+        ? formatCentsForNotification(safePayload.total_debit_cents)
+        : null
+      const billCount = typeof safePayload.bill_count === "number" ? safePayload.bill_count : 1
+      const subject = billCount > 1
+        ? `${billCount} vendor bills`
+        : `${vendor}${billNumber ? ` · invoice ${billNumber}` : ""}${project ? ` · ${project}` : ""}`
+      const title =
+        event_type === "payment_run_submitted"
+          ? `Payment needs your approval${amount ? `: ${amount}` : ""}`
+          : event_type === "payment_run_approved"
+            ? `Payment approved${amount ? `: ${amount}` : ""}`
+            : event_type === "payment_run_rejected"
+              ? "Payment rejected"
+              : "Payment approval recorded"
+      const message =
+        event_type === "payment_run_submitted"
+          ? `${subject}. Open it to review the bill and release the payment.`
+          : event_type === "payment_run_approved"
+            ? `${subject} is approved and on its way to the vendor.`
+            : event_type === "payment_run_rejected"
+              ? `${subject} was rejected${typeof safePayload.reason === "string" ? `: ${safePayload.reason}` : "."}`
+              : `An approver recorded a decision on ${subject}.`
+      return {
+        orgId: event.org_id,
+        userId,
+        type: event_type as NotificationType,
+        title,
+        message,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+        metadata: typeof safePayload.bill_id === "string" ? { bill_id: safePayload.bill_id } : undefined,
+      }
+    }
+
     case "portal_message":
       return {
         orgId: event.org_id,
@@ -889,6 +941,10 @@ async function enrichBidEvent(event: EventRecord, orgId: string) {
     ...(pkg.project_id ? { project_id: pkg.project_id } : {}),
     ...(pkg.created_by ? { package_created_by: pkg.created_by } : {}),
   }
+}
+
+function formatCentsForNotification(cents: number) {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100)
 }
 
 function extractProjectIdFromEvent(event: EventRecord): string | null {

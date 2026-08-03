@@ -1,7 +1,12 @@
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
-import { isVendorCredit } from "@/lib/financials/payables-rules"
+import { isVendorCredit, payableOutstandingCents } from "@/lib/financials/payables-rules"
 
-export type PayableQueue = "all" | "overdue" | "due_soon" | "needs_review" | "ready" | "synced"
+/**
+ * One lifecycle taxonomy for every payables surface. Queues describe where a
+ * payable sits on its way to the vendor being paid — never accounting-sync
+ * bookkeeping, which is an outcome that follows the lifecycle on its own.
+ */
+export type PayableQueue = "all" | "overdue" | "due_soon" | "needs_review" | "payable" | "paid"
 
 function dueDateState(bill: VendorBillSummary) {
   if (!bill.due_date || bill.status === "paid") return { overdue: false, dueSoon: false }
@@ -16,39 +21,16 @@ function dueDateState(bill: VendorBillSummary) {
   }
 }
 
-/** A payable still needs coding before it can sync to QuickBooks. */
-export function billNeedsReview(
-  bill: VendorBillSummary,
-  costCodesEnabled: boolean,
-  accountingEnabled = true,
-): boolean {
+/** Still needs a human: unapproved, or missing the coding approval requires. */
+function needsReview(bill: VendorBillSummary, costCodesEnabled: boolean): boolean {
   if (isVendorCredit(bill)) return false
-  if (!accountingEnabled) {
-    return bill.status === "pending" || (costCodesEnabled && !bill.actual_cost_code_id)
-  }
-  return (
-    bill.status === "pending" ||
-    !bill.qbo_vendor_id ||
-    (costCodesEnabled && !bill.actual_cost_code_id) ||
-    !bill.qbo_expense_account_id
-  )
+  return bill.status === "pending" || (costCodesEnabled && !bill.actual_cost_code_id)
 }
 
-/** A coded, approved payable that hasn't been pushed to QuickBooks yet. */
-export function billReadyToSync(
-  bill: VendorBillSummary,
-  costCodesEnabled: boolean,
-  accountingEnabled = true,
-): boolean {
+/** Approved with money still owed — the queue a payment run draws from. */
+function isPayable(bill: VendorBillSummary): boolean {
   if (isVendorCredit(bill)) return false
-  if (!accountingEnabled) {
-    return bill.status === "approved" || bill.status === "partial"
-  }
-  return (
-    bill.status !== "pending" &&
-    !billNeedsReview(bill, costCodesEnabled, accountingEnabled) &&
-    bill.qbo_sync_status !== "synced"
-  )
+  return (bill.status === "approved" || bill.status === "partial") && payableOutstandingCents(bill) > 0
 }
 
 function matchesSearch(bill: VendorBillSummary, query: string, costCodesEnabled: boolean): boolean {
@@ -66,49 +48,40 @@ function matchesSearch(bill: VendorBillSummary, query: string, costCodesEnabled:
 
 export function filterPayables(
   bills: VendorBillSummary[],
-  {
-    search,
-    queue,
-    costCodesEnabled,
-    accountingEnabled = true,
-  }: { search: string; queue: PayableQueue; costCodesEnabled: boolean; accountingEnabled?: boolean },
+  { search, queue, costCodesEnabled }: { search: string; queue: PayableQueue; costCodesEnabled: boolean },
 ): VendorBillSummary[] {
   const query = search.trim().toLowerCase()
   return bills.filter((bill) => {
     if (!matchesSearch(bill, query, costCodesEnabled)) return false
     switch (queue) {
       case "needs_review":
-        return billNeedsReview(bill, costCodesEnabled, accountingEnabled)
+        return needsReview(bill, costCodesEnabled)
       case "overdue":
         return dueDateState(bill).overdue
       case "due_soon":
         return dueDateState(bill).dueSoon
-      case "ready":
-        return billReadyToSync(bill, costCodesEnabled, accountingEnabled)
-      case "synced":
-        return accountingEnabled ? bill.qbo_sync_status === "synced" : bill.status === "paid"
+      case "payable":
+        return isPayable(bill)
+      case "paid":
+        return bill.status === "paid"
       default:
         return true
     }
   })
 }
 
-export function payableQueueCounts(
-  bills: VendorBillSummary[],
-  costCodesEnabled: boolean,
-  accountingEnabled = true,
-): Record<PayableQueue, number> {
+export function payableQueueCounts(bills: VendorBillSummary[], costCodesEnabled: boolean): Record<PayableQueue, number> {
   return bills.reduce(
     (counts, bill) => {
       counts.all += 1
       const due = dueDateState(bill)
       if (due.overdue) counts.overdue += 1
       if (due.dueSoon) counts.due_soon += 1
-      if (billNeedsReview(bill, costCodesEnabled, accountingEnabled)) counts.needs_review += 1
-      if (billReadyToSync(bill, costCodesEnabled, accountingEnabled)) counts.ready += 1
-      if (accountingEnabled ? bill.qbo_sync_status === "synced" : bill.status === "paid") counts.synced += 1
+      if (needsReview(bill, costCodesEnabled)) counts.needs_review += 1
+      if (isPayable(bill)) counts.payable += 1
+      if (bill.status === "paid") counts.paid += 1
       return counts
     },
-    { all: 0, overdue: 0, due_soon: 0, needs_review: 0, ready: 0, synced: 0 } as Record<PayableQueue, number>,
+    { all: 0, overdue: 0, due_soon: 0, needs_review: 0, payable: 0, paid: 0 } as Record<PayableQueue, number>,
   )
 }

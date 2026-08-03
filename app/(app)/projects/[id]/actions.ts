@@ -189,6 +189,7 @@ function mapProject(row: any): Project {
     org_id: row.org_id,
     name: row.name,
     status: row.status,
+    phase: row.phase ?? "delivery",
     start_date: row.start_date ?? undefined,
     end_date: row.end_date ?? undefined,
   budget: row.budget ?? undefined,

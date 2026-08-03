@@ -1,74 +1,21 @@
-import { notFound } from "next/navigation"
+import { notFound, redirect } from "next/navigation"
 
-import { BidPackageWorkbench } from "@/components/bids/bid-package-workbench"
-import { tradeOptionsFromCompanies } from "@/components/bids/trade-options"
-import { PageLayout } from "@/components/layout/page-layout"
-import { listCompanies } from "@/lib/services/companies"
-import { getProspect } from "@/lib/services/prospects"
+import { requireOrgContext } from "@/lib/services/context"
 
-import {
-  getBidPackageAction,
-  getPackageIntelligenceAction,
-  listBidAddendaAction,
-  listBidInvitesAction,
-  listBidPackageActivityAction,
-  listBidPackageRfisAction,
-  listBidScopeItemsAction,
-  listBidSubmissionsAction,
-} from "@/app/(app)/bids/actions"
-
-interface ProspectBidPackageDetailPageProps {
+// Legacy route: prospect bid packages now live on the prospect's (precon) project.
+export default async function ProspectBidPackagePage({
+  params,
+}: {
   params: Promise<{ prospectId: string; packageId: string }>
-}
-
-export default async function ProspectBidPackageDetailPage({ params }: ProspectBidPackageDetailPageProps) {
+}) {
   const { prospectId, packageId } = await params
-
-  let prospect
-  let bidPackage
-  try {
-    ;[prospect, bidPackage] = await Promise.all([getProspect(prospectId), getBidPackageAction(packageId)])
-  } catch {
-    notFound()
-  }
-
-  if (!bidPackage || bidPackage.prospect_id !== prospect.id) {
-    notFound()
-  }
-
-  const [invites, addenda, submissions, scopeItems, companies, rfis, activity, intelligence] = await Promise.all([
-    listBidInvitesAction(bidPackage.id),
-    listBidAddendaAction(bidPackage.id),
-    listBidSubmissionsAction(bidPackage.id),
-    listBidScopeItemsAction(bidPackage.id),
-    listCompanies(),
-    listBidPackageRfisAction(bidPackage.id),
-    listBidPackageActivityAction(bidPackage.id),
-    getPackageIntelligenceAction(bidPackage.id).catch(() => null),
-  ])
-
-  return (
-    <PageLayout
-      title={bidPackage.title}
-      breadcrumbs={[
-        { label: "Pipeline", href: "/pipeline" },
-        { label: prospect.name, href: `/pipeline/prospects/${prospect.id}/bids` },
-        { label: bidPackage.title },
-      ]}
-    >
-      <BidPackageWorkbench
-        context={{ prospectId: prospect.id }}
-        bidPackage={bidPackage}
-        invites={invites}
-        addenda={addenda}
-        submissions={submissions}
-        scopeItems={scopeItems}
-        rfis={rfis}
-        activity={activity}
-        intelligence={intelligence}
-        companies={companies}
-        tradeOptions={tradeOptionsFromCompanies(companies)}
-      />
-    </PageLayout>
-  )
+  const { supabase, orgId } = await requireOrgContext()
+  const { data: project } = await supabase
+    .from("projects")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("prospect_id", prospectId)
+    .maybeSingle()
+  if (!project) notFound()
+  redirect(`/projects/${project.id}/bids/${packageId}`)
 }

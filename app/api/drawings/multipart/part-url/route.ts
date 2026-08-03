@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server"
 
 import { requireOrgContext } from "@/lib/services/context"
+import { requireDrawingUploadForPath } from "@/app/api/drawings/multipart/upload-gate"
 import { ensureOrgScopedPath } from "@/lib/storage/files-storage"
 import { createDrawingPdfMultipartPartUrl } from "@/lib/storage/drawings-pdfs-storage"
 
 export async function POST(request: Request) {
   try {
-    const { orgId } = await requireOrgContext()
+    const { supabase, orgId, userId } = await requireOrgContext()
     const body = await request.json()
     const storagePath = typeof body?.storagePath === "string" ? body.storagePath : null
     const uploadId = typeof body?.uploadId === "string" ? body.uploadId : null
@@ -20,6 +21,9 @@ export async function POST(request: Request) {
     if (!normalizedStoragePath.startsWith(`${orgId}/`)) {
       return NextResponse.json({ error: "Invalid upload path." }, { status: 400 })
     }
+
+    const denied = await requireDrawingUploadForPath({ supabase, orgId, userId, storagePath: normalizedStoragePath })
+    if (denied) return denied
 
     const result = await createDrawingPdfMultipartPartUrl({
       orgId,

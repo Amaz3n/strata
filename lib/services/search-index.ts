@@ -283,12 +283,7 @@ export async function reindexEntity(
   let href = config.hrefTemplate.replace("{id}", entityId).replace("{project_id}", projectId ?? "")
   href = href.replace("{community_id}", typeof row.community_id === "string" ? row.community_id : "")
   if (entityType === "bid_package") {
-    const prospectId = typeof row.prospect_id === "string" ? row.prospect_id : null
-    href = projectId
-      ? `/projects/${projectId}/bids/${entityId}`
-      : prospectId
-        ? `/pipeline/prospects/${prospectId}/bids/${entityId}`
-        : "/bids"
+    href = projectId ? `/projects/${projectId}/bids/${entityId}` : "/bids"
   }
 
   const { data: upserted, error: upsertError } = await client

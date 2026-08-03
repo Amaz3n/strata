@@ -15,9 +15,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 import {
   AlertTriangle,
-  Check,
+  BookmarkPlus,
   ChevronRight,
+  Download,
+  Library,
+  ListChecks,
   Loader2,
+  MoreHorizontal,
   Pencil,
   Plus,
   Send,
@@ -28,6 +32,13 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Tooltip,
@@ -37,15 +48,19 @@ import {
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { unwrapAction } from "@/lib/action-result"
-import { formatQuantity, MEASURE_UOM_LABELS, type MeasureUom } from "@/lib/drawings/measure"
+import { formatQuantity, MEASURE_UOM_LABELS } from "@/lib/drawings/measure"
 import type { ConditionRollup, TakeoffCondition } from "@/lib/services/takeoff"
 import {
   deleteTakeoffConditionAction,
+  exportConditionRollupCsvAction,
   getConditionRollupAction,
+  listConditionTemplatesAction,
 } from "@/app/(app)/drawings/takeoff-actions"
 import { ConditionEditorDialog } from "./takeoff-condition-editor"
 import { TakeoffSyncDialog } from "./takeoff-sync-dialog"
 import { TakeoffRevisionBand } from "./takeoff-revision-band"
+import { SheetCoverageSheet } from "./takeoff-coverage-sheet"
+import { HarvestTemplatesDialog, TemplateLibraryDialog } from "./takeoff-template-library"
 
 const money = (cents: number) =>
   (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD" })
@@ -103,6 +118,10 @@ export function TakeoffPanel({
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set())
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [libraryOpen, setLibraryOpen] = useState(false)
+  const [harvestOpen, setHarvestOpen] = useState(false)
+  const [coverageOpen, setCoverageOpen] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const initialRollupRef = useRef(initialRollup)
 
   const scope = useMemo(
@@ -176,6 +195,31 @@ export function TakeoffPanel({
     })
   }
 
+  /**
+   * The CSV is built server-side and handed back as a string, then downloaded
+   * from a blob — no route, no temp file, and the browser never sees a URL that
+   * could be shared past the permission check that produced it.
+   */
+  const handleExport = useCallback(async () => {
+    if (!scope) return
+    setExporting(true)
+    try {
+      const result = unwrapAction(await exportConditionRollupCsvAction(scope))
+      const blob = new Blob([result.csv], { type: "text/csv;charset=utf-8" })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.href = url
+      link.download = result.filename
+      link.click()
+      URL.revokeObjectURL(url)
+      toast.success(`Exported ${result.condition_count} conditions`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to export")
+    } finally {
+      setExporting(false)
+    }
+  }, [scope])
+
   const handleDelete = async (rollup: ConditionRollup) => {
     const warning = rollup.sync
       ? `"${rollup.condition.name}" is synced to an estimate line. Deleting it marks that line detached and releases ${rollup.markup_count} measurement(s). Continue?`
@@ -215,6 +259,51 @@ export function TakeoffPanel({
               Condition
             </Button>
           )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="icon" variant="ghost" className="h-8 w-8" aria-label="Takeoff options">
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              {canWrite && (
+                <DropdownMenuItem onSelect={() => setLibraryOpen(true)}>
+                  <Library className="mr-2 h-3.5 w-3.5" />
+                  Add from library
+                </DropdownMenuItem>
+              )}
+              {canWrite && (
+                <DropdownMenuItem
+                  disabled={checkedRollups.length === 0}
+                  onSelect={() => setHarvestOpen(true)}
+                >
+                  <BookmarkPlus className="mr-2 h-3.5 w-3.5" />
+                  {checkedRollups.length === 0
+                    ? "Save to library"
+                    : `Save ${checkedRollups.length} to library`}
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => setCoverageOpen(true)}>
+                <ListChecks className="mr-2 h-3.5 w-3.5" />
+                Sheet coverage
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={exporting || (rollups?.length ?? 0) === 0}
+                onSelect={(event) => {
+                  event.preventDefault()
+                  void handleExport()
+                }}
+              >
+                {exporting ? (
+                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Download className="mr-2 h-3.5 w-3.5" />
+                )}
+                Export quantities (CSV)
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button size="icon" variant="ghost" className="h-8 w-8" onClick={onClose} aria-label="Close takeoff">
             <X className="h-4 w-4" />
           </Button>
@@ -235,7 +324,11 @@ export function TakeoffPanel({
       ) : error ? (
         <PanelError message={error} onRetry={() => void load()} />
       ) : rollups.length === 0 ? (
-        <PanelEmpty canWrite={canWrite} onCreate={() => setCreating(true)} />
+        <PanelEmpty
+          canWrite={canWrite}
+          onCreate={() => setCreating(true)}
+          onOpenLibrary={() => setLibraryOpen(true)}
+        />
       ) : (
         <ScrollArea className="flex-1">
           <TooltipProvider delayDuration={300}>
@@ -331,6 +424,47 @@ export function TakeoffPanel({
           }}
         />
       )}
+
+      {libraryOpen && scope && (
+        <TemplateLibraryDialog
+          open
+          scope={scope}
+          onOpenChange={setLibraryOpen}
+          onApplied={() => {
+            setLibraryOpen(false)
+            void load()
+          }}
+        />
+      )}
+
+      {harvestOpen && (
+        <HarvestTemplatesDialog
+          open
+          conditionIds={checkedRollups.map((rollup) => rollup.condition.id)}
+          onOpenChange={setHarvestOpen}
+          onSaved={() => {
+            setHarvestOpen(false)
+            setCheckedIds(new Set())
+          }}
+        />
+      )}
+
+      {coverageOpen && (
+        <SheetCoverageSheet
+          open
+          scope={
+            projectId
+              ? { project_id: projectId }
+              : {
+                  house_plan_version_id: housePlanVersionId as string,
+                  source_project_ids: sheetProjectId ? [sheetProjectId] : [],
+                }
+          }
+          declarationScope={scope}
+          canWrite={canWrite}
+          onOpenChange={setCoverageOpen}
+        />
+      )}
     </div>
   )
 }
@@ -365,7 +499,7 @@ function ConditionRow({
   onDelete: () => void
 }) {
   const { condition } = rollup
-  const uomLabel = MEASURE_UOM_LABELS[condition.uom as MeasureUom]
+  const uomLabel = MEASURE_UOM_LABELS[condition.uom]
   const onThisSheet = activeSheetId
     ? rollup.sheets.find((sheet) => sheet.drawing_sheet_id === activeSheetId)
     : null
@@ -435,6 +569,7 @@ function ConditionRow({
             )}
             <span>
               {rollup.markup_count} measurement{rollup.markup_count === 1 ? "" : "s"}
+              {rollup.deduction_count > 0 && `, ${rollup.deduction_count} deducted`}
             </span>
             {onThisSheet && (
               <span className="tabular-nums">
@@ -442,6 +577,14 @@ function ConditionRow({
               </span>
             )}
           </div>
+
+          {/* The arithmetic behind a converted number, in place. A CY figure is
+              only checkable if you can see the SF and the depth it came from. */}
+          {rollup.conversion_summary && (
+            <p className="mt-1 text-[11px] tabular-nums text-muted-foreground">
+              {rollup.conversion_summary}
+            </p>
+          )}
 
           <ConditionFlags rollup={rollup} />
         </button>
@@ -516,7 +659,7 @@ function ConditionRow({
                 {sheet.sheet_title ? ` · ${sheet.sheet_title}` : ""}
               </span>
               <span className="tabular-nums">
-                {formatQuantity(sheet.quantity)} {MEASURE_UOM_LABELS[rollup.condition.uom as MeasureUom]}
+                {formatQuantity(sheet.quantity)} {MEASURE_UOM_LABELS[rollup.condition.uom]}
               </span>
             </li>
           ))}
@@ -535,6 +678,21 @@ function ConditionRow({
 function ConditionFlags({ rollup }: { rollup: ConditionRollup }) {
   const flags: Array<{ key: string; label: string; tone: "warning" | "muted" }> = []
 
+  // Loudest first: a net-negative condition is a mistake, not a nuance.
+  if (rollup.net_negative) {
+    flags.push({
+      key: "net-negative",
+      label: "Deductions exceed the areas — counted as 0",
+      tone: "warning",
+    })
+  }
+  if (rollup.duplicate_suspect_sheets.length > 0) {
+    flags.push({
+      key: "duplicate",
+      label: `${rollup.duplicate_suspect_sheets.join(" and ")} match — measured twice?`,
+      tone: "warning",
+    })
+  }
   if (rollup.unscaled_markup_count > 0) {
     flags.push({
       key: "unscaled",
@@ -612,7 +770,34 @@ function PanelError({ message, onRetry }: { message: string; onRetry: () => void
   )
 }
 
-function PanelEmpty({ canWrite, onCreate }: { canWrite: boolean; onCreate: () => void }) {
+function PanelEmpty({
+  canWrite,
+  onCreate,
+  onOpenLibrary,
+}: {
+  canWrite: boolean
+  onCreate: () => void
+  onOpenLibrary: () => void
+}) {
+  const [hasLibrary, setHasLibrary] = useState(false)
+
+  // The library is offered FIRST when the org has one, because on the second job
+  // onward the honest answer to "nothing measured yet" is "you already have
+  // these conditions, take them".
+  useEffect(() => {
+    let cancelled = false
+    listConditionTemplatesAction()
+      .then((result) => {
+        if (!cancelled && result.success) setHasLibrary(result.data.length > 0)
+      })
+      .catch(() => {
+        if (!cancelled) setHasLibrary(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
       <p className="text-sm font-medium">Nothing measured yet</p>
@@ -621,10 +806,23 @@ function PanelEmpty({ canWrite, onCreate }: { canWrite: boolean; onCreate: () =>
         measure it on the sheet.
       </p>
       {canWrite && (
-        <Button size="sm" className="gap-1.5" onClick={onCreate}>
-          <Plus className="h-3.5 w-3.5" />
-          New condition
-        </Button>
+        <div className="flex flex-col items-center gap-2">
+          {hasLibrary && (
+            <Button size="sm" className="gap-1.5" onClick={onOpenLibrary}>
+              <Library className="h-3.5 w-3.5" />
+              Add from your library
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant={hasLibrary ? "outline" : "default"}
+            className="gap-1.5"
+            onClick={onCreate}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            New condition
+          </Button>
+        </div>
       )}
     </div>
   )

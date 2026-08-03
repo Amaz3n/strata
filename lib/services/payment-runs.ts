@@ -13,6 +13,11 @@ import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { isFeatureEnabledForOrg } from "@/lib/services/feature-flags"
+import {
+  assertUserMayApproveRun,
+  getPaymentApprovalRouting,
+  type PaymentApprovalRouting,
+} from "@/lib/services/payment-approvers"
 import { assertBillReleasable } from "@/lib/services/payment-holds"
 import { postDisbursementSubmittedLedger } from "@/lib/services/payment-ledger"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
@@ -315,11 +320,41 @@ export async function submitPaymentRun(runId: string, orgId?: string) {
     p_requested_at: now,
   })
   if (error || !data) throw new Error("Payment run changed before it could be submitted")
+  // Notification copy has to say what is being approved, so the event carries the
+  // bill context rather than making every recipient open the run to find out.
+  const summary = await summarizeRunForNotification(parsedRunId, context.orgId, material.items)
   await Promise.all([
-    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "payment_run_submitted", entityType: "payment_run", entityId: parsedRunId, payload: { content_hash: material.contentHash, total_debit_cents: Number(material.run.total_debit_cents), required_approvals: Number(material.run.required_approvals) } }),
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "payment_run_submitted", entityType: "payment_run", entityId: parsedRunId, payload: { content_hash: material.contentHash, total_debit_cents: Number(material.run.total_debit_cents), required_approvals: Number(material.run.required_approvals), ...summary } }),
     recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "payment_run", entityId: parsedRunId, before: { status: "draft" }, after: { status: "pending_approval", content_hash: material.contentHash } }),
   ])
   return { id: parsedRunId, status: "pending_approval", content_hash: material.contentHash }
+}
+
+/**
+ * Bill-level context for a run's notifications: enough for an approver to know
+ * what they are being asked to release without opening anything.
+ */
+async function summarizeRunForNotification(runId: string, orgId: string, items: Array<Record<string, unknown>>) {
+  const supabase = createServiceSupabaseClient()
+  const billIds = items.map((item) => item.bill_id).filter((value): value is string => typeof value === "string")
+  const { data: bills } = billIds.length > 0
+    ? await supabase.from("vendor_bills").select("id,bill_number,project_id,company_id").eq("org_id", orgId).in("id", billIds)
+    : { data: [] }
+  const first = (bills ?? [])[0]
+  const { data: company } = first?.company_id
+    ? await supabase.from("companies").select("name").eq("org_id", orgId).eq("id", first.company_id).maybeSingle()
+    : { data: null }
+  const { data: project } = first?.project_id
+    ? await supabase.from("projects").select("name").eq("org_id", orgId).eq("id", first.project_id).maybeSingle()
+    : { data: null }
+  return {
+    bill_id: first?.id ?? null,
+    bill_number: first?.bill_number ?? null,
+    project_id: first?.project_id ?? null,
+    project_name: project?.name ?? null,
+    vendor_name: company?.name ?? null,
+    bill_count: billIds.length,
+  }
 }
 
 export async function cancelPaymentRun(runId: string, orgId?: string) {
@@ -350,10 +385,12 @@ export async function decidePaymentRun(input: DecidePaymentRunInput, orgId?: str
   const parsed = decidePaymentRunSchema.parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("payments.approve_run", context)
-  const stepUpVerifiedAt = await requireRecentPaymentStepUp(context.supabase)
+  const stepUpVerifiedAt = await requireRecentPaymentStepUp()
   const supabase = createServiceSupabaseClient()
   const material = await loadRunHashMaterial(parsed.run_id, context.orgId)
   if (material.contentHash !== parsed.content_hash || material.run.content_hash !== parsed.content_hash) throw new Error("Payment run changed after review; reload it before deciding")
+  // Permission says you *can* approve; the roster says the org designated you to.
+  await assertUserMayApproveRun({ userId: context.userId, orgId: context.orgId, totalDebitCents: Number(material.run.total_debit_cents) })
   const { data, error } = await supabase.rpc("decide_payment_run_atomic", {
     p_org_id: context.orgId,
     p_run_id: parsed.run_id,
@@ -370,8 +407,9 @@ export async function decidePaymentRun(input: DecidePaymentRunInput, orgId?: str
     : decisionStatus === "approved"
       ? "payment_run_approved"
       : "payment_run_approval_recorded"
+  const summary = await summarizeRunForNotification(parsed.run_id, context.orgId, material.items)
   await Promise.all([
-    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType, entityType: "payment_run", entityId: parsed.run_id, payload: { content_hash: parsed.content_hash, status: decisionStatus } }),
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType, entityType: "payment_run", entityId: parsed.run_id, payload: { content_hash: parsed.content_hash, status: decisionStatus, total_debit_cents: Number(material.run.total_debit_cents), reason: parsed.reason ?? null, ...summary } }),
     recordAudit({ orgId: context.orgId, actorId: context.userId, action: "insert", entityType: "payment_run_approval", entityId: parsed.run_id, after: { decision: parsed.decision, content_hash: parsed.content_hash } }),
   ])
   return data
@@ -587,8 +625,8 @@ export async function listPaymentRuns(orgId?: string): Promise<PaymentRunListRow
   const context = await requireOrgContext(orgId)
   await requirePermission("payment.release", context)
   const supabase = createServiceSupabaseClient()
-  const [canApprove, runResult] = await Promise.all([
-    hasPermission("payments.approve_run", context),
+  const [routing, runResult] = await Promise.all([
+    getPaymentApprovalRouting(context.orgId),
     supabase.from("payment_runs").select("id,status,currency,payment_count,vendor_amount_cents,processor_fee_cents,platform_fee_cents,total_debit_cents,approval_mode_snapshot,required_approvals,content_hash,requested_by,requested_at,approved_at,processing_started_at,completed_at,created_at").eq("org_id", context.orgId).order("created_at", { ascending: false }).limit(PAYMENT_RUN_LIST_LIMIT).overrideTypes<PaymentRunReviewRow[], { merge: false }>(),
   ])
   const { data, error } = runResult
@@ -661,6 +699,14 @@ export async function listPaymentRuns(orgId?: string): Promise<PaymentRunListRow
     })
     listItemsByRunId.set(item.run_id, rows)
   }
+  // A run is approvable by this viewer when they are designated (or the org named
+  // nobody and they hold the permission), they did not prepare it, and it fits
+  // under their personal approval ceiling.
+  const viewerLimitCents = routing.approvers.find((approver) => approver.userId === context.userId)?.approvalLimitCents ?? null
+  const viewerCanApprove = (requestedBy: string, totalDebitCents: number) =>
+    routing.viewerMayApprove &&
+    requestedBy !== context.userId &&
+    (viewerLimitCents == null || totalDebitCents <= viewerLimitCents)
   return (data ?? []).map((row) => ({
     id: row.id,
     status: row.status,
@@ -681,7 +727,7 @@ export async function listPaymentRuns(orgId?: string): Promise<PaymentRunListRow
     created_at: row.created_at,
     details_truncated: detailsTruncated,
     can_cancel: row.requested_by === context.userId && ["draft", "pending_approval", "approved"].includes(row.status),
-    can_approve: canApprove && row.requested_by !== context.userId,
+    can_approve: viewerCanApprove(row.requested_by, Number(row.total_debit_cents)),
     approvals: approvalsByRunId.get(row.id) ?? [],
     items: listItemsByRunId.get(row.id) ?? [],
   }))
@@ -697,13 +743,16 @@ export interface PaymentRunSetupData {
     outstandingCents: number
     recipientAccountId: string
   }>
+  /** Who a submitted run routes to, so the preparer can be told before submitting. */
+  routing: PaymentApprovalRouting
 }
 
 export async function getPaymentRunSetupData(orgId?: string): Promise<PaymentRunSetupData> {
   const context = await requireOrgContext(orgId)
   await requirePermission("payment.release", context)
   const supabase = createServiceSupabaseClient()
-  const [{ data: fundingSources, error: fundingError }, { data: bills, error: billsError }] = await Promise.all([
+  const [routing, { data: fundingSources, error: fundingError }, { data: bills, error: billsError }] = await Promise.all([
+    getPaymentApprovalRouting(context.orgId),
     supabase.from("org_funding_sources")
       .select("id,bank_name,last4,is_default,status,usable_after")
       .eq("org_id", context.orgId)
@@ -780,5 +829,6 @@ export async function getPaymentRunSetupData(orgId?: string): Promise<PaymentRun
         recipientAccountId: recipient.id,
       }]
     }),
+    routing,
   }
 }

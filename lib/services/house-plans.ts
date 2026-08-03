@@ -45,6 +45,14 @@ export type HousePlanElevationDto = {
 
 export type TakeoffLineDto = PlanTakeoffPricingLine & {
   cost_code_label: string | null
+  /**
+   * Carried through reads and writes because `metadata.takeoff` is the line's
+   * link back to the measured geometry that produced it. `replaceTakeoffLines`
+   * deletes and re-inserts the whole set, so an editor that loads lines without
+   * this and saves them back does not merely fail to update provenance — it
+   * destroys it, and breaks the unique index the next sync relies on.
+   */
+  metadata: Record<string, unknown>
 }
 
 export type HousePlanVersionDto = {
@@ -162,6 +170,7 @@ type TakeoffRow = {
   uom: string
   unit_cost_cents: number | null
   sort_order: number
+  metadata?: Record<string, unknown> | null
   cost_code?: { code: string; name: string } | Array<{ code: string; name: string }> | null
 }
 
@@ -185,6 +194,7 @@ function mapTakeoff(row: TakeoffRow): TakeoffLineDto {
     uom: row.uom,
     unit_cost_cents: row.unit_cost_cents == null ? null : Number(row.unit_cost_cents),
     sort_order: Number(row.sort_order),
+    metadata: (row.metadata ?? {}) as Record<string, unknown>,
   }
 }
 
@@ -280,7 +290,7 @@ async function loadVersionDetails(context: Awaited<ReturnType<typeof requireOrgC
   const ids = versions.map((version) => version.id)
   const [linksResult, takeoffResult, lotsResult] = await Promise.all([
     context.supabase.from("house_plan_version_template_links").select("house_plan_version_id, kind, template_id").eq("org_id", context.orgId).in("house_plan_version_id", ids).order("sort_order"),
-    context.supabase.from("house_plan_takeoff_lines").select("id, house_plan_version_id, elevation_id, cost_code_id, cost_type, description, quantity, uom, unit_cost_cents, sort_order, cost_code:cost_codes(code,name)").eq("org_id", context.orgId).in("house_plan_version_id", ids).order("sort_order"),
+    context.supabase.from("house_plan_takeoff_lines").select("id, house_plan_version_id, elevation_id, cost_code_id, cost_type, description, quantity, uom, unit_cost_cents, sort_order, metadata, cost_code:cost_codes(code,name)").eq("org_id", context.orgId).in("house_plan_version_id", ids).order("sort_order"),
     context.supabase.from("lots").select("house_plan_version_id").eq("org_id", context.orgId).in("house_plan_version_id", ids),
   ])
   for (const result of [linksResult, takeoffResult, lotsResult]) {
@@ -474,6 +484,9 @@ export async function createPlanVersion(planId: string, input: { copyFromVersion
         uom: line.uom,
         unit_cost_cents: line.unit_cost_cents,
         sort_order: line.sort_order,
+        // A new version of a plan is still measured off the same drawings, so
+        // it inherits the link to the geometry along with the numbers.
+        metadata: line.metadata ?? {},
       })))
       if (takeoffError) throw new Error(`Failed to copy plan takeoff: ${takeoffError.message}`)
     }
@@ -1150,7 +1163,7 @@ export async function getPlanLadder(
   const takeoffResult = versionIds.length
     ? await context.supabase
         .from("house_plan_takeoff_lines")
-        .select("id, house_plan_version_id, elevation_id, cost_code_id, cost_type, description, quantity, uom, unit_cost_cents, sort_order")
+        .select("id, house_plan_version_id, elevation_id, cost_code_id, cost_type, description, quantity, uom, unit_cost_cents, sort_order, metadata")
         .eq("org_id", context.orgId)
         .in("house_plan_version_id", versionIds)
     : { data: [], error: null }

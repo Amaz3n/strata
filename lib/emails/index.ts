@@ -7,6 +7,11 @@ export { InvoiceReminderEmail, type InvoiceReminderEmailProps } from "./invoice-
 export { FollowUpReminderEmail, type FollowUpReminderEmailProps } from "./follow-up-reminder-email"
 export { InviteTeamMemberEmail, type InviteTeamMemberEmailProps } from "./invite-team-member-email"
 export { PasswordResetEmail, type PasswordResetEmailProps } from "./password-reset-email"
+export {
+  ExternalPasswordResetEmail,
+  type ExternalPasswordResetEmailProps,
+} from "./external-password-reset-email"
+export { ExternalVerifyEmail, type ExternalVerifyEmailProps } from "./external-verify-email"
 export { RfiNotificationEmail, type RfiNotificationEmailProps } from "./rfi-notification-email"
 export {
   WeeklyExecutiveSnapshotEmail,

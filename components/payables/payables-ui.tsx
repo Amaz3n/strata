@@ -5,8 +5,9 @@ import { isVendorCredit } from "@/lib/financials/payables-rules"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import { cn } from "@/lib/utils"
 
+/** One vendor name everywhere: the Arc company first, the accounting alias as fallback. */
 export function vendorLabel(bill: VendorBillSummary) {
-  return bill.qbo_vendor_name ?? bill.company_name ?? "No vendor"
+  return bill.company_name ?? bill.qbo_vendor_name ?? "No vendor"
 }
 
 export function billBadge(status?: string) {

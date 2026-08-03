@@ -517,6 +517,76 @@ export async function runBidAwardConversion(input: {
   }
 }
 
+const PROSPECT_PROJECT_TYPES = new Set(["new_construction", "remodel", "addition", "renovation", "repair"])
+
+// "Start pricing": provision the prospect's precon-phase project. Drawings,
+// takeoff, bids, and estimates attach to it from day one, and winning the job
+// later just flips the phase — no artifact re-parenting.
+export async function startProspectPricing({ prospectId }: { prospectId: string }) {
+  const { requireOrgContext } = await import("@/lib/services/context")
+  const { requirePermission } = await import("@/lib/services/permissions")
+  const { supabase, orgId, userId } = await requireOrgContext()
+  await requirePermission("org.member", { supabase, orgId, userId })
+
+  const { data: prospect, error: prospectError } = await supabase
+    .from("prospects")
+    .select("id, org_id, name, status, notes, project_type, jobsite_location")
+    .eq("org_id", orgId)
+    .eq("id", prospectId)
+    .maybeSingle()
+  if (prospectError || !prospect) {
+    throw new Error(`Prospect not found: ${prospectError?.message ?? "missing"}`)
+  }
+  if (prospect.status === "won" || prospect.status === "lost") {
+    throw new Error("This prospect is closed — pricing starts from an open prospect.")
+  }
+
+  const { data: existingProject } = await supabase
+    .from("projects")
+    .select("id, phase")
+    .eq("org_id", orgId)
+    .eq("prospect_id", prospectId)
+    .maybeSingle()
+  if (existingProject) {
+    return { projectId: existingProject.id as string, alreadyStarted: true }
+  }
+
+  const { createProject } = await import("@/lib/services/projects")
+  const project = await createProject({
+    input: {
+      name: prospect.name,
+      status: "planning",
+      phase: "precon",
+      location: prospect.jobsite_location || undefined,
+      project_type: PROSPECT_PROJECT_TYPES.has(prospect.project_type)
+        ? (prospect.project_type as "new_construction" | "remodel" | "addition" | "renovation" | "repair")
+        : undefined,
+      description: prospect.notes || undefined,
+      prospect_id: prospectId,
+    },
+    orgId,
+    authorizationPermission: "org.member",
+  })
+
+  if (prospect.status === "new" || prospect.status === "contacted" || prospect.status === "qualified") {
+    await supabase
+      .from("prospects")
+      .update({ status: "pricing", updated_at: new Date().toISOString() })
+      .eq("id", prospectId)
+  }
+
+  await recordEvent({
+    orgId,
+    actorId: userId,
+    eventType: "prospect_pricing_started",
+    entityType: "prospect",
+    entityId: prospectId,
+    payload: { project_id: project.id },
+  })
+
+  return { projectId: project.id as string, alreadyStarted: false }
+}
+
 export async function convertExecutedProspectToProject({
   prospectId,
   estimateId,
@@ -571,32 +641,48 @@ export async function convertExecutedProspectToProject({
     null) as AcceptedOptions | null
   const acceptedOptionalIds = new Set(acceptedOptions?.ids ?? [])
   const contractTotalCents: number = acceptedOptions?.accepted_total_cents ?? estimate.total_cents ?? 0
-  const contractedItems = ((estimate.items ?? []) as any[]).filter(
-    (item) =>
-      item.item_type === "line" &&
-      (item.metadata?.is_optional !== true || acceptedOptionalIds.has(item.id)),
-  )
 
-  // 3. Idempotency Check: check if project already exists for this prospect
-  const { data: existingProject, error: projectLookupError } = await supabase
+  // Walk items in document order so each contracted line remembers the section
+  // (group row) it sat under — the budget keeps the estimate's structure.
+  const orderedItems = [...((estimate.items ?? []) as any[])].sort(
+    (a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0),
+  )
+  let currentSection: string | null = null
+  const contractedItems: Array<any & { section_title: string | null }> = []
+  for (const item of orderedItems) {
+    if (item.item_type === "group") {
+      currentSection = item.description ?? null
+      continue
+    }
+    if (item.item_type !== "line") continue
+    if (item.metadata?.is_optional === true && !acceptedOptionalIds.has(item.id)) continue
+    contractedItems.push({ ...item, section_title: currentSection })
+  }
+
+  // 3. Existing-project lookup. Three cases:
+  //    - delivery phase + active contract → already converted, return.
+  //    - delivery phase, no contract → an interrupted conversion; resume it.
+  //    - precon phase → activation: the pricing workspace becomes the job.
+  const { data: existingProject } = await supabase
     .from("projects")
-    .select("id")
+    .select("id, phase, name, client_id, description")
     .eq("prospect_id", prospectId)
     .maybeSingle()
 
-  if (existingProject) {
-    // Already converted! Let's load active contract and return to be idempotent
+  if (existingProject && existingProject.phase !== "precon") {
     const { data: contract } = await supabase
       .from("contracts")
-      .select("*")
+      .select("id")
       .eq("project_id", existingProject.id)
       .eq("status", "active")
       .maybeSingle()
 
-    return {
-      projectId: existingProject.id,
-      contractId: contract?.id || null,
-      alreadyConverted: true,
+    if (contract) {
+      return {
+        projectId: existingProject.id,
+        contractId: contract.id,
+        alreadyConverted: true,
+      }
     }
   }
 
@@ -700,34 +786,60 @@ export async function convertExecutedProspectToProject({
       status: "running",
     })
 
-    // 5. Create project
-    const { createProject } = await import("@/lib/services/projects")
+    // 5. Create the project — or activate the precon-phase pricing workspace.
+    // Activation keeps every artifact where it was born; only the phase flips.
+    let projectId: string
+    let projectName: string
 
-    const createdProject = await createProject({
-      input: {
-        name: projectInput.name,
-        status: "active",
-        start_date: projectInput.start_date || null,
-        end_date: projectInput.end_date || null,
-        location: prospect.jobsite_location || undefined,
-        client_id: primaryPromotedContactId || undefined,
-        property_type: projectInput.property_type,
-        project_type: projectInput.project_type || (prospect.project_type === "new_construction" || prospect.project_type === "remodel" || prospect.project_type === "addition" || prospect.project_type === "renovation" || prospect.project_type === "repair" ? prospect.project_type : "remodel"),
-        description: projectInput.description || prospect.notes || undefined,
-        total_value: Math.round(contractTotalCents / 100),
-        prospect_id: prospectId,
-      },
-      orgId: prospect.org_id,
-    })
+    if (existingProject) {
+      projectId = existingProject.id
+      projectName = projectInput.name || existingProject.name
+      const { error: activateError } = await supabase
+        .from("projects")
+        .update({
+          phase: "delivery",
+          status: "active",
+          name: projectName,
+          start_date: projectInput.start_date || null,
+          end_date: projectInput.end_date || null,
+          client_id: existingProject.client_id ?? primaryPromotedContactId,
+          description: projectInput.description || existingProject.description || prospect.notes || null,
+          total_value: Math.round(contractTotalCents / 100),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", projectId)
+      if (activateError) {
+        throw new Error(`Failed to activate project: ${activateError.message}`)
+      }
+    } else {
+      const { createProject } = await import("@/lib/services/projects")
 
-    const projectId = createdProject.id
+      const createdProject = await createProject({
+        input: {
+          name: projectInput.name,
+          status: "active",
+          start_date: projectInput.start_date || null,
+          end_date: projectInput.end_date || null,
+          location: prospect.jobsite_location || undefined,
+          client_id: primaryPromotedContactId || undefined,
+          property_type: projectInput.property_type,
+          project_type: projectInput.project_type || (prospect.project_type === "new_construction" || prospect.project_type === "remodel" || prospect.project_type === "addition" || prospect.project_type === "renovation" || prospect.project_type === "repair" ? prospect.project_type : "remodel"),
+          description: projectInput.description || prospect.notes || undefined,
+          total_value: Math.round(contractTotalCents / 100),
+          prospect_id: prospectId,
+        },
+        orgId: prospect.org_id,
+      })
+      projectId = createdProject.id
+      projectName = createdProject.name
+    }
 
     await upsertConversionStep({
       runId,
       orgId: prospect.org_id,
       stepKey: "create_project",
       status: "completed",
-      details: { project_id: projectId },
+      details: { project_id: projectId, activated_precon: Boolean(existingProject) },
     })
 
     await upsertConversionStep({
@@ -798,13 +910,23 @@ export async function convertExecutedProspectToProject({
       status: "running",
     })
 
-    // 7. Create contract from executed estimate
-    const { data: contract, error: contractError } = await supabase
+    // 7. Create contract from executed estimate (resume-safe: reuse an active
+    // contract left behind by an interrupted earlier run).
+    const { data: existingContract } = await supabase
+      .from("contracts")
+      .select("*")
+      .eq("project_id", projectId)
+      .eq("status", "active")
+      .maybeSingle()
+
+    const { data: contract, error: contractError } = existingContract
+      ? { data: existingContract, error: null }
+      : await supabase
       .from("contracts")
       .insert({
         org_id: prospect.org_id,
         project_id: projectId,
-        title: `${createdProject.name} Contract`,
+        title: `${projectName} Contract`,
         status: "active",
         total_cents: contractTotalCents,
         currency: "usd",
@@ -814,6 +936,10 @@ export async function convertExecutedProspectToProject({
         signature_data: estimate.signature_data,
         snapshot: {
           estimate_id: estimateId,
+          // Scope qualifications from the signed estimate — part of the deal.
+          inclusions: typeof estimate.metadata?.inclusions === "string" ? estimate.metadata.inclusions : null,
+          exclusions: typeof estimate.metadata?.exclusions === "string" ? estimate.metadata.exclusions : null,
+          contingency_percent: Number(estimate.metadata?.contingency_percent ?? 0) || 0,
           esign: estimate.executed_file_id ? {
             executed_file_id: estimate.executed_file_id,
             source: estimate.signature_data?.builder?.source || "estimate_execution",
@@ -829,8 +955,9 @@ export async function convertExecutedProspectToProject({
       throw new Error(`Failed to create contract from estimate: ${contractError?.message}`)
     }
 
-    // Link the executed PDF file to the contract
-    if (estimate.executed_file_id) {
+    // Link the executed PDF file to the contract (skip on resume — the link
+    // was created alongside the contract).
+    if (estimate.executed_file_id && !existingContract) {
       await supabase.from("file_links").insert({
         org_id: prospect.org_id,
         file_id: estimate.executed_file_id,
@@ -844,25 +971,45 @@ export async function convertExecutedProspectToProject({
     // Create budget lines from the contracted estimate items (base + accepted
     // add-ons). Budget lines are the builder's cost basis: qty × unit cost,
     // with markup (profit) excluded — so the budget header must be the sum of
-    // its lines, not the client-facing contract price.
-    const budgetLines = contractedItems.map((item: any, idx: number) => ({
-      org_id: prospect.org_id,
-      cost_code_id: item.cost_code_id || null,
-      description: item.description,
-      amount_cents: (item.unit_cost_cents || 0) * (item.quantity || 1),
-      sort_order: item.sort_order ?? idx,
-      metadata: {
-        source: "estimate_execution",
-        source_estimate_id: estimateId,
-        source_estimate_item_id: item.id,
-        item_type: item.item_type,
-        ...(item.metadata?.is_optional === true ? { accepted_optional: true } : {}),
-        ...(item.metadata?.is_allowance === true ? { is_allowance: true } : {}),
+    // its lines, not the client-facing contract price. Allowance lines carry
+    // their allowance amount as the cost basis, and every line remembers the
+    // estimate section it sat under so the budget keeps the document structure.
+    const budgetLines = contractedItems.map((item: any, idx: number) => {
+      const allowanceCents =
+        item.metadata?.is_allowance === true && typeof item.metadata?.allowance_cents === "number"
+          ? item.metadata.allowance_cents
+          : null
+      return {
+        org_id: prospect.org_id,
+        cost_code_id: item.cost_code_id || null,
+        description: item.description,
+        amount_cents: allowanceCents ?? (item.unit_cost_cents || 0) * (item.quantity || 1),
+        sort_order: item.sort_order ?? idx,
+        metadata: {
+          source: "estimate_execution",
+          source_estimate_id: estimateId,
+          source_estimate_item_id: item.id,
+          item_type: item.item_type,
+          ...(item.section_title ? { section_title: item.section_title } : {}),
+          ...(item.metadata?.is_optional === true ? { accepted_optional: true } : {}),
+          ...(item.metadata?.is_allowance === true ? { is_allowance: true } : {}),
+          ...(allowanceCents != null ? { allowance_cents: allowanceCents } : {}),
+        }
       }
-    }))
+    })
     const budgetTotalCents = budgetLines.reduce((sum, line) => sum + line.amount_cents, 0)
 
-    const { data: budget, error: budgetError } = await supabase
+    // Resume-safe: an interrupted earlier run may have left the budget behind.
+    const { data: existingBudget } = await supabase
+      .from("budgets")
+      .select("*")
+      .eq("project_id", projectId)
+      .eq("metadata->>source_estimate_id", estimateId)
+      .maybeSingle()
+
+    const { data: budget, error: budgetError } = existingBudget
+      ? { data: existingBudget, error: null }
+      : await supabase
       .from("budgets")
       .insert({
         org_id: prospect.org_id,
@@ -884,7 +1031,7 @@ export async function convertExecutedProspectToProject({
       throw new Error(`Failed to create budget from estimate: ${budgetError?.message}`)
     }
 
-    if (budgetLines.length > 0) {
+    if (budgetLines.length > 0 && !existingBudget) {
       const { error: blError } = await supabase
         .from("budget_lines")
         .insert(budgetLines.map((line) => ({ ...line, budget_id: budget.id })))
@@ -937,11 +1084,13 @@ export async function convertExecutedProspectToProject({
     await recordEvent({
       orgId: prospect.org_id,
       actorId: triggeredBy || null,
-      eventType: "project_created",
+      // The precon project already emitted project_created when pricing
+      // started; activation is its own signal.
+      eventType: existingProject ? "project_activated" : "project_created",
       entityType: "project",
       entityId: projectId,
       payload: {
-        name: createdProject.name,
+        name: projectName,
         prospect_id: prospectId,
         estimate_id: estimateId,
         contract_id: contract.id,

@@ -10,7 +10,8 @@ import { NotificationPreferences } from "@/components/settings/notification-pref
 import { ComplianceSettings } from "@/components/settings/compliance-settings"
 import { OrganizationPanel } from "@/components/settings/organization-panel"
 import { IntegrationsPanel } from "@/components/integrations/integrations-panel"
-import { Bell, Building2, CreditCard, FileSpreadsheet, Link2, Receipt, ShieldCheck, User as UserIcon, Users, Wallet } from "@/components/icons"
+import { Bell, Building2, CreditCard, FileSpreadsheet, KeyRound, Link2, Receipt, ShieldCheck, User as UserIcon, Users, Wallet } from "@/components/icons"
+import { ExternalAccessPanel } from "@/components/sharing/external-access-directory"
 import { getTeamSettingsDataAction } from "@/app/(app)/settings/actions"
 import { useIsMobile } from "@/hooks/use-mobile"
 import type { StripeConnectedAccount } from "@/lib/services/stripe-connected-accounts"
@@ -88,6 +89,12 @@ const sections = [
     description: "Requirements and payment rules",
     icon: ShieldCheck,
   },
+  {
+    value: "external-access",
+    label: "External access",
+    description: "Clients, subs and reviewers",
+    icon: KeyRound,
+  },
 ]
 
 function toRoleLabel(roleKey: string) {
@@ -119,6 +126,7 @@ interface SettingsWindowProps {
   stripePublishableKey?: string | null
   initialBooksSettings: Awaited<ReturnType<typeof getBooksModuleSettings>>
   canManageAccounting?: boolean
+  canManageExternalAccess?: boolean
 }
 
 function getInitials(user: User | null) {
@@ -157,11 +165,18 @@ export function SettingsWindow({
   stripePublishableKey = null,
   initialBooksSettings,
   canManageAccounting = false,
+  canManageExternalAccess = false,
 }: SettingsWindowProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
   const settingsReturnTo = searchParams.get("returnTo")
-  const defaultTab = sections.some((section) => section.value === initialTab) ? initialTab : "profile"
+  // External access reads every project's share records, so it is hidden from
+  // anyone the service would refuse anyway rather than shown as a tab that errors.
+  const visibleSections = useMemo(
+    () => sections.filter((section) => section.value !== "external-access" || canManageExternalAccess),
+    [canManageExternalAccess],
+  )
+  const defaultTab = visibleSections.some((section) => section.value === initialTab) ? initialTab : "profile"
   const [tab, setTab] = useState<string>(defaultTab)
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>(initialTeamMembers ?? [])
   const [roleOptions, setRoleOptions] = useState<OrgRoleOption[]>(initialRoleOptions ?? [])
@@ -180,9 +195,9 @@ export function SettingsWindow({
   const isMobile = useIsMobile()
 
   useEffect(() => {
-    const nextTab = sections.some((section) => section.value === initialTab) ? initialTab : "profile"
+    const nextTab = visibleSections.some((section) => section.value === initialTab) ? initialTab : "profile"
     setTab(nextTab)
-  }, [initialTab])
+  }, [initialTab, visibleSections])
 
   useEffect(() => {
     if (initialTeamMembers !== undefined) {
@@ -273,7 +288,7 @@ export function SettingsWindow({
   }, [tab, loadTeam])
 
   const containerHeight = "flex h-full min-h-0 w-full"
-  const activeSection = sections.find((section) => section.value === tab) ?? sections[0]
+  const activeSection = visibleSections.find((section) => section.value === tab) ?? visibleSections[0]
 
   return (
     <Tabs value={tab} onValueChange={handleTabChange} className="h-full min-h-0 gap-0">
@@ -296,7 +311,7 @@ export function SettingsWindow({
                   </Avatar>
                 </button>
                 <TabsList className="h-auto flex-1 justify-start gap-2 overflow-x-auto bg-transparent p-0 pb-1 no-scrollbar">
-                  {sections
+                  {visibleSections
                     .filter((section) => section.value !== "profile")
                     .map((section) => (
                       <TabsTrigger key={section.value} value={section.value} className="h-9 shrink-0 gap-2 border border-border/70 bg-background/70 px-3 text-xs font-medium data-[state=active]:border-primary/30 data-[state=active]:bg-primary/5 data-[state=active]:text-primary">
@@ -350,6 +365,10 @@ export function SettingsWindow({
                   documentTypes={complianceDocumentTypes}
                   canManage={canManageCompliance}
                 />
+              </TabsContent>
+
+              <TabsContent value="external-access" className="m-0 mt-0 outline-none focus-visible:outline-none">
+                <ExternalAccessPanel />
               </TabsContent>
 
             </div>

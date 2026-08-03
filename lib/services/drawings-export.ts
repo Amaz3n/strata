@@ -17,7 +17,7 @@ import { requirePermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { downloadDrawingPdfObject } from "@/lib/storage/drawings-pdfs-storage"
 import type { MarkupData } from "@/lib/validation/drawings"
-import { measurementLabel } from "@/lib/drawings/measure"
+import { isDeductionGeometry, measurementLabel } from "@/lib/drawings/measure"
 
 const SET_EXPORT_MAX_SHEETS = 500
 // Fallback when a version predates image dimension tracking (96 DPI era).
@@ -451,6 +451,12 @@ function drawMarkupsOnPage(
       }
       case "area": {
         if (pts.length < 3) break
+        // A deduction subtracts from its condition, so on paper it must never
+        // read as an ordinary area: it is hatched in the same color, the way
+        // the viewer draws it.
+        if (isDeductionGeometry(data)) {
+          drawPolygonHatch(page, pts, color, 9 * map.scale, Math.max(0.5, map.scale))
+        }
         // pdf-lib has no polygon primitive; the ring is stroked edge by edge
         // and the fill is omitted rather than faked with a bounding box.
         for (let i = 0; i < pts.length; i++) {
@@ -502,6 +508,57 @@ function drawMarkupsOnPage(
       }
       default:
         break
+    }
+  }
+}
+
+/** Ceiling on hatch strokes per polygon, so a page-sized region can't balloon the file. */
+const HATCH_MAX_LINES = 400
+
+/**
+ * Diagonal hatch clipped to a polygon.
+ *
+ * pdf-lib has neither a polygon fill nor a clipping path, so the clip is done
+ * by hand: the ring is rotated 45°, scanned line by line, and only the spans
+ * that fall inside it are stroked (then rotated back). That gives the same
+ * hatch the SVG overlay paints with a <pattern>, including on concave rings —
+ * a stairwell cut out of a slab is exactly that shape.
+ */
+function drawPolygonHatch(
+  page: PDFPage,
+  pts: Array<{ x: number; y: number }>,
+  color: ReturnType<typeof rgb>,
+  spacing: number,
+  thickness: number,
+) {
+  if (pts.length < 3 || spacing <= 0) return
+  const cos = Math.SQRT1_2
+  const sin = Math.SQRT1_2
+  const rotated = pts.map((p) => ({ x: p.x * cos + p.y * sin, y: -p.x * sin + p.y * cos }))
+  const ys = rotated.map((p) => p.y)
+  const minY = Math.min(...ys)
+  const maxY = Math.max(...ys)
+  if (!Number.isFinite(minY) || !Number.isFinite(maxY)) return
+
+  const step = Math.max(spacing, (maxY - minY) / HATCH_MAX_LINES)
+  for (let y = Math.ceil(minY / step) * step; y <= maxY; y += step) {
+    const crossings: number[] = []
+    for (let i = 0; i < rotated.length; i++) {
+      const a = rotated[i]
+      const b = rotated[(i + 1) % rotated.length]
+      if ((a.y <= y && b.y > y) || (b.y <= y && a.y > y)) {
+        crossings.push(a.x + ((y - a.y) / (b.y - a.y)) * (b.x - a.x))
+      }
+    }
+    crossings.sort((p, q) => p - q)
+    for (let i = 0; i + 1 < crossings.length; i += 2) {
+      page.drawLine({
+        start: { x: crossings[i] * cos - y * sin, y: crossings[i] * sin + y * cos },
+        end: { x: crossings[i + 1] * cos - y * sin, y: crossings[i + 1] * sin + y * cos },
+        thickness,
+        color,
+        opacity: 0.6,
+      })
     }
   }
 }

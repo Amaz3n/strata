@@ -268,16 +268,26 @@ test("QBO-imported payables can split by line project while whole-payable reassi
     require("node:path").join(__dirname, "../components/payables/payables-workspace.tsx"),
     "utf8",
   )
+  const linesEditorSource = require("node:fs").readFileSync(
+    require("node:path").join(__dirname, "../components/payables/workspace/payable-lines-editor.tsx"),
+    "utf8",
+  )
 
-  const lineProjectSelect = workspaceSource.slice(
-    workspaceSource.indexOf("<Label className=\"microlabel mb-1 block\">Project</Label>"),
-    workspaceSource.indexOf("<Label className=\"microlabel mb-1 block\">Amount</Label>"),
+  const lineProjectSelect = linesEditorSource.slice(
+    linesEditorSource.indexOf("<Label className=\"microlabel mb-1 block\">Project</Label>"),
+    linesEditorSource.indexOf("<Label className=\"microlabel mb-1 block\">Amount</Label>"),
   )
 
   assert.match(lineProjectSelect, /projectId: value/)
-  assert.doesNotMatch(lineProjectSelect, /disabled=\{selectedIsReassignablePayable\}/)
-  assert.match(workspaceSource, /const reassignBlockedBySplit = selectedIsReassignablePayable && isSplitAcrossProjects/)
-  assert.match(workspaceSource, /disabled=\{isPending \|\| reassignBlockedBySplit \|\| !creditProjectId \|\| creditProjectId === selectedBill\.project_id\}/)
+  assert.doesNotMatch(lineProjectSelect, /disabled=\{isReassignable\}/)
+  assert.match(
+    workspaceSource,
+    /const reassignBlockedBySplit =\s*selectedIsReassignablePayable && distinctSplitProjects\.length > 1/,
+  )
+  assert.match(
+    workspaceSource,
+    /disabled=\{\s*isPending \|\|\s*reassignBlockedBySplit \|\|\s*!reassignProjectId \|\|\s*reassignProjectId === selectedBill\.project_id\s*\}/,
+  )
   assert.match(workspaceSource, /project_id: line\.projectId \|\| selectedBill\.project_id/)
 })
 

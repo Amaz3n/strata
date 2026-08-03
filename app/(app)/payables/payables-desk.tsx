@@ -1,382 +1,930 @@
 "use client"
 
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import * as React from "react"
+import { toast } from "sonner"
 
-import { ArrowUpRight, Check, X } from "@/components/icons"
-import type { OrgPayablesDeskData, PayableQueueRow } from "@/lib/services/org-payables"
+import { getOrgPayableContextAction } from "./actions"
+import { listProjectsAction } from "@/app/(app)/projects/actions"
+import {
+  getPayablesAccountingContextAction,
+  updateProjectVendorBillStatusAction,
+} from "@/app/(app)/projects/[id]/payables/actions"
+import { FileText, Receipt, Search, X } from "@/components/icons"
+import { PayablesWorkspace } from "@/components/payables/payables-workspace"
+import { useWorkspaceParam } from "@/components/financials/workspace/use-workspace-param"
+import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty"
+import { Input } from "@/components/ui/input"
+import { ProjectAvatar } from "@/components/ui/project-avatar"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { vendorLabel } from "@/components/payables/payables-ui"
+import {
+  isVendorCredit,
+  payableOutstandingCents,
+} from "@/lib/financials/payables-rules"
+import { unwrapAction } from "@/lib/action-result"
+import type {
+  OrgPayablesDeskData,
+  PayableRunMembership,
+} from "@/lib/services/org-payables"
+import type { PaymentHoldEvaluation } from "@/lib/services/payment-holds"
+import type { CompanyPaymentReadinessStatus } from "@/lib/services/vendor-payment-invitations"
+import type { VendorBillSummary } from "@/lib/services/vendor-bills"
+import type { BudgetLineOption } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
-function money(cents: number) {
-  return (cents / 100).toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  })
+type QBOAccountOption = {
+  id: string
+  name: string
+  fullyQualifiedName?: string
+  account_type?: string
+  account_sub_type?: string
+}
+type ProjectBillingModel =
+  | "fixed_price"
+  | "cost_plus_percent"
+  | "cost_plus_fixed_fee"
+  | "cost_plus_gmp"
+  | "time_and_materials"
+type ProjectOption = {
+  id: string
+  name: string
+  billingModel: ProjectBillingModel
 }
 
-function shortDate(value: string) {
-  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(
-    new Date(`${value}T00:00:00`),
+type TabKey = "due" | "approval" | "approved" | "paid" | "all"
+
+const TABS: { key: TabKey; label: string }[] = [
+  { key: "due", label: "Due" },
+  { key: "approval", label: "Needs approval" },
+  { key: "approved", label: "Approved" },
+  { key: "paid", label: "Paid" },
+  { key: "all", label: "All" },
+]
+
+/**
+ * Which tabs a payable belongs on. Vendor credits are money coming back, not an
+ * obligation — they only ever surface under All, so the money columns on the
+ * working tabs mean one thing.
+ */
+function tabsFor(bill: VendorBillSummary): TabKey[] {
+  if (isVendorCredit(bill)) return ["all"]
+  if (bill.status === "paid") return ["paid", "all"]
+  if (bill.status === "pending") return ["due", "approval", "all"]
+  return ["due", "approved", "all"]
+}
+
+function matchesSearch(bill: VendorBillSummary, query: string) {
+  if (!query) return true
+  return [
+    bill.company_name,
+    bill.qbo_vendor_name,
+    bill.bill_number,
+    bill.project_name,
+    bill.commitment_title,
+  ].some((value) => value?.toLowerCase().includes(query))
+}
+
+/** The line under the vendor: what this payable is actually for. */
+function itemLabel(bill: VendorBillSummary) {
+  if (isVendorCredit(bill)) return "Vendor credit"
+  return (
+    bill.commitment_title ??
+    bill.actual_lines?.[0]?.description ??
+    "Vendor bill"
   )
 }
 
-type WindowKey = "overdue" | "thisWeek" | "soon" | "later"
+const DAY_MS = 86_400_000
 
-/** Mirror of the server's horizon-bucketing so a clicked bar filters the queue. */
-function bucketOf(row: PayableQueueRow): WindowKey {
-  const { dueDate, daysToDue } = row
-  if (dueDate == null || (daysToDue != null && daysToDue > 30)) return "later"
-  if (daysToDue != null && daysToDue < 0) return "overdue"
-  if (daysToDue != null && daysToDue <= 7) return "thisWeek"
-  return "soon"
+function daysToDue(dueDate?: string | null): number | null {
+  if (!dueDate) return null
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return Math.round(
+    (new Date(`${dueDate}T00:00:00`).getTime() - today.getTime()) / DAY_MS,
+  )
 }
 
-const WINDOWS: { key: WindowKey; label: string; barClass: string; late: boolean }[] = [
-  { key: "overdue", label: "Overdue", barClass: "bg-destructive", late: true },
-  { key: "thisWeek", label: "This week", barClass: "bg-primary", late: false },
-  { key: "soon", label: "8–30 days", barClass: "bg-primary/40", late: false },
-  { key: "later", label: "31+ days", barClass: "bg-muted-foreground/25", late: false },
-]
-
-function statusChip(row: PayableQueueRow): { label: string; live: boolean } {
-  if (row.partiallyPaid) return { label: "Partly paid", live: true }
-  if (row.status === "approved") return { label: "Approved", live: true }
-  return { label: row.status, live: false }
-}
-
-function dueLines(row: PayableQueueRow): { date: string; rel: string | null; tone: "late" | "soon" | "muted" } {
-  if (row.dueDate == null) return { date: "No due date", rel: null, tone: "muted" }
-  const date = shortDate(row.dueDate)
-  const d = row.daysToDue
-  if (d == null) return { date, rel: null, tone: "muted" }
-  if (d < 0) return { date, rel: `${-d}d overdue`, tone: "late" }
-  if (d === 0) return { date, rel: "Due today", tone: "soon" }
-  if (d === 1) return { date, rel: "Due tomorrow", tone: "soon" }
-  if (d <= 7) return { date, rel: `In ${d} days`, tone: "soon" }
-  return { date, rel: `In ${d} days`, tone: "muted" }
-}
-
-/**
- * Bounded scroll region with a bottom shadow that fades in while more content
- * sits below the fold — the affordance that says "keep scrolling."
- */
-function ScrollRegion({ children, className }: { children: React.ReactNode; className?: string }) {
-  const ref = React.useRef<HTMLDivElement>(null)
-  const [edges, setEdges] = React.useState({ top: false, bottom: false })
-
-  const update = React.useCallback(() => {
-    const el = ref.current
-    if (!el) return
-    const top = el.scrollTop > 1
-    const bottom = el.scrollTop + el.clientHeight < el.scrollHeight - 1
-    setEdges((prev) => (prev.top === top && prev.bottom === bottom ? prev : { top, bottom }))
-  }, [])
-
-  React.useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(el)
-    if (el.firstElementChild) observer.observe(el.firstElementChild)
-    return () => observer.disconnect()
-  }, [update])
-
+function DueCell({ bill }: { bill: VendorBillSummary }) {
+  if (!bill.due_date) return <span className="text-muted-foreground">—</span>
+  const days = daysToDue(bill.due_date)
+  const settled = bill.status === "paid"
+  const date = new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(`${bill.due_date}T00:00:00`))
+  const late = !settled && days != null && days < 0
+  const soon = !settled && days != null && days >= 0 && days <= 7
   return (
-    <div className="relative min-h-0 flex-1">
-      <div ref={ref} onScroll={update} className={cn("h-full overflow-y-auto", className)}>
-        {children}
-      </div>
-      <div
-        aria-hidden
+    <div className="flex flex-col">
+      <span
         className={cn(
-          "pointer-events-none absolute inset-x-0 top-0 h-3 transition-opacity duration-200",
-          edges.top ? "opacity-100" : "opacity-0",
+          "tabular-nums",
+          late && "font-medium text-destructive",
+          soon && "text-foreground",
         )}
-        style={{ boxShadow: "inset 0 7px 6px -6px color-mix(in oklab, var(--foreground) 20%, transparent)" }}
-      />
-      <div
-        aria-hidden
-        className={cn(
-          "pointer-events-none absolute inset-x-0 bottom-0 h-4 transition-opacity duration-200",
-          edges.bottom ? "opacity-100" : "opacity-0",
-        )}
-        style={{ boxShadow: "inset 0 -10px 8px -7px color-mix(in oklab, var(--foreground) 22%, transparent)" }}
-      />
+      >
+        {date}
+      </span>
+      {days == null || settled ? null : late ? (
+        <span className="text-[11px] text-destructive">{-days}d overdue</span>
+      ) : soon ? (
+        <span className="text-[11px] text-warning">
+          {days === 0
+            ? "Due today"
+            : days === 1
+              ? "Due tomorrow"
+              : `In ${days} days`}
+        </span>
+      ) : null}
     </div>
   )
 }
 
-const TH = "microlabel sticky top-0 z-10 bg-card border-b px-4 py-2.5 text-left whitespace-nowrap"
+/**
+ * `payment_method` predates the payments table and QuickBooks imports write their
+ * own vocabulary, so the label map is deliberately wider than the Zod enum.
+ */
+const METHOD_LABELS: Record<string, string> = {
+  ach: "ACH",
+  card: "Card",
+  credit_card: "Card",
+  wire: "Wire",
+  check: "Check",
+  cash: "Cash",
+  other: "Other",
+}
 
-export function PayablesDesk({ data }: { data: OrgPayablesDeskData }) {
-  const { stats, horizon, queue, vendors, inboundBillsEmail } = data
-  const [filter, setFilter] = React.useState<WindowKey | null>(null)
+const READINESS_LABELS: Record<CompanyPaymentReadinessStatus, string> = {
+  ready: "ACH",
+  verifying: "ACH pending",
+  invited: "Check",
+  not_started: "Check",
+}
 
-  const allClear = stats.openCount === 0
-
-  const maxBucket = Math.max(1, ...WINDOWS.map((w) => horizon[w.key].cents))
-  const barHeight = (cents: number) => (cents === 0 ? 0 : Math.max(6, Math.round((cents / maxBucket) * 100)))
-
-  const visibleQueue = React.useMemo(
-    () => (filter ? queue.filter((row) => bucketOf(row) === filter) : queue),
-    [queue, filter],
+/**
+ * How this payable was paid, or — while it is still open — the rail it would go out
+ * on. With no payout rail configured there is no second option to report, so the
+ * column stays quiet rather than labelling every open bill "Check".
+ */
+function MethodCell({
+  bill,
+  readiness,
+  railOpen,
+}: {
+  bill: VendorBillSummary
+  readiness?: CompanyPaymentReadinessStatus
+  railOpen: boolean
+}) {
+  const recorded =
+    bill.payment_method ??
+    bill.payments?.find((payment) => payment.method)?.method
+  if (recorded) {
+    const viaAccounting = bill.payments?.some(
+      (payment) => payment.provider === "qbo",
+    )
+    return (
+      <span
+        className="text-sm text-muted-foreground"
+        title={viaAccounting ? "Recorded in QuickBooks" : undefined}
+      >
+        {METHOD_LABELS[recorded] ?? recorded}
+      </span>
+    )
+  }
+  if (bill.status === "paid" || isVendorCredit(bill) || !railOpen) {
+    return <span className="text-muted-foreground">—</span>
+  }
+  return (
+    <span className="text-sm text-muted-foreground">
+      {READINESS_LABELS[readiness ?? "not_started"]}
+    </span>
   )
-  const activeWindow = filter ? WINDOWS.find((w) => w.key === filter) ?? null : null
+}
 
-  const maxVendor = Math.max(1, vendors[0]?.outstandingCents ?? 0)
+function StatusCell({
+  bill,
+  membership,
+  awaitsViewer,
+}: {
+  bill: VendorBillSummary
+  membership?: PayableRunMembership
+  awaitsViewer?: boolean
+}) {
+  if (isVendorCredit(bill)) {
+    return (
+      <Badge variant="outline" className="font-normal text-muted-foreground">
+        Credit
+      </Badge>
+    )
+  }
+  // A bill inside a run is no longer just "approved" — say where the money is.
+  if (membership) {
+    const label = awaitsViewer
+      ? "Awaiting your approval"
+      : membership.runStatus === "pending_approval"
+        ? "In approval"
+        : membership.runStatus === "processing"
+          ? "Paying"
+          : "Scheduled"
+    return (
+      <Badge
+        variant="outline"
+        className={cn(
+          "font-normal",
+          awaitsViewer
+            ? "border-primary/40 bg-primary/10 text-primary"
+            : "border-primary/25 bg-primary/5 text-primary",
+        )}
+      >
+        {label}
+      </Badge>
+    )
+  }
+  const config: Record<string, { label: string; className: string }> = {
+    paid: {
+      label: "Paid",
+      className: "border-success/25 bg-success/10 text-success",
+    },
+    partial: {
+      label: "Partly paid",
+      className: "border-primary/25 bg-primary/10 text-primary",
+    },
+    approved: {
+      label: "Approved",
+      className: "border-border bg-accent text-accent-foreground",
+    },
+    pending: {
+      label: "Needs approval",
+      className: "border-warning/25 bg-warning/10 text-warning",
+    },
+  }
+  const tone = config[bill.status] ?? config.pending
+  return (
+    <Badge variant="outline" className={cn("font-normal", tone.className)}>
+      {tone.label}
+    </Badge>
+  )
+}
+
+/**
+ * Sticky header cells. `border-collapse` drops borders on sticky cells, so the
+ * hairline under the header is an inset shadow. `text-muted-foreground` restores
+ * the microlabel tone that TableHead's own `text-foreground` would otherwise win.
+ */
+const HEAD =
+  "sticky top-0 z-10 bg-background text-muted-foreground shadow-[inset_0_-1px_0_var(--border)]"
+
+export function PayablesDesk({
+  data,
+  railOpen,
+  viewerMayApproveRuns = false,
+}: {
+  data: OrgPayablesDeskData
+  railOpen: boolean
+  viewerMayApproveRuns?: boolean
+}) {
+  const router = useRouter()
+  const [isPending, startTransition] = React.useTransition()
+
+  const [tab, setTab] = React.useState<TabKey>("due")
+  const [search, setSearch] = React.useState("")
+  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(
+    () => new Set(),
+  )
+  const [workspaceBillId, openBill] = useWorkspaceParam("bill")
+
+  // Org-level accounting context — the same one the project workbench loads.
+  const [accountingEnabled, setAccountingEnabled] = React.useState(false)
+  const [qboExpenseAccounts, setQboExpenseAccounts] = React.useState<
+    QBOAccountOption[]
+  >([])
+  const [qboApAccounts, setQboApAccounts] = React.useState<QBOAccountOption[]>(
+    [],
+  )
+  const [qboDefaults, setQboDefaults] = React.useState<{
+    expenseAccountId?: string
+    apAccountId?: string
+  }>({})
+  const [projects, setProjects] = React.useState<ProjectOption[]>([])
+
+  // Per-payable project context, fetched only when a payable is opened.
+  const [costCodesEnabled, setCostCodesEnabled] = React.useState(true)
+  const [budgetLines, setBudgetLines] = React.useState<BudgetLineOption[]>([])
+  const [holdEvaluations, setHoldEvaluations] = React.useState<
+    Record<string, PaymentHoldEvaluation>
+  >({})
+
+  React.useEffect(() => {
+    let cancelled = false
+    getPayablesAccountingContextAction()
+      .then((context) => {
+        if (cancelled) return
+        setAccountingEnabled(Boolean(context.enabled))
+        setQboExpenseAccounts(context.expenseAccounts ?? [])
+        setQboApAccounts(context.apAccounts ?? [])
+        setQboDefaults(context.defaults ?? {})
+      })
+      .catch(() => {
+        if (!cancelled) setAccountingEnabled(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  React.useEffect(() => {
+    let cancelled = false
+    listProjectsAction()
+      .then((rows) => {
+        if (cancelled) return
+        setProjects(
+          (rows ?? []).map((project: any) => ({
+            id: project.id,
+            name: project.name,
+            billingModel:
+              project.financial_settings?.billing_model ?? "fixed_price",
+          })),
+        )
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const openedBill = React.useMemo(
+    () => data.bills.find((bill) => bill.id === workspaceBillId) ?? null,
+    [data.bills, workspaceBillId],
+  )
+  const openedProjectId = openedBill?.project_id
+
+  React.useEffect(() => {
+    if (!workspaceBillId || !openedProjectId) return
+    let cancelled = false
+    getOrgPayableContextAction(openedProjectId, workspaceBillId).then(
+      (result) => {
+        if (cancelled || !result.success) return
+        setCostCodesEnabled(result.data.costCodesEnabled)
+        setBudgetLines(result.data.budgetLines)
+        const holds = result.data.holds
+        if (holds)
+          setHoldEvaluations((current) => ({
+            ...current,
+            [workspaceBillId]: holds,
+          }))
+      },
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [openedProjectId, workspaceBillId])
+
+  const counts = React.useMemo(() => {
+    const totals: Record<TabKey, number> = {
+      due: 0,
+      approval: 0,
+      approved: 0,
+      paid: 0,
+      all: 0,
+    }
+    for (const bill of data.bills)
+      for (const key of tabsFor(bill)) totals[key] += 1
+    return totals
+  }, [data.bills])
+
+  const rows = React.useMemo(() => {
+    const query = search.trim().toLowerCase()
+    return data.bills.filter(
+      (bill) => tabsFor(bill).includes(tab) && matchesSearch(bill, query),
+    )
+  }, [data.bills, search, tab])
+
+  // Selection only ever means the rows you can still see.
+  const visibleIds = React.useMemo(
+    () => new Set(rows.map((bill) => bill.id)),
+    [rows],
+  )
+  const selected = React.useMemo(
+    () => rows.filter((bill) => selectedIds.has(bill.id)),
+    [rows, selectedIds],
+  )
+  const selectableRows = React.useMemo(
+    () => rows.filter((bill) => !isVendorCredit(bill)),
+    [rows],
+  )
+  const approvable = React.useMemo(
+    () => selected.filter((bill) => bill.status === "pending"),
+    [selected],
+  )
+  // Bills a payment run could take today: approved with a balance, an ACH-ready
+  // vendor, and not already claimed by an active run.
+  const payable = React.useMemo(
+    () =>
+      selected.filter(
+        (bill) =>
+          (bill.status === "approved" || bill.status === "partial") &&
+          payableOutstandingCents(bill) > 0 &&
+          bill.company_id &&
+          data.paymentReadinessByCompanyId[bill.company_id] === "ready" &&
+          !data.runMembershipByBillId[bill.id],
+      ),
+    [selected, data.paymentReadinessByCompanyId, data.runMembershipByBillId],
+  )
+
+  React.useEffect(() => {
+    setSelectedIds((current) => {
+      const next = new Set(
+        Array.from(current).filter((id) => visibleIds.has(id)),
+      )
+      return next.size === current.size ? current : next
+    })
+  }, [visibleIds])
+
+  const outstandingCents = rows.reduce(
+    (sum, bill) => sum + payableOutstandingCents(bill),
+    0,
+  )
+  const overdueCount = rows.filter((bill) => {
+    if (bill.status === "paid") return false
+    const days = daysToDue(bill.due_date)
+    return days != null && days < 0
+  }).length
+
+  /** A payment this viewer is the one being asked to release. */
+  const awaitsMyApproval = React.useCallback(
+    (bill: VendorBillSummary) => {
+      const membership = data.runMembershipByBillId[bill.id]
+      return Boolean(
+        viewerMayApproveRuns &&
+        membership &&
+        membership.runStatus === "pending_approval" &&
+        !membership.preparedByViewer,
+      )
+    },
+    [data.runMembershipByBillId, viewerMayApproveRuns],
+  )
+
+  const toggleAll = (checked: boolean) => {
+    setSelectedIds(
+      checked ? new Set(selectableRows.map((bill) => bill.id)) : new Set(),
+    )
+  }
+  const toggleOne = (billId: string, checked: boolean) => {
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      if (checked) next.add(billId)
+      else next.delete(billId)
+      return next
+    })
+  }
+
+  /** Approve is the desk's one write — it calls the workbench's own action per bill. */
+  const approveBills = (bills: VendorBillSummary[]) => {
+    if (bills.length === 0) return
+    startTransition(async () => {
+      let approved = 0
+      for (const bill of bills) {
+        const result = unwrapAction(
+          await updateProjectVendorBillStatusAction(bill.project_id, bill.id, {
+            status: "approved",
+            expected_updated_at: bill.updated_at,
+            qbo_expense_account_id:
+              bill.qbo_expense_account_id ?? qboDefaults.expenseAccountId,
+            qbo_expense_account_name:
+              bill.qbo_expense_account_name ??
+              qboExpenseAccounts.find(
+                (account) => account.id === qboDefaults.expenseAccountId,
+              )?.name,
+          }),
+        )
+        if (result.success) approved += 1
+        else
+          toast.error(result.error, {
+            description: bill.bill_number ?? vendorLabel(bill),
+          })
+      }
+      if (approved > 0)
+        toast.success(
+          `${approved} payable${approved === 1 ? "" : "s"} approved`,
+        )
+      setSelectedIds(new Set())
+      router.refresh()
+    })
+  }
+
+  const allSelected =
+    selectableRows.length > 0 && selected.length === selectableRows.length
+  const someSelected = selected.length > 0 && !allSelected
 
   return (
-    <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-4 pb-6 pt-6 sm:px-6 lg:h-full lg:min-h-0 lg:gap-5 lg:pb-4 lg:px-8">
-      {/* ── Header: the total owed ─────────────────────────────── */}
-      <header className="desk-rise" style={{ "--desk-stagger": 0 } as React.CSSProperties}>
-        <div className="flex items-center justify-between gap-4">
-          <div className="microlabel">Owed to vendors</div>
-          <Link href="/payables/payment-runs" className="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground">
-            Manage payment runs
-          </Link>
-        </div>
-        <div className="mt-1.5 font-mono text-4xl tabular-nums tracking-tight sm:text-5xl">
-          {money(stats.outstandingCents)}
-        </div>
-        {stats.retainedCents > 0 || stats.pendingApprovalCount > 0 || inboundBillsEmail ? (
-          <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
-            {stats.pendingApprovalCount > 0 ? (
-              <span>
-                <span className="font-mono font-medium tabular-nums text-warning">{money(stats.pendingApprovalCents)}</span>{" "}
-                awaiting approval · {stats.pendingApprovalCount} {stats.pendingApprovalCount === 1 ? "bill" : "bills"}
-              </span>
-            ) : null}
-            {stats.retainedCents > 0 ? (
-              <span>
-                <span className="font-mono font-medium tabular-nums text-foreground">{money(stats.retainedCents)}</span>{" "}
-                retention held
-              </span>
-            ) : null}
-            {inboundBillsEmail ? (
-              <span>
-                Vendors can email bills to{" "}
-                <button
-                  type="button"
-                  className="font-mono font-medium text-foreground underline-offset-2 hover:underline"
-                  title="Copy address"
-                  onClick={() => void navigator.clipboard.writeText(inboundBillsEmail)}
-                >
-                  {inboundBillsEmail}
-                </button>
-              </span>
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* Toolbar: what you're looking at, and how to find one row in it. */}
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b px-4 py-2.5 sm:px-6">
+        <Tabs
+          value={tab}
+          onValueChange={(value) => setTab(value as TabKey)}
+          className="w-auto"
+        >
+          <TabsList className="h-8">
+            {TABS.map((entry) => (
+              <TabsTrigger
+                key={entry.key}
+                value={entry.key}
+                className="gap-1.5 text-xs"
+              >
+                {entry.label}
+                <span className="tabular-nums text-muted-foreground">
+                  {counts[entry.key]}
+                </span>
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search vendor, invoice, project…"
+              aria-label="Search payables"
+              className="h-8 w-56 pl-8 pr-8 text-xs"
+            />
+            {search ? (
+              <button
+                type="button"
+                onClick={() => setSearch("")}
+                aria-label="Clear search"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <X className="size-3.5" />
+              </button>
             ) : null}
           </div>
-        ) : null}
-      </header>
-
-      {allClear ? (
-        <div
-          className="desk-rise flex items-center gap-2.5 border bg-card px-4 py-3 text-sm text-muted-foreground"
-          style={{ "--desk-stagger": 1 } as React.CSSProperties}
-        >
-          <Check className="h-4 w-4 text-success" />
-          You&rsquo;re all caught up — no open payables anywhere.
+          <Button asChild variant="outline" size="sm" className="h-8 text-xs">
+            <Link href="/payables/payment-runs">Payment runs</Link>
+          </Button>
         </div>
-      ) : (
-        <>
-          {/* ── Aging: a contained panel of clickable outflow windows ── */}
-          <section
-            className="desk-rise border bg-card p-4 sm:p-5"
-            style={{ "--desk-stagger": 1 } as React.CSSProperties}
-          >
-            <div className="mb-4 flex items-baseline justify-between">
-              <div className="microlabel">Aging</div>
-              {filter ? (
-                <button
-                  type="button"
-                  onClick={() => setFilter(null)}
-                  className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
-                >
-                  Clear filter
-                  <X className="size-3" />
-                </button>
-              ) : (
-                <div className="text-[11px] text-muted-foreground">Select a window to filter</div>
-              )}
-            </div>
+      </div>
 
-            <div className="relative grid grid-cols-4 gap-2 sm:gap-3">
-              {WINDOWS.map((w) => {
-                const bucket = horizon[w.key]
-                const active = filter === w.key
-                const dimmed = filter != null && !active
+      {/*
+        The list. shadcn's Table wraps itself in an overflow container, which becomes
+        the scrollport — so it has to be the element with the bounded height, or the
+        sticky header has nothing to stick to.
+      */}
+      <div className="desk-rise min-h-0 flex-1 [&>[data-slot=table-container]]:h-full">
+        {rows.length === 0 ? (
+          <Empty className="h-full border-0">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <Receipt />
+              </EmptyMedia>
+              <EmptyTitle>
+                {search ? "No payables match" : "Nothing here"}
+              </EmptyTitle>
+              <EmptyDescription>
+                {search
+                  ? "Try a different vendor, invoice number, or project."
+                  : tab === "due"
+                    ? "No vendor bills are waiting to be paid."
+                    : "No payables in this view yet."}
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : (
+          <Table className="min-w-[1020px]">
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead className={cn(HEAD, "w-10 pl-4 sm:pl-6")}>
+                  <Checkbox
+                    checked={
+                      allSelected || (someSelected ? "indeterminate" : false)
+                    }
+                    onCheckedChange={(checked) => toggleAll(checked === true)}
+                    aria-label="Select all payables"
+                  />
+                </TableHead>
+                <TableHead className={cn(HEAD, "microlabel")}>Vendor</TableHead>
+                <TableHead className={cn(HEAD, "microlabel w-[200px]")}>
+                  Project
+                </TableHead>
+                <TableHead className={cn(HEAD, "microlabel w-[130px]")}>
+                  Invoice
+                </TableHead>
+                <TableHead className={cn(HEAD, "microlabel w-[150px]")}>
+                  Due
+                </TableHead>
+                <TableHead className={cn(HEAD, "microlabel w-[140px]")}>
+                  Status
+                </TableHead>
+                <TableHead className={cn(HEAD, "microlabel w-[120px]")}>
+                  Method
+                </TableHead>
+                <TableHead
+                  className={cn(HEAD, "microlabel w-[150px] text-right")}
+                >
+                  Amount
+                </TableHead>
+                <TableHead className={cn(HEAD, "w-[104px] pr-4 sm:pr-6")}>
+                  <span className="sr-only">Actions</span>
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((bill) => {
+                const outstanding = payableOutstandingCents(bill)
+                const total = bill.total_cents ?? 0
+                const isSelected = selectedIds.has(bill.id)
                 return (
-                  <button
-                    type="button"
-                    key={w.key}
-                    aria-pressed={active}
-                    disabled={bucket.count === 0}
-                    onClick={() => setFilter((prev) => (prev === w.key ? null : w.key))}
-                    className={cn(
-                      "group/bar flex flex-col items-stretch gap-2 border px-2 py-2.5 text-left transition-all sm:px-3",
-                      active ? "border-foreground bg-muted/50" : "border-transparent hover:bg-muted/40",
-                      dimmed && "opacity-45",
-                      bucket.count === 0 && "cursor-default opacity-40 hover:bg-transparent",
-                    )}
+                  <TableRow
+                    key={bill.id}
+                    data-state={isSelected ? "selected" : undefined}
+                    onClick={() => openBill(bill.id)}
+                    className="group h-14 cursor-pointer"
                   >
-                    <div className="flex h-20 items-end sm:h-24">
-                      <div
-                        className={cn("w-full min-h-[3px] transition-all", w.barClass)}
-                        style={{ height: `${barHeight(bucket.cents)}%` }}
+                    <TableCell
+                      className="pl-4 sm:pl-6"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      {isVendorCredit(bill) ? null : (
+                        <Checkbox
+                          checked={isSelected}
+                          onCheckedChange={(checked) =>
+                            toggleOne(bill.id, checked === true)
+                          }
+                          aria-label={`Select ${vendorLabel(bill)}`}
+                        />
+                      )}
+                    </TableCell>
+                    {/* Width lives on the inner div: `max-w` on a <td> is ignored under auto table layout. */}
+                    <TableCell>
+                      <div className="max-w-[320px] truncate font-medium">
+                        {vendorLabel(bill)}
+                      </div>
+                      <div className="max-w-[320px] truncate text-xs text-muted-foreground">
+                        {itemLabel(bill)}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex max-w-[190px] items-center gap-2">
+                        <ProjectAvatar projectId={bill.project_id} size="sm" />
+                        <span className="truncate text-sm text-muted-foreground">
+                          {bill.project_name ?? "—"}
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground">
+                      {bill.bill_number ?? "—"}
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      <DueCell bill={bill} />
+                    </TableCell>
+                    <TableCell>
+                      <StatusCell
+                        bill={bill}
+                        membership={data.runMembershipByBillId[bill.id]}
+                        awaitsViewer={awaitsMyApproval(bill)}
                       />
-                    </div>
-                    <div className="border-t pt-2">
-                      <div className={cn("microlabel text-[9.5px]", w.late && "text-destructive")}>{w.label}</div>
-                      <div
-                        className={cn(
-                          "mt-1 font-mono text-sm font-medium tabular-nums sm:text-base",
-                          w.late && "text-destructive",
-                        )}
-                      >
-                        {money(bucket.cents)}
+                    </TableCell>
+                    <TableCell>
+                      <MethodCell
+                        bill={bill}
+                        readiness={
+                          bill.company_id
+                            ? data.paymentReadinessByCompanyId[bill.company_id]
+                            : undefined
+                        }
+                        railOpen={railOpen}
+                      />
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="font-mono text-sm font-medium tabular-nums">
+                        {formatMoneyFromCents(total)}
                       </div>
-                      <div className="text-[11px] text-muted-foreground">
-                        {bucket.count} {bucket.count === 1 ? "bill" : "bills"}
+                      {!isVendorCredit(bill) && outstanding !== total ? (
+                        <div className="font-mono text-[11px] tabular-nums text-muted-foreground">
+                          {outstanding > 0
+                            ? `${formatMoneyFromCents(outstanding)} due`
+                            : "Settled"}
+                        </div>
+                      ) : null}
+                    </TableCell>
+                    <TableCell
+                      className="pr-4 text-right sm:pr-6"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <div className="flex items-center justify-end gap-1">
+                        {awaitsMyApproval(bill) ? (
+                          <Button
+                            size="sm"
+                            className="h-7 px-2 text-xs"
+                            onClick={() => openBill(bill.id)}
+                          >
+                            Review
+                          </Button>
+                        ) : bill.status === "pending" &&
+                          !isVendorCredit(bill) ? (
+                          /*
+                            With a payment rail configured, approving a bill is the
+                            first half of releasing money — so the row opens the
+                            payable instead of deciding it from a list.
+                          */
+                          railOpen ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 px-2 text-xs opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
+                              onClick={() => openBill(bill.id)}
+                            >
+                              Review
+                            </Button>
+                          ) : (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={isPending}
+                              className="h-7 px-2 text-xs opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
+                              onClick={() => approveBills([bill])}
+                            >
+                              Approve
+                            </Button>
+                          )
+                        ) : null}
+                        {data.documentFileIdByBillId[bill.id] ? (
+                          <Button
+                            asChild
+                            variant="ghost"
+                            size="icon"
+                            className="size-7"
+                            title="Open invoice"
+                          >
+                            <a
+                              href={`/api/files/${data.documentFileIdByBillId[bill.id]}/raw`}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              <FileText className="size-4 text-muted-foreground" />
+                              <span className="sr-only">
+                                Open invoice document
+                              </span>
+                            </a>
+                          </Button>
+                        ) : null}
                       </div>
-                    </div>
-                  </button>
+                    </TableCell>
+                  </TableRow>
                 )
               })}
+            </TableBody>
+          </Table>
+        )}
+      </div>
+
+      {/* Pinned summary — and the bulk action, once rows are picked. */}
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t bg-card px-4 py-2 text-xs sm:px-6">
+        {selected.length > 0 ? (
+          <>
+            <div className="flex items-center gap-3">
+              <span className="font-medium tabular-nums">
+                {selected.length} selected
+              </span>
+              <span className="font-mono tabular-nums text-muted-foreground">
+                {formatMoneyFromCents(
+                  selected.reduce(
+                    (sum, bill) => sum + payableOutstandingCents(bill),
+                    0,
+                  ),
+                )}
+              </span>
+              <button
+                type="button"
+                onClick={() => setSelectedIds(new Set())}
+                className="text-muted-foreground transition-colors hover:text-foreground"
+              >
+                Clear
+              </button>
             </div>
-          </section>
+            <div className="flex items-center gap-2">
+              {approvable.length > 0 || payable.length === 0 ? (
+                <Button
+                  size="sm"
+                  variant={
+                    railOpen && payable.length > 0 ? "outline" : "default"
+                  }
+                  className="h-7 text-xs"
+                  disabled={isPending || approvable.length === 0}
+                  onClick={() => approveBills(approvable)}
+                >
+                  {approvable.length === 0
+                    ? "Nothing to approve"
+                    : `Approve ${approvable.length} ${approvable.length === 1 ? "payable" : "payables"}`}
+                </Button>
+              ) : null}
+              {railOpen && payable.length > 0 ? (
+                <Button
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() =>
+                    router.push(
+                      `/payables/payment-runs?bills=${payable.map((bill) => bill.id).join(",")}`,
+                    )
+                  }
+                >
+                  Pay {payable.length} by ACH ·{" "}
+                  {formatMoneyFromCents(
+                    payable.reduce(
+                      (sum, bill) => sum + payableOutstandingCents(bill),
+                      0,
+                    ),
+                  )}
+                </Button>
+              ) : null}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-muted-foreground">
+              <span className="tabular-nums">
+                {rows.length} {rows.length === 1 ? "payable" : "payables"}
+              </span>
+              {outstandingCents > 0 ? (
+                <span>
+                  <span className="font-mono tabular-nums text-foreground">
+                    {formatMoneyFromCents(outstandingCents)}
+                  </span>{" "}
+                  due
+                </span>
+              ) : null}
+              {overdueCount > 0 ? (
+                <span className="font-medium text-destructive tabular-nums">
+                  {overdueCount} overdue
+                </span>
+              ) : null}
+              {data.truncated ? (
+                <span className="text-warning">
+                  Capped at the 500 most urgent open payables
+                </span>
+              ) : null}
+            </div>
+            {data.inboundBillsEmail ? (
+              <button
+                type="button"
+                title="Copy address"
+                onClick={() => {
+                  void navigator.clipboard.writeText(data.inboundBillsEmail!)
+                  toast.success("Address copied")
+                }}
+                className="font-mono text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
+              >
+                {data.inboundBillsEmail}
+              </button>
+            ) : null}
+          </>
+        )}
+      </div>
 
-          {/* ── Tables: fixed-height, each scrolls within itself ────── */}
-          <div className="grid grid-cols-1 items-stretch gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[2fr_1fr] lg:gap-5">
-            <section
-              className="desk-rise flex min-h-0 flex-col overflow-hidden border bg-card max-lg:max-h-[70vh]"
-              style={{ "--desk-stagger": 2 } as React.CSSProperties}
-            >
-              <header className="flex items-baseline justify-between gap-3 border-b px-4 py-2.5">
-                <h2 className="text-sm font-semibold">
-                  Coming due
-                  {activeWindow ? (
-                    <span className="ml-2 font-normal text-muted-foreground">· {activeWindow.label}</span>
-                  ) : null}
-                </h2>
-                <div className="text-xs tabular-nums text-muted-foreground">
-                  {activeWindow
-                    ? `${visibleQueue.length} ${visibleQueue.length === 1 ? "bill" : "bills"}`
-                    : stats.overdueCount > 0
-                      ? `${stats.overdueCount} overdue · ${stats.dueThisWeekCount} this week`
-                      : `${stats.dueThisWeekCount} this week`}
-                </div>
-              </header>
-              {visibleQueue.length === 0 ? (
-                <div className="flex flex-1 items-center justify-center px-4 py-10 text-sm text-muted-foreground">
-                  No bills in this window.
-                </div>
-              ) : (
-                <ScrollRegion>
-                  <table className="w-full border-collapse">
-                    <thead>
-                      <tr>
-                        <th className={TH}>Vendor</th>
-                        <th className={TH}>Project</th>
-                        <th className={TH}>Due</th>
-                        <th className={cn(TH, "text-right")}>Outstanding</th>
-                        <th aria-hidden className="sticky top-0 z-10 bg-card border-b" />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {visibleQueue.map((row) => {
-                        const due = dueLines(row)
-                        const chip = statusChip(row)
-                        return (
-                          <tr
-                            key={row.id}
-                            className="group relative cursor-pointer border-b transition-colors last:border-b-0 hover:bg-muted/40"
-                          >
-                            <td className="px-4 py-3">
-                              <Link
-                                href={row.href}
-                                className="text-sm font-medium underline-offset-4 after:absolute after:inset-0 group-hover:underline"
-                              >
-                                {row.vendorName}
-                              </Link>
-                              <div className="mt-1">
-                                <span
-                                  className={cn(
-                                    "inline-flex items-center gap-1.5 rounded-full border px-2 py-px text-[11px] font-medium capitalize text-muted-foreground",
-                                    chip.live && "border-primary/30 text-primary",
-                                  )}
-                                >
-                                  <span className="size-[5px] rounded-full bg-current" />
-                                  {chip.label}
-                                </span>
-                              </div>
-                            </td>
-                            <td className="px-4 py-3 text-xs text-muted-foreground">{row.projectName}</td>
-                            <td className="px-4 py-3">
-                              <div className="text-sm tabular-nums">{due.date}</div>
-                              {due.rel ? (
-                                <div
-                                  className={cn(
-                                    "mt-0.5 text-[11px]",
-                                    due.tone === "late"
-                                      ? "font-medium text-destructive"
-                                      : due.tone === "soon"
-                                        ? "font-medium text-primary"
-                                        : "text-muted-foreground",
-                                  )}
-                                >
-                                  {due.rel}
-                                </div>
-                              ) : null}
-                            </td>
-                            <td className="px-4 py-3 text-right font-mono text-sm font-medium tabular-nums">
-                              {money(row.outstandingCents)}
-                            </td>
-                            <td className="px-4 py-3 text-right">
-                              <ArrowUpRight className="inline-block size-4 text-muted-foreground/40 transition-colors group-hover:text-foreground" />
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </ScrollRegion>
-              )}
-            </section>
-
-            <section
-              className="desk-rise flex min-h-0 flex-col overflow-hidden border bg-card max-lg:max-h-[60vh]"
-              style={{ "--desk-stagger": 3 } as React.CSSProperties}
-            >
-              <header className="flex items-baseline justify-between gap-3 border-b px-4 py-2.5">
-                <h2 className="text-sm font-semibold">Who you owe</h2>
-                <div className="text-xs tabular-nums text-muted-foreground">{stats.vendorCount}</div>
-              </header>
-              <ScrollRegion>
-                {vendors.map((v) => (
-                  <div className="flex flex-col gap-1.5 border-b px-4 py-3 last:border-b-0" key={v.vendorName}>
-                    <div className="flex items-baseline justify-between gap-3">
-                      <span className="text-sm font-medium">{v.vendorName}</span>
-                      <span className="font-mono text-sm font-medium tabular-nums">{money(v.outstandingCents)}</span>
-                    </div>
-                    <div className="h-1 overflow-hidden bg-border">
-                      <div
-                        className={cn("h-full", v.hasOverdue ? "bg-destructive" : "bg-primary")}
-                        style={{ width: `${Math.max(4, Math.round((v.outstandingCents / maxVendor) * 100))}%` }}
-                      />
-                    </div>
-                    <div className="text-[11px] text-muted-foreground">
-                      {v.openCount} open {v.openCount === 1 ? "bill" : "bills"}
-                      {v.hasOverdue ? " · has overdue" : v.nextDueDate ? ` · next ${shortDate(v.nextDueDate)}` : ""}
-                    </div>
-                  </div>
-                ))}
-              </ScrollRegion>
-            </section>
-          </div>
-        </>
-      )}
+      <PayablesWorkspace
+        bills={data.bills}
+        selectedBillId={workspaceBillId}
+        onSelectBill={openBill}
+        costCodes={data.costCodes}
+        budgetLines={budgetLines}
+        costCodesEnabled={costCodesEnabled}
+        projects={projects}
+        accountingEnabled={accountingEnabled}
+        qboExpenseAccounts={qboExpenseAccounts}
+        qboApAccounts={qboApAccounts}
+        qboDefaults={qboDefaults}
+        onChanged={() => router.refresh()}
+        holdEvaluations={holdEvaluations}
+        railOpen={railOpen}
+        paymentReadinessByCompanyId={data.paymentReadinessByCompanyId}
+        runMembershipByBillId={data.runMembershipByBillId}
+        viewerMayApproveRuns={viewerMayApproveRuns}
+      />
     </div>
   )
 }

@@ -87,13 +87,13 @@ export function PayablesExplorer({
   const [openQboAccountBillId, setOpenQboAccountBillId] = useState<string | null>(null)
 
   const filtered = useMemo(
-    () => filterPayables(vendorBills, { search, queue: queueFilter, costCodesEnabled, accountingEnabled }),
-    [accountingEnabled, costCodesEnabled, vendorBills, search, queueFilter],
+    () => filterPayables(vendorBills, { search, queue: queueFilter, costCodesEnabled }),
+    [costCodesEnabled, vendorBills, search, queueFilter],
   )
 
   const filterCounts = useMemo(
-    () => payableQueueCounts(vendorBills, costCodesEnabled, accountingEnabled),
-    [accountingEnabled, costCodesEnabled, vendorBills],
+    () => payableQueueCounts(vendorBills, costCodesEnabled),
+    [costCodesEnabled, vendorBills],
   )
   const totals = useMemo(() => summarizePayables(vendorBills), [vendorBills])
   const selectedBills = useMemo(
@@ -139,8 +139,8 @@ export function PayablesExplorer({
               { key: "overdue", label: "Overdue" },
               { key: "due_soon", label: "Due soon" },
               { key: "needs_review", label: "Needs review" },
-              { key: "ready", label: accountingEnabled ? "Ready to sync" : "Ready to pay" },
-              { key: "synced", label: accountingEnabled ? "Synced" : "Paid" },
+              { key: "payable", label: "Ready to pay" },
+              { key: "paid", label: "Paid" },
             ] as const).map((filter) => (
               <button
                 key={filter.key}

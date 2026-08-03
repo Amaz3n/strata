@@ -35,18 +35,30 @@ export function PaymentRunsClient({
   reconciliations,
   canReconcile,
   error,
+  preselectedBillIds = [],
 }: {
   setup: PaymentRunSetupData
   runs: PaymentRunListRow[]
   reconciliations: PaymentReconciliationSummary[]
   canReconcile: boolean
   error?: string | null
+  /** Bill ids handed over from the payables desk's Pay action. */
+  preselectedBillIds?: string[]
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
-  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const eligibleIds = useMemo(() => new Set(setup.eligibleBills.map((bill) => bill.id)), [setup.eligibleBills])
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set(preselectedBillIds.filter((id) => eligibleIds.has(id))),
+  )
+  const droppedPreselected = preselectedBillIds.filter((id) => !eligibleIds.has(id)).length
   const [fundingSourceId, setFundingSourceId] = useState(setup.fundingSources.find((source) => source.isDefault)?.id ?? setup.fundingSources[0]?.id ?? "")
-  const [message, setMessage] = useState<string | null>(error ?? null)
+  const [message, setMessage] = useState<string | null>(
+    error ??
+      (droppedPreselected > 0
+        ? `${droppedPreselected} selected ${droppedPreselected === 1 ? "bill is" : "bills are"} not payment-ready and ${droppedPreselected === 1 ? "was" : "were"} left out of the selection.`
+        : null),
+  )
   const selectedBills = useMemo(() => setup.eligibleBills.filter((bill) => selected.has(bill.id)), [selected, setup.eligibleBills])
   const selectedTotal = selectedBills.reduce((sum, bill) => sum + bill.outstandingCents, 0)
 

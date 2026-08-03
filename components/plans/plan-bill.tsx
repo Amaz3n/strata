@@ -63,6 +63,16 @@ type TakeoffDraft = {
   uom: string
   unitCostDollars: string
   elevationId: string
+  /**
+   * Opaque to this editor, and carried anyway.
+   *
+   * Saving REPLACES every row server-side, so anything the draft does not hold
+   * is deleted rather than merely left alone. `metadata.takeoff` is the line's
+   * link back to the measured geometry — dropping it here would silently sever
+   * every plan line from its drawings on the next ordinary save, and break the
+   * unique index the takeoff sync matches on.
+   */
+  metadata: Record<string, unknown>
 }
 
 let draftSequence = 0
@@ -79,6 +89,7 @@ function linesToDrafts(lines: TakeoffLineDto[], fresh = false): TakeoffDraft[] {
     uom: line.uom,
     unitCostDollars: line.unit_cost_cents == null ? "" : (line.unit_cost_cents / 100).toFixed(2),
     elevationId: line.elevation_id ?? "base",
+    metadata: line.metadata ?? {},
   }))
 }
 
@@ -391,6 +402,8 @@ export function PlanBill({
       // saying so — instead of being frozen into a manual cost on creation.
       unitCostDollars: "",
       elevationId: elevationFilter === "all" || elevationFilter === "base" ? "base" : elevationFilter,
+      // Typed by hand, so it has no measured geometry behind it.
+      metadata: {},
     })
   }
 
@@ -417,7 +430,8 @@ export function PlanBill({
   }
 
   function applyImport(lines: TakeoffImportLine[], mode: "append" | "replace") {
-    const drafts = lines.map((line) => ({ ...line, uid: nextUid(), lineId: null }))
+    // Imported from a spreadsheet, so these carry no link to geometry either.
+    const drafts = lines.map((line) => ({ ...line, uid: nextUid(), lineId: null, metadata: {} }))
     setTakeoff((current) => (mode === "replace" ? drafts : [...current, ...drafts]))
     clearFilters()
     toast.success(
@@ -475,6 +489,7 @@ export function PlanBill({
               uom: draft.uom.trim(),
               unitCostCents: parseMoneyCents(draft.unitCostDollars),
               elevationId: draft.elevationId === "base" ? null : draft.elevationId,
+              metadata: draft.metadata,
             })),
           ),
         )

@@ -4,7 +4,7 @@ import { memo, useImperativeHandle, useLayoutEffect, useMemo, useRef } from "rea
 import type { Ref } from "react"
 import type { ImageToScreenMatrix } from "./tiled-drawing-viewer"
 import { cn } from "@/lib/utils"
-import { measurementLabel } from "@/lib/drawings/measure"
+import { isDeductionGeometry, measurementLabel } from "@/lib/drawings/measure"
 import type { DrawingMarkup, DrawingPin } from "@/app/(app)/drawings/types"
 
 export interface SVGOverlayHandle {
@@ -22,14 +22,7 @@ export interface SVGOverlayProps {
   container: { width: number; height: number } | null
   imageSize: { width: number; height: number }
   markups: DrawingMarkup[]
-  draftMarkups?: Array<{
-    type: string
-    points: Array<{ x: number; y: number }>
-    color: string
-    strokeWidth: number
-    text?: string
-    label?: string | null
-  }>
+  draftMarkups?: DraftMarkup[]
   pins: DrawingPin[]
   showMarkups: boolean
   showPins: boolean
@@ -61,9 +54,78 @@ export interface SVGOverlayProps {
    * committing to it.
    */
   snapIndicator?: { x: number; y: number; color: string } | null
+  /**
+   * Find-in-sheet hits, normalized 0..1. The active one is emphasized so the
+   * user can tell which of forty "W12x26" they are standing on.
+   */
+  textMatches?: ReadonlyArray<{ x: number; y: number; w: number; h: number }>
+  activeTextMatchIndex?: number
+  /**
+   * Detail bubbles and sheet references that resolve to another sheet on the
+   * project. Rendered only while armed, because a plan can carry dozens and
+   * they would otherwise compete with the drawing itself.
+   */
+  calloutLinks?: ReadonlyArray<{
+    x: number
+    y: number
+    w: number
+    h: number
+    targetSheetId: string
+    targetSheetNumber: string
+  }>
+  onCalloutLinkClick?: (targetSheetId: string) => void
+}
+
+/**
+ * A shape being drawn right now. Carries `style` for the same reason a
+ * persisted markup does: an in-progress deduction has to read as a deduction
+ * before the ring closes, not after it is saved.
+ */
+export interface DraftMarkup {
+  type: string
+  points: Array<{ x: number; y: number }>
+  color: string
+  strokeWidth: number
+  text?: string
+  label?: string | null
+  style?: Record<string, unknown> | null
 }
 
 type PxPoint = { x: number; y: number }
+
+/** Color of record when a markup was stored without one. */
+const FALLBACK_MARKUP_COLOR = "#EF4444"
+
+/**
+ * A deduction subtracts from its condition, so it must never read as an
+ * ordinary area. It is drawn hatched instead of flat-filled, in the
+ * condition's own color, with the outline unchanged — the hatch carries the
+ * sign, the color keeps the link back to the panel row.
+ *
+ * One pattern per distinct color, defined once in <defs>: markups share their
+ * condition's color, so a sheet with 300 deductions still defines a handful.
+ */
+function deductionHatchId(color: string): string {
+  return `takeoff-deduction-${color.replace(/[^a-zA-Z0-9]/g, "")}`
+}
+
+function DeductionHatchPattern({ color }: { color: string }) {
+  return (
+    <pattern
+      id={deductionHatchId(color)}
+      width={9}
+      height={9}
+      patternUnits="userSpaceOnUse"
+      patternTransform="rotate(45)"
+    >
+      <line x1={0} y1={0} x2={0} y2={9} stroke={color} strokeWidth={2.5} opacity={0.75} />
+    </pattern>
+  )
+}
+
+function isDeductionDraft(markup: DraftMarkup): boolean {
+  return isDeductionGeometry({ type: markup.type, points: [], style: markup.style ?? null })
+}
 
 function toPxPoint(p: [number, number], imageSize: { width: number; height: number }): PxPoint {
   return { x: p[0] * imageSize.width, y: p[1] * imageSize.height }
@@ -155,6 +217,10 @@ export function SVGOverlay({
   highlightedMarkupIds,
   onMarkupClick,
   snapIndicator = null,
+  textMatches,
+  activeTextMatchIndex = 0,
+  calloutLinks,
+  onCalloutLinkClick,
 }: SVGOverlayProps) {
   const gRef = useRef<SVGGElement>(null)
   const matrixRef = useRef<ImageToScreenMatrix | null>(null)
@@ -163,6 +229,21 @@ export function SVGOverlay({
     () => (showTakeoff ? markups : markups.filter((m) => !m.condition_id)),
     [markups, showTakeoff]
   )
+
+  // Every color that needs a hatch pattern this render — persisted deductions
+  // and the one being drawn.
+  const deductionColors = useMemo(() => {
+    const colors = new Set<string>()
+    for (const m of visibleMarkups) {
+      if (m.data && isDeductionGeometry(m.data)) {
+        colors.add(typeof m.data.color === "string" ? m.data.color : FALLBACK_MARKUP_COLOR)
+      }
+    }
+    for (const draft of draftMarkups) {
+      if (isDeductionDraft(draft)) colors.add(draft.color)
+    }
+    return Array.from(colors)
+  }, [visibleMarkups, draftMarkups])
 
   const applyTransform = () => {
     const g = gRef.current
@@ -214,6 +295,9 @@ export function SVGOverlay({
         >
           <polygon points="0 0, 10 3.5, 0 7" fill="currentColor" />
         </marker>
+        {deductionColors.map((color) => (
+          <DeductionHatchPattern key={color} color={color} />
+        ))}
       </defs>
 
       {/* Hidden until the first transform arrives; applyTransform flips it. */}
@@ -250,6 +334,62 @@ export function SVGOverlay({
           </g>
         )}
 
+        {/* Callout hyperlinks: tap a detail bubble to open the sheet it names. */}
+        {calloutLinks && calloutLinks.length > 0 && (
+          <g>
+            {calloutLinks.map((link, index) => (
+              <g
+                key={`${link.targetSheetId}-${index}`}
+                style={{ cursor: onCalloutLinkClick ? "pointer" : "default" }}
+                onClick={
+                  onCalloutLinkClick
+                    ? (event) => {
+                        event.stopPropagation()
+                        onCalloutLinkClick(link.targetSheetId)
+                      }
+                    : undefined
+                }
+              >
+                <title>{`Go to ${link.targetSheetNumber}`}</title>
+                <rect
+                  x={link.x * imageSize.width}
+                  y={link.y * imageSize.height}
+                  width={link.w * imageSize.width}
+                  height={link.h * imageSize.height}
+                  fill="#2563EB"
+                  fillOpacity={0.14}
+                  stroke="#2563EB"
+                  strokeWidth={1.25}
+                  vectorEffect="non-scaling-stroke"
+                />
+              </g>
+            ))}
+          </g>
+        )}
+
+        {/* Find-in-sheet hits. Non-interactive: the search bar owns navigation. */}
+        {textMatches && textMatches.length > 0 && (
+          <g style={{ pointerEvents: "none" }}>
+            {textMatches.map((match, index) => {
+              const active = index === activeTextMatchIndex
+              return (
+                <rect
+                  key={`${match.x}-${match.y}-${index}`}
+                  x={match.x * imageSize.width}
+                  y={match.y * imageSize.height}
+                  width={match.w * imageSize.width}
+                  height={match.h * imageSize.height}
+                  fill={active ? "#F59E0B" : "#FBBF24"}
+                  fillOpacity={active ? 0.45 : 0.25}
+                  stroke={active ? "#B45309" : "none"}
+                  strokeWidth={active ? 1.5 : 0}
+                  vectorEffect="non-scaling-stroke"
+                />
+              )
+            })}
+          </g>
+        )}
+
         {/* Pins */}
         {showPins &&
           pins.map((pin) => (
@@ -269,15 +409,8 @@ export function SVGOverlay({
 const DraftMarkupShape = memo(function DraftMarkupShape({
   markup,
 }: {
-  markup: {
-    type: string
-    points: Array<{ x: number; y: number }>
-    color: string
-    strokeWidth: number
-    text?: string
-    /** Pre-computed live measurement; the draft has no persisted quantity yet. */
-    label?: string | null
-  }
+  /** `label` is the pre-computed live measurement; a draft has no persisted quantity yet. */
+  markup: DraftMarkup
 }) {
   const color = markup.color
   const strokeWidth = markup.strokeWidth
@@ -409,7 +542,12 @@ const DraftMarkupShape = memo(function DraftMarkupShape({
       if (pts.length < 1) return null
       return (
         <g style={{ pointerEvents: "none" }}>
-          {pts.length >= 3 && <path d={pathFromPoints(pts, true)} fill={color} opacity={0.14} />}
+          {pts.length >= 3 &&
+            (isDeductionDraft(markup) ? (
+              <path d={pathFromPoints(pts, true)} fill={`url(#${deductionHatchId(color)})`} opacity={0.7} />
+            ) : (
+              <path d={pathFromPoints(pts, true)} fill={color} opacity={0.14} />
+            ))}
           <path
             d={pathFromPoints(pts, pts.length >= 3)}
             stroke={color}
@@ -498,7 +636,7 @@ const MarkupShape = memo(function MarkupShape({
 }) {
   const data = (markup as any).data as any
   const type = data?.type as string | undefined
-  const color = (typeof data?.color === "string" ? data.color : "#EF4444") as string
+  const color = (typeof data?.color === "string" ? data.color : FALLBACK_MARKUP_COLOR) as string
   const strokeWidth = typeof data?.strokeWidth === "number" ? data.strokeWidth : 2
   const points: [number, number][] = Array.isArray(data?.points) ? data.points : []
 
@@ -548,11 +686,17 @@ const MarkupShape = memo(function MarkupShape({
     }
     case "area": {
       if (px.length < 3) return null
-      const label = measurementLabel({ type: "area", points }, imageSize, feetPerImagePx)
+      const style = data?.style ?? null
+      const deduction = isDeductionGeometry({ type: "area", points, style })
+      const label = measurementLabel({ type: "area", points, style }, imageSize, feetPerImagePx)
       const center = centroidOf(px)
       return (
         <g style={{ pointerEvents: "none" }}>
-          <path d={pathFromPoints(px, true)} fill={color} opacity={0.18} />
+          {deduction ? (
+            <path d={pathFromPoints(px, true)} fill={`url(#${deductionHatchId(color)})`} opacity={0.75} />
+          ) : (
+            <path d={pathFromPoints(px, true)} fill={color} opacity={0.18} />
+          )}
           <path
             d={pathFromPoints(px, true)}
             stroke={color}

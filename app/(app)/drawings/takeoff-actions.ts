@@ -42,11 +42,46 @@ import {
   type ReanchorReviewItem,
   type StaleEstimateAlert,
 } from "@/lib/services/takeoff-reanchor"
+import {
+  applyConditionTemplates,
+  createConditionTemplate,
+  deleteConditionTemplate,
+  listConditionTemplates,
+  listTemplateGroups,
+  saveConditionsAsTemplates,
+  updateConditionTemplate,
+  type ApplyTemplatesResult,
+  type ConditionTemplate,
+  type HarvestTemplatesResult,
+} from "@/lib/services/takeoff-templates"
+import {
+  getTakeoffCoverage,
+  setTakeoffSheetStatus,
+  type CoverageSummary,
+} from "@/lib/services/takeoff-coverage"
+import {
+  exportConditionRollupCsv,
+  type TakeoffExport,
+} from "@/lib/services/takeoff-export"
+import {
+  acceptSymbolMatches,
+  findSymbolMatchesByVision,
+  symbolVisionAvailable,
+  type AcceptSymbolMatchesResult,
+  type VisionSymbolProposal,
+} from "@/lib/services/takeoff-assist"
 import type {
+  AcceptSymbolMatchesInput,
+  ApplyConditionTemplatesInput,
   AssignMarkupsToConditionInput,
   ConditionRollupFilters,
+  CreateConditionTemplateInput,
   CreateTakeoffConditionInput,
+  FindSymbolMatchesInput,
+  SaveConditionsAsTemplatesInput,
+  SetTakeoffSheetStatusInput,
   SyncConditionsInput,
+  UpdateConditionTemplateInput,
   UpdateTakeoffConditionInput,
 } from "@/lib/validation/takeoff"
 import { updateTakeoffCondition } from "@/lib/services/takeoff"
@@ -91,9 +126,11 @@ export async function createTakeoffConditionAction(
 export async function updateTakeoffConditionAction(
   conditionId: string,
   updates: UpdateTakeoffConditionInput,
+  /** The `updated_at` the editor rendered, so a concurrent save is refused. */
+  seenUpdatedAt?: string | null,
 ): Promise<ActionResult<TakeoffCondition>> {
   return run(async () => {
-    const result = await updateTakeoffCondition(conditionId, updates)
+    const result = await updateTakeoffCondition(conditionId, updates, undefined, seenUpdatedAt)
     revalidatePath("/drawings")
     return result
   })
@@ -215,4 +252,137 @@ export async function listStaleEstimateAlertsAction(
   projectId: string,
 ): Promise<StaleEstimateAlert[]> {
   return listStaleEstimateAlerts(projectId)
+}
+
+// ---------------------------------------------------------------------------
+// Condition template library
+// ---------------------------------------------------------------------------
+
+export async function listConditionTemplatesAction(): Promise<
+  ActionResult<ConditionTemplate[]>
+> {
+  return run(() => listConditionTemplates())
+}
+
+export async function listTemplateGroupsAction(): Promise<ActionResult<string[]>> {
+  return run(() => listTemplateGroups())
+}
+
+export async function createConditionTemplateAction(
+  input: CreateConditionTemplateInput,
+): Promise<ActionResult<ConditionTemplate>> {
+  return run(async () => {
+    const result = await createConditionTemplate(input)
+    revalidatePath("/settings/takeoff")
+    return result
+  })
+}
+
+export async function updateConditionTemplateAction(
+  templateId: string,
+  updates: UpdateConditionTemplateInput,
+  seenUpdatedAt?: string | null,
+): Promise<ActionResult<ConditionTemplate>> {
+  return run(async () => {
+    const result = await updateConditionTemplate(templateId, updates, undefined, seenUpdatedAt)
+    revalidatePath("/settings/takeoff")
+    return result
+  })
+}
+
+export async function deleteConditionTemplateAction(
+  templateId: string,
+): Promise<ActionResult<null>> {
+  return run(async () => {
+    await deleteConditionTemplate(templateId)
+    revalidatePath("/settings/takeoff")
+    return null
+  })
+}
+
+/** Copy library templates into a takeoff scope as real, editable conditions. */
+export async function applyConditionTemplatesAction(
+  input: ApplyConditionTemplatesInput,
+): Promise<ActionResult<ApplyTemplatesResult>> {
+  return run(async () => {
+    const result = await applyConditionTemplates(input)
+    revalidatePath("/drawings")
+    return result
+  })
+}
+
+/** The reverse: keep the conditions built on a real job as library templates. */
+export async function saveConditionsAsTemplatesAction(
+  input: SaveConditionsAsTemplatesInput,
+): Promise<ActionResult<HarvestTemplatesResult>> {
+  return run(async () => {
+    const result = await saveConditionsAsTemplates(input)
+    revalidatePath("/settings/takeoff")
+    return result
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Sheet coverage
+// ---------------------------------------------------------------------------
+
+/** Which sheets have been measured, waived, or forgotten. */
+export async function getTakeoffCoverageAction(
+  scope:
+    | { project_id: string }
+    | { house_plan_version_id: string; source_project_ids: string[] },
+): Promise<ActionResult<CoverageSummary>> {
+  return run(() => getTakeoffCoverage(scope))
+}
+
+export async function setTakeoffSheetStatusAction(
+  input: SetTakeoffSheetStatusInput,
+): Promise<ActionResult<null>> {
+  return run(async () => {
+    await setTakeoffSheetStatus(input)
+    revalidatePath("/drawings")
+    return null
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
+/** The rollup as CSV, carrying every flag the panel shows. */
+export async function exportConditionRollupCsvAction(
+  filters: ConditionRollupFilters,
+): Promise<ActionResult<TakeoffExport>> {
+  return run(() => exportConditionRollupCsv(filters))
+}
+
+// ---------------------------------------------------------------------------
+// Count by example
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether the vision fallback is available. The viewer asks before offering it,
+ * so a sheet the geometric matcher cannot help with says so honestly instead of
+ * spinning on a call that was never going to run.
+ */
+export async function symbolVisionAvailableAction(): Promise<boolean> {
+  return symbolVisionAvailable()
+}
+
+/** The fallback for sheets whose linework the geometric matcher cannot use. */
+export async function findSymbolMatchesByVisionAction(
+  input: FindSymbolMatchesInput,
+): Promise<ActionResult<VisionSymbolProposal | null>> {
+  return run(() => findSymbolMatchesByVision(input))
+}
+
+/** Turn an approved proposal into one real count markup. */
+export async function acceptSymbolMatchesAction(
+  input: AcceptSymbolMatchesInput,
+): Promise<ActionResult<AcceptSymbolMatchesResult>> {
+  return run(async () => {
+    const result = await acceptSymbolMatches(input)
+    revalidatePath("/drawings")
+    return result
+  })
 }

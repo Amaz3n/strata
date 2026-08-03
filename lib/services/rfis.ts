@@ -19,7 +19,7 @@ import {
   fetchUserEmail,
 } from "@/lib/services/portal-links"
 import { fetchDistributionRecipients } from "@/lib/services/distribution-lists"
-import type { ChangeOrder, Rfi, RfiResponse } from "@/lib/types"
+import type { ChangeOrder, Rfi, RfiAttachment, RfiResponse, RfiThread } from "@/lib/types"
 import type { RfiDecisionInput, RfiInput, RfiResponseInput } from "@/lib/validation/rfis"
 import { RfiNotificationEmail } from "@/lib/emails/rfi-notification-email"
 import { formatDocNumber, type DocumentNumberingSettings } from "@/lib/document-number"
@@ -132,6 +132,69 @@ export async function listRfiResponses({
       actor_ip: row.actor_ip ?? null,
     } satisfies RfiResponse
   })
+}
+
+async function loadRfiAttachments(
+  supabase: SupabaseClient,
+  orgId: string,
+  fileIds: string[],
+): Promise<Map<string, RfiAttachment>> {
+  if (fileIds.length === 0) return new Map()
+  const { data } = await supabase
+    .from("files")
+    .select("id, file_name, mime_type, size_bytes")
+    .eq("org_id", orgId)
+    .in("id", fileIds)
+
+  return new Map(
+    (data ?? []).map((file) => [
+      file.id as string,
+      {
+        file_id: file.id as string,
+        file_name: (file.file_name as string) ?? "Attachment",
+        mime_type: (file.mime_type as string | null) ?? null,
+        size_bytes: (file.size_bytes as number | null) ?? null,
+      },
+    ]),
+  )
+}
+
+/**
+ * The conversation on one RFI with every attached file resolved to a name and
+ * size. Portals render files as something you can recognise before you download
+ * it; a bare `file_id` cannot do that.
+ *
+ * Callers are responsible for having authorised the reader against this RFI.
+ */
+export async function listRfiThread({ orgId, rfiId }: { orgId: string; rfiId: string }): Promise<RfiThread> {
+  const supabase = createServiceSupabaseClient()
+  const [messages, { data: rfi }] = await Promise.all([
+    listRfiResponses({ orgId, rfiId }),
+    supabase
+      .from("rfis")
+      .select("attachment_file_id")
+      .eq("org_id", orgId)
+      .eq("id", rfiId)
+      .maybeSingle(),
+  ])
+
+  const questionFileId = (rfi?.attachment_file_id as string | null) ?? null
+  const fileIds = [
+    ...new Set(
+      [...messages.map((message) => message.file_id), questionFileId].filter(
+        (id): id is string => !!id,
+      ),
+    ),
+  ]
+  const attachments = await loadRfiAttachments(supabase, orgId, fileIds)
+
+  return {
+    messages: messages.map((message) => ({
+      ...message,
+      attachment: message.file_id ? (attachments.get(message.file_id) ?? null) : null,
+    })),
+    attachment: questionFileId ? (attachments.get(questionFileId) ?? null) : null,
+  }
 }
 
 /**
@@ -367,6 +430,7 @@ export async function createPortalRfi({
   question,
   priority,
   dueDate,
+  attachmentFileId,
 }: {
   orgId: string
   projectId: string
@@ -377,6 +441,7 @@ export async function createPortalRfi({
   question: string
   priority?: "low" | "normal" | "high" | "urgent"
   dueDate?: string | null
+  attachmentFileId?: string | null
 }) {
   const supabase = createServiceSupabaseClient()
 
@@ -389,6 +454,7 @@ export async function createPortalRfi({
     status: "open",
     priority: priority ?? "normal",
     due_date: dueDate ?? null,
+    attachment_file_id: attachmentFileId ?? null,
     submitted_by_company_id: companyId ?? null,
     assigned_company_id: companyId ?? null,
     submitted_by: null,
@@ -412,6 +478,18 @@ export async function createPortalRfi({
     entityId: data.id,
     payload: { rfi_number: data.rfi_number, project_id: data.project_id, via_portal: true, contact_id: contactId ?? null },
   })
+
+  if (attachmentFileId) {
+    await attachFileWithServiceRole({
+      orgId,
+      fileId: attachmentFileId,
+      projectId,
+      entityType: "rfi",
+      entityId: data.id,
+      linkRole: "question",
+      createdBy: null,
+    })
+  }
 
   return data as Rfi
 }

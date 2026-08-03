@@ -2,7 +2,10 @@
 
 import {
   createPortalAccessToken,
-  listPortalTokens,
+  listKnownExternalContacts,
+  listOrgExternalAccess,
+  listProjectAccessRoster,
+  revokeOrgExternalPersonAccess,
   revokePortalToken,
   pausePortalToken,
   resumePortalToken,
@@ -10,10 +13,6 @@ import {
   setPortalTokenPin,
   removePortalTokenPin,
 } from "@/lib/services/portal-access"
-import {
-  listProjectExternalPortalAccounts,
-  setExternalPortalAccountStatus,
-} from "@/lib/services/external-portal-auth"
 import { listProjectVendors } from "@/lib/services/project-vendors"
 import {
   createPortalTokenInputSchema,
@@ -23,8 +22,8 @@ import {
   setPortalTokenRequireAccountSchema,
   setPortalTokenPinSchema,
   removePortalTokenPinSchema,
+  revokeOrgExternalPersonSchema,
 } from "@/lib/validation/portal-access"
-import { setExternalPortalAccountStatusSchema } from "@/lib/validation/external-portal-auth"
 import { REVIEWER_DEFAULT_PERMISSIONS } from "@/lib/types"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
@@ -37,12 +36,23 @@ async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   }
 }
 
-export async function loadSharingDataAction(projectId: string) {
-      return listPortalTokens(projectId)
+export async function loadProjectAccessRosterAction(projectId: string) {
+      return listProjectAccessRoster(projectId)
 }
 
-export async function loadProjectExternalPortalAccountsAction(projectId: string) {
-      return listProjectExternalPortalAccounts(projectId)
+export async function loadKnownExternalContactsAction() {
+      return listKnownExternalContacts()
+}
+
+export async function loadOrgExternalAccessAction() {
+      return listOrgExternalAccess()
+}
+
+export async function revokeOrgExternalPersonAction(input: unknown) {
+  return run(async () => {
+      const parsed = revokeOrgExternalPersonSchema.parse(input)
+      return revokeOrgExternalPersonAccess({ tokenIds: parsed.token_ids })
+  })
 }
 
 export async function loadProjectVendorsAction(projectId: string) {
@@ -128,16 +138,6 @@ export async function removePortalTokenPinAction(input: unknown) {
   })
 }
 
-export async function setExternalPortalAccountStatusAction(input: unknown) {
-  return run(async () => {
-      const parsed = setExternalPortalAccountStatusSchema.parse(input)
-      await setExternalPortalAccountStatus({
-        accountId: parsed.account_id,
-        status: parsed.status,
-      })
-      return { success: true }
-  })
-}
 
 
 

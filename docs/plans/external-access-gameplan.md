@@ -5,7 +5,12 @@
 > behavior from it. Source of truth is the code, `CLAUDE.md`, and the
 > reference docs at the `docs/` top level.
 
-**Status:** READY TO EXECUTE. Phases are sequenced and gated; do not reorder.
+**Status:** Phases 1–5 **IMPLEMENTED** 2026-08-02 — `pnpm lint` clean,
+`npx tsc --noEmit` clean, `pnpm test:auth` 19/19, `pnpm lint:tokens` 949 → 747.
+**Phase 6 is STOPPED at its migration gate:**
+`supabase/migrations/20260802140000_bid_access_on_portal_tokens.sql` is written and
+awaiting human approval, and none of WS-6.1…6.4's code has been written because it
+reads and writes the column that migration adds.
 Written 2026-08-02 against `main` @ `aa020a3e`.
 **Audience:** an LLM executor.
 
@@ -433,7 +438,54 @@ Also drop `access-token-list.tsx` (line 143) and `portal-link-creator.tsx`
 
 ---
 
-## Phase 6 — One vendor portal: absorb bids (owner decision 2026-08-02)
+## Phase 6 — One vendor portal: absorb bids — **SUPERSEDED 2026-08-02**
+
+> **Replaced by [`vendor-workspace-gameplan.md`](vendor-workspace-gameplan.md).**
+> Execute that instead. It takes the "builder-scoped vendor portal" fork below
+> (option 2), which was the right one: the unit of external access is
+> `(person, builder)`, not `(person, project)`, and the bid gap is a symptom of
+> that rather than a case to special-case. Its migration
+> `20260803001216_vendor_workspace_access.sql` was **applied to production
+> 2026-08-03**, and it makes `scoped_bid_invite_id` load-bearing — resolving the
+> applied-but-unused column flagged at the end of this section.
+>
+> Everything below is retained as the record of why this phase stopped.
+
+> **Do not execute this phase as written.** Its central premise does not hold.
+>
+> WS-6.1 assumes "a bid invite is a person on a project, pre-award". Production
+> says otherwise: **2 of 8 bid packages have no `project_id`** (both prospect-only
+> — bidding during estimating, before a project exists), carrying **3 of 14
+> invites**. `portal_access_tokens.project_id` is `NOT NULL` and `/s/[token]`
+> requires a project *and* a company, so a prospect-stage bid physically cannot
+> mint a portal token. A quarter of bid packages are pre-*project*, not merely
+> pre-award.
+>
+> Owner decision 2026-08-02: **pause.** `/b` stays as-is — WS-4.3 already gave it
+> the Phase 3 claimed-account behavior, so it is not drifting — and the vendor
+> portal model gets revisited as its own piece of work.
+>
+> The three ways forward, for whoever picks this up:
+> 1. **Project-optional bid tokens** — relax `project_id` for bid-scoped rows and
+>    give the sub portal a bid-only mode. Requires auditing every
+>    `portal_access_tokens` consumer and RLS policy for null-project handling.
+> 2. **Builder-scoped vendor portal** — one portal per (vendor, builder) rather
+>    than per project, with projects and bids as sections. Closest to the owner's
+>    original framing ("any bids they have been invited on"); reshapes the token
+>    model, so it deserves its own plan rather than a workstream here.
+> 3. **Partial migration** — project-backed bids only. Rejected: leaves two bid
+>    portals standing, which is the parallel implementation CLAUDE.md forbids.
+>
+> **Applied-but-unused schema:** the migration
+> `20260802140000_bid_access_on_portal_tokens.sql` WAS applied to production on
+> 2026-08-02 before this pause. `portal_access_tokens.scoped_bid_invite_id` and
+> its two indexes exist and were entirely unused. **Resolved 2026-08-03:** the
+> column is kept and becomes load-bearing — `20260803001216` adds a
+> `portal_access_tokens_scope_present` check requiring `project_id` OR
+> `scoped_bid_invite_id`, so bid-scoped records are what the column now carries.
+> Nothing to drop.
+
+### Original plan, retained for whoever resumes (owner decision 2026-08-02)
 
 **The rule: a bidder is a vendor.** The `/b` portal exists only because bid access
 grew its own token table. An Arc-account vendor invited to bid should not be
@@ -469,8 +521,21 @@ implementation. `bid_access_tokens` reads stay until the redirect window closes;
 mark the table deprecated in `docs/database-overview.md`.
 
 Phase 6 deliberately comes last: it benefits from one gate (P3), one auth form
-(P4), and one roster (P5) rather than blocking them. Production has few live bid
-tokens (§0.1 counts grants, not bid tokens — count them before starting).
+(P4), and one roster (P5) rather than blocking them.
+
+**Bid-side volumes (verified 2026-08-02):** 33 `bid_access_tokens` (29 live), 14
+`bid_invites`, **0** bid grants. Critically, **10 of 14 invites have no
+`contact_id`** while all 14 have a `company_id` — WS-6.3's "pure email invite" is
+therefore the *majority* case, not an edge, and auto-creating the contact at send
+time is load-bearing rather than tidying. With no contact there is no bound email,
+so the WS-3.1 lock would fall back to the weaker grant-existence signal.
+
+**STOPPED HERE.** The migration is written; WS-6.1…6.4 code is deliberately NOT
+written. It reads and writes `scoped_bid_invite_id`, so landing it before the
+migration is applied would break every bid invite send and the `/b` portal in
+production. Apply the migration, then execute WS-6.1 onward. `/b/[token]` keeps
+working unchanged until then, and WS-4.3 already gave it the Phase 3 behavior, so
+it is not drifting in the meantime.
 
 ---
 

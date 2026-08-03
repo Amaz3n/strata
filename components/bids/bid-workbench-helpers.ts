@@ -57,11 +57,10 @@ export function itemForScope(
   return (submission.items ?? []).find((item) => item.bid_scope_item_id === scopeItemId)
 }
 
-/** Where a bid package lives. Prospect packages have no project yet, which
- * disables the award-to-subcontract handoff and project-file linking. */
+/** Where a bid package lives. Precon-phase projects collect and level bids
+ * but cannot award — the server refuses commitments until activation. */
 export interface BidWorkbenchContext {
   projectId?: string | null
-  prospectId?: string | null
 }
 
 const DEFAULT_TZ = "America/New_York"

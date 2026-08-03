@@ -9,9 +9,8 @@ import {
   ClipboardList,
   FileCheck,
   BookOpen,
-  AlertTriangle,
-  AlertCircle,
   Camera,
+  Eye,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -43,21 +42,8 @@ const ENTITY_ICONS: Record<PinEntityType, React.ElementType> = {
   punch_list: ClipboardList,
   submittal: FileCheck,
   daily_log: BookOpen,
-  observation: AlertTriangle,
-  issue: AlertCircle,
+  observation: Eye,
   photo: Camera,
-}
-
-// Entity type colors
-const ENTITY_COLORS: Record<PinEntityType, string> = {
-  task: "bg-blue-500",
-  rfi: "bg-purple-500",
-  punch_list: "bg-orange-500",
-  submittal: "bg-green-500",
-  daily_log: "bg-cyan-500",
-  observation: "bg-yellow-500",
-  issue: "bg-red-500",
-  photo: "bg-teal-500",
 }
 
 interface CreateFromDrawingDialogProps {
@@ -124,11 +110,6 @@ export function CreateFromDrawingDialog({
         case "submittal":
           entityData.status = "pending"
           break
-        case "observation":
-        case "issue":
-          entityData.severity = priority
-          entityData.status = "open"
-          break
       }
 
       await onCreate(entityData)
@@ -177,8 +158,8 @@ export function CreateFromDrawingDialog({
           {/* Entity type selection */}
           <div>
             <Label className="mb-2 block">Type</Label>
-            <div className="grid grid-cols-5 gap-2">
-              {(["task", "rfi", "punch_list", "observation", "issue"] as PinEntityType[]).map(
+            <div className="grid grid-cols-4 gap-2">
+              {(["task", "rfi", "punch_list", "observation"] as PinEntityType[]).map(
                 (type) => {
                   const TypeIcon = ENTITY_ICONS[type]
                   return (
@@ -236,11 +217,8 @@ export function CreateFromDrawingDialog({
             />
           </div>
 
-          {/* Priority (for tasks, punch, issues) */}
-          {(entityType === "task" ||
-            entityType === "punch_list" ||
-            entityType === "issue" ||
-            entityType === "observation") && (
+          {/* Priority (for tasks and punch items) */}
+          {(entityType === "task" || entityType === "punch_list") && (
             <div>
               <Label>Priority</Label>
               <RadioGroup

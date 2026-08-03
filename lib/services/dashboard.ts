@@ -1588,7 +1588,7 @@ export async function getDecisionQueue(
       .eq("org_id", resolvedOrgId)
       .eq("status", "open")
       .in("severity", ["high", "urgent"]),
-    supabase.from("projects").select("id, name").eq("org_id", resolvedOrgId),
+    supabase.from("projects").select("id, name").eq("org_id", resolvedOrgId).eq("phase", "delivery"),
   ]);
 
   const projectMap = new Map(

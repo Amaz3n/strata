@@ -1,10 +1,17 @@
 import "server-only"
 
-import type { SupabaseClient } from "@supabase/supabase-js"
+import { createServerSupabaseClient } from "@/lib/supabase/server"
 
 const PAYMENT_STEP_UP_MAX_AGE_SECONDS = 10 * 60
 
-export async function requireRecentPaymentStepUp(supabase: SupabaseClient) {
+/**
+ * Assurance is a property of the caller's SESSION, so this resolves the
+ * cookie-bound client itself rather than accepting one. `requireOrgMembership`
+ * hands platform admins a service-role client, which carries no session — passing
+ * that in made the check unsatisfiable and locked real approvers out.
+ */
+export async function requireRecentPaymentStepUp() {
+  const supabase = await createServerSupabaseClient()
   const { data, error } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
   if (error || data?.currentLevel !== "aal2") {
     throw new Error("Two-factor authentication is required for payment approval")

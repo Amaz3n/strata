@@ -9,7 +9,7 @@ export async function startVendorPayoutSetupAction(input: {
   legal_name?: string
   dba_name?: string
   return_path: string
-}): Promise<ActionResult<{ url: string }>> {
+}): Promise<ActionResult<{ url: string | null }>> {
   try {
     const result = await startVendorPayoutSetup(input)
     return { success: true, data: { url: result.url } }

@@ -30,7 +30,16 @@ import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import { unwrapAction } from "@/lib/action-result"
-import { MEASURE_UOMS, MEASURE_UOM_LABELS, type MeasureUom } from "@/lib/drawings/measure"
+import {
+  CONDITION_UOMS,
+  CONDITION_UOM_DESCRIPTIONS,
+  conditionSourceUom,
+  conversionSummary,
+  MEASURE_UOM_LABELS,
+  type ConditionFactors,
+  type ConditionUom,
+} from "@/lib/drawings/measure"
+import { factorRuleViolation } from "@/lib/validation/takeoff"
 import { CONDITION_PALETTE } from "@/lib/drawings/takeoff-palette"
 import type { TakeoffCondition } from "@/lib/services/takeoff"
 import type { CostCodeRateHistory } from "@/lib/services/takeoff-pricing"
@@ -75,7 +84,12 @@ export function ConditionEditorDialog({
   const isEdit = !!condition
 
   const [name, setName] = useState(condition?.name ?? "")
-  const [uom, setUom] = useState<MeasureUom>((condition?.uom as MeasureUom) ?? "sf")
+  const [uom, setUom] = useState<ConditionUom>(condition?.uom ?? "sf")
+  // Factors are held as strings so a half-typed "4." is not a validation error.
+  const [depthIn, setDepthIn] = useState(numberField(condition?.depth_in))
+  const [heightFt, setHeightFt] = useState(numberField(condition?.height_ft))
+  const [pitchRise, setPitchRise] = useState(numberField(condition?.pitch_rise))
+  const [tonsPerCy, setTonsPerCy] = useState(numberField(condition?.tons_per_cy))
   const [color, setColor] = useState(condition?.color ?? CONDITION_PALETTE[0].hex)
   const [costCodeId, setCostCodeId] = useState<string | null>(condition?.cost_code_id ?? null)
   const [wastePct, setWastePct] = useState(String(condition?.waste_pct ?? 0))
@@ -131,6 +145,32 @@ export function ConditionEditorDialog({
     [costCodes, costCodeId],
   )
 
+  const factors = useMemo<ConditionFactors>(
+    () => ({
+      depth_in: parseFactor(depthIn),
+      height_ft: parseFactor(heightFt),
+      pitch_rise: parseFactor(pitchRise),
+      tons_per_cy: parseFactor(tonsPerCy),
+    }),
+    [depthIn, heightFt, pitchRise, tonsPerCy],
+  )
+
+  const sourceUom = conditionSourceUom(uom, factors)
+  const measuresDifferently = sourceUom !== uom
+
+  /**
+   * Changing the unit changes which factors are even legal, so the illegal ones
+   * are cleared rather than left holding a stale number that the save would
+   * reject with a constraint the user never saw.
+   */
+  const pickUom = useCallback((next: ConditionUom) => {
+    setUom(next)
+    if (next !== "cy" && next !== "ton") setDepthIn("")
+    if (next !== "ton") setTonsPerCy("")
+    if (next !== "sf") setHeightFt("")
+    if (next !== "sf" && next !== "sq") setPitchRise("")
+  }, [])
+
   const handleSave = useCallback(async () => {
     const trimmed = name.trim()
     if (!trimmed) {
@@ -150,10 +190,19 @@ export function ConditionEditorDialog({
       return
     }
 
+    // The same rule the database enforces, said as a sentence before the round
+    // trip — a CY condition with no depth would otherwise report zero.
+    const factorProblem = factorRuleViolation({ uom, ...factors })
+    if (factorProblem) {
+      toast.error(factorProblem)
+      return
+    }
+
     setSaving(true)
     try {
       const payload = {
         name: trimmed,
+        ...factors,
         cost_code_id: costCodeId,
         color,
         waste_pct: parsedWaste,
@@ -163,7 +212,11 @@ export function ConditionEditorDialog({
       }
 
       const saved = isEdit
-        ? unwrapAction(await updateTakeoffConditionAction(condition!.id, payload))
+        ? unwrapAction(
+            // The condition's own updated_at, so a save that would overwrite
+            // someone else's is refused instead of silently winning.
+            await updateTakeoffConditionAction(condition!.id, payload, condition!.updated_at),
+          )
         : unwrapAction(await createTakeoffConditionAction({ ...scope, ...payload, uom }))
 
       toast.success(isEdit ? "Condition updated" : `"${saved.name}" ready — measure it on the sheet`)
@@ -177,6 +230,7 @@ export function ConditionEditorDialog({
     name,
     wastePct,
     rateDollars,
+    factors,
     costCodeId,
     color,
     shareWithClients,
@@ -195,8 +249,8 @@ export function ConditionEditorDialog({
           <DialogTitle>{isEdit ? "Edit condition" : "New condition"}</DialogTitle>
           <DialogDescription>
             {isEdit
-              ? "The unit can't change — measurements already belong to it."
-              : "Name what you price, pick how it measures, then trace it on the sheet."}
+              ? "The unit can't change — measurements already belong to it. Depths, heights and pitches can."
+              : "Name what you price, pick what it reports, then trace it on the sheet."}
           </DialogDescription>
         </DialogHeader>
 
@@ -212,44 +266,67 @@ export function ConditionEditorDialog({
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label>Measures in</Label>
-              <div className="flex gap-1">
-                {MEASURE_UOMS.map((option) => (
-                  <Button
-                    key={option}
-                    type="button"
-                    size="sm"
-                    variant={uom === option ? "secondary" : "outline"}
-                    className="flex-1"
-                    disabled={isEdit}
-                    onClick={() => setUom(option)}
-                  >
-                    {MEASURE_UOM_LABELS[option]}
-                  </Button>
-                ))}
-              </div>
+          <div className="space-y-1.5">
+            <Label>Reports in</Label>
+            <div className="grid grid-cols-4 gap-1">
+              {CONDITION_UOMS.map((option) => (
+                <Button
+                  key={option}
+                  type="button"
+                  size="sm"
+                  variant={uom === option ? "secondary" : "outline"}
+                  disabled={isEdit}
+                  onClick={() => pickUom(option)}
+                >
+                  {MEASURE_UOM_LABELS[option]}
+                </Button>
+              ))}
             </div>
+            <p className="text-xs text-muted-foreground">
+              {CONDITION_UOM_DESCRIPTIONS[uom]}
+            </p>
+          </div>
 
-            <div className="space-y-1.5">
-              <Label>Color on the sheet</Label>
-              <div className="flex flex-wrap gap-1">
-                {CONDITION_PALETTE.map((entry) => (
-                  <button
-                    key={entry.hex}
-                    type="button"
-                    aria-label={entry.label}
-                    aria-pressed={color === entry.hex}
-                    onClick={() => setColor(entry.hex)}
-                    className={cn(
-                      "h-6 w-6 rounded-full ring-offset-2 ring-offset-background transition-shadow",
-                      color === entry.hex && "ring-2 ring-foreground",
-                    )}
-                    style={{ backgroundColor: entry.hex }}
-                  />
-                ))}
-              </div>
+          <FactorFields
+            uom={uom}
+            depthIn={depthIn}
+            heightFt={heightFt}
+            pitchRise={pitchRise}
+            tonsPerCy={tonsPerCy}
+            onDepthIn={setDepthIn}
+            onHeightFt={setHeightFt}
+            onPitchRise={setPitchRise}
+            onTonsPerCy={setTonsPerCy}
+          />
+
+          {measuresDifferently && (
+            <p className="border-l-2 border-muted-foreground/30 pl-2.5 text-xs text-muted-foreground">
+              Trace this in <span className="font-medium">{MEASURE_UOM_LABELS[sourceUom]}</span> on
+              the sheet. Arc converts it to {MEASURE_UOM_LABELS[uom]}
+              {conversionSummary(100, uom, factors)
+                ? ` — ${conversionSummary(100, uom, factors)}`
+                : ""}
+              .
+            </p>
+          )}
+
+          <div className="space-y-1.5">
+            <Label>Color on the sheet</Label>
+            <div className="flex flex-wrap gap-1">
+              {CONDITION_PALETTE.map((entry) => (
+                <button
+                  key={entry.hex}
+                  type="button"
+                  aria-label={entry.label}
+                  aria-pressed={color === entry.hex}
+                  onClick={() => setColor(entry.hex)}
+                  className={cn(
+                    "h-6 w-6 rounded-full ring-offset-2 ring-offset-background transition-shadow",
+                    color === entry.hex && "ring-2 ring-foreground",
+                  )}
+                  style={{ backgroundColor: entry.hex }}
+                />
+              ))}
             </div>
           </div>
 
@@ -349,6 +426,132 @@ export function ConditionEditorDialog({
   )
 }
 
+/** A stored factor as an editable string; null and undefined both mean empty. */
+function numberField(value: number | null | undefined): string {
+  return value === null || value === undefined ? "" : String(value)
+}
+
+/** An editable string back to a factor. Blank and unparseable both mean "unset". */
+function parseFactor(value: string): number | null {
+  const trimmed = value.trim()
+  if (trimmed === "") return null
+  const parsed = Number(trimmed)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+/**
+ * The dimension the drawing does not show.
+ *
+ * Only the fields that belong to the chosen unit appear, because the fields ARE
+ * the explanation: seeing "Depth (in)" appear the moment you pick CY is what
+ * tells an estimator that Arc measures a slab in plan and carries it down,
+ * rather than expecting some 3D tool they have not found yet.
+ */
+function FactorFields({
+  uom,
+  depthIn,
+  heightFt,
+  pitchRise,
+  tonsPerCy,
+  onDepthIn,
+  onHeightFt,
+  onPitchRise,
+  onTonsPerCy,
+}: {
+  uom: ConditionUom
+  depthIn: string
+  heightFt: string
+  pitchRise: string
+  tonsPerCy: string
+  onDepthIn: (value: string) => void
+  onHeightFt: (value: string) => void
+  onPitchRise: (value: string) => void
+  onTonsPerCy: (value: string) => void
+}) {
+  const wantsDepth = uom === "cy" || uom === "ton"
+  const wantsDensity = uom === "ton"
+  const wantsHeight = uom === "sf"
+  const wantsPitch = uom === "sf" || uom === "sq"
+  if (!wantsDepth && !wantsDensity && !wantsHeight && !wantsPitch) return null
+
+  // A wall height and a roof pitch are mutually exclusive, so each hides the
+  // other once used rather than offering a combination the save would refuse.
+  const showHeight = wantsHeight && pitchRise.trim() === ""
+  const showPitch = wantsPitch && heightFt.trim() === ""
+
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      {wantsDepth && (
+        <div className="space-y-1.5">
+          <Label htmlFor="condition-depth">Depth (in)</Label>
+          <Input
+            id="condition-depth"
+            value={depthIn}
+            onChange={(event) => onDepthIn(event.target.value)}
+            placeholder="4"
+            inputMode="decimal"
+            className="tabular-nums"
+          />
+          <p className="text-[11px] text-muted-foreground">
+            Thickness along the axis the plan can&apos;t show.
+          </p>
+        </div>
+      )}
+
+      {wantsDensity && (
+        <div className="space-y-1.5">
+          <Label htmlFor="condition-density">Tons per CY</Label>
+          <Input
+            id="condition-density"
+            value={tonsPerCy}
+            onChange={(event) => onTonsPerCy(event.target.value)}
+            placeholder="1.4"
+            inputMode="decimal"
+            className="tabular-nums"
+          />
+          <p className="text-[11px] text-muted-foreground">
+            Gravel ≈ 1.4, asphalt ≈ 2.0. Ask your supplier.
+          </p>
+        </div>
+      )}
+
+      {showHeight && (
+        <div className="space-y-1.5">
+          <Label htmlFor="condition-height">Wall height (ft)</Label>
+          <Input
+            id="condition-height"
+            value={heightFt}
+            onChange={(event) => onHeightFt(event.target.value)}
+            placeholder="Optional"
+            inputMode="decimal"
+            className="tabular-nums"
+          />
+          <p className="text-[11px] text-muted-foreground">
+            Set this and you walk the wall in plan instead of tracing its face.
+          </p>
+        </div>
+      )}
+
+      {showPitch && (
+        <div className="space-y-1.5">
+          <Label htmlFor="condition-pitch">Roof pitch (rise /12)</Label>
+          <Input
+            id="condition-pitch"
+            value={pitchRise}
+            onChange={(event) => onPitchRise(event.target.value)}
+            placeholder="Optional"
+            inputMode="decimal"
+            className="tabular-nums"
+          />
+          <p className="text-[11px] text-muted-foreground">
+            An 8/12 roof is ~20% larger than its plan area.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /**
  * "You've paid $4.05–$4.30/SF across 6 jobs." Silent when there is no history
  * — an empty band is more honest than a fabricated one.
@@ -361,7 +564,7 @@ function RateSuggestion({
 }: {
   history: CostCodeRateHistory | null
   loading: boolean
-  uom: MeasureUom
+  uom: ConditionUom
   onAccept: (cents: number) => void
 }) {
   const [showEvidence, setShowEvidence] = useState(false)

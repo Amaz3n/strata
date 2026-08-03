@@ -4,10 +4,19 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { PageLayout } from "@/components/layout/page-layout"
 import { DrawingsSetsView } from "@/components/drawings"
 import { getProjectAction } from "../actions"
-import { listDrawingSets, listDrawingSheetsWithUrls } from "@/lib/services/drawings"
+import {
+  countDrawingSheets,
+  listDrawingSets,
+  listDrawingSheetsWithUrls,
+} from "@/lib/services/drawings"
 import { hasPermission } from "@/lib/services/permissions"
 
-import { unwrapAction } from "@/lib/action-result"
+type DrawingsProject = NonNullable<Awaited<ReturnType<typeof getProjectAction>>>
+
+// The register renders every sheet it is given, grouped by discipline. This is
+// the ceiling; countDrawingSheets tells the view when it truncated so the cap
+// is never silent.
+const SHEET_RENDER_CAP = 1000
 
 interface ProjectDrawingsPageProps {
   params: Promise<{ id: string }>
@@ -57,14 +66,15 @@ async function ProjectDrawingsData({
   searchParams,
 }: {
   id: string
-  project: any
+  project: DrawingsProject
   searchParams: Promise<{ set?: string; sheetId?: string; condition?: string; planVersion?: string }>
 }) {
   const query = await searchParams
 
-  const [sets, sheets, canWriteTakeoff] = await Promise.all([
+  const [sets, sheets, totalSheetCount, canWriteTakeoff] = await Promise.all([
     listDrawingSets({ project_id: id, limit: 100 }),
-    listDrawingSheetsWithUrls({ project_id: id, limit: 500 }),
+    listDrawingSheetsWithUrls({ project_id: id, limit: SHEET_RENDER_CAP }),
+    countDrawingSheets({ project_id: id }),
     // Read-only viewers still see measured quantities; only writing is gated.
     hasPermission("takeoff.write"),
   ])
@@ -77,6 +87,7 @@ async function ProjectDrawingsData({
       <DrawingsSetsView
         initialSets={sets}
         initialSheets={sheets}
+        totalSheetCount={totalSheetCount}
         projects={[{ id: project.id, name: project.name }]}
         selectedProjectId={project.id}
         lockProject

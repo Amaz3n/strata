@@ -1,5 +1,7 @@
 import "server-only"
 
+import type { SupabaseClient } from "@supabase/supabase-js"
+
 /**
  * Floorplan models — interpreting a plan version's sheets into a walkable 3D
  * model, correcting it, and publishing it.
@@ -97,7 +99,11 @@ export interface FloorplanModelDto {
   interpreted_at: string | null
   published_at: string | null
   updated_at: string
-  /** True when a newer interpretation algorithm exists than the one that ran. */
+  /**
+   * True when a newer interpretation algorithm exists than the one that ran,
+   * or — for project-anchored models — when the project's drawings have been
+   * re-issued since the model was interpreted.
+   */
   stale: boolean
 }
 
@@ -137,7 +143,17 @@ function parseModel(raw: unknown): FloorplanModel | null {
   return parsed.success ? (parsed.data as FloorplanModel) : null
 }
 
-function mapModel(row: ModelRow): FloorplanModelDto {
+function mapModel(row: ModelRow, currentDrawingRevisionId?: string | null): FloorplanModelDto {
+  // Stale two ways: the interpreter improved since this model was built
+  // (algo_version), or the drawings themselves were re-issued under it. The
+  // revision check binds only project-anchored models — a released plan
+  // version's drawings never change, which is why the plan path stores null.
+  const revisionStale =
+    row.project_id !== null &&
+    row.drawing_revision_id !== null &&
+    currentDrawingRevisionId !== undefined &&
+    currentDrawingRevisionId !== null &&
+    row.drawing_revision_id !== currentDrawingRevisionId
   return {
     id: row.id,
     house_plan_version_id: row.house_plan_version_id,
@@ -153,8 +169,31 @@ function mapModel(row: ModelRow): FloorplanModelDto {
     interpreted_at: row.interpreted_at,
     published_at: row.published_at,
     updated_at: row.updated_at,
-    stale: row.algo_version < FLOORPLAN_ALGO_VERSION,
+    stale: row.algo_version < FLOORPLAN_ALGO_VERSION || revisionStale,
   }
+}
+
+/**
+ * The project's newest published drawing revision — what a project-anchored
+ * model's stored `drawing_revision_id` is compared against for staleness.
+ * Null for plan targets: a released plan version IS the revision.
+ */
+async function currentDrawingRevisionIdFor(
+  context: { supabase: SupabaseClient; orgId: string },
+  target: FloorplanTarget,
+): Promise<string | null> {
+  if (target.kind !== "project") return null
+  const { data, error } = await context.supabase
+    .from("drawing_revisions")
+    .select("id")
+    .eq("org_id", context.orgId)
+    .eq("project_id", target.projectId)
+    .eq("status", "published")
+    .order("published_at", { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) throw new Error(`Failed to load current drawing revision: ${error.message}`)
+  return (data?.id as string | undefined) ?? null
 }
 
 // ---------------------------------------------------------------------------
@@ -176,7 +215,8 @@ export async function getFloorplanModel(
     .eq(anchor.column, anchor.value)
     .maybeSingle()
   if (error) throw new Error(`Failed to load floorplan model: ${error.message}`)
-  return data ? mapModel(data as ModelRow) : null
+  if (!data) return null
+  return mapModel(data as ModelRow, await currentDrawingRevisionIdFor(context, target))
 }
 
 /** Status per plan version, for the library's model chips. */
@@ -441,7 +481,7 @@ export async function requestFloorplanInterpretation(
     source: "floorplan.interpret",
   })
 
-  return mapModel(data as ModelRow)
+  return mapModel(data as ModelRow, await currentDrawingRevisionIdFor(context, input.target))
 }
 
 /**
@@ -498,7 +538,7 @@ export async function applyFloorplanCorrections(
     source: "floorplan.correct",
   })
 
-  return mapModel(data as ModelRow)
+  return mapModel(data as ModelRow, await currentDrawingRevisionIdFor(context, input.target))
 }
 
 export async function publishFloorplanModel(
@@ -552,7 +592,7 @@ export async function publishFloorplanModel(
     }),
   ])
 
-  return mapModel(data as ModelRow)
+  return mapModel(data as ModelRow, await currentDrawingRevisionIdFor(context, input.target))
 }
 
 export async function unpublishFloorplanModel(
@@ -573,7 +613,7 @@ export async function unpublishFloorplanModel(
     .select(MODEL_COLUMNS)
     .single()
   if (error) throw new Error(`Failed to unpublish model: ${error.message}`)
-  return mapModel(data as ModelRow)
+  return mapModel(data as ModelRow, await currentDrawingRevisionIdFor(context, input.target))
 }
 
 /**
@@ -764,14 +804,17 @@ async function loadPlanSheetVersions(
   )
 }
 
-function feetPerImagePxOf(metadata: Record<string, any> | null): number | null {
+function feetPerImagePxOf(
+  metadata: Record<string, any> | null,
+): { value: number; confirmed: boolean } | null {
   const calibrated = metadata?.calibration?.feet_per_image_px
-  if (typeof calibrated === "number" && calibrated > 0) return calibrated
+  if (typeof calibrated === "number" && calibrated > 0) return { value: calibrated, confirmed: true }
   // An unconfirmed proposal is still measured evidence, and a model built at
-  // a slightly wrong scale is far more useful than no model — the review UI
-  // shows real dimensions, so a bad scale is immediately visible.
+  // a slightly wrong scale is far more useful than no model — but every length
+  // and area rides linearly on this number, so the fallback is flagged and the
+  // caller puts it on the model's warnings instead of absorbing it silently.
   const proposed = metadata?.calibration_proposal?.feet_per_image_px
-  if (typeof proposed === "number" && proposed > 0) return proposed
+  if (typeof proposed === "number" && proposed > 0) return { value: proposed, confirmed: false }
   return null
 }
 
@@ -787,15 +830,12 @@ async function loadProjectSheetVersions(
   orgId: string,
   projectId: string,
 ): Promise<{ sheets: SheetRow[]; revisionId: string | null }> {
-  const { data: revision } = await supabase
-    .from("drawing_revisions")
-    .select("id")
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .eq("status", "published")
-    .order("published_at", { ascending: false, nullsFirst: false })
-    .limit(1)
-    .maybeSingle()
+  // One definition of "current revision", shared with the staleness check in
+  // mapModel — what gets stamped here is exactly what gets compared later.
+  const revisionId = await currentDrawingRevisionIdFor(
+    { supabase, orgId },
+    { kind: "project", projectId },
+  )
 
   const { data, error } = await supabase
     .from("drawing_sheet_versions")
@@ -814,7 +854,7 @@ async function loadProjectSheetVersions(
   const sheets = ((data ?? []) as unknown as SheetRow[]).filter(
     (row) => row.drawing_sheets?.current_revision_id === row.drawing_revision_id,
   )
-  return { sheets, revisionId: (revision?.id as string | undefined) ?? null }
+  return { sheets, revisionId }
 }
 
 /**
@@ -897,6 +937,9 @@ export async function runFloorplanInterpretation(input: {
   // assist below — flagged loudly, because a traced level is a proposal.
   const visionAvailable = drawingsVisionConfigured()
   const scanTraced: string[] = []
+  // Sheets whose scale came from an unconfirmed pipeline proposal rather than
+  // a human calibration. The model still builds, but it says so on the record.
+  const proposalScaled: string[] = []
   const tilesBasePathBySheet = new Map<string, string>()
 
   for (const sheet of selected) {
@@ -905,11 +948,12 @@ export async function runFloorplanInterpretation(input: {
       skipped.push({ sheet: nameOf(sheet), reason: "vectors" })
       continue
     }
-    const feetPerImagePx = feetPerImagePxOf(row.extracted_metadata)
-    if (!feetPerImagePx) {
+    const scale = feetPerImagePxOf(row.extracted_metadata)
+    if (!scale) {
       skipped.push({ sheet: nameOf(sheet), reason: "scale" })
       continue
     }
+    if (!scale.confirmed) proposalScaled.push(nameOf(sheet))
 
     let segments: Float32Array | null = null
     let flags: Uint8Array | null = null
@@ -957,7 +1001,7 @@ export async function runFloorplanInterpretation(input: {
       order: sheet.order,
       imageWidth: Number(row.image_width ?? 0),
       imageHeight: Number(row.image_height ?? 0),
-      feetPerImagePx,
+      feetPerImagePx: scale.value,
       segments,
       flags,
       textRuns,
@@ -1001,6 +1045,13 @@ export async function runFloorplanInterpretation(input: {
   for (const sheet of scanTraced) {
     warnings.push(
       `${sheet} has no vector linework; its level was traced by AI vision and needs review before publishing.`,
+    )
+  }
+  // Every dimension on a level rides linearly on its sheet's scale, so a scale
+  // nobody confirmed is a review item, not a footnote.
+  for (const sheet of proposalScaled) {
+    warnings.push(
+      `${sheet} is scaled from an unconfirmed proposal; confirm the scale in the drawings viewer before trusting the model's dimensions.`,
     )
   }
   if (warnings.length > 0) model.warnings = warnings

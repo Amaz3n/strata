@@ -22,6 +22,8 @@ const estimateLineSchema = z.object({
   is_optional: z.boolean().optional(),
   /** Allowance line: included in the total as a placeholder budget the client can reallocate. */
   is_allowance: z.boolean().optional(),
+  /** Optional add-ons sharing a group label are mutually exclusive alternates. */
+  option_group: z.string().trim().max(80).optional(),
   /** Sub bid this line's cost basis was pulled from (estimate builder "Use bid"). */
   source_bid_submission_id: z.string().uuid().optional(),
   metadata: z.record(z.any()).optional(),
@@ -40,8 +42,17 @@ function buildLineMetadata(line: EstimateLine): Record<string, any> {
   else delete metadata.notes
   if (line.is_optional) metadata.is_optional = true
   else delete metadata.is_optional
-  if (line.is_allowance) metadata.is_allowance = true
-  else delete metadata.is_allowance
+  if (line.is_allowance) {
+    metadata.is_allowance = true
+    // The allowance amount is the line's extended price — recorded explicitly
+    // so downstream reconciliation (budget, change orders) has a fixed number.
+    metadata.allowance_cents = Math.round((line.unit_cost_cents ?? 0) * (line.quantity ?? 1))
+  } else {
+    delete metadata.is_allowance
+    delete metadata.allowance_cents
+  }
+  if (line.is_optional && line.option_group) metadata.option_group = stripNul(line.option_group)
+  else delete metadata.option_group
   if (line.source_bid_submission_id) metadata.source_bid_submission_id = line.source_bid_submission_id
   else delete metadata.source_bid_submission_id
   return metadata
@@ -115,6 +126,9 @@ export async function createEstimate({
   valid_until,
   tax_rate,
   markup_percent,
+  contingency_percent,
+  inclusions,
+  exclusions,
   lines,
   orgId,
 }: {
@@ -132,6 +146,9 @@ export async function createEstimate({
   valid_until?: string
   tax_rate?: number
   markup_percent?: number
+  contingency_percent?: number
+  inclusions?: string
+  exclusions?: string
   lines: z.infer<typeof estimateLineSchema>[]
   orgId?: string
 }) {
@@ -139,13 +156,27 @@ export async function createEstimate({
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("org.member", { supabase, orgId: resolvedOrgId, userId })
 
-  const totals = calculateTotals(parsedLines, tax_rate ?? 0)
+  const totals = calculateTotals(parsedLines, tax_rate ?? 0, contingency_percent ?? 0)
+
+  // A prospect that has entered pricing owns a precon-phase project; estimates
+  // land on it so takeoff conditions can sync into them before the job is won.
+  let resolvedProjectId = project_id ?? null
+  if (!resolvedProjectId && prospect_id) {
+    const { data: preconProject } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("org_id", resolvedOrgId)
+      .eq("prospect_id", prospect_id)
+      .eq("phase", "precon")
+      .maybeSingle()
+    resolvedProjectId = preconProject?.id ?? null
+  }
 
   const { data: estimate, error: estimateError } = await supabase
     .from("estimates")
     .insert({
       org_id: resolvedOrgId,
-      project_id: project_id ?? null,
+      project_id: resolvedProjectId,
       prospect_id: prospect_id ?? null,
       recipient_contact_id: recipient_contact_id ?? null,
       title: stripNul(title),
@@ -158,6 +189,9 @@ export async function createEstimate({
       metadata: {
         tax_rate: tax_rate ?? 0,
         markup_percent: markup_percent ?? 0,
+        contingency_percent: contingency_percent ?? 0,
+        inclusions: stripNul(inclusions) ?? null,
+        exclusions: stripNul(exclusions) ?? null,
         summary: stripNul(summary) ?? null,
         terms: stripNul(terms) ?? null,
         recipient:
@@ -574,6 +608,9 @@ export async function createEstimateVersion({
     valid_until?: string
     tax_rate?: number
     markup_percent?: number
+    contingency_percent?: number
+    inclusions?: string
+    exclusions?: string
     lines: z.infer<typeof estimateLineSchema>[]
   }
   orgId?: string
@@ -599,7 +636,7 @@ export async function createEstimateVersion({
 
   const versionGroupId = (existing.version_group_id as string | null) ?? existing.id
   const newVersion = (existing.version ?? 1) + 1
-  const totals = calculateTotals(parsedLines, input.tax_rate ?? 0)
+  const totals = calculateTotals(parsedLines, input.tax_rate ?? 0, input.contingency_percent ?? 0)
   const existingMetadata = (existing.metadata as Record<string, any> | null) ?? {}
 
   const { data: newEstimate, error: insertError } = await supabase
@@ -625,6 +662,9 @@ export async function createEstimateVersion({
         ...existingMetadata,
         tax_rate: input.tax_rate ?? 0,
         markup_percent: input.markup_percent ?? 0,
+        contingency_percent: input.contingency_percent ?? 0,
+        inclusions: stripNul(input.inclusions) ?? null,
+        exclusions: stripNul(input.exclusions) ?? null,
         summary: stripNul(input.summary) ?? null,
         terms: stripNul(input.terms) ?? null,
         recipient:

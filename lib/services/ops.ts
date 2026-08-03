@@ -1,6 +1,8 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
 import { CRON_JOBS } from "@/lib/services/job-runs"
+import { DRAWING_PIPELINE_JOB_TYPES } from "@/lib/services/drawings-pipeline"
+import { triggerDrawingsPipeline } from "@/lib/services/drawings-pipeline-trigger"
 
 export type CronJobState = "healthy" | "failing" | "overdue" | "no-data"
 
@@ -335,6 +337,254 @@ export async function getQboConnectionHealth(): Promise<QboConnectionHealth[]> {
       refreshFailureCount: row.refresh_failure_count ?? 0,
     }
   })
+}
+
+// ============================================================================
+// Drawings pipeline dead letters
+// ============================================================================
+
+export interface DrawingsDeadLetterJob {
+  id: number
+  jobType: string
+  orgId: string | null
+  orgName: string | null
+  retryCount: number
+  lastError: string | null
+  /** When the final retry failed (updated_at of the failed row). */
+  failedAt: string
+  createdAt: string
+  /** Compact human-readable payload digest (page, chunk, force, short ids). */
+  payloadSummary: string
+  projectId: string | null
+  projectName: string | null
+  /** Sheet number when derivable, else "Page N" from the payload. */
+  sheetLabel: string | null
+}
+
+export interface DrawingsDeadLetterHealth {
+  /** Exact total, independent of the listing cap. */
+  totalFailed: number
+  items: DrawingsDeadLetterJob[]
+  limit: number
+}
+
+const DRAWINGS_DEADLETTER_LIMIT = 100
+
+/**
+ * Drawings-pipeline outbox rows that exhausted their retries. These are the
+ * jobs with no user-visible surface at all — the sheet just never finishes —
+ * so this is the dead-letter queue for the pipeline, with enough payload
+ * context (project, sheet, page) to know what a requeue will actually fix.
+ */
+export async function listFailedDrawingsPipelineJobs(): Promise<DrawingsDeadLetterHealth> {
+  const supabase = createServiceSupabaseClient()
+  const jobTypes = [...DRAWING_PIPELINE_JOB_TYPES]
+
+  const [countRes, rowsRes] = await Promise.all([
+    supabase
+      .from("outbox")
+      .select("*", { count: "exact", head: true })
+      .eq("status", "failed")
+      .in("job_type", jobTypes),
+    supabase
+      .from("outbox")
+      .select("id, job_type, org_id, retry_count, last_error, payload, created_at, updated_at, org:orgs(name)")
+      .eq("status", "failed")
+      .in("job_type", jobTypes)
+      .order("updated_at", { ascending: false })
+      .limit(DRAWINGS_DEADLETTER_LIMIT),
+  ])
+  if (rowsRes.error) throw rowsRes.error
+  const rows = rowsRes.data ?? []
+
+  // Batched context resolution: payloads reference projects/sheets/versions/
+  // revisions by id; pull each referenced set once, org-scoped.
+  const orgIds = new Set<string>()
+  const projectIds = new Set<string>()
+  const sheetIds = new Set<string>()
+  const versionIds = new Set<string>()
+  const revisionIds = new Set<string>()
+  for (const row of rows) {
+    const payload = (row.payload ?? {}) as Record<string, unknown>
+    if (row.org_id) orgIds.add(row.org_id)
+    const projectId = asId(payload.projectId)
+    const sheetId = asId(payload.sheetId)
+    const versionId = asId(payload.versionId) ?? asId(payload.sheetVersionId) ?? asId(payload.sheet_version_id)
+    const revisionId = asId(payload.draftRevisionId) ?? asId(payload.revisionId)
+    if (projectId) projectIds.add(projectId)
+    if (sheetId) sheetIds.add(sheetId)
+    if (versionId) versionIds.add(versionId)
+    if (revisionId) revisionIds.add(revisionId)
+  }
+
+  const orgIdList = Array.from(orgIds)
+  const [versionsRes, revisionsRes] = await Promise.all([
+    versionIds.size > 0
+      ? supabase
+          .from("drawing_sheet_versions")
+          .select("id, page_index, drawing_sheet_id")
+          .in("org_id", orgIdList)
+          .in("id", Array.from(versionIds))
+      : Promise.resolve({ data: [] as Array<{ id: string; page_index: number | null; drawing_sheet_id: string }> }),
+    revisionIds.size > 0
+      ? supabase
+          .from("drawing_revisions")
+          .select("id, project_id")
+          .in("org_id", orgIdList)
+          .in("id", Array.from(revisionIds))
+      : Promise.resolve({ data: [] as Array<{ id: string; project_id: string }> }),
+  ])
+
+  const versionById = new Map(
+    (versionsRes.data ?? []).map((v) => [v.id, v] as const),
+  )
+  for (const v of versionsRes.data ?? []) sheetIds.add(v.drawing_sheet_id)
+  const revisionById = new Map(
+    (revisionsRes.data ?? []).map((r) => [r.id, r] as const),
+  )
+
+  const sheetsRes =
+    sheetIds.size > 0
+      ? await supabase
+          .from("drawing_sheets")
+          .select("id, project_id, sheet_number")
+          .in("org_id", orgIdList)
+          .in("id", Array.from(sheetIds))
+      : { data: [] as Array<{ id: string; project_id: string; sheet_number: string }> }
+  const sheetById = new Map((sheetsRes.data ?? []).map((s) => [s.id, s] as const))
+  for (const s of sheetsRes.data ?? []) projectIds.add(s.project_id)
+  for (const r of revisionsRes.data ?? []) projectIds.add(r.project_id)
+
+  const projectsRes =
+    projectIds.size > 0
+      ? await supabase
+          .from("projects")
+          .select("id, name")
+          .in("org_id", orgIdList)
+          .in("id", Array.from(projectIds))
+      : { data: [] as Array<{ id: string; name: string }> }
+  const projectById = new Map((projectsRes.data ?? []).map((p) => [p.id, p.name] as const))
+
+  const items: DrawingsDeadLetterJob[] = rows.map((row) => {
+    const org = Array.isArray(row.org) ? row.org[0] : row.org
+    const payload = (row.payload ?? {}) as Record<string, unknown>
+
+    const versionId = asId(payload.versionId) ?? asId(payload.sheetVersionId) ?? asId(payload.sheet_version_id)
+    const version = versionId ? versionById.get(versionId) : undefined
+    const sheetId = asId(payload.sheetId) ?? version?.drawing_sheet_id ?? null
+    const sheet = sheetId ? sheetById.get(sheetId) : undefined
+    const revisionId = asId(payload.draftRevisionId) ?? asId(payload.revisionId)
+    const revision = revisionId ? revisionById.get(revisionId) : undefined
+
+    const projectId =
+      asId(payload.projectId) ?? sheet?.project_id ?? revision?.project_id ?? null
+
+    const pageIndex =
+      typeof payload.pageIndex === "number"
+        ? payload.pageIndex
+        : typeof version?.page_index === "number"
+          ? version.page_index
+          : null
+    const pageNumber =
+      typeof payload.pageNumber === "number"
+        ? payload.pageNumber
+        : pageIndex !== null
+          ? pageIndex + 1
+          : null
+
+    const sheetLabel =
+      sheet?.sheet_number ?? (pageNumber !== null ? `Page ${pageNumber}` : null)
+
+    return {
+      id: row.id,
+      jobType: row.job_type,
+      orgId: row.org_id ?? null,
+      orgName: org?.name ?? null,
+      retryCount: row.retry_count ?? 0,
+      lastError: row.last_error ?? null,
+      failedAt: row.updated_at,
+      createdAt: row.created_at,
+      payloadSummary: summarizeDrawingsJobPayload(payload, { pageNumber }),
+      projectId,
+      projectName: projectId ? (projectById.get(projectId) ?? null) : null,
+      sheetLabel,
+    }
+  })
+
+  return {
+    totalFailed: countRes.count ?? 0,
+    items,
+    limit: DRAWINGS_DEADLETTER_LIMIT,
+  }
+}
+
+/**
+ * Return a dead-lettered drawings job to the queue with a FULL retry budget.
+ * The plain ops retry only flips status, and `MAX_JOB_RETRIES` compares
+ * against `retry_count` — without the reset the job gets exactly one attempt
+ * before failing straight back here.
+ */
+export async function requeueDrawingsPipelineJob(id: number, actorId?: string): Promise<void> {
+  const supabase = createServiceSupabaseClient()
+
+  const { data: item, error: itemError } = await supabase
+    .from("outbox")
+    .select("id, org_id, job_type, retry_count, last_error")
+    .eq("id", id)
+    .eq("status", "failed")
+    .in("job_type", [...DRAWING_PIPELINE_JOB_TYPES])
+    .maybeSingle()
+  if (itemError) throw itemError
+  if (!item) {
+    throw new Error("Failed drawings job not found — it may have been requeued already.")
+  }
+
+  const { error } = await supabase
+    .from("outbox")
+    .update({
+      status: "pending",
+      retry_count: 0,
+      last_error: null,
+      run_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .eq("status", "failed")
+  if (error) throw error
+
+  await recordAudit({
+    orgId: item.org_id,
+    actorId,
+    action: "update",
+    entityType: "outbox",
+    entityId: String(item.id),
+    before: { status: "failed", retry_count: item.retry_count, last_error: item.last_error },
+    after: { status: "pending", retry_count: 0, job_type: item.job_type },
+    source: "platform_ops",
+  })
+
+  // Kick the pipeline so the requeued job runs now, not at the next cron tick.
+  await triggerDrawingsPipeline()
+}
+
+function asId(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null
+}
+
+/** Short human digest of a job payload — enough to tell rows apart. */
+function summarizeDrawingsJobPayload(
+  payload: Record<string, unknown>,
+  context: { pageNumber: number | null },
+): string {
+  const parts: string[] = []
+  if (context.pageNumber !== null) parts.push(`page ${context.pageNumber}`)
+  if (typeof payload.chunkIndex === "number") parts.push(`chunk ${payload.chunkIndex}`)
+  if (payload.force === true) parts.push("forced")
+  const revisionId = asId(payload.draftRevisionId) ?? asId(payload.revisionId)
+  if (revisionId) parts.push(`rev ${revisionId.slice(0, 8)}`)
+  const versionId = asId(payload.versionId) ?? asId(payload.sheetVersionId) ?? asId(payload.sheet_version_id)
+  if (versionId) parts.push(`ver ${versionId.slice(0, 8)}`)
+  return parts.join(" · ") || "—"
 }
 
 export async function retryOutboxItem(id: number, actorId?: string): Promise<void> {

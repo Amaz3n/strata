@@ -152,9 +152,11 @@ export const stripeApProvider: PaymentRailProvider = {
       payment_method_types: ["us_bank_account"],
       confirm: true,
       off_session: true,
-      application_fee_amount: input.processorFeeCents + input.platformFeeCents > 0
-        ? input.processorFeeCents + input.platformFeeCents
-        : undefined,
+      // Stripe rejects `application_fee_amount` alongside `transfer_data[amount]`
+      // on a destination charge — they are two ways to express the same split.
+      // We send the vendor's exact take and keep the remainder (processor +
+      // platform fees) on the platform balance, so the fee never has to be
+      // re-derived from the charge total.
       transfer_data: {
         destination: input.recipientProviderAccountId,
         amount: input.recipientAmountCents,

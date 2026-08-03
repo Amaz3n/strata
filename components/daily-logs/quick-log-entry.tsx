@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useEffect } from "react"
+import { useState, useRef, useEffect, useMemo } from "react"
 import { format, isAfter, isSameDay, subDays } from "date-fns"
 import { toast } from "sonner"
 
@@ -227,6 +227,21 @@ export function QuickLogEntry({
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [mentionedUserIds, setMentionedUserIds] = useState<string[]>([])
   const [showDatePicker, setShowDatePicker] = useState(false)
+
+  // Blob URLs for the attachment thumbnails. Minting these in the render body
+  // leaks: each render allocates a fresh URL that pins the whole File in
+  // memory, and a superintendent attaching a dozen site photos re-renders on
+  // every keystroke in the summary field. Derive them once per file list and
+  // revoke the previous batch.
+  const previewUrls = useMemo(
+    () => selectedFiles.map((file) => (canPreviewSelectedImage(file) ? URL.createObjectURL(file) : null)),
+    [selectedFiles],
+  )
+  useEffect(() => {
+    return () => {
+      for (const url of previewUrls) if (url) URL.revokeObjectURL(url)
+    }
+  }, [previewUrls])
 
   // When opened with a target date (day-centric desktop flow), pre-select it.
   useEffect(() => {
@@ -687,14 +702,16 @@ export function QuickLogEntry({
       {selectedFiles.length > 0 && (
         <div className="mb-4">
           <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1 hide-scrollbar">
-            {selectedFiles.map((file, index) => (
+            {selectedFiles.map((file, index) => {
+              const previewUrl = previewUrls[index]
+              return (
               <div
                 key={index}
                 className="relative flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden bg-muted"
               >
-                {canPreviewSelectedImage(file) ? (
+                {previewUrl ? (
                   <img
-                    src={URL.createObjectURL(file)}
+                    src={previewUrl}
                     alt={`Preview ${index + 1}`}
                     className="w-full h-full object-cover"
                   />
@@ -712,7 +729,8 @@ export function QuickLogEntry({
                   <X className="h-3 w-3 text-white" />
                 </button>
               </div>
-            ))}
+              )
+            })}
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}

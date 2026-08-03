@@ -6,6 +6,7 @@ import { cookies } from "next/headers"
 
 import { recordAudit } from "@/lib/services/audit"
 import { enforceAuthRateLimit } from "@/lib/services/auth-rate-limit"
+import { sendExternalVerifyEmail } from "@/lib/services/mailer"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { requirePermission } from "@/lib/services/permissions"
@@ -32,6 +33,14 @@ const PASSWORD_SALT_ROUNDS = 10
 const VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000
 const RESET_TTL_MS = 60 * 60 * 1000
 const INVALID_CREDENTIALS_MESSAGE = "Invalid email or password"
+const REVOKED_ACCESS_MESSAGE =
+  "Your access to this project was removed by the builder. Contact them for a new invitation."
+const PAUSED_ACCESS_MESSAGE = "Your access to this project is paused. Contact the builder."
+
+function portalBaseUrl() {
+  const url = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || "https://arcnaples.com"
+  return url.startsWith("http") ? url.replace(/\/$/, "") : `https://${url}`.replace(/\/$/, "")
+}
 
 type ExternalTokenType = "portal" | "bid"
 type ExternalGrantStatus = "active" | "paused" | "revoked"
@@ -90,17 +99,28 @@ async function setSessionCookie(sessionToken: string) {
   })
 }
 
+/**
+ * Best-effort. `findSession()` runs during render — every portal layout and
+ * `/access` read the session while rendering — and Next.js forbids mutating
+ * cookies outside a Server Action or Route Handler. Dropping a cookie that no
+ * longer resolves is housekeeping, not authorization: the session is already
+ * refused, so it is safe to leave the stale value for the next action to clear.
+ */
 async function clearSessionCookie() {
-  const store = await cookies()
-  store.set({
-    name: SESSION_COOKIE,
-    value: "",
-    path: "/",
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    maxAge: 0,
-  })
+  try {
+    const store = await cookies()
+    store.set({
+      name: SESSION_COOKIE,
+      value: "",
+      path: "/",
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 0,
+    })
+  } catch {
+    // Rendering context — see above.
+  }
 }
 
 function mapIdentity(row: any): ExternalIdentity {
@@ -405,6 +425,102 @@ export async function hasExternalPortalGrantForToken({
   return !!data
 }
 
+async function tokenContextIsClaimed(
+  context: ResolvedExternalTokenContext,
+  tokenType: ExternalTokenType,
+): Promise<boolean> {
+  const supabase = createServiceSupabaseClient()
+  const email = context.expectedEmail?.trim().toLowerCase()
+
+  if (email) {
+    // Status is deliberately not filtered: a paused or revoked identity must not
+    // fall back to bearer access on the link. They get a clear message instead.
+    const { data } = await supabase
+      .from("external_identities")
+      .select("id")
+      .eq("email", email)
+      .maybeSingle()
+    return !!data
+  }
+
+  const { data } = await supabase
+    .from("external_identity_grants")
+    .select("id")
+    .eq("org_id", context.orgId)
+    .eq(grantTokenColumn(tokenType), context.tokenId)
+    .is("revoked_at", null)
+    .limit(1)
+    .maybeSingle()
+  return !!data
+}
+
+/**
+ * Has this access been tied to an Arc account? Once it has, the link alone stops
+ * being sufficient — it becomes a pointer to a sign-in.
+ *
+ * Keyed on the identity behind the token's *bound email*, not on a grant for this
+ * specific token: grants are per-token, so keying on them would hand bearer access
+ * straight back to an account holder every time a builder reissued their link.
+ * Falls back to grant-existence only for tokens with no bound contact email.
+ */
+export async function isExternalAccessClaimed({
+  token,
+  tokenType,
+}: {
+  token: string
+  tokenType: ExternalTokenType
+}): Promise<boolean> {
+  const context = await resolveTokenContext(tokenType, token)
+  if (!context) return false
+  return tokenContextIsClaimed(context, tokenType)
+}
+
+/**
+ * Authorizes the current session against this token, creating the grant when the
+ * signed-in identity *is* the invited person but this particular link predates or
+ * postdates their existing grants. Without it every reissued link would re-prompt
+ * someone who is already signed in.
+ *
+ * Never resurrects a paused or revoked grant — `upsertGrant` refuses, and the
+ * refusal surfaces as "not authorized", which sends them to the sign-in wall where
+ * the real message is shown.
+ */
+export async function ensureExternalPortalAccessForToken({
+  orgId,
+  tokenId,
+  tokenType,
+  token,
+}: {
+  orgId: string
+  tokenId: string
+  tokenType: ExternalTokenType
+  token: string
+}): Promise<boolean> {
+  const session = await findSession()
+  if (!session) return false
+
+  if (await hasExternalPortalGrantForToken({ orgId, tokenId, tokenType })) return true
+
+  const context = await resolveTokenContext(tokenType, token)
+  const invitedEmail = context?.expectedEmail?.trim().toLowerCase()
+  if (!context || !invitedEmail || invitedEmail !== session.identity.email.trim().toLowerCase()) {
+    return false
+  }
+
+  try {
+    await upsertGrant({
+      orgId: context.orgId,
+      identityId: session.identity.id,
+      tokenType,
+      tokenId: context.tokenId,
+    })
+  } catch {
+    return false
+  }
+
+  return true
+}
+
 /** Does the signed-in identity have any live grant with this builder at all? */
 export async function externalIdentityHasOrgAccess(orgId: string): Promise<boolean> {
   const session = await findSession()
@@ -476,14 +592,16 @@ export async function startExternalPortalSession(identityId: string) {
   await createSession(identityId)
 }
 
-export async function signInExternalPortalAccount({ email, password }: { email: string; password: string }) {
-  const identity = await verifyExternalIdentityPassword({ email, password })
-  if (!identity) {
-    throw new Error(INVALID_CREDENTIALS_MESSAGE)
-  }
-  await startExternalPortalSession(identity.id)
+
+function grantTokenColumn(tokenType: ExternalTokenType) {
+  return tokenType === "portal" ? "portal_access_token_id" : "bid_access_token_id"
 }
 
+/**
+ * Links an identity to a token. A grant the builder paused or revoked is NEVER
+ * resurrected: this previously upserted `revoked_at: null` unconditionally, so a
+ * revoked person restored their own access simply by signing in again.
+ */
 async function upsertGrant({
   orgId,
   identityId,
@@ -496,40 +614,100 @@ async function upsertGrant({
   tokenId: string
 }) {
   const supabase = createServiceSupabaseClient()
-  const payload: Record<string, any> = {
-    org_id: orgId,
-    identity_id: identityId,
-    status: "active",
-    paused_at: null,
-    revoked_at: null,
-    updated_at: new Date().toISOString(),
-  }
-  if (tokenType === "portal") {
-    payload.portal_access_token_id = tokenId
-  } else {
-    payload.bid_access_token_id = tokenId
+  const column = grantTokenColumn(tokenType)
+
+  const { data: existing } = await supabase
+    .from("external_identity_grants")
+    .select("id, status")
+    .eq("org_id", orgId)
+    .eq("identity_id", identityId)
+    .eq(column, tokenId)
+    .maybeSingle()
+
+  if (existing) {
+    if (existing.status === "revoked") throw new Error(REVOKED_ACCESS_MESSAGE)
+    if (existing.status !== "active") throw new Error(PAUSED_ACCESS_MESSAGE)
+
+    const { error } = await supabase
+      .from("external_identity_grants")
+      .update({ updated_at: new Date().toISOString() })
+      .eq("id", existing.id)
+    if (error) {
+      throw new Error(`Failed to refresh identity access: ${error.message}`)
+    }
+    return
   }
 
-  const { error } = await supabase.from("external_identity_grants").upsert(payload, {
-    onConflict: tokenType === "portal" ? "identity_id,portal_access_token_id" : "identity_id,bid_access_token_id",
+  const { error } = await supabase.from("external_identity_grants").insert({
+    org_id: orgId,
+    identity_id: identityId,
+    [column]: tokenId,
+    status: "active",
   })
+
+  // A concurrent request created the same grant. It can only have created an
+  // active one, which is exactly what this call wanted.
+  if (error && (error as { code?: string }).code === "23505") return
 
   if (error) {
     throw new Error(`Failed to grant identity access: ${error.message}`)
   }
 }
 
+/**
+ * Applies a token's lifecycle change to the grants hanging off it. Without this
+ * the two layers drift: revoking a claimed account left the token working, and
+ * revoking the token left the grant "active" in the builder's roster.
+ *
+ * Revoked grants are terminal — resuming a token never brings one back.
+ */
+export async function cascadeGrantStatusForPortalToken({
+  orgId,
+  tokenId,
+  status,
+}: {
+  orgId: string
+  tokenId: string
+  status: ExternalGrantStatus
+}) {
+  const supabase = createServiceSupabaseClient()
+  const nowIso = new Date().toISOString()
+
+  let query = supabase
+    .from("external_identity_grants")
+    .update({
+      status,
+      updated_at: nowIso,
+      paused_at: status === "paused" ? nowIso : null,
+      revoked_at: status === "revoked" ? nowIso : null,
+    })
+    .eq("org_id", orgId)
+    .eq("portal_access_token_id", tokenId)
+
+  if (status !== "revoked") {
+    query = query.is("revoked_at", null)
+  }
+
+  const { error } = await query
+  if (error) {
+    throw new Error(`Failed to cascade access status to accounts: ${error.message}`)
+  }
+}
+
+/**
+ * The one external auth entry point. There is no claim-vs-login mode: the server
+ * knows whether an identity exists for the invited email, so asking the caller to
+ * declare its intent only created ways for the UI to guess wrong.
+ */
 export async function authenticateExternalPortalAccountWithToken({
   token,
   tokenType,
-  mode,
   email,
   fullName,
   password,
 }: {
   token: string
   tokenType: ExternalTokenType
-  mode: "claim" | "login"
   email: string
   fullName?: string
   password: string
@@ -546,7 +724,7 @@ export async function authenticateExternalPortalAccountWithToken({
   }
 
   const lookupEmail = enforcedEmail ?? normalizedEmail
-  await enforceAuthRateLimit(mode === "claim" ? "external_claim" : "external_signin", lookupEmail)
+  await enforceAuthRateLimit("external_signin", lookupEmail)
 
   const supabase = createServiceSupabaseClient()
   const existing = await loadIdentityByEmail(lookupEmail)
@@ -555,9 +733,8 @@ export async function authenticateExternalPortalAccountWithToken({
   let created = false
 
   if (!existing) {
-    if (mode !== "claim") {
-      throw new Error(INVALID_CREDENTIALS_MESSAGE)
-    }
+    // Creating an account is rate-limited separately from attempting to sign in.
+    await enforceAuthRateLimit("external_claim", lookupEmail)
     const passwordHash = await hash(password, PASSWORD_SALT_ROUNDS)
     const { data: inserted, error } = await supabase
       .from("external_identities")
@@ -609,14 +786,48 @@ export async function authenticateExternalPortalAccountWithToken({
     entityType: "external_identity",
     entityId: identityId,
     action: created ? "insert" : "update",
-    after: { email: lookupEmail, token_type: tokenType, mode },
+    after: { email: lookupEmail, token_type: tokenType, created },
     source: "external_portal",
   })
 
   await touchIdentityLogin(identityId)
   await createSession(identityId)
 
+  if (created) {
+    await sendIdentityVerificationEmail({
+      identityId,
+      email: lookupEmail,
+      orgName: tokenContext.orgName,
+    })
+  }
+
   return { identityId, created, orgId: tokenContext.orgId, email: lookupEmail }
+}
+
+/**
+ * Confirming is never a gate — the sub works immediately either way — so a
+ * failure here must not fail the claim that just succeeded.
+ */
+async function sendIdentityVerificationEmail({
+  identityId,
+  email,
+  orgName,
+}: {
+  identityId: string
+  email: string
+  orgName?: string | null
+}) {
+  try {
+    const rawToken = await issueExternalIdentityVerification(identityId)
+    if (!rawToken) return
+
+    const verifyUrl = new URL("/auth/verify", portalBaseUrl())
+    verifyUrl.searchParams.set("token", rawToken)
+
+    await sendExternalVerifyEmail({ to: email, verifyLink: verifyUrl.toString(), orgName })
+  } catch (error) {
+    console.error("Failed to send external verification email", error)
+  }
 }
 
 export async function signOutExternalPortalAccount() {
@@ -933,94 +1144,6 @@ export async function purgeExpiredExternalSessions(): Promise<number> {
 }
 
 // ── Builder-side administration ──────────────────────────────────────────────
-
-export async function listProjectExternalPortalAccounts(projectId: string, orgId?: string): Promise<ExternalIdentity[]> {
-  const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
-  const serviceClient = createServiceSupabaseClient()
-
-  const { data, error } = await serviceClient
-    .from("external_identity_grants")
-    .select(
-      `
-      status,
-      identity:external_identities!inner(
-        id, email, full_name, status, email_verified_at, last_login_at, paused_at, revoked_at, created_at
-      ),
-      token:portal_access_tokens!inner(id, project_id)
-    `,
-    )
-    .eq("org_id", resolvedOrgId)
-    .eq("token.project_id", projectId)
-
-  if (error) {
-    throw new Error(`Failed to list external portal accounts: ${error.message}`)
-  }
-
-  const byIdentityId = new Map<string, ExternalIdentity>()
-  for (const row of (data ?? []) as any[]) {
-    const identity = mapIdentity(firstRelation(row.identity))
-    const existing = byIdentityId.get(identity.id)
-    if (!existing) {
-      byIdentityId.set(identity.id, { ...identity, grant_count: 1 })
-    } else {
-      existing.grant_count = (existing.grant_count ?? 0) + 1
-    }
-  }
-
-  return Array.from(byIdentityId.values()).sort((a, b) => a.email.localeCompare(b.email))
-}
-
-/**
- * A builder can only change access *to their own org*. The identity itself is
- * shared across builders, so pausing it here would knock the person out of
- * every other builder's portals too — status now applies to this org's grants.
- */
-export async function setExternalPortalAccountStatus({
-  accountId,
-  status,
-  orgId,
-}: {
-  accountId: string
-  status: ExternalGrantStatus
-  orgId?: string
-}) {
-  const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
-  await requirePermission("project.manage", { supabase, orgId: resolvedOrgId, userId })
-  const serviceClient = createServiceSupabaseClient()
-  const nowIso = new Date().toISOString()
-
-  const { error } = await serviceClient
-    .from("external_identity_grants")
-    .update({
-      status,
-      updated_at: nowIso,
-      paused_at: status === "paused" ? nowIso : null,
-      revoked_at: status === "revoked" ? nowIso : null,
-    })
-    .eq("org_id", resolvedOrgId)
-    .eq("identity_id", accountId)
-
-  if (error) {
-    throw new Error(`Failed to update external portal access: ${error.message}`)
-  }
-
-  await recordEvent({
-    orgId: resolvedOrgId,
-    entityType: "external_identity",
-    entityId: accountId,
-    eventType: `external_identity.${status}`,
-    payload: { status },
-  })
-  await recordAudit({
-    orgId: resolvedOrgId,
-    entityType: "external_identity",
-    entityId: accountId,
-    action: "update",
-    after: { status, scope: "org_grants" },
-    source: "external_portal",
-  })
-}
 
 async function setBidInviteGrantStatus({
   inviteId,

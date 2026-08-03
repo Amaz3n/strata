@@ -49,13 +49,10 @@ interface BudgetLineOption {
 
 interface BidPackagesClientProps {
   projectId?: string
-  prospectId?: string
   packages: BidPackage[]
   tradeOptions: string[]
   costCodes: CostCode[]
   budgetLines?: BudgetLineOption[]
-  detailBasePath?: string
-  createDescription?: string
   initialDraft?: {
     title?: string | null
     scope?: string | null
@@ -118,13 +115,10 @@ function CoverageBar({ responses, invited }: { responses: number; invited: numbe
 
 export function BidPackagesClient({
   projectId,
-  prospectId,
   packages,
   tradeOptions,
   costCodes,
   budgetLines = [],
-  detailBasePath,
-  createDescription,
   initialDraft = null,
 }: BidPackagesClientProps) {
   const router = useRouter()
@@ -253,7 +247,7 @@ export function BidPackagesClient({
     }
     startCreating(async () => {
       try {
-        if (!projectId && !prospectId) {
+        if (!projectId) {
           throw new Error("Missing bid package context")
         }
         const payload = {
@@ -268,7 +262,7 @@ export function BidPackagesClient({
           due_at: dueDate ? combineDateAndTime(dueDate, dueTime).toISOString() : null,
           due_tz: dueDate ? dueTz : null,
         }
-        const created = unwrapAction(await createBidPackageAction({ projectId, prospectId }, payload))
+        const created = unwrapAction(await createBidPackageAction({ projectId }, payload))
         setItems((prev) => [created, ...prev])
         toast.success("Bid package created")
         resetForm()
@@ -281,7 +275,7 @@ export function BidPackagesClient({
     })
   }
 
-  const basePath = detailBasePath ?? (projectId ? `/projects/${projectId}/bids` : "")
+  const basePath = projectId ? `/projects/${projectId}/bids` : ""
   const columnCount = projectId ? 7 : 6
 
   return (
@@ -296,9 +290,7 @@ export function BidPackagesClient({
         <SheetContent side="right" className="flex w-full flex-col p-0 sm:max-w-lg">
           <SheetHeader className="border-b px-6 py-4">
             <SheetTitle>New bid package</SheetTitle>
-            <SheetDescription>
-              {createDescription ?? "Create an invite-to-bid package for this project."}
-            </SheetDescription>
+            <SheetDescription>Create an invite-to-bid package for this project.</SheetDescription>
           </SheetHeader>
           <div className="flex-1 space-y-5 overflow-y-auto px-6 py-4">
             <div className="space-y-2">

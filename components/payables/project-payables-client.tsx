@@ -312,8 +312,6 @@ export function ProjectPayablesClient({
         qboExpenseAccounts={qboExpenseAccounts}
         qboApAccounts={qboApAccounts}
         qboDefaults={qboDefaults}
-        complianceRules={complianceRules}
-        complianceStatusByCompanyId={complianceStatusByCompanyId}
         onChanged={() => router.refresh()}
         holdEvaluations={holdEvaluations}
       />

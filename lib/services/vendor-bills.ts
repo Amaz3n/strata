@@ -100,7 +100,7 @@ export interface VendorBillSummary {
   payments: VendorBillPaymentSummary[]
 }
 
-const vendorBillSelect = `
+export const vendorBillSelect = `
   id, org_id, project_id, commitment_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, accounting_coding, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
   project:projects(id, name),
   company:companies!vendor_bills_company_id_fkey(id, name, qbo_vendor_id, qbo_vendor_name),
@@ -451,14 +451,7 @@ export async function listVendorBillsForCompany(companyId: string, orgId?: strin
 
   const { data, error } = await supabase
     .from("vendor_bills")
-    .select(
-      `
-      id, org_id, project_id, commitment_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, accounting_coding, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
-      project:projects(id, name),
-      company:companies!vendor_bills_company_id_fkey(id, name, qbo_vendor_id, qbo_vendor_name),
-      commitment:commitments(id, title, total_cents, company:companies(id, name, qbo_vendor_id, qbo_vendor_name))
-    `,
-    )
+    .select(vendorBillSelect)
     .eq("org_id", resolvedOrgId)
     .in("commitment_id", commitmentIds)
     .order("created_at", { ascending: false })
@@ -468,6 +461,86 @@ export async function listVendorBillsForCompany(companyId: string, orgId?: strin
   }
 
   return (data ?? []).map((row: any) => mapVendorBill(row))
+}
+
+/**
+ * Hydrate raw `vendor_bills` rows into summaries: coded lines, recorded payments and
+ * billed-to-date per commitment. Shared by the project list and the org-wide payables
+ * desk so both see the same shape — one round of lookups for the whole page of bills.
+ *
+ * `viewProjectId` is the project the bills are being read *for* (drives each bill's
+ * share of a multi-project split). Omit it org-wide, where no single project is the lens.
+ */
+export async function hydrateVendorBills(
+  supabase: SupabaseClient,
+  orgId: string,
+  rows: any[],
+  viewProjectId?: string,
+): Promise<VendorBillSummary[]> {
+  const billIds = rows.map((bill) => bill.id).filter(Boolean)
+  if (billIds.length === 0) return []
+
+  // Billed-to-date per commitment so the workspace can show remaining contract
+  // value at coding/approval time.
+  const commitmentIds = Array.from(new Set(rows.map((bill) => bill.commitment_id).filter(Boolean)))
+
+  const [commitmentBillsResult, billLinesResult, paymentsResult] = await Promise.all([
+    commitmentIds.length === 0
+      ? Promise.resolve({ data: [] as any[], error: null })
+      : supabase.from("vendor_bills").select("commitment_id, total_cents").eq("org_id", orgId).in("commitment_id", commitmentIds),
+    supabase
+      .from("bill_lines")
+      .select(
+        "id, bill_id, project_id, cost_code_id, budget_line_id, description, unit_cost_cents, quantity, metadata, cost_code:cost_codes(id, code, name), project:projects(id, name)",
+      )
+      .eq("org_id", orgId)
+      .in("bill_id", billIds)
+      .order("sort_order", { ascending: true }),
+    supabase
+      .from("payments")
+      .select("id, bill_id, amount_cents, method, reference, received_at, provider, status, metadata")
+      .eq("org_id", orgId)
+      .in("bill_id", billIds)
+      .eq("status", "succeeded")
+      .order("received_at", { ascending: false }),
+  ])
+
+  if (commitmentBillsResult.error) {
+    throw new Error(`Failed to load commitment billing totals: ${commitmentBillsResult.error.message}`)
+  }
+  if (billLinesResult.error) {
+    throw new Error(`Failed to load bill coding: ${billLinesResult.error.message}`)
+  }
+  if (paymentsResult.error) {
+    throw new Error(`Failed to load bill payments: ${paymentsResult.error.message}`)
+  }
+
+  const billedByCommitment = new Map<string, number>()
+  for (const row of commitmentBillsResult.data ?? []) {
+    billedByCommitment.set(row.commitment_id, (billedByCommitment.get(row.commitment_id) ?? 0) + Number(row.total_cents ?? 0))
+  }
+
+  const linesByBillId = new Map<string, any[]>()
+  for (const line of billLinesResult.data ?? []) {
+    const current = linesByBillId.get(line.bill_id) ?? []
+    current.push(line)
+    linesByBillId.set(line.bill_id, current)
+  }
+
+  const paymentsByBillId = new Map<string, any[]>()
+  for (const payment of paymentsResult.data ?? []) {
+    const current = paymentsByBillId.get(payment.bill_id) ?? []
+    current.push(payment)
+    paymentsByBillId.set(payment.bill_id, current)
+  }
+
+  return rows.map((bill) => {
+    const summary = mapVendorBill(bill, linesByBillId.get(bill.id), viewProjectId, paymentsByBillId.get(bill.id))
+    if (summary.commitment_id) {
+      summary.commitment_billed_cents = billedByCommitment.get(summary.commitment_id)
+    }
+    return summary
+  })
 }
 
 export async function listVendorBillsForProject(projectId: string, orgId?: string): Promise<VendorBillSummary[]> {
@@ -493,17 +566,7 @@ export async function listVendorBillsForProject(projectId: string, orgId?: strin
 
   const allocatedBillIds = Array.from(new Set((allocatedRows ?? []).map((row: any) => row.bill_id).filter(Boolean)))
 
-  const baseSelect = supabase
-    .from("vendor_bills")
-    .select(
-      `
-      id, org_id, project_id, commitment_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, accounting_coding, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
-      project:projects(id, name),
-      company:companies!vendor_bills_company_id_fkey(id, name, qbo_vendor_id, qbo_vendor_name),
-      commitment:commitments(id, title, total_cents, company:companies(id, name, qbo_vendor_id, qbo_vendor_name))
-    `,
-    )
-    .eq("org_id", resolvedOrgId)
+  const baseSelect = supabase.from("vendor_bills").select(vendorBillSelect).eq("org_id", resolvedOrgId)
 
   const scoped = allocatedBillIds.length > 0 ? baseSelect.or(`project_id.eq.${projectId},id.in.(${allocatedBillIds.join(",")})`) : baseSelect.eq("project_id", projectId)
 
@@ -513,79 +576,7 @@ export async function listVendorBillsForProject(projectId: string, orgId?: strin
     throw new Error(`Failed to list vendor bills: ${error.message}`)
   }
 
-  const bills = data ?? []
-  const billIds = bills.map((bill: any) => bill.id).filter(Boolean)
-
-  // Billed-to-date per commitment so the workspace can show remaining contract
-  // value at coding/approval time.
-  const commitmentIds = Array.from(new Set(bills.map((bill: any) => bill.commitment_id).filter(Boolean)))
-  const billedByCommitment = new Map<string, number>()
-  if (commitmentIds.length > 0) {
-    const { data: commitmentBills, error: commitmentBillsError } = await supabase
-      .from("vendor_bills")
-      .select("commitment_id, total_cents")
-      .eq("org_id", resolvedOrgId)
-      .in("commitment_id", commitmentIds)
-    if (commitmentBillsError) {
-      throw new Error(`Failed to load commitment billing totals: ${commitmentBillsError.message}`)
-    }
-    for (const row of commitmentBills ?? []) {
-      billedByCommitment.set(row.commitment_id, (billedByCommitment.get(row.commitment_id) ?? 0) + Number(row.total_cents ?? 0))
-    }
-  }
-
-  const { data: billLines, error: billLinesError } =
-    billIds.length === 0
-      ? { data: [], error: null }
-      : await supabase
-          .from("bill_lines")
-          .select(
-            "id, bill_id, project_id, cost_code_id, budget_line_id, description, unit_cost_cents, quantity, metadata, cost_code:cost_codes(id, code, name), project:projects(id, name)",
-          )
-          .eq("org_id", resolvedOrgId)
-          .in("bill_id", billIds)
-          .order("sort_order", { ascending: true })
-
-  if (billLinesError) {
-    throw new Error(`Failed to load bill coding: ${billLinesError.message}`)
-  }
-
-  const linesByBillId = new Map<string, any[]>()
-  for (const line of billLines ?? []) {
-    const current = linesByBillId.get(line.bill_id) ?? []
-    current.push(line)
-    linesByBillId.set(line.bill_id, current)
-  }
-
-  const { data: paymentRows, error: paymentsError } =
-    billIds.length === 0
-      ? { data: [], error: null }
-      : await supabase
-          .from("payments")
-          .select("id, bill_id, amount_cents, method, reference, received_at, provider, status, metadata")
-          .eq("org_id", resolvedOrgId)
-          .in("bill_id", billIds)
-          .eq("status", "succeeded")
-          .order("received_at", { ascending: false })
-
-  if (paymentsError) {
-    throw new Error(`Failed to load bill payments: ${paymentsError.message}`)
-  }
-
-  const paymentsByBillId = new Map<string, any[]>()
-  for (const payment of paymentRows ?? []) {
-    const current = paymentsByBillId.get(payment.bill_id) ?? []
-    current.push(payment)
-    paymentsByBillId.set(payment.bill_id, current)
-  }
-
-  return bills.map((bill: any) => {
-    const summary = mapVendorBill(bill, linesByBillId.get(bill.id), projectId, paymentsByBillId.get(bill.id))
-    if (summary.commitment_id) {
-      summary.commitment_billed_cents = billedByCommitment.get(summary.commitment_id)
-    }
-    return summary
-  })
+  return hydrateVendorBills(supabase, resolvedOrgId, data ?? [], projectId)
 }
 
 export async function updateVendorBillStatus({ billId, input, orgId }: { billId: string; input: VendorBillStatusUpdate; orgId?: string }): Promise<VendorBillSummary> {

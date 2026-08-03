@@ -21,10 +21,6 @@ import {
   History,
   Send,
 } from "lucide-react"
-import {
-  disciplineGradientClass,
-  disciplineIcon,
-} from "@/lib/utils/drawing-utils"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -92,6 +88,7 @@ import {
   createDrawingSetFromUpload,
   createPunchItemFromDrawingAction,
   createRfiFromDrawingAction,
+  captureDrawingRegionSnapshotAction,
   createTaskFromDrawingAction,
   deleteDrawingMarkupAction,
   deleteDrawingSetAction,
@@ -107,6 +104,7 @@ import {
   getDrawingRegisterSnapshotAction,
   retryProcessingAction,
   updateDrawingSheetAction,
+  bulkUpdateSheetSharingAction,
   listDrawingRevisionsAction,
   listSheetVersionsAction,
   getPendingDraftRevisionAction,
@@ -125,6 +123,7 @@ import type {
   DrawingRevision,
   DrawingSheetVersion,
 } from "@/app/(app)/drawings/types"
+import { SheetRegister } from "@/components/drawings/register/sheet-register"
 import dynamic from "next/dynamic"
 import { RevisionReviewDialog, DistributeRevisionDialog } from "./revision-review-dialog"
 import { CreateFromDrawingDialog } from "./create-from-drawing-dialog"
@@ -147,6 +146,11 @@ type ProjectOption = { id: string; name: string }
 interface DrawingsSetsViewProps {
   initialSets: DrawingSet[]
   initialSheets?: DrawingSheet[]
+  /**
+   * Total sheets on the project, ignoring the render cap. The register shows
+   * the shortfall so a truncated set can never read as a complete one.
+   */
+  totalSheetCount?: number
   projects: ProjectOption[]
   selectedProjectId?: string
   lockProject?: boolean
@@ -215,22 +219,6 @@ const BASELINE_ISSUANCE_TYPES: DrawingIssuanceType[] = [
 ]
 
 
-function formatDate(value?: string | null) {
-  if (!value) return "—"
-  const date = new Date(value)
-  const now = new Date()
-  const diffMs = now.getTime() - date.getTime()
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
-  if (diffDays === 0) return "Today"
-  if (diffDays === 1) return "Yesterday"
-  if (diffDays < 7) return `${diffDays}d ago`
-  return date.toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: date.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
-  })
-}
-
 function disciplineLabel(code?: DrawingDiscipline | string | null) {
   if (!code) return "Unassigned"
   return (
@@ -247,12 +235,23 @@ function compareSheets(a: DrawingSheet, b: DrawingSheet) {
   })
 }
 
-function compareDisciplineCodes(a: string, b: string) {
-  const ai = DISCIPLINE_ORDER.indexOf(a as DrawingDiscipline)
-  const bi = DISCIPLINE_ORDER.indexOf(b as DrawingDiscipline)
-  const av = ai === -1 ? Number.MAX_SAFE_INTEGER : ai
-  const bv = bi === -1 ? Number.MAX_SAFE_INTEGER : bi
-  return av - bv
+/**
+ * A house set is small enough to read at a glance, so opening it collapsed is
+ * pure friction. A commercial set is not — there the collapsed register IS the
+ * index. Only the first render is decided here; after that the user owns it.
+ */
+const AUTO_EXPAND_SHEET_LIMIT = 60
+
+/**
+ * Side of the square captured around a pin, as a fraction of the sheet.
+ * Wide enough to carry the surrounding detail that makes the region legible,
+ * tight enough that the subject is obvious.
+ */
+const SNAPSHOT_REGION_SIZE = 0.18
+
+function buildInitialExpandedDisciplines(sheets: DrawingSheet[]): Set<string> {
+  if (sheets.length === 0 || sheets.length > AUTO_EXPAND_SHEET_LIMIT) return new Set()
+  return new Set(sheets.map((sheet) => sheet.discipline ?? "X"))
 }
 
 function buildSheetsBySet(sheets: DrawingSheet[]) {
@@ -267,13 +266,6 @@ function buildSheetsBySet(sheets: DrawingSheet[]) {
     map.set(setId, list)
   }
   return map
-}
-
-function sheetVersionLabel(sheet: DrawingSheet) {
-  // Label by the sheet's own published version count: uploaded once -> v1,
-  // revised once -> v2, etc. Immune to project-wide revision numbering.
-  const count = sheet.version_count ?? 0
-  return `v${count > 0 ? count : 1}`
 }
 
 function issuanceDisplayLabel(revision: DrawingRevision | RevisionDraftStatus) {
@@ -396,6 +388,7 @@ function describeProcessingStage(set: DrawingSet | null) {
 export function DrawingsSetsView({
   initialSets,
   initialSheets = [],
+  totalSheetCount,
   projects,
   selectedProjectId,
   lockProject = false,
@@ -411,8 +404,8 @@ export function DrawingsSetsView({
     initialSelectedSetId ?? null,
   )
   const [search, setSearch] = useState("")
-  const [expandedDisciplines, setExpandedDisciplines] = useState<Set<string>>(
-    new Set(),
+  const [expandedDisciplines, setExpandedDisciplines] = useState<Set<string>>(() =>
+    buildInitialExpandedDisciplines(initialSheets),
   )
   const [sheetsBySet, setSheetsBySet] = useState<Map<string, DrawingSheet[]>>(() =>
     buildSheetsBySet(initialSheets),
@@ -836,29 +829,6 @@ export function DrawingsSetsView({
       return [{ match, sheet }]
     })
   }, [contentMatches, activeSheets, filteredSheets])
-
-  const disciplineGroups = useMemo(() => {
-    const map = new Map<string, DrawingSheet[]>()
-    for (const sheet of filteredSheets) {
-      const key = sheet.discipline ?? "X"
-      const existing = map.get(key)
-      if (existing) existing.push(sheet)
-      else map.set(key, [sheet])
-    }
-    return Array.from(map.entries())
-      .map(([code, list]) => ({
-        code,
-        label: disciplineLabel(code),
-        sheets: list.sort(compareSheets),
-      }))
-      .sort((a, b) => compareDisciplineCodes(a.code, b.code))
-  }, [filteredSheets])
-
-  // When searching, show all matches expanded; otherwise honor user's manual expand state.
-  const effectiveExpanded = useMemo(() => {
-    if (!search.trim()) return expandedDisciplines
-    return new Set(disciplineGroups.map((g) => g.code))
-  }, [search, expandedDisciplines, disciplineGroups])
 
   const toggleDiscipline = useCallback((code: string) => {
     setExpandedDisciplines((prev) => {
@@ -1355,6 +1325,68 @@ export function DrawingsSetsView({
     [sheetsBySet],
   )
 
+  const handleBulkSharingChange = useCallback(
+    async (
+      sheetIds: string[],
+      sharing: { share_with_clients?: boolean; share_with_subs?: boolean },
+    ) => {
+      if (sheetIds.length === 0) return
+      try {
+        unwrapAction(await bulkUpdateSheetSharingAction(sheetIds, sharing))
+        setSheetsBySet((curr) => {
+          const next = new Map(curr)
+          const ids = new Set(sheetIds)
+          for (const [key, list] of next) {
+            next.set(
+              key,
+              list.map((sheet) => (ids.has(sheet.id) ? { ...sheet, ...sharing } : sheet)),
+            )
+          }
+          return next
+        })
+        toast.success(`Sharing updated for ${sheetIds.length} sheets`)
+      } catch (err) {
+        console.error(err)
+        toast.error(err instanceof Error ? err.message : "Failed to update sharing")
+      }
+    },
+    [],
+  )
+
+  const handleBulkDisciplineChange = useCallback(
+    async (sheetIds: string[], discipline: DrawingDiscipline) => {
+      if (sheetIds.length === 0) return
+      const previous = sheetsBySet
+      setSheetsBySet((curr) => {
+        const next = new Map(curr)
+        const ids = new Set(sheetIds)
+        for (const [key, list] of next) {
+          const updated = list.map((sheet) =>
+            ids.has(sheet.id) ? { ...sheet, discipline } : sheet,
+          )
+          updated.sort(compareSheets)
+          next.set(key, updated)
+        }
+        return next
+      })
+      try {
+        const results = await Promise.all(
+          sheetIds.map((sheetId) => updateDrawingSheetAction(sheetId, { discipline })),
+        )
+        const failed = results.filter((result) => !result.success).length
+        if (failed > 0) {
+          throw new Error(`${failed} of ${sheetIds.length} sheets could not be moved`)
+        }
+        toast.success(`Moved ${sheetIds.length} sheets to ${disciplineLabel(discipline)}`)
+      } catch (err) {
+        console.error(err)
+        setSheetsBySet(previous)
+        toast.error(err instanceof Error ? err.message : "Failed to change discipline")
+      }
+    },
+    [sheetsBySet],
+  )
+
   const handleViewSheet = useCallback(
     async (sheet: DrawingSheet, highlightPinId?: string | null, openVersions?: boolean) => {
       const requestId = ++sheetOpenRequestIdRef.current
@@ -1604,6 +1636,27 @@ export function DrawingsSetsView({
       const pinProjectId = input.project_id ?? viewerSheet.project_id
       let entityId: string | null = null
 
+      // Freeze what the item is about. The pin keeps pointing at the live
+      // sheet — right, because drawings get revised — but a picture of the
+      // region as it read when the question was asked is what settles the
+      // argument later. Best-effort: a missing snapshot must not block the
+      // RFI, so a failure here is logged and the item is still created.
+      let snapshotFileId: string | null = null
+      if (input.entityType === "rfi" || input.entityType === "punch_list") {
+        const half = SNAPSHOT_REGION_SIZE / 2
+        const snapshot = await captureDrawingRegionSnapshotAction({
+          sheetId: viewerSheet.id,
+          region: {
+            x: Math.max(0, Math.min(1 - SNAPSHOT_REGION_SIZE, createPosition.x - half)),
+            y: Math.max(0, Math.min(1 - SNAPSHOT_REGION_SIZE, createPosition.y - half)),
+            w: SNAPSHOT_REGION_SIZE,
+            h: SNAPSHOT_REGION_SIZE,
+          },
+        })
+        if (snapshot.success) snapshotFileId = snapshot.data.fileId
+        else console.error("Drawing snapshot failed:", snapshot.error)
+      }
+
       if (input.entityType === "task") {
         const created = unwrapAction(await createTaskFromDrawingAction(pinProjectId, {
           title: input.title,
@@ -1620,6 +1673,7 @@ export function DrawingsSetsView({
       } else if (input.entityType === "rfi") {
         const created = unwrapAction(await createRfiFromDrawingAction({
           projectId: pinProjectId,
+          attachmentFileId: snapshotFileId,
           subject: input.subject ?? input.title,
           question: input.question ?? input.description ?? "",
           priority:
@@ -1637,6 +1691,7 @@ export function DrawingsSetsView({
           description: input.description,
           location: input.location,
           severity: input.priority,
+          attachmentFileId: snapshotFileId,
         }))
         entityId = created.id
       } else if (input.entityType === "observation") {
@@ -1646,15 +1701,6 @@ export function DrawingsSetsView({
           category: "deficiency",
           description: [input.title, input.description].filter(Boolean).join(" — "),
           location: input.location ?? null,
-        }))
-        entityId = created.id
-      } else if (input.entityType === "issue") {
-        const created = unwrapAction(await createTaskFromDrawingAction(pinProjectId, {
-          title: input.title,
-          description: input.description,
-          priority: "high",
-          status: "todo",
-          tags: ["issue"],
         }))
         entityId = created.id
       }
@@ -2092,7 +2138,7 @@ export function DrawingsSetsView({
                 : "This plan set doesn't have any sheets yet."
             }
           />
-        ) : disciplineGroups.length === 0 ? (
+        ) : filteredSheets.length === 0 ? (
           <EmptyState
             icon={Search}
             title="No results"
@@ -2104,56 +2150,39 @@ export function DrawingsSetsView({
             }
           />
         ) : (
-          <Table className="table-fixed sm:min-w-[880px]">
-            <TableHeader>
-              <TableRow className="bg-muted/40 hover:bg-muted/40">
-                <TableHead className="w-10 pl-4" />
-                <TableHead className="w-full sm:w-[44%] sm:min-w-[300px] text-xs font-medium text-muted-foreground">
-                  Drawing Register
-                </TableHead>
-                <TableHead className="hidden sm:table-cell w-[100px] text-center text-xs font-medium text-muted-foreground">
-                  Pages
-                </TableHead>
-                <TableHead className="hidden md:table-cell w-[120px] text-center text-xs font-medium text-muted-foreground">
-                  Version
-                </TableHead>
-                <TableHead className="hidden md:table-cell w-[160px] text-center text-xs font-medium text-muted-foreground">
-                  Modified By
-                </TableHead>
-                <TableHead className="hidden lg:table-cell w-[120px] text-center text-xs font-medium text-muted-foreground">
-                  Updated
-                </TableHead>
-                <TableHead className="w-[60px] pr-4" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {disciplineGroups.map((group) => (
-                <DisciplineRows
-                  key={group.code}
-                  code={group.code}
-                  label={group.label}
-                  sheets={group.sheets}
-                  isExpanded={effectiveExpanded.has(group.code)}
-                  onToggle={() => toggleDiscipline(group.code)}
-                  onEditGroup={() => {
-                    setDisciplineGroupToEdit(group)
-                    setGroupDisciplineValue(group.code as DrawingDiscipline)
-                  }}
-                  onDeleteGroup={() => setDisciplineGroupToDelete(group)}
-                  onViewSheet={handleViewSheet}
-                  onDisciplineChange={handleDisciplineChange}
-                  onRenameSheet={(sheet) => {
-                    setSheetToRename(sheet)
-                    setRenameSheetNumber(sheet.sheet_number)
-                    setRenameSheetTitle(sheet.sheet_title ?? "")
-                  }}
-                  onDeleteSheet={(s) => setSheetToDelete(s)}
-                  onUploadRevisionSheet={openUploadRevisionDialog}
-                  highlight={search.trim().toLowerCase()}
-                />
-              ))}
-            </TableBody>
-          </Table>
+          <SheetRegister
+            sheets={filteredSheets}
+            totalSheetCount={totalSheetCount}
+            loadedSheetCount={activeSheets.length}
+            search={search}
+            expandedDisciplines={expandedDisciplines}
+            onToggleDiscipline={toggleDiscipline}
+            onViewSheet={handleViewSheet}
+            onDisciplineChange={handleDisciplineChange}
+            onEditGroup={(group) => {
+              setDisciplineGroupToEdit(group)
+              setGroupDisciplineValue(group.code as DrawingDiscipline)
+            }}
+            onDeleteGroup={(group) => setDisciplineGroupToDelete(group)}
+            onRenameSheet={(sheet) => {
+              setSheetToRename(sheet)
+              setRenameSheetNumber(sheet.sheet_number)
+              setRenameSheetTitle(sheet.sheet_title ?? "")
+            }}
+            onDeleteSheet={(sheet) => setSheetToDelete(sheet)}
+            onUploadRevisionSheet={openUploadRevisionDialog}
+            onBulkSharingChange={handleBulkSharingChange}
+            onBulkDisciplineChange={handleBulkDisciplineChange}
+          />
+        )}
+
+        {/* Content search reads the published text of current sheets, so it
+            cannot answer a question scoped to an earlier revision. Say so
+            rather than silently returning nothing. */}
+        {search.trim().length >= 3 && revisionFilter !== "current" && (
+          <div className="border-t px-4 py-3 text-xs text-muted-foreground">
+            Searching inside sheets is only available on the current revision.
+          </div>
         )}
 
         {/* Full-text hits inside sheet content (notes, callouts, title blocks). */}
@@ -2959,318 +2988,6 @@ export function DrawingsSetsView({
         </div>
       )}
     </div>
-  )
-}
-
-function DisciplineRows({
-  code,
-  label,
-  sheets,
-  isExpanded,
-  onToggle,
-  onEditGroup,
-  onDeleteGroup,
-  onViewSheet,
-  onDisciplineChange,
-  onRenameSheet,
-  onDeleteSheet,
-  onUploadRevisionSheet,
-  highlight,
-}: {
-  code: string
-  label: string
-  sheets: DrawingSheet[]
-  isExpanded: boolean
-  onToggle: () => void
-  onEditGroup: () => void
-  onDeleteGroup: () => void
-  onViewSheet: (sheet: DrawingSheet, highlightPinId?: string | null, openVersions?: boolean) => void
-  onDisciplineChange: (sheetId: string, d: DrawingDiscipline) => void
-  onRenameSheet: (sheet: DrawingSheet) => void
-  onDeleteSheet: (sheet: DrawingSheet) => void
-  onUploadRevisionSheet: (sheet: DrawingSheet) => void
-  highlight: string
-}) {
-  const Icon = disciplineIcon(code)
-  const latestRev = useMemo(() => {
-    const versions = new Set(sheets.map(sheetVersionLabel))
-    const arr = Array.from(versions)
-    if (arr.length === 0) return "v1"
-    if (arr.length === 1) return arr[0]
-    return `${arr.length} versions`
-  }, [sheets])
-
-  const lastModified = useMemo(() => {
-    let max = 0
-    for (const s of sheets) {
-      const t = new Date(s.updated_at).getTime()
-      if (t > max) max = t
-    }
-    return max > 0 ? new Date(max).toISOString() : null
-  }, [sheets])
-
-  return (
-    <>
-      <TableRow
-        className={cn(
-          "group cursor-pointer border-t bg-background hover:bg-muted/30",
-          isExpanded && "bg-muted/20",
-        )}
-        onClick={onToggle}
-      >
-        <TableCell className="w-10 pl-4">
-          <ChevronRight
-            className={cn(
-              "h-4 w-4 text-muted-foreground transition-transform",
-              isExpanded && "rotate-90",
-            )}
-          />
-        </TableCell>
-        <TableCell className="min-w-0">
-          <div className="flex items-center gap-3 min-w-0">
-            <span
-              className={cn(
-                "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border",
-                disciplineGradientClass(code),
-              )}
-            >
-              <Icon className="h-4 w-4" />
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-semibold">{label}</div>
-              {/* The Pages column is hidden on mobile — surface the count here instead. */}
-              <div className="text-xs text-muted-foreground sm:hidden">
-                {sheets.length} {sheets.length === 1 ? "sheet" : "sheets"}
-              </div>
-            </div>
-          </div>
-        </TableCell>
-        <TableCell className="hidden sm:table-cell text-center text-xs text-muted-foreground">
-          {sheets.length}
-        </TableCell>
-        <TableCell className="hidden md:table-cell text-center text-xs text-muted-foreground">
-          {latestRev}
-        </TableCell>
-        <TableCell className="hidden md:table-cell text-center text-xs text-muted-foreground">
-          —
-        </TableCell>
-        <TableCell className="hidden lg:table-cell text-center text-xs text-muted-foreground">
-          {formatDate(lastModified)}
-        </TableCell>
-        <TableCell className="pr-4" onClick={(e) => e.stopPropagation()}>
-          <div className="flex justify-end">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 md:opacity-0 transition-opacity md:group-hover:opacity-100 data-[state=open]:opacity-100"
-                >
-                  <MoreHorizontal className="h-3.5 w-3.5" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-44">
-                <DropdownMenuItem onClick={onEditGroup}>
-                  <Pencil className="mr-2 h-4 w-4" />
-                  Edit trade
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  className="text-destructive focus:text-destructive"
-                  onClick={onDeleteGroup}
-                >
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  Delete pages
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </TableCell>
-      </TableRow>
-
-      {isExpanded &&
-        sheets.map((sheet) => (
-          <SheetRow
-            key={sheet.id}
-            sheet={sheet}
-            onOpen={() => onViewSheet(sheet)}
-            onDisciplineChange={(d) => onDisciplineChange(sheet.id, d)}
-            onRename={() => onRenameSheet(sheet)}
-            onViewVersions={() => onViewSheet(sheet, null, true)}
-            onDelete={() => onDeleteSheet(sheet)}
-            onUploadRevision={() => onUploadRevisionSheet(sheet)}
-            highlight={highlight}
-          />
-        ))}
-    </>
-  )
-}
-
-function SheetRow({
-  sheet,
-  onOpen,
-  onDisciplineChange,
-  onRename,
-  onViewVersions,
-  onDelete,
-  onUploadRevision,
-  highlight,
-}: {
-  sheet: DrawingSheet
-  onOpen: () => void
-  onDisciplineChange: (d: DrawingDiscipline) => void
-  onRename: () => void
-  onViewVersions: () => void
-  onDelete: () => void
-  onUploadRevision: () => void
-  highlight: string
-}) {
-  const currentDiscipline = (sheet.discipline as DrawingDiscipline) ?? "X"
-  const title = [sheet.sheet_number, sheet.sheet_title].filter(Boolean).join(" · ")
-  return (
-    <TableRow
-      className="group cursor-pointer border-t border-border/40 hover:bg-muted/20"
-      onClick={onOpen}
-    >
-      <TableCell className="w-10 pl-4">
-        {/* indent marker */}
-        <span className="ml-2 inline-block h-1 w-1 rounded-full bg-border" />
-      </TableCell>
-      <TableCell className="min-w-0 pl-2">
-        <div className="min-w-0">
-          <div className="truncate text-sm font-medium">
-            <Highlighted
-              text={title || sheet.sheet_number || "Untitled sheet"}
-              highlight={highlight}
-            />
-          </div>
-        </div>
-      </TableCell>
-      <TableCell className="hidden sm:table-cell" />
-      <TableCell className="hidden md:table-cell text-center text-xs text-muted-foreground">
-        {sheetVersionLabel(sheet)}
-      </TableCell>
-      <TableCell className="hidden md:table-cell text-center text-xs text-muted-foreground">
-        {sheet.last_modified_by_name ?? sheet.current_revision_creator_name ?? "—"}
-      </TableCell>
-      <TableCell className="hidden lg:table-cell text-center text-xs text-muted-foreground">
-        {formatDate(sheet.updated_at)}
-      </TableCell>
-      <TableCell className="pr-4" onClick={(e) => e.stopPropagation()}>
-        <div className="flex justify-end">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 md:opacity-0 transition-opacity md:group-hover:opacity-100 data-[state=open]:opacity-100"
-              >
-                <MoreHorizontal className="h-3.5 w-3.5" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-48">
-              <DropdownMenuItem onClick={onOpen}>
-                <Eye className="mr-2 h-4 w-4" />
-                Open
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={onRename}>
-                <Pencil className="mr-2 h-4 w-4" />
-                Rename
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={onViewVersions}>
-                <History className="mr-2 h-4 w-4" />
-                Version history
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={onUploadRevision}>
-                <Upload className="mr-2 h-4 w-4" />
-                Submit sheet issuance
-              </DropdownMenuItem>
-              <DropdownMenuItem asChild>
-                <a href={`/projects/${sheet.project_id}/transmittals?drawingSheet=${sheet.id}&description=${encodeURIComponent(title || sheet.sheet_number)}`}>
-                  <Send className="mr-2 h-4 w-4" />
-                  Send as transmittal
-                </a>
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={async () => {
-                  const url = await getSheetDownloadUrlAction(sheet.id).catch(
-                    () => null,
-                  )
-                  if (url) window.open(url, "_blank")
-                  else toast.error("Download not available")
-                }}
-              >
-                <Download className="mr-2 h-4 w-4" />
-                Download original
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => {
-                  window.open(`/api/drawings/export?sheetId=${sheet.id}`, "_blank")
-                }}
-              >
-                <Download className="mr-2 h-4 w-4" />
-                Download with markups
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
-                Change discipline
-              </DropdownMenuLabel>
-              {DISCIPLINE_ORDER.map((dcode) => (
-                <DropdownMenuItem
-                  key={dcode}
-                  onClick={() => {
-                    if (dcode !== currentDiscipline) onDisciplineChange(dcode)
-                  }}
-                  className={cn(
-                    "gap-2",
-                    dcode === currentDiscipline && "bg-muted font-medium",
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "inline-flex h-5 w-8 items-center justify-center rounded border font-mono text-[11px]",
-                      disciplineGradientClass(dcode),
-                    )}
-                  >
-                    {dcode}
-                  </span>
-                  <span>{disciplineLabel(dcode)}</span>
-                </DropdownMenuItem>
-              ))}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                className="text-destructive focus:text-destructive"
-                onClick={onDelete}
-              >
-                <Trash2 className="mr-2 h-4 w-4" />
-                Delete sheet
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </TableCell>
-    </TableRow>
-  )
-}
-
-function Highlighted({
-  text,
-  highlight,
-}: {
-  text?: string | null
-  highlight: string
-}) {
-  if (!text) return null
-  if (!highlight) return <>{text}</>
-  const idx = text.toLowerCase().indexOf(highlight)
-  if (idx === -1) return <>{text}</>
-  return (
-    <>
-      {text.slice(0, idx)}
-      <mark className="rounded-sm bg-yellow-200/70 px-0.5 text-foreground dark:bg-yellow-500/30">
-        {text.slice(idx, idx + highlight.length)}
-      </mark>
-      {text.slice(idx + highlight.length)}
-    </>
   )
 }
 

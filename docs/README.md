@@ -25,6 +25,7 @@ then the reference docs below.
 | [`production-org-playbook.md`](production-org-playbook.md) | Role/surface map: who lives on which desk and what they mutate. |
 | [`mobile-api-v1.openapi.yaml`](mobile-api-v1.openapi.yaml) | Mobile API contract. Enforced by `pnpm test:mobile`. |
 | [`report-export-api.md`](report-export-api.md) | Report export route contract. |
+| [`takeoff-model.md`](takeoff-model.md) | The quantity model: reporting unit vs measured unit, axis factors, what counts and what deliberately does not, count by example. Read before touching `lib/drawings/measure.ts` or `lib/services/takeoff*.ts`. |
 | [`takeoff-reanchor-design.md`](takeoff-reanchor-design.md) | Revision re-anchoring state machine. Referenced from `lib/services/takeoff-reanchor.ts`. |
 | [`takeoff-vector-spike.md`](takeoff-vector-spike.md) | Vector-extraction spike verdict. Referenced from `lib/drawings/vector-snap.ts`. |
 | [`google-places-setup.md`](google-places-setup.md) | Google Places API configuration. |

@@ -8,6 +8,7 @@ import { ArrowLeft } from "lucide-react"
 
 import { Loader2, AlertCircle } from "@/components/icons"
 import { ResetPasswordForm } from "@/components/auth/reset-password-form"
+import { ExternalResetPasswordForm } from "@/components/auth/external-reset-password-form"
 
 function createSupabaseClient(): SupabaseClient | null {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -21,11 +22,19 @@ function AuthResetContent() {
   const code = searchParams.get("code")
   const tokenHash = searchParams.get("token_hash")
   const tokenType = searchParams.get("type")
+  const externalToken = searchParams.get("external_token")
   const supabase = useMemo(() => createSupabaseClient(), [])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    // Externals have no Supabase session to verify — the server checks their raw
+    // token when the new password is submitted.
+    if (externalToken) {
+      setLoading(false)
+      return
+    }
+
     if (!supabase) {
       setError("Supabase configuration is missing.")
       setLoading(false)
@@ -85,7 +94,7 @@ function AuthResetContent() {
     }
 
     verifySession()
-  }, [code, supabase, tokenHash, tokenType])
+  }, [code, externalToken, supabase, tokenHash, tokenType])
 
   if (loading) {
     return (
@@ -120,6 +129,20 @@ function AuthResetContent() {
             Request new link
           </Link>
         </div>
+      </div>
+    )
+  }
+
+  if (externalToken) {
+    return (
+      <div className="flex flex-col gap-6">
+        <div className="flex flex-col items-center gap-2 text-center">
+          <h1 className="text-2xl font-semibold tracking-tight">Choose a new password</h1>
+          <p className="text-sm text-muted-foreground text-balance">
+            Updating signs you out on your other devices.
+          </p>
+        </div>
+        <ExternalResetPasswordForm token={externalToken} />
       </div>
     )
   }

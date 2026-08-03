@@ -49,16 +49,25 @@ export interface MeasureDraft {
   points: NormPoint[]
   /** Follows the cursor; drawn as a rubber band, never committed. */
   cursor: NormPoint | null
+  /** Captured when the shape starts, so toggling mid-trace can't flip its sign. */
+  deduction: boolean
 }
 
 export interface CommitPayload {
   type: MeasureToolType
   points: Array<[number, number]>
+  /** Areas only: this one subtracts — a window out of a wall. */
+  deduction: boolean
 }
 
 export interface UseMeasureToolsOptions {
   imageSize: ImageSize | null
   feetPerImagePx: number | null
+  /**
+   * Whether the NEXT area starts as a deduction. Only meaningful for the area
+   * tool; the hook ignores it everywhere else.
+   */
+  deduction?: boolean
   /** Persist the finished shape. Rejecting restores the draft so nothing is lost. */
   onCommit: (payload: CommitPayload) => Promise<void>
   /**
@@ -88,11 +97,20 @@ export interface MeasureToolsApi {
   finish: () => void
   cancel: () => void
   undoPoint: () => void
+  /**
+   * Replace the draft's geometry outright.
+   *
+   * Used by count-by-example: a proposal is just a count draft someone else
+   * placed the points for, so it renders, edits, and commits through the exact
+   * machinery a hand-clicked count already uses. An empty list clears it.
+   */
+  setDraftPoints: (tool: MeasureToolType, points: NormPoint[]) => void
 }
 
 export function useMeasureTools({
   imageSize,
   feetPerImagePx,
+  deduction = false,
   onCommit,
   snap = null,
 }: UseMeasureToolsOptions): MeasureToolsApi {
@@ -110,12 +128,17 @@ export function useMeasureTools({
   // host per render, and handleClick/handleMove must not churn on it.
   const snapRef = useRef(snap)
   snapRef.current = snap
+  const deductionRef = useRef(deduction)
+  deductionRef.current = deduction
 
   const commit = useCallback(async (current: MeasureDraft) => {
     if (current.points.length < MIN_POINTS[current.tool]) return
     const payload: CommitPayload = {
       type: current.tool,
       points: current.points.map((p) => [p.x, p.y] as [number, number]),
+      // Only an area can subtract; a deducted run or count has no meaning and
+      // the markup schema rejects one.
+      deduction: current.tool === "area" && current.deduction,
     }
     setDraft(null)
     setSaving(true)
@@ -138,6 +161,14 @@ export function useMeasureTools({
 
   const cancel = useCallback(() => {
     setDraft(null)
+  }, [])
+
+  const setDraftPoints = useCallback((tool: MeasureToolType, points: NormPoint[]) => {
+    setDraft(
+      points.length === 0
+        ? null
+        : { tool, points, cursor: null, deduction: deductionRef.current && tool === "area" },
+    )
   }, [])
 
   const undoPoint = useCallback(() => {
@@ -174,7 +205,12 @@ export function useMeasureTools({
 
       setDraft((prev) => {
         if (!prev || prev.tool !== activeTool) {
-          return { tool: activeTool, points: [point], cursor: null }
+          return {
+            tool: activeTool,
+            points: [point],
+            cursor: null,
+            deduction: deductionRef.current,
+          }
         }
 
         // Closing an area on its own start vertex.
@@ -259,15 +295,26 @@ export function useMeasureTools({
     return points
   }, [draft])
 
+  // `style` is threaded through both so a deduction reads "−240 SF" as it is
+  // being traced, not only once it is saved.
+  const draftGeometry = useMemo(
+    () => ({
+      type: draft?.tool ?? "",
+      points: previewPoints,
+      style: draft?.deduction ? { deduction: true } : null,
+    }),
+    [draft?.tool, draft?.deduction, previewPoints],
+  )
+
   const draftQuantity = useMemo(() => {
     if (!draft) return null
-    return computeMarkupQuantity({ type: draft.tool, points: previewPoints }, imageSize, feetPerImagePx)
-  }, [draft, previewPoints, imageSize, feetPerImagePx])
+    return computeMarkupQuantity(draftGeometry, imageSize, feetPerImagePx)
+  }, [draft, draftGeometry, imageSize, feetPerImagePx])
 
   const draftLabel = useMemo(() => {
     if (!draft) return null
-    return measurementLabel({ type: draft.tool, points: previewPoints }, imageSize, feetPerImagePx)
-  }, [draft, previewPoints, imageSize, feetPerImagePx])
+    return measurementLabel(draftGeometry, imageSize, feetPerImagePx)
+  }, [draft, draftGeometry, imageSize, feetPerImagePx])
 
   const remainingPoints = draft ? Math.max(0, MIN_POINTS[draft.tool] - draft.points.length) : 0
 
@@ -286,5 +333,6 @@ export function useMeasureTools({
     finish,
     cancel,
     undoPoint,
+    setDraftPoints,
   }
 }

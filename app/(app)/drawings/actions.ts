@@ -114,7 +114,12 @@ import type {
 import { createPhotoFromDrawingInputSchema } from "@/lib/validation/drawings"
 import { createFileRecord, buildInternalFileUrl } from "@/lib/services/files"
 import { triggerDrawingsPipeline } from "@/lib/services/drawings-pipeline-trigger"
-import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
+import {
+  requireAnyPermission,
+  requirePermission,
+  requireProjectPermission,
+} from "@/lib/services/permissions"
+import type { TileRepairResult } from "@/lib/services/drawings-pipeline"
 import { getPlatformAiFeatureDefaultConfig } from "@/lib/services/ai-config"
 import { createRfi } from "@/lib/services/rfis"
 import { createProjectTaskAction } from "@/app/(app)/projects/[id]/actions"
@@ -142,6 +147,80 @@ type TargetDrawingSheet = {
 // ============================================================================
 // PROCESSING PRIORITY
 // ============================================================================
+
+/**
+ * The sheet DTO the register hands the viewer carries no version id, and the
+ * client should not be trusted to name one anyway. Everything that acts on
+ * "the version currently on screen" resolves it here, org-scoped.
+ */
+async function resolveCurrentSheetVersionId(
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"],
+  orgId: string,
+  sheetId: string,
+): Promise<{ versionId: string; projectId: string }> {
+  const { data: sheet } = await supabase
+    .from("drawing_sheets")
+    .select("id, project_id, current_revision_id")
+    .eq("org_id", orgId)
+    .eq("id", sheetId)
+    .maybeSingle()
+  if (!sheet) throw new Error("Sheet not found")
+
+  let versionQuery = supabase
+    .from("drawing_sheet_versions")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("drawing_sheet_id", sheetId)
+  if (sheet.current_revision_id) {
+    versionQuery = versionQuery.eq("drawing_revision_id", sheet.current_revision_id)
+  }
+  const { data: version } = await versionQuery
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (!version) throw new Error("This sheet has no current version")
+
+  return { versionId: version.id, projectId: sheet.project_id as string }
+}
+
+/**
+ * Detail bubbles and sheet references on this sheet that resolve to another
+ * sheet on the same project. Only navigable links come back.
+ */
+export async function getSheetCalloutLinksAction(sheetId: string) {
+  return run(async () => {
+    const { supabase, orgId, userId } = await requireOrgContext()
+    const { versionId, projectId } = await resolveCurrentSheetVersionId(
+      supabase,
+      orgId,
+      sheetId,
+    )
+    await requireProjectPermission(userId, projectId, "drawing.read")
+
+    const { getSheetCalloutLinks } = await import("@/lib/services/drawings-pipeline")
+    return getSheetCalloutLinks({ orgId, projectId, sheetVersionId: versionId })
+  })
+}
+
+/**
+ * The viewer reports a sheet whose tiles will not load. Repair is rate-limited
+ * and idempotent in the service, so a stuck sheet heals itself on the next
+ * visit instead of becoming a support ticket.
+ */
+export async function reportBrokenSheetTilesAction(
+  sheetId: string,
+): Promise<ActionResult<TileRepairResult>> {
+  return run(async () => {
+    const { supabase, orgId, userId } = await requireOrgContext()
+    await requirePermission("drawing.read", { supabase, orgId, userId })
+
+    const { versionId } = await resolveCurrentSheetVersionId(supabase, orgId, sheetId)
+    const { requestSheetTileRepair } = await import(
+      "@/lib/services/drawings-pipeline"
+    )
+    return requestSheetTileRepair({ orgId, sheetVersionId: versionId })
+  })
+}
 
 /**
  * A user just opened a sheet whose tiles aren't rendered yet — move its page
@@ -1596,11 +1675,43 @@ export async function createTaskFromDrawingAction(projectId: string, input: unkn
   })
 }
 
+/**
+ * Freeze the region of a sheet an item is about.
+ *
+ * The pin keeps pointing at live drawings — which is the right default, since
+ * the sheet gets revised — but it can no longer show what the question looked
+ * like when it was asked. The snapshot does, and the two together are strictly
+ * better than either alone.
+ */
+export async function captureDrawingRegionSnapshotAction(input: {
+  sheetId: string
+  region: { x: number; y: number; w: number; h: number }
+}): Promise<ActionResult<{ fileId: string; width: number; height: number }>> {
+  return run(async () => {
+    const { supabase, orgId, userId } = await requireOrgContext()
+    await requirePermission("drawing.read", { supabase, orgId, userId })
+
+    const { versionId } = await resolveCurrentSheetVersionId(
+      supabase,
+      orgId,
+      input.sheetId,
+    )
+    const { captureSheetRegionSnapshot } = await import(
+      "@/lib/services/drawing-snapshots"
+    )
+    return captureSheetRegionSnapshot({
+      sheetVersionId: versionId,
+      region: input.region,
+    })
+  })
+}
+
 export async function createRfiFromDrawingAction(input: {
   projectId: string
   subject: string
   question: string
   priority?: "low" | "normal" | "high" | "urgent"
+  attachmentFileId?: string | null
 }) {
   return run(async () => {
       return createRfi({
@@ -1611,7 +1722,7 @@ export async function createRfiFromDrawingAction(input: {
           status: "open",
           priority: input.priority ?? "normal",
           due_date: null,
-          attachment_file_id: null,
+          attachment_file_id: input.attachmentFileId ?? null,
         },
       })
   })
@@ -1623,6 +1734,7 @@ export async function createPunchItemFromDrawingAction(input: {
   description?: string
   location?: string
   severity?: string
+  attachmentFileId?: string | null
 }) {
   return run(async () => {
       const { supabase, orgId, userId } = await requireOrgContext()
@@ -1645,6 +1757,19 @@ export async function createPunchItemFromDrawingAction(input: {
 
       if (error || !data) {
         throw new Error(`Failed to create punch item: ${error?.message}`)
+      }
+
+      // Punch items have no first-class attachment column, so the drawing
+      // snapshot rides the normal file_links path like any other attachment.
+      if (input.attachmentFileId) {
+        await supabase.from("file_links").insert({
+          org_id: orgId,
+          file_id: input.attachmentFileId,
+          project_id: input.projectId,
+          entity_type: "punch_item",
+          entity_id: data.id,
+          link_role: "drawing_snapshot",
+        })
       }
 
       await recordEvent({

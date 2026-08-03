@@ -72,6 +72,8 @@ export interface BidScopeItem {
   unit?: string | null
   budget_cents?: number | null
   cost_code_id?: string | null
+  /** Provenance jsonb — today `takeoff`, stamped by a condition sync. */
+  metadata?: Record<string, any> | null
   created_at: string
   updated_at?: string | null
 }
@@ -347,6 +349,7 @@ function mapBidScopeItem(row: any): BidScopeItem {
     unit: row.unit ?? null,
     budget_cents: row.budget_cents != null ? Number(row.budget_cents) : null,
     cost_code_id: row.cost_code_id ?? null,
+    metadata: row.metadata ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at ?? null,
   }
@@ -954,9 +957,9 @@ export async function listBidPackages(projectId: string, orgId?: string): Promis
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
 
-  const project = await ensureProjectInOrg(projectId, resolvedOrgId, supabase)
+  await ensureProjectInOrg(projectId, resolvedOrgId, supabase)
 
-  let query = supabase
+  const { data, error } = await supabase
     .from("bid_packages")
     .select(`
       ${BID_PACKAGE_COLUMNS},
@@ -964,14 +967,8 @@ export async function listBidPackages(projectId: string, orgId?: string): Promis
       bid_invites!bid_invites_org_package_fk(count)
     `)
     .eq("org_id", resolvedOrgId)
-
-  if (project.prospect_id) {
-    query = query.or(`project_id.eq.${projectId},and(project_id.is.null,prospect_id.eq.${project.prospect_id})`)
-  } else {
-    query = query.eq("project_id", projectId)
-  }
-
-  const { data, error } = await query.order("created_at", { ascending: false })
+    .eq("project_id", projectId)
+    .order("created_at", { ascending: false })
 
   if (error) {
     throw new Error(`Failed to list bid packages: ${error.message}`)
@@ -1174,32 +1171,6 @@ export async function listProspectBidQuotes(prospectId: string, orgId?: string):
     .sort((a, b) => a.package_title.localeCompare(b.package_title) || a.total_cents - b.total_cents)
 }
 
-export async function listProspectBidPackages(prospectId: string, orgId?: string): Promise<BidPackage[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
-  await ensureProspectInOrg(prospectId, resolvedOrgId, supabase)
-
-  const { data, error } = await supabase
-    .from("bid_packages")
-    .select(`
-      ${BID_PACKAGE_COLUMNS},
-      cost_code:cost_codes(code, name),
-      bid_invites!bid_invites_org_package_fk(count)
-    `)
-    .eq("org_id", resolvedOrgId)
-    .eq("prospect_id", prospectId)
-    // Converted packages carry a project_id and live on the project's bids
-    // tab — one home per package, never both lists.
-    .is("project_id", null)
-    .order("created_at", { ascending: false })
-
-  if (error) {
-    throw new Error(`Failed to list bid packages: ${error.message}`)
-  }
-
-  return decorateBidPackageSummaries(supabase, resolvedOrgId, (data ?? []).map(mapBidPackage))
-}
-
 export async function getBidPackage(bidPackageId: string, orgId?: string): Promise<BidPackage> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAnyPermission(["org.member", "org.read"], { supabase, orgId: resolvedOrgId, userId })
@@ -1346,7 +1317,7 @@ export async function listBidScopeItems(bidPackageId: string, orgId?: string): P
 
   const { data, error } = await supabase
     .from("bid_scope_items")
-    .select("id, org_id, bid_package_id, position, item_type, description, details, quantity, unit, budget_cents, cost_code_id, created_at, updated_at")
+    .select("id, org_id, bid_package_id, position, item_type, description, details, quantity, unit, budget_cents, cost_code_id, metadata, created_at, updated_at")
     .eq("org_id", resolvedOrgId)
     .eq("bid_package_id", bidPackageId)
     .order("position", { ascending: true })
@@ -1478,6 +1449,30 @@ export async function createBidPackage({
   if (parsed.cost_code_id) {
     await ensureCostCodeInOrg(parsed.cost_code_id, resolvedOrgId, supabase)
   }
+  // Precon packages are created on the prospect's precon-phase project; the
+  // prospect link is kept in both directions so the estimate builder's
+  // "Use bid" picker (which queries by prospect) keeps seeing them.
+  let resolvedProjectId = parsed.project_id ?? null
+  let resolvedProspectId = parsed.prospect_id ?? null
+  if (!resolvedProjectId && resolvedProspectId) {
+    const { data: preconProject } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("org_id", resolvedOrgId)
+      .eq("prospect_id", resolvedProspectId)
+      .eq("phase", "precon")
+      .maybeSingle()
+    resolvedProjectId = preconProject?.id ?? null
+  } else if (resolvedProjectId && !resolvedProspectId) {
+    const { data: project } = await supabase
+      .from("projects")
+      .select("prospect_id")
+      .eq("org_id", resolvedOrgId)
+      .eq("id", resolvedProjectId)
+      .maybeSingle()
+    resolvedProspectId = (project?.prospect_id as string | null) ?? null
+  }
+
   let resolvedCostCodeId = parsed.cost_code_id ?? null
   if (parsed.budget_line_id) {
     if (!parsed.project_id) {
@@ -1494,8 +1489,8 @@ export async function createBidPackage({
     .from("bid_packages")
     .insert({
       org_id: resolvedOrgId,
-      project_id: parsed.project_id ?? null,
-      prospect_id: parsed.prospect_id ?? null,
+      project_id: resolvedProjectId,
+      prospect_id: resolvedProspectId,
       community_id: parsed.community_id ?? null,
       house_plan_id: parsed.house_plan_id ?? null,
       award_target: parsed.project_id || parsed.prospect_id ? "commitment" : "price_agreement",
@@ -3230,6 +3225,23 @@ export async function awardBidSubmission({
     }
 
     awardProjectId = linkedProject.id as string
+  }
+
+  // Awards create commitments — real money that must not land on an invisible
+  // pricing workspace. Leveling and collecting bids is precon work; cutting
+  // the subcontract waits for the job to be won.
+  if (awardProjectId) {
+    const { data: awardProject } = await supabase
+      .from("projects")
+      .select("phase")
+      .eq("org_id", resolvedOrgId)
+      .eq("id", awardProjectId)
+      .maybeSingle()
+    if (awardProject?.phase === "precon") {
+      throw new Error(
+        "This job is still in pricing. Convert the prospect to activate the project, then award the bid to cut the subcontract.",
+      )
+    }
   }
 
   let mappedBudgetLineId = (bidPackage.budget_line_id as string | null) ?? null

@@ -9,6 +9,11 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
 import { requireRecentPaymentStepUp } from "@/lib/services/payment-step-up"
+import {
+  getPaymentApprovalRouting,
+  listPaymentApproverCandidates,
+  type PaymentRunApprover,
+} from "@/lib/services/payment-approvers"
 import { claimVendorCompany, getVendorPaymentPortalContext } from "@/lib/services/vendor-payment-identities"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import {
@@ -44,6 +49,12 @@ async function listRecipientRelationships(recipientAccountId: string) {
 
 export interface PaymentRailSettings {
   policy: {
+    /**
+     * Whether the org has ever saved payment settings. Distinct from `enabled`:
+     * saving once is what opens the payout section in this builder's vendor
+     * portals (see `isVendorPayoutSetupOpen`), long before money can move.
+     */
+    configured: boolean
     enabled: boolean
     approvalMode: "sole" | "dual"
     coolingHours: number
@@ -73,26 +84,44 @@ export interface PaymentRailSettings {
     last4: string | null
     canDecide: boolean
   }>
+  /** How many of this builder's vendors can actually receive an ACH payment. */
+  vendors: {
+    ready: number
+    inProgress: number
+  }
+  /** Designated approvers, plus who could be designated (managers only). */
+  approvals: {
+    approvers: PaymentRunApprover[]
+    candidates: Array<{ userId: string; name: string; email: string | null }>
+  }
   canManage: boolean
+  canApprove: boolean
 }
 
 export async function getPaymentRailSettings(orgId?: string): Promise<PaymentRailSettings> {
   const context = await requireOrgContext(orgId)
   await requirePermission("payment.release", context)
   const supabase = createServiceSupabaseClient()
-  const [{ data: policy }, { data: fundingSources }, { data: changes }, canManage, canApprove] = await Promise.all([
+  const [{ data: policy }, { data: fundingSources }, { data: changes }, { count: vendorsReady }, { count: vendorsInProgress }, canManage, canApprove] = await Promise.all([
     supabase.from("payment_rail_policies").select("enabled,approval_mode,control_change_cooling_hours,per_payment_limit_cents,per_run_limit_cents,daily_limit_cents,waiver_jurisdiction").eq("org_id", context.orgId).maybeSingle(),
     supabase.from("org_funding_sources").select("id,provider,bank_name,last4,verification_status,status,is_default,usable_after").eq("org_id", context.orgId).order("created_at", { ascending: false }).limit(20),
     supabase.from("payment_control_change_requests").select("id,funding_source_id,requested_by_user_id,status,required_approvals,apply_after,proposed_masked_details").eq("org_id", context.orgId).eq("kind", "org_funding_source").in("status", ["pending_approval", "cooling_off"]).order("created_at", { ascending: false }).limit(20),
+    supabase.from("vendor_payment_relationships").select("id", { count: "exact", head: true }).eq("org_id", context.orgId).eq("status", "active"),
+    supabase.from("vendor_payment_relationships").select("id", { count: "exact", head: true }).eq("org_id", context.orgId).in("status", ["invited", "claim_pending", "onboarding"]),
     hasPermission("payments.manage_rail", context),
     hasPermission("payments.approve_run", context),
   ])
   const changeIds = (changes ?? []).map((change) => change.id)
-  const { data: approvals } = changeIds.length > 0
-    ? await supabase.from("payment_control_change_approvals").select("change_request_id,decision").in("change_request_id", changeIds)
-    : { data: [] }
+  const [{ data: approvals }, routing, candidates] = await Promise.all([
+    changeIds.length > 0
+      ? supabase.from("payment_control_change_approvals").select("change_request_id,decision").in("change_request_id", changeIds)
+      : Promise.resolve({ data: [] }),
+    getPaymentApprovalRouting(context.orgId),
+    canManage ? listPaymentApproverCandidates(context.orgId) : Promise.resolve([]),
+  ])
   return {
     policy: {
+      configured: Boolean(policy),
       enabled: Boolean(policy?.enabled),
       approvalMode: policy?.approval_mode === "sole" ? "sole" : "dual",
       coolingHours: Number(policy?.control_change_cooling_hours ?? 72),
@@ -124,7 +153,16 @@ export async function getPaymentRailSettings(orgId?: string): Promise<PaymentRai
         canDecide: canApprove && row.requested_by_user_id !== context.userId,
       }
     }),
+    vendors: {
+      ready: vendorsReady ?? 0,
+      inProgress: vendorsInProgress ?? 0,
+    },
+    approvals: {
+      approvers: routing.approvers,
+      candidates,
+    },
     canManage,
+    canApprove,
   }
 }
 
@@ -178,10 +216,63 @@ export async function isVendorPayoutSetupOpen(orgId: string) {
 }
 
 /**
+ * Adopt an already-verified payout account into a freshly claimed relationship.
+ *
+ * The payout account belongs to the vendor entity, not to any builder, so a
+ * vendor who verified with one builder is already payable by the next one. That
+ * makes joining a second builder a mapping, not an onboarding — there is no new
+ * bank, nothing for the provider to verify, and nothing to send the vendor back
+ * through Stripe for.
+ *
+ * Returns false when the entity has no usable recipient yet, which leaves the
+ * caller to run the normal provider flow.
+ */
+async function adoptVerifiedRecipient(input: { vendorEntityId: string; relationshipId: string }) {
+  const supabase = createServiceSupabaseClient()
+  const { data: recipient } = await supabase
+    .from("payment_recipient_accounts")
+    .select("id")
+    .eq("vendor_entity_id", input.vendorEntityId)
+    .eq("status", "ready")
+    .eq("payouts_enabled", true)
+    .limit(1)
+    .maybeSingle()
+  if (!recipient) return false
+  const { data: relationship, error } = await supabase
+    .from("vendor_payment_relationships")
+    .update({ recipient_account_id: recipient.id, status: "active" })
+    .eq("id", input.relationshipId)
+    .select("id,org_id")
+    .single()
+  if (error || !relationship) throw new Error(`Unable to link the verified payout account: ${error?.message}`)
+  await Promise.all([
+    recordEvent({
+      orgId: relationship.org_id,
+      eventType: "vendor_recipient_status_updated",
+      entityType: "payment_recipient_account",
+      entityId: recipient.id,
+      payload: { status: "ready", payouts_enabled: true, reused_existing_account: true },
+    }),
+    recordAudit({
+      orgId: relationship.org_id,
+      action: "update",
+      entityType: "vendor_payment_relationship",
+      entityId: relationship.id,
+      after: { status: "active", recipient_account_id: recipient.id },
+      source: "vendor_portal",
+    }),
+  ])
+  return true
+}
+
+/**
  * The single vendor-facing payout action. Mapping the builder's vendor record
  * onto a global vendor entity carries no authorization the portal session has
  * not already established, so it is not a step the vendor confirms separately —
  * it is resolved here and handed straight to provider verification.
+ *
+ * A `null` url means there was nothing left to verify: the vendor's existing
+ * account was adopted and this builder can pay them immediately.
  */
 export async function startVendorPayoutSetup(input: StartVendorPayoutSetupInput) {
   const parsed = startVendorPayoutSetupSchema.parse(input)
@@ -191,6 +282,9 @@ export async function startVendorPayoutSetup(input: StartVendorPayoutSetupInput)
     legal_name: parsed.legal_name,
     dba_name: parsed.dba_name,
   })
+  if (await adoptVerifiedRecipient({ vendorEntityId: claim.vendorEntityId, relationshipId: claim.relationshipId })) {
+    return { url: null, vendorEntityId: claim.vendorEntityId, status: "ready" }
+  }
   const onboarding = await createVendorRecipientOnboarding({
     vendor_entity_id: claim.vendorEntityId,
     return_path: parsed.return_path,
@@ -203,7 +297,10 @@ async function createVendorRecipientOnboarding(parsed: { vendor_entity_id: strin
   if (!portal.identity || portal.identity.status !== "active") throw new Error("An active vendor identity is required")
   const entity = portal.entities.find((candidate) => candidate.id === parsed.vendor_entity_id)
   if (!entity || !["owner", "administrator"].includes(entity.role)) throw new Error("Vendor administrator access is required")
-  if (entity.recipient?.status === "ready") {
+  // A usable account never reaches this function — `adoptVerifiedRecipient`
+  // takes that path first. Re-entering the provider flow with one can therefore
+  // only mean a payout-bank change, which stays gated on the reviewer model.
+  if (entity.recipient?.status === "ready" && entity.recipient.payoutsEnabled) {
     throw new Error("Payout-bank changes are temporarily disabled until the independent reviewer model is approved")
   }
 
@@ -232,12 +329,19 @@ async function createVendorRecipientOnboarding(parsed: { vendor_entity_id: strin
     }).select("id,provider,provider_account_id,status,payouts_enabled").single()
     if (error || !data) throw new Error(`Unable to save recipient account: ${error?.message}`)
     recipient = { id: data.id, provider: data.provider, status: data.status, payoutsEnabled: data.payouts_enabled, bankName: null, bankLast4: null }
-    await Promise.all(affectedOrgIds.map((affectedOrgId) => supabase.from("vendor_payment_relationships")
-      .update({ recipient_account_id: data.id, status: "onboarding" })
-      .eq("org_id", affectedOrgId)
-      .eq("vendor_entity_id", entity.id)
-      .in("status", ["invited", "claim_pending", "onboarding"])))
   }
+
+  // Every relationship for this entity points at its one recipient account,
+  // including builders claimed after that account already existed. Linking only
+  // on first creation used to strand those later relationships with a null
+  // recipient, which no provider webhook could heal — `syncVendorRecipient`
+  // finds relationships *by* recipient_account_id.
+  const linkedRecipientId = recipient.id
+  await Promise.all(affectedOrgIds.map((affectedOrgId) => supabase.from("vendor_payment_relationships")
+    .update({ recipient_account_id: linkedRecipientId, status: "onboarding" })
+    .eq("org_id", affectedOrgId)
+    .eq("vendor_entity_id", entity.id)
+    .in("status", ["invited", "claim_pending", "onboarding"])))
 
   const { data: recipientRow } = await supabase.from("payment_recipient_accounts").select("provider_account_id").eq("id", recipient.id).maybeSingle()
   if (!recipientRow) throw new Error("Recipient provider account was not found")
@@ -354,7 +458,7 @@ export async function decidePaymentControlChange(input: { changeRequestId: strin
   }).parse(input)
   const context = await requireOrgContext(orgId)
   await requirePermission("payments.approve_run", context)
-  const stepUpVerifiedAt = await requireRecentPaymentStepUp(context.supabase)
+  const stepUpVerifiedAt = await requireRecentPaymentStepUp()
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase.rpc("decide_payment_control_change_atomic", {
     p_org_id: context.orgId,

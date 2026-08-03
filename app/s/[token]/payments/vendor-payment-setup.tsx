@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -22,11 +23,20 @@ export function VendorPaymentSetup({ token, context }: { token: string; context:
   const recipient = linkedEntity?.recipient ?? null
   const isReady = recipient?.status === "ready" && recipient.payoutsEnabled
   const otherBuilders = context.relationships.filter((candidate) => candidate.orgId !== builder.orgId)
+  /**
+   * A payout account this vendor already verified with another builder. It
+   * belongs to their legal entity, not to any builder, so connecting it here is
+   * a confirmation rather than a second round of Stripe onboarding.
+   */
+  const verifiedEntity =
+    context.entities.find((candidate) => candidate.recipient?.status === "ready" && candidate.recipient.payoutsEnabled) ?? null
 
+  const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [selectedEntity, setSelectedEntity] = useState(context.entities[0]?.id ?? NEW_ENTITY)
   const [editingName, setEditingName] = useState(false)
+  const [choosingEntity, setChoosingEntity] = useState(false)
   const [legalName, setLegalName] = useState(builder.companyName)
   const [dbaName, setDbaName] = useState("")
 
@@ -47,7 +57,13 @@ export function VendorPaymentSetup({ token, context }: { token: string; context:
         setError(result.error)
         return
       }
-      window.location.assign(result.data.url)
+      // No url means the existing account was adopted — there is nothing left
+      // to verify, so stay here and show the connected state.
+      if (result.data.url) {
+        window.location.assign(result.data.url)
+        return
+      }
+      router.refresh()
     })
   }
 
@@ -72,6 +88,29 @@ export function VendorPaymentSetup({ token, context }: { token: string; context:
               To change your payout bank, contact Arc support. Bank changes require independent review before they take
               effect.
             </p>
+          </>
+        ) : verifiedEntity && !choosingEntity ? (
+          <>
+            <h2 className="text-base font-semibold">You&rsquo;re already verified</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {verifiedEntity.legalName} is verified with Arc, and deposits go to{" "}
+              {verifiedEntity.recipient?.bankName ?? "your verified bank"}
+              {verifiedEntity.recipient?.bankLast4 ? ` •••• ${verifiedEntity.recipient.bankLast4}` : ""}. Confirm this is
+              the company {builder.orgName} knows as &ldquo;{builder.companyName}&rdquo; and they can pay you
+              electronically right away — there is nothing to verify again.
+            </p>
+            <div className="mt-5 flex flex-wrap items-center gap-4">
+              <Button onClick={() => start(verifiedEntity.id)} disabled={pending}>
+                {pending ? "Connecting…" : `Connect to ${builder.orgName}`}
+              </Button>
+              <button
+                type="button"
+                onClick={() => setChoosingEntity(true)}
+                className="text-sm underline underline-offset-4 hover:text-muted-foreground"
+              >
+                That&rsquo;s a different company
+              </button>
+            </div>
           </>
         ) : linkedEntity ? (
           <>

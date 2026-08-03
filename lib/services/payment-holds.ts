@@ -3,7 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { recordAudit } from "@/lib/services/audit"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { getCompanyComplianceStatusWithClient } from "@/lib/services/compliance-documents"
-import { getComplianceRules } from "@/lib/services/compliance"
+import { getComplianceRules, getComplianceRulesWithClient } from "@/lib/services/compliance"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
@@ -12,40 +12,22 @@ import { ensurePortalLink } from "@/lib/services/portal-links"
 import { getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
 import { listMissingSubtierWaiversForBill } from "@/lib/services/lien-waivers"
 import {
+  evaluatePaymentHoldFacts,
+  parsePaymentHoldPolicy,
+  type PaymentHoldEvaluation,
+} from "@/lib/payments/payment-hold-policy"
+import {
   paymentHoldOverrideSchema,
   type PaymentHoldKind,
-  type PaymentHoldLevel,
   type PaymentHoldOverrideInput,
 } from "@/lib/validation/payment-holds"
 
-export interface PaymentHold {
-  kind: PaymentHoldKind
-  level: PaymentHoldLevel
-  message: string
-  cureHref: string | null
-  overridden: boolean
-  overrideReason: string | null
-}
-
-export interface PaymentHoldFacts {
-  projectId: string
-  companyId: string | null
-  complianceCurrent: boolean
-  insuranceCurrent: boolean
-  waiverSigned: boolean
-  retainageRulesMet: boolean
-  fundingRequired: boolean
-  fundingReceived: boolean
-  overrides: Partial<Record<PaymentHoldKind, string>>
-  policy: Partial<Record<PaymentHoldKind, PaymentHoldLevel>>
-}
-
-export interface PaymentHoldEvaluation {
-  holds: PaymentHold[]
-  releasable: boolean
-  warningCount: number
-  blockingCount: number
-}
+export {
+  evaluatePaymentHoldFacts,
+  type PaymentHold,
+  type PaymentHoldEvaluation,
+  type PaymentHoldFacts,
+} from "@/lib/payments/payment-hold-policy"
 
 export interface PaymentReleaseEvidence {
   billId: string
@@ -56,55 +38,6 @@ export interface PaymentReleaseEvidence {
   missingSubtierWaiverCount: number
   complianceRequired: boolean
   capturedAt: string
-}
-
-const DEFAULT_POLICY: Record<PaymentHoldKind, PaymentHoldLevel> = {
-  insurance_current: "block",
-  waiver_signed: "block",
-  compliance_docs_approved: "block",
-  retainage_rules_met: "warn",
-  funding_received: "warn",
-}
-
-const HOLD_MESSAGES: Record<PaymentHoldKind, string> = {
-  insurance_current: "Vendor insurance is missing, expired, or awaiting approval",
-  waiver_signed: "A signed lien waiver is required before payment",
-  compliance_docs_approved: "Required compliance documents are incomplete",
-  retainage_rules_met: "Retainage release conditions have not been met",
-  funding_received: "The linked owner invoice has not been paid",
-}
-
-export function evaluatePaymentHoldFacts(facts: PaymentHoldFacts): PaymentHoldEvaluation {
-  const active: Array<{ kind: PaymentHoldKind; failed: boolean; cureHref: string | null }> = [
-    { kind: "insurance_current", failed: !facts.insuranceCurrent, cureHref: facts.companyId ? `/companies/${facts.companyId}?tab=compliance` : null },
-    { kind: "waiver_signed", failed: !facts.waiverSigned, cureHref: `/projects/${facts.projectId}/financials/payables` },
-    { kind: "compliance_docs_approved", failed: !facts.complianceCurrent, cureHref: facts.companyId ? `/companies/${facts.companyId}?tab=compliance` : null },
-    { kind: "retainage_rules_met", failed: !facts.retainageRulesMet, cureHref: `/projects/${facts.projectId}/financials/payables` },
-    { kind: "funding_received", failed: facts.fundingRequired && !facts.fundingReceived, cureHref: `/projects/${facts.projectId}/financials/receivables` },
-  ]
-  const holds = active.filter((item) => item.failed).map((item) => {
-    const overrideReason = facts.overrides[item.kind] ?? null
-    return {
-      kind: item.kind,
-      level: facts.policy[item.kind] ?? DEFAULT_POLICY[item.kind],
-      message: HOLD_MESSAGES[item.kind],
-      cureHref: item.cureHref,
-      overridden: overrideReason !== null,
-      overrideReason,
-    }
-  })
-  const blockingCount = holds.filter((hold) => hold.level === "block" && !hold.overridden).length
-  return { holds, releasable: blockingCount === 0, warningCount: holds.filter((hold) => hold.level === "warn" && !hold.overridden).length, blockingCount }
-}
-
-function parsePolicy(value: unknown): Partial<Record<PaymentHoldKind, PaymentHoldLevel>> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return DEFAULT_POLICY
-  const result: Partial<Record<PaymentHoldKind, PaymentHoldLevel>> = {}
-  for (const kind of Object.keys(DEFAULT_POLICY) as PaymentHoldKind[]) {
-    const level = (value as Record<string, unknown>)[kind]
-    if (level === "block" || level === "warn") result[kind] = level
-  }
-  return { ...DEFAULT_POLICY, ...result }
 }
 
 async function resolveBillCompany(supabase: SupabaseClient, orgId: string, companyId: string | null, commitmentId: string | null) {
@@ -122,7 +55,7 @@ export async function evaluateHolds(billId: string, orgId?: string): Promise<Pay
   if (error || !bill) throw new Error("Vendor bill not found")
   await requireAuthorization({ permission: "payment.release", userId, orgId: resolvedOrgId, projectId: bill.project_id, supabase, resourceType: "vendor_bill", resourceId: billId })
   const companyId = await resolveBillCompany(supabase, resolvedOrgId, bill.company_id, bill.commitment_id)
-  const [{ data: projectPolicy }, { data: orgPolicy }, { data: overrideRows }, compliance, funding] = await Promise.all([
+  const [{ data: projectPolicy }, { data: orgPolicy }, { data: overrideRows }, compliance, funding, rules, { data: projectControls }] = await Promise.all([
     supabase.from("payment_hold_policies").select("conditions,waiver_auto_chase").eq("org_id", resolvedOrgId).eq("project_id", bill.project_id).maybeSingle(),
     supabase.from("payment_hold_policies").select("conditions,waiver_auto_chase").eq("org_id", resolvedOrgId).is("project_id", null).maybeSingle(),
     supabase.from("payment_hold_overrides").select("hold_kind,reason").eq("org_id", resolvedOrgId).eq("bill_id", billId).is("revoked_at", null),
@@ -130,6 +63,8 @@ export async function evaluateHolds(billId: string, orgId?: string): Promise<Pay
     bill.funding_invoice_id
       ? supabase.from("invoices").select("status").eq("org_id", resolvedOrgId).eq("id", bill.funding_invoice_id).maybeSingle()
       : Promise.resolve({ data: null }),
+    getComplianceRulesWithClient(supabase, resolvedOrgId),
+    supabase.from("projects").select("require_subtier_waivers").eq("org_id", resolvedOrgId).eq("id", bill.project_id).maybeSingle(),
   ])
   const overrides = Object.fromEntries((overrideRows ?? []).map((row) => [row.hold_kind, row.reason])) as Partial<Record<PaymentHoldKind, string>>
   const insuranceDocuments = compliance?.documents.filter((document) => /insurance|certificate|coi/i.test(document.document_type?.name ?? "")) ?? []
@@ -141,12 +76,17 @@ export async function evaluateHolds(billId: string, orgId?: string): Promise<Pay
     companyId,
     complianceCurrent: compliance?.is_compliant ?? true,
     insuranceCurrent,
+    // A waiver is only a hold when org policy or the project's sub-tier rule
+    // actually asks for one. `assertBillReleasable` gates its hard waiver checks
+    // on these same two flags — the hold must agree or it blocks payment for a
+    // document nothing requires.
+    waiverRequired: Boolean(rules.require_lien_waiver) || Boolean(projectControls?.require_subtier_waivers),
     waiverSigned: bill.lien_waiver_status === "received" || bill.lien_waiver_status === "signed",
     retainageRulesMet: Number(bill.retainage_cents ?? 0) <= Number(bill.total_cents ?? 0),
     fundingRequired: Boolean(bill.funding_invoice_id),
     fundingReceived: !bill.funding_invoice_id || ["paid", "partial"].includes(funding.data?.status ?? ""),
     overrides,
-    policy: parsePolicy(projectPolicy?.conditions ?? orgPolicy?.conditions),
+    policy: parsePaymentHoldPolicy(projectPolicy?.conditions ?? orgPolicy?.conditions),
   })
   const waiverAutoChase = projectPolicy?.waiver_auto_chase ?? orgPolicy?.waiver_auto_chase ?? true
   if (waiverAutoChase && evaluation.holds.some((hold) => hold.kind === "waiver_signed" && !hold.overridden)) {

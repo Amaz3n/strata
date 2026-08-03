@@ -40,7 +40,10 @@ import {
   listTilesObjects,
 } from "@/lib/storage/drawings-tiles-storage"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { enqueuePageTextBackfill } from "@/lib/services/drawings-pipeline"
+import {
+  enqueueDrawingChangeDetection,
+  enqueuePageTextBackfill,
+} from "@/lib/services/drawings-pipeline"
 import { recomputeMarkupQuantitiesForVersion } from "@/lib/services/drawing-measurements"
 
 // ============================================================================
@@ -1030,6 +1033,23 @@ export async function deleteDrawingRevision(
 // ============================================================================
 
 /**
+ * Sheet reads are project-scoped whenever a project is named. Org-level
+ * drawing.read on its own would expose every project's register to anyone
+ * holding it, while search over the very same rows (searchSheetContent) is
+ * already project-gated — the two must agree.
+ */
+async function requireSheetReadAccess(
+  projectId: string | undefined,
+  context: Awaited<ReturnType<typeof requireOrgContext>>
+) {
+  if (projectId) {
+    await requireProjectPermission(context.userId, projectId, "drawing.read")
+    return
+  }
+  await requirePermission("drawing.read", context)
+}
+
+/**
  * List sheets with filters
  */
 export async function listDrawingSheets(
@@ -1037,8 +1057,9 @@ export async function listDrawingSheets(
   orgId?: string
 ): Promise<DrawingSheet[]> {
   const parsed = drawingSheetListFiltersSchema.parse(filters)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
+  const context = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId } = context
+  await requireSheetReadAccess(parsed.project_id, context)
 
   let query = supabase
     .from("drawing_sheets")
@@ -1097,6 +1118,64 @@ export async function listDrawingSheets(
 }
 
 /**
+ * Count sheets matching the same filters as listDrawingSheets.
+ *
+ * The register renders a capped page of sheets. Without a true total it cannot
+ * tell the user it truncated, so a 900-sheet commercial set simply stopped at
+ * the cap and looked complete.
+ */
+export async function countDrawingSheets(
+  filters: Partial<DrawingSheetListFilters> = {},
+  orgId?: string
+): Promise<number> {
+  const parsed = drawingSheetListFiltersSchema.parse(filters)
+  const context = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId } = context
+  await requireSheetReadAccess(parsed.project_id, context)
+
+  let query = supabase
+    .from("drawing_sheets")
+    .select("id", { count: "exact", head: true })
+    .eq("org_id", resolvedOrgId)
+
+  if (parsed.project_id) {
+    query = query.eq("project_id", parsed.project_id)
+  }
+
+  if (parsed.drawing_set_id) {
+    query = query.eq("drawing_set_id", parsed.drawing_set_id)
+  }
+
+  if (parsed.discipline) {
+    query = query.eq("discipline", parsed.discipline)
+  }
+
+  if (parsed.share_with_clients !== undefined) {
+    query = query.eq("share_with_clients", parsed.share_with_clients)
+  }
+
+  if (parsed.share_with_subs !== undefined) {
+    query = query.eq("share_with_subs", parsed.share_with_subs)
+  }
+
+  if (parsed.search) {
+    const sanitized = sanitizeIlikeSearch(parsed.search)
+    if (sanitized) {
+      const searchPattern = `%${sanitized}%`
+      query = query.or(`sheet_number.ilike.${searchPattern},sheet_title.ilike.${searchPattern}`)
+    }
+  }
+
+  const { count, error } = await query
+
+  if (error) {
+    throw new Error(`Failed to count drawing sheets: ${error.message}`)
+  }
+
+  return count ?? 0
+}
+
+/**
  * List sheets with signed URLs for display
  * Includes optimized image URLs when available (Phase 1 performance)
  */
@@ -1104,8 +1183,13 @@ export async function listDrawingSheetsWithUrls(
   filters: Partial<DrawingSheetListFilters> = {},
   orgId?: string
 ): Promise<DrawingSheet[]> {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requirePermission("drawing.read", { supabase, orgId: resolvedOrgId, userId })
+  const parsedFilters = drawingSheetListFiltersSchema.parse(filters)
+  const context = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId } = context
+  // listDrawingSheetsOptimized reads through a service client that bypasses
+  // RLS, so this check is the only thing standing between a caller and every
+  // sheet in the org. Keep it above both branches.
+  await requireSheetReadAccess(parsedFilters.project_id, context)
 
   // Foundation v2: prefer the denormalized list view (single query, counts included).
   if (process.env.NEXT_PUBLIC_FEATURE_TILED_VIEWER === "true") {
@@ -2494,6 +2578,14 @@ export async function publishRevision(input: PublishRevisionInput, orgId?: strin
       `Revision published, but measurement carry-forward could not be queued: ${reanchorEnqueueError.message}`,
     )
   }
+
+  // Per-sheet visual change detection. Unlike the carry-forward above this is
+  // pure signal, so the helper dedupes per revision and never throws — a
+  // publish must not fail because we could not queue a diff.
+  await enqueueDrawingChangeDetection({
+    orgId: resolvedOrgId,
+    revisionId: input.revisionId,
+  })
 
   await recordEvent({
     orgId: resolvedOrgId,

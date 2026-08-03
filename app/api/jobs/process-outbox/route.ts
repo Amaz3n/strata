@@ -543,7 +543,12 @@ async function processOutboxQueue(request: NextRequest) {
         const emailId = typeof job.payload?.email_id === "string" ? job.payload.email_id : null
         const projectId = typeof job.payload?.project_id === "string" ? job.payload.project_id : null
         if (!emailId || !projectId) throw new Error("Project-email ingest job is missing email_id or project_id")
-        await processInboundProjectEmail({ orgId: job.org_id, projectId, emailId })
+        await processInboundProjectEmail({
+          orgId: job.org_id,
+          projectId,
+          emailId,
+          receivedAt: typeof job.payload?.received_at === "string" ? job.payload.received_at : null,
+        })
       } else if (job.job_type === "classify_project_email") {
         const projectEmailId = typeof job.payload?.project_email_id === "string" ? job.payload.project_email_id : null
         if (!projectEmailId) throw new Error("Project-email classification job is missing project_email_id")
@@ -1754,6 +1759,12 @@ function buildNotificationHref(payload: any): string | null {
   // prospect pipeline (or the standalone estimates list) so the CTA still works.
   if (entityType === "estimate") {
     return typeof payload?.prospect_id === "string" ? "/pipeline" : "/estimates"
+  }
+
+  // A payment approval is decided on the payable itself, not on the run: the
+  // approver needs the bill, its documents, and its holds in front of them.
+  if (entityType === "payment_run") {
+    return typeof payload?.bill_id === "string" ? `/payables?bill=${payload.bill_id}` : "/payables/payment-runs"
   }
 
   if (!projectId) return null

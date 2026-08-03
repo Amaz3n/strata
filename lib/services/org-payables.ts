@@ -1,5 +1,7 @@
-import { payableOutstandingCents } from "@/lib/financials/payables-rules"
+import { getCompaniesComplianceStatus } from "@/lib/services/compliance-documents"
+import { getComplianceRules } from "@/lib/services/compliance"
 import { requireOrgContext } from "@/lib/services/context"
+import { listCostCodes } from "@/lib/services/cost-codes"
 import { orgBillsInboundAddress } from "@/lib/services/payables-email-ingest"
 import { requireAnyPermission } from "@/lib/services/permissions"
 import {
@@ -7,225 +9,235 @@ import {
   applyReportingExclusion,
   getReportingExcludedProjectIds,
 } from "@/lib/services/reporting-scope"
+import {
+  hydrateVendorBills,
+  vendorBillSelect,
+  type VendorBillSummary,
+} from "@/lib/services/vendor-bills"
+import {
+  listCompanyPaymentReadiness,
+  type CompanyPaymentReadinessStatus,
+} from "@/lib/services/vendor-payment-invitations"
+import type {
+  ComplianceRules,
+  ComplianceStatusSummary,
+  CostCode,
+} from "@/lib/types"
 
-const DAY_MS = 86_400_000
-const FETCH_LIMIT = 500
+/**
+ * Open payables carry the work — they are the desk. Settled ones are history, kept
+ * to a recent window so the Paid tab is useful without dragging years of rows along.
+ */
+const OPEN_FETCH_LIMIT = 500
+const SETTLED_FETCH_LIMIT = 150
 
 /** Statuses that are no longer real obligations and never appear on the desk. */
-const CLOSED_STATUSES = new Set(["void", "voided", "cancelled", "canceled"])
+const CLOSED_STATUSES = ["void", "voided", "cancelled", "canceled"]
 
-export interface PayableQueueRow {
-  id: string
-  projectId: string
-  projectName: string
-  billNumber: string
-  vendorName: string
+/** Payment-run item statuses that mean the bill is spoken for by the rail. */
+const ACTIVE_RUN_ITEM_STATUSES = [
+  "draft",
+  "pending_approval",
+  "approved",
+  "processing",
+  "partially_paid",
+]
+
+export interface PayableRunMembership {
+  runId: string
+  /** The run item's status — draft through partially_paid means in flight. */
   status: string
-  dueDate: string | null
-  /** Days from today until due; negative when overdue, null when undated. */
-  daysToDue: number | null
-  outstandingCents: number
-  partiallyPaid: boolean
-  href: string
-}
-
-export interface VendorRollup {
-  vendorName: string
-  openCount: number
-  outstandingCents: number
-  nextDueDate: string | null
-  hasOverdue: boolean
-}
-
-export interface HorizonBucket {
-  cents: number
-  count: number
+  /** The parent run's own status, which is what the viewer can act on. */
+  runStatus: string
+  /** True when the viewer prepared this run, and so can never approve it. */
+  preparedByViewer: boolean
+  totalDebitCents: number
 }
 
 export interface OrgPayablesDeskData {
-  stats: {
-    outstandingCents: number
-    overdueCents: number
-    overdueCount: number
-    dueThisWeekCents: number
-    dueThisWeekCount: number
-    openCount: number
-    vendorCount: number
-    /** Retainage held on open bills — payable later, excluded from outstanding. */
-    retainedCents: number
-    /** Portion of outstanding still awaiting approval (not yet a committed outflow). */
-    pendingApprovalCents: number
-    pendingApprovalCount: number
-  }
-  /** The Cash Horizon: forward windows of outflow. Sums to outstandingCents. */
-  horizon: {
-    overdue: HorizonBucket
-    thisWeek: HorizonBucket
-    soon: HorizonBucket
-    later: HorizonBucket
-  }
-  /** Open payables, most urgent first. */
-  queue: PayableQueueRow[]
-  /** Vendors ranked by what they're owed. */
-  vendors: VendorRollup[]
-  /** True when more open bills exist than were fetched. */
+  /** Every payable on the desk: open first (by due date), then recently settled. */
+  bills: VendorBillSummary[]
+  costCodes: CostCode[]
+  complianceRules: ComplianceRules
+  complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>
+  /** Bill id → the scanned invoice to open from the row, when one exists. */
+  documentFileIdByBillId: Record<string, string>
+  /** Company id → whether this builder can pay them electronically yet. */
+  paymentReadinessByCompanyId: Record<string, CompanyPaymentReadinessStatus>
+  /** Bill id → the active payment run that already claims it, when one does. */
+  runMembershipByBillId: Record<string, PayableRunMembership>
+  /** True when more open payables exist than were fetched. */
   truncated: boolean
   /** Forwarding address for emailed vendor invoices, when the org has a slug. */
   inboundBillsEmail: string | null
 }
 
-function one<T>(value: T | T[] | null | undefined): T | null {
-  if (Array.isArray(value)) return value[0] ?? null
-  return value ?? null
+const DEFAULT_COMPLIANCE_RULES: ComplianceRules = {
+  require_lien_waiver: false,
+  block_payment_on_missing_docs: true,
+  warn_subcontract_execution_on_missing_docs: true,
+  block_subcontract_execution_on_missing_docs: false,
 }
 
-function vendorNameFor(row: any) {
-  const metadata = row.metadata ?? {}
-  const company = one(row.company)
-  return String(company?.name ?? row.qbo_vendor_name ?? metadata.vendor_name ?? "Vendor")
-}
-
-function todayMidnight() {
-  const now = new Date()
-  now.setHours(0, 0, 0, 0)
-  return now
-}
-
-function daysToDueFor(dueDate: string | null, today: Date): number | null {
-  if (!dueDate) return null
-  const due = new Date(`${dueDate}T00:00:00`)
-  return Math.round((due.getTime() - today.getTime()) / DAY_MS)
-}
-
-export async function loadOrgPayablesDesk(projectIds: string[] | null = null): Promise<OrgPayablesDeskData> {
+/**
+ * The org-wide payables desk: every vendor bill anyone owes, in one list, with the
+ * coding context the payables workspace needs to act on any of them without a
+ * second round trip.
+ */
+export async function loadOrgPayablesDesk(
+  projectIds: string[] | null = null,
+): Promise<OrgPayablesDeskData> {
   const { supabase, orgId, userId } = await requireOrgContext()
-  await requireAnyPermission(["bill.read", "payment.read"], { supabase, orgId, userId })
+  await requireAnyPermission(["bill.read", "payment.read"], {
+    supabase,
+    orgId,
+    userId,
+  })
 
-  const { data: org } = await supabase.from("orgs").select("slug").eq("id", orgId).maybeSingle()
-
-  const excludedProjectIds = projectIds === null ? [] : await getReportingExcludedProjectIds(supabase, orgId)
-  let billsQuery = supabase
-    .from("vendor_bills")
-    .select(`
-      id, project_id, bill_number, status, bill_date, due_date, total_cents, paid_cents, retainage_cents, qbo_vendor_name, metadata, created_at,
-      project:projects(id, name),
-      company:companies!vendor_bills_company_id_fkey(id, name)
-    `)
-    .eq("org_id", orgId)
-    .order("due_date", { ascending: true, nullsFirst: false })
-    .order("created_at", { ascending: false })
-    .limit(FETCH_LIMIT)
-  billsQuery = applyProjectIdScope(applyReportingExclusion(billsQuery, excludedProjectIds), projectIds)
-  const { data, error } = await billsQuery
-
-  if (error) throw new Error(`Failed to load payables: ${error.message}`)
-
-  const today = todayMidnight()
-
-  const empty = (): HorizonBucket => ({ cents: 0, count: 0 })
-  const horizon = { overdue: empty(), thisWeek: empty(), soon: empty(), later: empty() }
-  const vendorMap = new Map<string, VendorRollup>()
-  const queue: PayableQueueRow[] = []
-
-  let outstandingCents = 0
-  let retainedCents = 0
-  let pendingApprovalCents = 0
-  let pendingApprovalCount = 0
-
-  for (const row of data ?? []) {
-    const status = String(row.status ?? "pending")
-    if (CLOSED_STATUSES.has(status)) continue
-    // Vendor credits reduce cost; they are not an obligation on the desk.
-    if ((row.metadata as Record<string, any> | null)?.source === "vendor_credit") continue
-
-    const totalCents = Number(row.total_cents ?? 0)
-    const paidCents = Number(row.paid_cents ?? 0)
-    const heldRetainage = Math.max(0, Number(row.retainage_cents ?? 0))
-    // Same math the workbench shows: total minus held retainage minus paid.
-    const outstanding = payableOutstandingCents({
-      total_cents: totalCents,
-      paid_cents: paidCents,
-      retainage_cents: heldRetainage,
-    })
-    if (outstanding <= 0 && heldRetainage <= 0) continue
-    if (totalCents - paidCents > 0) retainedCents += heldRetainage
-    if (outstanding <= 0) continue
-    if (status === "pending") {
-      pendingApprovalCents += outstanding
-      pendingApprovalCount += 1
-    }
-
-    const project = one(row.project)
-    const dueDate = (row.due_date as string | null) ?? null
-    const daysToDue = daysToDueFor(dueDate, today)
-    const vendorName = vendorNameFor(row)
-
-    outstandingCents += outstanding
-
-    // Place the outflow on the horizon.
-    const bucket =
-      dueDate == null || (daysToDue != null && daysToDue > 30)
-        ? horizon.later
-        : daysToDue != null && daysToDue < 0
-          ? horizon.overdue
-          : daysToDue != null && daysToDue <= 7
-            ? horizon.thisWeek
-            : horizon.soon
-    bucket.cents += outstanding
-    bucket.count += 1
-
-    // Vendor rollup.
-    const vendor = vendorMap.get(vendorName)
-    const isOverdue = daysToDue != null && daysToDue < 0
-    if (vendor) {
-      vendor.openCount += 1
-      vendor.outstandingCents += outstanding
-      vendor.hasOverdue = vendor.hasOverdue || isOverdue
-      if (dueDate && (!vendor.nextDueDate || dueDate < vendor.nextDueDate)) vendor.nextDueDate = dueDate
-    } else {
-      vendorMap.set(vendorName, {
-        vendorName,
-        openCount: 1,
-        outstandingCents: outstanding,
-        nextDueDate: dueDate,
-        hasOverdue: isOverdue,
-      })
-    }
-
-    queue.push({
-      id: row.id,
-      projectId: row.project_id,
-      projectName: String(project?.name ?? "Project"),
-      billNumber: String(row.bill_number ?? "Unnumbered"),
-      vendorName,
-      status,
-      dueDate,
-      daysToDue,
-      outstandingCents: outstanding,
-      partiallyPaid: paidCents > 0,
-      href: `/projects/${row.project_id}/financials/payables?bill=${row.id}`,
-    })
+  const excludedProjectIds =
+    projectIds === null
+      ? []
+      : await getReportingExcludedProjectIds(supabase, orgId)
+  const scoped = () => {
+    const query = supabase
+      .from("vendor_bills")
+      .select(vendorBillSelect)
+      .eq("org_id", orgId)
+    return applyProjectIdScope(
+      applyReportingExclusion(query, excludedProjectIds),
+      projectIds,
+    )
   }
 
-  const vendors = Array.from(vendorMap.values()).sort((a, b) => b.outstandingCents - a.outstandingCents)
+  const [org, openResult, settledResult] = await Promise.all([
+    supabase.from("orgs").select("slug").eq("id", orgId).maybeSingle(),
+    scoped()
+      .not("status", "in", `(${[...CLOSED_STATUSES, "paid"].join(",")})`)
+      .order("due_date", { ascending: true, nullsFirst: false })
+      .order("created_at", { ascending: false })
+      .limit(OPEN_FETCH_LIMIT),
+    scoped()
+      .eq("status", "paid")
+      .order("paid_at", { ascending: false, nullsFirst: false })
+      .order("created_at", { ascending: false })
+      .limit(SETTLED_FETCH_LIMIT),
+  ])
+
+  if (openResult.error)
+    throw new Error(`Failed to load payables: ${openResult.error.message}`)
+  if (settledResult.error)
+    throw new Error(
+      `Failed to load paid payables: ${settledResult.error.message}`,
+    )
+
+  const rows = [...(openResult.data ?? []), ...(settledResult.data ?? [])]
+  const bills = await hydrateVendorBills(supabase, orgId, rows)
+  const companyIds = bills
+    .map((bill) => bill.company_id)
+    .filter(Boolean) as string[]
+
+  // The desk stays readable when a supporting lookup fails — the payables themselves
+  // are the page, everything else only decorates or codes them.
+  const [
+    costCodesResult,
+    complianceRulesResult,
+    complianceStatusResult,
+    readinessResult,
+    attachmentsResult,
+    runItemsResult,
+  ] = await Promise.allSettled([
+    listCostCodes(orgId),
+    getComplianceRules(orgId),
+    getCompaniesComplianceStatus(companyIds, orgId),
+    listCompanyPaymentReadiness(companyIds, orgId),
+    supabase
+      .from("file_links")
+      .select("entity_id, file_id")
+      .eq("org_id", orgId)
+      .eq("entity_type", "vendor_bill")
+      .in(
+        "entity_id",
+        bills.map((bill) => bill.id),
+      ),
+    supabase
+      .from("payment_run_items")
+      .select("bill_id, run_id, status")
+      .eq("org_id", orgId)
+      .in("status", ACTIVE_RUN_ITEM_STATUSES)
+      .in(
+        "bill_id",
+        bills.map((bill) => bill.id),
+      ),
+  ])
+
+  // A payable's scanned invoice is either attached to it or stamped on the row
+  // itself, depending on how it arrived (email ingest, upload, accounting import).
+  const documentFileIdByBillId: Record<string, string> = {}
+  for (const bill of bills) {
+    if (bill.file_id) documentFileIdByBillId[bill.id] = bill.file_id
+  }
+  if (attachmentsResult.status === "fulfilled") {
+    for (const link of attachmentsResult.value.data ?? []) {
+      if (link.file_id) documentFileIdByBillId[link.entity_id] = link.file_id
+    }
+  }
+
+  const paymentReadinessByCompanyId: Record<
+    string,
+    CompanyPaymentReadinessStatus
+  > = {}
+  if (readinessResult.status === "fulfilled") {
+    for (const [companyId, readiness] of readinessResult.value) {
+      paymentReadinessByCompanyId[companyId] = readiness.status
+    }
+  }
+
+  const runMembershipByBillId: Record<string, PayableRunMembership> = {}
+  if (runItemsResult.status === "fulfilled") {
+    const items = runItemsResult.value.data ?? []
+    const runIds = [
+      ...new Set(items.map((item) => item.run_id).filter(Boolean)),
+    ]
+    const { data: runRows } =
+      runIds.length > 0
+        ? await supabase
+            .from("payment_runs")
+            .select("id,status,requested_by,total_debit_cents")
+            .eq("org_id", orgId)
+            .in("id", runIds)
+        : { data: [] }
+    const runById = new Map((runRows ?? []).map((run) => [run.id, run]))
+    for (const item of items) {
+      if (!item.bill_id || !item.run_id) continue
+      const run = runById.get(item.run_id)
+      runMembershipByBillId[item.bill_id] = {
+        runId: item.run_id,
+        status: item.status,
+        runStatus: run?.status ?? item.status,
+        preparedByViewer: run?.requested_by === userId,
+        totalDebitCents: Number(run?.total_debit_cents ?? 0),
+      }
+    }
+  }
 
   return {
-    stats: {
-      outstandingCents,
-      overdueCents: horizon.overdue.cents,
-      overdueCount: horizon.overdue.count,
-      dueThisWeekCents: horizon.thisWeek.cents,
-      dueThisWeekCount: horizon.thisWeek.count,
-      openCount: queue.length,
-      vendorCount: vendors.length,
-      retainedCents,
-      pendingApprovalCents,
-      pendingApprovalCount,
-    },
-    horizon,
-    queue,
-    vendors,
-    truncated: (data?.length ?? 0) >= FETCH_LIMIT,
-    inboundBillsEmail: org?.slug ? orgBillsInboundAddress(org.slug as string) : null,
+    bills,
+    costCodes:
+      costCodesResult.status === "fulfilled" ? costCodesResult.value : [],
+    complianceRules:
+      complianceRulesResult.status === "fulfilled"
+        ? complianceRulesResult.value
+        : DEFAULT_COMPLIANCE_RULES,
+    complianceStatusByCompanyId:
+      complianceStatusResult.status === "fulfilled"
+        ? complianceStatusResult.value
+        : {},
+    documentFileIdByBillId,
+    paymentReadinessByCompanyId,
+    runMembershipByBillId,
+    truncated: (openResult.data?.length ?? 0) >= OPEN_FETCH_LIMIT,
+    inboundBillsEmail: org.data?.slug
+      ? orgBillsInboundAddress(org.data.slug as string)
+      : null,
   }
 }

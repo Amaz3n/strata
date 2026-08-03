@@ -17,6 +17,10 @@ const {
   calculatePaymentFeeQuote,
   quoteApDisbursementFee,
 } = require("../lib/payments/fee-engine")
+const {
+  DEFAULT_PAYMENT_HOLD_POLICY,
+  evaluatePaymentHoldFacts,
+} = require("../lib/payments/payment-hold-policy")
 
 test("disbursement state transitions are monotonic with explicit return paths", () => {
   assert.doesNotThrow(() => assertDisbursementTransition("created", "submitted"))
@@ -191,6 +195,37 @@ test("portal tokens resolve by hash, never by a plaintext column that no longer 
   assert.doesNotMatch(identityService, /\.eq\("token",/)
 })
 
+test("a vendor verified with one builder is adopted by the next, not re-onboarded", () => {
+  const railSetup = fs.readFileSync(path.resolve(__dirname, "../lib/services/payment-rail-setup.ts"), "utf8")
+  const actions = fs.readFileSync(path.resolve(__dirname, "../app/s/[token]/payments/actions.ts"), "utf8")
+  const setupUi = fs.readFileSync(path.resolve(__dirname, "../app/s/[token]/payments/vendor-payment-setup.tsx"), "utf8")
+
+  // The payout account belongs to the vendor entity, so joining a second builder
+  // is a mapping. Adoption must be attempted before the provider flow, or the
+  // bank-change guard below rejects the vendor for a change they never made.
+  assert.match(railSetup, /async function adoptVerifiedRecipient/)
+  assert.match(
+    railSetup,
+    /startVendorPayoutSetup[\s\S]{0,600}?await adoptVerifiedRecipient\([\s\S]{0,400}?await createVendorRecipientOnboarding\(/,
+  )
+  assert.match(railSetup, /\.update\(\{ recipient_account_id: recipient\.id, status: "active" \}\)/)
+
+  // The gate is a *bank change* gate. An account that exists but cannot yet pay
+  // out has to be able to finish onboarding.
+  assert.match(railSetup, /entity\.recipient\?\.status === "ready" && entity\.recipient\.payoutsEnabled/)
+
+  // Every relationship for an entity points at its one recipient account.
+  // Linking only when the account was just created stranded later builders with
+  // a null recipient that no webhook could heal — syncVendorRecipient finds
+  // relationships *by* recipient_account_id.
+  assert.match(railSetup, /const linkedRecipientId = recipient\.id/)
+  assert.doesNotMatch(railSetup, /if \(!recipient\) \{[\s\S]*?recipient_account_id: data\.id/)
+
+  // Adoption returns no provider url; the portal must not navigate to it.
+  assert.match(actions, /url: string \| null/)
+  assert.match(setupUi, /if \(result\.data\.url\)/)
+})
+
 test("payout setup is one vendor action and carries no second credential prompt", () => {
   const railSetup = fs.readFileSync(path.resolve(__dirname, "../lib/services/payment-rail-setup.ts"), "utf8")
   const identityService = fs.readFileSync(path.resolve(__dirname, "../lib/services/vendor-payment-identities.ts"), "utf8")
@@ -232,4 +267,149 @@ test("a vendor connecting a payout account reaches the builder as a real notific
   const events = fs.readFileSync(path.resolve(__dirname, "../lib/services/events.ts"), "utf8")
   assert.match(types, /key: "vendor_payment_relationship_claimed"/)
   assert.match(events, /paymentSecurityEvents = new Set\(\[[\s\S]*?"vendor_payment_relationship_claimed"/)
+})
+
+test("a bill only holds on a lien waiver when policy actually requires one", () => {
+  const baseFacts = {
+    projectId: "11111111-1111-1111-1111-111111111111",
+    companyId: "22222222-2222-2222-2222-222222222222",
+    complianceCurrent: true,
+    insuranceCurrent: true,
+    waiverSigned: false,
+    retainageRulesMet: true,
+    fundingRequired: false,
+    fundingReceived: true,
+    overrides: {},
+    policy: DEFAULT_PAYMENT_HOLD_POLICY,
+  }
+
+  // require_lien_waiver off and no sub-tier rule: nothing to sign, nothing to hold.
+  const notRequired = evaluatePaymentHoldFacts({ ...baseFacts, waiverRequired: false })
+  assert.equal(notRequired.holds.some((hold) => hold.kind === "waiver_signed"), false)
+  assert.equal(notRequired.releasable, true)
+
+  // Turn the requirement on and the same unsigned bill blocks.
+  const required = evaluatePaymentHoldFacts({ ...baseFacts, waiverRequired: true })
+  const waiverHold = required.holds.find((hold) => hold.kind === "waiver_signed")
+  assert.ok(waiverHold)
+  assert.equal(waiverHold.level, "block")
+  assert.equal(required.releasable, false)
+
+  // Signing it clears the hold.
+  assert.equal(
+    evaluatePaymentHoldFacts({ ...baseFacts, waiverRequired: true, waiverSigned: true }).releasable,
+    true,
+  )
+})
+
+test("the waiver hold and the hard release gate read the same two flags", () => {
+  const holds = fs.readFileSync(path.resolve(__dirname, "../lib/services/payment-holds.ts"), "utf8")
+  // evaluateHolds must source waiverRequired from compliance rules + the project
+  // sub-tier flag, the same inputs assertBillReleasable gates its throws on.
+  assert.match(holds, /waiverRequired: Boolean\(rules\.require_lien_waiver\) \|\| Boolean\(projectControls\?\.require_subtier_waivers\)/)
+  assert.match(holds, /getComplianceRulesWithClient\(supabase, resolvedOrgId\)/)
+  // Auto-chase hangs off the hold, so an unrequired waiver must not email vendors.
+  assert.match(holds, /waiverAutoChase && evaluation\.holds\.some\(\(hold\) => hold\.kind === "waiver_signed"/)
+})
+
+test("payment step-up reads the caller's session, never a passed-in client", () => {
+  const stepUp = fs.readFileSync(path.resolve(__dirname, "../lib/services/payment-step-up.ts"), "utf8")
+  const runs = fs.readFileSync(path.resolve(__dirname, "../lib/services/payment-runs.ts"), "utf8")
+  const railSetup = fs.readFileSync(path.resolve(__dirname, "../lib/services/payment-rail-setup.ts"), "utf8")
+  // requireOrgMembership swaps in a service-role client for platform admins, and
+  // that client carries no session — so AAL must come from the cookie-bound
+  // client this function resolves itself, not from a caller-supplied one.
+  assert.match(stepUp, /export async function requireRecentPaymentStepUp\(\)/)
+  assert.match(stepUp, /await createServerSupabaseClient\(\)/)
+  assert.doesNotMatch(stepUp, /requireRecentPaymentStepUp\(supabase/)
+  assert.doesNotMatch(runs, /requireRecentPaymentStepUp\(context\.supabase\)/)
+  assert.doesNotMatch(railSetup, /requireRecentPaymentStepUp\(context\.supabase\)/)
+})
+
+test("a destination charge sends the vendor split without an application fee", () => {
+  const adapter = fs.readFileSync(path.resolve(__dirname, "../lib/integrations/payments/stripe-ap.ts"), "utf8")
+  const submit = adapter.slice(adapter.indexOf("async submitDisbursement"), adapter.indexOf("async retrieveSettlement"))
+  // Stripe 400s when both are present. The old code set application_fee_amount
+  // only when fees were non-zero, so execution worked ONLY on zero-fee runs.
+  assert.match(submit, /transfer_data:\s*\{[\s\S]*?amount: input\.recipientAmountCents/)
+  assert.doesNotMatch(submit, /application_fee_amount\s*:/)
+  // The debit still has to cover the vendor plus both fees, or the platform
+  // silently eats the difference.
+  assert.match(submit, /amount: input\.debitAmountCents/)
+})
+
+test("a designated approver roster narrows who can decide a run, and never widens it", () => {
+  const runs = fs.readFileSync(path.resolve(__dirname, "../lib/services/payment-runs.ts"), "utf8")
+  const approvers = fs.readFileSync(path.resolve(__dirname, "../lib/services/payment-approvers.ts"), "utf8")
+  const decide = runs.slice(runs.indexOf("export async function decidePaymentRun"), runs.indexOf("async function assertRunRiskAllowed"))
+
+  // The roster is a second gate AFTER the permission, never a replacement for it.
+  assert.match(decide, /requirePermission\("payments\.approve_run", context\)/)
+  assert.match(decide, /assertUserMayApproveRun\(\{ userId: context\.userId, orgId: context\.orgId, totalDebitCents/)
+
+  // An empty roster falls back to permission-only; a configured one is exclusive.
+  const assertMay = approvers.slice(approvers.indexOf("export async function assertUserMayApproveRun"))
+  assert.match(assertMay, /if \(rows\.length === 0\) return/)
+  assert.match(assertMay, /not a designated payment-run approver/)
+  assert.match(assertMay, /exceeds your approval limit/)
+
+  // Designating someone who cannot approve would create a roster that blocks every run.
+  const setRoster = approvers.slice(approvers.indexOf("export async function setPaymentRunApprovers"))
+  assert.match(setRoster, /payments\.manage_rail/)
+  assert.match(setRoster, /needs a role that grants payment-run approval/)
+})
+
+test("the approver roster migration is org-scoped, RLS-protected, and separates read from write", () => {
+  const migration = fs.readFileSync(path.resolve(__dirname, "../supabase/migrations/20260803193117_payment_run_approver_roster.sql"), "utf8")
+  assert.match(migration, /create table public\.payment_run_approvers/)
+  assert.match(migration, /org_id uuid not null references public\.orgs\(id\) on delete cascade/)
+  assert.match(migration, /unique \(org_id, user_id\)/)
+  assert.match(migration, /alter table public\.payment_run_approvers enable row level security;/)
+  // Seeing who approves is part of the workflow; changing it is a control change.
+  assert.match(migration, /payment_run_approvers_read[\s\S]*?has_org_permission\(org_id, 'payment\.release'\)/)
+  assert.match(migration, /payment_run_approvers_write[\s\S]*?has_org_permission\(org_id, 'payments\.manage_rail'\)/)
+})
+
+test("preparing a payable for approval resolves the destination server-side and never releases money", () => {
+  const service = fs.readFileSync(path.resolve(__dirname, "../lib/services/payable-approvals.ts"), "utf8")
+  const prepare = service.slice(service.indexOf("export async function preparePayableApproval"), service.indexOf("export interface PayableApprovalDetail"))
+
+  // A client may name the amount and the funding account it comes from; it may
+  // never name the bank account the money lands in.
+  assert.match(prepare, /from\("vendor_payment_relationships"\)[\s\S]*?recipient_account_id/)
+  assert.match(prepare, /recipient_account_id: relationship\.recipient_account_id/)
+  assert.doesNotMatch(prepare, /input\.recipient_account_id|parsed\.recipient_account_id/)
+
+  // Preparing drafts a run; submission and approval stay separate acts.
+  assert.match(prepare, /createPaymentRun\(/)
+  assert.doesNotMatch(prepare, /submitPaymentRun\(|executePaymentRun\(/)
+
+  // Overpaying a bill is caught before a run exists.
+  assert.match(prepare, /amount_cents > outstandingCents/)
+})
+
+test("a fully approved payable releases immediately, and says so honestly when it cannot", () => {
+  const service = fs.readFileSync(path.resolve(__dirname, "../lib/services/payable-approvals.ts"), "utf8")
+  const decide = service.slice(service.indexOf("export async function decidePayableApproval"))
+
+  // Release only follows a decision that actually reached quorum.
+  assert.match(decide, /if \(status !== "approved"\)/)
+  assert.match(decide, /executePaymentRun\(parsed\.run_id/)
+  // The execution gates throw; that must surface as "not released", never as success.
+  assert.match(decide, /approved_release_pending/)
+  assert.doesNotMatch(decide, /catch[\s\S]{0,120}return \{ result: "released" \}/)
+})
+
+test("approval notifications reach the designated approvers and name the bill", () => {
+  const events = fs.readFileSync(path.resolve(__dirname, "../lib/services/events.ts"), "utf8")
+  const outbox = fs.readFileSync(path.resolve(__dirname, "../app/api/jobs/process-outbox/route.ts"), "utf8")
+
+  // A configured roster owns the decision, so it owns the email.
+  assert.match(events, /from\("payment_run_approvers"\)[\s\S]{0,400}?if \(\(designated \?\? \[\]\)\.length > 0\)/)
+  // The email has to state what is being approved without opening anything.
+  assert.match(events, /case "payment_run_submitted":/)
+  assert.match(events, /Payment needs your approval/)
+  assert.match(events, /vendor_name/)
+  // And it links to the payable, where the decision is actually made.
+  assert.match(outbox, /entityType === "payment_run"[\s\S]{0,200}?\/payables\?bill=/)
 })
