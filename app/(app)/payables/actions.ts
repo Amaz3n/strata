@@ -21,8 +21,13 @@ import {
   overridePaymentHold,
 } from "@/lib/services/payment-holds"
 import type { PaymentHoldEvaluation } from "@/lib/services/payment-holds"
+import {
+  extractPayableInvoiceFromFile,
+  type ExtractedPayableInvoice,
+} from "@/lib/services/receipt-extraction"
 import type { PaymentHoldOverrideInput } from "@/lib/validation/payment-holds"
 import type { BudgetLineOption } from "@/lib/types"
+import { deletePayableView, savePayableView, type SavedPayableView } from "@/lib/services/payable-views"
 
 export interface OrgPayableContext {
   projectId: string
@@ -113,5 +118,60 @@ export async function overridePaymentHoldAction(
     return { success: true, data: await overridePaymentHold(input) }
   } catch (error) {
     return actionError(error)
+  }
+}
+
+export async function savePayableViewAction(input: { id?: string; name: string; projectId?: string; filters: unknown; isDefault?: boolean }): Promise<ActionResult<SavedPayableView>> {
+  try {
+    const data = await savePayableView(input)
+    revalidatePath("/payables")
+    return { success: true, data }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
+export async function deletePayableViewAction(id: string): Promise<ActionResult<{ deleted: true }>> {
+  try {
+    await deletePayableView(id)
+    revalidatePath("/payables")
+    return { success: true, data: { deleted: true } }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
+export type PayableInvoiceExtractionResult =
+  | { ok: true; data: ExtractedPayableInvoice }
+  | { ok: false; error: string }
+
+/**
+ * Read a vendor invoice with vision so the form arrives filled in.
+ *
+ * Deliberately org-scoped and not project-scoped: reading an invoice tells you
+ * nothing about which project it belongs to, and on the org desk the project is
+ * the one field the human still has to answer. Extraction never needed the
+ * project, so asking for one only ever prevented scanning before you had picked.
+ *
+ * A failed scan is returned as data, not thrown: the sheet stays open on the
+ * file the user just chose so they can type the fields in themselves.
+ */
+export async function extractPayableInvoiceAction(
+  formData: FormData,
+): Promise<ActionResult<PayableInvoiceExtractionResult>> {
+  try {
+    const { orgId } = await requireOrgContext()
+    const invoice = formData.get("invoice")
+    if (!(invoice instanceof File)) {
+      return { success: true, data: { ok: false, error: "Choose an invoice to scan" } }
+    }
+    const data = await extractPayableInvoiceFromFile(invoice, { orgId })
+    return { success: true, data: { ok: true, data } }
+  } catch (error) {
+    console.warn("[PayableExtraction] Scan failed", error)
+    return {
+      success: true,
+      data: { ok: false, error: error instanceof Error ? error.message : "Could not scan invoice" },
+    }
   }
 }

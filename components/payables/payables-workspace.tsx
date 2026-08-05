@@ -88,12 +88,13 @@ import {
 import {
   ensureProjectVendorCompanyForPayableAction,
   reassignProjectPayableAction,
-  syncProjectVendorBillToQBOAction,
+  syncProjectVendorBillToAccountingAction,
   updateProjectVendorBillStatusAction,
 } from "@/app/(app)/projects/[id]/payables/actions"
 import { qboTxnUrl } from "@/lib/integrations/accounting/qbo/links"
 import type { FileLinkWithFile } from "@/lib/services/file-links"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
+import type { AccountingSyncState } from "@/lib/services/accounting-sync-state"
 import type { PaymentHoldEvaluation } from "@/lib/services/payment-holds"
 import type { PayableRunMembership } from "@/lib/services/org-payables"
 import type { CompanyPaymentReadinessStatus } from "@/lib/services/vendor-payment-invitations"
@@ -156,6 +157,9 @@ interface PayablesWorkspaceProps {
   costCodesEnabled: boolean
   projects: ProjectOption[]
   accountingEnabled: boolean
+  accountingProvider?: string | null
+  accountingProviderName?: string | null
+  accountingSyncByBillId?: Record<string, AccountingSyncState>
   qboExpenseAccounts: QBOAccountOption[]
   qboApAccounts: QBOAccountOption[]
   qboDefaults: { expenseAccountId?: string; apAccountId?: string }
@@ -204,6 +208,9 @@ export function PayablesWorkspace({
   costCodesEnabled,
   projects,
   accountingEnabled,
+  accountingProvider = null,
+  accountingProviderName = "accounting",
+  accountingSyncByBillId = {},
   qboExpenseAccounts,
   qboApAccounts,
   qboDefaults,
@@ -477,7 +484,9 @@ export function PayablesWorkspace({
     optimisticSyncedBillIds.has(selectedBill.id) &&
     selectedBill.qbo_sync_status !== "error"
       ? "synced"
-      : selectedBill.qbo_sync_status
+      : accountingSyncByBillId[selectedBill.id]?.status ?? selectedBill.qbo_sync_status
+  const effectiveSyncError = accountingSyncByBillId[selectedBill.id]?.error ?? selectedBill.qbo_sync_error
+  const effectiveExternalId = accountingSyncByBillId[selectedBill.id]?.externalId ?? selectedBill.qbo_id
 
   const refreshAttachments = async () => {
     const links = await listAttachmentsAction("vendor_bill", selectedBill.id)
@@ -761,7 +770,7 @@ export function PayablesWorkspace({
     })
   }
 
-  const syncToQbo = () => {
+  const syncToAccounting = () => {
     const reason = getPayableSyncBlockReason(selectedBill)
     if (reason) {
       toast.error(reason)
@@ -770,13 +779,13 @@ export function PayablesWorkspace({
     }
     startTransition(async () => {
       unwrapAction(
-        await syncProjectVendorBillToQBOAction(
+        await syncProjectVendorBillToAccountingAction(
           contextProjectId,
           selectedBill.id,
         ),
       )
       setOptimisticSyncedBillIds((prev) => new Set(prev).add(selectedBill.id))
-      toast.success("Synced to QuickBooks")
+      toast.success(`Synced to ${accountingProviderName ?? "accounting"}`)
       onChanged()
     })
   }
@@ -1002,9 +1011,9 @@ export function PayablesWorkspace({
                           disabled={
                             isPending || effectiveSyncStatus === "synced"
                           }
-                          onClick={syncToQbo}
+                          onClick={syncToAccounting}
                         >
-                          Sync to QuickBooks
+                          Sync to {accountingProviderName ?? "accounting"}
                         </DropdownMenuItem>
                       ) : null}
                       {selectedIsReassignablePayable ? (
@@ -1036,7 +1045,7 @@ export function PayablesWorkspace({
                       </div>
                       <p className="text-xs text-muted-foreground">
                         Reduces project cost
-                        {accountingEnabled ? " · managed in QuickBooks" : ""}
+                        {accountingEnabled ? ` · managed in ${accountingProviderName ?? "accounting"}` : ""}
                       </p>
                     </div>
                   ) : (
@@ -1266,11 +1275,10 @@ export function PayablesWorkspace({
                                 <SelectContent>
                                   <SelectItem value="check">Check</SelectItem>
                                   <SelectItem value="ach">ACH</SelectItem>
-                                  <SelectItem value="credit_card">
+                                  <SelectItem value="card">
                                     Credit card
                                   </SelectItem>
-                                  <SelectItem value="cash">Cash</SelectItem>
-                                  <SelectItem value="other">Other</SelectItem>
+                                  <SelectItem value="wire">Wire</SelectItem>
                                 </SelectContent>
                               </Select>
                             </div>
@@ -1312,10 +1320,10 @@ export function PayablesWorkspace({
                               </Popover>
                             </div>
                             <div className="space-y-1.5">
-                              <Label className="microlabel">Reference</Label>
+                              <Label className="microlabel">{paymentMethod === "check" ? "Check # / joint payees" : "Reference"}</Label>
                               <Input
                                 className="h-10"
-                                placeholder="Check # or transaction ID"
+                                placeholder={paymentMethod === "check" ? "Check #; include every joint payee" : "Transaction ID"}
                                 value={paymentRef}
                                 onChange={(event) =>
                                   setPaymentRef(event.target.value)
@@ -1691,22 +1699,22 @@ export function PayablesWorkspace({
                     <section className="space-y-2 border-t pt-4">
                       <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
                         <div className="flex items-center gap-2">
-                          <span className="microlabel">QuickBooks</span>
+                          <span className="microlabel">{accountingProviderName ?? "Accounting"}</span>
                           <AccountingSyncBadge
                             status={effectiveSyncStatus ?? "not_synced"}
-                            error={selectedBill.qbo_sync_error}
-                            externalId={selectedBill.qbo_id}
+                            error={effectiveSyncError}
+                            externalId={effectiveExternalId}
                           />
                         </div>
                         <div className="flex items-center gap-3">
-                          {selectedBill.qbo_id ? (
+                          {effectiveExternalId && accountingProvider === "qbo" ? (
                             <a
-                              href={qboTransactionUrl(selectedBill)!}
+                              href={qboTxnUrl(isVendorCredit(selectedBill) ? "vendorcredit" : "bill", effectiveExternalId) ?? undefined}
                               target="_blank"
                               rel="noreferrer"
                               className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
                             >
-                              Open in QuickBooks{" "}
+                              Open in {accountingProviderName ?? "accounting"}{" "}
                               <ExternalLink className="h-3 w-3" />
                             </a>
                           ) : null}
@@ -1718,17 +1726,16 @@ export function PayablesWorkspace({
                               disabled={
                                 isPending || effectiveSyncStatus === "synced"
                               }
-                              onClick={syncToQbo}
+                              onClick={syncToAccounting}
                             >
                               Sync now
                             </Button>
                           ) : null}
                         </div>
                       </div>
-                      {selectedBill.qbo_sync_status === "error" &&
-                      selectedBill.qbo_sync_error ? (
+                      {effectiveSyncStatus === "error" && effectiveSyncError ? (
                         <p className="text-[11px] font-medium text-destructive">
-                          {selectedBill.qbo_sync_error}
+                          {effectiveSyncError}
                         </p>
                       ) : null}
                     </section>
@@ -1799,7 +1806,7 @@ export function PayablesWorkspace({
               Vendor details
             </SheetTitle>
             <SheetDescription>
-              Update the Arc vendor profile and its QuickBooks vendor link.
+              Update the Arc vendor profile and its accounting vendor link.
             </SheetDescription>
           </SheetHeader>
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
@@ -1904,8 +1911,4 @@ function mapAttachment(link: FileLinkWithFile): AttachedFile {
     created_at: link.created_at,
     link_role: link.link_role,
   }
-}
-
-function qboTransactionUrl(bill: VendorBillSummary) {
-  return qboTxnUrl(isVendorCredit(bill) ? "vendorcredit" : "bill", bill.qbo_id)
 }

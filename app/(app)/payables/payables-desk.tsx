@@ -1,17 +1,20 @@
 "use client"
 
 import Link from "next/link"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import * as React from "react"
 import { toast } from "sonner"
 
-import { getOrgPayableContextAction } from "./actions"
+import { getOrgPayableContextAction, savePayableViewAction } from "./actions"
 import { listProjectsAction } from "@/app/(app)/projects/actions"
 import {
   getPayablesAccountingContextAction,
+  getPayablesAccountingSyncStatesAction,
+  approveVendorBillsAtomicAction,
   updateProjectVendorBillStatusAction,
 } from "@/app/(app)/projects/[id]/payables/actions"
-import { FileText, Receipt, Search, X } from "@/components/icons"
+import { Plus, Receipt, Search, Upload, X } from "@/components/icons"
+import { AddPayableSheet } from "@/components/payables/add-payable-sheet"
 import { PayablesWorkspace } from "@/components/payables/payables-workspace"
 import { useWorkspaceParam } from "@/components/financials/workspace/use-workspace-param"
 import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
@@ -47,9 +50,10 @@ import type {
   PayableRunMembership,
 } from "@/lib/services/org-payables"
 import type { PaymentHoldEvaluation } from "@/lib/services/payment-holds"
-import type { CompanyPaymentReadinessStatus } from "@/lib/services/vendor-payment-invitations"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import type { BudgetLineOption } from "@/lib/types"
+import type { AccountingSyncState } from "@/lib/services/accounting-sync-state"
+import type { SavedPayableView } from "@/lib/services/payable-views"
 import { cn } from "@/lib/utils"
 
 type QBOAccountOption = {
@@ -176,49 +180,26 @@ const METHOD_LABELS: Record<string, string> = {
   other: "Other",
 }
 
-const READINESS_LABELS: Record<CompanyPaymentReadinessStatus, string> = {
-  ready: "ACH",
-  verifying: "ACH pending",
-  invited: "Check",
-  not_started: "Check",
-}
-
 /**
- * How this payable was paid, or — while it is still open — the rail it would go out
- * on. With no payout rail configured there is no second option to report, so the
- * column stays quiet rather than labelling every open bill "Check".
+ * How this payable was actually paid. An open payable has no method yet — Arc
+ * pays by ACH today and will mail checks later, and which rail a bill goes out on
+ * is decided when it is released, not by whether its vendor has onboarded. So the
+ * column reports the recorded fact and stays quiet otherwise.
  */
-function MethodCell({
-  bill,
-  readiness,
-  railOpen,
-}: {
-  bill: VendorBillSummary
-  readiness?: CompanyPaymentReadinessStatus
-  railOpen: boolean
-}) {
+function MethodCell({ bill }: { bill: VendorBillSummary }) {
   const recorded =
     bill.payment_method ??
     bill.payments?.find((payment) => payment.method)?.method
-  if (recorded) {
-    const viaAccounting = bill.payments?.some(
-      (payment) => payment.provider === "qbo",
-    )
-    return (
-      <span
-        className="text-sm text-muted-foreground"
-        title={viaAccounting ? "Recorded in QuickBooks" : undefined}
-      >
-        {METHOD_LABELS[recorded] ?? recorded}
-      </span>
-    )
-  }
-  if (bill.status === "paid" || isVendorCredit(bill) || !railOpen) {
-    return <span className="text-muted-foreground">—</span>
-  }
+  if (!recorded) return <span className="text-muted-foreground">—</span>
+  const viaAccounting = bill.payments?.some(
+    (payment) => payment.provider === "qbo",
+  )
   return (
-    <span className="text-sm text-muted-foreground">
-      {READINESS_LABELS[readiness ?? "not_started"]}
+    <span
+      className="text-sm text-muted-foreground"
+      title={viaAccounting ? "Recorded in QuickBooks" : undefined}
+    >
+      {METHOD_LABELS[recorded] ?? recorded}
     </span>
   )
 }
@@ -298,18 +279,23 @@ const HEAD =
 
 export function PayablesDesk({
   data,
+  savedViews,
   railOpen,
   viewerMayApproveRuns = false,
 }: {
   data: OrgPayablesDeskData
+  savedViews: SavedPayableView[]
   railOpen: boolean
   viewerMayApproveRuns?: boolean
 }) {
   const router = useRouter()
+  const urlSearchParams = useSearchParams()
   const [isPending, startTransition] = React.useTransition()
 
-  const [tab, setTab] = React.useState<TabKey>("due")
-  const [search, setSearch] = React.useState("")
+  const [tab, setTab] = React.useState<TabKey>(data.query.tab)
+  const [search, setSearch] = React.useState(data.query.search)
+  const [savingView, setSavingView] = React.useState(false)
+  const [viewName, setViewName] = React.useState("")
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(
     () => new Set(),
   )
@@ -317,6 +303,9 @@ export function PayablesDesk({
 
   // Org-level accounting context — the same one the project workbench loads.
   const [accountingEnabled, setAccountingEnabled] = React.useState(false)
+  const [accountingProvider, setAccountingProvider] = React.useState<string | null>(null)
+  const [accountingProviderName, setAccountingProviderName] = React.useState<string | null>(null)
+  const [accountingSyncByBillId, setAccountingSyncByBillId] = React.useState<Record<string, AccountingSyncState>>({})
   const [qboExpenseAccounts, setQboExpenseAccounts] = React.useState<
     QBOAccountOption[]
   >([])
@@ -328,6 +317,12 @@ export function PayablesDesk({
     apAccountId?: string
   }>({})
   const [projects, setProjects] = React.useState<ProjectOption[]>([])
+
+  // Adding a bill: opened by the toolbar button, or by dropping a file anywhere
+  // on the page. `droppedFile` is what the sheet scans on open.
+  const [addOpen, setAddOpen] = React.useState(false)
+  const [droppedFile, setDroppedFile] = React.useState<File | null>(null)
+  const [isDraggingFile, setIsDraggingFile] = React.useState(false)
 
   // Per-payable project context, fetched only when a payable is opened.
   const [costCodesEnabled, setCostCodesEnabled] = React.useState(true)
@@ -342,6 +337,8 @@ export function PayablesDesk({
       .then((context) => {
         if (cancelled) return
         setAccountingEnabled(Boolean(context.enabled))
+        setAccountingProvider(context.provider ?? null)
+        setAccountingProviderName(context.providerName ?? null)
         setQboExpenseAccounts(context.expenseAccounts ?? [])
         setQboApAccounts(context.apAccounts ?? [])
         setQboDefaults(context.defaults ?? {})
@@ -353,6 +350,11 @@ export function PayablesDesk({
       cancelled = true
     }
   }, [])
+
+  React.useEffect(() => {
+    if (!accountingEnabled) return
+    void getPayablesAccountingSyncStatesAction(data.bills.map((bill) => bill.id)).then(setAccountingSyncByBillId).catch(() => setAccountingSyncByBillId({}))
+  }, [accountingEnabled, data.bills])
 
   React.useEffect(() => {
     let cancelled = false
@@ -401,25 +403,32 @@ export function PayablesDesk({
     }
   }, [openedProjectId, workspaceBillId])
 
-  const counts = React.useMemo(() => {
-    const totals: Record<TabKey, number> = {
-      due: 0,
-      approval: 0,
-      approved: 0,
-      paid: 0,
-      all: 0,
-    }
-    for (const bill of data.bills)
-      for (const key of tabsFor(bill)) totals[key] += 1
-    return totals
-  }, [data.bills])
+  const counts = data.counts
+  const rows = data.bills
 
-  const rows = React.useMemo(() => {
-    const query = search.trim().toLowerCase()
-    return data.bills.filter(
-      (bill) => tabsFor(bill).includes(tab) && matchesSearch(bill, query),
-    )
-  }, [data.bills, search, tab])
+  const navigateQuery = React.useCallback((updates: Record<string, string | null>) => {
+    const params = new URLSearchParams(urlSearchParams.toString())
+    for (const [key, value] of Object.entries(updates)) value ? params.set(key, value) : params.delete(key)
+    router.replace(`/payables?${params.toString()}`, { scroll: false })
+  }, [router, urlSearchParams])
+
+  React.useEffect(() => {
+    setTab(data.query.tab)
+    setSearch(data.query.search)
+  }, [data.query.search, data.query.tab])
+
+  React.useEffect(() => {
+    if (search === data.query.search) return
+    const timer = window.setTimeout(() => navigateQuery({ q: search.trim() || null, page: null }), 350)
+    return () => window.clearTimeout(timer)
+  }, [data.query.search, navigateQuery, search])
+
+  /**
+   * Method is settled history, so it only earns a column where settled rows live.
+   * On the working tabs nothing has been paid yet and the column would be a full
+   * height of em dashes.
+   */
+  const showMethod = tab === "paid" || tab === "all"
 
   // Selection only ever means the rows you can still see.
   const visibleIds = React.useMemo(
@@ -486,6 +495,63 @@ export function PayablesDesk({
     [data.runMembershipByBillId, viewerMayApproveRuns],
   )
 
+  /**
+   * Page-wide file drop.
+   *
+   * Listeners are on `window`, not a wrapper element, so the whole desk is the
+   * target — a bill arrives as a PDF someone is already dragging, and making them
+   * find a small dropzone first is the part worth deleting.
+   *
+   * `dragleave` fires every time the pointer crosses into a child element, so a
+   * depth counter tracks real entry and exit; a boolean flickers.
+   */
+  React.useEffect(() => {
+    // While the sheet is open it owns file drops — it has its own dropzone, and a
+    // second drop landing here would silently swap the invoice being scanned.
+    if (addOpen) return
+    let depth = 0
+    const carriesFiles = (event: DragEvent) =>
+      Array.from(event.dataTransfer?.types ?? []).includes("Files")
+
+    const onDragEnter = (event: DragEvent) => {
+      if (!carriesFiles(event)) return
+      depth += 1
+      setIsDraggingFile(true)
+    }
+    const onDragOver = (event: DragEvent) => {
+      if (!carriesFiles(event)) return
+      // Without this the browser navigates to the file instead of dropping it.
+      event.preventDefault()
+    }
+    const onDragLeave = (event: DragEvent) => {
+      if (!carriesFiles(event)) return
+      depth = Math.max(0, depth - 1)
+      if (depth === 0) setIsDraggingFile(false)
+    }
+    const onDrop = (event: DragEvent) => {
+      depth = 0
+      setIsDraggingFile(false)
+      if (!carriesFiles(event)) return
+      event.preventDefault()
+      const file = event.dataTransfer?.files?.[0]
+      if (!file) return
+      setDroppedFile(file)
+      setAddOpen(true)
+    }
+
+    window.addEventListener("dragenter", onDragEnter)
+    window.addEventListener("dragover", onDragOver)
+    window.addEventListener("dragleave", onDragLeave)
+    window.addEventListener("drop", onDrop)
+    return () => {
+      window.removeEventListener("dragenter", onDragEnter)
+      window.removeEventListener("dragover", onDragOver)
+      window.removeEventListener("dragleave", onDragLeave)
+      window.removeEventListener("drop", onDrop)
+      setIsDraggingFile(false)
+    }
+  }, [addOpen])
+
   const toggleAll = (checked: boolean) => {
     setSelectedIds(
       checked ? new Set(selectableRows.map((bill) => bill.id)) : new Set(),
@@ -500,35 +566,16 @@ export function PayablesDesk({
     })
   }
 
-  /** Approve is the desk's one write — it calls the workbench's own action per bill. */
+  /** Approve the selection as one all-or-nothing transaction. */
   const approveBills = (bills: VendorBillSummary[]) => {
     if (bills.length === 0) return
     startTransition(async () => {
-      let approved = 0
-      for (const bill of bills) {
-        const result = unwrapAction(
-          await updateProjectVendorBillStatusAction(bill.project_id, bill.id, {
-            status: "approved",
-            expected_updated_at: bill.updated_at,
-            qbo_expense_account_id:
-              bill.qbo_expense_account_id ?? qboDefaults.expenseAccountId,
-            qbo_expense_account_name:
-              bill.qbo_expense_account_name ??
-              qboExpenseAccounts.find(
-                (account) => account.id === qboDefaults.expenseAccountId,
-              )?.name,
-          }),
-        )
-        if (result.success) approved += 1
-        else
-          toast.error(result.error, {
-            description: bill.bill_number ?? vendorLabel(bill),
-          })
+      const result = await approveVendorBillsAtomicAction(bills.map((bill) => ({ id: bill.id, expected_updated_at: bill.updated_at })))
+      if (!result.success) {
+        toast.error(result.error, { description: "No payables were changed." })
+        return
       }
-      if (approved > 0)
-        toast.success(
-          `${approved} payable${approved === 1 ? "" : "s"} approved`,
-        )
+      toast.success(`${result.data.approvedCount} payable${result.data.approvedCount === 1 ? "" : "s"} approved atomically`)
       setSelectedIds(new Set())
       router.refresh()
     })
@@ -540,22 +587,53 @@ export function PayablesDesk({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      {/*
+        Drop target feedback. Fixed and pointer-events-none: the window listeners
+        own the drop, so this is purely the answer to "will it take this?" — an
+        overlay that intercepted the event would break the drop it advertises.
+      */}
+      {isDraggingFile ? (
+        <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-background/90">
+          <div className="flex flex-col items-center gap-3 border-2 border-dashed border-primary px-12 py-10 text-center">
+            <Upload className="size-8 text-primary" />
+            <p className="text-sm font-medium">Drop the invoice to add a bill</p>
+            <p className="text-xs text-muted-foreground">
+              Arc reads the vendor, invoice number, amount, and dates. You pick the project.
+            </p>
+          </div>
+        </div>
+      ) : null}
+
       {/* Toolbar: what you're looking at, and how to find one row in it. */}
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b px-4 py-2.5 sm:px-6">
         <Tabs
           value={tab}
-          onValueChange={(value) => setTab(value as TabKey)}
+          onValueChange={(value) => {
+            setTab(value as TabKey)
+            navigateQuery({ tab: value === "due" ? null : value, page: null })
+          }}
           className="w-auto"
         >
-          <TabsList className="h-8">
+          {/*
+            A segmented control, not a pill row: shared hairlines collapsed with
+            -ml-px so five filters read as one instrument. The active cell is the
+            only filled surface; counts ride their own cell's ink so a tab never
+            reads as two competing labels.
+          */}
+          <TabsList className="h-8 rounded-none bg-transparent p-0">
             {TABS.map((entry) => (
               <TabsTrigger
                 key={entry.key}
                 value={entry.key}
-                className="gap-1.5 text-xs"
+                className={cn(
+                  "relative -ml-px h-full flex-none gap-1.5 rounded-none border border-border px-2.5 text-xs font-normal text-muted-foreground shadow-none transition-colors first:ml-0",
+                  "hover:bg-accent/40 hover:text-foreground",
+                  "data-[state=active]:z-10 data-[state=active]:bg-accent data-[state=active]:font-medium data-[state=active]:text-accent-foreground data-[state=active]:shadow-none",
+                  "dark:text-muted-foreground dark:data-[state=active]:border-border dark:data-[state=active]:bg-accent dark:data-[state=active]:text-accent-foreground",
+                )}
               >
                 {entry.label}
-                <span className="tabular-nums text-muted-foreground">
+                <span className="tabular-nums opacity-60">
                   {counts[entry.key]}
                 </span>
               </TabsTrigger>
@@ -564,6 +642,35 @@ export function PayablesDesk({
         </Tabs>
 
         <div className="flex items-center gap-2">
+          <select
+            aria-label="Saved payable views"
+            defaultValue=""
+            onChange={(event) => {
+              const view = savedViews.find((candidate) => candidate.id === event.target.value)
+              if (!view) return
+              setTab(view.filters.queue as TabKey)
+              setSearch(view.filters.search)
+              navigateQuery({ tab: view.filters.queue === "due" ? null : view.filters.queue, q: view.filters.search || null, pageSize: String(view.filters.pageSize), page: null })
+            }}
+            className="h-8 border bg-background px-2 text-xs"
+          >
+            <option value="">Saved views</option>
+            {savedViews.map((view) => <option key={view.id} value={view.id}>{view.name}{view.isDefault ? " · default" : ""}</option>)}
+          </select>
+          {savingView ? (
+            <div className="flex items-center gap-1">
+              <Input autoFocus value={viewName} onChange={(event) => setViewName(event.target.value)} placeholder="View name" aria-label="Saved view name" className="h-8 w-36 text-xs" />
+              <Button size="sm" className="h-8 text-xs" disabled={!viewName.trim() || isPending} onClick={() => startTransition(async () => {
+                const result = await savePayableViewAction({ name: viewName, filters: { queue: tab, search, pageSize: data.pagination.pageSize } })
+                if (!result.success) { toast.error(result.error); return }
+                toast.success("Payables view saved")
+                setSavingView(false)
+                setViewName("")
+                router.refresh()
+              })}>Save</Button>
+              <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => setSavingView(false)}>Cancel</Button>
+            </div>
+          ) : <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => setSavingView(true)}>Save view</Button>}
           <div className="relative">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -586,6 +693,17 @@ export function PayablesDesk({
           </div>
           <Button asChild variant="outline" size="sm" className="h-8 text-xs">
             <Link href="/payables/payment-runs">Payment runs</Link>
+          </Button>
+          <Button
+            size="sm"
+            className="h-8 text-xs"
+            onClick={() => {
+              setDroppedFile(null)
+              setAddOpen(true)
+            }}
+          >
+            <Plus className="size-3.5" />
+            Add bill
           </Button>
         </div>
       </div>
@@ -615,7 +733,7 @@ export function PayablesDesk({
             </EmptyHeader>
           </Empty>
         ) : (
-          <Table className="min-w-[1020px]">
+          <Table className={showMethod ? "min-w-[1020px]" : "min-w-[900px]"}>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
                 <TableHead className={cn(HEAD, "w-10 pl-4 sm:pl-6")}>
@@ -640,9 +758,11 @@ export function PayablesDesk({
                 <TableHead className={cn(HEAD, "microlabel w-[140px]")}>
                   Status
                 </TableHead>
-                <TableHead className={cn(HEAD, "microlabel w-[120px]")}>
-                  Method
-                </TableHead>
+                {showMethod ? (
+                  <TableHead className={cn(HEAD, "microlabel w-[120px]")}>
+                    Method
+                  </TableHead>
+                ) : null}
                 <TableHead
                   className={cn(HEAD, "microlabel w-[150px] text-right")}
                 >
@@ -663,7 +783,15 @@ export function PayablesDesk({
                     key={bill.id}
                     data-state={isSelected ? "selected" : undefined}
                     onClick={() => openBill(bill.id)}
-                    className="group h-14 cursor-pointer"
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault()
+                        openBill(bill.id)
+                      }
+                    }}
+                    tabIndex={0}
+                    aria-label={`Open ${vendorLabel(bill)} invoice ${bill.bill_number ?? "payable"}`}
+                    className="h-14 cursor-pointer"
                   >
                     <TableCell
                       className="pl-4 sm:pl-6"
@@ -709,17 +837,11 @@ export function PayablesDesk({
                         awaitsViewer={awaitsMyApproval(bill)}
                       />
                     </TableCell>
-                    <TableCell>
-                      <MethodCell
-                        bill={bill}
-                        readiness={
-                          bill.company_id
-                            ? data.paymentReadinessByCompanyId[bill.company_id]
-                            : undefined
-                        }
-                        railOpen={railOpen}
-                      />
-                    </TableCell>
+                    {showMethod ? (
+                      <TableCell>
+                        <MethodCell bill={bill} />
+                      </TableCell>
+                    ) : null}
                     <TableCell className="text-right">
                       <div className="font-mono text-sm font-medium tabular-nums">
                         {formatMoneyFromCents(total)}
@@ -736,64 +858,19 @@ export function PayablesDesk({
                       className="pr-4 text-right sm:pr-6"
                       onClick={(event) => event.stopPropagation()}
                     >
-                      <div className="flex items-center justify-end gap-1">
-                        {awaitsMyApproval(bill) ? (
-                          <Button
-                            size="sm"
-                            className="h-7 px-2 text-xs"
-                            onClick={() => openBill(bill.id)}
-                          >
-                            Review
-                          </Button>
-                        ) : bill.status === "pending" &&
-                          !isVendorCredit(bill) ? (
-                          /*
-                            With a payment rail configured, approving a bill is the
-                            first half of releasing money — so the row opens the
-                            payable instead of deciding it from a list.
-                          */
-                          railOpen ? (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="h-7 px-2 text-xs opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
-                              onClick={() => openBill(bill.id)}
-                            >
-                              Review
-                            </Button>
-                          ) : (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              disabled={isPending}
-                              className="h-7 px-2 text-xs opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
-                              onClick={() => approveBills([bill])}
-                            >
-                              Approve
-                            </Button>
-                          )
-                        ) : null}
-                        {data.documentFileIdByBillId[bill.id] ? (
-                          <Button
-                            asChild
-                            variant="ghost"
-                            size="icon"
-                            className="size-7"
-                            title="Open invoice"
-                          >
-                            <a
-                              href={`/api/files/${data.documentFileIdByBillId[bill.id]}/raw`}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              <FileText className="size-4 text-muted-foreground" />
-                              <span className="sr-only">
-                                Open invoice document
-                              </span>
-                            </a>
-                          </Button>
-                        ) : null}
-                      </div>
+                      {/*
+                        One row action, always visible: open the payable. Deciding
+                        it — approve, code, pay, read the invoice — happens in the
+                        workspace, so the row never has to guess which verb applies.
+                      */}
+                      <Button
+                        variant={awaitsMyApproval(bill) ? "default" : "outline"}
+                        size="sm"
+                        className="h-7 px-2.5 text-xs"
+                        onClick={() => openBill(bill.id)}
+                      >
+                        Review
+                      </Button>
                     </TableCell>
                   </TableRow>
                 )
@@ -883,12 +960,11 @@ export function PayablesDesk({
                   {overdueCount} overdue
                 </span>
               ) : null}
-              {data.truncated ? (
-                <span className="text-warning">
-                  Capped at the 500 most urgent open payables
-                </span>
-              ) : null}
+              <span className="tabular-nums">{data.pagination.total} total · page {data.pagination.page} of {data.pagination.pageCount}</span>
             </div>
+            <div className="flex items-center gap-2">
+              <Button type="button" size="sm" variant="outline" className="h-7 text-xs" disabled={data.pagination.page <= 1} onClick={() => navigateQuery({ page: String(data.pagination.page - 1) })}>Previous</Button>
+              <Button type="button" size="sm" variant="outline" className="h-7 text-xs" disabled={data.pagination.page >= data.pagination.pageCount} onClick={() => navigateQuery({ page: String(data.pagination.page + 1) })}>Next</Button>
             {data.inboundBillsEmail ? (
               <button
                 type="button"
@@ -902,9 +978,21 @@ export function PayablesDesk({
                 {data.inboundBillsEmail}
               </button>
             ) : null}
+            </div>
           </>
         )}
       </div>
+
+      <AddPayableSheet
+        projects={projects}
+        initialFile={droppedFile}
+        open={addOpen}
+        onOpenChange={(next) => {
+          setAddOpen(next)
+          if (!next) setDroppedFile(null)
+        }}
+        onSuccess={() => router.refresh()}
+      />
 
       <PayablesWorkspace
         bills={data.bills}
@@ -915,6 +1003,9 @@ export function PayablesDesk({
         costCodesEnabled={costCodesEnabled}
         projects={projects}
         accountingEnabled={accountingEnabled}
+        accountingProvider={accountingProvider}
+        accountingProviderName={accountingProviderName}
+        accountingSyncByBillId={accountingSyncByBillId}
         qboExpenseAccounts={qboExpenseAccounts}
         qboApAccounts={qboApAccounts}
         qboDefaults={qboDefaults}

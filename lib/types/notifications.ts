@@ -113,6 +113,10 @@ export type NotificationType =
   | "payment_run_approved"
   | "payment_run_rejected"
   | "payment_run_execution_failed"
+  | "payment_submission_needs_recovery"
+  | "payment_operations_alert"
+  | "payment_run_fee_charge_failed"
+  | "vendor_transfer_needs_attention"
   | "vendor_payment_returned"
   | "payment_reconciliation_completed"
   | "vendor_payment_relationship_claimed"
@@ -178,6 +182,26 @@ export const EMAIL_NOTIFICATION_TYPES = [
     key: "payment_run_execution_failed",
     label: "Payment run failed",
     description: "Email me when a vendor payment run fails during provider submission.",
+  },
+  {
+    key: "vendor_transfer_needs_attention",
+    label: "Vendor transfer blocked",
+    description: "Email me when a builder debit has cleared but the vendor payout could not be sent.",
+  },
+  {
+    key: "payment_run_fee_charge_failed",
+    label: "Arc fee debit failed",
+    description: "Email me when Arc could not collect its fee for a payment run and the balance is still owed.",
+  },
+  {
+    key: "payment_operations_alert",
+    label: "Payment operations alert",
+    description: "Email me when automated monitoring finds a stalled payment release or a reconciliation that stopped running.",
+  },
+  {
+    key: "payment_submission_needs_recovery",
+    label: "Payment submission needs recovery",
+    description: "Email me when Arc cannot tell whether a vendor payment reached the provider and needs a human to confirm it.",
   },
   {
     key: "vendor_payment_returned",

@@ -349,6 +349,92 @@ html[data-ui-size="comfortable"] {
     animation-delay: calc(var(--desk-stagger, 0) * 80ms);
   }
 
+  /* Success check — fade + rotate + blur + bob, with the tick drawing itself.
+     Expressive zone only (portals, auth): it is a one-shot mark that a
+     terminal, consequential thing succeeded, so it must not render on a
+     surface the reader lands on repeatedly. Set the wrapper's text color;
+     the stroke inherits it. */
+  .success-check {
+    --check-dur: 500ms;
+    --check-rotate-from: 80deg;
+    --check-y-amount: 40px;
+    --check-blur-from: 10px;
+    --check-path-length: 24;
+    display: inline-block;
+    transform-origin: center;
+    will-change: transform, opacity, filter;
+    animation:
+      check-fade var(--check-dur) cubic-bezier(0.22, 1, 0.36, 1) both,
+      check-rotate var(--check-dur) cubic-bezier(0.22, 1, 0.36, 1) both,
+      check-blur var(--check-dur) cubic-bezier(0.22, 1, 0.36, 1) both,
+      check-bob var(--check-dur) cubic-bezier(0.34, 1.35, 0.64, 1) both;
+  }
+
+  /* overflow-visible stops the stroke clipping as it draws; block kills the
+     inline whitespace under the svg. */
+  .success-check svg {
+    display: block;
+    overflow: visible;
+  }
+
+  .success-check svg path {
+    stroke-dasharray: var(--check-path-length);
+    animation: check-draw var(--check-dur) cubic-bezier(0.22, 1, 0.36, 1) 80ms
+      both;
+  }
+
+  @keyframes check-fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes check-rotate {
+    from {
+      transform: rotate(var(--check-rotate-from));
+    }
+    to {
+      transform: rotate(0deg);
+    }
+  }
+
+  @keyframes check-blur {
+    from {
+      filter: blur(var(--check-blur-from));
+    }
+    to {
+      filter: blur(0);
+    }
+  }
+
+  @keyframes check-bob {
+    from {
+      translate: 0 var(--check-y-amount);
+    }
+    to {
+      translate: 0 0;
+    }
+  }
+
+  @keyframes check-draw {
+    from {
+      stroke-dashoffset: var(--check-path-length);
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .success-check,
+    .success-check svg path {
+      animation: none;
+    }
+  }
+
   /* Live-progress indicators — the only permitted infinite animations. */
   .skeleton-shimmer {
     position: relative;

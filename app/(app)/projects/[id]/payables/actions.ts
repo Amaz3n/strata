@@ -7,6 +7,7 @@ import {
   listVendorBillsForProject,
   deleteVendorBill,
   reassignImportedPayable,
+  approveVendorBillsAtomic,
   type VendorBillSummary,
 } from "@/lib/services/vendor-bills"
 import { listProjectCommitments } from "@/lib/services/commitments"
@@ -16,8 +17,8 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { AuthorizationError } from "@/lib/services/authorization"
 import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 import { getProvider } from "@/lib/integrations/accounting/registry"
+import { getAccountingSyncStates } from "@/lib/services/accounting-sync-state"
 import { processAccountingPush } from "@/lib/services/accounting-sync"
-import { extractPayableInvoiceFromFile, type ExtractedPayableInvoice } from "@/lib/services/receipt-extraction"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -31,6 +32,18 @@ async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
 
 export type PayableActionResult = { success: true } | { success: false; error: string }
 export type PayableMutationResult<T = VendorBillSummary> = { success: true; data: T } | { success: false; error: string }
+
+export async function approveVendorBillsAtomicAction(
+  items: Array<{ id: string; expected_updated_at?: string }>,
+): Promise<ActionResult<{ approvedCount: number }>> {
+  return run(async () => {
+    const result = await approveVendorBillsAtomic(items)
+    revalidatePath("/payables")
+    revalidatePath("/payables/payment-runs")
+    revalidatePath("/projects/[id]/financials/payables", "page")
+    return result
+  })
+}
 
 /**
  * Turn a thrown error into a user-facing message. Server Actions redact thrown
@@ -83,28 +96,6 @@ export async function createProjectVendorBillAction(
         return { success: true, data: bill }
       } catch (error) {
         return { success: false, error: toPayableActionError(error) }
-      }
-  })
-}
-
-export type PayableInvoiceExtractionResult =
-  | { ok: true; data: ExtractedPayableInvoice }
-  | { ok: false; error: string }
-
-export async function extractPayableInvoiceAction(_projectId: string, formData: FormData): Promise<ActionResult<PayableInvoiceExtractionResult>> {
-  return run(async () => {
-      try {
-        const { orgId } = await requireOrgContext()
-        const invoice = formData.get("invoice")
-        if (!(invoice instanceof File)) {
-          return { ok: false, error: "Choose an invoice to scan" }
-        }
-
-        const data = await extractPayableInvoiceFromFile(invoice, { orgId })
-        return { ok: true, data }
-      } catch (error: any) {
-        console.warn("[PayableExtraction] Scan failed", error)
-        return { ok: false, error: error?.message ?? "Could not scan invoice" }
       }
   })
 }
@@ -198,6 +189,10 @@ export async function getPayablesAccountingContextAction(projectId?: string) {
       if (!target) {
         return {
           enabled: false,
+          provider: null,
+          providerName: null,
+          connectionLabel: null,
+          healthy: false,
           expenseAccounts: [],
           apAccounts: [],
           vendors: [],
@@ -215,6 +210,10 @@ export async function getPayablesAccountingContextAction(projectId?: string) {
       const settings = (target.connection.settings as Record<string, any> | null) ?? {}
       return {
         enabled: true,
+        provider: target.connection.provider,
+        providerName: target.connection.label,
+        connectionLabel: target.connection.externalAccountName ?? target.connection.label,
+        healthy: target.healthy,
         expenseAccounts,
         apAccounts,
         vendors,
@@ -225,7 +224,14 @@ export async function getPayablesAccountingContextAction(projectId?: string) {
       }
 }
 
-export async function syncProjectVendorBillToQBOAction(projectId: string, billId: string) {
+export async function getPayablesAccountingSyncStatesAction(billIds: string[]) {
+  const ids = Array.from(new Set(billIds)).slice(0, 500)
+  const { orgId, supabase } = await requireOrgContext()
+  const states = await getAccountingSyncStates(supabase, { orgId, entityType: "bill", entityIds: ids })
+  return Object.fromEntries(states)
+}
+
+export async function syncProjectVendorBillToAccountingAction(projectId: string, billId: string) {
   return run(async () => {
       const { orgId } = await requireOrgContext()
       const result = await processAccountingPush({ orgId, entityType: "vendor_bill", entityId: billId })
@@ -233,6 +239,9 @@ export async function syncProjectVendorBillToQBOAction(projectId: string, billId
       return result
   })
 }
+
+/** @deprecated Use the provider-neutral action. Kept during the UI migration. */
+export const syncProjectVendorBillToQBOAction = syncProjectVendorBillToAccountingAction
 
 export async function deleteProjectVendorBillAction(
   projectId: string,

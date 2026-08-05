@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
+import { estimateSettlement } from "@/lib/payments/settlement-estimate"
 import type { PayableApprovalDetail } from "@/lib/services/payable-approvals"
 import type { PaymentHoldEvaluation } from "@/lib/services/payment-holds"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
@@ -25,6 +26,13 @@ import { cn } from "@/lib/utils"
 import { vendorLabel } from "../payables-ui"
 
 type ReviewStep = "review" | "confirm" | "reject" | "done"
+
+/** Bare `YYYY-MM-DD` in, readable date out — never routed through a local timezone. */
+function readableDate(iso: string) {
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(
+    new Date(`${iso}T00:00:00Z`),
+  )
+}
 
 /**
  * The approver's side of a payable payment. It deliberately shows the bill's own
@@ -123,6 +131,14 @@ export function PayableReviewView({
     holds?.holds.filter((hold) => hold.level === "block" && !hold.overridden) ??
     []
   const overriddenHolds = holds?.holds.filter((hold) => hold.overridden) ?? []
+  // An unscheduled run releases the moment approval completes, so today is the
+  // right anchor for the estimate the approver is looking at.
+  const settlement = detail
+    ? estimateSettlement({
+        initiatedOn: detail.scheduledFor ?? new Date().toISOString().slice(0, 10),
+        window: detail.settlementWindow,
+      })
+    : null
 
   return (
     <div className="flex h-full flex-col">
@@ -178,14 +194,6 @@ export function PayableReviewView({
                     {formatMoneyFromCents(detail.vendorAmountCents)}
                   </span>
                 </div>
-                <div className="flex items-baseline justify-between border-b px-4 py-3">
-                  <span className="text-sm text-muted-foreground">
-                    Processing cost
-                  </span>
-                  <span className="font-mono text-sm tabular-nums text-muted-foreground">
-                    {formatMoneyFromCents(detail.feeCents)}
-                  </span>
-                </div>
                 <div className="flex items-baseline justify-between bg-muted/20 px-4 py-3">
                   <span className="flex items-center gap-2 text-sm font-medium">
                     <Landmark className="h-4 w-4 text-muted-foreground" />
@@ -195,6 +203,68 @@ export function PayableReviewView({
                     {formatMoneyFromCents(detail.totalDebitCents)}
                   </span>
                 </div>
+                {/*
+                  Both fee lines always render, including at zero — a fee that
+                  only appears when it is non-zero teaches people not to look for
+                  it. They sit below the debit rather than inside it: the approver
+                  is signing for money leaving the bank, and these do not.
+                */}
+                <div className="border-t px-4 py-3">
+                  <p className="microlabel">Collected separately · one Arc fee debit per run</p>
+                  <div className="mt-2 flex items-baseline justify-between">
+                    <span className="text-sm text-muted-foreground">
+                      Provider processing cost
+                    </span>
+                    <span className="font-mono text-sm tabular-nums text-muted-foreground">
+                      {formatMoneyFromCents(detail.processorFeeCents)}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 flex items-baseline justify-between">
+                    <span className="text-sm text-muted-foreground">
+                      Arc fee
+                      {detail.platformFeeCents === 0 ? (
+                        <span className="ml-2 text-xs text-muted-foreground/80">
+                          No Arc markup
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="font-mono text-sm tabular-nums text-muted-foreground">
+                      {formatMoneyFromCents(detail.platformFeeCents)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/*
+                When the money actually lands. The approver is releasing on a date
+                the preparer chose, so both the release and the vendor-receipt
+                estimate belong in front of them before they decide.
+              */}
+              <div className="border bg-muted/10 px-4 py-3 text-xs">
+                <p>
+                  {detail.scheduledFor ? (
+                    <>
+                      Scheduled for release on{" "}
+                      <span className="font-medium">
+                        {readableDate(detail.scheduledFor)}
+                      </span>
+                      .
+                    </>
+                  ) : (
+                    <>Releases as soon as approval completes.</>
+                  )}
+                </p>
+                {settlement ? (
+                  <p className="mt-1 text-muted-foreground">
+                    {vendorLabel(bill)}&rsquo;s bank should credit them{" "}
+                    <span className="text-foreground">
+                      {readableDate(settlement.vendorReceivesEarliest)}&ndash;
+                      {readableDate(settlement.vendorReceivesLatest)}
+                    </span>
+                    . Estimated from the rail&rsquo;s normal{" "}
+                    {settlement.maxBusinessDays} business-day window.
+                  </p>
+                ) : null}
               </div>
 
               {/* The bill it pays */}

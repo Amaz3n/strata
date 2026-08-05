@@ -20,6 +20,12 @@ export interface PaymentRunApprover {
   /** Personal ceiling on the run debit total this approver may decide. */
   approvalLimitCents: number | null
   /**
+   * Division this approver is restricted to, or null for org-wide. A ceiling
+   * alone cannot express "approves anything in Westside" — it would have handed
+   * that person authority over every division at the same amount.
+   */
+  divisionId: string | null
+  /**
    * False when the person is still on the roster but no longer holds
    * `payments.approve_run` — the roster names people, roles grant the power, and
    * the UI has to be able to say when the two have drifted apart.
@@ -30,6 +36,7 @@ export interface PaymentRunApprover {
 export interface PaymentApprovalRouting {
   /** True when the org has named specific approvers rather than any permitted user. */
   rosterConfigured: boolean
+  /** In the org's chosen order — index 0 is who a submitted run is routed to first. */
   approvers: PaymentRunApprover[]
   /** Whether the current user may decide runs at all (before preparer/limit checks). */
   viewerMayApprove: boolean
@@ -65,8 +72,9 @@ async function loadRoster(orgId: string) {
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("payment_run_approvers")
-    .select("user_id,approval_limit_cents")
+    .select("user_id,approval_limit_cents,division_id,sort_order")
     .eq("org_id", orgId)
+    .order("sort_order", { ascending: true })
     .order("created_at", { ascending: true })
   if (error)
     throw new Error(`Unable to load payment approvers: ${error.message}`)
@@ -78,6 +86,7 @@ async function hydrateRoster(
   rows: Array<{
     user_id: string
     approval_limit_cents: number | string | null
+    division_id?: string | null
   }>,
 ) {
   const userIds = rows.map((row) => row.user_id)
@@ -96,6 +105,7 @@ async function hydrateRoster(
         row.approval_limit_cents == null
           ? null
           : Number(row.approval_limit_cents),
+      divisionId: row.division_id ?? null,
       permitted:
         permissions.includes("*") ||
         permissions.includes("payments.approve_run"),
@@ -173,7 +183,8 @@ export async function listPaymentApproverCandidates(
 
 /**
  * Replace the designated-approver roster. Saving an empty roster is allowed and
- * means "anyone with the permission" — the same fallback new orgs start on.
+ * means "anyone with the permission" — the same fallback new orgs start on. The
+ * submitted array order is the routing order and is persisted as `sort_order`.
  */
 export async function setPaymentRunApprovers(
   input: SetPaymentRunApproversInput,
@@ -216,10 +227,12 @@ export async function setPaymentRunApprovers(
     const { error: insertError } = await supabase
       .from("payment_run_approvers")
       .insert(
-        parsed.approvers.map((approver) => ({
+        parsed.approvers.map((approver, index) => ({
           org_id: context.orgId,
           user_id: approver.user_id,
           approval_limit_cents: approver.approval_limit_cents ?? null,
+          division_id: approver.division_id ?? null,
+          sort_order: index,
           created_by: context.userId,
         })),
       )
@@ -254,6 +267,7 @@ export async function setPaymentRunApprovers(
     parsed.approvers.map((approver) => ({
       user_id: approver.user_id,
       approval_limit_cents: approver.approval_limit_cents ?? null,
+      division_id: approver.division_id ?? null,
     })),
   )
 }
@@ -267,23 +281,44 @@ export async function assertUserMayApproveRun({
   userId,
   orgId,
   totalDebitCents,
+  divisionIds,
 }: {
   userId: string
   orgId: string
   totalDebitCents: number
+  /** Divisions the run's bills sit in. A run spanning divisions needs org-wide authority. */
+  divisionIds?: string[]
 }): Promise<void> {
   const rows = await loadRoster(orgId)
   if (rows.length === 0) return
-  const entry = rows.find((row) => row.user_id === userId)
-  if (!entry)
+  const entries = rows.filter((row) => row.user_id === userId)
+  if (entries.length === 0)
     throw new Error(
       "You are not a designated payment-run approver for this organization",
     )
-  const limitCents =
-    entry.approval_limit_cents == null
-      ? null
-      : Number(entry.approval_limit_cents)
-  if (limitCents != null && totalDebitCents > limitCents) {
+
+  // Someone can hold a low org-wide ceiling and a higher one inside their own
+  // division, so the question is whether ANY of their entries covers this run,
+  // not what their first row says.
+  const covering = entries.filter((entry) => {
+    if (!entry.division_id) return true
+    // A division-scoped approver covers a run only when every bill in it sits
+    // in their division. A mixed run needs someone with org-wide authority —
+    // approving the part you own is not approving the run.
+    const runDivisions = divisionIds ?? []
+    return runDivisions.length > 0 && runDivisions.every((division) => division === entry.division_id)
+  })
+  if (covering.length === 0) {
+    throw new Error(
+      "This payment run covers work outside the division you approve for; it needs an approver with organization-wide authority",
+    )
+  }
+  const bestLimitCents = covering.reduce<number | null>((best, entry) => {
+    const limit = entry.approval_limit_cents == null ? null : Number(entry.approval_limit_cents)
+    if (best === null || limit === null) return null
+    return Math.max(best, limit)
+  }, 0)
+  if (bestLimitCents != null && totalDebitCents > bestLimitCents) {
     throw new Error(
       "This payment run exceeds your approval limit; it needs an approver with a higher limit",
     )

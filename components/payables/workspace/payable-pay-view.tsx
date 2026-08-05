@@ -28,6 +28,10 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
+import {
+  estimateSettlement,
+  type ProviderSettlementWindow,
+} from "@/lib/payments/settlement-estimate"
 import type { PaymentApprovalRouting } from "@/lib/services/payment-approvers"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import { cn } from "@/lib/utils"
@@ -65,6 +69,19 @@ interface DraftRun {
   totalDebitCents: number
   requiredApprovals: number
   vendorAmountCents: number
+  processorFeeCents: number
+  platformFeeCents: number
+}
+
+function todayIso() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+/** Bare `YYYY-MM-DD` in, readable date out — never routed through a local timezone. */
+function readableDate(iso: string) {
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(
+    new Date(`${iso}T00:00:00Z`),
+  )
 }
 
 /**
@@ -98,6 +115,9 @@ export function PayablePayView({
   const [fundingSourceId, setFundingSourceId] = useState("")
   const [amount, setAmount] = useState("")
   const [draft, setDraft] = useState<DraftRun | null>(null)
+  const [scheduleMode, setScheduleMode] = useState<"asap" | "date">("asap")
+  const [scheduleDate, setScheduleDate] = useState("")
+  const [settlementWindow, setSettlementWindow] = useState<ProviderSettlementWindow | null>(null)
 
   // Fresh flow every time the pane opens or the bill changes.
   useEffect(() => {
@@ -105,6 +125,8 @@ export function PayablePayView({
     setStep("setup")
     setDraft(null)
     setAmount((balanceCents / 100).toFixed(2))
+    setScheduleMode("asap")
+    setScheduleDate("")
   }, [open, bill.id, balanceCents])
 
   // Closing the pane by any route (back, Escape, switching bills) discards an
@@ -132,6 +154,7 @@ export function PayablePayView({
       setSetupError(null)
       setFundingSources(result.data.fundingSources)
       setRouting(result.data.routing)
+      setSettlementWindow(result.data.settlementWindow)
       // Eligibility is advisory here — the destination account is resolved
       // server-side when the run is prepared, never named by the client.
       setBillEligible(
@@ -174,6 +197,8 @@ export function PayablePayView({
         totalDebitCents: result.data.totalDebitCents,
         requiredApprovals: result.data.requiredApprovals,
         vendorAmountCents: result.data.vendorAmountCents,
+        processorFeeCents: result.data.processorFeeCents,
+        platformFeeCents: result.data.platformFeeCents,
       })
       setStep("review")
     })
@@ -193,7 +218,10 @@ export function PayablePayView({
   const submitRun = () => {
     if (!draft) return
     startTransition(async () => {
-      const result = await submitPaymentRunAction(draft.id)
+      const result = await submitPaymentRunAction({
+        run_id: draft.id,
+        scheduled_for: scheduledFor,
+      })
       if (!result.success) {
         toast.error(result.error)
         return
@@ -209,7 +237,14 @@ export function PayablePayView({
   const fundingLabel =
     fundingSources?.find((source) => source.id === fundingSourceId)?.label ??
     "Bank account"
-  const feeCents = draft ? draft.totalDebitCents - draft.vendorAmountCents : 0
+  const scheduledFor = scheduleMode === "date" && scheduleDate ? scheduleDate : null
+  const scheduleInvalid = scheduleMode === "date" && (!scheduleDate || scheduleDate < todayIso())
+  const settlement = settlementWindow
+    ? estimateSettlement({ initiatedOn: scheduledFor ?? todayIso(), window: settlementWindow })
+    : null
+  const paysLate = Boolean(
+    settlement && bill.due_date && bill.due_date < settlement.vendorReceivesLatest,
+  )
 
   // Designated approvers who could actually decide *this* run: still permitted,
   // not the preparer (a preparer never approves their own run), and with a
@@ -394,14 +429,6 @@ export function PayablePayView({
                     {formatMoneyFromCents(draft.vendorAmountCents)}
                   </span>
                 </div>
-                <div className="flex items-baseline justify-between border-b px-4 py-3">
-                  <span className="text-sm text-muted-foreground">
-                    Processing cost{feeCents === 0 ? "" : " (at cost)"}
-                  </span>
-                  <span className="font-mono text-sm tabular-nums text-muted-foreground">
-                    {formatMoneyFromCents(feeCents)}
-                  </span>
-                </div>
                 <div className="flex items-baseline justify-between bg-muted/20 px-4 py-3">
                   <span className="text-sm font-medium">
                     Debited from {fundingLabel}
@@ -410,6 +437,99 @@ export function PayablePayView({
                     {formatMoneyFromCents(draft.totalDebitCents)}
                   </span>
                 </div>
+                {/*
+                  Below the debit, never added to it. Provider cost and Arc's own
+                  fee are still never lumped — the preparer is about to ask
+                  someone else to sign for this, and both of them need to see
+                  which part is Arc's — but they ride their own debit, so putting
+                  them inside the debit total would describe a movement of money
+                  that does not happen.
+                */}
+                <div className="border-t px-4 py-3">
+                  <p className="microlabel">Collected separately · one Arc fee debit per run</p>
+                  <div className="mt-2 flex items-baseline justify-between">
+                    <span className="text-sm text-muted-foreground">
+                      Provider processing cost
+                      <span className="ml-2 text-xs text-muted-foreground/80">At cost</span>
+                    </span>
+                    <span className="font-mono text-sm tabular-nums text-muted-foreground">
+                      {formatMoneyFromCents(draft.processorFeeCents)}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 flex items-baseline justify-between">
+                    <span className="text-sm text-muted-foreground">
+                      Arc fee
+                      {draft.platformFeeCents === 0 ? (
+                        <span className="ml-2 text-xs text-muted-foreground/80">
+                          No Arc markup
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="font-mono text-sm tabular-nums text-muted-foreground">
+                      {formatMoneyFromCents(draft.platformFeeCents)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <p className="microlabel">When should this be paid?</p>
+                <div className="flex">
+                  {(
+                    [
+                      { key: "asap", label: "As soon as approved" },
+                      { key: "date", label: "On a date" },
+                    ] as const
+                  ).map((option, index) => (
+                    <button
+                      key={option.key}
+                      type="button"
+                      onClick={() => setScheduleMode(option.key)}
+                      aria-pressed={scheduleMode === option.key}
+                      className={cn(
+                        "h-8 border border-border px-3 text-xs transition-colors",
+                        index > 0 && "-ml-px",
+                        scheduleMode === option.key
+                          ? "relative z-10 bg-accent font-medium text-accent-foreground"
+                          : "text-muted-foreground hover:bg-accent/40 hover:text-foreground",
+                      )}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+                {scheduleMode === "date" ? (
+                  <Input
+                    type="date"
+                    aria-label="Release date"
+                    min={todayIso()}
+                    value={scheduleDate}
+                    onChange={(event) => setScheduleDate(event.target.value)}
+                    className="h-8 w-48 text-xs"
+                  />
+                ) : null}
+                {settlement && (scheduleMode === "asap" || scheduleDate) ? (
+                  <p className="text-xs text-muted-foreground">
+                    Released{" "}
+                    {readableDate(scheduledFor ?? todayIso())} ·{" "}
+                    {vendorLabel(bill)}&rsquo;s bank should credit them{" "}
+                    <span className="text-foreground">
+                      {readableDate(settlement.vendorReceivesEarliest)}&ndash;
+                      {readableDate(settlement.vendorReceivesLatest)}
+                    </span>
+                    . Estimated from the rail&rsquo;s normal{" "}
+                    {settlement.maxBusinessDays} business-day window; bank
+                    holidays and returns can push it later.
+                  </p>
+                ) : null}
+                {paysLate ? (
+                  <p className="border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-foreground">
+                    <span className="font-medium">
+                      This lands after the bill&rsquo;s due date
+                    </span>{" "}
+                    at the slow end of the estimate.
+                  </p>
+                ) : null}
               </div>
 
               <div className="space-y-2 text-xs text-muted-foreground">
@@ -447,7 +567,7 @@ export function PayablePayView({
                 </Button>
                 <Button
                   className="h-11 flex-1"
-                  disabled={isPending}
+                  disabled={isPending || scheduleInvalid}
                   onClick={submitRun}
                 >
                   {isPending ? "Submitting…" : "Send for approval"}

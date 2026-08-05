@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 
+import { SuccessCheck } from "@/components/portal/success-check"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -14,7 +15,16 @@ const NEW_ENTITY = "new"
 const money = (cents: number, currency: string) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: currency.toUpperCase() }).format(cents / 100)
 
-export function VendorPaymentSetup({ token, context }: { token: string; context: VendorPaymentSetupContext }) {
+export function VendorPaymentSetup({
+  token,
+  context,
+  justVerified,
+}: {
+  token: string
+  /** True only on the redirect back from a completed Stripe onboarding. */
+  justVerified: boolean
+  context: VendorPaymentSetupContext
+}) {
   const { builder } = context
   const relationship = context.relationships.find((candidate) => candidate.orgId === builder.orgId) ?? null
   const linkedEntity = relationship
@@ -78,7 +88,10 @@ export function VendorPaymentSetup({ token, context }: { token: string; context:
       <section className="border border-border bg-card p-5">
         {isReady ? (
           <>
-            <h2 className="text-base font-semibold">Verified and ready</h2>
+            {justVerified ? <SuccessCheck className="mb-3" /> : null}
+            <h2 className="text-base font-semibold">
+              {justVerified ? "You're verified. You can be paid." : "Verified and ready"}
+            </h2>
             <p className="mt-1 text-sm text-muted-foreground">
               {linkedEntity?.legalName} is verified. When {builder.orgName} pays you electronically, deposits go to{" "}
               {recipient?.bankName ?? "your verified bank"}

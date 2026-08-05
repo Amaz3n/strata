@@ -288,15 +288,46 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     return uniqUserIds((memberships ?? []).map((row) => row.user_id)).filter((id) => id !== actorId)
   }
 
+  // An ambiguous submission is the one state where Arc cannot say whether the
+  // builder's bank was debited, so it is deliberately the one payment event that
+  // does NOT exclude the actor. On the scheduled path the actor is the preparer,
+  // who is not at a screen; on the manual path they saw a transient error and
+  // still need a durable record naming the disbursement to confirm.
+  if (event.event_type === "payment_submission_needs_recovery") {
+    const { data: roleRows } = await supabase.from("role_permissions")
+      .select("role_id")
+      .in("permission_key", ["payment.release", "payment.reconcile"])
+    const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
+    if (roleIds.length === 0) return []
+    const { data: memberships } = await supabase.from("memberships")
+      .select("user_id")
+      .eq("org_id", orgId)
+      .eq("status", "active")
+      .in("role_id", roleIds)
+    return uniqUserIds([...(memberships ?? []).map((row) => row.user_id), ...(actorId ? [actorId] : [])])
+  }
+
   const paymentOperationalEvents = new Set([
     "payment_run_execution_failed",
+    "payment_operations_alert",
+    "payment_run_fee_charge_failed",
+    "vendor_transfer_needs_attention",
     "vendor_payment_returned",
     "payment_reconciliation_completed",
   ])
   if (paymentOperationalEvents.has(event.event_type)) {
     const permissionKeys = event.event_type === "payment_reconciliation_completed"
       ? ["payment.reconcile"]
-      : ["payment.release", "payment.reconcile"]
+      : event.event_type === "payment_run_fee_charge_failed"
+        // The vendors were paid; only Arc's own fee is outstanding. That is a
+        // rail-ownership problem, not a release problem.
+        ? ["payments.manage_rail", "payment.reconcile"]
+      : event.event_type === "payment_operations_alert"
+        // A stalled release or a reconciliation that stopped running is a rail
+        // problem, so the people who own the rail hear about it alongside the
+        // ones who reconcile it.
+        ? ["payment.reconcile", "payments.manage_rail"]
+        : ["payment.release", "payment.reconcile"]
     const { data: roleRows } = await supabase.from("role_permissions").select("role_id").in("permission_key", permissionKeys)
     const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
     if (roleIds.length === 0) return []
@@ -837,6 +868,94 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
         entityType: entity_type,
         entityId: entity_id,
         eventId: event.id,
+      }
+    }
+
+    /**
+     * The builder's money cleared to Arc and the vendor did not get paid. That
+     * is the worst intermediate state in the system, so the copy says exactly
+     * that rather than describing it as a failed payment.
+     */
+    case "vendor_transfer_needs_attention": {
+      const amount = typeof safePayload.amount_cents === "number"
+        ? formatCentsForNotification(safePayload.amount_cents)
+        : null
+      const reason = typeof safePayload.error === "string" ? safePayload.error : null
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "vendor_transfer_needs_attention" as NotificationType,
+        title: `Vendor payout blocked${amount ? `: ${amount}` : ""}`,
+        message: `This payment was debited from your bank and has not reached the vendor${reason ? ` (${reason})` : ""}. Arc is holding the funds and will retry, but someone should check the vendor's payout account.`,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
+    /**
+     * The vendors were paid and Arc's own fee debit did not go through. The copy
+     * has to lead with that, because the instinct on seeing a payment failure is
+     * to worry the subcontractor did not get paid.
+     */
+    case "payment_run_fee_charge_failed": {
+      const amount = typeof safePayload.amount_cents === "number"
+        ? formatCentsForNotification(safePayload.amount_cents)
+        : null
+      const reason = typeof safePayload.error === "string" ? safePayload.error : null
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "payment_run_fee_charge_failed" as NotificationType,
+        title: `Arc fee debit failed${amount ? `: ${amount}` : ""}`,
+        message: `Your vendors were paid normally. Only Arc's own fee could not be collected${reason ? ` (${reason})` : ""}, and the balance is still owed.`,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
+    /**
+     * Automated monitoring found the rail in a state a healthy system would not
+     * leave it in. The copy leads with what is stuck, because the recipient's
+     * first question is whether money is currently not moving.
+     */
+    case "payment_operations_alert": {
+      const findings = Array.isArray(safePayload.findings) ? safePayload.findings : []
+      const details = findings
+        .map((finding) => (finding && typeof finding === "object" ? Reflect.get(finding, "detail") : null))
+        .filter((detail): detail is string => typeof detail === "string")
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "payment_operations_alert" as NotificationType,
+        title: "Vendor payments need attention",
+        message: details.length > 0 ? details.join(" ") : "Automated monitoring found a problem with vendor payment processing.",
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
+    /**
+     * Unknown money state. The provider call did not return a trustworthy answer,
+     * so Arc cannot say whether the debit happened. The copy must not imply
+     * either outcome — it names the disbursement and asks a human to confirm it
+     * against the provider before anyone builds a replacement run.
+     */
+    case "payment_submission_needs_recovery": {
+      const reason = typeof safePayload.error === "string" ? safePayload.error : null
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "payment_submission_needs_recovery" as NotificationType,
+        title: "Vendor payment needs confirmation",
+        message: `Arc could not confirm whether this vendor payment reached the provider${reason ? ` (${reason})` : ""}. Automatic recovery retries it with the same idempotency key, so it cannot double-pay. Do not build a replacement run until the provider record is checked.`,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+        metadata: typeof safePayload.payment_run_id === "string" ? { payment_run_id: safePayload.payment_run_id } : undefined,
       }
     }
 

@@ -8,6 +8,7 @@ import { recordAudit } from "@/lib/services/audit"
 import { logQBO } from "@/lib/services/accounting-logger"
 import { ACCOUNTING_JOB_TYPES } from "@/lib/services/accounting-job-types"
 import type { AccountingProviderKey } from "@/lib/integrations/accounting/provider"
+import { BATCH_FORMATS, isAccountingBatchFormat } from "@/lib/integrations/accounting/file/formats"
 
 export type QBOConnectionStatus = "active" | "expired" | "disconnected" | "error"
 const ACCESS_TOKEN_REFRESH_WINDOW_MS = 10 * 60 * 1000
@@ -490,6 +491,51 @@ export async function upsertQBOConnection(input: {
   } catch (eventError) {
     console.error("Failed to record QBO connection event", eventError)
   }
+}
+
+/**
+ * Create a connection to a target Arc cannot authenticate against.
+ *
+ * A batch-file target has no OAuth handshake and no credentials — it is pure
+ * configuration, so it is created directly rather than through a redirect. That
+ * is why `connectFlow` exists in the catalog: offering this provider in the
+ * OAuth menu would be a button that can only fail.
+ */
+export async function createFileAccountingConnection(input: {
+  label: string
+  batchFormat: string
+  orgId?: string
+}) {
+  const { orgId, userId } = await requireOrgContext(input.orgId)
+  const label = input.label.trim()
+  if (label.length < 1 || label.length > 120) throw new Error("Give this connection a name between 1 and 120 characters")
+  if (!isAccountingBatchFormat(input.batchFormat)) throw new Error("Choose a supported batch format")
+
+  const supabase = createServiceSupabaseClient()
+  const { data, error } = await supabase
+    .from("accounting_connections")
+    .insert({
+      org_id: orgId,
+      provider: "file",
+      label,
+      // No remote company file to point at. The format is the only identity this
+      // connection has, and it has to be unique-ish and non-null.
+      external_account_id: `file:${input.batchFormat}:${randomUUID().slice(0, 8)}`,
+      external_account_name: BATCH_FORMATS[input.batchFormat].label,
+      auth_scheme: "none",
+      status: "active",
+      settings: { batch_format: input.batchFormat, auto_sync: true, sync_payments: true },
+      connected_by: userId,
+    })
+    .select("id,label")
+    .single()
+  if (error || !data) throw new Error(`Unable to create the batch export connection: ${error?.message}`)
+
+  await Promise.all([
+    recordAudit({ orgId, actorId: userId, action: "insert", entityType: "accounting_connection", entityId: data.id, after: { provider: "file", label, batch_format: input.batchFormat } }),
+    recordEvent({ orgId, actorId: userId, eventType: "accounting_connected", entityType: "accounting_connection", entityId: data.id, payload: { provider: "file", label }, channel: "integration" }),
+  ])
+  return { id: data.id, label: data.label }
 }
 
 export async function refreshQBOConnectionsDueForKeepalive(limit = 10) {

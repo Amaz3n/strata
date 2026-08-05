@@ -1,6 +1,8 @@
 require("../scripts/register-ts-node-test")
 
 const assert = require("node:assert/strict")
+const fs = require("node:fs")
+const path = require("node:path")
 const test = require("node:test")
 
 const { accountingPushBlockReason, selectAccountingMap } = require("../lib/services/accounting-rules")
@@ -161,5 +163,129 @@ test("application accounting workflows depend on the provider seam", () => {
   for (const file of applicationFiles) {
     const source = fs.readFileSync(path.join(__dirname, file), "utf8")
     assert.doesNotMatch(source, /QBOClient/, `${file} bypasses the accounting provider seam`)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// File-based accounting targets.
+//
+// Sage 300 CRE, Foundation and Viewpoint import AP through a delimited file
+// rather than an API, so the "push" for those targets is a rendered batch. The
+// rendering is pure, which is how it gets tested without a database.
+// ---------------------------------------------------------------------------
+
+const {
+  BATCH_FORMATS,
+  isAccountingBatchFormat,
+  renderAccountingBatch,
+} = require("../lib/integrations/accounting/file/formats")
+
+function billLine(overrides = {}) {
+  return {
+    entityType: "bill",
+    direction: "post",
+    amountCents: 1_234_56,
+    currency: "usd",
+    postedAt: "2026-08-04T00:00:00.000Z",
+    memo: "Vendor invoice 8891",
+    payload: {
+      arc_reference: "bill-1",
+      vendor_name: "Southeast Lumber Supply",
+      document_number: "8891",
+      due_date: "2026-09-03",
+      job_name: "Lot 44 — Maple",
+      cost_code: "06-1000",
+      cost_type: "Material",
+    },
+    ...overrides,
+  }
+}
+
+test("every batch format renders a header plus one row per line", () => {
+  for (const key of Object.keys(BATCH_FORMATS)) {
+    const rendered = renderAccountingBatch(key, [billLine(), billLine({ payload: { ...billLine().payload, arc_reference: "bill-2" } })])
+    const rows = rendered.split("\r\n")
+    assert.equal(rows.length, 3, `${key} should render a header and two rows`)
+    assert.equal(rows[0].split(",").length, BATCH_FORMATS[key].columns.length)
+  }
+})
+
+test("money renders from integer cents with no floating point in the path", () => {
+  // 1234.56 is not representable in binary floating point; rendering it through
+  // division would be exactly the bug integer cents exists to prevent.
+  const rendered = renderAccountingBatch("generic", [billLine({ amountCents: 1_234_56 })])
+  assert.match(rendered, /(^|,)1234\.56(,|$)/m)
+  assert.match(renderAccountingBatch("generic", [billLine({ amountCents: 5 })]), /(^|,)0\.05(,|$)/m)
+  assert.match(renderAccountingBatch("generic", [billLine({ amountCents: 100 })]), /(^|,)1\.00(,|$)/m)
+})
+
+test("a reversal renders negative so the import reads it as a debit memo", () => {
+  const rendered = renderAccountingBatch("sage300", [billLine({ direction: "reverse" })])
+  assert.match(rendered, /-1234\.56/)
+})
+
+test("batch rendering escapes separators rather than corrupting a row", () => {
+  const rendered = renderAccountingBatch("generic", [
+    billLine({ memo: 'Paid "in full", per contract', payload: { ...billLine().payload, vendor_name: "Smith, Jones & Co" } }),
+  ])
+  const rows = rendered.split("\r\n")
+  assert.equal(rows.length, 2)
+  assert.match(rows[1], /"Smith, Jones & Co"/)
+  assert.match(rows[1], /"Paid ""in full"", per contract"/)
+})
+
+test("batch dates are bare calendar dates, never ISO instants", () => {
+  // These importers reject a timestamp, and a timezone-shifted date posts a
+  // vendor invoice into the wrong period.
+  const rendered = renderAccountingBatch("viewpoint", [billLine()])
+  assert.match(rendered, /2026-08-04/)
+  assert.doesNotMatch(rendered, /T00:00:00/)
+})
+
+test("batch formats emit no column Arc cannot populate", () => {
+  const source = fs.readFileSync(path.resolve(__dirname, "../lib/integrations/accounting/file/formats.ts"), "utf8")
+  // companies has no vendor_code and projects has no job_number, so a column fed
+  // by either would be blank on every row and read as a mapping that exists.
+  assert.doesNotMatch(source, /vendor_code/)
+  assert.doesNotMatch(source, /job_code/)
+  assert.doesNotMatch(source, /gl_account/)
+})
+
+test("the format registry and its guard agree", () => {
+  for (const key of Object.keys(BATCH_FORMATS)) assert.ok(isAccountingBatchFormat(key))
+  assert.equal(isAccountingBatchFormat("sage100"), false)
+  assert.equal(isAccountingBatchFormat(null), false)
+})
+
+test("only self-serve providers are offered in the add-connection menu", () => {
+  const { ACCOUNTING_PROVIDERS, ACCOUNTING_PROVIDER_KEYS, CONNECTABLE_ACCOUNTING_PROVIDER_KEYS } =
+    require("../lib/integrations/accounting/catalog")
+
+  // A `configured` provider has no remote system to authorize against, so
+  // offering it in an OAuth menu is a button that can only fail.
+  for (const key of CONNECTABLE_ACCOUNTING_PROVIDER_KEYS) {
+    assert.equal(ACCOUNTING_PROVIDERS[key].connectFlow, "oauth", `${key} is offered but cannot be connected`)
+  }
+  assert.ok(CONNECTABLE_ACCOUNTING_PROVIDER_KEYS.length < ACCOUNTING_PROVIDER_KEYS.length)
+  assert.equal(ACCOUNTING_PROVIDERS.file.connectFlow, "configured")
+
+  // Every declared logo has to exist, or the UI renders a broken image.
+  for (const key of ACCOUNTING_PROVIDER_KEYS) {
+    const logoUrl = ACCOUNTING_PROVIDERS[key].logoUrl
+    if (logoUrl === null) continue
+    assert.ok(
+      fs.existsSync(path.resolve(__dirname, "../public", logoUrl.replace(/^\//, ""))),
+      `${key} declares ${logoUrl}, which does not exist in public/`,
+    )
+  }
+})
+
+test("the integrations panel renders a fallback for providers with no logo", () => {
+  for (const file of [
+    "../components/integrations/integrations-panel.tsx",
+    "../components/integrations/accounting-connection-sheet.tsx",
+  ]) {
+    const source = fs.readFileSync(path.resolve(__dirname, file), "utf8")
+    assert.match(source, /logoUrl \?/, `${file} must branch on a null logo rather than rendering it`)
   }
 })

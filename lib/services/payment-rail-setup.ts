@@ -39,7 +39,7 @@ async function listRecipientRelationships(recipientAccountId: string) {
     const { data, error } = await supabase.from("vendor_payment_relationships")
       .select("id,org_id")
       .eq("recipient_account_id", recipientAccountId)
-      .neq("status", "revoked")
+      .in("status", ["invited", "claim_pending", "onboarding", "active"])
       .range(from, from + pageSize - 1)
     if (error) throw new Error(`Unable to load recipient relationships: ${error.message}`)
     rows.push(...(data ?? []))
@@ -84,11 +84,6 @@ export interface PaymentRailSettings {
     last4: string | null
     canDecide: boolean
   }>
-  /** How many of this builder's vendors can actually receive an ACH payment. */
-  vendors: {
-    ready: number
-    inProgress: number
-  }
   /** Designated approvers, plus who could be designated (managers only). */
   approvals: {
     approvers: PaymentRunApprover[]
@@ -102,12 +97,10 @@ export async function getPaymentRailSettings(orgId?: string): Promise<PaymentRai
   const context = await requireOrgContext(orgId)
   await requirePermission("payment.release", context)
   const supabase = createServiceSupabaseClient()
-  const [{ data: policy }, { data: fundingSources }, { data: changes }, { count: vendorsReady }, { count: vendorsInProgress }, canManage, canApprove] = await Promise.all([
+  const [{ data: policy }, { data: fundingSources }, { data: changes }, canManage, canApprove] = await Promise.all([
     supabase.from("payment_rail_policies").select("enabled,approval_mode,control_change_cooling_hours,per_payment_limit_cents,per_run_limit_cents,daily_limit_cents,waiver_jurisdiction").eq("org_id", context.orgId).maybeSingle(),
     supabase.from("org_funding_sources").select("id,provider,bank_name,last4,verification_status,status,is_default,usable_after").eq("org_id", context.orgId).order("created_at", { ascending: false }).limit(20),
     supabase.from("payment_control_change_requests").select("id,funding_source_id,requested_by_user_id,status,required_approvals,apply_after,proposed_masked_details").eq("org_id", context.orgId).eq("kind", "org_funding_source").in("status", ["pending_approval", "cooling_off"]).order("created_at", { ascending: false }).limit(20),
-    supabase.from("vendor_payment_relationships").select("id", { count: "exact", head: true }).eq("org_id", context.orgId).eq("status", "active"),
-    supabase.from("vendor_payment_relationships").select("id", { count: "exact", head: true }).eq("org_id", context.orgId).in("status", ["invited", "claim_pending", "onboarding"]),
     hasPermission("payments.manage_rail", context),
     hasPermission("payments.approve_run", context),
   ])
@@ -153,10 +146,6 @@ export async function getPaymentRailSettings(orgId?: string): Promise<PaymentRai
         canDecide: canApprove && row.requested_by_user_id !== context.userId,
       }
     }),
-    vendors: {
-      ready: vendorsReady ?? 0,
-      inProgress: vendorsInProgress ?? 0,
-    },
     approvals: {
       approvers: routing.approvers,
       candidates,
@@ -346,9 +335,11 @@ async function createVendorRecipientOnboarding(parsed: { vendor_entity_id: strin
   const { data: recipientRow } = await supabase.from("payment_recipient_accounts").select("provider_account_id").eq("id", recipient.id).maybeSingle()
   if (!recipientRow) throw new Error("Recipient provider account was not found")
   const baseUrl = getAppBaseUrl()
-  const returnUrl = new URL(parsed.return_path, baseUrl).toString()
+  const returnUrl = new URL(parsed.return_path, baseUrl)
+  returnUrl.searchParams.set("payments", "return")
+  returnUrl.searchParams.set("entity", entity.id)
   const refreshUrl = new URL(`/access?payments=refresh&entity=${entity.id}`, baseUrl).toString()
-  const url = await provider.createRecipientOnboardingLink({ providerAccountId: recipientRow.provider_account_id, refreshUrl, returnUrl })
+  const url = await provider.createRecipientOnboardingLink({ providerAccountId: recipientRow.provider_account_id, refreshUrl, returnUrl: returnUrl.toString() })
   await Promise.all(affectedOrgIds.flatMap((affectedOrgId) => [
     recordEvent({ orgId: affectedOrgId, eventType: "vendor_recipient_onboarding_started", entityType: "payment_recipient_account", entityId: recipient.id, payload: { vendor_entity_id: entity.id } }),
     recordAudit({ orgId: affectedOrgId, action: "update", entityType: "payment_recipient_account", entityId: recipient.id, after: { status: recipient.status, onboarding_link_created: true }, source: "vendor_portal" }),
@@ -356,7 +347,11 @@ async function createVendorRecipientOnboarding(parsed: { vendor_entity_id: strin
   return { url, recipientId: recipient.id, status: recipient.status }
 }
 
-export async function syncVendorRecipient(providerAccountId: string, providerKey = DEFAULT_PROVIDER) {
+export async function syncVendorRecipient(
+  providerAccountId: string,
+  providerKey = DEFAULT_PROVIDER,
+  auditSource = "stripe_webhook",
+) {
   const provider = getPaymentRailProvider(providerKey)
   const snapshot = await provider.retrieveRecipient(providerAccountId)
   const supabase = createServiceSupabaseClient()
@@ -381,9 +376,38 @@ export async function syncVendorRecipient(providerAccountId: string, providerKey
       .eq("org_id", relationship.org_id)
       .eq("id", relationship.id),
     recordEvent({ orgId: relationship.org_id, eventType: "vendor_recipient_status_updated", entityType: "payment_recipient_account", entityId: recipient.id, payload: { status: snapshot.status, payouts_enabled: snapshot.payoutsEnabled } }),
-    recordAudit({ orgId: relationship.org_id, action: "update", entityType: "payment_recipient_account", entityId: recipient.id, after: { status: snapshot.status, payouts_enabled: snapshot.payoutsEnabled }, source: "stripe_webhook" }),
+    recordAudit({ orgId: relationship.org_id, action: "update", entityType: "payment_recipient_account", entityId: recipient.id, after: { status: snapshot.status, payouts_enabled: snapshot.payoutsEnabled }, source: auditSource }),
   ]))
   return recipient
+}
+
+/**
+ * Stripe redirects are user-controlled navigation and cannot be trusted as
+ * proof that onboarding completed. Reconcile only after the active portal
+ * identity is authorized for the requested vendor entity, then retrieve the
+ * authoritative status from Stripe. This is a fallback for delayed/missing
+ * webhooks, not a replacement for account.updated processing.
+ */
+export async function reconcileVendorRecipientAfterOnboarding(vendorEntityId: string) {
+  const parsedEntityId = z.string().uuid().safeParse(vendorEntityId)
+  if (!parsedEntityId.success) return null
+  const entityId = parsedEntityId.data
+  const portal = await getVendorPaymentPortalContext()
+  if (!portal.identity || portal.identity.status !== "active") throw new Error("An active vendor identity is required")
+  const entity = portal.entities.find((candidate) => candidate.id === entityId)
+  if (!entity || !["owner", "administrator"].includes(entity.role)) throw new Error("Vendor administrator access is required")
+  if (!entity.recipient) return null
+
+  const supabase = createServiceSupabaseClient()
+  const { data: recipient, error } = await supabase
+    .from("payment_recipient_accounts")
+    .select("provider,provider_account_id")
+    .eq("id", entity.recipient.id)
+    .eq("vendor_entity_id", entity.id)
+    .maybeSingle()
+  if (error) throw new Error(`Unable to load recipient account: ${error.message}`)
+  if (!recipient) return null
+  return syncVendorRecipient(recipient.provider_account_id, recipient.provider, "stripe_return")
 }
 
 export async function createOrgFundingSetup(orgId?: string) {

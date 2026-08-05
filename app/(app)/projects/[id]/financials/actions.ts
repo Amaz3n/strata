@@ -8,7 +8,7 @@ import { listProjectCommitments } from "@/lib/services/commitments"
 import { listCompanies } from "@/lib/services/companies"
 import { getProjectInvoiceArSummary, listInvoices } from "@/lib/services/invoices"
 import { listContacts } from "@/lib/services/contacts"
-import { listVendorBillsForProject } from "@/lib/services/vendor-bills"
+import { listVendorBillsPageForProject } from "@/lib/services/vendor-bills"
 import { getProjectBuyoutStatus } from "@/lib/services/bids"
 import { getComplianceRules } from "@/lib/services/compliance"
 import { getCompaniesComplianceStatus } from "@/lib/services/compliance-documents"
@@ -241,15 +241,16 @@ export async function prepareBillingAutopilotAction(projectId: string) {
  * - Vendor bills for the project
  * - Compliance rules for payment blocking
  */
-export async function fetchPayablesTabDataAction(projectId: string) {
+export async function fetchPayablesTabDataAction(projectId: string, query: { page?: number; pageSize?: number; queue?: string; search?: string } = {}) {
       const [vendorBillsResult, complianceRulesResult, costCodesResult, budgetLinesResult] = await Promise.allSettled([
-        listVendorBillsForProject(projectId),
+        listVendorBillsPageForProject(projectId, query),
         getComplianceRules(),
         listCostCodes(),
         listProjectBudgetLines(projectId),
       ])
 
-      const vendorBills = vendorBillsResult.status === "fulfilled" ? vendorBillsResult.value : []
+      const vendorBillsPage = vendorBillsResult.status === "fulfilled" ? vendorBillsResult.value : { items: [], page: 1, pageSize: 50, total: 0, pageCount: 1 }
+      const vendorBills = vendorBillsPage.items
       const complianceRules =
         complianceRulesResult.status === "fulfilled"
           ? complianceRulesResult.value
@@ -268,6 +269,7 @@ export async function fetchPayablesTabDataAction(projectId: string) {
 
       return {
         vendorBills,
+        vendorBillsPage,
         complianceRules,
         complianceStatusByCompanyId,
         costCodes,

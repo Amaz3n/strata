@@ -1,4 +1,4 @@
-export type AccountingProviderKey = "qbo"
+export type AccountingProviderKey = "qbo" | "file"
 
 export type AccountingDimensionKind = "class" | "customer" | "location" | "department" | "entity"
 
@@ -34,6 +34,8 @@ export interface AccountingCapabilities {
   supportsAttachments: boolean
   supportsJournalEntryPush: boolean
   supportsVendorCredits: boolean
+  /** Whether a posted bill payment can be reversed when an ACH return lands. */
+  supportsBillPaymentVoid: boolean
   updateConcurrency: "sync_token" | "etag" | "none"
   dimensions: AccountingDimensionKind[]
 }
@@ -84,6 +86,17 @@ export interface AccountingProvider {
   pushVendorBill(input: { orgId: string; connectionId: string; billId: string }): Promise<PushResult>
   pushVendorCredit?(input: { orgId: string; connectionId: string; creditId: string }): Promise<PushResult>
   pushBillPayment(input: { orgId: string; connectionId: string; paymentId: string }): Promise<PushResult>
+  /**
+   * Reverse a previously pushed bill payment after an ACH return or reversal.
+   *
+   * Without this the two ledgers diverge permanently: Arc reopens the vendor
+   * bill and the accounting system keeps a payment for money that came back.
+   * Optional because not every target can void a posted payment — a batch-file
+   * provider emits a reversing entry instead — so callers must check
+   * `capabilities.supportsBillPaymentVoid` and surface an exception when it is
+   * unsupported rather than silently leaving the books wrong.
+   */
+  voidBillPayment?(input: { orgId: string; connectionId: string; paymentId: string; reason: string }): Promise<PushResult>
   pushJournalEntry?(input: { orgId: string; connectionId: string; journalId: string }): Promise<PushResult>
   /**
    * Build the URL a user is sent to in order to authorize a new connection.

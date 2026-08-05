@@ -1,6 +1,8 @@
 "use client"
 
-import { type ReactNode, useMemo, useState } from "react"
+import { type ReactNode, useCallback, useEffect, useMemo, useState, useTransition } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
+import { toast } from "sonner"
 import {
   Check,
   CheckCircle2,
@@ -31,8 +33,10 @@ import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import { isVendorCredit, summarizePayables } from "@/lib/financials/payables-rules"
 import type { ComplianceRules, ComplianceStatusSummary, CostCode } from "@/lib/types"
 import { CodingCombobox } from "@/components/financials/workspace/coding-combobox"
-import { filterPayables, payableQueueCounts, type PayableQueue } from "./payables-filters"
+import type { PayableQueue } from "./payables-filters"
 import { billBadge, dueDateClassName, getDueState, payableTypeBadge, vendorLabel } from "./payables-ui"
+import type { SavedPayableView } from "@/lib/services/payable-views"
+import { savePayableViewAction } from "@/app/(app)/payables/actions"
 
 type QBOAccountOption = { id: string; name: string; fullyQualifiedName?: string }
 
@@ -42,6 +46,7 @@ interface PayablesExplorerProps {
   costCodes: CostCode[]
   costCodesEnabled?: boolean
   accountingEnabled?: boolean
+  accountingProviderName?: string | null
   qboExpenseAccounts?: QBOAccountOption[]
   complianceRules: ComplianceRules
   complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>
@@ -57,13 +62,19 @@ interface PayablesExplorerProps {
   onSelectQboExpenseAccount?: (bill: VendorBillSummary, accountId: string) => void
   toolbarLeading?: ReactNode
   fullBleed?: boolean
+  pagination: { page: number; pageSize: number; total: number; pageCount: number }
+  initialQueue: string
+  initialSearch: string
+  savedViews: SavedPayableView[]
 }
 
 export function PayablesExplorer({
+  projectId,
   vendorBills,
   costCodes,
   costCodesEnabled = true,
   accountingEnabled = true,
+  accountingProviderName = "Accounting",
   qboExpenseAccounts = [],
   complianceRules,
   complianceStatusByCompanyId,
@@ -79,22 +90,37 @@ export function PayablesExplorer({
   onSelectQboExpenseAccount,
   toolbarLeading,
   fullBleed = false,
+  pagination,
+  initialQueue,
+  initialSearch,
+  savedViews,
 }: PayablesExplorerProps) {
-  const [search, setSearch] = useState("")
-  const [queueFilter, setQueueFilter] = useState<PayableQueue>("needs_review")
+  const router = useRouter()
+  const urlSearchParams = useSearchParams()
+  const [pending, startTransition] = useTransition()
+  const [search, setSearch] = useState(initialSearch)
+  const [queueFilter, setQueueFilter] = useState<PayableQueue>((initialQueue as PayableQueue) || "needs_review")
+  const [savingView, setSavingView] = useState(false)
+  const [viewName, setViewName] = useState("")
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [openCostCodeBillId, setOpenCostCodeBillId] = useState<string | null>(null)
   const [openQboAccountBillId, setOpenQboAccountBillId] = useState<string | null>(null)
 
-  const filtered = useMemo(
-    () => filterPayables(vendorBills, { search, queue: queueFilter, costCodesEnabled }),
-    [costCodesEnabled, vendorBills, search, queueFilter],
-  )
+  const filtered = vendorBills
 
-  const filterCounts = useMemo(
-    () => payableQueueCounts(vendorBills, costCodesEnabled),
-    [costCodesEnabled, vendorBills],
-  )
+  const navigateQuery = useCallback((updates: Record<string, string | null>) => {
+    const params = new URLSearchParams(urlSearchParams.toString())
+    for (const [key, value] of Object.entries(updates)) value ? params.set(key, value) : params.delete(key)
+    router.replace(`?${params.toString()}`, { scroll: false })
+  }, [router, urlSearchParams])
+
+  useEffect(() => { setSearch(initialSearch); setQueueFilter((initialQueue as PayableQueue) || "needs_review") }, [initialQueue, initialSearch])
+  useEffect(() => {
+    if (search === initialSearch) return
+    const timer = window.setTimeout(() => navigateQuery({ q: search.trim() || null, page: null }), 350)
+    return () => window.clearTimeout(timer)
+  }, [initialSearch, navigateQuery, search])
+
   const totals = useMemo(() => summarizePayables(vendorBills), [vendorBills])
   const selectedBills = useMemo(
     () => vendorBills.filter((bill) => selectedIds.includes(bill.id)),
@@ -124,6 +150,15 @@ export function PayablesExplorer({
       <div className="sticky top-0 z-20 flex shrink-0 flex-col gap-3 border-b bg-background px-4 py-3 sm:min-h-14 sm:flex-row sm:items-center sm:justify-between">
         {toolbarLeading ? <div className="min-w-0">{toolbarLeading}</div> : null}
         <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center">
+          <select aria-label="Saved payable views" defaultValue="" onChange={(event) => {
+            const view = savedViews.find((candidate) => candidate.id === event.target.value)
+            if (!view) return
+            setSearch(view.filters.search); setQueueFilter(view.filters.queue as PayableQueue)
+            navigateQuery({ queue: view.filters.queue === "needs_review" ? null : view.filters.queue, q: view.filters.search || null, pageSize: String(view.filters.pageSize), page: null })
+          }} className="h-[42px] border bg-background px-2 text-xs">
+            <option value="">Saved views</option>
+            {savedViews.map((view) => <option key={view.id} value={view.id}>{view.name}{view.isDefault ? " · default" : ""}</option>)}
+          </select>
           <div className="relative w-full sm:w-72">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -145,25 +180,24 @@ export function PayablesExplorer({
               <button
                 key={filter.key}
                 type="button"
-                onClick={() => setQueueFilter(filter.key)}
+                onClick={() => { setQueueFilter(filter.key); navigateQuery({ queue: filter.key === "needs_review" ? null : filter.key, page: null }) }}
                 className={cn(
                   "flex h-8 shrink-0 items-center gap-1.5 px-3 text-xs font-medium transition-colors",
                   queueFilter === filter.key ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
                 )}
               >
                 <span>{filter.label}</span>
-                <span className={cn("px-1.5 py-0.5 text-[10px] tabular-nums", queueFilter === filter.key ? "bg-primary-foreground/20 text-primary-foreground" : "bg-muted text-muted-foreground")}>
-                  {filterCounts[filter.key]}
-                </span>
+                {queueFilter === filter.key ? <span className="bg-primary-foreground/20 px-1.5 py-0.5 text-[10px] tabular-nums text-primary-foreground">{pagination.total}</span> : null}
               </button>
             ))}
           </div>
         </div>
         <div className="flex w-full gap-2 sm:w-auto">
-          {accountingEnabled ? (
+          {savingView ? <div className="flex items-center gap-1"><Input autoFocus value={viewName} onChange={(event) => setViewName(event.target.value)} placeholder="View name" aria-label="Saved view name" className="h-[42px] w-32" /><Button size="sm" disabled={pending || !viewName.trim()} onClick={() => startTransition(async () => { const result = await savePayableViewAction({ name: viewName, projectId, filters: { queue: queueFilter, search, pageSize: pagination.pageSize } }); if (!result.success) { toast.error(result.error); return } toast.success("Payables view saved"); setSavingView(false); setViewName(""); router.refresh() })}>Save</Button></div> : <Button type="button" variant="ghost" onClick={() => setSavingView(true)}>Save view</Button>}
+          {accountingEnabled && onOpenSyncSheet ? (
             <Button type="button" variant="outline" onClick={onOpenSyncSheet} className="w-full sm:w-auto">
               <ExternalLink className="mr-2 h-4 w-4" />
-              QuickBooks
+              {accountingProviderName}
             </Button>
           ) : null}
           <Button type="button" onClick={onAddPayable} className="w-full sm:w-auto">
@@ -357,12 +391,14 @@ export function PayablesExplorer({
         </Table>
       </div>
 
-      <div className="h-10 shrink-0 border-t bg-muted/10 px-4 flex items-center justify-between text-[11px] font-medium text-muted-foreground uppercase tracking-widest">
-        <div>{filtered.length} records showing</div>
+      <div className="min-h-10 shrink-0 border-t bg-muted/10 px-4 py-1.5 flex flex-wrap items-center justify-between gap-2 text-[11px] font-medium text-muted-foreground uppercase tracking-widest">
+        <div>{pagination.total} records · page {pagination.page} of {pagination.pageCount}</div>
         <div className="flex gap-4">
           <span>Outstanding: {formatCurrency(totals.outstandingCents)}</span>
           <span>Settled: {formatCurrency(totals.settledCents)}</span>
           <span>Vendor credits: {formatCurrency(totals.vendorCreditsCents)}</span>
+          <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" disabled={pagination.page <= 1} onClick={() => navigateQuery({ page: String(pagination.page - 1) })}>Previous</Button>
+          <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" disabled={pagination.page >= pagination.pageCount} onClick={() => navigateQuery({ page: String(pagination.page + 1) })}>Next</Button>
         </div>
       </div>
     </div>

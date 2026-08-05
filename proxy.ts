@@ -64,6 +64,9 @@ const PUBLIC_API_ROUTES = [
   "/api/jobs/esign",
   "/api/jobs/late-fees",
   "/api/jobs/payment-controls",
+  "/api/jobs/payment-release",
+  "/api/jobs/payment-reconciliation",
+  "/api/jobs/ops-watchdog",
   // Portal drawing sheet PDFs — self-authenticate via the portal access token
   // in the path (no session cookie on client/sub portals).
   "/api/portal/drawings/",

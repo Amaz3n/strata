@@ -3,7 +3,8 @@
 import { revalidatePath } from "next/cache"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
-import { runPaymentReconciliation } from "@/lib/services/payment-reconciliation"
+import { resolvePaymentReconciliationItem, runPaymentReconciliation } from "@/lib/services/payment-reconciliation"
+import { decidePaymentRiskReview, type DecidePaymentRiskInput } from "@/lib/services/payment-risk"
 import {
   cancelPaymentRun,
   createPaymentRun,
@@ -13,7 +14,12 @@ import {
   submitPaymentRun,
   type PaymentRunSetupData,
 } from "@/lib/services/payment-runs"
-import type { CreatePaymentRunInput, DecidePaymentRunInput } from "@/lib/validation/fintech-payments"
+import type {
+  CreatePaymentRunInput,
+  DecidePaymentRunInput,
+  SubmitPaymentRunInput,
+} from "@/lib/validation/fintech-payments"
+import { resolveProductionDeskScope } from "@/lib/services/production-desk-scope"
 
 async function run<T>(operation: () => Promise<T>): Promise<ActionResult<T>> {
   try {
@@ -46,16 +52,19 @@ export async function createPaymentRunAction(
  */
 export async function getPaymentRunSetupAction(): Promise<ActionResult<PaymentRunSetupData>> {
   try {
-    return { success: true, data: await getPaymentRunSetupData() }
+    const scope = await resolveProductionDeskScope({})
+    return { success: true, data: await getPaymentRunSetupData(undefined, scope.projectIds) }
   } catch (error) {
     return actionError(error)
   }
 }
 
-export async function submitPaymentRunAction(runId: string): Promise<ActionResult<{ id: string; status: string }>> {
+export async function submitPaymentRunAction(
+  input: SubmitPaymentRunInput,
+): Promise<ActionResult<{ id: string; status: string; scheduledFor: string | null }>> {
   return run(async () => {
-    const result = await submitPaymentRun(runId)
-    return { id: result.id, status: result.status }
+    const result = await submitPaymentRun(input)
+    return { id: result.id, status: result.status, scheduledFor: result.scheduled_for }
   })
 }
 
@@ -82,4 +91,20 @@ export async function reconcilePaymentsAction(input: { period_start: string; per
     const result = await runPaymentReconciliation(input)
     return { id: result.id, status: result.status }
   })
+}
+
+export async function resolvePaymentExceptionAction(input: { itemId: string; note: string }): Promise<ActionResult<{ id: string }>> {
+  return run(async () => {
+    const result = await resolvePaymentReconciliationItem(input)
+    return { id: result.id }
+  })
+}
+
+/**
+ * Clear or confirm a risk block. Step-up and the preparer-separation rule are
+ * enforced in the service — overriding a fraud control is at least as sensitive
+ * as approving the payment it stopped.
+ */
+export async function decidePaymentRiskReviewAction(input: DecidePaymentRiskInput): Promise<ActionResult<{ id: string; decision: string }>> {
+  return run(() => decidePaymentRiskReview(input))
 }

@@ -2,7 +2,9 @@ import "server-only"
 
 import { z } from "zod"
 
+import { getPaymentRailProvider } from "@/lib/integrations/payments/payment-rail-registry"
 import { payableOutstandingCents } from "@/lib/financials/payables-rules"
+import type { ProviderSettlementWindow } from "@/lib/payments/settlement-estimate"
 import { requireOrgContext } from "@/lib/services/context"
 import { getPaymentApprovalRouting } from "@/lib/services/payment-approvers"
 import {
@@ -30,6 +32,9 @@ export interface PreparedPayableApproval {
   runId: string
   totalDebitCents: number
   vendorAmountCents: number
+  /** Provider cost and Arc's fee stay apart: a lumped "fees" number hides whose it is. */
+  processorFeeCents: number
+  platformFeeCents: number
   requiredApprovals: number
 }
 
@@ -133,6 +138,8 @@ export async function preparePayableApproval(
     runId: run.id,
     totalDebitCents: run.totalDebitCents,
     vendorAmountCents: parsed.amount_cents,
+    processorFeeCents: run.processorFeeCents,
+    platformFeeCents: run.platformFeeCents,
     requiredApprovals: run.requiredApprovals,
   }
 }
@@ -142,10 +149,16 @@ export interface PayableApprovalDetail {
   status: string
   contentHash: string | null
   vendorAmountCents: number
-  feeCents: number
+  /** Kept apart so the approver can see which part of the cost is Arc's. */
+  processorFeeCents: number
+  platformFeeCents: number
   totalDebitCents: number
   requiredApprovals: number
   approvalCount: number
+  /** The release date the preparer chose, or null to release on approval. */
+  scheduledFor: string | null
+  /** The rail's timing, so the approver sees when the vendor would actually be paid. */
+  settlementWindow: ProviderSettlementWindow
   fundingLabel: string
   submittedByName: string
   submittedAt: string | null
@@ -188,7 +201,7 @@ export async function getPayableApprovalDetail(
     supabase
       .from("payment_runs")
       .select(
-        "id,status,content_hash,total_debit_cents,required_approvals,requested_by,requested_at,funding_source_id",
+        "id,status,content_hash,total_debit_cents,required_approvals,requested_by,requested_at,funding_source_id,scheduled_for",
       )
       .eq("org_id", context.orgId)
       .eq("id", item.run_id)
@@ -206,7 +219,7 @@ export async function getPayableApprovalDetail(
     run.funding_source_id
       ? supabase
           .from("org_funding_sources")
-          .select("bank_name,last4")
+          .select("bank_name,last4,provider")
           .eq("id", run.funding_source_id)
           .maybeSingle()
       : Promise.resolve({ data: null }),
@@ -236,13 +249,15 @@ export async function getPayableApprovalDetail(
     status: run.status,
     contentHash: run.content_hash ?? null,
     vendorAmountCents: Number(item.vendor_amount_cents),
-    feeCents:
-      Number(item.processor_fee_cents) + Number(item.platform_fee_cents),
+    processorFeeCents: Number(item.processor_fee_cents),
+    platformFeeCents: Number(item.platform_fee_cents),
     totalDebitCents,
     requiredApprovals: Number(run.required_approvals),
     approvalCount: (approvals ?? []).filter(
       (approval) => approval.decision === "approved",
     ).length,
+    scheduledFor: run.scheduled_for ?? null,
+    settlementWindow: getPaymentRailProvider(funding?.provider ?? undefined).settlementWindow,
     fundingLabel: funding
       ? `${funding.bank_name ?? "Bank account"}${funding.last4 ? ` •••• ${funding.last4}` : ""}`
       : "Bank account",

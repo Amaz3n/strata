@@ -4,7 +4,7 @@ import { cookies } from "next/headers"
 
 import { getProvider, isAccountingProviderKey } from "@/lib/integrations/accounting/registry"
 import type { AccountingAccountKind, AccountingCapabilities, AccountingDimensionKind, AccountingProviderKey } from "@/lib/integrations/accounting/provider"
-import { disconnectAccountingConnection, listAccountingConnections, requireAccountingConnectionForOrg, updateAccountingConnectionLabel, updateAccountingConnectionSettings, type AccountingConnectionDTO } from "@/lib/services/accounting-connections"
+import { createFileAccountingConnection, disconnectAccountingConnection, listAccountingConnections, requireAccountingConnectionForOrg, updateAccountingConnectionLabel, updateAccountingConnectionSettings, type AccountingConnectionDTO } from "@/lib/services/accounting-connections"
 import {
   createStripeConnectedAccountDashboardLoginLink,
   createStripeConnectedAccountOnboardingLink,
@@ -13,6 +13,7 @@ import {
 } from "@/lib/services/stripe-connected-accounts"
 import type { StripeConnectedAccount } from "@/lib/services/stripe-connected-accounts"
 import { requireOrgContext } from "@/lib/services/context"
+import { exportAccountingBatch, listAccountingBatches } from "@/lib/services/accounting-batches"
 import { getCurrentUserPermissions, requirePermission } from "@/lib/services/permissions"
 import { accountingConnectionLabelSchema, accountingConnectionSettingsSchema, accountingEntityMapSchema } from "@/lib/validation/accounting"
 import { upsertAccountingEntityMap } from "@/lib/services/accounting-target"
@@ -145,6 +146,30 @@ export async function connectAccountingProviderAction(providerKey: AccountingPro
 
     return { authUrl: url }
   })
+}
+
+/**
+ * Create a batch-file connection. No redirect: there is nothing to authorize,
+ * so this is a form rather than an OAuth handshake.
+ */
+export async function createFileAccountingConnectionAction(input: { label: string; batchFormat: string }) {
+  return run(async () => {
+    const { supabase, orgId, userId } = await requireOrgContext()
+    await requirePermission("org.admin", { supabase, orgId, userId })
+    return createFileAccountingConnection({ label: input.label, batchFormat: input.batchFormat, orgId })
+  })
+}
+
+export async function listAccountingBatchesAction() {
+  return run(() => listAccountingBatches())
+}
+
+/**
+ * Render a batch and close it. Returns the bytes rather than a URL because the
+ * file is generated on demand and never stored — there is nothing to link to.
+ */
+export async function exportAccountingBatchAction(batchId: string) {
+  return run(() => exportAccountingBatch({ batchId }))
 }
 
 export async function disconnectAccountingConnectionAction(connectionId: string) {

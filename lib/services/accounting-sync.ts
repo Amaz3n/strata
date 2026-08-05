@@ -148,3 +148,35 @@ export const enqueuePaymentSync = (paymentId: string, orgId: string) => enqueueA
 export const enqueueProjectExpenseSync = (expenseId: string, orgId: string) => enqueueAccountingPush({ orgId, entityType: "project_expense", entityId: expenseId })
 export const enqueueVendorBillSync = (billId: string, orgId: string) => enqueueAccountingPush({ orgId, entityType: "vendor_bill", entityId: billId })
 export const enqueueBillPaymentSync = (paymentId: string, orgId: string) => enqueueAccountingPush({ orgId, entityType: "bill_payment", entityId: paymentId })
+
+/**
+ * Reverse a bill payment in the accounting system after an ACH return.
+ *
+ * Runs inline rather than through the outbox: it is called from the provider
+ * event that already reopened the bill, and the window where Arc says "open" and
+ * the GL says "paid" should be as short as possible. A failure raises so the
+ * webhook retries, because leaving the two ledgers disagreeing silently is the
+ * outcome this exists to prevent.
+ */
+export async function voidBillPaymentInAccounting(input: { orgId: string; paymentId: string; reason: string }) {
+  if (!await operationalPushAllowed(input.orgId)) return { voided: false as const, reason: "books_authoritative" as const }
+  const projectId = await resolveProjectId(input.orgId, "bill_payment", input.paymentId)
+  const target = await resolveAccountingTarget({ orgId: input.orgId, projectId })
+  if (!target) return { voided: false as const, reason: "unconnected" as const }
+  const provider = getProvider(target.connection.provider)
+  if (!provider.capabilities.supportsBillPaymentVoid || !provider.voidBillPayment) {
+    // Never silent: an unsupported target still has to leave a durable trace
+    // that a human owes this reversal by hand.
+    await markAccountingSyncError(
+      input.orgId,
+      "bill_payment",
+      input.paymentId,
+      target.connection.id,
+      target.connection.provider,
+      `${target.connection.label} cannot reverse a posted bill payment. Reverse it manually — this payment was returned: ${input.reason}`,
+    )
+    return { voided: false as const, reason: "unsupported" as const }
+  }
+  await provider.voidBillPayment({ orgId: input.orgId, connectionId: target.connection.id, paymentId: input.paymentId, reason: input.reason })
+  return { voided: true as const }
+}

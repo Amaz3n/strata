@@ -79,6 +79,10 @@ export function assertDisbursementTransition(from: string, to: string) {
   }
 }
 
+export function canTransitionDisbursement(from: DisbursementStatus, to: DisbursementStatus) {
+  return DISBURSEMENT_TRANSITIONS[from].includes(to)
+}
+
 export function requiredApprovalCount(mode: PaymentApprovalMode) {
   return mode === "dual" ? 2 : 1
 }
@@ -101,6 +105,97 @@ export function assertApprovalQuorum(input: {
   if (distinctApprovers.size < required) {
     throw new Error(`Payment run requires ${required} distinct approval${required === 1 ? "" : "s"}`)
   }
+}
+
+/**
+ * The one-way order a disbursement walks. Terminal states are not on it — they
+ * are reachable from several points and are handled by the transition table.
+ */
+export const DISBURSEMENT_FORWARD_PATH: readonly DisbursementStatus[] = [
+  "created",
+  "submitted",
+  "debit_pending",
+  "funds_available",
+  "transfer_pending",
+  "payout_pending",
+  "paid",
+]
+
+const UNPAID_TERMINAL_STATUSES = ["failed", "returned", "canceled"] as const
+export type UnpaidTerminalStatus = (typeof UNPAID_TERMINAL_STATUSES)[number]
+
+function isUnpaidTerminal(status: string): status is UnpaidTerminalStatus {
+  return (UNPAID_TERMINAL_STATUSES as readonly string[]).includes(status)
+}
+
+/**
+ * The statuses a disbursement must pass through to reach `target`, in order.
+ *
+ * Empty means "do nothing", which is the answer for every duplicate and every
+ * out-of-order webhook: the provider re-delivers, and events routinely arrive
+ * after a later one has already been processed. Both must be no-ops rather than
+ * walking a state backwards.
+ *
+ * A disbursement that has already reached a terminal state never moves again —
+ * a late `payout.paid` arriving after a return must not resurrect the payment.
+ */
+export function planDisbursementAdvance(current: string, target: string): DisbursementStatus[] {
+  assertKnownStatus(current, DISBURSEMENT_STATUSES, "disbursement")
+  assertKnownStatus(target, DISBURSEMENT_STATUSES, "disbursement")
+  if (current === target) return []
+  if (isUnpaidTerminal(current) || current === "reversed") return []
+  const currentIndex = DISBURSEMENT_FORWARD_PATH.indexOf(current)
+  const targetIndex = DISBURSEMENT_FORWARD_PATH.indexOf(target)
+  // Already at or past the target on the forward path: a stale event.
+  if (targetIndex >= 0 && currentIndex >= targetIndex) return []
+  if (targetIndex >= 0 && currentIndex >= 0) return [...DISBURSEMENT_FORWARD_PATH.slice(currentIndex + 1, targetIndex + 1)]
+
+  // A terminal target is not on the forward path and is not reachable from every
+  // point on it — `created -> returned` is not a legal hop. Walk forward to the
+  // first state the target IS reachable from, then apply it. Doing this here
+  // rather than in the caller means no call site has to know that a return
+  // arriving before settlement has to pass through funds_available first.
+  if (currentIndex >= 0) {
+    for (let index = currentIndex; index < DISBURSEMENT_FORWARD_PATH.length; index += 1) {
+      if (!canTransitionDisbursement(DISBURSEMENT_FORWARD_PATH[index], target as DisbursementStatus)) continue
+      return [...DISBURSEMENT_FORWARD_PATH.slice(currentIndex + 1, index + 1), target as DisbursementStatus]
+    }
+    // Unreachable without an illegal hop — cancelling after funds are available,
+    // for instance. Emitting nothing is the only safe answer.
+    return []
+  }
+  return canTransitionDisbursement(current, target as DisbursementStatus) ? [target as DisbursementStatus] : []
+}
+
+/**
+ * A run item's status given its payees'.
+ *
+ * `terminalTarget` is the terminal state being applied to the payee that just
+ * changed, so an item whose payees have all failed reports the same reason.
+ *
+ * An item with no payees reports `processing`, never `paid`. `[].every()` is
+ * true, so the natural phrasing concludes "paid" from an absence of evidence and
+ * closes a bill nobody paid. In a money system the safe default is to stay open
+ * and let a human notice.
+ */
+export function resolveRunItemStatus(payeeStatuses: readonly string[], terminalTarget: UnpaidTerminalStatus): string {
+  if (payeeStatuses.length === 0) return "processing"
+  if (payeeStatuses.every((status) => status === "paid")) return "paid"
+  if (payeeStatuses.some((status) => status === "paid")) return "partially_paid"
+  if (payeeStatuses.every(isUnpaidTerminal)) return terminalTarget
+  return "processing"
+}
+
+/** A run's status given its items'. Same empty-set reasoning as the item rollup. */
+export function resolveRunStatus(itemStatuses: readonly string[]): string {
+  if (itemStatuses.length === 0) return "processing"
+  const anySettled = itemStatuses.some((status) => status === "paid" || status === "partially_paid")
+  const anyFailed = itemStatuses.some(isUnpaidTerminal)
+  if (itemStatuses.every((status) => status === "paid")) return "paid"
+  if (anySettled && anyFailed) return "partially_failed"
+  if (itemStatuses.every(isUnpaidTerminal)) return "failed"
+  if (anySettled) return "partially_paid"
+  return "processing"
 }
 
 export interface LedgerEntryInput {

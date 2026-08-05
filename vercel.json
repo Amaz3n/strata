@@ -61,8 +61,20 @@
       "schedule": "30 13 * * *"
     },
     {
+      "path": "/api/jobs/payment-release",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/jobs/payment-controls",
-      "schedule": "35 13 * * *"
+      "schedule": "35 * * * *"
+    },
+    {
+      "path": "/api/jobs/payment-reconciliation",
+      "schedule": "50 13 * * *"
+    },
+    {
+      "path": "/api/jobs/ops-watchdog",
+      "schedule": "20 * * * *"
     },
     {
       "path": "/api/jobs/task-reminders",
@@ -167,6 +179,12 @@
       "maxDuration": 120
     },
     "app/api/jobs/payment-controls/route.ts": {
+      "maxDuration": 120
+    },
+    "app/api/jobs/payment-release/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/jobs/payment-reconciliation/route.ts": {
       "maxDuration": 300
     },
     "app/api/jobs/task-reminders/route.ts": {

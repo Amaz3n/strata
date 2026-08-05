@@ -41,6 +41,8 @@ import { processPhotoCaption } from "@/lib/services/photo-intelligence"
 import { classifyProjectEmail, processInboundProjectEmail } from "@/lib/services/project-email-ingest"
 import { sendVendorBillWaiverChase } from "@/lib/services/payment-holds"
 import { FLOORPLAN_INTERPRET_JOB, runFloorplanInterpretation } from "@/lib/services/floorplan-models"
+import { propagateApprovalToLedger } from "@/lib/services/cost-plus"
+import { enqueueVendorBillSync } from "@/lib/services/accounting-sync"
 import { floorplanTargetSchema } from "@/lib/validation/floorplan"
 import type { SearchEntityType } from "@/lib/services/search-config"
 
@@ -105,6 +107,41 @@ const MAX_RETRIES = 3
 // Lightweight jobs (emails, indexing) run first; drawing pipeline jobs are
 // drained afterwards with the remaining time budget.
 const BATCH_SIZE = 50
+/**
+ * How long a claimed job may stay in `processing` before the reaper assumes its
+ * worker died. Comfortably longer than this route's maxDuration, so a job that
+ * is merely slow is never yanked out from under a running worker.
+ */
+const LEASE_SECONDS = 900
+
+/**
+ * Job types this worker owns. `release_payment_run` is deliberately absent — it
+ * is drained by the five-minute payment-release tick, not this hourly one.
+ */
+const OUTBOX_JOB_TYPES = [
+  "deliver_notification",
+  "deliver_push",
+  "send_daily_log_mention_email",
+  "send_esign_executed_email",
+  "send_bid_email",
+  "process_esign_execution_side_effects",
+  "refresh_drawing_sheets_list",
+  "index_file",
+  "generate_file_preview",
+  "reindex_search",
+  "remove_search_index",
+  "process_inbound_bill_email",
+  "selection_cutoff_recompute",
+  "warranty_enroll_coverage",
+  "reanchor_takeoff_markups",
+  "process_quick_capture",
+  "caption_photo",
+  "process_inbound_project_email",
+  "classify_project_email",
+  "chase_vendor_bill_waiver",
+  "project_vendor_bill_approval",
+  FLOORPLAN_INTERPRET_JOB,
+]
 
 function isAuthorizedCronRequest(request: NextRequest) {
   const isDev = process.env.NODE_ENV !== "production"
@@ -465,27 +502,39 @@ async function processOutboxQueue(request: NextRequest) {
 
   const isDev = process.env.NODE_ENV !== "production"
   const supabase = createServiceSupabaseClient()
-  const now = new Date().toISOString()
 
-  const { data: jobs, error } = await supabase
-    .from("outbox")
-    .select("*")
-    .in("job_type", ["deliver_notification", "deliver_push", "send_daily_log_mention_email", "send_esign_executed_email", "send_bid_email", "process_esign_execution_side_effects", "refresh_drawing_sheets_list", "index_file", "generate_file_preview", "reindex_search", "remove_search_index", "process_inbound_bill_email", "selection_cutoff_recompute", "warranty_enroll_coverage", "reanchor_takeoff_markups", "process_quick_capture", "caption_photo", "process_inbound_project_email", "classify_project_email", "chase_vendor_bill_waiver", FLOORPLAN_INTERPRET_JOB])
-    .eq("status", "pending")
-    .lte("run_at", now)
-    .order("created_at", { ascending: false })
-    .limit(BATCH_SIZE)
+  // Return leases abandoned by a worker that timed out mid-batch. Without this a
+  // function timeout orphans its rows in `processing` permanently — they are
+  // never claimed again and never retried.
+  const { data: reaped, error: reapError } = await supabase.rpc("reap_stale_outbox_jobs", {
+    p_lease_seconds: LEASE_SECONDS,
+    p_max_attempts: MAX_RETRIES,
+    p_job_types: OUTBOX_JOB_TYPES,
+  })
+  if (reapError) {
+    return NextResponse.json({ error: reapError.message }, { status: 500 })
+  }
+  const reapRow = (Array.isArray(reaped) ? reaped[0] : reaped) as { requeued?: number; exhausted?: number } | null
+
+  // Claim atomically. The previous select-then-update spanned two statements, so
+  // two overlapping invocations — a manual trigger racing the cron, or a retry
+  // after a timeout — could claim and run the same job twice.
+  const { data: claimed, error } = await supabase.rpc("claim_jobs", {
+    job_types: OUTBOX_JOB_TYPES,
+    limit_value: BATCH_SIZE,
+  })
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
-  if (!jobs?.length) {
-    return NextResponse.json({ processed: 0 })
-  }
+  const jobs = ((claimed ?? []) as Array<{ job_id: number; org_id: string; job_type: string; payload: any; retry_count: number }>)
+    .map((job) => ({ id: job.job_id, org_id: job.org_id, job_type: job.job_type, payload: job.payload, retry_count: job.retry_count }))
 
-  const jobIds = jobs.map((j: any) => j.id)
-  await supabase.from("outbox").update({ status: "processing" }).in("id", jobIds)
+  if (!jobs.length) {
+    const drained = await runDrawingsPipeline({ deadlineMs: Date.now() + 120_000 })
+    return NextResponse.json({ processed: 0, requeued: reapRow?.requeued ?? 0, exhausted: reapRow?.exhausted ?? 0, drawings: drained })
+  }
 
   let processed = 0
   let failed = 0
@@ -557,6 +606,11 @@ async function processOutboxQueue(request: NextRequest) {
         const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
         if (!billId) throw new Error("Waiver chase is missing bill_id")
         await sendVendorBillWaiverChase(job.org_id, billId)
+      } else if (job.job_type === "project_vendor_bill_approval") {
+        const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
+        if (!billId) throw new Error("Vendor-bill approval projection is missing bill_id")
+        await propagateApprovalToLedger({ source: "vendor_bill", sourceId: billId, orgId: job.org_id })
+        await enqueueVendorBillSync(billId, job.org_id)
       } else if (job.job_type === FLOORPLAN_INTERPRET_JOB) {
         const target = floorplanTargetSchema.safeParse(job.payload?.target)
         if (!target.success) throw new Error("Floorplan interpretation has no valid target")
@@ -614,9 +668,9 @@ async function processOutboxQueue(request: NextRequest) {
           status: shouldRetry ? "pending" : "failed",
           retry_count: newRetry,
           last_error: errorText,
-          run_at: shouldRetry
-            ? new Date(Date.now() + Math.pow(3, newRetry) * 5 * 60 * 1000).toISOString()
-            : job.run_at,
+          ...(shouldRetry
+            ? { run_at: new Date(Date.now() + Math.pow(3, newRetry) * 5 * 60 * 1000).toISOString() }
+            : {}),
         })
         .eq("id", job.id)
 
@@ -635,8 +689,9 @@ async function processOutboxQueue(request: NextRequest) {
   // uploads; this is the cron safety net so nothing stays stuck.
   const drawings = await runDrawingsPipeline({ deadlineMs: Date.now() + 120_000 })
 
+  const reap = { requeued: reapRow?.requeued ?? 0, exhausted: reapRow?.exhausted ?? 0 }
   return NextResponse.json(
-    isDev ? { processed, failed, failures, drawings } : { processed, failed, drawings },
+    isDev ? { processed, failed, failures, ...reap, drawings } : { processed, failed, ...reap, drawings },
   )
 }
 

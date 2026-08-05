@@ -26,9 +26,9 @@ import { Calendar } from "@/components/ui/calendar"
 import { CompanyForm } from "@/components/companies/company-form"
 import { createCompanyAction, listCompaniesAction } from "@/app/(app)/companies/actions"
 import { uploadFileAction } from "@/app/(app)/documents/actions"
+import { extractPayableInvoiceAction } from "@/app/(app)/payables/actions"
 import {
   createProjectVendorBillAction,
-  extractPayableInvoiceAction,
   listProjectCommitmentsForPayablesAction,
 } from "@/app/(app)/projects/[id]/payables/actions"
 import type { CommitmentSummary } from "@/lib/services/commitments"
@@ -37,6 +37,7 @@ import type { Company } from "@/lib/types"
 import { unwrapAction } from "@/lib/action-result"
 
 const NO_COMMITMENT = "__no_commitment__"
+const NO_PROJECT = ""
 
 function normalizeName(value: string) {
   return value.trim().replace(/\s+/g, " ").toLowerCase()
@@ -47,7 +48,16 @@ function formatMoney(cents: number) {
 }
 
 interface AddPayableSheetProps {
-  projectId: string
+  /**
+   * Fixed on a project workbench. Omitted on the org-wide payables desk, where the
+   * project becomes a field on the form — an invoice tells you who and how much,
+   * never which job, so that is the one answer the human still owes.
+   */
+  projectId?: string
+  /** Projects to choose from. Required when `projectId` is omitted. */
+  projects?: Array<{ id: string; name: string }>
+  /** A file dropped onto the page, scanned as soon as the sheet opens. */
+  initialFile?: File | null
   open: boolean
   onOpenChange: (open: boolean) => void
   onSuccess?: () => void
@@ -55,6 +65,8 @@ interface AddPayableSheetProps {
 
 export function AddPayableSheet({
   projectId,
+  projects,
+  initialFile = null,
   open,
   onOpenChange,
   onSuccess,
@@ -67,6 +79,7 @@ export function AddPayableSheet({
   const [isCreatingVendor, startCreateVendorTransition] = useTransition()
 
   // Form state
+  const [selectedProjectId, setSelectedProjectId] = useState(projectId ?? NO_PROJECT)
   const [commitmentId, setCommitmentId] = useState(NO_COMMITMENT)
   const [companyId, setCompanyId] = useState("")
   const [vendorName, setVendorName] = useState("")
@@ -85,19 +98,39 @@ export function AddPayableSheet({
   const [isDraggingFile, setIsDraggingFile] = useState(false)
 
   useEffect(() => {
-    if (open) {
-      setLoadingCommitments(true)
-      setLoadingCompanies(true)
-      listProjectCommitmentsForPayablesAction(projectId)
-        .then(setCommitments)
-        .catch(() => toast.error("Failed to load commitments"))
-        .finally(() => setLoadingCommitments(false))
-      listCompaniesAction()
-        .then((rows) => setCompanies(rows.filter((company) => company.company_type === "subcontractor" || company.company_type === "supplier" || company.company_type === "other")))
-        .catch(() => toast.error("Failed to load vendors"))
-        .finally(() => setLoadingCompanies(false))
+    if (!open) return
+    setLoadingCompanies(true)
+    listCompaniesAction()
+      .then((rows) => setCompanies(rows.filter((company) => company.company_type === "subcontractor" || company.company_type === "supplier" || company.company_type === "other")))
+      .catch(() => toast.error("Failed to load vendors"))
+      .finally(() => setLoadingCompanies(false))
+  }, [open])
+
+  // Commitments belong to one project, so they reload whenever the project does —
+  // and are emptied when there is no project yet, rather than showing another
+  // job's subcontracts.
+  useEffect(() => {
+    if (!open) return
+    if (!selectedProjectId) {
+      setCommitments([])
+      return
     }
-  }, [open, projectId])
+    let cancelled = false
+    setLoadingCommitments(true)
+    listProjectCommitmentsForPayablesAction(selectedProjectId)
+      .then((rows) => { if (!cancelled) setCommitments(rows) })
+      .catch(() => { if (!cancelled) toast.error("Failed to load commitments") })
+      .finally(() => { if (!cancelled) setLoadingCommitments(false) })
+    return () => { cancelled = true }
+  }, [open, selectedProjectId])
+
+  // A file dropped on the desk opens this sheet already holding it, so the scan
+  // starts without the user having to pick the same file a second time.
+  useEffect(() => {
+    if (!open || !initialFile) return
+    void handleFileSelected(initialFile)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialFile])
 
   const amountCents = Math.round((Number.parseFloat(amountDollars) || 0) * 100)
   const selectedCommitment =
@@ -115,7 +148,7 @@ export function AddPayableSheet({
     ? companies.find((company) => normalizeName(company.name) === normalizeName(vendorName))
     : null
   const canCreateVendor = vendorName.trim().length >= 2 && !exactCompany
-  const isValid = billNumber && amountCents > 0 && billDate && (companyId || commitmentId !== NO_COMMITMENT)
+  const isValid = Boolean(selectedProjectId) && billNumber && amountCents > 0 && billDate && (companyId || commitmentId !== NO_COMMITMENT)
 
   function applyVendor(value: string) {
     setVendorName(value)
@@ -182,7 +215,7 @@ export function AddPayableSheet({
     try {
       const formData = new FormData()
       formData.append("invoice", nextFile)
-      const result = unwrapAction(await extractPayableInvoiceAction(projectId, formData))
+      const result = unwrapAction(await extractPayableInvoiceAction(formData))
       if (!result.ok) {
         toast.error(result.error)
         return
@@ -222,6 +255,7 @@ export function AddPayableSheet({
   }
 
   const handleSubmit = () => {
+    if (!selectedProjectId) return
     startTransition(async () => {
       try {
         let fileId = null
@@ -229,14 +263,14 @@ export function AddPayableSheet({
           setIsUploading(true)
           const formData = new FormData()
           formData.append("file", file)
-          formData.append("projectId", projectId)
+          formData.append("projectId", selectedProjectId)
           formData.append("category", "financials")
           const uploaded = unwrapAction(await uploadFileAction(formData))
           fileId = uploaded.id
           setIsUploading(false)
         }
 
-        const result = unwrapAction(await createProjectVendorBillAction(projectId, {
+        const result = unwrapAction(await createProjectVendorBillAction(selectedProjectId, {
           commitment_id: commitmentId === NO_COMMITMENT ? null : commitmentId,
           company_id: companyId || undefined,
           vendor_name: selectedCompany?.name ?? (vendorName.trim() || undefined),
@@ -265,6 +299,7 @@ export function AddPayableSheet({
   }
 
   const resetForm = () => {
+    setSelectedProjectId(projectId ?? NO_PROJECT)
     setCommitmentId(NO_COMMITMENT)
     setCompanyId("")
     setVendorName("")
@@ -342,6 +377,36 @@ export function AddPayableSheet({
 
           {/* Details Section */}
           <div className="space-y-6">
+            {projectId ? null : (
+              <div className="space-y-2">
+                <Label className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Project</Label>
+                <Select
+                  value={selectedProjectId}
+                  onValueChange={(value) => {
+                    setSelectedProjectId(value)
+                    // Commitments are project-scoped, so a project change drops any
+                    // commitment picked against the previous one.
+                    setCommitmentId(NO_COMMITMENT)
+                  }}
+                >
+                  <SelectTrigger className="h-11">
+                    <SelectValue placeholder="Which job is this invoice for?" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(projects ?? []).map((project) => (
+                      <SelectItem key={project.id} value={project.id}>
+                        {project.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Scanning fills in the vendor and amounts. The job is the one thing
+                  an invoice cannot tell us.
+                </p>
+              </div>
+            )}
+
             <div className="space-y-2">
               <Label className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Arc vendor</Label>
               <Popover open={vendorPickerOpen} onOpenChange={setVendorPickerOpen}>
@@ -393,9 +458,9 @@ export function AddPayableSheet({
 
             <div className="space-y-2">
               <Label className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Source Commitment</Label>
-              <Select value={commitmentId} onValueChange={handleCommitmentChange}>
+              <Select value={commitmentId} onValueChange={handleCommitmentChange} disabled={!selectedProjectId}>
                 <SelectTrigger className="h-11">
-                  <SelectValue placeholder={loadingCommitments ? "Loading..." : "Select commitment"} />
+                  <SelectValue placeholder={!selectedProjectId ? "Choose a project first" : loadingCommitments ? "Loading..." : "Select commitment"} />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={NO_COMMITMENT}>

@@ -832,6 +832,21 @@ export class QBOClient {
     return result.BillPayment
   }
 
+  /**
+   * Delete a bill payment, which is how QuickBooks reverses one — there is no
+   * void operation for BillPayment as there is for Invoice. Deleting reopens the
+   * linked bill's balance, which is exactly what an ACH return means happened.
+   */
+  async deleteBillPayment(billPayment: { Id: string; SyncToken: string }): Promise<void> {
+    if (!billPayment.Id || !billPayment.SyncToken) {
+      throw new Error("BillPayment Id and SyncToken required for delete")
+    }
+    await this.request("POST", "billpayment?operation=delete", {
+      Id: billPayment.Id,
+      SyncToken: billPayment.SyncToken,
+    })
+  }
+
   async createJournalEntry(journalEntry: any): Promise<any> {
     const result = await this.request<{ JournalEntry: any }>("POST", "journalentry", journalEntry)
     return result.JournalEntry

@@ -41,6 +41,8 @@ export const vendorBillStatusUpdateSchema = z.object({
   qbo_vendor_name: z.string().optional(),
   payment_method: paymentMethodInputSchema.optional(),
   payment_reference: z.string().max(200).optional(),
+  /** A real identifier, checked for duplicates — not a note in the reference field. */
+  check_number: z.string().trim().min(1).max(40).optional(),
   payment_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid payment date").optional(),
   payment_amount_cents: z.number().int().min(1).optional(),
   retainage_percent: z.number().min(0).max(25).optional(),

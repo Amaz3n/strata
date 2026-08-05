@@ -2,7 +2,6 @@ import "server-only"
 
 import { z } from "zod"
 
-import { payableOutstandingCents } from "@/lib/financials/payables-rules"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
@@ -58,80 +57,6 @@ export async function listCompanyPaymentReadiness(
     }
   }
   return readiness
-}
-
-export interface UnpayableVendor {
-  companyId: string
-  companyName: string
-  status: CompanyPaymentReadinessStatus
-  openBillCount: number
-  outstandingCents: number
-}
-
-/**
- * Vendors this builder owes money to right now but cannot pay electronically.
- *
- * This is the highest-intent moment to ask a vendor to set up direct deposit —
- * there is a real amount waiting — so the payables desk, not the directory, is
- * where activation actually comes from.
- */
-export async function listUnpayableVendorsWithOpenBills(
-  projectIds: string[] | null = null,
-  orgId?: string,
-): Promise<UnpayableVendor[]> {
-  const context = await requireOrgContext(orgId)
-  if (projectIds && projectIds.length === 0) return []
-  const supabase = createServiceSupabaseClient()
-  let query = supabase
-    .from("vendor_bills")
-    .select("company_id,total_cents,paid_cents,retainage_cents")
-    .eq("org_id", context.orgId)
-    .in("status", ["approved", "partial"])
-    .not("company_id", "is", null)
-    .limit(1000)
-  if (projectIds) query = query.in("project_id", projectIds)
-  const { data: bills, error } = await query
-  if (error) throw new Error(`Unable to load open payables: ${error.message}`)
-
-  const byCompany = new Map<string, { openBillCount: number; outstandingCents: number }>()
-  for (const bill of bills ?? []) {
-    if (!bill.company_id) continue
-    const outstanding = payableOutstandingCents({
-      total_cents: Number(bill.total_cents ?? 0),
-      paid_cents: Number(bill.paid_cents ?? 0),
-      retainage_cents: Number(bill.retainage_cents ?? 0),
-    })
-    if (outstanding <= 0) continue
-    const entry = byCompany.get(bill.company_id) ?? { openBillCount: 0, outstandingCents: 0 }
-    entry.openBillCount += 1
-    entry.outstandingCents += outstanding
-    byCompany.set(bill.company_id, entry)
-  }
-  const companyIds = [...byCompany.keys()]
-  if (companyIds.length === 0) return []
-
-  const [readiness, { data: companies, error: companyError }] = await Promise.all([
-    listCompanyPaymentReadiness(companyIds, context.orgId),
-    supabase.from("companies").select("id,name").eq("org_id", context.orgId).in("id", companyIds),
-  ])
-  if (companyError) throw new Error(`Unable to load vendor names: ${companyError.message}`)
-  const nameById = new Map((companies ?? []).map((company) => [company.id, company.name]))
-
-  return companyIds
-    .flatMap((companyId) => {
-      const status = readiness.get(companyId)?.status ?? "not_started"
-      if (status === "ready") return []
-      const totals = byCompany.get(companyId)
-      if (!totals) return []
-      return [{
-        companyId,
-        companyName: nameById.get(companyId) ?? "Vendor",
-        status,
-        openBillCount: totals.openBillCount,
-        outstandingCents: totals.outstandingCents,
-      }]
-    })
-    .sort((left, right) => right.outstandingCents - left.outstandingCents)
 }
 
 /**

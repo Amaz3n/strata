@@ -1420,15 +1420,22 @@ export async function syncBillPaymentToQBO(paymentId: string, orgId: string, opt
       return { success: false, error: "Choose a default QuickBooks payment account before syncing bill payments" }
     }
 
+    // Record the rail the money actually moved on. Everything used to post as a
+    // check, so an auditor reviewing a year of electronic vendor payments saw a
+    // year of checks. QuickBooks has no ACH PayType — the electronic equivalent
+    // is CreditCard against the funding account — so anything not a literal
+    // check maps there rather than misreporting the instrument.
+    const isCheck = String(payment.method ?? "check") === "check"
+    const payType = isCheck ? "Check" : "CreditCard"
     const qboPayment = await client.createBillPayment({
       VendorRef: vendorRef,
-      PayType: "Check",
+      PayType: payType,
       TxnDate: payment.received_at ? new Date(payment.received_at).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
       TotalAmt: payment.amount_cents / 100,
       PrivateNote: payment.reference ?? undefined,
-      CheckPayment: {
-        BankAccountRef: { value: paymentAccountId },
-      },
+      ...(isCheck
+        ? { CheckPayment: { BankAccountRef: { value: paymentAccountId } } }
+        : { CreditCardPayment: { CCAccountRef: { value: paymentAccountId } } }),
       Line: [
         {
           Amount: payment.amount_cents / 100,
@@ -1462,6 +1469,69 @@ export async function syncBillPaymentToQBO(paymentId: string, orgId: string, opt
       qbo_fault_detail: error instanceof QBOError ? error.faultDetail : undefined,
       intuit_tid: error instanceof QBOError ? error.intuitTid : undefined,
     })
+    return { success: false, error: message }
+  }
+}
+
+/**
+ * Reverse a bill payment in QuickBooks after an ACH return.
+ *
+ * Arc reopens the vendor bill when money comes back; without this the books
+ * diverge permanently — QuickBooks keeps a payment for funds the bank pulled
+ * back, and the bill shows paid there and open here forever.
+ *
+ * Deleting is how QuickBooks reverses a BillPayment (there is no void for this
+ * entity), and it restores the linked bill's open balance, which is exactly the
+ * state a return leaves Arc in.
+ */
+export async function voidBillPaymentInQBO(
+  paymentId: string,
+  orgId: string,
+  reason: string,
+  options?: { connectionId?: string },
+) {
+  const supabase = createServiceSupabaseClient()
+  const resolvedConnectionId = await resolveHealthConnectionId(orgId, options?.connectionId)
+  if (!resolvedConnectionId) return { success: false, error: "No active QBO connection" }
+  const client = await QBOClient.forConnection(resolvedConnectionId)
+  if (!client) return { success: false, error: "No active QBO connection" }
+
+  const { data: record } = await supabase
+    .from("accounting_sync_records")
+    .select("external_id")
+    .eq("org_id", orgId)
+    .eq("connection_id", resolvedConnectionId)
+    .eq("entity_type", "bill_payment")
+    .eq("entity_id", paymentId)
+    .maybeSingle()
+  // Nothing was ever pushed, so there is nothing to reverse. Not an error — a
+  // return can land on a payment whose sync never succeeded.
+  if (!record?.external_id) return { success: true, skipped: true }
+
+  try {
+    // SyncToken has to come from QuickBooks, never from a cached copy: an edit
+    // made in QuickBooks since the push would make a stale token fail.
+    const existing = await client.getBillPaymentById(record.external_id)
+    if (!existing) {
+      await supabase.from("accounting_sync_records").delete().eq("org_id", orgId).eq("connection_id", resolvedConnectionId).eq("entity_type", "bill_payment").eq("entity_id", paymentId)
+      return { success: true, skipped: true }
+    }
+    await client.deleteBillPayment({ Id: existing.Id, SyncToken: existing.SyncToken })
+    await supabase
+      .from("accounting_sync_records")
+      .delete()
+      .eq("org_id", orgId)
+      .eq("connection_id", resolvedConnectionId)
+      .eq("entity_type", "bill_payment")
+      .eq("entity_id", paymentId)
+    await markConnectionHealthy(orgId, options?.connectionId)
+    logQBO("info", "bill_payment_void_success", { orgId, paymentId, qboId: record.external_id, reason })
+    return { success: true, qbo_id: record.external_id }
+  } catch (error: any) {
+    const message = error instanceof QBOError ? error.message : error?.message ?? String(error)
+    await markSyncRecordError(orgId, "bill_payment", paymentId, message, options?.connectionId)
+    await markConnectionErrorIfConnectionLevel(orgId, error, message, options?.connectionId)
+    logQBO("error", "bill_payment_void_failed", { orgId, paymentId, error: message })
     return { success: false, error: message }
   }
 }
@@ -2128,6 +2198,7 @@ export const qboProvider: AccountingProvider = {
     supportsAttachments: true,
     supportsJournalEntryPush: true,
     supportsVendorCredits: true,
+    supportsBillPaymentVoid: true,
     updateConcurrency: "sync_token",
     dimensions: ["class", "customer"],
   },
@@ -2158,6 +2229,9 @@ export const qboProvider: AccountingProvider = {
   },
   async pushBillPayment(input) {
     return requirePushResult(await syncBillPaymentToQBO(input.paymentId, input.orgId, { connectionId: input.connectionId }))
+  },
+  async voidBillPayment(input) {
+    return requirePushResult(await voidBillPaymentInQBO(input.paymentId, input.orgId, input.reason, { connectionId: input.connectionId }))
   },
   pushJournalEntry: pushBooksJournalToQbo,
   async listDimensionValues(input) {

@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { z } from "zod"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireOrgContext } from "@/lib/services/context"
@@ -16,7 +17,8 @@ import { APPROVAL_GATE_REASONS, loadApprovalGateSettings } from "@/lib/financial
 import { isCostDrivenBillingModel } from "@/lib/financials/billing-model"
 import { payableOutstandingCents } from "@/lib/financials/payables-rules"
 import { accountingReference, buildAccountingCoding } from "@/lib/services/accounting-coding"
-import { assertBillReleasable } from "@/lib/services/payment-holds"
+import { assertBillReleasable, type PaymentReleaseEvidence } from "@/lib/services/payment-holds"
+import { requireRecentPaymentStepUp } from "@/lib/services/payment-step-up"
 import { evaluateAndAutoApproveVendorBill } from "@/lib/services/invoice-auto-approval"
 import { learnCodingRule, recordCodingTouch, suggestCoding } from "@/lib/services/books/coding-rules"
 
@@ -24,6 +26,7 @@ export type VendorBillStatus = "pending" | "approved" | "partial" | "paid"
 
 /** Hard bound on the project payables query — lists that can grow unbounded get a cap. */
 const PROJECT_PAYABLES_FETCH_LIMIT = 500
+const BULK_APPROVAL_LIMIT = 500
 export type PayableKind = "bill" | "vendor_credit"
 
 export interface VendorBillPaymentSummary {
@@ -98,6 +101,53 @@ export interface VendorBillSummary {
   /** True when this payable originated from a QuickBooks import (QBO owns the record). */
   imported_from_qbo: boolean
   payments: VendorBillPaymentSummary[]
+}
+
+export interface BulkVendorBillApprovalItem {
+  id: string
+  expected_updated_at?: string
+}
+
+/**
+ * Approve a review queue as one database transaction. Validation, row locking,
+ * status changes, audit evidence, events, and durable projection jobs either all
+ * commit or none do. Ledger/accounting projections are idempotent and are also
+ * attempted immediately so the normal UI does not wait for the worker.
+ */
+export async function approveVendorBillsAtomic(
+  items: BulkVendorBillApprovalItem[],
+  orgId?: string,
+): Promise<{ approvedCount: number }> {
+  const parsed = z.array(z.object({
+    id: z.string().uuid(),
+    expected_updated_at: z.string().datetime({ offset: true }).optional(),
+  })).min(1).max(BULK_APPROVAL_LIMIT).parse(items)
+  if (new Set(parsed.map((item) => item.id)).size !== parsed.length) throw new Error("Bulk approval contains duplicate payables")
+
+  const context = await requireOrgContext(orgId)
+  const service = createServiceSupabaseClient()
+  const { data: bills, error } = await service.from("vendor_bills").select("id,project_id").eq("org_id", context.orgId).in("id", parsed.map((item) => item.id))
+  if (error || (bills?.length ?? 0) !== parsed.length) throw new Error("One or more payables could not be found")
+  const projectIds = Array.from(new Set((bills ?? []).map((bill) => bill.project_id)))
+  if (projectIds.some((projectId) => !projectId)) throw new Error("Every payable in a bulk approval must belong to a project")
+  for (const projectId of projectIds as string[]) {
+    await requireAuthorization({ permission: "bill.approve", userId: context.userId, orgId: context.orgId, projectId, supabase: context.supabase, logDecision: true, resourceType: "project", resourceId: projectId })
+  }
+
+  const { data, error: rpcError } = await service.rpc("approve_vendor_bills_atomic", {
+    p_org_id: context.orgId,
+    p_actor_id: context.userId,
+    p_items: parsed,
+  })
+  if (rpcError) throw new Error(rpcError.message)
+
+  // Fast path. The transaction inserted one durable outbox job per bill, so a
+  // temporary projection failure here is retried without weakening approval.
+  await Promise.allSettled(parsed.map(async (item) => {
+    await propagateApprovalToLedger({ source: "vendor_bill", sourceId: item.id, orgId: context.orgId })
+    await enqueueVendorBillSync(item.id, context.orgId)
+  }))
+  return { approvedCount: Number((data as any)?.approved_count ?? parsed.length) }
 }
 
 export const vendorBillSelect = `
@@ -579,6 +629,102 @@ export async function listVendorBillsForProject(projectId: string, orgId?: strin
   return hydrateVendorBills(supabase, resolvedOrgId, data ?? [], projectId)
 }
 
+export interface VendorBillsPage {
+  items: VendorBillSummary[]
+  page: number
+  pageSize: number
+  total: number
+  pageCount: number
+}
+
+export async function listVendorBillsPageForProject(
+  projectId: string,
+  input: { page?: number; pageSize?: number; queue?: string; search?: string } = {},
+  orgId?: string,
+): Promise<VendorBillsPage> {
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAuthorization({ permission: "bill.read", userId, orgId: resolvedOrgId, projectId, supabase, logDecision: true, resourceType: "project", resourceId: projectId })
+  const page = Math.max(1, Math.floor(input.page ?? 1))
+  const pageSize = Math.min(100, Math.max(10, Math.floor(input.pageSize ?? 50)))
+  const queue = String(input.queue ?? "needs_review")
+  const search = String(input.search ?? "").trim().slice(0, 120).replace(/[,%()]/g, " ").trim()
+
+  const { data: allocatedRows, error: allocatedError } = await supabase.from("bill_lines").select("bill_id").eq("org_id", resolvedOrgId).eq("project_id", projectId).limit(5_000)
+  if (allocatedError) throw new Error(`Failed to resolve allocated bills: ${allocatedError.message}`)
+  const allocatedBillIds = Array.from(new Set((allocatedRows ?? []).map((row: any) => row.bill_id).filter(Boolean)))
+  let query = supabase.from("vendor_bills").select(vendorBillSelect, { count: "exact" }).eq("org_id", resolvedOrgId)
+  query = allocatedBillIds.length > 0 ? query.or(`project_id.eq.${projectId},id.in.(${allocatedBillIds.join(",")})`) : query.eq("project_id", projectId)
+  const today = new Date().toISOString().slice(0, 10)
+  const soon = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10)
+  if (queue === "paid") query = query.eq("status", "paid")
+  else if (queue === "payable") query = query.in("status", ["approved", "partial"])
+  else if (queue === "needs_review") query = query.eq("status", "pending")
+  else if (queue === "overdue") query = query.neq("status", "paid").lt("due_date", today)
+  else if (queue === "due_soon") query = query.neq("status", "paid").gte("due_date", today).lte("due_date", soon)
+  if (search) query = query.or(`bill_number.ilike.%${search}%,qbo_vendor_name.ilike.%${search}%`)
+  const { data, error, count } = await query.order("due_date", { ascending: true, nullsFirst: false }).order("created_at", { ascending: false }).range((page - 1) * pageSize, page * pageSize - 1)
+  if (error) throw new Error(`Failed to list vendor bills: ${error.message}`)
+  return { items: await hydrateVendorBills(supabase, resolvedOrgId, data ?? [], projectId), page, pageSize, total: count ?? 0, pageCount: Math.max(1, Math.ceil((count ?? 0) / pageSize)) }
+}
+
+/**
+ * The controls a recorded external payment now carries, mirroring the
+ * electronic path as closely as a single-step action can.
+ *
+ * Full dual approval would mean routing checks through payment runs, which is
+ * the same change that unlocks true joint checks — a real feature, not a
+ * tightening. What is achievable here without inventing a lifecycle is genuine
+ * separation of duties: the person releasing the money is not the person who
+ * approved the obligation.
+ */
+async function assertExternalPaymentControls(input: {
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"]
+  orgId: string
+  userId: string
+  bill: { approved_by?: string | null; total_cents?: number | null }
+  amountCents: number
+  checkNumber: string | null
+}) {
+  const service = createServiceSupabaseClient()
+  const { data: policy } = await service
+    .from("payment_rail_policies")
+    .select("enabled,approval_mode,per_payment_limit_cents")
+    .eq("org_id", input.orgId)
+    .maybeSingle()
+
+  // A duplicate check number is the most common AP data error there is, and the
+  // unique index will reject it anyway — catching it here turns a constraint
+  // violation into a sentence that names the other payment.
+  if (input.checkNumber) {
+    const { data: existingCheck } = await service
+      .from("payments")
+      .select("id,bill_id,amount_cents")
+      .eq("org_id", input.orgId)
+      .eq("check_number", input.checkNumber.trim())
+      .neq("status", "canceled")
+      .maybeSingle()
+    if (existingCheck) {
+      throw new Error(`Check number ${input.checkNumber.trim()} is already recorded against another payment. Void that one first if this is a correction.`)
+    }
+  }
+
+  // Orgs that never configured the rail keep the old behaviour: these controls
+  // describe how an org releases money, and an org with no payment policy has
+  // not made that decision yet.
+  if (!policy) return
+
+  if (policy.approval_mode === "dual" && input.bill.approved_by && input.bill.approved_by === input.userId) {
+    throw new Error("You approved this payable, so someone else has to record its payment. Your organization requires two people to release money.")
+  }
+
+  // Step-up on the same amounts that would trigger it electronically. A check is
+  // not a lower-assurance instrument just because Arc did not print it.
+  const limitCents = policy.per_payment_limit_cents == null ? null : Number(policy.per_payment_limit_cents)
+  if (policy.enabled && limitCents != null && input.amountCents > limitCents) {
+    await requireRecentPaymentStepUp()
+  }
+}
+
 export async function updateVendorBillStatus({ billId, input, orgId }: { billId: string; input: VendorBillStatusUpdate; orgId?: string }): Promise<VendorBillSummary> {
   const parsed = vendorBillStatusUpdateSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
@@ -631,8 +777,29 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
     throw new Error("Bill must be approved before it can be marked paid")
   }
 
+  // The release gate was already shared with the electronic path. What was not
+  // shared is everything around it: an ACH payment needed two designated
+  // approvers, a fresh two-factor challenge and a frozen evidence snapshot,
+  // while the same money recorded as a check needed one person and free text.
+  // In construction the check payments carry the higher lien risk, so the
+  // control model was pointing the wrong way.
+  let externalReleaseEvidence: PaymentReleaseEvidence | null = null
   if (parsed.status === "paid" || parsed.status === "partial") {
-    await assertBillReleasable(billId, resolvedOrgId)
+    externalReleaseEvidence = await assertBillReleasable(billId, resolvedOrgId)
+    await assertExternalPaymentControls({
+      supabase,
+      orgId: resolvedOrgId,
+      userId,
+      bill: existing,
+      // `remainingCents` is computed further down; the outstanding balance is
+      // derivable here from the row already in hand.
+      amountCents: parsed.payment_amount_cents ?? payableOutstandingCents({
+        total_cents: existing.total_cents ?? 0,
+        paid_cents: typeof existing.paid_cents === "number" ? existing.paid_cents : 0,
+        retainage_cents: existing.retainage_cents ?? 0,
+      }),
+      checkNumber: parsed.check_number ?? null,
+    })
   }
 
   if (parsed.status === "partial" && parsed.payment_amount_cents == null && existing.status !== "partial") {
@@ -904,6 +1071,20 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
           currency: existing.currency ?? "usd",
           method: parsed.payment_method ?? "check",
           reference: parsed.payment_reference ?? null,
+          check_number: parsed.check_number ?? null,
+          // Frozen, not recomputed. This is what an auditor is shown when they
+          // ask what was true about holds and waivers at the moment this
+          // payment was recorded.
+          release_evidence: externalReleaseEvidence
+            ? {
+                holds: externalReleaseEvidence.holdEvaluation,
+                waiver: externalReleaseEvidence.waiverEvidence,
+                construction: externalReleaseEvidence.constructionEvidence,
+                subtier_waivers_required: externalReleaseEvidence.subtierWaiversRequired,
+                captured_at: externalReleaseEvidence.capturedAt,
+                recorded_by: userId,
+              }
+            : null,
           received_at: parsed.payment_date ? `${parsed.payment_date}T12:00:00.000Z` : new Date().toISOString(),
           status: "succeeded",
           provider: "manual",

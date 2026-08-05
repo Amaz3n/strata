@@ -1,7 +1,6 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react"
-import Link from "next/link"
 import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-stripe-js"
 import { loadStripe } from "@stripe/stripe-js"
 import { useRouter, useSearchParams } from "next/navigation"
@@ -13,7 +12,7 @@ import {
   decidePaymentControlChangeAction,
   updatePaymentRailPolicyAction,
 } from "@/app/(app)/settings/payment-actions"
-import { ArrowRight, Building2, CheckCircle2, Circle, Clock, KeyRound, Lock, ShieldCheck, Users } from "@/components/icons"
+import { Building2, CheckCircle2, Circle, Clock, KeyRound, Lock, ShieldCheck, Users } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -27,7 +26,7 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { PaymentApproversGroup } from "@/components/settings/payment-approvers-group"
-import { InfoRow, SettingsError, SettingsField, SettingsGroup } from "@/components/settings/settings-section"
+import { SettingsError, SettingsField, SettingsGroup, SettingsToggle } from "@/components/settings/settings-section"
 import { unwrapAction } from "@/lib/action-result"
 import type { PaymentRailSettings } from "@/lib/services/payment-rail-setup"
 import { cn } from "@/lib/utils"
@@ -255,7 +254,6 @@ export function PaymentRailPanel({
   const [rejecting, setRejecting] = useState<{ id: string; label: string } | null>(null)
   const [rejectReason, setRejectReason] = useState("")
   const settings = initialSettings
-  const [approvalMode, setApprovalMode] = useState<"sole" | "dual">(settings?.policy.approvalMode ?? "dual")
   const [coolingHours, setCoolingHours] = useState(String(settings?.policy.coolingHours ?? 72))
   const [perPayment, setPerPayment] = useState(centsToDollars(settings?.policy.perPaymentLimitCents ?? null))
   const [perRun, setPerRun] = useState(centsToDollars(settings?.policy.perRunLimitCents ?? null))
@@ -325,7 +323,6 @@ export function PaymentRailPanel({
   const enabled = settings.policy.enabled
 
   const policyDirty =
-    approvalMode !== settings.policy.approvalMode ||
     Number(coolingHours) !== settings.policy.coolingHours ||
     dollarsToCents(perPayment) !== settings.policy.perPaymentLimitCents ||
     dollarsToCents(perRun) !== settings.policy.perRunLimitCents ||
@@ -342,7 +339,6 @@ export function PaymentRailPanel({
   const savePolicy = () => {
     if (capError) return
     perform(() => updatePaymentRailPolicyAction({
-      approval_mode: approvalMode,
       control_change_cooling_hours: Number(coolingHours),
       per_payment_limit_cents: perPaymentCents,
       per_run_limit_cents: perRunCents,
@@ -393,102 +389,53 @@ export function PaymentRailPanel({
             }
           : { state: "current" as const, detail: "Waiting on review." }
 
-  const armStep = enabled
-    ? { state: "done" as const, detail: "Payment runs can debit your account." }
-    : activeFunding
-      ? { state: "current" as const, detail: "Everything is in place. Nothing moves until you switch it on." }
-      : { state: "waiting" as const, detail: "Available once a funding bank is approved." }
-
-  const headline = enabled
-    ? "Payments are on."
-    : !hasFunding
-      ? "Connect a bank to get started."
-      : !activeFunding
-        ? "Your funding bank is under review."
-        : "Everything is ready. Turn it on when you are."
-
-  const lede = enabled
-    ? "Runs are built from approved, released bills in Payables. Arc re-checks holds and waivers when a run is submitted, not just when it was drafted."
-    : !hasFunding
-      ? "Nothing can move until a funding bank clears two approvals and a cooling period. Your subs can verify their payout accounts in the meantime."
-      : !activeFunding
-        ? "The delay is the point: it is your window to catch a bank change nobody in your office made."
-        : "Switching payments on lets a prepared run debit your account. Approvals and caps still apply to every run."
-
   return (
     <div className="mx-auto w-full max-w-4xl space-y-10 px-5 py-8 lg:px-8 lg:py-10">
-      <div className="border-l-2 border-primary pl-4">
-        <p className="microlabel">Vendor payments</p>
-        <h2 className="mt-2 text-xl font-semibold tracking-tight">{headline}</h2>
-        <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">{lede}</p>
-      </div>
-
       {error ? <SettingsError>{error}</SettingsError> : null}
 
-      {enabled ? (
-        <div className="border bg-muted/30 p-5 sm:flex sm:items-center sm:justify-between sm:gap-6">
-          <div className="flex items-start gap-3">
-            <ShieldCheck className="mt-0.5 size-5 shrink-0 text-success" />
-            <div>
-              <p className="text-sm font-medium">
-                {activeFunding ? `Funded by ${fundingLabel(activeFunding)}` : "Electronic payments are armed"}
-              </p>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                {settings.policy.approvalMode === "dual" ? "Two approvers" : "One approver"} per run, never the preparer.
-                {" "}{settings.vendors.ready} {settings.vendors.ready === 1 ? "vendor is" : "vendors are"} ready to receive an ACH payment.
-              </p>
-            </div>
+      <SettingsGroup title="Vendor payments">
+        <SettingsToggle
+          id="payments-enabled"
+          label="Electronic vendor payments"
+          description={enabled
+            ? "Approved payment runs can debit your funding bank. Approvals and caps still apply to every run."
+            : activeFunding
+              ? "Off. Runs can be prepared but nothing debits your account until you switch this on."
+              : "Available once a funding bank is approved and past its cooling period."}
+          checked={enabled}
+          disabled={!settings.canManage || pending || (!enabled && !activeFunding)}
+          onCheckedChange={(next) => {
+            if (!next && !window.confirm("Turn off electronic vendor payments? Runs in flight keep settling, but no new run can be created.")) return
+            perform(
+              () => updatePaymentRailPolicyAction({ enabled: next }),
+              next ? "Electronic payments turned on" : "Electronic payments turned off",
+            )
+          }}
+        />
+        {!enabled ? (
+          <>
+            <Step
+              state={fundingStep.state}
+              title="Connect your funding bank"
+              detail={fundingStep.detail}
+              action={!hasFunding && settings.canManage ? (
+                <Button size="sm" onClick={startBankSetup} disabled={pending}>Connect bank</Button>
+              ) : null}
+            />
+            <Step
+              state={reviewStep.state}
+              title="Second approval and cooling period"
+              detail={reviewStep.detail}
+            />
+          </>
+        ) : null}
+        {!settings.canManage ? (
+          <div className="flex items-start gap-2 py-4 text-xs leading-5 text-muted-foreground">
+            <Lock className="mt-0.5 size-3.5 shrink-0" />
+            You can see how payments are configured but cannot change them.
           </div>
-          <div className="mt-4 flex items-center gap-2 sm:mt-0">
-            {settings.canManage ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={pending}
-                onClick={() => {
-                  if (!window.confirm("Turn off electronic vendor payments? Runs in flight keep settling, but no new run can be created.")) return
-                  perform(() => updatePaymentRailPolicyAction({ enabled: false }), "Electronic payments turned off")
-                }}
-              >
-                Turn off
-              </Button>
-            ) : null}
-            <Button asChild size="sm"><Link href="/payables/payment-runs">Open payment runs</Link></Button>
-          </div>
-        </div>
-      ) : (
-        <SettingsGroup title="Activation">
-          <Step
-            state={fundingStep.state}
-            title="Connect your funding bank"
-            detail={fundingStep.detail}
-            action={!hasFunding && settings.canManage ? (
-              <Button size="sm" onClick={startBankSetup} disabled={pending}>Connect bank</Button>
-            ) : null}
-          />
-          <Step
-            state={reviewStep.state}
-            title="Second approval and cooling period"
-            detail={reviewStep.detail}
-          />
-          <Step
-            state={armStep.state}
-            title="Turn payments on"
-            detail={armStep.detail}
-            action={armStep.state === "current" && settings.canManage ? (
-              <Button size="sm" disabled={pending} onClick={() => perform(() => updatePaymentRailPolicyAction({ enabled: true }), "Electronic payments turned on")}>
-                Turn on
-              </Button>
-            ) : null}
-          />
-          {!settings.canManage ? (
-            <div className="flex items-start gap-2 py-4 text-xs leading-5 text-muted-foreground">
-              <Lock className="mt-0.5 size-3.5 shrink-0" />
-              You can see how payments are configured but cannot change them.
-            </div>
-          ) : null}
-        </SettingsGroup>
-      )}
+        ) : null}
+      </SettingsGroup>
 
       {settings.controlChanges.length > 0 ? (
         <SettingsGroup
@@ -544,30 +491,48 @@ export function PaymentRailPanel({
           <Button size="sm" variant="outline" onClick={startBankSetup} disabled={pending}>Add bank</Button>
         ) : null}
       >
-        {hasFunding ? settings.fundingSources.map((source) => (
-          <div key={source.id} className="flex items-center justify-between gap-4 py-4">
-            <div className="flex min-w-0 items-center gap-3">
-              <Building2 className="size-4 shrink-0 text-muted-foreground" />
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium">{fundingLabel(source)}</p>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  {source.status === "active" && source.usableAfter && new Date(source.usableAfter).getTime() > now ? (
-                    <>Approved — usable after <LocalTime iso={source.usableAfter} />.</>
-                  ) : source.status === "active" ? (
-                    source.isDefault ? "Funding your payments." : "Approved and available."
-                  ) : source.status === "pending_approval" ? (
-                    "Waiting on a second approval."
-                  ) : source.status === "cooling_off" ? (
-                    "Approved, finishing its cooling period."
-                  ) : (
-                    `${source.status.replaceAll("_", " ")} · ${source.verificationStatus.replaceAll("_", " ")}`
-                  )}
-                </p>
+        {hasFunding ? (
+          // One child so the group's own hairline divider never doubles up with
+          // the default bank's own border.
+          <div>
+            {settings.fundingSources.map((source) => (
+              <div
+                key={source.id}
+                className={cn(
+                  "flex items-center justify-between gap-4",
+                  source.isDefault
+                    ? "my-3 border border-success bg-success/5 p-4 first:mt-0"
+                    : "border-t border-border py-4 first:border-t-0",
+                )}
+              >
+                <div className="flex min-w-0 items-center gap-3">
+                  <Building2 className={cn("size-4 shrink-0", source.isDefault ? "text-success" : "text-muted-foreground")} />
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{fundingLabel(source)}</p>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      {source.status === "active" && source.usableAfter && new Date(source.usableAfter).getTime() > now ? (
+                        <>Approved — usable after <LocalTime iso={source.usableAfter} />.</>
+                      ) : source.status === "active" ? (
+                        source.isDefault ? "Funding your payments." : "Approved and available."
+                      ) : source.status === "pending_approval" ? (
+                        "Waiting on a second approval."
+                      ) : source.status === "cooling_off" ? (
+                        "Approved, finishing its cooling period."
+                      ) : (
+                        `${source.status.replaceAll("_", " ")} · ${source.verificationStatus.replaceAll("_", " ")}`
+                      )}
+                    </p>
+                  </div>
+                </div>
+                {source.isDefault ? (
+                  <span className="shrink-0 border border-success/40 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-success">
+                    Default
+                  </span>
+                ) : null}
               </div>
-            </div>
-            {source.isDefault ? <span className="shrink-0 text-xs text-muted-foreground">Default</span> : null}
+            ))}
           </div>
-        )) : (
+        ) : (
           <div className="flex items-center gap-3 py-5 text-sm text-muted-foreground">
             <Building2 className="size-4" /> No funding bank connected yet.
           </div>
@@ -578,20 +543,6 @@ export function PaymentRailPanel({
         title="Controls"
         description="These apply to every electronic payment run. Caps are checked when a run is built and again when it is submitted."
       >
-        <SettingsField
-          label="Approvers per run"
-          htmlFor="approval-mode"
-          hint="Whoever prepares a run never counts as one of its approvers."
-        >
-          <Select value={approvalMode} onValueChange={(value) => setApprovalMode(value === "sole" ? "sole" : "dual")} disabled={!settings.canManage}>
-            <SelectTrigger id="approval-mode" className="max-w-sm"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="sole">One approver</SelectItem>
-              <SelectItem value="dual">Two approvers</SelectItem>
-            </SelectContent>
-          </Select>
-        </SettingsField>
-
         <SettingsField
           label="Bank-change cooling period"
           htmlFor="cooling-hours"
@@ -629,9 +580,9 @@ export function PaymentRailPanel({
         {capError ? <SettingsError className="py-3">{capError}</SettingsError> : null}
 
         {settings.canManage ? (
-          <div className="flex items-center gap-3 py-4">
-            <Button onClick={savePolicy} disabled={pending || !policyDirty || Boolean(capError)}>Save controls</Button>
+          <div className="flex items-center justify-end gap-3 py-4">
             {policyDirty && !capError ? <span className="text-xs text-muted-foreground">Unsaved changes</span> : null}
+            <Button onClick={savePolicy} disabled={pending || !policyDirty || Boolean(capError)}>Save controls</Button>
           </div>
         ) : null}
       </SettingsGroup>
@@ -642,51 +593,6 @@ export function PaymentRailPanel({
         approvalMode={settings.policy.approvalMode}
         canManage={settings.canManage}
       />
-
-      <SettingsGroup
-        title="Vendors"
-        description="Subs verify their own payout account once, then reuse it with every builder they work with on Arc."
-      >
-        <InfoRow label="Ready to be paid" hint="Verified with the payment provider and payouts enabled.">
-          <span className="tabular-nums">{settings.vendors.ready}</span>
-        </InfoRow>
-        <InfoRow label="Still verifying" hint="Started setup but the provider still needs something from them.">
-          <span className="tabular-nums">{settings.vendors.inProgress}</span>
-        </InfoRow>
-        <div className="flex items-start gap-2 py-4 text-xs leading-5 text-muted-foreground">
-          <Users className="mt-0.5 size-3.5 shrink-0" />
-          A Payments section is showing in your sub portals now. Vendors start there — you never enter, see, or change a vendor&apos;s bank details.
-        </div>
-      </SettingsGroup>
-
-      <SettingsGroup
-        title="How the money moves"
-        description="A bill is not paid the moment your account is debited. Arc labels each stage for exactly this reason."
-      >
-        <div className="grid gap-4 py-4 sm:grid-cols-3">
-          <div>
-            <p className="text-xs text-muted-foreground">1 · Debited</p>
-            <p className="mt-1 text-sm font-medium">Your bank</p>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">ACH pulls the run total from your funding bank.</p>
-          </div>
-          <div>
-            <p className="text-xs text-muted-foreground">2 · In transit</p>
-            <p className="mt-1 text-sm font-medium">With the provider</p>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">Funds clear before anything is sent on. A return here reopens the payable.</p>
-          </div>
-          <div>
-            <p className="text-xs text-muted-foreground">3 · Paid</p>
-            <p className="mt-1 text-sm font-medium">Vendor&apos;s bank</p>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">Only now is the bill marked paid and the unconditional waiver due.</p>
-          </div>
-        </div>
-        <div className="flex items-center justify-between gap-4 py-4">
-          <p className="text-xs leading-5 text-muted-foreground">Every stage is reconciled daily against the provider and the ledger.</p>
-          <Button asChild size="sm" variant="outline">
-            <Link href="/payables/payment-runs">Payment runs <ArrowRight className="ml-1.5 size-3.5" /></Link>
-          </Button>
-        </div>
-      </SettingsGroup>
 
       <Dialog open={Boolean(setup)} onOpenChange={(open) => { if (!open) setSetup(null) }}>
         <DialogContent className="sm:max-w-lg">

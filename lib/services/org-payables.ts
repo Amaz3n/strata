@@ -28,8 +28,8 @@ import type {
  * Open payables carry the work — they are the desk. Settled ones are history, kept
  * to a recent window so the Paid tab is useful without dragging years of rows along.
  */
-const OPEN_FETCH_LIMIT = 500
-const SETTLED_FETCH_LIMIT = 150
+const DEFAULT_PAGE_SIZE = 50
+const MAX_PAGE_SIZE = 100
 
 /** Statuses that are no longer real obligations and never appear on the desk. */
 const CLOSED_STATUSES = ["void", "voided", "cancelled", "canceled"]
@@ -60,14 +60,15 @@ export interface OrgPayablesDeskData {
   costCodes: CostCode[]
   complianceRules: ComplianceRules
   complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>
-  /** Bill id → the scanned invoice to open from the row, when one exists. */
-  documentFileIdByBillId: Record<string, string>
   /** Company id → whether this builder can pay them electronically yet. */
   paymentReadinessByCompanyId: Record<string, CompanyPaymentReadinessStatus>
   /** Bill id → the active payment run that already claims it, when one does. */
   runMembershipByBillId: Record<string, PayableRunMembership>
   /** True when more open payables exist than were fetched. */
   truncated: boolean
+  pagination: { page: number; pageSize: number; total: number; pageCount: number }
+  query: { tab: "due" | "approval" | "approved" | "paid" | "all"; search: string }
+  counts: Record<"due" | "approval" | "approved" | "paid" | "all", number>
   /** Forwarding address for emailed vendor invoices, when the org has a slug. */
   inboundBillsEmail: string | null
 }
@@ -86,6 +87,7 @@ const DEFAULT_COMPLIANCE_RULES: ComplianceRules = {
  */
 export async function loadOrgPayablesDesk(
   projectIds: string[] | null = null,
+  input: { tab?: string; search?: string; page?: number; pageSize?: number } = {},
 ): Promise<OrgPayablesDeskData> {
   const { supabase, orgId, userId } = await requireOrgContext()
   await requireAnyPermission(["bill.read", "payment.read"], {
@@ -98,10 +100,16 @@ export async function loadOrgPayablesDesk(
     projectIds === null
       ? []
       : await getReportingExcludedProjectIds(supabase, orgId)
-  const scoped = () => {
+  const tab = (["due", "approval", "approved", "paid", "all"] as const).includes(input.tab as any) ? input.tab as "due" | "approval" | "approved" | "paid" | "all" : "due"
+  const search = String(input.search ?? "").trim().slice(0, 120)
+  const searchFilter = search.replace(/[,%()]/g, " ").trim()
+  const page = Math.max(1, Math.floor(input.page ?? 1))
+  const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(10, Math.floor(input.pageSize ?? DEFAULT_PAGE_SIZE)))
+  const from = (page - 1) * pageSize
+  const scoped = (count = false) => {
     const query = supabase
       .from("vendor_bills")
-      .select(vendorBillSelect)
+      .select(count ? "id" : vendorBillSelect, count ? { count: "exact", head: true } : { count: "exact" })
       .eq("org_id", orgId)
     return applyProjectIdScope(
       applyReportingExclusion(query, excludedProjectIds),
@@ -109,28 +117,33 @@ export async function loadOrgPayablesDesk(
     )
   }
 
-  const [org, openResult, settledResult] = await Promise.all([
+  const applyTab = (query: any, key: typeof tab) => {
+    if (key === "paid") return query.eq("status", "paid")
+    if (key === "approval") return query.eq("status", "pending")
+    if (key === "approved") return query.in("status", ["approved", "partial"])
+    if (key === "due") return query.not("status", "in", `(${[...CLOSED_STATUSES, "paid"].join(",")})`)
+    return query.not("status", "in", `(${CLOSED_STATUSES.join(",")})`)
+  }
+  const applySearch = (query: any) => searchFilter
+    ? query.or(`bill_number.ilike.%${searchFilter}%,qbo_vendor_name.ilike.%${searchFilter}%`)
+    : query
+  const pageQuery = applySearch(applyTab(scoped(), tab))
+    .order(tab === "paid" ? "paid_at" : "due_date", { ascending: tab !== "paid", nullsFirst: false })
+    .order("created_at", { ascending: false })
+    .range(from, from + pageSize - 1)
+  const [org, pageResult, dueCount, approvalCount, approvedCount, paidCount, allCount] = await Promise.all([
     supabase.from("orgs").select("slug").eq("id", orgId).maybeSingle(),
-    scoped()
-      .not("status", "in", `(${[...CLOSED_STATUSES, "paid"].join(",")})`)
-      .order("due_date", { ascending: true, nullsFirst: false })
-      .order("created_at", { ascending: false })
-      .limit(OPEN_FETCH_LIMIT),
-    scoped()
-      .eq("status", "paid")
-      .order("paid_at", { ascending: false, nullsFirst: false })
-      .order("created_at", { ascending: false })
-      .limit(SETTLED_FETCH_LIMIT),
+    pageQuery,
+    applyTab(scoped(true), "due"),
+    applyTab(scoped(true), "approval"),
+    applyTab(scoped(true), "approved"),
+    applyTab(scoped(true), "paid"),
+    applyTab(scoped(true), "all"),
   ])
 
-  if (openResult.error)
-    throw new Error(`Failed to load payables: ${openResult.error.message}`)
-  if (settledResult.error)
-    throw new Error(
-      `Failed to load paid payables: ${settledResult.error.message}`,
-    )
+  if (pageResult.error) throw new Error(`Failed to load payables: ${pageResult.error.message}`)
 
-  const rows = [...(openResult.data ?? []), ...(settledResult.data ?? [])]
+  const rows = pageResult.data ?? []
   const bills = await hydrateVendorBills(supabase, orgId, rows)
   const companyIds = bills
     .map((bill) => bill.company_id)
@@ -143,22 +156,12 @@ export async function loadOrgPayablesDesk(
     complianceRulesResult,
     complianceStatusResult,
     readinessResult,
-    attachmentsResult,
     runItemsResult,
   ] = await Promise.allSettled([
     listCostCodes(orgId),
     getComplianceRules(orgId),
     getCompaniesComplianceStatus(companyIds, orgId),
     listCompanyPaymentReadiness(companyIds, orgId),
-    supabase
-      .from("file_links")
-      .select("entity_id, file_id")
-      .eq("org_id", orgId)
-      .eq("entity_type", "vendor_bill")
-      .in(
-        "entity_id",
-        bills.map((bill) => bill.id),
-      ),
     supabase
       .from("payment_run_items")
       .select("bill_id, run_id, status")
@@ -169,18 +172,6 @@ export async function loadOrgPayablesDesk(
         bills.map((bill) => bill.id),
       ),
   ])
-
-  // A payable's scanned invoice is either attached to it or stamped on the row
-  // itself, depending on how it arrived (email ingest, upload, accounting import).
-  const documentFileIdByBillId: Record<string, string> = {}
-  for (const bill of bills) {
-    if (bill.file_id) documentFileIdByBillId[bill.id] = bill.file_id
-  }
-  if (attachmentsResult.status === "fulfilled") {
-    for (const link of attachmentsResult.value.data ?? []) {
-      if (link.file_id) documentFileIdByBillId[link.entity_id] = link.file_id
-    }
-  }
 
   const paymentReadinessByCompanyId: Record<
     string,
@@ -232,10 +223,12 @@ export async function loadOrgPayablesDesk(
       complianceStatusResult.status === "fulfilled"
         ? complianceStatusResult.value
         : {},
-    documentFileIdByBillId,
     paymentReadinessByCompanyId,
     runMembershipByBillId,
-    truncated: (openResult.data?.length ?? 0) >= OPEN_FETCH_LIMIT,
+    truncated: (pageResult.count ?? 0) > from + pageSize,
+    pagination: { page, pageSize, total: pageResult.count ?? 0, pageCount: Math.max(1, Math.ceil((pageResult.count ?? 0) / pageSize)) },
+    query: { tab, search },
+    counts: { due: dueCount.count ?? 0, approval: approvalCount.count ?? 0, approved: approvedCount.count ?? 0, paid: paidCount.count ?? 0, all: allCount.count ?? 0 },
     inboundBillsEmail: org.data?.slug
       ? orgBillsInboundAddress(org.data.slug as string)
       : null,

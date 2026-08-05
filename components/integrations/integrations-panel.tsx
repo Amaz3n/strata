@@ -2,13 +2,16 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { formatDistanceToNow } from "date-fns"
-import { ChevronRight, Download, Pencil, Plus, Shield } from "lucide-react"
+import { ChevronRight, Download, FileSpreadsheet, Pencil, Plus, Shield } from "lucide-react"
 import { toast } from "sonner"
 
 import {
   connectAccountingProviderAction,
   createAccountingExportAction,
+  createFileAccountingConnectionAction,
+  exportAccountingBatchAction,
   getIntegrationsOverviewAction,
+  listAccountingBatchesAction,
   type AccountingConnectionWithCapabilities,
   type AccountingRoute,
   type IntegrationsOverview,
@@ -16,12 +19,15 @@ import {
 import { unwrapAction } from "@/lib/action-result"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { ACCOUNTING_PROVIDERS, ACCOUNTING_PROVIDER_KEYS, DIMENSION_LABELS } from "@/lib/integrations/accounting/catalog"
+import { ACCOUNTING_PROVIDERS, ACCOUNTING_PROVIDER_KEYS, CONNECTABLE_ACCOUNTING_PROVIDER_KEYS, DIMENSION_LABELS } from "@/lib/integrations/accounting/catalog"
+import { BATCH_FORMATS, type AccountingBatchFormat } from "@/lib/integrations/accounting/file/formats"
+import type { AccountingBatchSummary } from "@/lib/services/accounting-batches"
 import type { AccountingDimensionKind, AccountingProviderKey } from "@/lib/integrations/accounting/provider"
 import type { AccountingExportKind } from "@/lib/services/accounting-export"
 import type { StripeConnectedAccount } from "@/lib/services/stripe-connected-accounts"
@@ -70,7 +76,8 @@ function IntegrationRow({
   statusLabel,
   onClick,
 }: {
-  logoUrl: string
+  /** Null for providers with no brand mark of their own — a file target is setup, not a service. */
+  logoUrl: string | null
   title: string
   subtitle: string
   meta?: string
@@ -85,7 +92,11 @@ function IntegrationRow({
       className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none"
     >
       <div className="flex size-9 shrink-0 items-center justify-center border border-border bg-background p-1.5">
-        <img src={logoUrl} alt="" className="size-full object-contain" />
+        {logoUrl ? (
+          <img src={logoUrl} alt="" className="size-full object-contain" />
+        ) : (
+          <FileSpreadsheet className="size-full text-muted-foreground" />
+        )}
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
@@ -121,6 +132,12 @@ export function IntegrationsPanel({ initialStripe = null }: Props) {
   const [routingRoute, setRoutingRoute] = useState<AccountingRoute | null>(null)
   const [routingOpen, setRoutingOpen] = useState(false)
   const [connecting, setConnecting] = useState(false)
+  // Batch-file target: pure configuration, so it is a form rather than a redirect.
+  const [fileDialogOpen, setFileDialogOpen] = useState(false)
+  const [fileLabel, setFileLabel] = useState("")
+  const [fileFormat, setFileFormat] = useState<AccountingBatchFormat>("generic")
+  const [batches, setBatches] = useState<AccountingBatchSummary[]>([])
+  const [exportingBatchId, setExportingBatchId] = useState<string | null>(null)
   const [exportScope, setExportScope] = useState("all")
   const [startDate, setStartDate] = useState(() => `${new Date().getFullYear()}-01-01`)
   const [endDate, setEndDate] = useState(() => new Date().toISOString().slice(0, 10))
@@ -135,7 +152,47 @@ export function IntegrationsPanel({ initialStripe = null }: Props) {
     } finally {
       setLoading(false)
     }
+    // Batches are secondary: a failure here must not blank the integrations page.
+    try {
+      setBatches(unwrapAction(await listAccountingBatchesAction()))
+    } catch {
+      setBatches([])
+    }
   }, [])
+
+  const createFileConnection = async () => {
+    setConnecting(true)
+    try {
+      unwrapAction(await createFileAccountingConnectionAction({ label: fileLabel.trim(), batchFormat: fileFormat }))
+      toast.success("Batch export connection added")
+      setFileDialogOpen(false)
+      setFileLabel("")
+      await load()
+    } catch (error) {
+      toast.error("Unable to add the connection", { description: error instanceof Error ? error.message : "Try again." })
+    } finally {
+      setConnecting(false)
+    }
+  }
+
+  const downloadBatch = async (batch: AccountingBatchSummary) => {
+    setExportingBatchId(batch.id)
+    try {
+      const result = unwrapAction(await exportAccountingBatchAction(batch.id))
+      const url = URL.createObjectURL(new Blob([result.content], { type: result.contentType }))
+      const anchor = document.createElement("a")
+      anchor.href = url
+      anchor.download = result.fileName
+      anchor.click()
+      URL.revokeObjectURL(url)
+      // Exporting closes the batch, so the list has to reflect that immediately.
+      await load()
+    } catch (error) {
+      toast.error("Unable to export the batch", { description: error instanceof Error ? error.message : "Try again." })
+    } finally {
+      setExportingBatchId(null)
+    }
+  }
 
   useEffect(() => {
     void load()
@@ -186,8 +243,8 @@ export function IntegrationsPanel({ initialStripe = null }: Props) {
   }
 
   const addConnectionButton =
-    ACCOUNTING_PROVIDER_KEYS.length === 1 ? (
-      <Button size="sm" variant="outline" disabled={!canManage || connecting} onClick={() => void connect(ACCOUNTING_PROVIDER_KEYS[0])}>
+    ACCOUNTING_PROVIDER_KEYS.length === 1 && CONNECTABLE_ACCOUNTING_PROVIDER_KEYS.length === 1 ? (
+      <Button size="sm" variant="outline" disabled={!canManage || connecting} onClick={() => void connect(CONNECTABLE_ACCOUNTING_PROVIDER_KEYS[0])}>
         <Plus className="mr-1.5 size-3.5" />
         Add connection
       </Button>
@@ -201,8 +258,18 @@ export function IntegrationsPanel({ initialStripe = null }: Props) {
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-64">
           {ACCOUNTING_PROVIDER_KEYS.map((key) => (
-            <DropdownMenuItem key={key} onSelect={() => void connect(key)}>
-              <img src={ACCOUNTING_PROVIDERS[key].logoUrl} alt="" className="size-4 object-contain" />
+            <DropdownMenuItem
+              key={key}
+              onSelect={() => {
+                if (ACCOUNTING_PROVIDERS[key].connectFlow === "configured") setFileDialogOpen(true)
+                else void connect(key)
+              }}
+            >
+              {ACCOUNTING_PROVIDERS[key].logoUrl ? (
+                <img src={ACCOUNTING_PROVIDERS[key].logoUrl ?? undefined} alt="" className="size-4 object-contain" />
+              ) : (
+                <FileSpreadsheet className="size-4 text-muted-foreground" />
+              )}
               {ACCOUNTING_PROVIDERS[key].name}
             </DropdownMenuItem>
           ))}
@@ -268,7 +335,7 @@ export function IntegrationsPanel({ initialStripe = null }: Props) {
             ) : connections.length === 0 ? (
               <div className="flex flex-col items-center px-6 py-10 text-center">
                 <div className="flex size-10 items-center justify-center border border-border bg-background p-2">
-                  <img src={ACCOUNTING_PROVIDERS.qbo.logoUrl} alt="" className="size-full object-contain" />
+                  <img src={ACCOUNTING_PROVIDERS.qbo.logoUrl ?? undefined} alt="" className="size-full object-contain" />
                 </div>
                 <p className="mt-3 text-sm font-medium">No accounting connection</p>
                 <p className="mt-1 max-w-sm text-sm text-muted-foreground">
@@ -397,6 +464,42 @@ export function IntegrationsPanel({ initialStripe = null }: Props) {
         onChanged={(next) => setOverview((current) => (current ? { ...current, stripe: next } : current))}
       />
 
+      {batches.length > 0 ? (
+        <section className="mt-6 border bg-card">
+          <div className="border-b px-4 py-3">
+            <h2 className="text-sm font-semibold">Export batches</h2>
+            <p className="text-xs text-muted-foreground">
+              Transactions accrue into an open batch. Exporting closes it — anything after that goes into the next one.
+            </p>
+          </div>
+          <div className="divide-y">
+            {batches.map((batch) => (
+              <div key={batch.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">
+                    {batch.connectionLabel}
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">{batch.formatLabel}</span>
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {batch.lineCount} {batch.lineCount === 1 ? "line" : "lines"} ·{" "}
+                    {batch.status === "open" ? "Open" : batch.exportedAt ? `Exported ${formatDistanceToNow(new Date(batch.exportedAt), { addSuffix: true })}` : "Exported"}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={exportingBatchId === batch.id || batch.lineCount === 0}
+                  onClick={() => void downloadBatch(batch)}
+                >
+                  <Download className="mr-1.5 size-3.5" />
+                  {batch.status === "open" ? "Export" : "Download again"}
+                </Button>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       <AccountingConnectionSheet
         connection={activeConnection}
         open={activeConnection !== null}
@@ -412,6 +515,48 @@ export function IntegrationsPanel({ initialStripe = null }: Props) {
         scopes={overview?.scopes ?? { divisions: [], communities: [] }}
         onSaved={() => void load()}
       />
+
+      <Dialog open={fileDialogOpen} onOpenChange={setFileDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add batch export</DialogTitle>
+            <DialogDescription>
+              For books Arc cannot reach by API. Transactions accrue into a batch you export and import on your side.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="batch-label">Name</Label>
+              <Input
+                id="batch-label"
+                value={fileLabel}
+                onChange={(event) => setFileLabel(event.target.value)}
+                placeholder="Sage 300 CRE — Main company"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="batch-format">Format</Label>
+              <Select value={fileFormat} onValueChange={(value) => setFileFormat(value as AccountingBatchFormat)}>
+                <SelectTrigger id="batch-format"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {Object.values(BATCH_FORMATS).map((format) => (
+                    <SelectItem key={format.key} value={format.key}>{format.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Layouts are unvalidated against a live install. Check the columns against your own import format before relying on one.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setFileDialogOpen(false)}>Cancel</Button>
+            <Button disabled={connecting || fileLabel.trim().length === 0} onClick={() => void createFileConnection()}>
+              Add connection
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

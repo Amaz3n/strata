@@ -10,28 +10,31 @@ import { loadFinancialsOverviewData } from "../page-data"
 import { evaluateHolds } from "@/lib/services/payment-holds"
 
 import { unwrapAction } from "@/lib/action-result"
+import { listSavedPayableViews } from "@/lib/services/payable-views"
 
 export const dynamic = "force-dynamic"
 
 interface PageProps {
   params: Promise<{ id: string }>
+  searchParams: Promise<{ queue?: string; q?: string; page?: string; pageSize?: string }>
 }
 
-export default async function FinancialsPayablesPage({ params }: PageProps) {
-  const { id } = await params
+export default async function FinancialsPayablesPage({ params, searchParams }: PageProps) {
+  const [{ id }, query] = await Promise.all([params, searchParams])
 
   return (
     <Suspense fallback={<FinancialsChildSkeleton title="Payables" />}>
-      <FinancialsPayablesData id={id} />
+      <FinancialsPayablesData id={id} query={query} />
     </Suspense>
   )
 }
 
-async function FinancialsPayablesData({ id }: { id: string }) {
-  const [{ project }, data, setupStatus] = await Promise.all([
+async function FinancialsPayablesData({ id, query }: { id: string; query: { queue?: string; q?: string; page?: string; pageSize?: string } }) {
+  const [{ project }, data, setupStatus, savedViews] = await Promise.all([
     loadFinancialsOverviewData(id),
-    fetchPayablesTabDataAction(id),
+    fetchPayablesTabDataAction(id, { queue: query.queue, search: query.q, page: Number(query.page) || 1, pageSize: Number(query.pageSize) || 50 }),
     getProjectFinancialSetupStatusForProject(id),
+    listSavedPayableViews(id).catch(() => []),
   ])
   const holdEntries = await Promise.all(data.vendorBills.map(async (bill) => [bill.id, await evaluateHolds(bill.id).catch(() => null)] as const))
   const holdEvaluations = Object.fromEntries(holdEntries.filter((entry): entry is readonly [string, NonNullable<(typeof entry)[1]>] => entry[1] !== null))
@@ -50,6 +53,10 @@ async function FinancialsPayablesData({ id }: { id: string }) {
       <PayablesTab
         projectId={project.id}
         vendorBills={data.vendorBills}
+        pagination={data.vendorBillsPage}
+        initialQueue={query.queue ?? "needs_review"}
+        initialSearch={query.q ?? ""}
+        savedViews={savedViews}
         costCodes={data.costCodes}
         budgetLines={data.budgetLines}
         costCodesEnabled={setupStatus.costCodesEnabled}
