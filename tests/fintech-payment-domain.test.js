@@ -1081,16 +1081,20 @@ test("the vendor is told what a deposit covers, and retainage is named", () => {
 })
 
 test("1099 totals subtract reversals and flag vendors Arc cannot file for", () => {
-  const service = fs.readFileSync(path.resolve(__dirname, "../lib/services/vendor-1099.ts"), "utf8")
+  // One implementation, not two. A second copy read `payments` directly with its
+  // own threshold and its own idea of "paid", so the two could disagree about a
+  // number that goes to the IRS. The governed report is the survivor.
+  assert.equal(fs.existsSync(path.resolve(__dirname, "../lib/services/vendor-1099.ts")), false)
+  const service = fs.readFileSync(path.resolve(__dirname, "../lib/services/reports/vendor-1099.ts"), "utf8")
   // A returned payment was not income to the vendor; reporting it overstates
   // what they received on a form the IRS also receives.
   assert.match(service, /payment_reversals/)
-  assert.match(service, /reportableCents = Math\.max\(0, total\.paid - total\.reversed\)/)
+  assert.match(service, /Math\.max\(0, \(paidByCompany\.get\(company\.id\) \?\? 0\) - reversedCents\)/)
   // Reportable-but-unfileable is what someone needs to see in December.
   assert.match(service, /blockingReasons/)
   assert.match(service, /No W-9 on file/)
-  // Paged: a silently truncated tax total is worse than none.
-  assert.match(service, /pageSize/)
+  // The threshold is governed by an approved policy row, never a constant.
+  assert.match(service, /tax_policy_versions/)
 })
 
 // ---------------------------------------------------------------------------
@@ -1191,4 +1195,134 @@ test("the Viewpoint layout is header-only and says so", () => {
   // like job distribution that the import will not produce.
   assert.doesNotMatch(viewpoint, /job_name|cost_code|cost_type/)
   assert.match(formats, /HEADER ONLY/)
+})
+
+// ---------------------------------------------------------------------------
+// Fee model: the debit is the vendor amount, and the schema has to agree.
+// ---------------------------------------------------------------------------
+
+test("a non-zero fee policy still debits only the vendor amount", () => {
+  // The bug this guards: `quoteApDisbursementFee` was changed to collect fees
+  // once per run, so `debitAmountCents` became the vendor amount alone — but the
+  // table CHECKs and `create_payment_run_atomic` kept asserting the old identity
+  // `total_debit = vendor + processor + platform`. With the 80bps + 80bps policy
+  // that shipped alongside, every real run raised "Payment run item totals do not
+  // match the run totals" at creation. Nothing exercised the RPC, so CI was green.
+  const quote = quoteApDisbursementFee({
+    vendorAmountCents: 100_000,
+    policy: {
+      passThroughProcessorFees: true,
+      processorFeeBps: 80,
+      processorFeeFixedCents: 0,
+      processorFeeCapCents: 500,
+      platformFeeBps: 80,
+      platformFeeFlatCents: 0,
+      platformFeeCapCents: 500,
+    },
+  })
+  assert.equal(quote.processorFeeCents, 500)
+  assert.equal(quote.platformFeeCents, 500)
+  assert.equal(quote.debitAmountCents, 100_000)
+  assert.equal(quote.accruedFeeCents, 1_000)
+
+  const root = path.resolve(__dirname, "..")
+  const alignment = fs.readFileSync(
+    path.join(root, "supabase/migrations/20260805090000_ap_fee_model_constraint_alignment.sql"),
+    "utf8",
+  )
+  // Both levels, and the RPC, must express the same invariant the engine does.
+  assert.match(alignment, /payment_runs_total_debit_is_vendor_amount[\s\S]*?check \(total_debit_cents = vendor_amount_cents\)/)
+  assert.match(alignment, /payment_run_items_total_debit_is_vendor_amount[\s\S]*?check \(total_debit_cents = vendor_amount_cents\)/)
+  assert.match(alignment, /p_total_debit_cents <> p_vendor_amount_cents then/)
+  // The superseded identity must be gone, not merely joined by a new one.
+  assert.doesNotMatch(
+    alignment.replace(/^--.*$/gm, ""),
+    /p_total_debit_cents <> p_vendor_amount_cents \+ p_processor_fee_cents/,
+  )
+})
+
+// ---------------------------------------------------------------------------
+// Payable lifecycle: rejection, and the controls around reversing an approval.
+// ---------------------------------------------------------------------------
+
+test("a payable can be rejected with a reason, and the vendor is told", () => {
+  const root = path.resolve(__dirname, "..")
+  const migration = fs.readFileSync(
+    path.join(root, "supabase/migrations/20260805091000_vendor_bill_rejection_lifecycle.sql"),
+    "utf8",
+  )
+  // Free-text status was how 'void' and 'disputed' ended up queried but
+  // unwritable. The column is constrained to states that exist.
+  assert.match(migration, /check \(status in \('pending', 'approved', 'partial', 'paid', 'rejected'\)\)/)
+  // A rejection with no reason gets the same invoice back.
+  assert.match(migration, /length\(coalesce\(btrim\(rejection_reason\), ''\)\) >= 8/)
+
+  const service = fs.readFileSync(path.join(root, "lib/services/vendor-bills.ts"), "utf8")
+  assert.match(service, /vendor_bill_rejected/)
+  assert.match(service, /vendor_bill_approved/)
+  // Reversing an approval is an approval decision, not an edit.
+  assert.match(service, /const isUnapproval =/)
+  assert.match(service, /parsed\.status === "rejected" \|\| isUnapproval/)
+  // And it must not strand settled payments against a reopened bill.
+  assert.match(service, /cannot be returned to pending\. Reverse the payment first/)
+
+  const notices = fs.readFileSync(path.join(root, "lib/services/vendor-bill-notices.ts"), "utf8")
+  assert.match(notices, /submitted_via_portal/)
+})
+
+test("auto-approval runs the same gates a person does", () => {
+  const service = fs.readFileSync(
+    path.resolve(__dirname, "../lib/services/invoice-auto-approval.ts"),
+    "utf8",
+  )
+  // It used to be a bare status update: no ledger, no sync, no coding check.
+  assert.match(service, /propagateApprovalToLedger/)
+  assert.match(service, /enqueueVendorBillSync/)
+  assert.match(service, /loadApprovalGateSettings/)
+  assert.match(service, /codedTotal !== Number\(bill\.total_cents \?\? 0\)/)
+  // A payable that cannot reach the cost ledger is not approved.
+  assert.match(service, /Auto-approval was reverted because the project cost ledger/)
+})
+
+test("preparing a payment never approves the obligation as a side effect", () => {
+  const service = fs.readFileSync(path.resolve(__dirname, "../lib/services/payable-approvals.ts"), "utf8")
+  assert.match(service, /has to be approved before a payment can be prepared/)
+  // The old behaviour made the preparer the approver of record without asking.
+  assert.doesNotMatch(service, /updateVendorBillStatus/)
+})
+
+test("the vendor sees checks, not only rail payments", () => {
+  const root = path.resolve(__dirname, "..")
+  const remittance = fs.readFileSync(path.join(root, "lib/services/vendor-remittance.ts"), "utf8")
+  // The rationale — an unexplained deposit and a phone call — applies to a
+  // check at least as much as to an ACH.
+  assert.match(remittance, /sendManualPaymentRemittanceAdvice/)
+  const bills = fs.readFileSync(path.join(root, "lib/services/vendor-bills.ts"), "utf8")
+  assert.match(bills, /sendManualPaymentRemittanceAdvice\(\{ orgId: resolvedOrgId, paymentId: recordedPaymentId \}\)\.catch/)
+
+  const identities = fs.readFileSync(path.join(root, "lib/services/vendor-payment-identities.ts"), "utf8")
+  // Sourced from `payments`, which both rails write to, rather than from
+  // `disbursements`, which only the electronic one does.
+  assert.match(identities, /from\("payments"\)/)
+})
+
+test("portal payables identify their vendor", () => {
+  const service = fs.readFileSync(path.resolve(__dirname, "../lib/services/vendor-bills.ts"), "utf8")
+  // Without company_id the bill is unpayable electronically, invisible to 1099
+  // totals, and skipped by the duplicate-invoice trigger.
+  assert.match(service, /company_id: companyId,\n      bill_number: parsed\.bill_number/)
+})
+
+test("AP notifications are on the email allowlist, not just wired", () => {
+  const root = path.resolve(__dirname, "..")
+  const types = fs.readFileSync(path.join(root, "lib/types/notifications.ts"), "utf8")
+  // Wiring a notification service is not enough; only types in this list send.
+  for (const key of ["vendor_bill_submitted", "vendor_bill_approved", "vendor_bill_rejected", "vendor_payment_paid"]) {
+    assert.match(types, new RegExp(`key: "${key}"`), `${key} must be email-eligible`)
+  }
+  const events = fs.readFileSync(path.join(root, "lib/services/events.ts"), "utf8")
+  // And each needs a recipient set, or it resolves to [] and notifies nobody.
+  assert.match(events, /vendor_bill_submitted: \["bill\.approve"\]/)
+  assert.match(events, /event\.event_type === "vendor_payment_paid"/)
+  assert.match(events, /"vpo\.request"/)
 })

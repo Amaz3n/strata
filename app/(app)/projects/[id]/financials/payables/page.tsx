@@ -16,7 +16,7 @@ export const dynamic = "force-dynamic"
 
 interface PageProps {
   params: Promise<{ id: string }>
-  searchParams: Promise<{ queue?: string; q?: string; page?: string; pageSize?: string }>
+  searchParams: Promise<{ queue?: string; q?: string; page?: string; pageSize?: string; bill?: string }>
 }
 
 export default async function FinancialsPayablesPage({ params, searchParams }: PageProps) {
@@ -29,15 +29,20 @@ export default async function FinancialsPayablesPage({ params, searchParams }: P
   )
 }
 
-async function FinancialsPayablesData({ id, query }: { id: string; query: { queue?: string; q?: string; page?: string; pageSize?: string } }) {
+async function FinancialsPayablesData({ id, query }: { id: string; query: { queue?: string; q?: string; page?: string; pageSize?: string; bill?: string } }) {
   const [{ project }, data, setupStatus, savedViews] = await Promise.all([
     loadFinancialsOverviewData(id),
     fetchPayablesTabDataAction(id, { queue: query.queue, search: query.q, page: Number(query.page) || 1, pageSize: Number(query.pageSize) || 50 }),
     getProjectFinancialSetupStatusForProject(id),
     listSavedPayableViews(id).catch(() => []),
   ])
-  const holdEntries = await Promise.all(data.vendorBills.map(async (bill) => [bill.id, await evaluateHolds(bill.id).catch(() => null)] as const))
-  const holdEvaluations = Object.fromEntries(holdEntries.filter((entry): entry is readonly [string, NonNullable<(typeof entry)[1]>] => entry[1] !== null))
+  // Only the open payable's holds. `holdEvaluations` feeds the detail pane and
+  // nothing in the list, so evaluating every row cost roughly seven queries per
+  // bill plus a compliance lookup on every render — 350+ round trips for a page
+  // showing one. The org desk already loads this per bill on selection.
+  const openBillId = query.bill && data.vendorBills.some((bill) => bill.id === query.bill) ? query.bill : null
+  const openBillHolds = openBillId ? await evaluateHolds(openBillId).catch(() => null) : null
+  const holdEvaluations = openBillId && openBillHolds ? { [openBillId]: openBillHolds } : {}
 
   return (
     <PageLayout

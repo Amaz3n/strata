@@ -3,7 +3,7 @@
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { listInvoices } from "@/lib/services/invoices"
-import { processAccountingPush, type AccountingPushEntityType } from "@/lib/services/accounting-sync"
+import { enqueueAccountingPush, processAccountingPush, type AccountingPushEntityType } from "@/lib/services/accounting-sync"
 
 export type QboSyncEntityType = "invoice" | "expense" | "bill" | "payment" | "bill_payment" | "webhook_event"
 
@@ -263,12 +263,23 @@ export async function syncQboItemAction(entityType: QboSyncEntityType, id: strin
   await processAccountingPush({ orgId, entityType: mapped, entityId: id })
 }
 
-/** Push every pending/failed item now. Returns a summary; never throws on individual failures. */
-export async function syncAllQboPendingAction(params?: { projectId?: string | null }): Promise<{ synced: number; failed: number; errors: string[] }> {
+/**
+ * Requeue every pending/failed item.
+ *
+ * These go back through the outbox rather than being pushed inline. Pushing a
+ * backlog serially inside one server action meant a large queue ran past the
+ * request budget and died partway, with no record of where it stopped and no
+ * retry for the half that never ran. The outbox already has the retry, the
+ * backoff and the deduplication.
+ *
+ * Webhook replays stay inline: they only reset a row so the inbound drain picks
+ * them up, and there is nothing to enqueue.
+ */
+export async function syncAllQboPendingAction(params?: { projectId?: string | null }): Promise<{ queued: number; failed: number; errors: string[] }> {
   const { orgId } = await requireOrgContext()
   const { items } = await listQboSyncQueueAction({ projectId: params?.projectId })
 
-  let synced = 0
+  let queued = 0
   let failed = 0
   const errors: string[] = []
   for (const item of items) {
@@ -276,17 +287,45 @@ export async function syncAllQboPendingAction(params?: { projectId?: string | nu
       if (item.entityType === "webhook_event") {
         const result = await retryQboWebhookEventAction(item.id)
         if (!result.success) throw new Error(result.error ?? "Unable to retry webhook event")
-      } else {
-        const mapped: AccountingPushEntityType = item.entityType === "expense" ? "project_expense" : item.entityType === "bill" ? "vendor_bill" : item.entityType
-        await processAccountingPush({ orgId, entityType: mapped, entityId: item.id })
+        queued += 1
+        continue
       }
-      synced += 1
+      const mapped: AccountingPushEntityType = item.entityType === "expense" ? "project_expense" : item.entityType === "bill" ? "vendor_bill" : item.entityType
+      const result = await enqueueAccountingPush({ orgId, entityType: mapped, entityId: item.id })
+      if (result.queued) {
+        queued += 1
+      } else {
+        failed += 1
+        errors.push(`${item.label}: ${describeEnqueueBlock(result.reason)}`)
+      }
     } catch (error) {
       failed += 1
       errors.push(`${item.label}: ${error instanceof Error ? error.message : "Sync failed"}`)
     }
   }
-  return { synced, failed, errors }
+  return { queued, failed, errors }
+}
+
+/** Why a transaction could not even be queued, in words a bookkeeper can act on. */
+function describeEnqueueBlock(reason: string): string {
+  switch (reason) {
+    case "unconnected":
+      return "No accounting connection is mapped to this transaction."
+    case "cutover_freeze":
+      return "Held by an accounting cutover freeze."
+    case "books_authoritative":
+      return "Arc Books owns this ledger, so nothing is pushed out."
+    case "inbound_only":
+      return "This record came from the accounting system and is not pushed back."
+    case "connection_mismatch":
+      return "It belongs to a different accounting connection than the one now mapped."
+    case "disabled":
+      return "Automatic sync is turned off for this connection."
+    case "connection_unhealthy":
+      return "The accounting connection needs to be reconnected."
+    default:
+      return "Could not be queued."
+  }
 }
 
 export async function retryQboWebhookEventAction(id: string): Promise<{ success: boolean; error: string | null }> {

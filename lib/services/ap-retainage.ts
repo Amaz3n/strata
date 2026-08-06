@@ -54,7 +54,7 @@ export async function listRetainageHoldings(projectId?: string, orgId?: string):
     .select("id,bill_number,company_id,project_id,retainage_cents,retainage_released_cents,company:companies(name)")
     .eq("org_id", context.orgId)
     .gt("retainage_cents", 0)
-    .not("status", "in", "(void,voided,cancelled,canceled)")
+    .neq("status", "rejected")
     .limit(500)
   if (projectId) query = query.eq("project_id", projectId)
   const { data, error } = await query

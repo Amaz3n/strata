@@ -10,6 +10,13 @@ import {
   updatePaymentRailPolicy,
 } from "@/lib/services/payment-rail-setup"
 import { setPaymentRunApprovers, type PaymentRunApprover } from "@/lib/services/payment-approvers"
+import {
+  deleteAutoApprovalRule,
+  listAutoApprovalRules,
+  upsertAutoApprovalRule,
+  type AutoApprovalRule,
+  type AutoApprovalRuleInput,
+} from "@/lib/services/invoice-auto-approval"
 import type { SetPaymentRunApproversInput, UpdatePaymentRailPolicyInput } from "@/lib/validation/fintech-payments"
 
 async function run<T>(operation: () => Promise<T>): Promise<ActionResult<T>> {
@@ -49,4 +56,16 @@ export async function decidePaymentControlChangeAction(input: { changeRequestId:
     await decidePaymentControlChange(input)
     return { completed: true }
   })
+}
+
+export async function listAutoApprovalRulesAction(): Promise<ActionResult<AutoApprovalRule[]>> {
+  return run(() => listAutoApprovalRules())
+}
+
+export async function upsertAutoApprovalRuleAction(input: AutoApprovalRuleInput): Promise<ActionResult<{ id: string }>> {
+  return run(() => upsertAutoApprovalRule(input))
+}
+
+export async function deleteAutoApprovalRuleAction(ruleId: string): Promise<ActionResult<{ deleted: true }>> {
+  return run(() => deleteAutoApprovalRule(ruleId))
 }

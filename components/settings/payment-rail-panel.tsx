@@ -26,6 +26,7 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { PaymentApproversGroup } from "@/components/settings/payment-approvers-group"
+import { AutoApprovalRulesGroup } from "@/components/settings/auto-approval-rules-group"
 import { SettingsError, SettingsField, SettingsGroup, SettingsToggle } from "@/components/settings/settings-section"
 import { unwrapAction } from "@/lib/action-result"
 import type { PaymentRailSettings } from "@/lib/services/payment-rail-setup"
@@ -593,6 +594,8 @@ export function PaymentRailPanel({
         approvalMode={settings.policy.approvalMode}
         canManage={settings.canManage}
       />
+
+      <AutoApprovalRulesGroup canManage={settings.canManage} />
 
       <Dialog open={Boolean(setup)} onOpenChange={(open) => { if (!open) setSetup(null) }}>
         <DialogContent className="sm:max-w-lg">

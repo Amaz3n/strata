@@ -14,7 +14,6 @@ import {
 } from "@/lib/services/payment-runs"
 import { requirePermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { updateVendorBillStatus } from "@/lib/services/vendor-bills"
 import { decidePaymentRunSchema } from "@/lib/validation/fintech-payments"
 
 export const preparePayableApprovalSchema = z.object({
@@ -58,7 +57,7 @@ export async function preparePayableApproval(
   const { data: bill, error } = await supabase
     .from("vendor_bills")
     .select(
-      "id,status,company_id,updated_at,total_cents,paid_cents,retainage_cents,bill_number",
+      "id,status,company_id,total_cents,paid_cents,retainage_cents,bill_number",
     )
     .eq("org_id", context.orgId)
     .eq("id", parsed.bill_id)
@@ -77,17 +76,17 @@ export async function preparePayableApproval(
     )
   }
 
-  // A run can only contain approved bills. Approving here keeps the preparer's
-  // flow to one decision; `updateVendorBillStatus` still enforces bill.approve.
+  // Approving the obligation and releasing the money are two decisions, and this
+  // used to quietly make them one: preparing a payment auto-approved a pending
+  // bill, so the preparer became its approver of record without ever choosing to
+  // be. That is the same separation `assertExternalPaymentControls` enforces on
+  // the check path, and the workspace already reflects it — a pending payable
+  // sits in the review stage and offers Approve, never Pay.
+  if (bill.status === "rejected") {
+    throw new Error("This payable was rejected. Reopen it before preparing a payment.")
+  }
   if (bill.status === "pending") {
-    await updateVendorBillStatus({
-      billId: parsed.bill_id,
-      input: {
-        status: "approved",
-        expected_updated_at: bill.updated_at ?? undefined,
-      },
-      orgId: context.orgId,
-    })
+    throw new Error("This payable has to be approved before a payment can be prepared for it")
   }
 
   // The payee's destination is resolved server-side — a client must never get to

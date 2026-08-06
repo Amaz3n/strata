@@ -15,6 +15,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import { PaymentStepUpGate } from "@/components/payments/payment-step-up-gate"
 import { estimateSettlement, type ProviderSettlementWindow } from "@/lib/payments/settlement-estimate"
 import type { PaymentRunListRow } from "@/lib/services/payment-runs"
 import { cn } from "@/lib/utils"
@@ -285,31 +286,38 @@ export function ApprovePaymentRunDialog({
           </div>
         ) : null}
 
-        <DialogFooter>
-          {rejecting ? (
-            <>
-              <Button variant="outline" onClick={() => setRejecting(false)} disabled={pending}>
-                Back
-              </Button>
-              <Button
-                variant="destructive"
-                onClick={() => onDecide("rejected", reason.trim())}
-                disabled={pending || reason.trim().length < 8}
-              >
-                {pending ? "Rejecting…" : "Reject run"}
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button variant="ghost" onClick={() => setRejecting(true)} disabled={pending}>
-                Reject
-              </Button>
-              <Button onClick={() => onDecide("approved")} disabled={pending}>
-                {pending ? "Recording…" : `Approve ${money(run.total_debit_cents)}`}
-              </Button>
-            </>
-          )}
-        </DialogFooter>
+        {/*
+          Both decisions are step-up gated server-side, not just approval — a
+          rejection closes the run and forces a rebuild, so it is also a control
+          action. Asking here turns a thrown error into a challenge.
+        */}
+        <PaymentStepUpGate description="Enter the 6-digit code from your authenticator app to record a decision on this run.">
+          <DialogFooter>
+            {rejecting ? (
+              <>
+                <Button variant="outline" onClick={() => setRejecting(false)} disabled={pending}>
+                  Back
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => onDecide("rejected", reason.trim())}
+                  disabled={pending || reason.trim().length < 8}
+                >
+                  {pending ? "Rejecting…" : "Reject run"}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button variant="ghost" onClick={() => setRejecting(true)} disabled={pending}>
+                  Reject
+                </Button>
+                <Button onClick={() => onDecide("approved")} disabled={pending}>
+                  {pending ? "Recording…" : `Approve ${money(run.total_debit_cents)}`}
+                </Button>
+              </>
+            )}
+          </DialogFooter>
+        </PaymentStepUpGate>
       </DialogContent>
     </Dialog>
   )

@@ -34,6 +34,8 @@ import type { StripeConnectedAccount } from "@/lib/services/stripe-connected-acc
 import { AccountingConnectionSheet } from "@/components/integrations/accounting-connection-sheet"
 import { AccountingRoutingDialog } from "@/components/integrations/accounting-routing-dialog"
 import { ConnectionStatusBadge, accountingStatusLabel, accountingStatusTone } from "@/components/integrations/connection-status"
+import { QboSyncSheet } from "@/components/integrations/qbo-sync-sheet"
+import { cn } from "@/lib/utils"
 import { StripeConnectionSheet, stripeStatus } from "@/components/integrations/stripe-connection-sheet"
 import type { ConnectionTone } from "@/components/integrations/connection-status"
 
@@ -125,6 +127,7 @@ function RowSkeleton() {
 
 export function IntegrationsPanel({ initialStripe = null }: Props) {
   const [overview, setOverview] = useState<IntegrationsOverview | null>(null)
+  const [syncSheetOpen, setSyncSheetOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [stripeOpen, setStripeOpen] = useState(false)
@@ -204,6 +207,10 @@ export function IntegrationsPanel({ initialStripe = null }: Props) {
   const canManageRouting = overview?.canManageRouting ?? false
   const stripe = overview ? overview.stripe : initialStripe
   const activeConnection = connections.find((row) => row.id === activeConnectionId) ?? null
+  const syncPosture = overview?.syncPosture ?? null
+  const stuckCount = syncPosture
+    ? syncPosture.errorCount + syncPosture.needsReviewCount + syncPosture.failedJobCount
+    : 0
 
   const connect = async (providerKey: AccountingProviderKey) => {
     setConnecting(true)
@@ -352,6 +359,58 @@ export function IntegrationsPanel({ initialStripe = null }: Props) {
           </div>
         )}
       </section>
+
+      {/*
+        Connection health answers "is the pipe open", which is not the question
+        a bookkeeper has. This answers "is anything stuck in it" — the state that
+        was previously visible only on the admin Ops page.
+      */}
+      {canManage && syncPosture && connections.length > 0 ? (
+        <section className="space-y-3">
+          <SectionHeader
+            label="Sync queue"
+            description="Transactions on their way to your accounting file, and any that stopped."
+          />
+          <div className="border border-border bg-card">
+            <div className="grid grid-cols-2 divide-x divide-border border-b border-border sm:grid-cols-4">
+              {[
+                { label: "Waiting", value: syncPosture.pendingCount },
+                { label: "Failed", value: syncPosture.errorCount },
+                { label: "Needs review", value: syncPosture.needsReviewCount },
+                { label: "Gave up", value: syncPosture.failedJobCount },
+              ].map((tile) => (
+                <div key={tile.label} className="px-4 py-3">
+                  <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{tile.label}</p>
+                  <p
+                    className={cn(
+                      "mt-1 text-lg font-semibold tabular-nums",
+                      tile.value > 0 && tile.label !== "Waiting" ? "text-destructive" : undefined,
+                    )}
+                  >
+                    {tile.value}
+                  </p>
+                </div>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+              <p className="text-sm text-muted-foreground">
+                {syncPosture.suppressedReason === "books_authoritative"
+                  ? "Arc Books owns this ledger, so nothing is pushed to an outside accounting file."
+                  : syncPosture.suppressedReason === "unconnected"
+                    ? "No routing rule points anywhere yet, so nothing is being pushed."
+                    : syncPosture.suppressedReason === "cutover_freeze"
+                      ? "A cutover freeze is holding every push until it is lifted."
+                      : stuckCount > 0
+                        ? "Open the queue to see what stopped and send it again."
+                        : "Everything queued has posted."}
+              </p>
+              <Button size="sm" variant="outline" onClick={() => setSyncSheetOpen(true)}>
+                Open sync queue
+              </Button>
+            </div>
+          </div>
+        </section>
+      ) : null}
 
       {canManageRouting && connections.length > 0 ? (
         <section className="space-y-3">
@@ -557,6 +616,19 @@ export function IntegrationsPanel({ initialStripe = null }: Props) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/*
+        No projectId: the Import tab is deliberately project-scoped, because an
+        imported transaction has to land somewhere. The queue and history are
+        org-wide and belong here.
+      */}
+      <QboSyncSheet
+        open={syncSheetOpen}
+        onOpenChange={(next) => {
+          setSyncSheetOpen(next)
+          if (!next) void load()
+        }}
+      />
     </div>
   )
 }

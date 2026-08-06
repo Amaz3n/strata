@@ -31,8 +31,12 @@ import type {
 const DEFAULT_PAGE_SIZE = 50
 const MAX_PAGE_SIZE = 100
 
-/** Statuses that are no longer real obligations and never appear on the desk. */
-const CLOSED_STATUSES = ["void", "voided", "cancelled", "canceled"]
+/**
+ * Statuses that are no longer real obligations and never appear on the desk.
+ * This used to list void/cancelled, none of which any code path could write —
+ * the filter was inert. `rejected` is the state that actually exists.
+ */
+const CLOSED_STATUSES = ["rejected"]
 
 /** Payment-run item statuses that mean the bill is spoken for by the rail. */
 const ACTIVE_RUN_ITEM_STATUSES = [

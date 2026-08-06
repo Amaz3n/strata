@@ -250,11 +250,19 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
   const actorId = typeof (event.payload as any)?.actor_id === "string" ? ((event.payload as any).actor_id as string) : null
   const projectId = extractProjectIdFromEvent(event)
 
+  // Requests route to whoever decides them; decisions route back to whoever
+  // raises them. The decision half was declared as a notification type, given a
+  // title, and emitted — but never given a recipient set, so five event types
+  // resolved to an empty list and notified nobody at all.
   const permissionEvent = event.event_type === "vpo.requested"
     ? "vpo.approve"
     : event.event_type === "po_completion.reported"
       ? "po_completion.verify"
-      : null
+      : event.event_type === "vpo.approved" || event.event_type === "vpo.rejected"
+        ? "vpo.request"
+        : ["po_completion.verified", "po_completion.approved", "po_completion.rejected"].includes(event.event_type)
+          ? "po_completion.report"
+          : null
   if (permissionEvent) {
     const { data: roleRows } = await supabase.from("role_permissions").select("role_id").eq("permission_key", permissionEvent)
     const roleIds = (roleRows ?? []).map((row: any) => row.role_id).filter(Boolean)
@@ -396,7 +404,6 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     "invoice_updated",
     "invoice_sent",
     "payment_recorded",
-    "vendor_bill_submitted",
     "selection_created",
     "portal_message",
     "recipient_signed",
@@ -469,6 +476,43 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     return uniqUserIds((admins ?? []).map((m: any) => m.user_id))
   }
 
+  // The payable lifecycle goes to the people who can act on it, not to every
+  // project member. An approval queue that emails the whole project is one
+  // everybody filters, which is the same as not sending it.
+  const payableApprovalEvents: Record<string, string[]> = {
+    vendor_bill_submitted: ["bill.approve"],
+    vendor_bill_approved: ["bill.write", "bill.approve"],
+    vendor_bill_rejected: ["bill.write", "bill.approve"],
+  }
+  const payablePermissions = payableApprovalEvents[event.event_type]
+  if (payablePermissions) {
+    if (!projectId) return []
+    return getProjectFinancialNotificationRecipients({
+      supabase,
+      orgId,
+      projectId,
+      actorId,
+      permissions: payablePermissions,
+      policyVersion: "payable-lifecycle-v1",
+    })
+  }
+
+  // Every failure mode of a payment run was emailed and success was not, so the
+  // only way an AP clerk learned a run finished was to go looking.
+  if (event.event_type === "vendor_payment_paid") {
+    const { data: roleRows } = await supabase.from("role_permissions")
+      .select("role_id")
+      .in("permission_key", ["payment.release", "payment.reconcile"])
+    const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
+    if (roleIds.length === 0) return []
+    const { data: memberships } = await supabase.from("memberships")
+      .select("user_id")
+      .eq("org_id", orgId)
+      .eq("status", "active")
+      .in("role_id", roleIds)
+    return uniqUserIds((memberships ?? []).map((row) => row.user_id)).filter((id) => id !== actorId)
+  }
+
   if (projectId && projectScopedEvents.has(event.event_type)) {
     if (event.event_type === "payment_recorded") {
       return getProjectFinancialNotificationRecipients({
@@ -512,11 +556,16 @@ async function getProjectFinancialNotificationRecipients({
   orgId,
   projectId,
   actorId,
+  permissions = FINANCIAL_NOTIFICATION_PERMISSIONS,
+  policyVersion = "payment-notification-v1",
 }: {
   supabase: ReturnType<typeof createServiceSupabaseClient>
   orgId: string
   projectId: string
   actorId: string | null
+  /** Any one of these grants the notification. Defaults to read-level finance. */
+  permissions?: string[]
+  policyVersion?: string
 }) {
   const { data: members, error } = await supabase
     .from("project_members")
@@ -563,7 +612,7 @@ async function getProjectFinancialNotificationRecipients({
     if (!activeUserIds.has(userId)) continue
 
     const decisions = await Promise.all(
-      FINANCIAL_NOTIFICATION_PERMISSIONS.map((permission) =>
+      permissions.map((permission) =>
         authorize({
           permission,
           userId,
@@ -572,7 +621,7 @@ async function getProjectFinancialNotificationRecipients({
           supabase,
           resourceType: "project",
           resourceId: projectId,
-          policyVersion: "payment-notification-v1",
+          policyVersion,
         }),
       ),
     )
@@ -1021,6 +1070,35 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
         eventId: event.id,
       }
 
+    case "vendor_bill_submitted":
+    case "vendor_bill_approved":
+    case "vendor_bill_rejected": {
+      const billLabel = typeof safePayload.bill_number === "string" && safePayload.bill_number
+        ? `Invoice ${safePayload.bill_number}`
+        : "A vendor invoice"
+      const amount = typeof safePayload.amount_cents === "number"
+        ? ` for ${formatCentsForNotification(safePayload.amount_cents)}`
+        : ""
+      const message = event_type === "vendor_bill_submitted"
+        ? `${billLabel}${amount} is waiting for approval.`
+        : event_type === "vendor_bill_approved"
+          ? `${billLabel}${amount} was approved for payment.`
+          // The reason is the whole point of the notification: without it the
+          // recipient has to open the payable to learn anything.
+          : `${billLabel}${amount} was rejected.${typeof safePayload.rejection_reason === "string" ? ` ${safePayload.rejection_reason}` : ""}`
+      return {
+        orgId: event.org_id,
+        userId,
+        type: event_type as NotificationType,
+        title: fallbackTitle,
+        message,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
     default:
       // Generic fallback for supported event types
       return {
@@ -1128,6 +1206,16 @@ function titleForEventType(eventType: string): string {
       return "Invoice sent"
     case "payment_recorded":
       return "Payment received"
+    case "vendor_bill_submitted":
+      return "Payable needs approval"
+    case "vendor_bill_approved":
+      return "Payable approved"
+    case "vendor_bill_rejected":
+      return "Payable rejected"
+    case "vendor_payment_paid":
+      return "Vendor payment completed"
+    case "payable_email_ingest":
+      return "Payable arrived by email"
     case "portal_message":
       return "New portal message"
     case "recipient_signed":

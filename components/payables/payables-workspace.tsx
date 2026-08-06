@@ -30,6 +30,7 @@ import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import {
   Popover,
   PopoverContent,
@@ -88,6 +89,7 @@ import {
 import {
   ensureProjectVendorCompanyForPayableAction,
   reassignProjectPayableAction,
+  releaseRetainageAction,
   syncProjectVendorBillToAccountingAction,
   updateProjectVendorBillStatusAction,
 } from "@/app/(app)/projects/[id]/payables/actions"
@@ -184,6 +186,10 @@ const STAGE_BADGES: Record<PayableStage, { label: string; className: string }> =
       label: "Needs approval",
       className: "border-warning/25 bg-warning/10 text-warning",
     },
+    rejected: {
+      label: "Rejected",
+      className: "border-destructive/25 bg-destructive/10 text-destructive",
+    },
     in_run: {
       label: "In payment run",
       className: "border-primary/25 bg-primary/10 text-primary",
@@ -248,6 +254,14 @@ export function PayablesWorkspace({
   const [paymentAmount, setPaymentAmount] = useState("")
   const [paymentMethod, setPaymentMethod] = useState("check")
   const [paymentRef, setPaymentRef] = useState("")
+  /**
+   * Captured separately from the reference. There is a unique index and a
+   * duplicate-detection message behind this field; folding it into free text
+   * meant neither ever ran.
+   */
+  const [checkNumber, setCheckNumber] = useState("")
+  const [rejecting, setRejecting] = useState(false)
+  const [rejectionReason, setRejectionReason] = useState("")
   const [paymentDate, setPaymentDate] = useState(() =>
     format(new Date(), "yyyy-MM-dd"),
   )
@@ -580,6 +594,10 @@ export function PayablesWorkspace({
               payment_reference: isPayment
                 ? paymentRef || undefined
                 : undefined,
+              check_number:
+                isPayment && paymentMethod === "check"
+                  ? checkNumber.trim() || undefined
+                  : undefined,
               payment_date: isPayment ? paymentDate : undefined,
               payment_amount_cents:
                 isPayment && amountCents ? amountCents : undefined,
@@ -681,6 +699,8 @@ export function PayablesWorkspace({
                 amount_cents: line.amount_cents ?? 0,
               })),
               retainage_percent: retainagePercent,
+              early_pay_discount_percent: form.discountPercent.trim() ? Number(form.discountPercent) : null,
+              early_pay_discount_days: form.discountDays.trim() ? Number(form.discountDays) : null,
               lien_waiver_status: normalizeLienWaiverStatus(form.lienWaiver),
               qbo_expense_account_id: form.qboExpenseAccountId || undefined,
               qbo_expense_account_name: getExpenseAccountName(
@@ -704,8 +724,37 @@ export function PayablesWorkspace({
     })
   }
 
-  const releaseRetainage = () => {
+  /**
+   * Retainage is released as its own payable, not by editing this one down to
+   * zero. The original stays evidence of what was billed and what was held; the
+   * release gets its own approval, its own holds and its own payment.
+   */
+  const releaseHeldRetainage = () => {
     if (heldRetainageCents <= 0) return
+    clearOptimisticSync(selectedBill.id)
+    startTransition(async () => {
+      const result = unwrapAction(
+        await releaseRetainageAction(contextProjectId, selectedBill.id),
+      )
+      if (result.success) {
+        toast.success("Retainage release payable created")
+        onChanged()
+      } else {
+        toast.error(result.error)
+      }
+    })
+  }
+
+  /**
+   * Refusing a payable. The reason is required because it is what the vendor is
+   * shown — a rejection with no explanation gets the same invoice back.
+   */
+  const rejectPayable = () => {
+    const reason = rejectionReason.trim()
+    if (reason.length < 8) {
+      toast.error("Tell the vendor why in at least a few words")
+      return
+    }
     clearOptimisticSync(selectedBill.id)
     startTransition(async () => {
       const result = unwrapAction(
@@ -713,15 +762,36 @@ export function PayablesWorkspace({
           contextProjectId,
           selectedBill.id,
           {
-            status: currentStatus,
+            status: "rejected",
             expected_updated_at: selectedBill.updated_at,
-            retainage_percent: 0,
+            rejection_reason: reason,
           },
         ),
       )
       if (result.success) {
-        setForm((prev) => (prev ? { ...prev, retainage: "0" } : prev))
-        toast.success("Retainage released")
+        setRejecting(false)
+        setRejectionReason("")
+        toast.success("Payable rejected")
+        onChanged()
+      } else {
+        toast.error(result.error)
+      }
+    })
+  }
+
+  /** Put a rejected payable back in the queue; the reason is cleared with it. */
+  const reopenPayable = () => {
+    clearOptimisticSync(selectedBill.id)
+    startTransition(async () => {
+      const result = unwrapAction(
+        await updateProjectVendorBillStatusAction(
+          contextProjectId,
+          selectedBill.id,
+          { status: "pending", expected_updated_at: selectedBill.updated_at },
+        ),
+      )
+      if (result.success) {
+        toast.success("Payable reopened")
         onChanged()
       } else {
         toast.error(result.error)
@@ -1108,22 +1178,22 @@ export function PayablesWorkspace({
                           }
                         />
                       ) : null}
+                      {/*
+                        Approving the obligation is its own act, separate from
+                        releasing the money. Jumping straight into the payment
+                        pane made the preparer the approver of record without
+                        ever asking them to be.
+                      */}
                       <Button
                         className="group h-11 w-full justify-between"
                         disabled={isPending || blocked}
-                        onClick={() =>
-                          canPayElectronically
-                            ? setSidePane("pay")
-                            : setStatus("approved")
-                        }
+                        onClick={() => setStatus("approved")}
                       >
                         <span className="flex items-center gap-2">
                           <CheckCircle2 className="h-4 w-4" />
                           {blocked
                             ? "Blocked by payment holds"
-                            : canPayElectronically
-                              ? `Submit for approval · ${formatMoneyFromCents(billTotalCents)}`
-                              : `Approve for payment · ${formatMoneyFromCents(billTotalCents)}`}
+                            : `Approve for payment · ${formatMoneyFromCents(billTotalCents)}`}
                         </span>
                         {!blocked ? (
                           <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
@@ -1131,10 +1201,78 @@ export function PayablesWorkspace({
                       </Button>
                       {canPayElectronically ? (
                         <p className="text-xs text-muted-foreground">
-                          You&apos;ll choose the amount and the account it comes
-                          from next; an approver releases it.
+                          Once approved you can pay it by ACH, and a second person releases the run.
                         </p>
                       ) : null}
+
+                      {rejecting ? (
+                        <div className="space-y-2 border border-border p-3">
+                          <Label className="microlabel" htmlFor="rejection-reason">
+                            Why is this being rejected?
+                          </Label>
+                          <Textarea
+                            id="rejection-reason"
+                            rows={3}
+                            value={rejectionReason}
+                            onChange={(event) => setRejectionReason(event.target.value)}
+                            placeholder="Wrong contract, quantities don't match the delivery ticket, missing backup…"
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            The vendor is sent this, so write it for them.
+                          </p>
+                          <div className="flex gap-2">
+                            <Button
+                              variant="destructive"
+                              className="h-9"
+                              disabled={isPending || rejectionReason.trim().length < 8}
+                              onClick={rejectPayable}
+                            >
+                              {isPending ? "Rejecting…" : "Reject payable"}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              className="h-9"
+                              disabled={isPending}
+                              onClick={() => {
+                                setRejecting(false)
+                                setRejectionReason("")
+                              }}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          className="h-9 w-full text-muted-foreground"
+                          disabled={isPending}
+                          onClick={() => setRejecting(true)}
+                        >
+                          Reject this payable
+                        </Button>
+                      )}
+                    </section>
+                  ) : null}
+
+                  {stage === "rejected" ? (
+                    <section className="space-y-3 border border-border p-4">
+                      <div>
+                        <p className="text-sm font-medium">Rejected</p>
+                        {selectedBill.rejection_reason ? (
+                          <p className="mt-1 text-sm text-muted-foreground">
+                            {selectedBill.rejection_reason}
+                          </p>
+                        ) : null}
+                      </div>
+                      <Button
+                        variant="outline"
+                        className="h-9"
+                        disabled={isPending}
+                        onClick={reopenPayable}
+                      >
+                        {isPending ? "Reopening…" : "Reopen for review"}
+                      </Button>
                     </section>
                   ) : null}
 
@@ -1320,10 +1458,10 @@ export function PayablesWorkspace({
                               </Popover>
                             </div>
                             <div className="space-y-1.5">
-                              <Label className="microlabel">{paymentMethod === "check" ? "Check # / joint payees" : "Reference"}</Label>
+                              <Label className="microlabel">Reference</Label>
                               <Input
                                 className="h-10"
-                                placeholder={paymentMethod === "check" ? "Check #; include every joint payee" : "Transaction ID"}
+                                placeholder={paymentMethod === "check" ? "Joint payees, memo" : "Transaction ID"}
                                 value={paymentRef}
                                 onChange={(event) =>
                                   setPaymentRef(event.target.value)
@@ -1331,6 +1469,22 @@ export function PayablesWorkspace({
                               />
                             </div>
                           </div>
+                          {paymentMethod === "check" ? (
+                            <div className="space-y-1.5">
+                              <Label className="microlabel">Check number</Label>
+                              <Input
+                                className="h-10"
+                                placeholder="1042"
+                                value={checkNumber}
+                                onChange={(event) =>
+                                  setCheckNumber(event.target.value)
+                                }
+                              />
+                              <p className="text-xs text-muted-foreground">
+                                Checked against every other payment so the same check cannot be recorded twice.
+                              </p>
+                            </div>
+                          ) : null}
                           <Button
                             className="h-10 w-full"
                             disabled={isPending || blocked}
@@ -1649,7 +1803,7 @@ export function PayablesWorkspace({
                                 variant="link"
                                 className="h-auto p-0 text-xs"
                                 disabled={isPending}
-                                onClick={releaseRetainage}
+                                onClick={releaseHeldRetainage}
                               >
                                 Release
                               </Button>
@@ -1687,6 +1841,60 @@ export function PayablesWorkspace({
                               {normalizeLienWaiverStatus(
                                 selectedBill.lien_waiver_status,
                               ).replaceAll("_", " ")}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      {/*
+                        Discount terms the payment-run builder already knows how
+                        to price. Until there was somewhere to type them, the
+                        saving it offers could never appear.
+                      */}
+                      <div className="grid grid-cols-2 gap-6">
+                        <div className="space-y-1.5">
+                          <Label className="microlabel">Early-pay discount %</Label>
+                          {editable ? (
+                            <Input
+                              type="number"
+                              step="0.1"
+                              value={form.discountPercent}
+                              onChange={(event) =>
+                                setForm((prev) =>
+                                  prev ? { ...prev, discountPercent: event.target.value } : prev,
+                                )
+                              }
+                              placeholder="0"
+                              className="h-10 font-semibold"
+                            />
+                          ) : (
+                            <p className="text-sm font-semibold tabular-nums">
+                              {selectedBill.early_pay_discount_percent != null
+                                ? `${selectedBill.early_pay_discount_percent}%`
+                                : "—"}
+                            </p>
+                          )}
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label className="microlabel">If paid within (days)</Label>
+                          {editable ? (
+                            <Input
+                              type="number"
+                              step="1"
+                              value={form.discountDays}
+                              onChange={(event) =>
+                                setForm((prev) =>
+                                  prev ? { ...prev, discountDays: event.target.value } : prev,
+                                )
+                              }
+                              placeholder="10"
+                              className="h-10 font-semibold"
+                            />
+                          ) : (
+                            <p className="text-sm font-semibold tabular-nums">
+                              {selectedBill.early_pay_discount_days != null
+                                ? `${selectedBill.early_pay_discount_days} days`
+                                : "—"}
                             </p>
                           )}
                         </div>

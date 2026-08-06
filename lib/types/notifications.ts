@@ -24,6 +24,9 @@ export type NotificationType =
   | "invoice_sent"
   | "payment_recorded"
   | "vendor_bill_submitted"
+  | "vendor_bill_approved"
+  | "vendor_bill_rejected"
+  | "vendor_payment_paid"
   | "selection_created"
   | "selection_cutoff_reminder"
   | "selection_cutoff_missed"
@@ -123,6 +126,31 @@ export type NotificationType =
   | "accounting_reconciliation_drift"
 
 export const EMAIL_NOTIFICATION_TYPES = [
+  {
+    key: "vendor_bill_submitted",
+    label: "Payable needs approval",
+    description: "Email me when a vendor invoice arrives and is waiting on my approval.",
+  },
+  {
+    key: "vendor_bill_approved",
+    label: "Payable approved",
+    description: "Email me when a payable I submitted or entered is approved for payment.",
+  },
+  {
+    key: "vendor_bill_rejected",
+    label: "Payable rejected",
+    description: "Email me when a payable I submitted or entered is rejected, with the reason.",
+  },
+  {
+    key: "vendor_payment_paid",
+    label: "Vendor payment completed",
+    description: "Email me when a vendor payment finishes settling and the vendor has been paid.",
+  },
+  {
+    key: "payable_email_ingest",
+    label: "Payable arrived by email",
+    description: "Email me when an invoice sent to our payables address is captured into Arc.",
+  },
   {
     key: "accounting_reconciliation_drift",
     label: "Accounting reconciliation drift",

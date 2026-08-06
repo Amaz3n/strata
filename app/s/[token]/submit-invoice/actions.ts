@@ -54,9 +54,12 @@ export async function submitInvoiceAction({
     return {
       success: true,
       billId: bill.id,
-      overBudget: bill.commitment_total_cents
-        ? (bill.total_cents ?? 0) > (bill.commitment_total_cents ?? 0)
-        : false,
+      // The service already worked this out against the remaining contract
+      // balance and approved change orders. Recomputing it here as "this one
+      // invoice versus the whole contract" called the second draw on a
+      // three-draw contract over budget, and stayed silent on the one that
+      // actually exceeded it.
+      overBudget: bill.over_budget === true,
     }
   } catch (err) {
     console.error("Failed to submit invoice:", err)

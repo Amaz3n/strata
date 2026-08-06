@@ -3,12 +3,12 @@ import type { PayableRunMembership } from "@/lib/services/org-payables"
 import { isVendorCredit, payableOutstandingCents } from "@/lib/financials/payables-rules"
 import type { CostCode } from "@/lib/types"
 
-export type VendorBillStatus = "pending" | "approved" | "partial" | "paid"
+export type VendorBillStatus = "pending" | "approved" | "partial" | "paid" | "rejected"
 
 /** Narrow the summary's loose status string to the real lifecycle enum. */
 export function billStatus(bill: VendorBillSummary): VendorBillStatus {
   const status = bill.status
-  if (status === "approved" || status === "partial" || status === "paid") return status
+  if (status === "approved" || status === "partial" || status === "paid" || status === "rejected") return status
   return "pending"
 }
 
@@ -17,11 +17,12 @@ export function billStatus(bill: VendorBillSummary): VendorBillStatus {
  * drives which sections render, which fields are editable, and which one
  * primary action the workspace offers.
  */
-export type PayableStage = "credit" | "review" | "in_run" | "payable" | "paid"
+export type PayableStage = "credit" | "review" | "rejected" | "in_run" | "payable" | "paid"
 
 export function payableStage(bill: VendorBillSummary, runMembership?: PayableRunMembership): PayableStage {
   if (isVendorCredit(bill)) return "credit"
   const status = billStatus(bill)
+  if (status === "rejected") return "rejected"
   if (status === "pending") return "review"
   if (runMembership) return "in_run"
   if (status === "paid" && payableOutstandingCents(bill) <= 0) return "paid"
@@ -45,6 +46,9 @@ export interface PayableFormState {
   billDate: string
   dueDate: string
   retainage: string
+  /** "2/10 net 30" split in two: the percent, and the days it holds for. */
+  discountPercent: string
+  discountDays: string
   lienWaiver: string
   qboExpenseAccountId: string
   qboApAccountId: string
@@ -102,6 +106,8 @@ export function toFormState(bill: VendorBillSummary, { costCodesEnabled, qboDefa
     billDate: bill.bill_date ?? "",
     dueDate: bill.due_date ?? "",
     retainage: bill.retainage_percent != null ? String(bill.retainage_percent) : "",
+    discountPercent: bill.early_pay_discount_percent != null ? String(bill.early_pay_discount_percent) : "",
+    discountDays: bill.early_pay_discount_days != null ? String(bill.early_pay_discount_days) : "",
     lienWaiver: normalizeLienWaiverStatus(bill.lien_waiver_status),
     qboExpenseAccountId: bill.qbo_expense_account_id ?? qboDefaults.expenseAccountId ?? "",
     qboApAccountId: bill.qbo_ap_account_id ?? qboDefaults.apAccountId ?? "",
@@ -115,6 +121,8 @@ export function formIsDirty(state: PayableFormState, baseline: PayableFormState)
     state.billDate !== baseline.billDate ||
     state.dueDate !== baseline.dueDate ||
     state.retainage !== baseline.retainage ||
+    state.discountPercent !== baseline.discountPercent ||
+    state.discountDays !== baseline.discountDays ||
     state.lienWaiver !== baseline.lienWaiver ||
     state.qboExpenseAccountId !== baseline.qboExpenseAccountId ||
     state.qboApAccountId !== baseline.qboApAccountId ||

@@ -1839,18 +1839,24 @@ export interface SubPortalCommitment {
 export interface SubPortalBill {
   id: string
   bill_number: string
-  commitment_id: string
+  /** Null for payables the builder entered directly, with no contract behind them. */
+  commitment_id: string | null
   commitment_title: string
-  status: "pending" | "approved" | "partial" | "paid"
+  status: "pending" | "approved" | "partial" | "paid" | "rejected"
   total_cents: number
   paid_cents?: number
+  retainage_cents?: number
   bill_date: string
   due_date?: string | null
   submitted_at: string
   paid_at?: string | null
   payment_reference?: string | null
+  payment_method?: string | null
   lien_waiver_status?: string | null
   lien_waiver_received_at?: string | null
+  rejected_at?: string | null
+  /** Shown to the vendor verbatim; it is the only thing that makes a rejection actionable. */
+  rejection_reason?: string | null
 }
 
 export interface SubPortalFinancialSummary {

@@ -146,9 +146,13 @@ export function QboSyncSheet({ open, onOpenChange, projectId, projectName, conne
     try {
       const result = await syncAllQboPendingAction({ projectId })
       if (result.failed > 0) {
-        toast.warning(`Synced ${result.synced}, ${result.failed} failed`, { description: result.errors[0] ?? "Open the failed items to see why." })
+        toast.warning(`Queued ${result.queued}, ${result.failed} could not be queued`, { description: result.errors[0] ?? "Open the failed items to see why." })
       } else {
-        toast.success(result.synced > 0 ? `Synced ${result.synced} to QuickBooks` : "Nothing to sync")
+        toast.success(
+          result.queued > 0
+            ? `Queued ${result.queued} for QuickBooks. They post within a few minutes.`
+            : "Nothing to sync",
+        )
       }
     } catch (error: any) {
       toast.error("Sync failed", { description: error?.message ?? "Try again." })

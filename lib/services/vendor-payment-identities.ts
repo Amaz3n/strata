@@ -52,8 +52,11 @@ export interface VendorPaymentPortalContext {
     status: string
     amountCents: number
     currency: string
-    createdAt: string
-    paidAt: string | null
+    /** How the money was sent — ACH through Arc, or a check the builder wrote. */
+    method: string
+    reference: string | null
+    retainageHeldCents: number
+    paidAt: string
   }>
 }
 
@@ -355,19 +358,20 @@ export async function getVendorPaymentPortalContext(): Promise<VendorPaymentPort
   const recipientByEntityId = new Map((recipientRows ?? []).map((recipient) => [recipient.vendor_entity_id, recipient]))
   const orgNameById = new Map((orgRows ?? []).map((org) => [org.id, org.name]))
   const companyNameById = new Map((companyRows ?? []).map((company) => [company.id, company.name]))
-  const recipientIds = (recipientRows ?? []).map((recipient) => recipient.id)
-  const { data: disbursementRows } = recipientIds.length > 0
-    ? await supabase.from("disbursements")
-      .select("id,org_id,bill_id,status,amount_cents,currency,created_at,paid_at")
-      .in("recipient_account_id", recipientIds)
-      .order("created_at", { ascending: false })
+  // Sourced from `payments` rather than `disbursements` so a check appears
+  // beside an ACH. Both rails write here — `record_ap_payment_atomic` inserts a
+  // payment for every settled disbursement — so this is the one place that sees
+  // every dollar the vendor was actually sent, which is the whole question the
+  // vendor came to this page to answer. Filtering by the bill's company is safe
+  // without an org filter: a company row belongs to exactly one org.
+  const { data: paymentRows } = companyIds.length > 0
+    ? await supabase.from("payments")
+      .select("id,org_id,amount_cents,currency,method,status,received_at,reference,bill:vendor_bills!inner(id,bill_number,company_id,retainage_cents)")
+      .in("bill.company_id", companyIds)
+      .in("status", ["succeeded", "completed"])
+      .order("received_at", { ascending: false })
       .limit(100)
     : { data: [] }
-  const billIds = [...new Set((disbursementRows ?? []).map((disbursement) => disbursement.bill_id))]
-  const { data: billRows } = billIds.length > 0
-    ? await supabase.from("vendor_bills").select("id,org_id,bill_number").in("id", billIds)
-    : { data: [] }
-  const billById = new Map((billRows ?? []).map((bill) => [bill.id, bill]))
 
   const entities = (membershipRows ?? []).flatMap((row) => {
     const entity = entityById.get(row.vendor_entity_id)
@@ -406,16 +410,21 @@ export async function getVendorPaymentPortalContext(): Promise<VendorPaymentPort
     identity: identity ? { id: identity.id, email: identity.email, fullName: identity.full_name, status: identity.status } : null,
     entities,
     relationships,
-    recentPayments: (disbursementRows ?? []).map((disbursement) => ({
-      id: disbursement.id,
-      orgName: orgNameById.get(disbursement.org_id) ?? "Builder",
-      billNumber: billById.get(disbursement.bill_id)?.bill_number ?? "Vendor bill",
-      status: disbursement.status,
-      amountCents: Number(disbursement.amount_cents),
-      currency: disbursement.currency,
-      createdAt: disbursement.created_at,
-      paidAt: disbursement.paid_at ?? null,
-    })),
+    recentPayments: (paymentRows ?? []).map((payment) => {
+      const bill = firstRelation(payment.bill)
+      return {
+        id: payment.id,
+        orgName: orgNameById.get(payment.org_id) ?? "Builder",
+        billNumber: bill?.bill_number ?? "Vendor bill",
+        status: payment.status,
+        amountCents: Number(payment.amount_cents),
+        currency: payment.currency,
+        method: payment.method ?? "ach",
+        reference: payment.reference ?? null,
+        retainageHeldCents: Number(bill?.retainage_cents ?? 0),
+        paidAt: payment.received_at,
+      }
+    }),
   }
 }
 

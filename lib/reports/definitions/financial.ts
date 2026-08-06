@@ -1292,14 +1292,17 @@ const vendor1099: ReportDefinition = {
     const report = await getVendor1099Report({ year: Number(ctx.params.year) || undefined })
     const reportable = report.rows.filter((row) => row.meets_threshold)
     const missingW9 = reportable.filter((row) => !row.w9_on_file)
+    // Reportable but unfileable is the state worth surfacing in December rather
+    // than discovering at the filing deadline.
+    const blocked = reportable.filter((row) => row.blocked_for_filing)
 
     return {
       subtitle: `Tax year ${report.tax_year} · ${formatMoneyCents(report.threshold_cents)} threshold`,
       notice:
-        missingW9.length > 0
+        blocked.length > 0
           ? {
               tone: "warning",
-              message: `${missingW9.length} reportable vendor${missingW9.length === 1 ? " has" : "s have"} no W-9 on file.`,
+              message: `${blocked.length} reportable vendor${blocked.length === 1 ? " cannot" : "s cannot"} be filed for yet — see the blockers column.`,
             }
           : undefined,
       stats: [
@@ -1321,6 +1324,7 @@ const vendor1099: ReportDefinition = {
             { key: "tax_id_last4", header: "TIN last 4" },
             { key: "w9_on_file", header: "W-9", type: "status" },
             { key: "meets_threshold", header: "Reportable", type: "status" },
+            { key: "blockers", header: "Blockers" },
             { key: "total_paid_cents", header: "Paid", type: "money" },
           ],
           rows: report.rows.map((row) => ({
@@ -1340,6 +1344,7 @@ const vendor1099: ReportDefinition = {
                 label: row.meets_threshold ? "Yes" : "No",
                 tone: row.meets_threshold ? undefined : "muted",
               },
+              blockers: row.blocking_reasons.length > 0 ? row.blocking_reasons.join("; ") : null,
               total_paid_cents: row.total_paid_cents,
             },
           })),

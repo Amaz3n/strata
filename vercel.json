@@ -14,7 +14,7 @@
     },
     {
       "path": "/api/jobs/process-outbox",
-      "schedule": "0 * * * *"
+      "schedule": "*/10 * * * *"
     },
     {
       "path": "/api/jobs/drawings-pipeline",

@@ -9,7 +9,6 @@ import { requireAuthorization } from "@/lib/services/authorization"
 import { attachFileWithServiceRole } from "@/lib/services/file-links"
 import { vendorBillStatusUpdateSchema, vendorBillCreateSchema, type VendorBillStatusUpdate, type VendorBillCreate } from "@/lib/validation/vendor-bills"
 import { getComplianceRules } from "@/lib/services/compliance"
-import { getCompanyComplianceStatusWithClient } from "@/lib/services/compliance-documents"
 import { propagateApprovalToLedger, voidBillableCostsForVendorBill } from "@/lib/services/cost-plus"
 import { voidJobCostEntriesForVendorBill } from "@/lib/services/job-cost-actuals"
 import { enqueueBillPaymentSync, enqueueVendorBillSync } from "@/lib/services/accounting-sync"
@@ -21,8 +20,10 @@ import { assertBillReleasable, type PaymentReleaseEvidence } from "@/lib/service
 import { requireRecentPaymentStepUp } from "@/lib/services/payment-step-up"
 import { evaluateAndAutoApproveVendorBill } from "@/lib/services/invoice-auto-approval"
 import { learnCodingRule, recordCodingTouch, suggestCoding } from "@/lib/services/books/coding-rules"
+import { sendManualPaymentRemittanceAdvice } from "@/lib/services/vendor-remittance"
+import { sendVendorBillDecisionNotice } from "@/lib/services/vendor-bill-notices"
 
-export type VendorBillStatus = "pending" | "approved" | "partial" | "paid"
+export type VendorBillStatus = "pending" | "approved" | "partial" | "paid" | "rejected"
 
 /** Hard bound on the project payables query — lists that can grow unbounded get a cap. */
 const PROJECT_PAYABLES_FETCH_LIMIT = 500
@@ -71,8 +72,13 @@ export interface VendorBillSummary {
   paid_cents?: number
   retainage_percent?: number
   retainage_cents?: number
+  early_pay_discount_percent?: number
+  early_pay_discount_days?: number
   lien_waiver_status?: string
   lien_waiver_received_at?: string
+  rejected_at?: string
+  rejected_by?: string
+  rejection_reason?: string
   over_budget?: boolean
   actual_cost_code_id?: string
   actual_cost_code_code?: string
@@ -151,7 +157,7 @@ export async function approveVendorBillsAtomic(
 }
 
 export const vendorBillSelect = `
-  id, org_id, project_id, commitment_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, accounting_coding, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
+  id, org_id, project_id, commitment_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, accounting_coding, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, early_pay_discount_percent, early_pay_discount_days, lien_waiver_status, lien_waiver_received_at, rejected_at, rejected_by, rejection_reason, qbo_id, qbo_synced_at, qbo_sync_status, qbo_sync_error, qbo_expense_account_id, qbo_expense_account_name, qbo_ap_account_id, qbo_ap_account_name, qbo_vendor_id, qbo_vendor_name,
   project:projects(id, name),
   company:companies!vendor_bills_company_id_fkey(id, name, qbo_vendor_id, qbo_vendor_name),
   commitment:commitments(id, title, total_cents, company:companies(id, name, qbo_vendor_id, qbo_vendor_name))
@@ -348,8 +354,13 @@ export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: strin
     paid_cents: paidCents,
     retainage_percent: row.retainage_percent ?? undefined,
     retainage_cents: row.retainage_cents ?? undefined,
+    early_pay_discount_percent: row.early_pay_discount_percent == null ? undefined : Number(row.early_pay_discount_percent),
+    early_pay_discount_days: row.early_pay_discount_days == null ? undefined : Number(row.early_pay_discount_days),
     lien_waiver_status: row.lien_waiver_status ?? undefined,
     lien_waiver_received_at: row.lien_waiver_received_at ?? undefined,
+    rejected_at: row.rejected_at ?? undefined,
+    rejected_by: row.rejected_by ?? undefined,
+    rejection_reason: row.rejection_reason ?? undefined,
     over_budget: typeof metadata.over_budget === "boolean" ? metadata.over_budget : undefined,
     actual_cost_code_id: firstActualLine?.cost_code_id ?? undefined,
     actual_cost_code_code: firstActualLine?.cost_code_code ?? undefined,
@@ -607,8 +618,16 @@ export async function listVendorBillsForProject(projectId: string, orgId?: strin
   })
 
   // Multi-project bills: include bills whose primary project is elsewhere but
-  // which have at least one line allocated to this project.
-  const { data: allocatedRows, error: allocatedError } = await supabase.from("bill_lines").select("bill_id").eq("org_id", resolvedOrgId).eq("project_id", projectId)
+  // which have at least one line allocated to this project. Bills already on
+  // this project are excluded here because `project_id.eq` below finds them —
+  // carrying them in the id list only inflated the request URL.
+  const { data: allocatedRows, error: allocatedError } = await supabase
+    .from("bill_lines")
+    .select("bill_id,bill:vendor_bills!inner(project_id)")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+    .neq("bill.project_id", projectId)
+    .limit(2_000)
 
   if (allocatedError) {
     throw new Error(`Failed to resolve allocated bills: ${allocatedError.message}`)
@@ -649,7 +668,19 @@ export async function listVendorBillsPageForProject(
   const queue = String(input.queue ?? "needs_review")
   const search = String(input.search ?? "").trim().slice(0, 120).replace(/[,%()]/g, " ").trim()
 
-  const { data: allocatedRows, error: allocatedError } = await supabase.from("bill_lines").select("bill_id").eq("org_id", resolvedOrgId).eq("project_id", projectId).limit(5_000)
+  // Only bills that live on ANOTHER project but have a line coded to this one.
+  // The old query pulled every bill line on the project, which meant the id list
+  // was dominated by bills already matched by `project_id.eq` — building an `.or()`
+  // URL of thousands of UUIDs to re-select rows the other half of the filter had
+  // already found. On a busy project that URL exceeded PostgREST's limit and the
+  // page simply failed.
+  const { data: allocatedRows, error: allocatedError } = await supabase
+    .from("bill_lines")
+    .select("bill_id,bill:vendor_bills!inner(project_id)")
+    .eq("org_id", resolvedOrgId)
+    .eq("project_id", projectId)
+    .neq("bill.project_id", projectId)
+    .limit(2_000)
   if (allocatedError) throw new Error(`Failed to resolve allocated bills: ${allocatedError.message}`)
   const allocatedBillIds = Array.from(new Set((allocatedRows ?? []).map((row: any) => row.bill_id).filter(Boolean)))
   let query = supabase.from("vendor_bills").select(vendorBillSelect, { count: "exact" }).eq("org_id", resolvedOrgId)
@@ -677,6 +708,22 @@ export async function listVendorBillsPageForProject(
  * separation of duties: the person releasing the money is not the person who
  * approved the obligation.
  */
+/** Whether anyone other than this user could record the payment instead. */
+async function orgHasAnotherPaymentReleaser(orgId: string, userId: string) {
+  const service = createServiceSupabaseClient()
+  const { data: roleRows } = await service.from("role_permissions").select("role_id").eq("permission_key", "payment.release")
+  const roleIds = (roleRows ?? []).map((row) => row.role_id).filter(Boolean)
+  if (roleIds.length === 0) return false
+  const { count } = await service
+    .from("memberships")
+    .select("user_id", { count: "exact", head: true })
+    .eq("org_id", orgId)
+    .eq("status", "active")
+    .in("role_id", roleIds)
+    .neq("user_id", userId)
+  return (count ?? 0) > 0
+}
+
 async function assertExternalPaymentControls(input: {
   supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"]
   orgId: string
@@ -708,10 +755,23 @@ async function assertExternalPaymentControls(input: {
     }
   }
 
-  // Orgs that never configured the rail keep the old behaviour: these controls
-  // describe how an org releases money, and an org with no payment policy has
-  // not made that decision yet.
-  if (!policy) return
+  // An org that never configured the electronic rail has not chosen an approval
+  // mode, so the mode-dependent rules below have nothing to read. Separation of
+  // duties is not mode-dependent, though, and defaulting it off for exactly the
+  // orgs that pay by check aimed the control model at the lower-risk payments.
+  //
+  // It is applied here only when the org actually has someone else who could
+  // release the payment. A two-person rule in a one-person AP department is not
+  // a control, it is a wall — and small residential builders where the owner
+  // both approves and pays are a real, supported way to run.
+  if (!policy) {
+    if (input.bill.approved_by && input.bill.approved_by === input.userId) {
+      if (await orgHasAnotherPaymentReleaser(input.orgId, input.userId)) {
+        throw new Error("You approved this payable, so someone else has to record its payment.")
+      }
+    }
+    return
+  }
 
   if (policy.approval_mode === "dual" && input.bill.approved_by && input.bill.approved_by === input.userId) {
     throw new Error("You approved this payable, so someone else has to record its payment. Your organization requires two people to release money.")
@@ -754,9 +814,15 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
     throw new Error("Payments cannot be recorded against a vendor credit")
   }
 
+  // Reversing an approval is an approval decision, not an edit. Routing it to
+  // `bill.write` let anyone who could correct a bill number also undo the
+  // control that released money against it.
+  const isUnapproval =
+    !isVendorCredit && parsed.status === "pending" && ["approved", "partial", "paid"].includes(String(existing.status))
+
   const requiredPermission = isVendorCredit
     ? "bill.write"
-    : parsed.status === "approved"
+    : parsed.status === "approved" || parsed.status === "rejected" || isUnapproval
       ? "bill.approve"
       : parsed.status === "paid" || parsed.status === "partial"
         ? "payment.release"
@@ -775,6 +841,36 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
 
   if ((parsed.status === "paid" || parsed.status === "partial") && existing.status !== "approved" && existing.status !== "partial" && existing.status !== "paid") {
     throw new Error("Bill must be approved before it can be marked paid")
+  }
+
+  // Money already left. Reverting the status would void the job-cost entries and
+  // the billable costs while the payment rows stay exactly where they are, so
+  // the ledger would stop agreeing with the bank over a click nobody thought was
+  // destructive. Reversing a payment is its own operation.
+  if (isUnapproval) {
+    const { count: settledPayments, error: settledError } = await supabase
+      .from("payments")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", resolvedOrgId)
+      .eq("bill_id", billId)
+      .in("status", ["succeeded", "completed"])
+    if (settledError) throw new Error(`Unable to check recorded payments: ${settledError.message}`)
+    if ((settledPayments ?? 0) > 0) {
+      throw new Error("This payable has recorded payments, so it cannot be returned to pending. Reverse the payment first.")
+    }
+  }
+
+  if (parsed.status === "rejected") {
+    if (!parsed.rejection_reason) {
+      throw new Error("Tell the vendor why this payable was rejected")
+    }
+    if (existing.status !== "pending") {
+      throw new Error("Only a payable still awaiting approval can be rejected")
+    }
+  }
+
+  if (existing.status === "rejected" && parsed.status !== "rejected" && parsed.status !== "pending") {
+    throw new Error("Reopen this rejected payable before approving or paying it")
   }
 
   // The release gate was already shared with the electronic path. What was not
@@ -902,6 +998,20 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
   if (parsed.status === "approved" && !existing.approved_at) {
     updateData.approved_at = new Date().toISOString()
     updateData.approved_by = userId
+  }
+
+  if (parsed.status === "rejected") {
+    updateData.rejected_at = new Date().toISOString()
+    updateData.rejected_by = userId
+    updateData.rejection_reason = parsed.rejection_reason
+  }
+
+  // Reopening clears the rejection rather than leaving a stale reason attached to
+  // a payable that is live again.
+  if (existing.status === "rejected" && parsed.status === "pending") {
+    updateData.rejected_at = null
+    updateData.rejected_by = null
+    updateData.rejection_reason = null
   }
 
   if (parsed.status === "approved" && parsed.lien_waiver_status === undefined) {
@@ -1110,6 +1220,13 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
     }
   }
 
+  if (parsed.early_pay_discount_percent !== undefined) {
+    updateData.early_pay_discount_percent = parsed.early_pay_discount_percent
+  }
+  if (parsed.early_pay_discount_days !== undefined) {
+    updateData.early_pay_discount_days = parsed.early_pay_discount_days
+  }
+
   if (parsed.retainage_percent != null) {
     updateData.retainage_percent = parsed.retainage_percent
     updateData.retainage_cents = Math.round((totalCents * parsed.retainage_percent) / 100)
@@ -1186,6 +1303,11 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
   }
   if (recordedPaymentId) {
     await enqueueBillPaymentSync(recordedPaymentId, resolvedOrgId)
+    // Best effort by design: the money is already recorded, and a mail failure
+    // must not undo it. The vendor being told is not conditional on the rail.
+    await sendManualPaymentRemittanceAdvice({ orgId: resolvedOrgId, paymentId: recordedPaymentId }).catch((error) =>
+      console.warn("Vendor remittance advice was not sent", error),
+    )
   }
 
   await recordAudit({
@@ -1198,13 +1320,32 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
     after: data,
   })
 
+  // Approval and rejection are their own events. Collapsing them into
+  // `vendor_bill_updated` — which has no recipient set and is not a notification
+  // type — is why a submitter was never told either way, and why a rejected
+  // invoice could only be discovered by asking.
+  const lifecycleEventType =
+    finalStatus === "paid"
+      ? "vendor_bill_paid"
+      : finalStatus === "rejected"
+        ? "vendor_bill_rejected"
+        : finalStatus === "approved" && existing.status !== "approved"
+          ? "vendor_bill_approved"
+          : "vendor_bill_updated"
+
   await recordEvent({
     orgId: resolvedOrgId,
-    eventType: finalStatus === "paid" ? "vendor_bill_paid" : "vendor_bill_updated",
+    actorId: userId,
+    eventType: lifecycleEventType,
     entityType: "vendor_bill",
     entityId: billId,
     payload: {
       status: finalStatus,
+      project_id: existing.project_id,
+      company_id: existing.company_id,
+      bill_number: existing.bill_number,
+      amount_cents: existing.total_cents,
+      rejection_reason: finalStatus === "rejected" ? parsed.rejection_reason : undefined,
       cost_code_id: parsed.cost_code_id,
       actual_lines: parsed.actual_lines,
       payment_reference: parsed.payment_reference,
@@ -1218,6 +1359,17 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
       qbo_vendor_id: parsed.qbo_vendor_id,
     },
   })
+
+  // The vendor who sent the invoice hears the outcome directly. Best effort: the
+  // decision is already recorded and is not undone by a mail failure.
+  if (lifecycleEventType === "vendor_bill_approved" || lifecycleEventType === "vendor_bill_rejected") {
+    await sendVendorBillDecisionNotice({
+      orgId: resolvedOrgId,
+      billId,
+      kind: lifecycleEventType === "vendor_bill_approved" ? "approved" : "rejected",
+      reason: parsed.rejection_reason ?? null,
+    }).catch((error) => console.warn("Vendor bill decision notice was not sent", error))
+  }
 
   const learnedLine = actualLines.length === 1 ? actualLines[0] : null
   const codingWasTouched = Boolean(learnedLine?.cost_code_id || parsed.cost_code_id || qboCodingChanged)
@@ -1758,6 +1910,11 @@ export async function createVendorBillFromPortal({
       org_id: orgId,
       project_id: projectId,
       commitment_id: commitmentId,
+      // The vendor is known here with more certainty than on any other intake
+      // path — they authenticated as this company to submit. Omitting it made
+      // portal bills unpayable electronically, invisible to 1099 totals, and the
+      // only bills the duplicate-number trigger could not check.
+      company_id: companyId,
       bill_number: parsed.bill_number,
       total_cents: parsed.total_cents,
       currency: "usd",
@@ -1776,7 +1933,7 @@ export async function createVendorBillFromPortal({
     })
     .select(
       `
-      id, org_id, project_id, commitment_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at,
+      id, org_id, project_id, commitment_id, company_id, bill_number, status, bill_date, due_date, total_cents, currency, submitted_by_contact_id, file_id, metadata, created_at, updated_at, approved_at, approved_by, paid_at, paid_cents, payment_reference, payment_method, retainage_percent, retainage_cents, lien_waiver_status, lien_waiver_received_at,
       project:projects(id, name),
       commitment:commitments(id, title, total_cents)
     `,

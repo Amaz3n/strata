@@ -10,6 +10,7 @@ import {
   approveVendorBillsAtomic,
   type VendorBillSummary,
 } from "@/lib/services/vendor-bills"
+import { releaseRetainage } from "@/lib/services/ap-retainage"
 import { listProjectCommitments } from "@/lib/services/commitments"
 import { createCompany, getCompany } from "@/lib/services/companies"
 import { requireOrgContext } from "@/lib/services/context"
@@ -82,6 +83,35 @@ export async function updateProjectVendorBillStatusAction(
       } catch (error) {
         return { success: false, error: toPayableActionError(error) }
       }
+  })
+}
+
+/**
+ * Release held retainage as its own payable.
+ *
+ * The workspace used to do this by sending `retainage_percent: 0` on the
+ * original bill — editing accounting evidence to achieve a payment, which is
+ * exactly what `releaseRetainage` was written to replace. The release now goes
+ * through the normal approval, hold and payment path, and the original keeps
+ * saying what it always said.
+ */
+export async function releaseRetainageAction(
+  projectId: string,
+  billId: string,
+  amountCents?: number,
+  reason?: string,
+): Promise<
+  ActionResult<PayableMutationResult<{ releaseBillId: string; amountCents: number; remainingHeldCents: number }>>
+> {
+  return run(async () => {
+    try {
+      const result = await releaseRetainage({ bill_id: billId, amount_cents: amountCents, reason })
+      revalidatePayablesPages(projectId)
+      revalidatePath("/payables")
+      return { success: true, data: result }
+    } catch (error) {
+      return { success: false, error: toPayableActionError(error) }
+    }
   })
 }
 

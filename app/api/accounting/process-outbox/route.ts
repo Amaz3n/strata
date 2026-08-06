@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { ACCOUNTING_JOB_TYPES, processAccountingPush, type AccountingPushEntityType } from "@/lib/services/accounting-sync"
+import { ACCOUNTING_JOB_TYPES, markAccountingPushExhausted, processAccountingPush, type AccountingPushEntityType } from "@/lib/services/accounting-sync"
 import { keepAliveAccountingConnections } from "@/lib/services/accounting-connection-maintenance"
 import { logAccounting } from "@/lib/services/accounting-logger"
 import { withCronRun } from "@/lib/services/job-runs"
@@ -142,6 +142,23 @@ async function processAccountingOutbox(request: NextRequest) {
             : job.run_at ?? new Date().toISOString(),
         })
         .eq("id", jobId)
+
+      // Giving up is the moment a human inherits the problem, so it is the
+      // moment the transaction has to start saying so.
+      if (!shouldRetry && job.org_id) {
+        const normalized = job.job_type.replace(/^qbo_sync_/, "").replace(/^accounting_push_/, "")
+        const entityType = normalized as AccountingPushEntityType
+        const payloadKey = entityType === "invoice" ? "invoice_id" : entityType === "project_expense" ? "expense_id" : entityType === "vendor_bill" ? "bill_id" : "payment_id"
+        const entityId = payload[payloadKey]
+        if (typeof entityId === "string") {
+          await markAccountingPushExhausted({
+            orgId: job.org_id,
+            entityType,
+            entityId,
+            message: err?.message ?? "Sync failed",
+          }).catch((markError) => logAccounting("error", "process_outbox_mark_exhausted_failed", { error: String(markError) }))
+        }
+      }
 
       failed++
     }

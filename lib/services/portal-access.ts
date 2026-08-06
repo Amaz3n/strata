@@ -1301,10 +1301,10 @@ export async function loadSubPortalData({
     supabase
       .from("vendor_bills")
       .select(`
-        id, bill_number, commitment_id, status,
-        total_cents, paid_cents, bill_date, due_date,
-        created_at, paid_at, payment_reference, lien_waiver_status,
-        lien_waiver_received_at, metadata,
+        id, bill_number, commitment_id, company_id, status,
+        total_cents, paid_cents, retainage_cents, bill_date, due_date,
+        created_at, paid_at, payment_reference, payment_method, lien_waiver_status,
+        lien_waiver_received_at, rejected_at, rejection_reason, metadata,
         commitments:commitment_id (title)
       `)
       .eq("org_id", orgId)
@@ -1382,10 +1382,15 @@ export async function loadSubPortalData({
 
   ])
 
-  // Filter bills to only those belonging to this company's commitments
   const commitmentIds = new Set((commitmentsResult.data ?? []).map(c => c.id))
-  const companyBills = (billsResult.data ?? []).filter(b =>
-    commitmentIds.has(b.commitment_id)
+  // The vendor's bills are the ones addressed to them, which is what
+  // `company_id` records. Filtering only by commitment membership hid every
+  // payable the builder entered themselves — an invoice emailed in, a bill with
+  // no contract behind it — so a sub could be paid for work they could not see
+  // billed. The commitment set stays in the union for older rows written before
+  // the portal path recorded a company.
+  const companyBills = (billsResult.data ?? []).filter(
+    (b) => b.company_id === companyId || (b.commitment_id && commitmentIds.has(b.commitment_id)),
   )
 
   const { data: approvedCommitmentChangeOrders } =
@@ -1465,8 +1470,12 @@ export async function loadSubPortalData({
     submitted_at: b.created_at,
     paid_at: b.paid_at ?? b.metadata?.paid_at ?? null,
     payment_reference: b.payment_reference ?? b.metadata?.payment_reference ?? null,
+    payment_method: b.payment_method ?? null,
+    retainage_cents: b.retainage_cents ?? 0,
     lien_waiver_status: b.lien_waiver_status ?? null,
     lien_waiver_received_at: b.lien_waiver_received_at ?? null,
+    rejected_at: b.rejected_at ?? null,
+    rejection_reason: b.rejection_reason ?? null,
   }))
 
   // Calculate financial summary

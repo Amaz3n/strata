@@ -338,8 +338,15 @@ async function createVendorRecipientOnboarding(parsed: { vendor_entity_id: strin
   const returnUrl = new URL(parsed.return_path, baseUrl)
   returnUrl.searchParams.set("payments", "return")
   returnUrl.searchParams.set("entity", entity.id)
-  const refreshUrl = new URL(`/access?payments=refresh&entity=${entity.id}`, baseUrl).toString()
-  const url = await provider.createRecipientOnboardingLink({ providerAccountId: recipientRow.provider_account_id, refreshUrl, returnUrl: returnUrl.toString() })
+  // Stripe sends the vendor here when the onboarding link expires before they
+  // finish. Pointing it at `/access` stranded them: that route is a workspace
+  // router and reads neither parameter, so an expired link dead-ended at a list
+  // of builders with no way back into verification. It belongs on the same page
+  // that started the flow, which still has the button.
+  const refreshUrl = new URL(parsed.return_path, baseUrl)
+  refreshUrl.searchParams.set("payments", "refresh")
+  refreshUrl.searchParams.set("entity", entity.id)
+  const url = await provider.createRecipientOnboardingLink({ providerAccountId: recipientRow.provider_account_id, refreshUrl: refreshUrl.toString(), returnUrl: returnUrl.toString() })
   await Promise.all(affectedOrgIds.flatMap((affectedOrgId) => [
     recordEvent({ orgId: affectedOrgId, eventType: "vendor_recipient_onboarding_started", entityType: "payment_recipient_account", entityId: recipient.id, payload: { vendor_entity_id: entity.id } }),
     recordAudit({ orgId: affectedOrgId, action: "update", entityType: "payment_recipient_account", entityId: recipient.id, after: { status: recipient.status, onboarding_link_created: true }, source: "vendor_portal" }),

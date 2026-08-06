@@ -1,7 +1,7 @@
 import { z } from "zod"
 import { paymentMethodInputSchema } from "@/lib/validation/payments"
 
-export const vendorBillStatusEnum = z.enum(["pending", "approved", "partial", "paid"]).default("pending")
+export const vendorBillStatusEnum = z.enum(["pending", "approved", "partial", "paid", "rejected"]).default("pending")
 const lienWaiverStatusSchema = z.preprocess((value) => {
   if (value === "pending") return "requested"
   return value
@@ -46,7 +46,19 @@ export const vendorBillStatusUpdateSchema = z.object({
   payment_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid payment date").optional(),
   payment_amount_cents: z.number().int().min(1).optional(),
   retainage_percent: z.number().min(0).max(25).optional(),
+  /**
+   * "2/10 net 30" as two numbers. The payment-run builder already prices these
+   * and surfaces the saving; until now nothing could record the terms, so the
+   * discount hint could never fire.
+   */
+  early_pay_discount_percent: z.number().min(0).max(25).nullable().optional(),
+  early_pay_discount_days: z.number().int().min(1).max(180).nullable().optional(),
   lien_waiver_status: lienWaiverStatusSchema.optional(),
+  /**
+   * Required to reject. The vendor is shown this verbatim, so it has to say
+   * something — "no" with no reason is how an invoice gets resubmitted unchanged.
+   */
+  rejection_reason: z.string().trim().min(8, "Tell the vendor why in at least a few words").max(1000).optional(),
 })
 
 export type VendorBillStatusUpdate = z.infer<typeof vendorBillStatusUpdateSchema>

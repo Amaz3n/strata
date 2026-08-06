@@ -50,9 +50,24 @@ export async function enqueueAccountingPush(input: { orgId: string; entityType: 
   const projectId = await resolveProjectId(input.orgId, input.entityType, input.entityId)
   const target = await resolveAccountingTarget({ orgId: input.orgId, projectId })
   if (!target) return { queued: false as const, reason: "unconnected" as const }
-  if (typeof target.connection.settings.cutover_freeze_run_id === "string") return { queued: false as const, reason: "cutover_freeze" as const }
 
   const ledgerType = input.entityType === "vendor_bill" ? "bill" : input.entityType
+
+  // A freeze strands transactions that were meant to post, and the freeze is
+  // lifted long after the person who approved them has moved on. Recording it
+  // per entity is what makes the backlog findable afterwards instead of leaving
+  // the row indistinguishable from one that simply has not run yet.
+  if (typeof target.connection.settings.cutover_freeze_run_id === "string") {
+    await markAccountingSyncNeedsReview(
+      input.orgId,
+      ledgerType,
+      input.entityId,
+      target.connection.id,
+      target.connection.provider,
+      "Held by an accounting cutover freeze. It will not post until the freeze is lifted.",
+    )
+    return { queued: false as const, reason: "cutover_freeze" as const }
+  }
   const { data: existingRows } = await supabase
     .from("accounting_sync_records")
     .select("pushable,connection_id")
@@ -92,6 +107,15 @@ export async function enqueueAccountingPush(input: { orgId: string; entityType: 
   return { queued: true as const, reason: queued.reason }
 }
 
+/** A transaction that cannot post right now, and that a human has to come back to. */
+export async function markAccountingSyncNeedsReview(orgId: string, entityType: string, entityId: string, connectionId: string, provider: string, message: string) {
+  const supabase = createServiceSupabaseClient()
+  await supabase.from("accounting_sync_records").upsert({
+    org_id: orgId, connection_id: connectionId, provider, entity_type: entityType,
+    entity_id: entityId, external_id: "", status: "needs_review", error_message: message.slice(0, 4000),
+  }, { onConflict: "org_id,connection_id,entity_type,entity_id" })
+}
+
 export async function markAccountingSyncError(orgId: string, entityType: string, entityId: string, connectionId: string, provider: string, message: string) {
   const supabase = createServiceSupabaseClient()
   const { error } = await supabase.from("accounting_sync_records").upsert({
@@ -128,19 +152,80 @@ export async function processAccountingPush(input: { orgId: string; entityType: 
   return provider.pushBillPayment({ orgId: input.orgId, connectionId, paymentId: input.entityId })
 }
 
-export async function retryFailedAccountingSyncJobs(orgId: string) {
+/**
+ * A push that has run out of retries.
+ *
+ * The outbox marked the job `failed` and stopped, which was the end of it: no
+ * event, no notification, and no per-row trace. The transaction's badge kept
+ * saying "not synced", which is also what a job that has not run yet says, so
+ * a permanent failure and a thirty-second wait looked identical.
+ */
+export async function markAccountingPushExhausted(input: {
+  orgId: string
+  entityType: AccountingPushEntityType
+  entityId: string
+  message: string
+}) {
+  const projectId = await resolveProjectId(input.orgId, input.entityType, input.entityId)
+  const target = await resolveAccountingTarget({ orgId: input.orgId, projectId })
+  if (!target) return
+  const ledgerType = input.entityType === "vendor_bill" ? "bill" : input.entityType
+  await markAccountingSyncError(
+    input.orgId,
+    ledgerType,
+    input.entityId,
+    target.connection.id,
+    target.connection.provider,
+    `Sync gave up after repeated failures and will not retry on its own: ${input.message}`,
+  )
+}
+
+export interface AccountingSyncPosture {
+  /** Transactions waiting to post, or that failed and need a person. */
+  pendingCount: number
+  errorCount: number
+  needsReviewCount: number
+  /** Outbox jobs that exhausted their retries and will never run again. */
+  failedJobCount: number
+  /** Set when pushes are suppressed org-wide rather than per transaction. */
+  suppressedReason: "books_authoritative" | "unconnected" | "cutover_freeze" | null
+}
+
+/**
+ * What the org's accounting sync is actually doing.
+ *
+ * Settings showed connection health and nothing else, so "connected, synced 4
+ * minutes ago" was displayed over a backlog of transactions that had failed
+ * permanently or were frozen mid-cutover. Nothing counted them anywhere a user
+ * could see.
+ */
+export async function getAccountingSyncPosture(orgId: string): Promise<AccountingSyncPosture> {
   const supabase = createServiceSupabaseClient()
-  const { data, error } = await supabase.from("accounting_sync_records")
-    .select("entity_type,entity_id").eq("org_id", orgId).in("status", ["error", "needs_review"]).eq("pushable", true).limit(200)
-  if (error) throw new Error(`Unable to load failed accounting syncs: ${error.message}`)
-  let retried = 0
-  for (const row of data ?? []) {
-    const entityType = row.entity_type === "bill" ? "vendor_bill" : row.entity_type
-    if (!["invoice","payment","project_expense","vendor_bill","bill_payment"].includes(entityType)) continue
-    const result = await enqueueAccountingPush({ orgId, entityType: entityType as AccountingPushEntityType, entityId: row.entity_id })
-    if (result.queued) retried += 1
+  const [{ data: records }, { count: failedJobCount }, booksAuthoritative, target] = await Promise.all([
+    supabase.from("accounting_sync_records").select("status").eq("org_id", orgId).in("status", ["pending", "error", "needs_review"]).limit(1000),
+    supabase.from("outbox").select("id", { count: "exact", head: true })
+      .eq("org_id", orgId)
+      .eq("status", "failed")
+      .in("job_type", Object.values(ENTITY_CONFIG).map((config) => config.jobType))
+      .then((result) => ({ count: result.count ?? 0 })),
+    operationalPushAllowed(orgId).then((allowed) => !allowed),
+    resolveAccountingTarget({ orgId, projectId: null }),
+  ])
+
+  const rows = records ?? []
+  return {
+    pendingCount: rows.filter((row) => row.status === "pending").length,
+    errorCount: rows.filter((row) => row.status === "error").length,
+    needsReviewCount: rows.filter((row) => row.status === "needs_review").length,
+    failedJobCount,
+    suppressedReason: booksAuthoritative
+      ? "books_authoritative"
+      : !target
+        ? "unconnected"
+        : typeof target.connection.settings.cutover_freeze_run_id === "string"
+          ? "cutover_freeze"
+          : null,
   }
-  return { retried }
 }
 
 export const enqueueInvoiceSync = (invoiceId: string, orgId: string) => enqueueAccountingPush({ orgId, entityType: "invoice", entityId: invoiceId })

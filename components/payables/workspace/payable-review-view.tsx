@@ -19,6 +19,7 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
 import { estimateSettlement } from "@/lib/payments/settlement-estimate"
+import { PaymentStepUpGate } from "@/components/payments/payment-step-up-gate"
 import type { PayableApprovalDetail } from "@/lib/services/payable-approvals"
 import type { PaymentHoldEvaluation } from "@/lib/services/payment-holds"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
@@ -360,23 +361,30 @@ export function PayableReviewView({
                       ? ". Another approver is still required after you."
                       : " as soon as you confirm. ACH payments cannot be recalled once sent."}
                   </p>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      className="h-10 flex-1"
-                      disabled={isPending}
-                      onClick={() => setStep("review")}
-                    >
-                      Back
-                    </Button>
-                    <Button
-                      className="h-10 flex-1"
-                      disabled={isPending}
-                      onClick={() => decide("approved")}
-                    >
-                      {isPending ? "Releasing…" : "Confirm & release"}
-                    </Button>
-                  </div>
+                  {/*
+                    The server requires a fresh second factor here. Asking for it
+                    at the confirm step means the approver is challenged instead
+                    of being handed an error after committing to the decision.
+                  */}
+                  <PaymentStepUpGate description="Enter the 6-digit code from your authenticator app to release this payment.">
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        className="h-10 flex-1"
+                        disabled={isPending}
+                        onClick={() => setStep("review")}
+                      >
+                        Back
+                      </Button>
+                      <Button
+                        className="h-10 flex-1"
+                        disabled={isPending}
+                        onClick={() => decide("approved")}
+                      >
+                        {isPending ? "Releasing…" : "Confirm & release"}
+                      </Button>
+                    </div>
+                  </PaymentStepUpGate>
                 </div>
               ) : (
                 <div className="space-y-3 border p-4">
@@ -390,24 +398,26 @@ export function PayableReviewView({
                     onChange={(event) => setReason(event.target.value)}
                     placeholder="The preparer sees this."
                   />
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      className="h-10 flex-1"
-                      disabled={isPending}
-                      onClick={() => setStep("review")}
-                    >
-                      Back
-                    </Button>
-                    <Button
-                      className={cn("h-10 flex-1")}
-                      variant="destructive"
-                      disabled={isPending || reason.trim().length < 8}
-                      onClick={() => decide("rejected")}
-                    >
-                      {isPending ? "Rejecting…" : "Reject payment"}
-                    </Button>
-                  </div>
+                  <PaymentStepUpGate description="Enter the 6-digit code from your authenticator app to record this decision.">
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        className="h-10 flex-1"
+                        disabled={isPending}
+                        onClick={() => setStep("review")}
+                      >
+                        Back
+                      </Button>
+                      <Button
+                        className={cn("h-10 flex-1")}
+                        variant="destructive"
+                        disabled={isPending || reason.trim().length < 8}
+                        onClick={() => decide("rejected")}
+                      >
+                        {isPending ? "Rejecting…" : "Reject payment"}
+                      </Button>
+                    </div>
+                  </PaymentStepUpGate>
                 </div>
               )}
             </>

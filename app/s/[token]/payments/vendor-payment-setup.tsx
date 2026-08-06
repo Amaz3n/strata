@@ -15,14 +15,31 @@ const NEW_ENTITY = "new"
 const money = (cents: number, currency: string) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: currency.toUpperCase() }).format(cents / 100)
 
+const paymentDate = (value: string) =>
+  new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }).format(
+    new Date(value),
+  )
+
+const METHOD_LABELS: Record<string, string> = {
+  ach: "Direct deposit",
+  check: "Check",
+  wire: "Wire",
+  card: "Card",
+  cash: "Cash",
+  other: "Other",
+}
+
 export function VendorPaymentSetup({
   token,
   context,
   justVerified,
+  linkExpired,
 }: {
   token: string
   /** True only on the redirect back from a completed Stripe onboarding. */
   justVerified: boolean
+  /** Stripe bounced the vendor back because the onboarding link timed out. */
+  linkExpired: boolean
   context: VendorPaymentSetupContext
 }) {
   const { builder } = context
@@ -82,6 +99,15 @@ export function VendorPaymentSetup({
       {error ? (
         <div role="alert" className="border border-destructive bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {error}
+        </div>
+      ) : null}
+
+      {linkExpired && !isReady ? (
+        <div className="border border-warning bg-warning/10 px-4 py-3 text-sm">
+          <p className="font-medium">Your verification link expired</p>
+          <p className="mt-1 text-muted-foreground">
+            Nothing was lost — anything you already entered is saved. Start again below to pick up where you left off.
+          </p>
         </div>
       ) : null}
 
@@ -249,30 +275,39 @@ export function VendorPaymentSetup({
       <section className="border border-border bg-card p-5">
         <h2 className="text-base font-semibold">Recent payments</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Up to 100 recent payment attempts across every builder you are connected to.
+          Up to 100 recent payments across every builder you are connected to, however they were sent.
         </p>
         {context.recentPayments.length === 0 ? (
           <div className="mt-4 border border-border px-4 py-8 text-center text-sm text-muted-foreground">
-            No electronic payments yet.
+            No payments recorded yet.
           </div>
         ) : (
           <div className="mt-4 overflow-x-auto border border-border">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/40 text-left text-xs text-muted-foreground">
+                  <th className="px-3 py-2 font-medium">Date</th>
                   <th className="px-3 py-2 font-medium">Builder</th>
                   <th className="px-3 py-2 font-medium">Invoice</th>
-                  <th className="px-3 py-2 font-medium">Status</th>
+                  <th className="px-3 py-2 font-medium">Method</th>
+                  <th className="px-3 py-2 text-right font-medium">Retainage held</th>
                   <th className="px-3 py-2 text-right font-medium">Amount</th>
                 </tr>
               </thead>
               <tbody>
                 {context.recentPayments.map((payment) => (
                   <tr key={payment.id} className="border-b border-border last:border-0">
+                    <td className="whitespace-nowrap px-3 py-3 tabular-nums">{paymentDate(payment.paidAt)}</td>
                     <td className="px-3 py-3">{payment.orgName}</td>
                     <td className="px-3 py-3">{payment.billNumber}</td>
-                    <td className="px-3 py-3 capitalize text-muted-foreground">
-                      {payment.status.replaceAll("_", " ")}
+                    <td className="px-3 py-3 text-muted-foreground">
+                      {METHOD_LABELS[payment.method] ?? payment.method}
+                      {payment.reference ? (
+                        <span className="mt-0.5 block text-xs">{payment.reference}</span>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
+                      {payment.retainageHeldCents > 0 ? money(payment.retainageHeldCents, payment.currency) : "—"}
                     </td>
                     <td className="px-3 py-3 text-right tabular-nums">
                       {money(payment.amountCents, payment.currency)}

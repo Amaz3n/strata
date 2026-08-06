@@ -59,7 +59,7 @@ export default async function SubBillsPage({ params }: SubBillsPageProps) {
     <>
       <PortalPageHeader
         title="Invoices"
-        description="Every invoice you have submitted on this project, and where each one stands."
+        description="Every invoice on this project billed to you, however it got here, and where each one stands."
         actions={
           access.permissions.can_submit_invoices && invoiceableCommitments.length > 0 ? (
             <SubmitInvoiceButton
@@ -74,9 +74,9 @@ export default async function SubBillsPage({ params }: SubBillsPageProps) {
 
       {data.bills.length === 0 ? (
         <div className="border border-border bg-card px-4 py-12 text-center">
-          <p className="text-sm font-medium">No invoices submitted yet</p>
+          <p className="text-sm font-medium">No invoices yet</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Invoices you submit against your contracts appear here.
+            Invoices you submit, and any the builder enters on your behalf, appear here.
           </p>
         </div>
       ) : (
@@ -85,11 +85,34 @@ export default async function SubBillsPage({ params }: SubBillsPageProps) {
             <li key={bill.id} className="flex items-start justify-between gap-4 px-4 py-3">
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium">{bill.bill_number}</p>
-                <p className="truncate text-xs text-muted-foreground">{bill.commitment_title}</p>
+                <p className="truncate text-xs text-muted-foreground">
+                  {bill.commitment_title || "Entered by the builder"}
+                </p>
                 {bill.due_date ? (
                   <p className="text-xs tabular-nums text-muted-foreground">
                     Due {formatLocalDate(bill.due_date, "MMM d, yyyy")}
                   </p>
+                ) : null}
+                {/*
+                  Paid amount, date and reference were already loaded and then
+                  dropped on the floor, so the one question a sub opens this page
+                  to answer — what did you actually pay me, and when — was the
+                  one thing it would not say.
+                */}
+                {(bill.paid_cents ?? 0) > 0 ? (
+                  <p className="mt-1 text-xs tabular-nums text-muted-foreground">
+                    {formatMoneyCents(bill.paid_cents ?? 0)} paid
+                    {bill.paid_at ? ` on ${formatLocalDate(bill.paid_at, "MMM d, yyyy")}` : ""}
+                    {bill.payment_reference ? ` · ${bill.payment_reference}` : ""}
+                  </p>
+                ) : null}
+                {(bill.retainage_cents ?? 0) > 0 ? (
+                  <p className="text-xs tabular-nums text-muted-foreground">
+                    {formatMoneyCents(bill.retainage_cents ?? 0)} retainage held
+                  </p>
+                ) : null}
+                {bill.status === "rejected" && bill.rejection_reason ? (
+                  <p className="mt-1 text-xs text-destructive">{bill.rejection_reason}</p>
                 ) : null}
                 {bill.lien_waiver_status === "received" ? (
                   <p className="mt-1 flex items-center gap-1 text-xs text-success">
@@ -99,7 +122,10 @@ export default async function SubBillsPage({ params }: SubBillsPageProps) {
                 ) : null}
               </div>
               <div className="shrink-0 text-right">
-                <Badge variant="outline" className="mb-1 text-xs capitalize">
+                <Badge
+                  variant="outline"
+                  className={`mb-1 text-xs capitalize ${bill.status === "rejected" ? "border-destructive/25 text-destructive" : ""}`}
+                >
                   {bill.status}
                 </Badge>
                 <p className="text-sm font-medium tabular-nums">{formatMoneyCents(bill.total_cents)}</p>

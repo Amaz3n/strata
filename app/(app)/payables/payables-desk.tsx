@@ -15,6 +15,7 @@ import {
 } from "@/app/(app)/projects/[id]/payables/actions"
 import { Plus, Receipt, Search, Upload, X } from "@/components/icons"
 import { AddPayableSheet } from "@/components/payables/add-payable-sheet"
+import { QboSyncSheet } from "@/components/integrations/qbo-sync-sheet"
 import { PayablesWorkspace } from "@/components/payables/payables-workspace"
 import { useWorkspaceParam } from "@/components/financials/workspace/use-workspace-param"
 import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
@@ -321,6 +322,7 @@ export function PayablesDesk({
   // Adding a bill: opened by the toolbar button, or by dropping a file anywhere
   // on the page. `droppedFile` is what the sheet scans on open.
   const [addOpen, setAddOpen] = React.useState(false)
+  const [syncSheetOpen, setSyncSheetOpen] = React.useState(false)
   const [droppedFile, setDroppedFile] = React.useState<File | null>(null)
   const [isDraggingFile, setIsDraggingFile] = React.useState(false)
 
@@ -694,6 +696,16 @@ export function PayablesDesk({
           <Button asChild variant="outline" size="sm" className="h-8 text-xs">
             <Link href="/payables/payment-runs">Payment runs</Link>
           </Button>
+          {/*
+            The queue was only reachable from project-level list pages, so the
+            desk where AP is actually worked had no way to see what had failed to
+            reach the accounting file.
+          */}
+          {accountingEnabled ? (
+            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setSyncSheetOpen(true)}>
+              Sync queue
+            </Button>
+          ) : null}
           <Button
             size="sm"
             className="h-8 text-xs"
@@ -982,6 +994,14 @@ export function PayablesDesk({
           </>
         )}
       </div>
+
+      <QboSyncSheet
+        open={syncSheetOpen}
+        onOpenChange={(next) => {
+          setSyncSheetOpen(next)
+          if (!next) router.refresh()
+        }}
+      />
 
       <AddPayableSheet
         projects={projects}
