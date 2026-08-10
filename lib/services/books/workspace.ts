@@ -10,6 +10,9 @@ import {
 import { requireOrgContext } from "@/lib/services/context";
 import { requireBooksWorkspaceEnabled } from "@/lib/services/books/module";
 
+/** How many unresolved reconciliation findings the workspace renders at once. */
+const RECONCILIATION_ITEM_CAP = 100;
+
 function monthStart() {
   const now = new Date();
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
@@ -50,6 +53,7 @@ export async function getBooksWorkspace(orgId?: string) {
     bankReconciliations,
     comparisons,
     reconciliations,
+    reconciliationItems,
     accountingConnections,
     exports,
     accountantPackages,
@@ -124,6 +128,17 @@ export async function getBooksWorkspace(orgId?: string) {
       .eq("org_id", context.orgId)
       .order("created_at", { ascending: false })
       .limit(12),
+    // The unresolved findings themselves, not just the run that observed them:
+    // these are what the blocking `accounting_drift` close check counts, so the
+    // person closing the period has to be able to see and dispose of them.
+    service
+      .from("accounting_reconciliation_items")
+      .select("id, category, entity_type, entity_id, local_amount_cents, external_amount_cents, difference_cents, status, details, created_at", { count: "exact" })
+      .eq("org_id", context.orgId)
+      .eq("status", "open")
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(RECONCILIATION_ITEM_CAP),
     service
       .from("accounting_connections")
       .select("id, provider, display_name:label, status, last_sync_at")
@@ -182,6 +197,7 @@ export async function getBooksWorkspace(orgId?: string) {
     bankReconciliations.error,
     comparisons.error,
     reconciliations.error,
+    reconciliationItems.error,
     accountingConnections.error,
     exports.error,
     accountantPackages.error,
@@ -221,6 +237,9 @@ export async function getBooksWorkspace(orgId?: string) {
     unmatchedTransactions,
     comparisons: comparisons.data ?? [],
     reconciliations: reconciliations.data ?? [],
+    reconciliationItems: reconciliationItems.data ?? [],
+    reconciliationItemTotal: reconciliationItems.count ?? 0,
+    reconciliationItemCap: RECONCILIATION_ITEM_CAP,
     accountingConnections: accountingConnections.data ?? [],
     exports: exports.data ?? [],
     accountantPackages: accountantPackages.data ?? [],

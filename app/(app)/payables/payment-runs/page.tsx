@@ -1,37 +1,23 @@
-import { PageLayout } from "@/components/layout/page-layout"
-import { listPaymentReconciliations } from "@/lib/services/payment-reconciliation"
-import {
-  getPaymentRunSetupData,
-  listPaymentRuns,
-  type PaymentRunListRow,
-  type PaymentRunSetupData,
-} from "@/lib/services/payment-runs"
-import type { PaymentReconciliationSummary } from "@/lib/services/payment-reconciliation"
+import { redirect } from "next/navigation"
 
-import { PaymentRunsClient } from "./payment-runs-client"
-
-export const dynamic = "force-dynamic"
-
-export default async function PaymentRunsPage() {
-  let error: string | null = null
-  let setup: PaymentRunSetupData = { fundingSources: [], eligibleBills: [] }
-  let runs: PaymentRunListRow[] = []
-  let reconciliations: PaymentReconciliationSummary[] = []
-  const [setupResult, runsResult, reconciliationResult] = await Promise.allSettled([
-    getPaymentRunSetupData(),
-    listPaymentRuns(),
-    listPaymentReconciliations(),
-  ])
-  if (setupResult.status === "fulfilled") setup = setupResult.value
-  if (runsResult.status === "fulfilled") runs = runsResult.value
-  if (reconciliationResult.status === "fulfilled") reconciliations = reconciliationResult.value
-  const coreFailure = setupResult.status === "rejected"
-    ? setupResult.reason
-    : runsResult.status === "rejected"
-      ? runsResult.reason
-      : null
-  if (coreFailure) {
-    error = coreFailure instanceof Error ? coreFailure.message : "Unable to load payment operations"
-  }
-  return <PageLayout fullBleed><PaymentRunsClient setup={setup} runs={runs} reconciliations={reconciliations} canReconcile={reconciliationResult.status === "fulfilled"} error={error} /></PageLayout>
+/**
+ * Payment runs no longer have a desk.
+ *
+ * A run is the envelope an approver signs for — real, but real for about ninety
+ * seconds, to one person. Everyone else relates to it through a bill: the clerk
+ * pays bills, the approver releases them, and the vendor is owed on one. Giving
+ * it its own surface meant a second bill-selection table beside the payables
+ * desk, and an approval queue nobody visited because approvals arrive by email.
+ *
+ * Composition and release now happen on the payables desk. Reconciliation moved
+ * to Ops, where a daily job whose silence is the alarm belongs. This redirect
+ * stays because approval emails already in inboxes point here.
+ */
+export default async function PaymentRunsRedirect({
+  searchParams,
+}: {
+  searchParams: Promise<{ run?: string }>
+}) {
+  const { run } = await searchParams
+  redirect(run ? `/payables?run=${run}` : "/payables")
 }

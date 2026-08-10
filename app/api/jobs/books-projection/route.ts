@@ -1,22 +1,20 @@
 import { type NextRequest, NextResponse } from "next/server"
 
 import { runBooksProjection } from "@/lib/services/books/projector"
+import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
 import { withCronRun } from "@/lib/services/job-runs"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-function authorized(request: NextRequest) {
-  if (process.env.NODE_ENV !== "production") return true
-  const expected = process.env.CRON_SECRET
-  const bearer = request.headers.get("authorization")
-  if (expected) return bearer === `Bearer ${expected}` || request.headers.get("x-cron-secret") === expected
-  return request.headers.get("x-vercel-cron") === "1"
-}
-
 async function handler(request: NextRequest) {
-  if (!authorized(request)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  const result = await runBooksProjection()
+  if (!isAuthorizedCronRequest(request)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  // `?full=1` ignores the watermark and rescans every source record. The scheduled
+  // run stays incremental; this is the operator lever for a backfill, or for
+  // recovering facts whose journal entry failed to post (see the repair sweep in
+  // `books-maintenance`, which runs the same pass nightly).
+  const full = ["1", "true"].includes((request.nextUrl.searchParams.get("full") ?? "").toLowerCase())
+  const result = await runBooksProjection({ full })
   const failures = result.results.reduce((sum, item) => sum + item.failures.length, 0)
   return NextResponse.json({ ok: failures === 0, failures, ...result }, { status: failures === 0 ? 200 : 207 })
 }

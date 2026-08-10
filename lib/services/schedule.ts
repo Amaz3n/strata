@@ -466,6 +466,10 @@ export async function createScheduleItem(
       float_days: input.float_days ?? 0,
       color: input.color || null,
       sort_order: input.sort_order ?? 0,
+      // The only modelled link between a schedule task and the money spent on
+      // it. The schema has always accepted it; the insert used to drop it, so
+      // anything reading the schedule for cost context saw almost nothing.
+      cost_code_id: input.cost_code_id || null,
     })
     .select(
       `
@@ -604,6 +608,9 @@ export async function updateScheduleItem({
   if (parsed.color !== undefined) updateData.color = parsed.color || null;
   if (parsed.sort_order !== undefined)
     updateData.sort_order = parsed.sort_order;
+  // Accepted by the schema and previously discarded here — see createScheduleItem.
+  if (parsed.cost_code_id !== undefined)
+    updateData.cost_code_id = parsed.cost_code_id || null;
 
   const { data, error } =
     Object.keys(updateData).length === 0

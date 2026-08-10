@@ -17,6 +17,7 @@ import { getDirectoryIntelligenceForCompanies } from "@/lib/services/directory-i
 import { listProjectsAction } from "@/app/(app)/projects/actions";
 import { CompanyDetailPage } from "@/components/companies/company-detail-page";
 import { getLatestPrequalification } from "@/lib/services/prequalification";
+import { listCompanyPaymentReadiness } from "@/lib/services/vendor-payment-invitations";
 
 interface CompanyDetailPageProps {
   params: Promise<{ id: string }>;
@@ -45,7 +46,7 @@ export default async function CompanyDetailPageRoute({
   const emptyIntelligence: Awaited<
     ReturnType<typeof getDirectoryIntelligenceForCompanies>
   > = { scorecardsByCompanyId: {}, taxReadinessByCompanyId: {} };
-  const [commitments, vendorBills, clientReceivables, intelligence] =
+  const [commitments, vendorBills, clientReceivables, intelligence, readinessByCompany] =
     await Promise.all([
       isClientCompany ? Promise.resolve([]) : listCompanyCommitments(companyId),
       isClientCompany ? Promise.resolve([]) : listVendorBillsForCompany(companyId),
@@ -55,6 +56,9 @@ export default async function CompanyDetailPageRoute({
       isVendorCompany
         ? getDirectoryIntelligenceForCompanies([companyId]).catch(() => emptyIntelligence)
         : Promise.resolve(emptyIntelligence),
+      isVendorCompany
+        ? listCompanyPaymentReadiness([companyId]).catch(() => null)
+        : Promise.resolve(null),
     ]);
 
   const vendorScorecard = intelligence.scorecardsByCompanyId[companyId] ?? null;
@@ -87,6 +91,7 @@ export default async function CompanyDetailPageRoute({
         canEdit={canEdit}
         canArchive={canArchive}
         prequalification={prequalification}
+        paymentReadiness={readinessByCompany?.get(companyId) ?? null}
       />
     </PageLayout>
   );

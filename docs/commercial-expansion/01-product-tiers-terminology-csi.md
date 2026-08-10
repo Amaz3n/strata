@@ -1,5 +1,10 @@
 # Workstream 01 — Product Tiers, Project Posture, Terminology, CSI Cost Codes
 
+> **Status: SHIPPED — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for commercial
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 > Prereq: read `00-MASTER-commercial-expansion.md`. This workstream has no dependencies
 > and unblocks every other one. It is mostly plumbing — resist the urge to redesign UI.
 

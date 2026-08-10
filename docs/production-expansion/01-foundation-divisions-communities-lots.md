@@ -1,5 +1,10 @@
 # Workstream 01 — Foundation: Production Posture, Divisions, Communities, Lots
 
+> **Status: SHIPPED (QA acceptance pending) — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for production
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 > Prereq: `00-MASTER-production-expansion.md` read fully, plus the commercial suite's
 > `00-MASTER` and `09-platform-deferred-and-production.md`. This workstream is the
 > root of the production dependency graph: every later doc (plans, purchasing, starts,

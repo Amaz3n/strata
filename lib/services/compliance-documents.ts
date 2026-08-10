@@ -25,11 +25,40 @@ import {
   type ComplianceRequirementWaiverRevokeInput,
   type ComplianceReviewDecision,
 } from "@/lib/validation/compliance-documents"
+import { isInsuranceDocumentTypeName } from "@/lib/payments/ap-verification"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { recordAudit } from "@/lib/services/audit"
+import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 import { normalizeComplianceRequirementDefaults } from "@/lib/services/compliance"
+
+/**
+ * Hand an insurance certificate to the reader, out of band.
+ *
+ * Opportunistic in both directions: extraction never blocks the upload or the
+ * review, and a job that never runs costs nothing — the payment hold keeps
+ * evaluating on the expiry a human recorded, exactly as it did before any
+ * certificate was read. Deduped on the file, so uploading and then approving
+ * the same certificate reads it once.
+ */
+async function enqueueCoiExtraction(params: {
+  orgId: string
+  fileId: string | null | undefined
+  documentId: string
+  documentType: { name?: string | null; code?: string | null } | null | undefined
+}) {
+  if (!params.fileId) return
+  const name = params.documentType?.name
+  const code = params.documentType?.code
+  if (!isInsuranceDocumentTypeName(name) && !isInsuranceDocumentTypeName(code)) return
+  await enqueueOutboxJob({
+    orgId: params.orgId,
+    jobType: "extract_coi_facts",
+    payload: { file_id: params.fileId, compliance_document_id: params.documentId },
+    dedupeByPayloadKeys: ["file_id"],
+  })
+}
 
 // ============ Mappers ============
 
@@ -552,6 +581,8 @@ export async function uploadComplianceDocument({
     await recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "company.w9_received", entityType: "company", entityId: companyId, payload: { file_id: fileId } })
   }
 
+  await enqueueCoiExtraction({ orgId: resolvedOrgId, fileId, documentId: data.id, documentType: uploadedType })
+
   await recordEvent({
     orgId: resolvedOrgId,
     eventType: "compliance_document_uploaded",
@@ -636,6 +667,8 @@ export async function uploadComplianceDocumentFromPortal({
     await recordEvent({ orgId, eventType: "company.w9_received", entityType: "company", entityId: companyId, payload: { file_id: fileId, submitted_via_portal: true } })
   }
 
+  await enqueueCoiExtraction({ orgId, fileId, documentId: data.id, documentType: uploadedType })
+
   await recordEvent({
     orgId,
     eventType: "compliance_document_uploaded",
@@ -701,6 +734,15 @@ export async function reviewComplianceDocument({
 
   if (error || !data) {
     throw new Error(`Failed to review compliance document: ${error?.message}`)
+  }
+
+  // Approval is the moment the certificate starts gating payments, so it is the
+  // moment worth reading it — a document rejected on sight is never read.
+  if (parsed.decision === "approved") {
+    const reviewedType = Array.isArray(data.compliance_document_types)
+      ? data.compliance_document_types[0]
+      : data.compliance_document_types
+    await enqueueCoiExtraction({ orgId: resolvedOrgId, fileId: data.file_id, documentId: documentId, documentType: reviewedType })
   }
 
   await recordEvent({

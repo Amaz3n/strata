@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto"
 import { buildTableArtifact } from "@/lib/services/ai-search/artifacts"
 import { retrieveHybridResults } from "@/lib/services/ai-search/retrieval"
 import { resolveProjectById, resolveProjectFromHints, type ProjectRef } from "@/lib/services/ai-search/projects"
-import type { AiSearchArtifact, AiSearchExportLink } from "@/lib/services/ai-search"
+import type { AiSearchArtifact, AiSearchExportLink } from "@/lib/services/ai-search/types"
 import type { requireOrgContext } from "@/lib/services/context"
 import type { SearchResult } from "@/lib/services/search"
 
@@ -575,7 +575,7 @@ export async function executeCanonicalMetricIntent(
       limit: Math.max(8, Math.min(intent.limit, 12)),
       enableHybrid: enableHybridRetrieval,
     })
-    const dedupedRelated = dedupeResults(fallbackRelated).slice(0, Math.max(8, Math.min(intent.limit, 12)))
+    const dedupedRelated = dedupeResults(fallbackRelated.results).slice(0, Math.max(8, Math.min(intent.limit, 12)))
 
     const artifactData =
       buildTableArtifact({

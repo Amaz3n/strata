@@ -1,9 +1,30 @@
+import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireProjectPermission } from "@/lib/services/permissions"
 import { getBudgetWithActuals } from "@/lib/services/budgets"
 import { getOrgBilling } from "@/lib/services/orgs"
+import { resolveRevisedContractCents, type PocBillingContract } from "@/lib/financials/poc-inputs"
 
+/**
+ * `accrual` counts an invoice when it is billed; `cash` counts only what has
+ * been collected against it (`total − balance_due`, i.e. payments applied).
+ *
+ * That is NOT the cash basis Books reports, which is a GL-delta basis over
+ * posted entries. The two answer different questions and will not agree, so the
+ * label below rides on the report and every surface that renders it.
+ */
 export type ProfitabilityBasis = "accrual" | "cash"
+
+export const PROFITABILITY_BASIS_LABELS: Record<ProfitabilityBasis, string> = {
+  accrual: "Accrual — invoiced",
+  cash: "Cash — payments applied",
+}
+
+/** Spelled out wherever the number could be mistaken for the Books cash-basis figure. */
+export const PROFITABILITY_BASIS_DESCRIPTIONS: Record<ProfitabilityBasis, string> = {
+  accrual: "Income counted when invoiced, on invoices in a billed status.",
+  cash: "Income counted as payments applied to invoices. Not the Books cash-basis figure, which is derived from posted ledger entries.",
+}
 
 /** How cost-of-work lines are grouped: by cost-code category, or by the QBO expense account on the source bill/expense. */
 export type ProfitabilityGroupBy = "category" | "account"
@@ -35,6 +56,9 @@ export type ProjectProfitabilityReport = {
   org_name: string | null
   org_logo_url: string | null
   basis: ProfitabilityBasis
+  /** Rendered next to the totals so "cash" is never read as the Books cash basis. */
+  basis_label: string
+  basis_description: string
   from: string | null
   to: string | null
   generated_at: string
@@ -104,7 +128,12 @@ export async function getProjectProfitabilityReport({
   await requireProjectPermission(userId, projectId, "financials.margin.read")
 
   const [projectResult, invoicesResult, jobCostResult, budgetData, orgBilling] = await Promise.all([
-    supabase.from("projects").select("id, name").eq("org_id", resolvedOrgId).eq("id", projectId).maybeSingle(),
+    supabase
+      .from("projects")
+      .select("id, name, billing_contract, total_contract_value_cents")
+      .eq("org_id", resolvedOrgId)
+      .eq("id", projectId)
+      .maybeSingle(),
     supabase
       .from("invoices")
       .select("id, status, total_cents, balance_due_cents, issue_date, created_at, metadata")
@@ -130,9 +159,12 @@ export async function getProjectProfitabilityReport({
   const orgLogoUrl = (orgBilling?.org?.logo_url as string | undefined) ?? null
 
   // ---- Income ----------------------------------------------------------------
+  // Membership in the billed set, not an inverse list of everything that isn't
+  // billed: the inverse drifts silently the day a new invoice status ships.
+  const billedStatuses: ReadonlySet<string> = new Set<string>(BILLED_INVOICE_STATUSES)
   const incomeBySource = new Map<string, { label: string; amount_cents: number }>()
   for (const invoice of invoicesResult.data ?? []) {
-    if (["draft", "saved", "void"].includes(String(invoice.status))) continue
+    if (!billedStatuses.has(String(invoice.status))) continue
     const billedDate = (invoice.issue_date ?? invoice.created_at) as string | null
     if (!inDateRange(billedDate, from, to)) continue
     const total = Number(invoice.total_cents ?? 0)
@@ -304,7 +336,19 @@ export async function getProjectProfitabilityReport({
   const grossProfitCents = totalIncomeCents - totalCostCents
   const netProfitCents = grossProfitCents
 
-  const contractValueCents = await getContractValueCents(supabase, resolvedOrgId, projectId)
+  // One contract value per project. This used to read the active `contracts`
+  // row while POC/WIP read `projects.billing_contract` + `total_contract_value_cents`
+  // through `resolveRevisedContractCents`; a stale mirror made this report's
+  // contract KPI and percent-billed disagree with the WIP report for the same
+  // project. Both now go through the same resolver.
+  const contractValueCents =
+    resolveRevisedContractCents({
+      billingContract: (projectResult.data.billing_contract ?? null) as PocBillingContract,
+      totalContractValueCents:
+        typeof projectResult.data.total_contract_value_cents === "number"
+          ? projectResult.data.total_contract_value_cents
+          : null,
+    }) || null
 
   const budgetedMarginPercent =
     contractValueCents && contractValueCents > 0 && budgetTotalCents > 0
@@ -317,6 +361,8 @@ export async function getProjectProfitabilityReport({
     org_name: orgName,
     org_logo_url: orgLogoUrl,
     basis,
+    basis_label: PROFITABILITY_BASIS_LABELS[basis],
+    basis_description: PROFITABILITY_BASIS_DESCRIPTIONS[basis],
     from,
     to,
     generated_at: new Date().toISOString(),
@@ -349,25 +395,6 @@ export async function getProjectProfitabilityReport({
       contractValueCents && contractValueCents > 0 ? Math.round((totalIncomeCents / contractValueCents) * 1000) / 10 : null,
     percent_budget_spent: budgetTotalCents > 0 ? Math.round((totalCostCents / budgetTotalCents) * 1000) / 10 : null,
   }
-}
-
-async function getContractValueCents(
-  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"],
-  orgId: string,
-  projectId: string,
-): Promise<number | null> {
-  const { data } = await supabase
-    .from("contracts")
-    .select("total_cents, snapshot, status")
-    .eq("org_id", orgId)
-    .eq("project_id", projectId)
-    .order("status", { ascending: true })
-    .limit(5)
-
-  if (!data || data.length === 0) return null
-  const active = data.find((c: any) => c.status === "active") ?? data[0]
-  const revised = (active as any)?.snapshot?.revised_total_cents
-  return Number(revised ?? (active as any)?.total_cents ?? 0) || null
 }
 
 function titleCase(value: string): string {

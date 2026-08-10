@@ -6,10 +6,14 @@ import { toast } from "sonner"
 
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import type { PaymentHoldEvaluation } from "@/lib/services/payment-holds"
+import type { PayableRunMembership } from "@/lib/services/org-payables"
+import type { CompanyPaymentReadinessStatus } from "@/lib/services/vendor-payment-invitations"
 import type { BudgetLineOption, ComplianceRules, ComplianceStatusSummary, CostCode } from "@/lib/types"
 import {
   getPayablesAccountingContextAction,
-  syncProjectVendorBillToQBOAction,
+  getPayablesAccountingSyncStatesAction,
+  approveVendorBillsAtomicAction,
+  syncProjectVendorBillToAccountingAction,
   updateProjectVendorBillStatusAction,
   deleteProjectVendorBillAction,
 } from "@/app/(app)/projects/[id]/payables/actions"
@@ -30,9 +34,11 @@ import {
 } from "@/components/ui/alert-dialog"
 import { useWorkspaceParam } from "@/components/financials/workspace/use-workspace-param"
 import { PayablesExplorer } from "./payables-explorer"
-import { AddPayableSheet } from "./add-payable-sheet"
+import { billStatus } from "./workspace/payable-form"
+import { PayableCreateWorkspace } from "./payable-create-workspace"
 import { PayablesWorkspace } from "./payables-workspace"
-import { QboSyncSheet } from "@/components/integrations/qbo-sync-sheet"
+import { AccountingSyncSheet } from "@/components/integrations/accounting-sync-sheet"
+import type { AccountingSyncState } from "@/lib/services/accounting-sync-state"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -52,6 +58,14 @@ export function ProjectPayablesClient({
   toolbarLeading,
   fullBleed = false,
   holdEvaluations = {},
+  railOpen = false,
+  paymentReadinessByCompanyId = {},
+  runMembershipByBillId = {},
+  viewerMayApproveRuns = false,
+  approvalViewer = null,
+  pagination,
+  initialQueue,
+  initialSearch,
 }: {
   projectId: string
   vendorBills: VendorBillSummary[]
@@ -64,6 +78,17 @@ export function ProjectPayablesClient({
   toolbarLeading?: ReactNode
   fullBleed?: boolean
   holdEvaluations?: Record<string, PaymentHoldEvaluation>
+  railOpen?: boolean
+  paymentReadinessByCompanyId?: Record<string, CompanyPaymentReadinessStatus>
+  runMembershipByBillId?: Record<string, PayableRunMembership>
+  viewerMayApproveRuns?: boolean
+  approvalViewer?: {
+    userId: string
+    approvers: Array<{ userId: string; name: string }>
+  } | null
+  pagination: { page: number; pageSize: number; total: number; pageCount: number }
+  initialQueue: string
+  initialSearch: string
 }) {
   const router = useRouter()
   const [, startTransition] = useTransition()
@@ -71,27 +96,41 @@ export function ProjectPayablesClient({
   const [addPayableOpen, setAddPayableOpen] = useState(false)
   const [syncSheetOpen, setSyncSheetOpen] = useState(false)
   const [accountingEnabled, setAccountingEnabled] = useState(false)
+  const [accountingProvider, setAccountingProvider] = useState<string | null>(null)
+  const [accountingProviderName, setAccountingProviderName] = useState<string | null>(null)
+  const [accountingSyncByBillId, setAccountingSyncByBillId] = useState<Record<string, AccountingSyncState>>({})
   const [customerPreview, setCustomerPreview] = useState<{ hasDefault: boolean; customerName: string | null } | null>(null)
   const [customerNudgeDismissed, setCustomerNudgeDismissed] = useState(false)
   const [qboExpenseAccounts, setQboExpenseAccounts] = useState<QBOAccountOption[]>([])
   const [qboApAccounts, setQboApAccounts] = useState<QBOAccountOption[]>([])
   const [qboDefaults, setQboDefaults] = useState<{ expenseAccountId?: string; apAccountId?: string }>({})
+  const [accountingDimensions, setAccountingDimensions] = useState<Array<{
+    key: string
+    label: string
+    values: QBOAccountOption[]
+  }>>([])
   const [projects, setProjects] = useState<ProjectOption[]>([])
   const [deleteBill, setDeleteBill] = useState<VendorBillSummary | null>(null)
 
   const [workspaceBillId, openBill] = useWorkspaceParam("bill")
 
   const getExpenseAccountName = (accountId?: string) => qboExpenseAccounts.find((account) => account.id === accountId)?.name
+  const mayApproveBill = (bill: VendorBillSummary) =>
+    !bill.preferred_approver_ids?.length ||
+    Boolean(approvalViewer && bill.preferred_approver_ids.includes(approvalViewer.userId))
   useEffect(() => {
     let cancelled = false
     getPayablesAccountingContextAction(projectId)
       .then((context) => {
         if (cancelled) return
         setAccountingEnabled(Boolean(context.enabled))
+        setAccountingProvider(context.provider ?? null)
+        setAccountingProviderName(context.providerName ?? null)
         setQboExpenseAccounts(context.expenseAccounts ?? [])
         setQboApAccounts(context.apAccounts ?? [])
         setQboDefaults(context.defaults ?? {})
-        if (context.enabled) {
+        setAccountingDimensions(context.dimensions ?? [])
+        if (context.provider === "qbo") {
           getProjectAccountingCustomerPreviewAction(projectId)
             .then((preview) => {
               if (!cancelled) setCustomerPreview(preview)
@@ -106,6 +145,11 @@ export function ProjectPayablesClient({
       cancelled = true
     }
   }, [projectId])
+
+  useEffect(() => {
+    if (!accountingEnabled) return
+    void getPayablesAccountingSyncStatesAction(vendorBills.map((bill) => bill.id)).then(setAccountingSyncByBillId).catch(() => setAccountingSyncByBillId({}))
+  }, [accountingEnabled, vendorBills])
 
   useEffect(() => {
     let cancelled = false
@@ -149,8 +193,8 @@ export function ProjectPayablesClient({
           return
         }
         if (updated.data.qbo_sync_status === "needs_review") {
-          toast.warning("Bill approved, but QuickBooks needs coding", {
-            description: updated.data.qbo_sync_error ?? "Choose a QuickBooks account before syncing.",
+          toast.warning(`Bill approved, but ${accountingProviderName ?? "accounting"} needs coding`, {
+            description: updated.data.qbo_sync_error ?? "Choose an accounting category before syncing.",
           })
         } else {
           toast.success("Bill approved")
@@ -164,7 +208,7 @@ export function ProjectPayablesClient({
 
   return (
     <div className={fullBleed ? "w-full" : "h-full flex flex-col"}>
-      {accountingEnabled && customerPreview && !customerPreview.hasDefault && !customerNudgeDismissed ? (
+      {accountingProvider === "qbo" && customerPreview && !customerPreview.hasDefault && !customerNudgeDismissed ? (
         <div
           className={cn(
             "mb-3 flex items-start justify-between gap-3 border border-warning/30 bg-warning/10 px-4 py-2.5 text-sm text-foreground",
@@ -189,23 +233,28 @@ export function ProjectPayablesClient({
 
       <div className={fullBleed ? "w-full" : "flex-1 overflow-hidden border bg-card"}>
         <PayablesExplorer
-          projectId={projectId}
           vendorBills={vendorBills}
           costCodes={costCodes}
           costCodesEnabled={costCodesEnabled}
           accountingEnabled={accountingEnabled}
+          externalAccountingEnabled={accountingEnabled && accountingProvider !== "arc_books"}
+          runMembershipByBillId={runMembershipByBillId}
+          accountingProviderName={accountingProviderName}
           qboExpenseAccounts={qboExpenseAccounts}
           complianceRules={complianceRules}
           complianceStatusByCompanyId={complianceStatusByCompanyId}
           toolbarLeading={toolbarLeading}
           fullBleed={fullBleed}
+          pagination={pagination}
+          initialQueue={initialQueue}
+          initialSearch={initialSearch}
           onAddPayable={() => setAddPayableOpen(true)}
-          onOpenSyncSheet={() => setSyncSheetOpen(true)}
+          onOpenSyncSheet={accountingProvider === "qbo" ? () => setSyncSheetOpen(true) : undefined}
           onSelectQboExpenseAccount={(bill, accountId) => {
             startTransition(async () => {
               try {
                 const result = unwrapAction(await updateProjectVendorBillStatusAction(projectId, bill.id, {
-                  status: bill.status as any,
+                  status: billStatus(bill),
                   expected_updated_at: bill.updated_at,
                   qbo_expense_account_id: accountId || undefined,
                   qbo_expense_account_name: getExpenseAccountName(accountId),
@@ -214,7 +263,7 @@ export function ProjectPayablesClient({
                   toast.error(result.error)
                   return
                 }
-                toast.success("QuickBooks account updated")
+                toast.success("Accounting category updated")
                 router.refresh()
               } catch (error) {
                 toast.error((error as Error).message)
@@ -225,7 +274,7 @@ export function ProjectPayablesClient({
             startTransition(async () => {
               try {
                 const result = unwrapAction(await updateProjectVendorBillStatusAction(projectId, bill.id, {
-                  status: bill.status as any,
+                  status: billStatus(bill),
                   expected_updated_at: bill.updated_at,
                   cost_code_id: costCodeId,
                   qbo_expense_account_id: bill.qbo_expense_account_id ?? qboDefaults.expenseAccountId,
@@ -244,21 +293,15 @@ export function ProjectPayablesClient({
           } : undefined}
           onViewDetails={(bill) => openBill(bill.id)}
           onApprove={approveBill}
+          mayApprove={mayApproveBill}
           onBulkApprove={(bills) => {
             startTransition(async () => {
-              let approved = 0
-              for (const bill of bills) {
-                const result = unwrapAction(await updateProjectVendorBillStatusAction(projectId, bill.id, {
-                  status: "approved",
-                  expected_updated_at: bill.updated_at,
-                  cost_code_id: costCodesEnabled ? bill.actual_cost_code_id ?? undefined : undefined,
-                  qbo_expense_account_id: bill.qbo_expense_account_id ?? qboDefaults.expenseAccountId,
-                  qbo_expense_account_name: bill.qbo_expense_account_name ?? getExpenseAccountName(qboDefaults.expenseAccountId),
-                }))
-                if (result.success) approved += 1
-                else toast.error(result.error, { description: bill.bill_number ?? undefined })
+              const result = await approveVendorBillsAtomicAction(bills.map((bill) => ({ id: bill.id, expected_updated_at: bill.updated_at })))
+              if (!result.success) {
+                toast.error(result.error, { description: "No payables were changed." })
+                return
               }
-              if (approved > 0) toast.success(`${approved} payable${approved === 1 ? "" : "s"} approved`)
+              toast.success(`${result.data.approvedCount} payable${result.data.approvedCount === 1 ? "" : "s"} approved atomically`)
               router.refresh()
             })
           }}
@@ -271,7 +314,7 @@ export function ProjectPayablesClient({
                   toast.error(blockReason, { description: bill.bill_number ?? undefined })
                   continue
                 }
-                unwrapAction(await syncProjectVendorBillToQBOAction(projectId, bill.id))
+                unwrapAction(await syncProjectVendorBillToAccountingAction(projectId, bill.id))
                 synced += 1
               }
               if (synced > 0) toast.success(`${synced} payable${synced === 1 ? "" : "s"} synced`)
@@ -286,8 +329,8 @@ export function ProjectPayablesClient({
                 if (!bill.qbo_vendor_id) openBill(bill.id)
                 return
               }
-              unwrapAction(await syncProjectVendorBillToQBOAction(projectId, bill.id))
-              toast.success("Synced to QuickBooks")
+              unwrapAction(await syncProjectVendorBillToAccountingAction(projectId, bill.id))
+              toast.success(`Synced to ${accountingProviderName ?? "accounting"}`)
               router.refresh()
             })
           }}
@@ -295,9 +338,15 @@ export function ProjectPayablesClient({
         />
       </div>
 
-      <AddPayableSheet projectId={projectId} open={addPayableOpen} onOpenChange={setAddPayableOpen} onSuccess={() => router.refresh()} />
+      <PayableCreateWorkspace
+        projectId={projectId}
+        projects={projects}
+        open={addPayableOpen}
+        onOpenChange={setAddPayableOpen}
+        onSuccess={() => router.refresh()}
+      />
 
-      <QboSyncSheet open={syncSheetOpen} onOpenChange={setSyncSheetOpen} projectId={projectId} />
+      {accountingProvider === "qbo" ? <AccountingSyncSheet open={syncSheetOpen} onOpenChange={setSyncSheetOpen} projectId={projectId} /> : null}
 
       <PayablesWorkspace
         projectId={projectId}
@@ -309,13 +358,20 @@ export function ProjectPayablesClient({
         costCodesEnabled={costCodesEnabled}
         projects={projects}
         accountingEnabled={accountingEnabled}
+        accountingProvider={accountingProvider}
+        accountingProviderName={accountingProviderName}
+        accountingSyncByBillId={accountingSyncByBillId}
         qboExpenseAccounts={qboExpenseAccounts}
         qboApAccounts={qboApAccounts}
         qboDefaults={qboDefaults}
-        complianceRules={complianceRules}
-        complianceStatusByCompanyId={complianceStatusByCompanyId}
+        accountingDimensions={accountingDimensions}
         onChanged={() => router.refresh()}
         holdEvaluations={holdEvaluations}
+        railOpen={railOpen}
+        paymentReadinessByCompanyId={paymentReadinessByCompanyId}
+        runMembershipByBillId={runMembershipByBillId}
+        viewerMayApproveRuns={viewerMayApproveRuns}
+        approvalViewer={approvalViewer}
       />
 
       <AlertDialog open={Boolean(deleteBill)} onOpenChange={(open) => !open && setDeleteBill(null)}>

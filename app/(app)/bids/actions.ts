@@ -19,7 +19,6 @@ import {
   listBidPackages,
   listBidScopeItems,
   listBidSubmissions,
-  listProspectBidPackages,
   listProspectBidQuotes,
   answerBidPackageRfi,
   pauseBidInviteAccess,
@@ -45,10 +44,9 @@ import {
 } from "@/lib/services/external-portal-auth"
 import { actionError, type ActionResult } from "@/lib/action-result"
 
-/** Where a bid package lives — drives cache revalidation for both route trees. */
+/** Where a bid package lives — drives cache revalidation. */
 export interface BidContext {
   projectId?: string | null
-  prospectId?: string | null
   bidPackageId?: string | null
 }
 
@@ -58,12 +56,6 @@ function revalidateBids(context: BidContext) {
     revalidatePath(`/projects/${context.projectId}/bids`)
     if (context.bidPackageId) {
       revalidatePath(`/projects/${context.projectId}/bids/${context.bidPackageId}`)
-    }
-  }
-  if (context.prospectId) {
-    revalidatePath(`/pipeline/prospects/${context.prospectId}/bids`)
-    if (context.bidPackageId) {
-      revalidatePath(`/pipeline/prospects/${context.prospectId}/bids/${context.bidPackageId}`)
     }
   }
 }
@@ -80,10 +72,6 @@ async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
 
 export async function listBidPackagesAction(projectId: string) {
   return listBidPackages(projectId)
-}
-
-export async function listProspectBidPackagesAction(prospectId: string) {
-  return listProspectBidPackages(prospectId)
 }
 
 export async function listProspectBidQuotesAction(prospectId: string) {
@@ -147,7 +135,6 @@ export async function createBidPackageAction(context: BidContext, input: unknown
       input: {
         ...(input as Record<string, unknown>),
         project_id: context.projectId ?? null,
-        prospect_id: context.prospectId ?? null,
       },
     })
     revalidateBids({ ...context, bidPackageId: created.id })

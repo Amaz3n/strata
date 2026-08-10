@@ -714,7 +714,8 @@ function CashSheet({
   arAging: ControlTowerData["financials"]["arAging"]
   overdueInvoices: OverdueInvoiceItem[]
   readyToInvoiceCents: number
-  unpaidBillsCents: number
+  /** `null` when the payables read failed — rendered as unavailable, not as $0. */
+  unpaidBillsCents: number | null
 }) {
   const buckets: Array<{ label: string; cents: number; tone: Tone }> = [
     { label: "Current", cents: arAging.current, tone: "neutral" },
@@ -780,15 +781,19 @@ function CashSheet({
           </Section>
         )}
 
-        {unpaidBillsCents > 0 && (
+        {unpaidBillsCents === null ? (
+          <Section label="You owe">
+            <LineRow label="Approved bills unpaid" value="Unavailable" tone="muted" href="/payables" />
+          </Section>
+        ) : unpaidBillsCents > 0 ? (
           <Section label="You owe">
             <LineRow
               label="Approved bills unpaid"
               value={formatMoney(unpaidBillsCents)}
-              href="/payments"
+              href="/payables"
             />
           </Section>
-        )}
+        ) : null}
       </SheetBody>
       <SheetFootLinks>
         <FootLink href="/invoices">Invoices</FootLink>

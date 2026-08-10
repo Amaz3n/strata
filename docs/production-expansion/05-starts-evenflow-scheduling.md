@@ -1,5 +1,10 @@
 # Workstream 05 — Start Packages, Even-Flow, and Multi-House Scheduling
 
+> **Status: SHIPPED (QA acceptance pending) — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for production
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 > Prereq: `00-MASTER-production-expansion.md` read FULLY (especially §5.8 —
 > start packages hard-gate release; even-flow slots make over/under-starting
 > visible — and §9's even-flow math), plus workstreams 01 (communities/lots),

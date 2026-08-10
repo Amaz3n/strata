@@ -4,7 +4,6 @@ import { getDashboardSnapshot } from "@/lib/services/dashboard"
 import { createFileRecord, listFiles } from "@/lib/services/files"
 import { fileInputSchema } from "@/lib/validation/files"
 import { getOrgActivity } from "@/lib/services/events"
-import { askAiSearch, type AskAiSearchResponse } from "@/lib/services/ai-search"
 import { revalidatePath } from "next/cache"
 
 export async function getDashboardSnapshotAction() {
@@ -58,8 +57,4 @@ export async function searchAction(query: string, filters?: any, options?: any) 
     console.error("Search failed:", error)
     return []
   }
-}
-
-export async function askAiSearchAction(query: string, options?: { limit?: number }): Promise<AskAiSearchResponse> {
-  return askAiSearch(query, options)
 }

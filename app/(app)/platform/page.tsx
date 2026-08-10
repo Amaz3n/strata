@@ -5,15 +5,8 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { Skeleton } from "@/components/ui/skeleton"
 import { PlatformClient } from "@/components/platform/platform-client"
 
-import { listOrgAiSearchAccess } from "@/lib/services/ai-search-access"
-import { getAdminStats, getPlans } from "@/lib/services/admin"
-import { getCurrentPlatformAccess, listPlatformOrganizations } from "@/lib/services/platform-access"
-import { getPlatformSessionState } from "@/lib/services/platform-session"
-import { getPlatformAiFeatureDefaultConfig } from "@/lib/services/ai-config"
-import { getDemoUsageSummary } from "@/lib/services/platform-demo-usage"
-import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { hasAnyPermission } from "@/lib/services/permissions"
-import { requireAuth } from "@/lib/auth/context"
+import { getAdminStats } from "@/lib/services/admin"
+import { getCurrentPlatformAccess } from "@/lib/services/platform-access"
 
 export const dynamic = "force-dynamic"
 
@@ -23,26 +16,7 @@ async function PlatformData() {
     redirect("/unauthorized")
   }
 
-  const { user } = await requireAuth()
-  const serviceSupabase = createServiceSupabaseClient()
-
-  const [stats, orgs, session, plans, aiConfigs, canManagePlatformAi, aiSearchAccess, demoUsage] = await Promise.all([
-    getAdminStats(),
-    listPlatformOrganizations(),
-    getPlatformSessionState(),
-    getPlans(),
-    Promise.all([
-      getPlatformAiFeatureDefaultConfig({ supabase: serviceSupabase, feature: "search" }),
-      getPlatformAiFeatureDefaultConfig({ supabase: serviceSupabase, feature: "document_extraction" }),
-      getPlatformAiFeatureDefaultConfig({ supabase: serviceSupabase, feature: "drawings_vision" }),
-      getPlatformAiFeatureDefaultConfig({ supabase: serviceSupabase, feature: "spec_classification" }),
-      getPlatformAiFeatureDefaultConfig({ supabase: serviceSupabase, feature: "transcription" }),
-      getPlatformAiFeatureDefaultConfig({ supabase: serviceSupabase, feature: "meeting_minutes" }),
-    ]),
-    hasAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id }),
-    listOrgAiSearchAccess(),
-    getDemoUsageSummary(),
-  ])
+  const stats = await getAdminStats()
 
   return (
     <PlatformClient
@@ -52,17 +26,6 @@ async function PlatformData() {
         newOrgsThisMonth: stats.newOrgsThisMonth,
         activeSubscriptions: stats.activeSubscriptions,
         trialingSubscriptions: stats.trialingSubscriptions,
-      }}
-      plans={plans}
-      orgs={orgs.map((org) => ({ id: org.id, name: org.name }))}
-      aiConfigs={aiConfigs}
-      aiSearchAccess={aiSearchAccess}
-      canManagePlatformAi={canManagePlatformAi}
-      demoUsage={demoUsage}
-      impersonation={{
-        active: session.impersonation.active,
-        target: session.impersonation.targetName ?? session.impersonation.targetEmail,
-        expiresAt: session.impersonation.expiresAt,
       }}
     />
   )

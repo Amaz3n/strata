@@ -218,10 +218,12 @@ function mapSheet(
 // SHEET DETAIL (versions + pins)
 // ============================================================================
 
+// Mirrors the web enrichment in lib/services/drawing-markups.ts
+// (listDrawingPinsWithEntities) — the punch table is `punch_items`.
 const PIN_ENTITY_TABLES: Record<string, { table: string; titleColumn: string }> = {
   task: { table: "tasks", titleColumn: "title" },
   rfi: { table: "rfis", titleColumn: "subject" },
-  punch_list: { table: "punch_list_items", titleColumn: "title" },
+  punch_list: { table: "punch_items", titleColumn: "title" },
   submittal: { table: "submittals", titleColumn: "title" },
 }
 
@@ -248,11 +250,14 @@ async function loadPinsWithEntities(
   await Promise.all(
     [...idsByType.entries()].map(async ([type, ids]) => {
       const config = PIN_ENTITY_TABLES[type]
-      const { data: entities } = await context.serviceSupabase
+      const { data: entities, error: entityError } = await context.serviceSupabase
         .from(config.table)
         .select(`id, ${config.titleColumn}, status`)
         .eq("org_id", context.orgId)
         .in("id", ids)
+      if (entityError) {
+        throw new MobileAPIError(500, "drawing_pins_unavailable", "Pinned item details could not be loaded.")
+      }
       for (const entity of ((entities ?? []) as Array<Record<string, any>>)) {
         entityMap.set(entity.id, {
           title: (entity as any)[config.titleColumn] ?? null,

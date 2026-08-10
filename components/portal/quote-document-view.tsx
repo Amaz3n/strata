@@ -20,6 +20,8 @@ export type QuoteViewLine = {
   muted?: boolean
   /** Optional add-on the client can choose to include. */
   is_optional?: boolean
+  /** Alternates: optionals sharing a group label are pick-one-of-N. */
+  option_group?: string | null
   /**
    * Set when this line's quantity was measured off the plans. Renders a
    * "show me" affordance that opens the measured regions — the whole point of
@@ -45,6 +47,12 @@ export interface QuoteDocumentViewProps {
   terms?: string | null
   lines: QuoteViewLine[]
   totalCents?: number | null
+  /** Contingency already included in the total; rendered as its own row. */
+  contingencyCents?: number | null
+  contingencyPercent?: number | null
+  /** Scope qualifications rendered alongside the terms. */
+  inclusions?: string | null
+  exclusions?: string | null
   /** Hex accent color for headings, totals, and chrome. */
   accentColor?: string | null
   /** CSS font-family applied to the document body. */
@@ -112,6 +120,10 @@ export function QuoteDocumentView({
   terms,
   lines,
   totalCents,
+  contingencyCents,
+  contingencyPercent,
+  inclusions,
+  exclusions,
   accentColor,
   fontFamily,
   pricingDisplay = "itemized",
@@ -128,8 +140,15 @@ export function QuoteDocumentView({
   const selected = new Set(selectedOptionalIds ?? [])
 
   // Split out optional add-ons so they render as a distinct, selectable block.
+  // Alternates (same option_group) cluster together under their group label.
   const mainLines = lines.filter((l) => !l.is_optional)
-  const optionalLines = lines.filter((l) => l.is_optional && l.kind === "item")
+  const ungroupedOptionals = lines.filter((l) => l.is_optional && l.kind === "item" && !l.option_group)
+  const groupedOptionals = new Map<string, QuoteViewLine[]>()
+  for (const line of lines) {
+    if (!line.is_optional || line.kind !== "item" || !line.option_group) continue
+    groupedOptionals.set(line.option_group, [...(groupedOptionals.get(line.option_group) ?? []), line])
+  }
+  const optionalLines = ungroupedOptionals
 
   return (
     <div
@@ -254,7 +273,14 @@ export function QuoteDocumentView({
                         {showUnitLine ? (
                           <p className="mt-1 text-xs text-muted-foreground tabular-nums">
                             {line.quantity ?? 1}
-                            {line.unit ? ` ${line.unit}` : ""} × {money(line.unit_cost_cents)}
+                            {line.unit ? ` ${line.unit}` : ""} ×{" "}
+                            {/* Unit price is the sell rate derived from the amount — the
+                                builder's raw unit cost never renders client-side. */}
+                            {money(
+                              line.quantity && line.amount_cents != null
+                                ? Math.round(line.amount_cents / line.quantity)
+                                : line.unit_cost_cents,
+                            )}
                           </p>
                         ) : null}
                         {line.takeoff_condition_id && onShowTakeoff ? (
@@ -280,8 +306,8 @@ export function QuoteDocumentView({
             </div>
           </div>
 
-          {/* Optional add-ons */}
-          {optionalLines.length > 0 ? (
+          {/* Optional add-ons — ungrouped extras plus pick-one alternate groups */}
+          {optionalLines.length > 0 || groupedOptionals.size > 0 ? (
             <div className="mt-6">
               <div className="flex items-baseline justify-between border-b pb-2">
                 <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
@@ -291,8 +317,8 @@ export function QuoteDocumentView({
                   <span className="text-[10px] font-medium normal-case tracking-normal text-muted-foreground">Tap to include</span>
                 ) : null}
               </div>
-              <div className="divide-y divide-border/70">
-                {optionalLines.map((line, idx) => {
+              {(() => {
+                const renderOptionalRow = (line: QuoteViewLine, idx: number) => {
                   const id = line.id ?? `opt-${idx}`
                   const isOn = selected.has(id)
                   const interactive = !!onToggleOptional
@@ -328,8 +354,33 @@ export function QuoteDocumentView({
                       {body}
                     </div>
                   )
-                })}
-              </div>
+                }
+                return (
+                  <>
+                    <div className="divide-y divide-border/70">{optionalLines.map(renderOptionalRow)}</div>
+                    {[...groupedOptionals.entries()].map(([group, groupLines]) => (
+                      <div key={group} className="mt-2">
+                        <p className="pt-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                          {group}
+                          {onToggleOptional ? <span className="ml-2 font-medium normal-case tracking-normal">choose one</span> : null}
+                        </p>
+                        <div className="divide-y divide-border/70">{groupLines.map(renderOptionalRow)}</div>
+                      </div>
+                    ))}
+                  </>
+                )
+              })()}
+            </div>
+          ) : null}
+
+          {/* Contingency — already inside the total, shown so the number is honest */}
+          {contingencyCents && contingencyCents > 0 ? (
+            <div className="mt-6 flex items-center justify-between text-sm text-muted-foreground">
+              <span>
+                Contingency
+                {contingencyPercent ? ` (${contingencyPercent}%)` : ""}
+              </span>
+              <span className="tabular-nums">{money(contingencyCents)}</span>
             </div>
           ) : null}
 
@@ -341,9 +392,23 @@ export function QuoteDocumentView({
             </span>
           </div>
 
+          {/* Scope qualifications */}
+          {inclusions ? (
+            <div className="mt-9 border bg-muted/30 p-5">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Included in this price</p>
+              <p className="mt-2 whitespace-pre-line text-xs leading-relaxed text-foreground/75">{inclusions}</p>
+            </div>
+          ) : null}
+          {exclusions ? (
+            <div className={`${inclusions ? "mt-3" : "mt-9"} border bg-muted/30 p-5`}>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Not included</p>
+              <p className="mt-2 whitespace-pre-line text-xs leading-relaxed text-foreground/75">{exclusions}</p>
+            </div>
+          ) : null}
+
           {/* Terms */}
           {terms ? (
-            <div className="mt-9 border bg-muted/30 p-5">
+            <div className={`${inclusions || exclusions ? "mt-3" : "mt-9"} border bg-muted/30 p-5`}>
               <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
                 Terms &amp; conditions
               </p>

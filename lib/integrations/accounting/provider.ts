@@ -1,4 +1,4 @@
-export type AccountingProviderKey = "qbo"
+export type AccountingProviderKey = "qbo" | "file"
 
 export type AccountingDimensionKind = "class" | "customer" | "location" | "department" | "entity"
 
@@ -30,10 +30,19 @@ export interface AccountingCapabilities {
   supportsInvoiceNumberReservation: boolean
   supportsInvoiceDocNumberSync: boolean
   supportsCDC: boolean
+  /**
+   * Whether the provider can be READ from to pull existing records into Arc.
+   * A batch/file target can be written to but never queried, so this is what
+   * the import surface gates on — the UI used to compare the provider key,
+   * which is the check a second adapter has to go edit.
+   */
+  supportsImport: boolean
   supportsWebhooks: boolean
   supportsAttachments: boolean
   supportsJournalEntryPush: boolean
   supportsVendorCredits: boolean
+  /** Whether a posted bill payment can be reversed when an ACH return lands. */
+  supportsBillPaymentVoid: boolean
   updateConcurrency: "sync_token" | "etag" | "none"
   dimensions: AccountingDimensionKind[]
 }
@@ -84,7 +93,42 @@ export interface AccountingProvider {
   pushVendorBill(input: { orgId: string; connectionId: string; billId: string }): Promise<PushResult>
   pushVendorCredit?(input: { orgId: string; connectionId: string; creditId: string }): Promise<PushResult>
   pushBillPayment(input: { orgId: string; connectionId: string; paymentId: string }): Promise<PushResult>
+  /**
+   * Reverse a previously pushed bill payment after an ACH return or reversal.
+   *
+   * Without this the two ledgers diverge permanently: Arc reopens the vendor
+   * bill and the accounting system keeps a payment for money that came back.
+   * Optional because not every target can void a posted payment — a batch-file
+   * provider emits a reversing entry instead — so callers must check
+   * `capabilities.supportsBillPaymentVoid` and surface an exception when it is
+   * unsupported rather than silently leaving the books wrong.
+   */
+  voidBillPayment?(input: { orgId: string; connectionId: string; paymentId: string; reason: string }): Promise<PushResult>
   pushJournalEntry?(input: { orgId: string; connectionId: string; journalId: string }): Promise<PushResult>
+  /**
+   * Push ONE summarized journal per period, at account grain.
+   *
+   * This is the mirror's real shape. Pushing per source transaction turns the
+   * external system into an unreadable dump of Arc's operational history, which
+   * is the opposite of what a CPA filing from it needs: a monthly summary they
+   * can tie to a trial balance. The lines are already mapped to external
+   * accounts by the caller, so this is transport only.
+   */
+  pushSummaryJournal?(input: {
+    orgId: string
+    connectionId: string
+    /** Stable key for idempotency — the same period must never post twice. */
+    reference: string
+    date: string
+    memo: string
+    lines: Array<{
+      externalAccountId: string
+      externalAccountName: string | null
+      debitCents: number
+      creditCents: number
+      description: string
+    }>
+  }): Promise<PushResult>
   /**
    * Build the URL a user is sent to in order to authorize a new connection.
    * The returned state must round-trip through the provider's OAuth callback.

@@ -1,10 +1,14 @@
 import "server-only"
 
-import { generateText } from "ai"
+import { z } from "zod"
+import type { SupabaseClient } from "@supabase/supabase-js"
 
 import { requireAuthorization } from "@/lib/services/authorization"
-import { getOrgAiSearchConfig } from "@/lib/services/ai-config"
-import { getApiKeyForProvider, resolveLanguageModel } from "@/lib/services/ai-search/llm"
+import { runAiObject } from "@/lib/services/ai/gateway"
+
+const scopeNotesSchema = z.object({
+  notes: z.array(z.object({ index: z.number().int(), note: z.string() })),
+})
 import { requireOrgContext } from "@/lib/services/context"
 
 /** Lightweight summary of an estimate that can seed a budget. */
@@ -230,57 +234,37 @@ async function improveScopeNotesWithAi({
   orgId,
   lines,
 }: {
-  supabase: Parameters<typeof getOrgAiSearchConfig>[0]["supabase"]
+  supabase: SupabaseClient
   orgId: string
   lines: ProposedBudgetLine[]
 }): Promise<string[] | null> {
   if (lines.length === 0) return null
 
-  const config = await getOrgAiSearchConfig({ supabase, orgId })
-  const apiKey = getApiKeyForProvider(config.provider)
-  if (!apiKey) return null
-
-  const model = resolveLanguageModel(config.provider, apiKey, config.model)
   const payload = lines.map((line, index) => ({
     index,
     code: line.cost_code_label ?? null,
     scope: line.description,
   }))
 
-  const result = await generateText({
-    model,
+  const result = await runAiObject({
+    feature: "document_extraction",
+    schema: scopeNotesSchema,
     system:
-      "You write short, clear construction budget scope notes for builders. " +
-      "Given draft scope notes, return a concise (max ~8 words) plain-language note for each. " +
-      "Keep the trade/scope meaning. Do not invent work. Respond with strict JSON only: " +
-      '{"notes":[{"index":number,"note":string}]}.',
+      "You write short, clear construction budget scope notes for builders. Given draft scope notes, " +
+      "return a concise (max ~8 words) plain-language note for each. Keep the trade/scope meaning. " +
+      "Do not invent work.",
     prompt: `Draft budget lines:\n${JSON.stringify(payload)}`,
-    temperature: 0.2,
-    maxOutputTokens: 600,
-    timeout: 12_000,
+    orgId,
+    timeoutMs: 12_000,
+    // Cosmetic polish over a deterministic rollup; never worth escalating.
+    allowEscalation: false,
   })
+  if (!result.ok) return null
 
-  const parsed = parseNotes(result.text, lines.length)
-  return parsed
-}
-
-function parseNotes(raw: string, expectedLength: number): string[] | null {
-  const start = raw.indexOf("{")
-  const end = raw.lastIndexOf("}")
-  if (start < 0 || end <= start) return null
-  try {
-    const json = JSON.parse(raw.slice(start, end + 1)) as {
-      notes?: Array<{ index?: number; note?: string }>
-    }
-    if (!Array.isArray(json.notes)) return null
-    const out = new Array<string>(expectedLength).fill("")
-    for (const entry of json.notes) {
-      if (typeof entry.index === "number" && entry.index >= 0 && entry.index < expectedLength) {
-        out[entry.index] = typeof entry.note === "string" ? entry.note : ""
-      }
-    }
-    return out
-  } catch {
-    return null
+  const notes = new Array<string>(lines.length)
+  for (const entry of result.object.notes) {
+    if (entry.index >= 0 && entry.index < lines.length) notes[entry.index] = entry.note
   }
+  return notes.every((note) => typeof note === "string" && note.trim()) ? notes : null
 }
+

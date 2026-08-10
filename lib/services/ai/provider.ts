@@ -1,0 +1,75 @@
+import "server-only"
+
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
+import { createGoogleGenerativeAI } from "@ai-sdk/google"
+import { createOpenAI } from "@ai-sdk/openai"
+import type { LanguageModel } from "ai"
+
+import { normalizeModelId, type AiProvider } from "@/lib/services/ai-config"
+
+/**
+ * Turning a (provider, model) pair into something the AI SDK can call.
+ *
+ * Google and OpenAI are native so the hot paths keep native file/PDF handling.
+ * OpenRouter rides the first-party OpenAI-compatible provider, which is what
+ * makes "try Qwen this week" a settings change instead of a dependency change.
+ */
+
+const OPENROUTER_DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+
+export function getOpenAiBaseUrl() {
+  const configured = process.env.OPENAI_BASE_URL ?? process.env.OPENAI_COMPAT_BASE_URL
+  const normalized = configured?.trim()
+  return normalized ? normalized : undefined
+}
+
+/**
+ * Overridable so the same code path can point at Together, DashScope, Fireworks
+ * or a local vLLM without another provider entry.
+ */
+export function getOpenRouterBaseUrl() {
+  const configured = process.env.OPENROUTER_BASE_URL?.trim()
+  return configured || OPENROUTER_DEFAULT_BASE_URL
+}
+
+export function getApiKeyForProvider(provider: AiProvider): string | undefined {
+  if (provider === "openai") {
+    const configured = process.env.OPENAI_API_KEY?.trim()
+    if (configured) return configured
+    // An OpenAI-compatible base URL implies a local or proxied gateway that may
+    // not require a real key; the SDK still wants a non-empty string.
+    if (getOpenAiBaseUrl()) return process.env.OPENAI_COMPAT_API_KEY?.trim() || "local-dev-key"
+    return undefined
+  }
+  if (provider === "openrouter") {
+    return process.env.OPENROUTER_API_KEY?.trim() || undefined
+  }
+  return process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim() || process.env.GEMINI_API_KEY?.trim() || undefined
+}
+
+export function isProviderConfigured(provider: AiProvider) {
+  return Boolean(getApiKeyForProvider(provider))
+}
+
+export function resolveLanguageModel(provider: AiProvider, apiKey: string, model: string): LanguageModel {
+  const normalizedModel = normalizeModelId(model)
+
+  if (provider === "openai") {
+    return createOpenAI({ apiKey, baseURL: getOpenAiBaseUrl() })(normalizedModel)
+  }
+
+  if (provider === "openrouter") {
+    return createOpenAICompatible({
+      name: "openrouter",
+      apiKey,
+      baseURL: getOpenRouterBaseUrl(),
+      headers: {
+        // OpenRouter attributes traffic with these; harmless elsewhere.
+        "HTTP-Referer": process.env.OPENROUTER_SITE_URL?.trim() || "https://arc.build",
+        "X-Title": process.env.OPENROUTER_SITE_NAME?.trim() || "Arc",
+      },
+    })(normalizedModel)
+  }
+
+  return createGoogleGenerativeAI({ apiKey })(normalizedModel)
+}

@@ -86,6 +86,11 @@ export const removePortalTokenPinSchema = z.object({
   token_id: z.string().uuid(),
 })
 
+/** Removing one person from every project they can reach in this org. */
+export const revokeOrgExternalPersonSchema = z.object({
+  token_ids: z.array(z.string().uuid()).min(1).max(200),
+})
+
 export type CreatePortalTokenInput = z.infer<typeof createPortalTokenInputSchema>
 export type RevokePortalTokenInput = z.infer<typeof revokePortalTokenInputSchema>
 export type PausePortalTokenInput = z.infer<typeof pausePortalTokenInputSchema>

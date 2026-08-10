@@ -1,3 +1,4 @@
+import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
 import { applyReportingExclusion, getReportingExcludedProjectIds } from "@/lib/services/reporting-scope"
@@ -56,7 +57,10 @@ export async function getArAgingReport({
     .from("invoices")
     .select("id, org_id, project_id, invoice_number, title, status, issue_date, due_date, total_cents, balance_due_cents, metadata, project:projects(name)")
     .eq("org_id", resolvedOrgId)
-    .neq("status", "void")
+    // Aging reports what customers owe, so it starts where the receivable does:
+    // an invoice still in `draft` or `saved` has not been sent to anyone. This is
+    // the same set the projector posts and `ar_control` ties out against.
+    .in("status", [...BILLED_INVOICE_STATUSES])
     .order("due_date", { ascending: true, nullsFirst: true })
     .order("created_at", { ascending: false })
 

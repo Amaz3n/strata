@@ -4,7 +4,7 @@ import { cookies } from "next/headers"
 
 import { getProvider, isAccountingProviderKey } from "@/lib/integrations/accounting/registry"
 import type { AccountingAccountKind, AccountingCapabilities, AccountingDimensionKind, AccountingProviderKey } from "@/lib/integrations/accounting/provider"
-import { disconnectAccountingConnection, listAccountingConnections, requireAccountingConnectionForOrg, updateAccountingConnectionLabel, updateAccountingConnectionSettings, type AccountingConnectionDTO } from "@/lib/services/accounting-connections"
+import { createFileAccountingConnection, disconnectAccountingConnection, listAccountingConnections, requireAccountingConnectionForOrg, updateAccountingConnectionLabel, updateAccountingConnectionSettings, type AccountingConnectionDTO } from "@/lib/services/accounting-connections"
 import {
   createStripeConnectedAccountDashboardLoginLink,
   createStripeConnectedAccountOnboardingLink,
@@ -13,6 +13,8 @@ import {
 } from "@/lib/services/stripe-connected-accounts"
 import type { StripeConnectedAccount } from "@/lib/services/stripe-connected-accounts"
 import { requireOrgContext } from "@/lib/services/context"
+import { exportAccountingBatch, listAccountingBatches } from "@/lib/services/accounting-batches"
+import { getAccountingSyncPosture, type AccountingSyncPosture } from "@/lib/services/accounting-sync"
 import { getCurrentUserPermissions, requirePermission } from "@/lib/services/permissions"
 import { accountingConnectionLabelSchema, accountingConnectionSettingsSchema, accountingEntityMapSchema } from "@/lib/validation/accounting"
 import { upsertAccountingEntityMap } from "@/lib/services/accounting-target"
@@ -51,6 +53,8 @@ export interface IntegrationsOverview {
   canManageConnections: boolean
   /** accounting.entity_map.manage — edit which connection a scope posts to. */
   canManageRouting: boolean
+  /** What the sync is actually doing, beyond whether the connection is alive. */
+  syncPosture: AccountingSyncPosture | null
 }
 
 type EntityMapJoin = { name: string } | { name: string }[] | null
@@ -73,11 +77,14 @@ export async function getIntegrationsOverviewAction(): Promise<ActionResult<Inte
     const canManageConnections = permissions.includes("*") || permissions.includes("org.admin")
     const canManageRouting = canManageConnections || permissions.includes("accounting.entity_map.manage")
 
-    const [stripe, connections, routes, scopes] = await Promise.all([
+    const [stripe, connections, routes, scopes, syncPosture] = await Promise.all([
       getStripeConnectedAccount().catch(() => null),
       canManageConnections ? listAccountingConnections(orgId) : Promise.resolve([]),
       canManageRouting ? listRoutes(orgId) : Promise.resolve([]),
       canManageRouting ? listScopes(orgId) : Promise.resolve({ divisions: [], communities: [] }),
+      // A backlog is not a connection problem, so it never showed up next to
+      // "Synced 4 minutes ago" — which is exactly where someone looks for it.
+      canManageConnections ? getAccountingSyncPosture(orgId).catch(() => null) : Promise.resolve(null),
     ])
 
     return {
@@ -87,6 +94,7 @@ export async function getIntegrationsOverviewAction(): Promise<ActionResult<Inte
       scopes,
       canManageConnections,
       canManageRouting,
+      syncPosture,
     }
   })
 }
@@ -145,6 +153,30 @@ export async function connectAccountingProviderAction(providerKey: AccountingPro
 
     return { authUrl: url }
   })
+}
+
+/**
+ * Create a batch-file connection. No redirect: there is nothing to authorize,
+ * so this is a form rather than an OAuth handshake.
+ */
+export async function createFileAccountingConnectionAction(input: { label: string; batchFormat: string }) {
+  return run(async () => {
+    const { supabase, orgId, userId } = await requireOrgContext()
+    await requirePermission("org.admin", { supabase, orgId, userId })
+    return createFileAccountingConnection({ label: input.label, batchFormat: input.batchFormat, orgId })
+  })
+}
+
+export async function listAccountingBatchesAction() {
+  return run(() => listAccountingBatches())
+}
+
+/**
+ * Render a batch and close it. Returns the bytes rather than a URL because the
+ * file is generated on demand and never stored — there is nothing to link to.
+ */
+export async function exportAccountingBatchAction(batchId: string) {
+  return run(() => exportAccountingBatch({ batchId }))
 }
 
 export async function disconnectAccountingConnectionAction(connectionId: string) {

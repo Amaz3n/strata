@@ -10,6 +10,80 @@ type QBOEntityReader = {
   getVendorCreditById(id: string): Promise<{ Id?: string; SyncToken?: string } | null>
 }
 
+/**
+ * The token Arc stamps into a created transaction's PrivateNote so it can
+ * recognise its own work later.
+ *
+ * QuickBooks accepts no idempotency key, so "did my create actually land?" can
+ * only be answered by looking. A lost response near the function timeout used to
+ * mean the +15m retry created a SECOND payment in the customer's books, with
+ * nothing in Arc able to detect it: duplicate suppression was the sync record's
+ * external id, and the sync record is exactly what a lost response fails to
+ * write. Anything money-moving that Arc creates carries this marker.
+ */
+export function arcTransactionMarker(entityType: string, entityId: string) {
+  return `[arc:${entityType}:${entityId}]`
+}
+
+/** PrivateNote text carrying the marker without discarding a user's own note. */
+export function withArcTransactionMarker(note: string | null | undefined, entityType: string, entityId: string) {
+  const marker = arcTransactionMarker(entityType, entityId)
+  const existing = String(note ?? "").trim()
+  return existing.length > 0 ? `${existing} ${marker}` : marker
+}
+
+type QBOTransactionFinder = {
+  findTransactionByPrivateNote(
+    entity: "Payment" | "BillPayment",
+    marker: string,
+    opts?: { sinceDate?: string | null },
+  ): Promise<{ Id?: string } | null>
+}
+
+/**
+ * The object a previous attempt may already have created, or null.
+ *
+ * Called only when Arc has evidence of a prior attempt (a sync record exists for
+ * the entity but carries no external id), so the happy path pays nothing for it.
+ * The search window is generous rather than exact — a retry can be minutes or,
+ * after a manual resync, weeks later — because the marker is unique and a wider
+ * window only costs one query.
+ */
+export async function findAlreadyCreatedQBOTransaction(params: {
+  client: QBOTransactionFinder
+  entity: "Payment" | "BillPayment"
+  entityType: string
+  entityId: string
+  windowDays?: number
+  logContext?: Record<string, unknown>
+}): Promise<string | null> {
+  const windowDays = params.windowDays ?? 120
+  const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const marker = arcTransactionMarker(params.entityType, params.entityId)
+  try {
+    const found = await params.client.findTransactionByPrivateNote(params.entity, marker, { sinceDate: since })
+    if (!found?.Id) return null
+    logQBO("warn", "qbo_create_adopted_existing", {
+      entity: params.entity,
+      entityId: params.entityId,
+      qboId: String(found.Id),
+      ...params.logContext,
+    })
+    return String(found.Id)
+  } catch (error) {
+    // A failed lookup must not block the push: it degrades to the old behaviour,
+    // it does not invent one. The create below is still guarded by the sync
+    // record, and the outbox will retry.
+    logQBO("warn", "qbo_create_adoption_lookup_failed", {
+      entity: params.entity,
+      entityId: params.entityId,
+      error: error instanceof Error ? error.message : String(error),
+      ...params.logContext,
+    })
+    return null
+  }
+}
+
 export function isStaleObjectError(error: unknown) {
   const candidate = error as { faultCode?: string | null; qboError?: unknown }
   const detail = JSON.stringify(candidate?.qboError ?? error ?? {}).toLowerCase()

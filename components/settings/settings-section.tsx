@@ -29,14 +29,15 @@ export function SettingsGroup({
         <h2 className="microlabel">{title}</h2>
         {action ? <div className="flex shrink-0 items-center gap-1">{action}</div> : null}
       </div>
-      {description ? <p className="mt-1 max-w-xl text-xs leading-5 text-muted-foreground">{description}</p> : null}
+      {description ? <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">{description}</p> : null}
       <div className={cn("divide-y divide-border border-t border-border", description ? "mt-3" : "mt-2")}>{children}</div>
     </section>
   )
 }
 
 /**
- * One field. Defaults to `split` — label and hint on the left, control on the right.
+ * One field. Defaults to `split` — label and hint take the width on the left, the
+ * control sits in a fixed column pinned right, so a one-line hint stays one line.
  * Pass `layout="stacked"` inside narrow containers (side panes, sheets): the split grid
  * keys off viewport `sm:`, not container width, so it would squeeze controls there.
  */
@@ -60,7 +61,7 @@ export function SettingsField({
     <div
       className={cn(
         "grid gap-2 py-4",
-        !stacked && "sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)] sm:gap-8",
+        !stacked && "sm:grid-cols-[minmax(0,1fr)_minmax(0,24rem)] sm:gap-8",
         className,
       )}
     >
@@ -131,7 +132,7 @@ export function InfoRow({
   children: ReactNode
 }) {
   return (
-    <div className="grid gap-1 py-4 sm:grid-cols-[minmax(0,12rem)_minmax(0,1fr)] sm:gap-8">
+    <div className="grid gap-1 py-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,24rem)] sm:gap-8">
       <div className="min-w-0">
         <p className="text-sm font-medium leading-5 text-foreground">{label}</p>
         {hint ? <p className="mt-1 text-xs leading-5 text-muted-foreground">{hint}</p> : null}

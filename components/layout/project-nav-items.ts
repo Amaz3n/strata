@@ -376,8 +376,9 @@ export function buildProjectNavGroups({
       requiredAny: ["docs.read"],
     },
     {
+      // No posture gate: production builders take just as much buyer and trade
+      // email as anyone else, and the log has no tier-specific destination.
       title: "Correspondence",
-      postures: ["residential", "commercial"],
       url: url("/correspondence"),
       isActive: section === "correspondence",
       requiredAny: ["correspondence.read"],
@@ -496,6 +497,10 @@ export function buildProjectNavGroups({
     },
   ]
 
+  // A precon-phase project is a pricing workspace: plans, takeoff, and bids.
+  // Build, Financials, and Close don't exist until the job activates.
+  const isPrecon = project?.phase === "precon"
+
   const groups: ProjectNavGroup[] = [
     {
       items: [
@@ -513,27 +518,31 @@ export function buildProjectNavGroups({
           isActive: planSubs.some((item) => item.isActive),
           items: planSubs,
         },
-        {
-          title: "Build",
-          url: url("/schedule"),
-          icon: Hammer,
-          isActive: buildSubs.some((item) => item.isActive) || BUILD_SECTIONS.has(section),
-          items: buildSubs,
-        },
-        {
-          title: "Financials",
-          url: getFinancialLandingUrl(projectId),
-          icon: Wallet,
-          isActive: financialSubs.some((item) => item.isActive) || FINANCIAL_SECTIONS.has(section),
-          items: financialSubs,
-        },
-        {
-          title: "Close",
-          url: url("/closeout"),
-          icon: Flag,
-          isActive: closeSubs.some((item) => item.isActive),
-          items: closeSubs,
-        },
+        ...(isPrecon
+          ? []
+          : [
+              {
+                title: "Build",
+                url: url("/schedule"),
+                icon: Hammer,
+                isActive: buildSubs.some((item) => item.isActive) || BUILD_SECTIONS.has(section),
+                items: buildSubs,
+              },
+              {
+                title: "Financials",
+                url: getFinancialLandingUrl(projectId),
+                icon: Wallet,
+                isActive: financialSubs.some((item) => item.isActive) || FINANCIAL_SECTIONS.has(section),
+                items: financialSubs,
+              },
+              {
+                title: "Close",
+                url: url("/closeout"),
+                icon: Flag,
+                isActive: closeSubs.some((item) => item.isActive),
+                items: closeSubs,
+              },
+            ]),
       ],
     },
   ]

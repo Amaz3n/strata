@@ -5,15 +5,47 @@ export const paymentApprovalModeSchema = z.enum(["sole", "dual"])
 export const updatePaymentRailPolicySchema = z.object({
   enabled: z.boolean().optional(),
   approval_mode: paymentApprovalModeSchema.optional(),
+  /** Explicit owner-operated exception; false preserves maker-checker separation. */
+  requester_may_approve: z.boolean().optional(),
   control_change_cooling_hours: z.number().int().min(24).max(168).optional(),
   per_payment_limit_cents: z.number().int().positive().nullable().optional(),
   per_run_limit_cents: z.number().int().positive().nullable().optional(),
   daily_limit_cents: z.number().int().positive().nullable().optional(),
 }).superRefine((value, context) => {
+  if (value.requester_may_approve && value.approval_mode === "dual") {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["requester_may_approve"],
+      message: "Self-approval is only available when one approval is required",
+    })
+  }
   if (value.per_payment_limit_cents && value.per_run_limit_cents && value.per_run_limit_cents < value.per_payment_limit_cents) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["per_run_limit_cents"], message: "Run limit must be at least the per-payment limit" })
   }
 })
+
+export const setPaymentRunApproversSchema = z.object({
+  approvers: z
+    .array(
+      z.object({
+        user_id: z.string().uuid(),
+        approval_limit_cents: z.number().int().positive().nullable().optional(),
+        /** Restricts this entry to one division. Null or absent is org-wide. */
+        division_id: z.string().uuid().nullable().optional(),
+      }),
+    )
+    .max(50)
+    .superRefine((approvers, context) => {
+      // One entry per person per scope: the same person may hold a low org-wide
+      // ceiling and a higher one inside their own division.
+      const scopes = new Set(approvers.map((approver) => `${approver.user_id}:${approver.division_id ?? "org"}`))
+      if (scopes.size !== approvers.length) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: "Each approver can only be listed once per division" })
+      }
+    }),
+})
+
+export type SetPaymentRunApproversInput = z.infer<typeof setPaymentRunApproversSchema>
 
 export const paymentRunItemSchema = z.object({
   bill_id: z.string().uuid(),
@@ -32,8 +64,12 @@ export const paymentRunItemSchema = z.object({
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["payees"], message: "Payee amounts must equal the vendor payment amount" })
   }
   item.payees.forEach((payee, index) => {
-    if (payee.method === "ach" && !payee.recipient_account_id) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["payees", index, "recipient_account_id"], message: "ACH payees require a recipient account" })
+    // Primary-vendor destinations are always resolved from the trusted vendor
+    // relationship on the server. A client-supplied UUID must never be the
+    // authority for where money is sent. Joint payees remain explicit because
+    // they have a separately verified destination.
+    if (payee.method === "ach" && payee.payee_kind === "joint_payee" && !payee.recipient_account_id) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["payees", index, "recipient_account_id"], message: "Joint ACH payees require a verified recipient account" })
     }
   })
 })
@@ -42,6 +78,17 @@ export const createPaymentRunSchema = z.object({
   funding_source_id: z.string().uuid(),
   idempotency_key: z.string().trim().min(8).max(200),
   items: z.array(paymentRunItemSchema).min(1).max(200),
+})
+
+/**
+ * The preparer names the business date they want the run released on. Omitting it
+ * means "release as soon as it is approved", which is how every run behaved before
+ * scheduling existed. The date is validated again in the database against
+ * `current_date`, because a client clock is not a control.
+ */
+export const submitPaymentRunSchema = z.object({
+  run_id: z.string().uuid(),
+  scheduled_for: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().default(null),
 })
 
 export const decidePaymentRunSchema = z.object({
@@ -79,13 +126,29 @@ const requireEntityOrLegalName = (
 
 export const vendorClaimSchema = z.object(vendorClaimFields).superRefine(requireEntityOrLegalName)
 
+/**
+ * A same-origin path, and nothing else.
+ *
+ * `startsWith("/")` accepted `//evil.com`, which `new URL("//evil.com", base)`
+ * resolves as protocol-relative — off-origin — and which was then handed to
+ * Stripe as the onboarding `return_url`/`refresh_url`. A payout-verification
+ * flow must not be able to exit onto an attacker's domain. Backslashes are
+ * rejected for the same reason: browsers normalise `/\evil.com` to `//evil.com`.
+ */
+export const portalReturnPathSchema = z
+  .string()
+  .trim()
+  .max(500)
+  .regex(/^\/(?!\/)[^\\\s]*$/, "Return path must be a same-origin path beginning with a single /")
+
 export const startVendorPayoutSetupSchema = z.object({
   ...vendorClaimFields,
-  return_path: z.string().startsWith("/").max(500).default("/access"),
+  return_path: portalReturnPathSchema.default("/access"),
 }).superRefine(requireEntityOrLegalName)
 
 export type UpdatePaymentRailPolicyInput = z.infer<typeof updatePaymentRailPolicySchema>
 export type CreatePaymentRunInput = z.infer<typeof createPaymentRunSchema>
+export type SubmitPaymentRunInput = z.infer<typeof submitPaymentRunSchema>
 export type DecidePaymentRunInput = z.infer<typeof decidePaymentRunSchema>
 export type VendorClaimInput = z.infer<typeof vendorClaimSchema>
 export type StartVendorPayoutSetupInput = z.infer<typeof startVendorPayoutSetupSchema>

@@ -57,6 +57,11 @@ async function SettingsData({ searchParams }: SettingsPageProps) {
     permissions.includes("org.admin") ||
     permissions.includes("billing.manage")
   const canManageAccounting = permissions.includes("org.admin") || permissions.includes("*")
+  // Mirrors the service: listOrgExternalAccess requires project.manage.
+  const canManageExternalAccess =
+    permissions.includes("project.manage") ||
+    permissions.includes("org.admin") ||
+    permissions.includes("*")
 
   const [complianceRules, complianceRequirementDefaults, complianceDocumentTypes, documentNumbering, paymentRailSettings, booksSettings] = isLocked
     ? [DEFAULT_COMPLIANCE_RULES, [], [], null, null, { enabled: false, settings: null, canDisable: true, connections: [] }]
@@ -91,6 +96,7 @@ async function SettingsData({ searchParams }: SettingsPageProps) {
       stripePublishableKey={process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? null}
       initialBooksSettings={booksSettings}
       canManageAccounting={canManageAccounting}
+      canManageExternalAccess={canManageExternalAccess}
     />
   )
 }

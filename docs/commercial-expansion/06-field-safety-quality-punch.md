@@ -1,5 +1,10 @@
 # Workstream 06 — Safety Module, Quality Inspections, Punch Ball-in-Court
 
+> **Status: SHIPPED — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for commercial
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 > **STATUS (2026-07-10): CODE COMPLETE; MIGRATIONS APPLIED TO PROD; MANUAL QA
 > PENDING.** All four phases implemented (`pnpm lint` + `tsc` clean). Migrations
 > `20260711020000_punch_company_assignment.sql`, `20260711021000_inspections.sql`,

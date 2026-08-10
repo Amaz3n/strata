@@ -61,6 +61,43 @@ async function fileBelongsToCompanySubmittal(
   return !!data
 }
 
+/**
+ * Sub tokens reach the files that ride an RFI their company is party to — the
+ * builder's question attachment and every file on the thread they can already
+ * read. Scoped tokens stay pinned to their one RFI.
+ */
+async function fileBelongsToCompanyRfi(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  orgId: string,
+  fileId: string,
+  companyId: string,
+  scopedRfiId: string | null,
+): Promise<boolean> {
+  const { data: links } = await supabase
+    .from("file_links")
+    .select("entity_id")
+    .eq("org_id", orgId)
+    .eq("file_id", fileId)
+    .eq("entity_type", "rfi")
+
+  const rfiIds = (links ?? []).map((link) => link.entity_id as string)
+  if (rfiIds.length === 0) return false
+
+  let query = supabase
+    .from("rfis")
+    .select("id")
+    .eq("org_id", orgId)
+    .in("id", rfiIds)
+    .neq("status", "draft")
+    .or(`assigned_company_id.eq.${companyId},submitted_by_company_id.eq.${companyId}`)
+    .limit(1)
+
+  if (scopedRfiId) query = query.eq("id", scopedRfiId)
+
+  const { data } = await query.maybeSingle()
+  return !!data
+}
+
 export async function GET(
   request: NextRequest,
   context: { params: Promise<{ token: string; fileId: string }> },
@@ -98,7 +135,15 @@ export async function GET(
       access.portal_type === "reviewer"
         ? await fileBelongsToReviewedDocument(supabase, access.org_id, file.id)
         : access.portal_type === "sub" && access.company_id
-          ? await fileBelongsToCompanySubmittal(supabase, access.org_id, file.id, access.company_id)
+          ? (await fileBelongsToCompanySubmittal(supabase, access.org_id, file.id, access.company_id)) ||
+            (access.permissions.can_view_rfis !== false &&
+              (await fileBelongsToCompanyRfi(
+                supabase,
+                access.org_id,
+                file.id,
+                access.company_id,
+                access.scoped_rfi_id ?? null,
+              )))
           : false
     if (!isReachable) {
       return NextResponse.json({ error: "File not available" }, { status: 404 })

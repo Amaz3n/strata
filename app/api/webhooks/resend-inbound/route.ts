@@ -89,7 +89,13 @@ export async function POST(request: Request) {
     await enqueueOutboxJob({
       orgId: project.orgId,
       jobType: "process_inbound_project_email",
-      payload: { email_id: emailId, project_id: project.projectId },
+      payload: {
+        email_id: emailId,
+        project_id: project.projectId,
+        // Receipt time travels with the job so the filed row records when the
+        // message actually arrived, not when the outbox cron got around to it.
+        received_at: typeof data.created_at === "string" ? data.created_at : null,
+      },
       dedupeByPayloadKeys: ["email_id"],
     })
     return NextResponse.json({ received: true, routed: true, route: "project_correspondence" })

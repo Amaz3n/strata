@@ -313,7 +313,7 @@ export async function executeAnalyticsToolLayer(
     limit: Math.max(8, Math.min(intent.limit, 12)),
     enableHybrid: enableHybridRetrieval,
   })
-  const relatedResults = dedupeResults(rawRelated).slice(0, Math.min(intent.limit, 12))
+  const relatedResults = dedupeResults(rawRelated.results).slice(0, Math.min(intent.limit, 12))
 
   const execution: AnalyticsExecution = {
     answer: "",

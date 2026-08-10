@@ -4,7 +4,8 @@
 -- providers remain a permanent supported posture. This migration deliberately
 -- stores provider references rather than bank-feed or tax-vault secrets.
 --
--- IMPORTANT: migration is written, not applied. Production approval is required.
+-- Applied to the linked Supabase project (verified 2026-08-07: all Books tables
+-- present). Later Books migrations state their own release status.
 
 set lock_timeout = '5s';
 set statement_timeout = '120s';

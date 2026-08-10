@@ -1,8 +1,8 @@
-# Strata Database Overview
+# Arc Database Overview
 
 ## Overview
 
-Strata is a comprehensive construction management platform built on Supabase (PostgreSQL). This document provides a complete overview of the database structure, permissions, storage, and all related components.
+Arc is a comprehensive construction management platform built on Supabase (PostgreSQL). This document provides a complete overview of the database structure, permissions, storage, and all related components.
 
 **Project URL:** https://gzlfiskfkvqgpzqldnwk.supabase.co
 
@@ -78,6 +78,19 @@ Strata is a comprehensive construction management platform built on Supabase (Po
 - **`payment_intents`** - Stripe payment intents
 - **`payment_methods`** - Stored payment methods
 - **`payment_schedules`** - Recurring payment plans
+- **`saved_payable_views`** - User-owned, org/project-scoped payables queue and search presets
+- **`payment_runs` / `payment_run_items` / `payment_run_item_payees`** - Frozen multi-bill AP batches, including vendor splits and retained amounts
+- **`payment_run_approvals` / `payment_run_approvers`** - Maker-checker decisions, ordered routing, and approver limits
+- **`disbursements` / `payment_execution_reservations`** - Provider submissions plus atomic per-org daily-limit reservations
+- **`payment_ledger_transactions` / `payment_ledger_entries`** - Balanced AP money-movement ledger
+- **`payment_reconciliation_runs` / `payment_reconciliation_items`** - Provider-to-Arc settlement reconciliation and exceptions
+
+Bulk bill approval is performed by the service-only `approve_vendor_bills_atomic`
+RPC. It locks every selected bill, validates the entire set, commits audit/event
+evidence with the status changes, and enqueues idempotent ledger/accounting
+projection work in the same transaction. Payment approval remains a separate
+maker-checker control: many approved bills are submitted as one payment run and
+an independent approver decides the frozen run.
 
 #### Project Operations
 - **`schedule_items`** - Project schedule items
@@ -430,5 +443,4 @@ RFIs     Submittals  Dailies  Photos    Closeout
 
 ---
 
-This document provides a comprehensive overview of the Strata database architecture. For specific implementation details, refer to the individual table schemas and migration files.
-
+This document provides a comprehensive overview of the Arc database architecture. For specific implementation details, refer to the individual table schemas and migration files.

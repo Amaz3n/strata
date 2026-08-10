@@ -36,6 +36,13 @@ export interface ApFeePolicy {
   processorFeeCapCents?: number | null
   platformFeeFlatCents: number
   platformFeeBps: number
+  /**
+   * Ceiling on Arc's own fee per payment. A cap is what makes a percentage fee
+   * defensible on an ACH rail: the rail's cost does not scale with amount, so an
+   * uncapped basis-point fee turns a $500k progress payment into a five-figure
+   * charge for moving money that cost a few dollars to move.
+   */
+  platformFeeCapCents?: number | null
 }
 
 export interface ApFeeQuote {
@@ -44,7 +51,20 @@ export interface ApFeeQuote {
   vendorAmountCents: number
   processorFeeCents: number
   platformFeeCents: number
-  totalDebitCents: number
+  /**
+   * What actually leaves the builder's bank for this payment — the vendor amount
+   * and nothing else, so the bank feed line equals the accounting entry and the
+   * bookkeeper has no remainder to hand-code on every single payment.
+   */
+  debitAmountCents: number
+  /**
+   * Fees recognised against this payment. Collected once per run in a separate
+   * debit rather than folded into this one, so the vendor payment's bank line
+   * equals its accounting entry. What the builder is charged is this quoted
+   * figure; any difference from the provider's eventual actual is Arc's margin
+   * and never reaches the builder's books.
+   */
+  accruedFeeCents: number
   description: string
 }
 
@@ -163,7 +183,10 @@ export function quoteApDisbursementFee(input: {
     { allowZero: true },
   )
   const processorFeeCents = policy.passThroughProcessorFees ? estimatedProcessorFeeCents : 0
-  const platformFeeCents = policy.platformFeeFlatCents + Math.round((vendorAmountCents * policy.platformFeeBps) / 10_000)
+  const calculatedPlatformFee = policy.platformFeeFlatCents + Math.round((vendorAmountCents * policy.platformFeeBps) / 10_000)
+  const platformFeeCents = policy.platformFeeCapCents == null
+    ? calculatedPlatformFee
+    : Math.min(calculatedPlatformFee, policy.platformFeeCapCents)
   assertIntegerCents(platformFeeCents, "Platform fee", { allowZero: true })
   return {
     kind: "ap_disbursement",
@@ -171,9 +194,10 @@ export function quoteApDisbursementFee(input: {
     vendorAmountCents,
     processorFeeCents,
     platformFeeCents,
-    totalDebitCents: vendorAmountCents + processorFeeCents + platformFeeCents,
+    debitAmountCents: vendorAmountCents,
+    accruedFeeCents: processorFeeCents + platformFeeCents,
     description: platformFeeCents > 0
-      ? "Provider costs plus Arc payment fee"
-      : "Provider processing costs passed through at cost",
+      ? "Provider costs plus Arc payment fee, collected once per run"
+      : "Provider processing costs passed through at cost, collected once per run",
   }
 }

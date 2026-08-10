@@ -3,6 +3,7 @@ import { createHmac, randomBytes } from "crypto"
 import {
   estimateLineAmountCents,
   resolveAcceptedOptions,
+  validateOptionGroups,
   type AcceptedOptions,
 } from "@/lib/financials/estimate-totals"
 import { recordAudit } from "@/lib/services/audit"
@@ -20,6 +21,7 @@ import { buildOrgScopedPath, createFilesDownloadUrl, downloadFilesObject, upload
 import { PRICING_DISPLAY_MODES, type PricingDisplayMode } from "@/lib/validation/estimates"
 import { formatLocalDate } from "@/lib/utils"
 import { buildDrawingsImageUrl } from "@/lib/storage/drawings-urls"
+import { isDeductionGeometry } from "@/lib/drawings/measure"
 
 export type EstimateDecision = "approved" | "rejected" | "changes_requested"
 
@@ -440,6 +442,11 @@ export type EstimatePortalData = {
   intro: string | null
   /** Percent tax rate applied to the base subtotal and accepted add-ons. */
   tax_rate: number
+  /** Percent contingency carried on the base subtotal (already in total_cents). */
+  contingency_percent: number
+  /** Scope qualifications: what the price includes / excludes. */
+  inclusions: string | null
+  exclusions: string | null
   /** How much pricing breakdown the client sees. */
   pricing_display: PricingDisplayMode
   /** Hex accent color for the document chrome. */
@@ -475,6 +482,8 @@ export type EstimatePortalLine = {
   is_optional: boolean
   /** Allowance line: included in the total as a placeholder budget. */
   is_allowance: boolean
+  /** Mutually-exclusive alternates group label (optional add-ons only). */
+  option_group: string | null
   /**
    * Set when this quantity was measured off the plans AND the builder made the
    * condition client-visible. Drives the portal's "show me on the plans" link.
@@ -542,6 +551,7 @@ function mapEstimatePortalData(
       notes: typeof it.metadata?.notes === "string" ? it.metadata.notes : null,
       is_optional: it.metadata?.is_optional === true,
       is_allowance: it.metadata?.is_allowance === true,
+      option_group: typeof it.metadata?.option_group === "string" ? it.metadata.option_group : null,
       // Only a live link is exposed: a detached line's condition no longer
       // exists, so offering "show me" would open onto nothing.
       takeoff_condition_id:
@@ -556,6 +566,9 @@ function mapEstimatePortalData(
   return {
     intro: typeof metadata.intro === "string" ? metadata.intro : null,
     tax_rate: Number(metadata.tax_rate ?? 0) || 0,
+    contingency_percent: Number(metadata.contingency_percent ?? 0) || 0,
+    inclusions: typeof metadata.inclusions === "string" ? metadata.inclusions : null,
+    exclusions: typeof metadata.exclusions === "string" ? metadata.exclusions : null,
     pricing_display: normalizePricingDisplay(metadata.display?.pricing),
     accent_color: extras.accentColor ?? null,
     font_family: extras.fontFamily ?? null,
@@ -808,6 +821,10 @@ export async function renderEstimatePdfByToken(
     subtotalCents: estimate.subtotal_cents,
     taxCents: taxForPdf,
     totalCents: totalForPdf,
+    contingencyCents: (estimate.total_cents ?? 0) - (estimate.subtotal_cents ?? 0) - (estimate.tax_cents ?? 0),
+    contingencyPercent: Number(metadata.contingency_percent ?? 0) || 0,
+    inclusions: typeof metadata.inclusions === "string" ? metadata.inclusions : null,
+    exclusions: typeof metadata.exclusions === "string" ? metadata.exclusions : null,
     validUntil: estimate.valid_until,
     documentLabel: signers ? ((estimate as any).executed_at ? "Executed Estimate" : "Client-Signed Estimate") : undefined,
     signers,
@@ -914,6 +931,10 @@ async function generateExecutedEstimateArtifact({
         ? (estimate.tax_cents ?? 0) + (executedAccepted.optional_tax_cents ?? 0)
         : estimate.tax_cents,
       totalCents: executedAccepted ? executedAccepted.accepted_total_cents : estimate.total_cents,
+      contingencyCents: (estimate.total_cents ?? 0) - (estimate.subtotal_cents ?? 0) - (estimate.tax_cents ?? 0),
+      contingencyPercent: Number(metadata.contingency_percent ?? 0) || 0,
+      inclusions: typeof metadata.inclusions === "string" ? metadata.inclusions : null,
+      exclusions: typeof metadata.exclusions === "string" ? metadata.exclusions : null,
       validUntil: estimate.valid_until,
       signers: [
         {
@@ -1279,6 +1300,10 @@ async function issueBuilderEstimateSigningEnvelope(input: {
       ? (estimate.tax_cents ?? 0) + (builderAccepted.optional_tax_cents ?? 0)
       : estimate.tax_cents,
     totalCents: builderAccepted ? builderAccepted.accepted_total_cents : estimate.total_cents,
+    contingencyCents: (estimate.total_cents ?? 0) - (estimate.subtotal_cents ?? 0) - (estimate.tax_cents ?? 0),
+    contingencyPercent: Number(metadata.contingency_percent ?? 0) || 0,
+    inclusions: typeof metadata.inclusions === "string" ? metadata.inclusions : null,
+    exclusions: typeof metadata.exclusions === "string" ? metadata.exclusions : null,
     validUntil: estimate.valid_until,
     signers: [
       {
@@ -1990,6 +2015,13 @@ export async function submitEstimateDecision(input: {
       throw new Error("Please sign and accept the estimate before approving.")
     }
 
+    // Alternates in the same option group are mutually exclusive; reject the
+    // selection server-side rather than trusting the portal UI.
+    const groupError = validateOptionGroups((estimate as any).items ?? [], input.selected_optional_ids ?? [])
+    if (groupError) {
+      throw new Error(groupError)
+    }
+
     // Authoritatively resolve which optional add-ons the client accepted and the
     // resulting total, recomputed server-side from the persisted line items.
     const taxRate = Number(((estimate as any).metadata as Record<string, any> | null)?.tax_rate ?? 0) || 0
@@ -2546,6 +2578,13 @@ export type TakeoffEvidenceSheet = {
     type: string
     points: Array<[number, number]>
     quantity: number | null
+    /**
+     * This area SUBTRACTS — a window out of a wall, a stairwell out of a slab.
+     * Carried explicitly rather than inferred from a negative quantity, because
+     * an area on an uncalibrated sheet has no quantity at all and would
+     * otherwise render to a client as though it were being added.
+     */
+    deduction: boolean
   }>
 }
 
@@ -2632,7 +2671,13 @@ export async function loadTakeoffEvidenceByToken(
     total += quantity ?? 0
 
     const existing = bySheet.get(row.drawing_sheet_id)
-    const shape = { id: row.id as string, type: String(row.data?.type ?? ""), points, quantity }
+    const shape = {
+      id: row.id as string,
+      type: String(row.data?.type ?? ""),
+      points,
+      quantity,
+      deduction: isDeductionGeometry({ type: String(row.data?.type ?? ""), points, style: row.data?.style ?? null }),
+    }
     if (existing) {
       existing.shapes.push(shape)
     } else {

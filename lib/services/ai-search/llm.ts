@@ -1,11 +1,13 @@
 import "server-only"
 
-import { createAnthropic } from "@ai-sdk/anthropic"
-import { createGoogleGenerativeAI } from "@ai-sdk/google"
-import { createOpenAI } from "@ai-sdk/openai"
 import { generateText } from "ai"
 import type { AiProvider } from "@/lib/services/ai-config"
 import type { SearchResult } from "@/lib/services/search"
+
+// Provider wiring lives in the gateway; this module is only a caller.
+import { getApiKeyForProvider, resolveLanguageModel } from "@/lib/services/ai/provider"
+
+export { getApiKeyForProvider, getOpenAiBaseUrl, resolveLanguageModel } from "@/lib/services/ai/provider"
 
 const REQUEST_TIMEOUT_MS = 12_000
 
@@ -118,49 +120,10 @@ function parseModelAnswer(raw: string): ParsedModelAnswer | null {
   return null
 }
 
-export function getApiKeyForProvider(provider: AiProvider) {
-  if (provider === "openai") {
-    const configuredKey = process.env.OPENAI_API_KEY?.trim()
-    if (configuredKey) return configuredKey
-
-    if (getOpenAiBaseUrl()) {
-      return process.env.OPENAI_COMPAT_API_KEY?.trim() || "local-dev-key"
-    }
-
-    return undefined
-  }
-  if (provider === "anthropic") return process.env.ANTHROPIC_API_KEY?.trim() || undefined
-  return process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim() || process.env.GEMINI_API_KEY?.trim() || undefined
-}
-
-export function getOpenAiBaseUrl() {
-  const configured = process.env.OPENAI_BASE_URL ?? process.env.OPENAI_COMPAT_BASE_URL
-  if (!configured) return undefined
-  const normalized = configured.trim()
-  return normalized.length > 0 ? normalized : undefined
-}
-
 function buildPrompt(query: string, sources: RetrievedSource[], additionalContext?: string) {
   const sourceContext = formatSourceContext(sources)
   const contextBlock = additionalContext?.trim() ? `\n\nAdditional context:\n${additionalContext.trim()}` : ""
   return `Question:\n${query}${contextBlock}\n\nSources:\n${sourceContext}`
-}
-
-export function resolveLanguageModel(provider: AiProvider, apiKey: string, model: string) {
-  const normalizedModel = provider === "google" && model.startsWith("models/") ? model.slice("models/".length) : model
-
-  if (provider === "openai") {
-    return createOpenAI({
-      apiKey,
-      baseURL: getOpenAiBaseUrl(),
-    })(normalizedModel)
-  }
-
-  if (provider === "anthropic") {
-    return createAnthropic({ apiKey })(normalizedModel)
-  }
-
-  return createGoogleGenerativeAI({ apiKey })(normalizedModel)
 }
 
 export async function generateAnswerWithLlm(

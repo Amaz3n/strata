@@ -10,7 +10,7 @@ import "server-only"
  * consumes, in the SAME normalized image space markup points use (0..1,
  * y-down against the rendered raster).
  *
- * The walk is the production port of scripts/takeoff-vector-spike.mjs; the
+ * The walk is the production port of the retired vector spike harness; the
  * stats math is shared with it via lib/drawings/vector-analysis.ts.
  *
  * vectors.bin format (little-endian):

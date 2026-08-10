@@ -73,7 +73,7 @@ Before starting any stage, compare current code with this baseline:
 ```bash
 git rev-parse HEAD
 git diff --stat 4ad9b11..HEAD
-git diff 4ad9b11..HEAD -- docs/arc-books-gameplan.md lib/integrations/accounting lib/services/accounting-connections.ts lib/services/accounting-export.ts lib/services/billing-periods.ts lib/services/reports/vendor-1099.ts lib/reports/definitions/financial.ts supabase/migrations
+git diff 4ad9b11..HEAD -- docs/plans/arc-books-gameplan.md lib/integrations/accounting lib/services/accounting-connections.ts lib/services/accounting-export.ts lib/services/billing-periods.ts lib/services/reports/vendor-1099.ts lib/reports/definitions/financial.ts supabase/migrations
 ```
 
 If those areas have materially changed, update the relevant stage plan before implementing it.

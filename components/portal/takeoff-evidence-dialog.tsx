@@ -148,8 +148,29 @@ function SheetPlate({
         preserveAspectRatio="none"
         aria-hidden
       >
+        <defs>
+          {/*
+           * Deductions are hatched, not flat-filled: a client verifying a
+           * quantity has to see what was SUBTRACTED as plainly as what was
+           * counted. One pattern for the condition's color, not one per shape.
+           */}
+          <pattern
+            id={`evidence-deduction-${sheet.drawing_sheet_id}`}
+            width={9}
+            height={9}
+            patternUnits="userSpaceOnUse"
+            patternTransform="rotate(45)"
+          >
+            <line x1={0} y1={0} x2={0} y2={9} stroke={color} strokeWidth={2.5} opacity={0.75} />
+          </pattern>
+        </defs>
         {sheet.shapes.map((shape) => (
-          <EvidenceShape key={shape.id} shape={shape} color={color} />
+          <EvidenceShape
+            key={shape.id}
+            shape={shape}
+            color={color}
+            hatchId={`evidence-deduction-${sheet.drawing_sheet_id}`}
+          />
         ))}
       </svg>
     </div>
@@ -159,9 +180,11 @@ function SheetPlate({
 function EvidenceShape({
   shape,
   color,
+  hatchId,
 }: {
   shape: TakeoffEvidence["sheets"][number]["shapes"][number]
   color: string
+  hatchId: string
 }) {
   // The normalized points map straight onto the 0..1000 viewBox.
   const points = shape.points.map(([x, y]) => ({ x: x * 1000, y: y * 1000 }))
@@ -180,9 +203,16 @@ function EvidenceShape({
   const path = points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ")
 
   if (shape.type === "area") {
+    // A deduction was taken OUT of the total. It hatches so a client can never
+    // mistake it for a region that was counted in.
+    const deduction = shape.deduction
     return (
       <g>
-        <path d={`${path} Z`} fill={color} opacity={0.22} />
+        {deduction ? (
+          <path d={`${path} Z`} fill={`url(#${hatchId})`} opacity={0.75} />
+        ) : (
+          <path d={`${path} Z`} fill={color} opacity={0.22} />
+        )}
         <path d={`${path} Z`} fill="none" stroke={color} strokeWidth={3} vectorEffect="non-scaling-stroke" />
       </g>
     )

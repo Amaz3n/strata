@@ -134,6 +134,15 @@ export async function trackInCrmAction(contactId: string) {
   })
 }
 
+export async function startProspectPricingAction(prospectId: string) {
+  return run(async () => {
+    const { startProspectPricing } = await import("@/lib/services/conversions")
+    const result = await startProspectPricing({ prospectId })
+    revalidatePipelinePaths(prospectId)
+    return result
+  })
+}
+
 export async function convertExecutedProspectAction({
   prospectId,
   estimateId,
@@ -167,15 +176,19 @@ export async function convertExecutedProspectAction({
 export async function getExecutedEstimateForProspectAction(prospectId: string) {
       const { requireOrgContext } = await import("@/lib/services/context")
       const { supabase, orgId } = await requireOrgContext()
+      // More than one executed estimate can exist (re-executed revisions);
+      // convert from the current version, falling back to the newest.
       const { data, error } = await supabase
         .from("estimates")
-        .select("id, title, total_cents, valid_until, created_at, status")
+        .select("id, title, total_cents, valid_until, created_at, status, is_current_version")
         .eq("org_id", orgId)
         .eq("prospect_id", prospectId)
         .eq("status", "executed")
-        .maybeSingle()
+        .order("is_current_version", { ascending: false })
+        .order("created_at", { ascending: false })
+        .limit(1)
       if (error) throw new Error(error.message)
-      return data
+      return data?.[0] ?? null
 }
 
 export async function listProspectEstimatesAction(

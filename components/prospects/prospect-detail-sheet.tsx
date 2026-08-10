@@ -14,6 +14,7 @@ import {
   listProspectActivityAction,
   listProspectEstimatesAction,
   setProspectFollowUpAction,
+  startProspectPricingAction,
 } from "@/app/(app)/pipeline/actions"
 import {
   createEstimateAction,
@@ -57,6 +58,7 @@ import {
   Phone,
   Plus,
   Receipt,
+  Ruler,
   Send,
   User,
   X,
@@ -267,7 +269,7 @@ interface NextStep {
 }
 
 function deriveNextStep(prospect: Prospect, estimates: EstimateRow[]): NextStep {
-  if (prospect.project_id) {
+  if (prospect.project_id && prospect.project_phase !== "precon") {
     return { tone: "success", title: "Project created", body: "This prospect has been converted. Open the project to keep working." }
   }
   switch (prospect.status) {
@@ -315,6 +317,7 @@ export function ProspectDetailSheet({
   const [tab, setTab] = useState<"overview" | "estimates" | "activity">("overview")
 
   const [convertOpen, setConvertOpen] = useState(false)
+  const [startingPricing, setStartingPricing] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [loadingCreateData, setLoadingCreateData] = useState(false)
@@ -376,6 +379,20 @@ export function ProspectDetailSheet({
       return data
     } finally {
       setLoadingCreateData(false)
+    }
+  }
+
+  async function handleStartPricing() {
+    if (!prospect) return
+    setStartingPricing(true)
+    try {
+      const result = unwrapAction(await startProspectPricingAction(prospect.id))
+      await refreshProspect()
+      router.push(`/projects/${result.projectId}/drawings`)
+    } catch (error) {
+      toast({ title: "Unable to start pricing", description: (error as Error).message })
+    } finally {
+      setStartingPricing(false)
     }
   }
 
@@ -640,14 +657,56 @@ export function ProspectDetailSheet({
                     ) : null}
                   </Section>
 
-                  <Section title="Workspaces">
-                    <Button variant="outline" asChild className="w-full justify-start">
-                      <Link href={`/pipeline/prospects/${prospect.id}/bids`}>
-                        <Hammer className="mr-2 h-4 w-4" />
-                        Bids
-                        <ExternalLink className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
-                      </Link>
-                    </Button>
+                  <Section title="Pricing workspace">
+                    {prospect.project_id && prospect.project_phase === "precon" ? (
+                      <div className="space-y-2">
+                        <Button variant="outline" asChild className="w-full justify-start">
+                          <Link href={`/projects/${prospect.project_id}/drawings`}>
+                            <Ruler className="mr-2 h-4 w-4" />
+                            Plans &amp; takeoff
+                            <ExternalLink className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+                          </Link>
+                        </Button>
+                        <Button variant="outline" asChild className="w-full justify-start">
+                          <Link href={`/projects/${prospect.project_id}/bids`}>
+                            <Hammer className="mr-2 h-4 w-4" />
+                            Bids
+                            <ExternalLink className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+                          </Link>
+                        </Button>
+                        <Button variant="outline" asChild className="w-full justify-start">
+                          <Link href={`/projects/${prospect.project_id}/documents`}>
+                            <FileText className="mr-2 h-4 w-4" />
+                            Files
+                            <ExternalLink className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+                          </Link>
+                        </Button>
+                      </div>
+                    ) : prospect.project_id ? (
+                      <Button variant="outline" asChild className="w-full justify-start">
+                        <Link href={`/projects/${prospect.project_id}/bids`}>
+                          <Hammer className="mr-2 h-4 w-4" />
+                          Bids
+                          <ExternalLink className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+                        </Link>
+                      </Button>
+                    ) : (
+                      <div className="space-y-2">
+                        <Button
+                          variant="outline"
+                          className="w-full justify-start"
+                          disabled={startingPricing || prospect.status === "won" || prospect.status === "lost"}
+                          onClick={handleStartPricing}
+                        >
+                          <Ruler className="mr-2 h-4 w-4" />
+                          {startingPricing ? "Starting…" : "Start pricing"}
+                        </Button>
+                        <p className="text-xs text-muted-foreground">
+                          Opens a pricing workspace for this prospect — plans, takeoff, sub bids, and the estimate all
+                          live there.
+                        </p>
+                      </div>
+                    )}
                   </Section>
                 </TabsContent>
 
@@ -841,7 +900,7 @@ export function ProspectDetailSheet({
               <Button variant="outline" onClick={() => onOpenChange(false)} className="flex-1">
                 Close
               </Button>
-              {prospect.project_id ? (
+              {prospect.project_id && prospect.project_phase !== "precon" ? (
                 <Button asChild className="flex-1">
                   <Link href={`/projects/${prospect.project_id}`}>
                     Go to project

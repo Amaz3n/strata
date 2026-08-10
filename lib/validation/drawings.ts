@@ -316,7 +316,10 @@ export const drawingSheetListFiltersSchema = z.object({
   search: z.string().optional(),
   share_with_clients: z.boolean().optional(),
   share_with_subs: z.boolean().optional(),
-  limit: z.number().int().positive().max(500).default(100),
+  // 1000 matches the mobile list cap. A 900-sheet commercial set is the design
+  // case, not the stress case — pair any request near this ceiling with
+  // countDrawingSheets so truncation is visible to the user.
+  limit: z.number().int().positive().max(1000).default(100),
   offset: z.number().int().nonnegative().default(0),
 })
 
@@ -386,21 +389,45 @@ export const MARKUP_TYPE_LABELS: Record<MarkupType, string> = {
   count: "Count",
 }
 
-// Unit of measure carried by a measured markup or a takeoff condition.
+// What a piece of geometry can measure. A takeoff CONDITION may report a wider
+// set (CY, SY, squares, tons) — see conditionUomSchema in validation/takeoff.ts.
 export const measureUomSchema = z.enum(["lf", "sf", "ea"])
 
 export type MeasureUomValue = z.infer<typeof measureUomSchema>
 
 // Markup data structure (stored as JSON)
-export const markupDataSchema = z.object({
-  type: markupTypeSchema,
-  points: z.array(z.tuple([z.number(), z.number()])), // [[x, y], ...]
-  color: z.string().regex(/^#[0-9A-Fa-f]{6}$/).default("#FF0000"),
-  strokeWidth: z.number().positive().max(20).default(2),
-  text: z.string().max(1000).optional(),
-  fontSize: z.number().positive().max(72).optional(),
-  style: z.record(z.any()).optional(),
-})
+export const markupDataSchema = z
+  .object({
+    type: markupTypeSchema,
+    points: z.array(z.tuple([z.number(), z.number()])), // [[x, y], ...]
+    color: z.string().regex(/^#[0-9A-Fa-f]{6}$/).default("#FF0000"),
+    strokeWidth: z.number().positive().max(20).default(2),
+    text: z.string().max(1000).optional(),
+    fontSize: z.number().positive().max(72).optional(),
+    style: z.record(z.any()).optional(),
+  })
+  .superRefine((value, ctx) => {
+    // `style.deduction` flips the sign of the measured quantity. Only an area
+    // can be subtracted — a deducted count or run has no meaning, and letting
+    // the flag ride on one would produce a negative quantity nothing expects.
+    if (value.style?.deduction !== undefined && value.type !== "area") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["style", "deduction"],
+        message: "Only an area can be a deduction",
+      })
+    }
+    if (
+      value.style?.deduction !== undefined &&
+      typeof value.style.deduction !== "boolean"
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["style", "deduction"],
+        message: "A deduction flag is true or false",
+      })
+    }
+  })
 
 export type MarkupData = z.infer<typeof markupDataSchema>
 
@@ -448,7 +475,10 @@ export type DrawingMarkupListFilters = z.infer<typeof drawingMarkupListFiltersSc
 // DRAWING PIN SCHEMAS (Phase 4)
 // ============================================================================
 
-// Pin entity types
+// Pin entity types. Every value must have a resolvable backing entity — the
+// enrichment maps in lib/services/drawing-markups.ts and lib/mobile/drawings.ts
+// are what a pin's title and status ride on. `observation` and `issue` were
+// retired from this enum because pins of those types could never resolve.
 export const pinEntityTypeSchema = z.enum([
   "task",
   "rfi",
@@ -456,14 +486,23 @@ export const pinEntityTypeSchema = z.enum([
   "submittal",
   "daily_log",
   "observation",
-  "issue",
   "photo",
 ])
 
 export type PinEntityType = z.infer<typeof pinEntityTypeSchema>
 
+/**
+ * Entity types that can no longer be pinned but may survive on old rows.
+ * Kept in the label map so an existing pin still names its type instead of
+ * rendering an empty chip; such pins title themselves from the pin label.
+ *
+ * `issue` never had an entity of its own — it minted a tagged task, so the pin
+ * pointed at a task while claiming to be an issue.
+ */
+type LegacyPinEntityType = "issue"
+
 // Human-readable entity type labels
-export const PIN_ENTITY_TYPE_LABELS: Record<PinEntityType, string> = {
+export const PIN_ENTITY_TYPE_LABELS: Record<PinEntityType | LegacyPinEntityType, string> = {
   task: "Task",
   rfi: "RFI",
   punch_list: "Punch List Item",

@@ -1,3 +1,10 @@
+import {
+  INK_ADDED_TINT,
+  INK_COMMON_TINT,
+  INK_LUMA,
+  INK_REMOVED_TINT,
+  vec3Literal,
+} from "./ink-diff"
 import type {
   DrawQuad,
   FrameSpec,
@@ -10,8 +17,9 @@ import type {
 /**
  * WebGL2 backend — the fallback path, and the primary one on browsers without
  * WebGPU (older iPad Safari being the field reality). Mirrors the WebGPU
- * renderer's frame contract exactly; see webgpu-renderer.ts for the shared
- * difference-shader math.
+ * renderer's frame contract exactly; the difference-shader constants are
+ * interpolated from ink-diff.ts, the single source of truth shared with
+ * webgpu-renderer.ts.
  *
  * Blending is premultiplied-alpha throughout (the canvas is configured to
  * match), so an overlay at opacity o outputs rgb·o / a·o with ONE,
@@ -45,7 +53,8 @@ void main() {
 // added, and recolor — unchanged gray, removed (base only) red, added
 // (overlay only) blue. Sampling by window coordinate keeps the two offscreen
 // rasters texel-aligned with the composite pass.
-const DIFF_FRAG = `#version 300 es
+/** Exported for the shader-sync test only. */
+export const DIFF_FRAG = `#version 300 es
 precision mediump float;
 uniform sampler2D uTexBase;
 uniform sampler2D uTexOverlay;
@@ -56,15 +65,16 @@ void main() {
   vec2 screenUv = gl_FragCoord.xy / uViewportDevice;
   vec3 a = texture(uTexBase, screenUv).rgb;
   vec3 b = texture(uTexOverlay, screenUv).rgb;
-  float inkBase = 1.0 - dot(a, vec3(0.299, 0.587, 0.114));
-  float inkOverlay = 1.0 - dot(b, vec3(0.299, 0.587, 0.114));
+  vec3 luma = ${vec3Literal("glsl", INK_LUMA)};
+  float inkBase = 1.0 - dot(a, luma);
+  float inkOverlay = 1.0 - dot(b, luma);
   float commonInk = min(inkBase, inkOverlay);
   float removed = clamp(inkBase - commonInk, 0.0, 1.0);
   float added = clamp(inkOverlay - commonInk, 0.0, 1.0);
   vec3 color = vec3(1.0)
-    - commonInk * vec3(0.62, 0.62, 0.62)
-    - removed * vec3(0.14, 0.86, 0.80)
-    - added * vec3(0.86, 0.55, 0.08);
+    - commonInk * ${vec3Literal("glsl", INK_COMMON_TINT)}
+    - removed * ${vec3Literal("glsl", INK_REMOVED_TINT)}
+    - added * ${vec3Literal("glsl", INK_ADDED_TINT)};
   outColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 }`
 
@@ -135,11 +145,14 @@ function imageToClip(matrix: ImageToScreenMatrix, viewport: Size): Float32Array 
 
 export class WebGL2Renderer implements SceneRenderer {
   readonly backend = "webgl2" as const
+  onDeviceLost: ((reason: string) => void) | null = null
 
+  private contextLost = false
   private readonly gl: WebGL2RenderingContext
   private readonly tileProgram: WebGLProgram
   private readonly diffProgram: WebGLProgram
   private readonly quadVao: WebGLVertexArrayObject
+  private readonly quadVbo: WebGLBuffer
   private readonly tileUniforms: {
     rect: WebGLUniformLocation | null
     matrix: WebGLUniformLocation | null
@@ -180,6 +193,8 @@ export class WebGL2Renderer implements SceneRenderer {
     if (!vao) throw new Error("WebGL2: createVertexArray failed")
     this.quadVao = vao
     const buffer = gl.createBuffer()
+    if (!buffer) throw new Error("WebGL2: createBuffer failed")
+    this.quadVbo = buffer
     gl.bindVertexArray(vao)
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
     gl.bufferData(
@@ -194,6 +209,24 @@ export class WebGL2Renderer implements SceneRenderer {
     gl.enable(gl.BLEND)
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false)
+
+    canvas.addEventListener("webglcontextlost", this.handleContextLost)
+    canvas.addEventListener("webglcontextrestored", this.handleContextRestored)
+  }
+
+  private readonly handleContextLost = (event: Event): void => {
+    // preventDefault tells the browser we manage recovery, which also allows
+    // it to restore the context later. Every GL resource is gone either way —
+    // the owner (gpu-viewer.ts) tears this renderer down and re-negotiates.
+    event.preventDefault()
+    this.contextLost = true
+    this.onDeviceLost?.("webgl2 context lost")
+  }
+
+  private readonly handleContextRestored = (): void => {
+    // The owner rebuilds by replacing this renderer; clearing the flag only
+    // stops render() from touching a lost context in the teardown gap.
+    this.contextLost = false
   }
 
   uploadTile(bitmap: ImageBitmap): TileTexture {
@@ -226,6 +259,7 @@ export class WebGL2Renderer implements SceneRenderer {
   }
 
   render(frame: FrameSpec): void {
+    if (this.contextLost) return
     const gl = this.gl
     if (this.deviceWidth === 0) this.resize(frame.viewport, frame.dpr)
     const clipMatrix = imageToClip(frame.matrix, frame.viewport)
@@ -355,9 +389,15 @@ export class WebGL2Renderer implements SceneRenderer {
   }
 
   destroy(): void {
+    this.canvas.removeEventListener("webglcontextlost", this.handleContextLost)
+    this.canvas.removeEventListener("webglcontextrestored", this.handleContextRestored)
     this.disposeOffscreen()
     this.gl.deleteProgram(this.tileProgram)
     this.gl.deleteProgram(this.diffProgram)
     this.gl.deleteVertexArray(this.quadVao)
+    this.gl.deleteBuffer(this.quadVbo)
+    // Release the context itself; without this the GPU keeps it alive until
+    // the canvas is garbage-collected.
+    this.gl.getExtension("WEBGL_lose_context")?.loseContext()
   }
 }

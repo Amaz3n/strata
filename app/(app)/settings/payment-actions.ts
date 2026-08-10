@@ -9,7 +9,15 @@ import {
   decidePaymentControlChange,
   updatePaymentRailPolicy,
 } from "@/lib/services/payment-rail-setup"
-import type { UpdatePaymentRailPolicyInput } from "@/lib/validation/fintech-payments"
+import { setPaymentRunApprovers, type PaymentRunApprover } from "@/lib/services/payment-approvers"
+import {
+  deleteAutoApprovalRule,
+  listAutoApprovalRules,
+  upsertAutoApprovalRule,
+  type AutoApprovalRule,
+  type AutoApprovalRuleInput,
+} from "@/lib/services/invoice-auto-approval"
+import type { SetPaymentRunApproversInput, UpdatePaymentRailPolicyInput } from "@/lib/validation/fintech-payments"
 
 async function run<T>(operation: () => Promise<T>): Promise<ActionResult<T>> {
   try {
@@ -28,6 +36,10 @@ export async function updatePaymentRailPolicyAction(input: UpdatePaymentRailPoli
   })
 }
 
+export async function setPaymentRunApproversAction(input: SetPaymentRunApproversInput): Promise<ActionResult<PaymentRunApprover[]>> {
+  return run(() => setPaymentRunApprovers(input))
+}
+
 export async function createOrgFundingSetupAction(): Promise<ActionResult<{ providerSetupId: string; clientSecret: string }>> {
   return run(async () => {
     const result = await createOrgFundingSetup()
@@ -44,4 +56,16 @@ export async function decidePaymentControlChangeAction(input: { changeRequestId:
     await decidePaymentControlChange(input)
     return { completed: true }
   })
+}
+
+export async function listAutoApprovalRulesAction(): Promise<ActionResult<AutoApprovalRule[]>> {
+  return run(() => listAutoApprovalRules())
+}
+
+export async function upsertAutoApprovalRuleAction(input: AutoApprovalRuleInput): Promise<ActionResult<{ id: string }>> {
+  return run(() => upsertAutoApprovalRule(input))
+}
+
+export async function deleteAutoApprovalRuleAction(ruleId: string): Promise<ActionResult<{ deleted: true }>> {
+  return run(() => deleteAutoApprovalRule(ruleId))
 }

@@ -43,7 +43,7 @@ import ReceivablesInvoicingArticle from "./project-financials/receivables-invoic
 import ProjectsOverviewArticle from "./projects/projects-overview"
 import TroubleshootingOverviewArticle from "./troubleshooting/troubleshooting-overview"
 import PermissionsAccessIssuesArticle from "./troubleshooting/permissions-access-issues"
-import DocumentOcrIssuesArticle from "./troubleshooting/document-ocr-issues"
+import DrawingProcessingIssuesArticle from "./troubleshooting/drawing-processing-issues"
 import IntegrationSyncIssuesArticle from "./troubleshooting/integration-sync-issues"
 import AdministrationOverviewArticle from "./workspace-administration/administration-overview"
 import TeamPermissionsArticle from "./workspace-administration/team-permissions"
@@ -573,11 +573,12 @@ export const helpTopics: HelpTopic[] = [
             content: PermissionsAccessIssuesArticle,
           },
           {
-            slug: "document-ocr-issues",
-            title: "Document & OCR upload issues",
-            description: "Resolve stuck drawing uploads, OCR errors, and file size limits.",
-            updatedAt: "2026-06-16",
-            content: DocumentOcrIssuesArticle,
+            slug: "drawing-processing-issues",
+            title: "Drawing & document processing issues",
+            description:
+              "Resolve stuck drawing uploads, wrong sheet numbers, and bills that did not reconcile when scanned.",
+            updatedAt: "2026-08-07",
+            content: DrawingProcessingIssuesArticle,
           },
           {
             slug: "integration-sync-issues",

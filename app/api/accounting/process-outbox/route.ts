@@ -1,12 +1,20 @@
 import { NextRequest, NextResponse } from "next/server"
 
+import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
+
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { ACCOUNTING_JOB_TYPES, processAccountingPush, type AccountingPushEntityType } from "@/lib/services/accounting-sync"
+import {
+  ACCOUNTING_JOB_TYPES,
+  markAccountingPushExhausted,
+  markAccountingPushPermanentlyFailed,
+  processAccountingPush,
+  type AccountingPushEntityType,
+} from "@/lib/services/accounting-sync"
+import { classifyQboPermanentFailure } from "@/lib/integrations/accounting/qbo/error-rules"
 import { keepAliveAccountingConnections } from "@/lib/services/accounting-connection-maintenance"
 import { logAccounting } from "@/lib/services/accounting-logger"
 import { withCronRun } from "@/lib/services/job-runs"
 
-const CRON_SECRET = process.env.CRON_SECRET
 const MAX_RETRIES = 3
 const BATCH_SIZE = 25
 const TOKEN_KEEPALIVE_BATCH_SIZE = 10
@@ -23,26 +31,6 @@ type ClaimedJob = {
   run_at?: string | null
 }
 
-function isAuthorizedCronRequest(request: NextRequest) {
-  const isDev = process.env.NODE_ENV !== "production"
-  if (isDev) return true
-
-  const authHeader = request.headers.get("authorization") ?? request.headers.get("Authorization")
-  const bearer = typeof authHeader === "string" ? authHeader.trim() : ""
-  const legacyHeader = request.headers.get("x-cron-secret")
-  const isVercelCron = request.headers.get("x-vercel-cron") === "1"
-
-  const secretOk =
-    (!!CRON_SECRET && bearer === `Bearer ${CRON_SECRET}`) ||
-    (!!CRON_SECRET && legacyHeader === CRON_SECRET)
-
-  if (CRON_SECRET) {
-    return secretOk
-  }
-
-  return isVercelCron
-}
-
 async function processAccountingOutbox(request: NextRequest) {
   if (!isAuthorizedCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
@@ -50,61 +38,36 @@ async function processAccountingOutbox(request: NextRequest) {
 
   const keepalive = await keepAliveAccountingConnections(TOKEN_KEEPALIVE_BATCH_SIZE)
   const supabase = createServiceSupabaseClient()
-  const staleCutoff = new Date(Date.now() - PROCESSING_TIMEOUT_MINUTES * 60 * 1000).toISOString()
-  let recoveredStale = 0
 
-  const { data: recoveredRows, error: recoveredError } = await supabase
-    .from("outbox")
-    .update({
-      status: "pending",
-      run_at: new Date().toISOString(),
-      last_error: "Recovered stale processing job",
-    })
-    .in("job_type", ACCOUNTING_OUTBOX_JOB_TYPES)
-    .eq("status", "processing")
-    .lt("updated_at", staleCutoff)
-    .select("id")
-
-  if (recoveredError) {
-    logAccounting("warn", "process_outbox_stale_recovery_failed", { error: recoveredError.message })
-  } else {
-    recoveredStale = recoveredRows?.length ?? 0
-    if (recoveredStale > 0) {
-      logAccounting("warn", "process_outbox_stale_recovered", { recovered: recoveredStale })
-    }
+  // Return leases abandoned by a worker that timed out mid-batch, using the
+  // same atomic reaper as the generic outbox worker.
+  const { data: reaped, error: reapError } = await supabase.rpc("reap_stale_outbox_jobs", {
+    p_lease_seconds: PROCESSING_TIMEOUT_MINUTES * 60,
+    p_max_attempts: MAX_RETRIES,
+    p_job_types: ACCOUNTING_OUTBOX_JOB_TYPES,
+  })
+  if (reapError) {
+    return NextResponse.json({ error: `reap_stale_outbox_jobs failed: ${reapError.message}` }, { status: 500 })
+  }
+  const reapRow = (Array.isArray(reaped) ? reaped[0] : reaped) as { requeued?: number; exhausted?: number } | null
+  const recoveredStale = Number(reapRow?.requeued ?? 0)
+  if (recoveredStale > 0) {
+    logAccounting("warn", "process_outbox_stale_recovered", { recovered: recoveredStale, exhausted: Number(reapRow?.exhausted ?? 0) })
   }
 
+  // Claims atomically (FOR UPDATE SKIP LOCKED). There is deliberately no
+  // select-then-update fallback: that two-statement path is the double-claim
+  // race the RPC exists to eliminate, so a missing RPC fails loudly instead.
   const { data: claimedJobs, error } = await supabase.rpc("claim_jobs", {
     job_types: ACCOUNTING_OUTBOX_JOB_TYPES,
     limit_value: BATCH_SIZE,
   })
 
-  if (error && !error.message.toLowerCase().includes("claim_jobs")) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+  if (error) {
+    return NextResponse.json({ error: `claim_jobs failed: ${error.message}` }, { status: 500 })
   }
 
-  let jobs = (claimedJobs ?? []) as ClaimedJob[]
-  if (error && jobs.length === 0) {
-    const now = new Date().toISOString()
-    const { data: fallbackJobs, error: fallbackError } = await supabase
-      .from("outbox")
-      .select("id, org_id, job_type, payload, retry_count, run_at")
-      .in("job_type", ACCOUNTING_OUTBOX_JOB_TYPES)
-      .eq("status", "pending")
-      .lte("run_at", now)
-      .order("created_at", { ascending: true })
-      .limit(BATCH_SIZE)
-
-    if (fallbackError) {
-      return NextResponse.json({ error: fallbackError.message }, { status: 500 })
-    }
-
-    const jobIds = (fallbackJobs ?? []).map((j) => j.id)
-    if (jobIds.length > 0) {
-      await supabase.from("outbox").update({ status: "processing" }).in("id", jobIds).eq("status", "pending")
-    }
-    jobs = (fallbackJobs ?? []) as ClaimedJob[]
-  }
+  const jobs = (claimedJobs ?? []) as ClaimedJob[]
 
   if (!jobs.length) {
     return NextResponse.json({ processed: 0, failed: 0, keepalive, recoveredStale })
@@ -129,7 +92,16 @@ async function processAccountingOutbox(request: NextRequest) {
       processed++
     } catch (err: any) {
       const newRetry = (job.retry_count ?? 0) + 1
-      const shouldRetry = newRetry < MAX_RETRIES
+      // Some failures are answers, not outages. A QuickBooks 610 for an object
+      // somebody deactivated over there will fail identically forever, so it
+      // skips the backoff and goes straight to a person with the cure attached.
+      const permanent = classifyQboPermanentFailure({
+        status: err?.status ?? null,
+        faultCode: err?.faultCode ?? null,
+        faultDetail: err?.faultDetail ?? null,
+        message: err?.message ?? null,
+      })
+      const shouldRetry = !permanent && newRetry < MAX_RETRIES
 
       await supabase
         .from("outbox")
@@ -142,6 +114,26 @@ async function processAccountingOutbox(request: NextRequest) {
             : job.run_at ?? new Date().toISOString(),
         })
         .eq("id", jobId)
+
+      // Giving up is the moment a human inherits the problem, so it is the
+      // moment the transaction has to start saying so.
+      if (!shouldRetry && job.org_id) {
+        const normalized = job.job_type.replace(/^qbo_sync_/, "").replace(/^accounting_push_/, "")
+        const entityType = normalized as AccountingPushEntityType
+        const payloadKey = entityType === "invoice" ? "invoice_id" : entityType === "project_expense" ? "expense_id" : entityType === "vendor_bill" ? "bill_id" : "payment_id"
+        const entityId = payload[payloadKey]
+        if (typeof entityId === "string") {
+          const mark = permanent
+            ? markAccountingPushPermanentlyFailed({ orgId: job.org_id, entityType, entityId, message: permanent.message })
+            : markAccountingPushExhausted({
+                orgId: job.org_id,
+                entityType,
+                entityId,
+                message: err?.message ?? "Sync failed",
+              })
+          await mark.catch((markError) => logAccounting("error", "process_outbox_mark_exhausted_failed", { error: String(markError) }))
+        }
+      }
 
       failed++
     }

@@ -250,11 +250,19 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
   const actorId = typeof (event.payload as any)?.actor_id === "string" ? ((event.payload as any).actor_id as string) : null
   const projectId = extractProjectIdFromEvent(event)
 
+  // Requests route to whoever decides them; decisions route back to whoever
+  // raises them. The decision half was declared as a notification type, given a
+  // title, and emitted — but never given a recipient set, so five event types
+  // resolved to an empty list and notified nobody at all.
   const permissionEvent = event.event_type === "vpo.requested"
     ? "vpo.approve"
     : event.event_type === "po_completion.reported"
       ? "po_completion.verify"
-      : null
+      : event.event_type === "vpo.approved" || event.event_type === "vpo.rejected"
+        ? "vpo.request"
+        : ["po_completion.verified", "po_completion.approved", "po_completion.rejected"].includes(event.event_type)
+          ? "po_completion.report"
+          : null
   if (permissionEvent) {
     const { data: roleRows } = await supabase.from("role_permissions").select("role_id").eq("permission_key", permissionEvent)
     const roleIds = (roleRows ?? []).map((row: any) => row.role_id).filter(Boolean)
@@ -288,15 +296,47 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     return uniqUserIds((memberships ?? []).map((row) => row.user_id)).filter((id) => id !== actorId)
   }
 
+  // An ambiguous submission is the one state where Arc cannot say whether the
+  // builder's bank was debited, so it is deliberately the one payment event that
+  // does NOT exclude the actor. On the scheduled path the actor is the preparer,
+  // who is not at a screen; on the manual path they saw a transient error and
+  // still need a durable record naming the disbursement to confirm.
+  if (event.event_type === "payment_submission_needs_recovery") {
+    const { data: roleRows } = await supabase.from("role_permissions")
+      .select("role_id")
+      .in("permission_key", ["payment.release", "payment.reconcile"])
+    const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
+    if (roleIds.length === 0) return []
+    const { data: memberships } = await supabase.from("memberships")
+      .select("user_id")
+      .eq("org_id", orgId)
+      .eq("status", "active")
+      .in("role_id", roleIds)
+    return uniqUserIds([...(memberships ?? []).map((row) => row.user_id), ...(actorId ? [actorId] : [])])
+  }
+
   const paymentOperationalEvents = new Set([
     "payment_run_execution_failed",
+    "payment_operations_alert",
+    "payment_run_fee_charge_failed",
+    "vendor_transfer_needs_attention",
     "vendor_payment_returned",
     "payment_reconciliation_completed",
+    "vendor_payout_destination_changed",
   ])
   if (paymentOperationalEvents.has(event.event_type)) {
     const permissionKeys = event.event_type === "payment_reconciliation_completed"
       ? ["payment.reconcile"]
-      : ["payment.release", "payment.reconcile"]
+      : event.event_type === "payment_run_fee_charge_failed"
+        // The vendors were paid; only Arc's own fee is outstanding. That is a
+        // rail-ownership problem, not a release problem.
+        ? ["payments.manage_rail", "payment.reconcile"]
+      : event.event_type === "payment_operations_alert"
+        // A stalled release or a reconciliation that stopped running is a rail
+        // problem, so the people who own the rail hear about it alongside the
+        // ones who reconcile it.
+        ? ["payment.reconcile", "payments.manage_rail"]
+        : ["payment.release", "payment.reconcile"]
     const { data: roleRows } = await supabase.from("role_permissions").select("role_id").in("permission_key", permissionKeys)
     const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
     if (roleIds.length === 0) return []
@@ -331,6 +371,16 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
       const { data: run } = await supabase.from("payment_runs").select("requested_by").eq("org_id", orgId).eq("id", event.entity_id).maybeSingle()
       return run?.requested_by && run.requested_by !== actorId ? [run.requested_by] : []
     }
+    // An org that designated approvers has said who owns this decision; mailing
+    // everyone who merely holds the permission would train them to ignore it.
+    const routedApprovers = Array.isArray(event.payload?.approver_ids)
+      ? uniqUserIds(event.payload.approver_ids.filter((value): value is string => typeof value === "string"))
+      : []
+    if (routedApprovers.length > 0) return routedApprovers.filter((id) => id !== actorId)
+    const { data: designated } = await supabase.from("payment_run_approvers").select("user_id").eq("org_id", orgId)
+    if ((designated ?? []).length > 0) {
+      return uniqUserIds((designated ?? []).map((row) => row.user_id)).filter((id) => id !== actorId)
+    }
     const { data: roleRows } = await supabase.from("role_permissions").select("role_id").eq("permission_key", "payments.approve_run")
     const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
     if (roleIds.length === 0) return []
@@ -359,7 +409,6 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     "invoice_updated",
     "invoice_sent",
     "payment_recorded",
-    "vendor_bill_submitted",
     "selection_created",
     "portal_message",
     "recipient_signed",
@@ -389,8 +438,8 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     "commitment_created",
     "budget_created",
     "invoice_number_changed",
-    "qbo_connected",
-    "qbo_disconnected",
+    "accounting_connected",
+    "accounting_disconnected",
   ])
 
   if (BID_NOTIFICATION_EVENTS.has(event.event_type)) {
@@ -430,6 +479,87 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
       return []
     }
     return uniqUserIds((admins ?? []).map((m: any) => m.user_id))
+  }
+
+  // The payable lifecycle goes to the people who can act on it, not to every
+  // project member. An approval queue that emails the whole project is one
+  // everybody filters, which is the same as not sending it.
+  const payableApprovalEvents: Record<string, string[]> = {
+    vendor_bill_submitted: ["bill.approve"],
+    vendor_bill_approved: ["bill.write", "bill.approve"],
+    vendor_bill_rejected: ["bill.write", "bill.approve"],
+  }
+  const payablePermissions = payableApprovalEvents[event.event_type]
+  if (payablePermissions) {
+    if (!projectId) return []
+    const eligibleRecipients = await getProjectFinancialNotificationRecipients({
+      supabase,
+      orgId,
+      projectId,
+      actorId,
+      permissions: payablePermissions,
+      policyVersion: "payable-lifecycle-v1",
+    })
+    if (event.event_type !== "vendor_bill_submitted") {
+      const payloadSubmitterId = typeof event.payload?.submitted_by_user_id === "string"
+        ? event.payload.submitted_by_user_id
+        : null
+      const { data: submissionEvent } = payloadSubmitterId
+        ? { data: null }
+        : await supabase
+            .from("events")
+            .select("payload")
+            .eq("org_id", orgId)
+            .eq("entity_type", "vendor_bill")
+            .eq("entity_id", event.entity_id)
+            .eq("event_type", "vendor_bill_submitted")
+            .order("created_at", { ascending: true })
+            .limit(1)
+            .maybeSingle()
+      const originalPayload = submissionEvent?.payload && typeof submissionEvent.payload === "object"
+        ? submissionEvent.payload as Record<string, unknown>
+        : null
+      const submitterId = payloadSubmitterId ?? (
+        typeof originalPayload?.actor_id === "string" ? originalPayload.actor_id : null
+      )
+
+      // Decisions go back to the person who submitted the payable. Keep the
+      // permission-derived intersection so an archived or de-scoped submitter
+      // cannot receive a link to a bill they can no longer access.
+      return submitterId
+        ? eligibleRecipients.filter((userId) => userId === submitterId)
+        : eligibleRecipients
+    }
+
+    // A payable created in the new bill workspace names its intended approvers.
+    // Intersect with the permission-derived audience above so client metadata
+    // can narrow notification delivery but can never widen access to the bill.
+    const routedApproverIds = Array.isArray(event.payload?.approver_ids)
+      ? uniqUserIds(
+          event.payload.approver_ids.filter(
+            (value): value is string => typeof value === "string",
+          ),
+        )
+      : []
+    if (routedApproverIds.length === 0) return eligibleRecipients
+    const routedSet = new Set(routedApproverIds)
+    return eligibleRecipients.filter((userId) => routedSet.has(userId))
+  }
+
+  // Every failure mode of a payment run was emailed and success was not, so the
+  // only way an AP clerk learned a run finished was to go looking.
+  if (event.event_type === "vendor_payment_paid") {
+    const { data: roleRows } = await supabase.from("role_permissions")
+      .select("role_id")
+      .in("permission_key", ["payment.release", "payment.reconcile"])
+    const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
+    if (roleIds.length === 0) return []
+    const { data: memberships } = await supabase.from("memberships")
+      .select("user_id")
+      .eq("org_id", orgId)
+      .eq("status", "active")
+      .in("role_id", roleIds)
+    return uniqUserIds((memberships ?? []).map((row) => row.user_id)).filter((id) => id !== actorId)
   }
 
   if (projectId && projectScopedEvents.has(event.event_type)) {
@@ -475,11 +605,16 @@ async function getProjectFinancialNotificationRecipients({
   orgId,
   projectId,
   actorId,
+  permissions = FINANCIAL_NOTIFICATION_PERMISSIONS,
+  policyVersion = "payment-notification-v1",
 }: {
   supabase: ReturnType<typeof createServiceSupabaseClient>
   orgId: string
   projectId: string
   actorId: string | null
+  /** Any one of these grants the notification. Defaults to read-level finance. */
+  permissions?: string[]
+  policyVersion?: string
 }) {
   const { data: members, error } = await supabase
     .from("project_members")
@@ -526,7 +661,7 @@ async function getProjectFinancialNotificationRecipients({
     if (!activeUserIds.has(userId)) continue
 
     const decisions = await Promise.all(
-      FINANCIAL_NOTIFICATION_PERMISSIONS.map((permission) =>
+      permissions.map((permission) =>
         authorize({
           permission,
           userId,
@@ -535,7 +670,7 @@ async function getProjectFinancialNotificationRecipients({
           supabase,
           resourceType: "project",
           resourceId: projectId,
-          policyVersion: "payment-notification-v1",
+          policyVersion,
         }),
       ),
     )
@@ -572,6 +707,32 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
         title: "Task completed",
         message: fallbackMessage,
         projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+
+    case "accounting_reconciliation_drift":
+      // Without this case the in-app notification rendered its raw lowercase
+      // event type as a title and linked nowhere, so the one alert that says
+      // the books stopped agreeing looked like noise.
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "accounting_reconciliation_drift" as NotificationType,
+        title:
+          typeof safePayload.new_discrepancy_count === "number"
+            ? `${safePayload.new_discrepancy_count} new reconciliation ${safePayload.new_discrepancy_count === 1 ? "issue" : "issues"}`
+            : "Accounting reconciliation drift",
+        message: fallbackMessage,
+        // `/reports/accounting-reconciliation` is not a route — the reconciliation
+        // report's slug is `reconciliation` and it is project-scoped. The org-wide
+        // finding queue lives on the period-close tab, which is also where an item
+        // can be explained or resolved.
+        metadata: {
+          href: "/books/close",
+          new_discrepancy_count: safePayload.new_discrepancy_count,
+        },
         entityType: entity_type,
         entityId: entity_id,
         eventId: event.id,
@@ -834,6 +995,161 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
       }
     }
 
+    /**
+     * The builder's money cleared to Arc and the vendor did not get paid. That
+     * is the worst intermediate state in the system, so the copy says exactly
+     * that rather than describing it as a failed payment.
+     */
+    case "vendor_transfer_needs_attention": {
+      const amount = typeof safePayload.amount_cents === "number"
+        ? formatCentsForNotification(safePayload.amount_cents)
+        : null
+      const reason = typeof safePayload.error === "string" ? safePayload.error : null
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "vendor_transfer_needs_attention" as NotificationType,
+        title: `Vendor payout blocked${amount ? `: ${amount}` : ""}`,
+        message: `This payment was debited from your bank and has not reached the vendor${reason ? ` (${reason})` : ""}. Arc is holding the funds and will retry, but someone should check the vendor's payout account.`,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
+    /**
+     * A vendor's payout bank changed. This is the "change the payee, pay
+     * immediately" vector, so the copy names the masked account and the hold
+     * rather than describing it as a routine settings update. Nothing beyond the
+     * last four ever appears here.
+     */
+    case "vendor_payout_destination_changed": {
+      const last4 = typeof safePayload.bank_last4 === "string" ? safePayload.bank_last4 : null
+      const lockedUntil = typeof safePayload.locked_until === "string" ? safePayload.locked_until : null
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "vendor_payout_destination_changed" as NotificationType,
+        title: `Vendor payout bank changed${last4 ? ` to •••• ${last4}` : ""}`,
+        message: `A vendor you pay through Arc has a new payout bank account. Payments to them are held${lockedUntil ? ` until ${new Date(lockedUntil).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" })} UTC` : ""}. Confirm the change with someone you already know at the vendor, using a number you already have.`,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
+    /**
+     * The vendors were paid and Arc's own fee debit did not go through. The copy
+     * has to lead with that, because the instinct on seeing a payment failure is
+     * to worry the subcontractor did not get paid.
+     */
+    case "payment_run_fee_charge_failed": {
+      const amount = typeof safePayload.amount_cents === "number"
+        ? formatCentsForNotification(safePayload.amount_cents)
+        : null
+      const reason = typeof safePayload.error === "string" ? safePayload.error : null
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "payment_run_fee_charge_failed" as NotificationType,
+        title: `Arc fee debit failed${amount ? `: ${amount}` : ""}`,
+        message: `Your vendors were paid normally. Only Arc's own fee could not be collected${reason ? ` (${reason})` : ""}, and the balance is still owed.`,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
+    /**
+     * Automated monitoring found the rail in a state a healthy system would not
+     * leave it in. The copy leads with what is stuck, because the recipient's
+     * first question is whether money is currently not moving.
+     */
+    case "payment_operations_alert": {
+      const findings = Array.isArray(safePayload.findings) ? safePayload.findings : []
+      const details = findings
+        .map((finding) => (finding && typeof finding === "object" ? Reflect.get(finding, "detail") : null))
+        .filter((detail): detail is string => typeof detail === "string")
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "payment_operations_alert" as NotificationType,
+        title: "Vendor payments need attention",
+        message: details.length > 0 ? details.join(" ") : "Automated monitoring found a problem with vendor payment processing.",
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
+    /**
+     * Unknown money state. The provider call did not return a trustworthy answer,
+     * so Arc cannot say whether the debit happened. The copy must not imply
+     * either outcome — it names the disbursement and asks a human to confirm it
+     * against the provider before anyone builds a replacement run.
+     */
+    case "payment_submission_needs_recovery": {
+      const reason = typeof safePayload.error === "string" ? safePayload.error : null
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "payment_submission_needs_recovery" as NotificationType,
+        title: "Vendor payment needs confirmation",
+        message: `Arc could not confirm whether this vendor payment reached the provider${reason ? ` (${reason})` : ""}. Automatic recovery retries it with the same idempotency key, so it cannot double-pay. Do not build a replacement run until the provider record is checked.`,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+        metadata: typeof safePayload.payment_run_id === "string" ? { payment_run_id: safePayload.payment_run_id } : undefined,
+      }
+    }
+
+    // Payment approvals: the recipient has to know what they are releasing (or
+    // what was released on their behalf) from the email alone.
+    case "payment_run_submitted":
+    case "payment_run_approved":
+    case "payment_run_approval_recorded":
+    case "payment_run_rejected": {
+      const vendor = typeof safePayload.vendor_name === "string" ? safePayload.vendor_name : "a vendor"
+      const billNumber = typeof safePayload.bill_number === "string" ? safePayload.bill_number : null
+      const project = typeof safePayload.project_name === "string" ? safePayload.project_name : null
+      const amount = typeof safePayload.total_debit_cents === "number"
+        ? formatCentsForNotification(safePayload.total_debit_cents)
+        : null
+      const billCount = typeof safePayload.bill_count === "number" ? safePayload.bill_count : 1
+      const subject = billCount > 1
+        ? `${billCount} vendor bills`
+        : `${vendor}${billNumber ? ` · invoice ${billNumber}` : ""}${project ? ` · ${project}` : ""}`
+      const title =
+        event_type === "payment_run_submitted"
+          ? `Payment needs your approval${amount ? `: ${amount}` : ""}`
+          : event_type === "payment_run_approved"
+            ? `Payment approved${amount ? `: ${amount}` : ""}`
+            : event_type === "payment_run_rejected"
+              ? "Payment rejected"
+              : "Payment approval recorded"
+      const message =
+        event_type === "payment_run_submitted"
+          ? `${subject}. Open it to review the bill and release the payment.`
+          : event_type === "payment_run_approved"
+            ? `${subject} is approved and on its way to the vendor.`
+            : event_type === "payment_run_rejected"
+              ? `${subject} was rejected${typeof safePayload.reason === "string" ? `: ${safePayload.reason}` : "."}`
+              : `An approver recorded a decision on ${subject}.`
+      return {
+        orgId: event.org_id,
+        userId,
+        type: event_type as NotificationType,
+        title,
+        message,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+        metadata: typeof safePayload.bill_id === "string" ? { bill_id: safePayload.bill_id } : undefined,
+      }
+    }
+
     case "portal_message":
       return {
         orgId: event.org_id,
@@ -849,6 +1165,35 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
         entityId: entity_id,
         eventId: event.id,
       }
+
+    case "vendor_bill_submitted":
+    case "vendor_bill_approved":
+    case "vendor_bill_rejected": {
+      const billLabel = typeof safePayload.bill_number === "string" && safePayload.bill_number
+        ? `Invoice ${safePayload.bill_number}`
+        : "A vendor invoice"
+      const amount = typeof safePayload.amount_cents === "number"
+        ? ` for ${formatCentsForNotification(safePayload.amount_cents)}`
+        : ""
+      const message = event_type === "vendor_bill_submitted"
+        ? `${billLabel}${amount} is waiting for approval.`
+        : event_type === "vendor_bill_approved"
+          ? `${billLabel}${amount} was approved for payment.`
+          // The reason is the whole point of the notification: without it the
+          // recipient has to open the payable to learn anything.
+          : `${billLabel}${amount} was rejected.${typeof safePayload.rejection_reason === "string" ? ` ${safePayload.rejection_reason}` : ""}`
+      return {
+        orgId: event.org_id,
+        userId,
+        type: event_type as NotificationType,
+        title: fallbackTitle,
+        message,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
 
     default:
       // Generic fallback for supported event types
@@ -889,6 +1234,10 @@ async function enrichBidEvent(event: EventRecord, orgId: string) {
     ...(pkg.project_id ? { project_id: pkg.project_id } : {}),
     ...(pkg.created_by ? { package_created_by: pkg.created_by } : {}),
   }
+}
+
+function formatCentsForNotification(cents: number) {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100)
 }
 
 function extractProjectIdFromEvent(event: EventRecord): string | null {
@@ -953,6 +1302,16 @@ function titleForEventType(eventType: string): string {
       return "Invoice sent"
     case "payment_recorded":
       return "Payment received"
+    case "vendor_bill_submitted":
+      return "Payable needs approval"
+    case "vendor_bill_approved":
+      return "Payable approved"
+    case "vendor_bill_rejected":
+      return "Payable rejected"
+    case "vendor_payment_paid":
+      return "Vendor payment completed"
+    case "payable_email_ingest":
+      return "Payable arrived by email"
     case "portal_message":
       return "New portal message"
     case "recipient_signed":

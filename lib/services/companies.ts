@@ -11,6 +11,12 @@ import { getDefaultComplianceRequirements } from "@/lib/services/compliance"
 import { setCompanyRequirements } from "@/lib/services/compliance-documents"
 import { listInvoices } from "@/lib/services/invoices"
 import { listProjects } from "@/lib/services/projects"
+import {
+  listCompanyPaymentReadiness,
+  type CompanyPaymentReadinessStatus,
+} from "@/lib/services/vendor-payment-invitations"
+import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
+import { payableOutstandingCents } from "@/lib/financials/payables-rules"
 
 export interface ClientCompanyReceivableProject {
   project_id: string
@@ -94,6 +100,7 @@ function mapCompany(row: any, accountingLink?: CompanyAccountingLink | null): Co
     prequalified_at: row.prequalified_at ?? metadata.prequalified_at ?? undefined,
     rating: row.rating ?? metadata.rating ?? undefined,
     default_payment_terms: row.default_payment_terms ?? metadata.default_payment_terms ?? undefined,
+    default_payment_method: metadata.default_payment_method ?? undefined,
     internal_notes: row.internal_notes ?? metadata.internal_notes ?? undefined,
     notes: row.notes ?? metadata.notes ?? undefined,
     qbo_vendor_id: accountingLink?.external_id || undefined,
@@ -434,7 +441,13 @@ export async function getClientCompanyReceivables(
   const invoiceResultsByProject = new Map(invoiceResults.map((result) => [result.projectId, result]))
   const projects = visibleProjects.map((project) => {
     const invoiceResult = invoiceResultsByProject.get(project.id)
-    const invoices = (invoiceResult?.invoices ?? []).filter((invoice) => invoice.status !== "void")
+    // What this client has been billed, on the same set the AR aging report for
+    // the same client uses. Excluding only `void` counted the client's unsent
+    // `draft` and `saved` invoices as money they owe.
+    const billedStatuses: ReadonlySet<string> = new Set<string>(BILLED_INVOICE_STATUSES)
+    const invoices = (invoiceResult?.invoices ?? []).filter((invoice) =>
+      billedStatuses.has(String(invoice.status)),
+    )
     const contractValue =
       project.billing_contract?.total_cents ??
       project.total_contract_value_cents ??
@@ -579,6 +592,159 @@ export async function getCompaniesVendorFinancialSummary(
   return result
 }
 
+/**
+ * What an AP clerk needs to know about a vendor at the moment they are entering
+ * that vendor's bill: how much of this org's money already runs through them,
+ * what is still owed, the terms that should set the due date, and whether the
+ * money can leave on Arc's rail at all.
+ *
+ * Read-only and best-effort by design — this decorates an entry form, so a
+ * vendor whose history the viewer cannot see returns zeros rather than failing
+ * the bill entry behind it.
+ */
+export interface VendorPayableProfile {
+  companyId: string
+  name: string
+  trade: string | null
+  paymentTerms: string | null
+  /** Paid to this vendor over the trailing window, and how many bills that was. */
+  paidCents: number
+  billCount: number
+  trailingDays: number
+  /** Still owed across every unpaid payable, whatever its age. */
+  openCents: number
+  openBillCount: number
+  lastBillDate: string | null
+  /** Whether this org can pay the vendor electronically today. */
+  paymentReadiness: CompanyPaymentReadinessStatus
+  paymentInvitedAt: string | null
+  /** Masked provider data only. Builders never receive full payout details. */
+  payoutBankName: string | null
+  payoutBankLast4: string | null
+  /** False when the viewer may not read payables — the money fields read zero. */
+  canViewBills: boolean
+}
+
+export async function getVendorPayableProfile(
+  companyId: string,
+  orgId?: string,
+  options?: { trailingDays?: number },
+): Promise<VendorPayableProfile | null> {
+  const trailingDays = options?.trailingDays ?? 365
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  await requireAnyPermission(["org.member", "org.read", "directory.read", "directory.write"], {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  })
+
+  const { data: company, error } = await supabase
+    .from("companies")
+    .select("id,name,metadata,default_payment_terms")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", companyId)
+    .maybeSingle()
+  if (error) throw new Error(`Failed to load vendor: ${error.message}`)
+  if (!company) return null
+
+  const since = new Date()
+  since.setDate(since.getDate() - trailingDays)
+
+  // Spend history is payable data, so it answers to `bill.read` — the directory
+  // permission that got us this far only entitles someone to the vendor itself.
+  let canViewBills = true
+  try {
+    await requireAuthorization({
+      permission: "bill.read",
+      userId,
+      orgId: resolvedOrgId,
+      supabase,
+      resourceType: "directory",
+      resourceId: "vendor_payable_profile",
+    })
+  } catch {
+    canViewBills = false
+  }
+
+  // Vendor credits live in the same table and are not money owed to the vendor.
+  const excludeCredits = "metadata->>source.is.null,metadata->>source.neq.vendor_credit"
+  const [{ data: recent }, { data: open }, readiness, { data: paymentRelationship }] = await Promise.all([
+    canViewBills
+      ? supabase
+          .from("vendor_bills")
+          .select("id,total_cents,paid_cents,status,bill_date")
+          .eq("org_id", resolvedOrgId)
+          .eq("company_id", companyId)
+          .gte("bill_date", since.toISOString().slice(0, 10))
+          .or(excludeCredits)
+          .order("bill_date", { ascending: false })
+          .limit(500)
+      : Promise.resolve({ data: [] }),
+    canViewBills
+      ? supabase
+          .from("vendor_bills")
+          .select("total_cents,paid_cents,retainage_cents")
+          .eq("org_id", resolvedOrgId)
+          .eq("company_id", companyId)
+          .in("status", ["pending", "approved", "partial"])
+          .or(excludeCredits)
+          .limit(500)
+      : Promise.resolve({ data: [] }),
+    listCompanyPaymentReadiness([companyId], resolvedOrgId).catch(() => null),
+    supabase
+      .from("vendor_payment_relationships")
+      .select("invited_at,recipient:payment_recipient_accounts(payout_bank_name,payout_bank_last4)")
+      .eq("org_id", resolvedOrgId)
+      .eq("company_id", companyId)
+      .maybeSingle(),
+  ])
+
+  const metadata = (company.metadata ?? {}) as Record<string, unknown>
+  const openCents = (open ?? []).reduce(
+    (sum, row) =>
+      sum +
+      payableOutstandingCents({
+        total_cents: Number(row.total_cents ?? 0),
+        paid_cents: Number(row.paid_cents ?? 0),
+        retainage_cents: Number(row.retainage_cents ?? 0),
+      }),
+    0,
+  )
+
+  const recipient = Array.isArray(paymentRelationship?.recipient)
+    ? paymentRelationship?.recipient[0]
+    : paymentRelationship?.recipient
+  const paymentState = readiness?.get(companyId)
+
+  return {
+    companyId,
+    name: company.name as string,
+    trade: typeof metadata.trade === "string" ? metadata.trade : null,
+    paymentTerms: (company.default_payment_terms as string | null) ?? null,
+    paidCents: (recent ?? []).reduce(
+      (sum, row) => sum + Number(row.paid_cents ?? (row.status === "paid" ? row.total_cents ?? 0 : 0)),
+      0,
+    ),
+    billCount: (recent ?? []).length,
+    trailingDays,
+    openCents,
+    openBillCount: (open ?? []).filter(
+      (row) =>
+        payableOutstandingCents({
+          total_cents: Number(row.total_cents ?? 0),
+          paid_cents: Number(row.paid_cents ?? 0),
+          retainage_cents: Number(row.retainage_cents ?? 0),
+        }) > 0,
+    ).length,
+    lastBillDate: (recent ?? [])[0]?.bill_date ?? null,
+    paymentReadiness: paymentState?.status ?? "not_started",
+    paymentInvitedAt: paymentState?.invitedAt ?? paymentRelationship?.invited_at ?? null,
+    payoutBankName: recipient?.payout_bank_name ?? null,
+    payoutBankLast4: recipient?.payout_bank_last4 ?? null,
+    canViewBills,
+  }
+}
+
 function buildCompanyInsert(input: CompanyInput, orgId: string) {
   return {
     org_id: orgId,
@@ -605,6 +771,7 @@ function buildCompanyInsert(input: CompanyInput, orgId: string) {
       prequalified_at: input.prequalified_at,
       rating: input.rating,
       default_payment_terms: input.default_payment_terms,
+      default_payment_method: input.default_payment_method,
       internal_notes: input.internal_notes,
       notes: input.notes,
     },
@@ -719,6 +886,7 @@ export async function updateCompany({
     prequalified_at: parsed.prequalified_at ?? existing.metadata?.prequalified_at,
     rating: parsed.rating ?? existing.metadata?.rating,
     default_payment_terms: parsed.default_payment_terms ?? existing.metadata?.default_payment_terms,
+    default_payment_method: parsed.default_payment_method ?? existing.metadata?.default_payment_method,
     internal_notes: parsed.internal_notes ?? existing.metadata?.internal_notes,
     notes: parsed.notes ?? existing.metadata?.notes,
   }

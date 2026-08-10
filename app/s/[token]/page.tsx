@@ -16,6 +16,7 @@ import {
 import { getCompanyComplianceStatusWithClient } from "@/lib/services/compliance-documents"
 import { getLatestPrequalificationWithClient } from "@/lib/services/prequalification"
 import { listWarrantyVisitsForCompanyPortal } from "@/lib/services/warranty-operations"
+import { subRfiBucket } from "@/lib/portal/rfi-buckets"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { formatLocalDate, formatMoneyCents, parseLocalDate } from "@/lib/utils"
 
@@ -77,8 +78,11 @@ export default async function SubPortalHome({ params }: SubPortalHomeProps) {
   const actions: PortalAction[] = []
 
   // Overdue RFIs get their own row — a sub needs to know which one is late,
-  // not that "3 RFIs" are outstanding somewhere.
-  const openRfis = data.rfis.filter((rfi) => rfi.status === "open" || rfi.status === "pending")
+  // not that "3 RFIs" are outstanding somewhere. Only questions put *to* the
+  // sub belong here; the ones they raised are waiting on the builder.
+  const openRfis = data.rfis.filter(
+    (rfi) => subRfiBucket(rfi, access.company_id ?? null) === "needs-you",
+  )
   const overdueRfis = openRfis.filter((rfi) => {
     const due = parseLocalDate(rfi.due_date)
     return due !== null && due < today

@@ -1,7 +1,8 @@
 import type { AccountingProvider, AccountingProviderKey } from "@/lib/integrations/accounting/provider"
+import { fileProvider } from "@/lib/integrations/accounting/file/adapter"
 import { qboProvider } from "@/lib/integrations/accounting/qbo/adapter"
 
-const providers: Record<AccountingProviderKey, AccountingProvider> = { qbo: qboProvider }
+const providers: Record<AccountingProviderKey, AccountingProvider> = { qbo: qboProvider, file: fileProvider }
 
 export function getProvider(key: AccountingProviderKey): AccountingProvider {
   return providers[key]

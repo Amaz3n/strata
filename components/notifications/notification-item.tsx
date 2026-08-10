@@ -84,6 +84,12 @@ function getNotificationHref(payload: any): string | null {
   const entityId = typeof payload?.entity_id === "string" ? payload.entity_id : null
   const logId = typeof payload?.daily_log_id === "string" ? payload.daily_log_id : null
 
+  // An explicit destination wins. Everything below infers a link from a project,
+  // which left every ORG-level notification — reconciliation drift among them —
+  // unable to link anywhere at all.
+  const explicit = typeof payload?.href === "string" ? payload.href : null
+  if (explicit?.startsWith("/")) return explicit
+
   if (!projectId) return null
 
   switch (entityType) {

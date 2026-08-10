@@ -23,6 +23,7 @@ const journalRowSchema = z.object({
   entry_kind: z.enum(["operational", "adjusting", "opening", "poc", "closing", "reversal"]),
   memo: z.string(),
   posting_key: z.string(),
+  projection_version: z.number().int(),
   policy_version: z.number().int(),
   status: z.enum(["draft", "posted", "reversed"]),
 })
@@ -220,7 +221,7 @@ async function postBooksJournalEntryInternal(input: {
       entry_kind: draft.entryKind,
       memo: draft.memo,
       posting_key: draft.postingKey,
-      projection_version: 1,
+      projection_version: draft.projectionVersion,
       policy_version: draft.policyVersion,
       source_type: draft.sourceType ?? null,
       source_id: draft.sourceId ?? null,
@@ -291,11 +292,35 @@ export async function reverseBooksJournalEntry(input: {
   orgId?: string
 }) {
   const context = await requireBooksPermission("books.adjust", input.orgId)
+  return reverseJournalEntryInternal({ entryId: input.entryId, reversalDate: input.reversalDate, reason: input.reason, orgId: context.orgId })
+}
+
+/**
+ * Service-job boundary. The projector uses this to reverse the entry behind a
+ * superseded fact so a genuine economic revision repairs itself instead of
+ * failing on every pass.
+ */
+export async function reverseBooksJournalEntryForService(input: {
+  entryId: string
+  reversalDate: string
+  reason: string
+  orgId: string
+}) {
+  return reverseJournalEntryInternal(input)
+}
+
+async function reverseJournalEntryInternal(input: {
+  entryId: string
+  reversalDate: string
+  reason: string
+  orgId: string
+}) {
+  const context = { orgId: input.orgId }
   const service = createServiceSupabaseClient()
   const [entryResult, linesResult] = await Promise.all([
     service
       .from("journal_entries")
-      .select("id, entry_date, entry_kind, memo, posting_key, policy_version, status")
+      .select("id, entry_date, entry_kind, memo, posting_key, projection_version, policy_version, status")
       .eq("org_id", context.orgId)
       .eq("id", input.entryId)
       .single(),
@@ -317,6 +342,7 @@ export async function reverseBooksJournalEntry(input: {
     entryKind: "reversal",
     memo: `Reversal of ${entry.memo}: ${input.reason}`,
     postingKey: `reversal:${entry.id}:${booksDigest({ date: input.reversalDate, reason: input.reason }).slice(0, 20)}`,
+    projectionVersion: entry.projection_version,
     policyVersion: entry.policy_version,
     reversalOfEntryId: entry.id,
     lines: lines.map((item) => {
@@ -333,5 +359,5 @@ export async function reverseBooksJournalEntry(input: {
       }
     }),
   }
-  return postBooksJournalEntry(draft, { permission: "books.adjust", orgId: context.orgId })
+  return postBooksJournalEntryForService(draft, context.orgId)
 }

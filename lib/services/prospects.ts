@@ -74,6 +74,8 @@ export interface Prospect {
   estimate_value_cents?: number
   has_estimate?: boolean
   project_id?: string | null
+  // Phase of the linked project: "precon" while pricing, "delivery" once won.
+  project_phase?: "precon" | "delivery" | null
 }
 
 const prospectSelect = `
@@ -90,7 +92,12 @@ const prospectContactSelect = `
 function mapProspect(
   row: any,
   contacts?: ProspectContact[],
-  extras: { estimateCount?: number; estimateValueCents?: number; projectId?: string | null } = {},
+  extras: {
+    estimateCount?: number
+    estimateValueCents?: number
+    projectId?: string | null
+    projectPhase?: "precon" | "delivery" | null
+  } = {},
 ): Prospect {
   return {
     id: row.id,
@@ -120,6 +127,7 @@ function mapProspect(
     estimate_value_cents: extras.estimateValueCents ?? 0,
     has_estimate: (extras.estimateCount ?? 0) > 0,
     project_id: extras.projectId ?? null,
+    project_phase: extras.projectPhase ?? null,
   }
 }
 
@@ -242,7 +250,7 @@ export async function listProspects(orgId?: string, filters?: ProspectFilters): 
   const contactsByProspect = new Map<string, ProspectContact[]>()
   const estimateCountsByProspect = new Map<string, number>()
   const estimateValueByProspect = new Map<string, number>()
-  const projectByProspect = new Map<string, string>()
+  const projectByProspect = new Map<string, { id: string; phase: "precon" | "delivery" | null }>()
 
   if (prospectIds.length > 0) {
     const [contactsResult, estimatesResult, projectsResult] = await Promise.all([
@@ -260,7 +268,7 @@ export async function listProspects(orgId?: string, filters?: ProspectFilters): 
         .in("prospect_id", prospectIds),
       supabase
         .from("projects")
-        .select("id, prospect_id")
+        .select("id, prospect_id, phase")
         .eq("org_id", resolvedOrgId)
         .in("prospect_id", prospectIds),
     ])
@@ -297,7 +305,10 @@ export async function listProspects(orgId?: string, filters?: ProspectFilters): 
     for (const project of projectsResult.data ?? []) {
       const prospectId = project.prospect_id as string | null
       if (prospectId) {
-        projectByProspect.set(prospectId, project.id as string)
+        projectByProspect.set(prospectId, {
+          id: project.id as string,
+          phase: (project.phase as "precon" | "delivery" | null) ?? "delivery",
+        })
       }
     }
   }
@@ -306,7 +317,8 @@ export async function listProspects(orgId?: string, filters?: ProspectFilters): 
     mapProspect(row, contactsByProspect.get(row.id), {
       estimateCount: estimateCountsByProspect.get(row.id) ?? 0,
       estimateValueCents: estimateValueByProspect.get(row.id) ?? 0,
-      projectId: projectByProspect.get(row.id) ?? null,
+      projectId: projectByProspect.get(row.id)?.id ?? null,
+      projectPhase: projectByProspect.get(row.id)?.phase ?? null,
     }),
   )
 }
@@ -384,7 +396,7 @@ export async function getProspect(prospectId: string, orgId?: string): Promise<P
       .eq("prospect_id", prospectId),
     supabase
       .from("projects")
-      .select("id")
+      .select("id, phase")
       .eq("org_id", resolvedOrgId)
       .eq("prospect_id", prospectId)
       .maybeSingle(),
@@ -400,6 +412,9 @@ export async function getProspect(prospectId: string, orgId?: string): Promise<P
     estimateCount: estimates.length,
     estimateValueCents,
     projectId: (projectResult.data?.id as string | undefined) ?? null,
+    projectPhase: projectResult.data
+      ? ((projectResult.data.phase as "precon" | "delivery" | null) ?? "delivery")
+      : null,
   })
 }
 

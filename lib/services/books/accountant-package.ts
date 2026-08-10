@@ -2,6 +2,7 @@ import "server-only"
 
 import { z } from "zod"
 
+import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { createCompleteBooksExport } from "@/lib/services/books/exports"
@@ -9,11 +10,31 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { getVendor1099Report } from "@/lib/services/reports/vendor-1099"
 
+/**
+ * Sales tax billed, grouped by jurisdiction — and honest about what it cannot say.
+ *
+ * Two gaps are structural, not bugs to be tidied, and they are reported rather
+ * than papered over because an accountant could otherwise read this table as a
+ * return:
+ *
+ *  - **Jurisdiction is not captured anywhere.** `metadata.tax_jurisdiction` is
+ *    read here and written by nothing in the codebase, so every invoice falls to
+ *    "Unassigned". Typing the field would not change that; something has to
+ *    *collect* a jurisdiction at invoicing first.
+ *  - **Use tax is not computed at all.** Self-assessed use tax is a fact about
+ *    purchases, and `vendor_bills` has no tax column — there is no input, so
+ *    there is nothing to compute. The name of this summary is aspirational on
+ *    that half.
+ *
+ * Both are noted in the C4.5 plan entry. Until a customer actually charges sales
+ * tax, building the jurisdiction subsystem would produce a typed field that is
+ * still always empty and a use-tax figure with nothing behind it.
+ */
 export async function buildSalesUseTaxSummary(input: { startDate: string; endDate: string; orgId?: string }) {
   const context = await requireOrgContext(input.orgId)
   await requireAuthorization({ permission: "books.tax", userId: context.userId, orgId: context.orgId, supabase: context.supabase, resourceType: "tax_summary", resourceId: context.orgId, logDecision: true })
   const service = createServiceSupabaseClient()
-  const { data, error } = await service.from("invoices").select("id, issue_date, subtotal_cents, tax_cents, total_cents, metadata, project_id").eq("org_id", context.orgId).gte("issue_date", input.startDate).lte("issue_date", input.endDate).in("status", ["sent", "partial", "paid", "overdue"])
+  const { data, error } = await service.from("invoices").select("id, issue_date, subtotal_cents, tax_cents, total_cents, metadata, project_id").eq("org_id", context.orgId).gte("issue_date", input.startDate).lte("issue_date", input.endDate).in("status", [...BILLED_INVOICE_STATUSES])
   if (error) throw new Error(`Failed to build sales/use-tax summary: ${error.message}`)
   const byJurisdiction = new Map<string, { taxableSalesCents: number; taxCents: number; invoiceCount: number }>()
   for (const invoice of data ?? []) {
@@ -25,7 +46,27 @@ export async function buildSalesUseTaxSummary(input: { startDate: string; endDat
     current.invoiceCount += 1
     byJurisdiction.set(jurisdiction, current)
   }
-  return { startDate: input.startDate, endDate: input.endDate, rows: Array.from(byJurisdiction, ([jurisdiction, totals]) => ({ jurisdiction, ...totals })).sort((left, right) => left.jurisdiction.localeCompare(right.jurisdiction)), warning: "Summary only. Confirm contractor and resale treatment with a qualified tax professional before filing." }
+  const rows = Array.from(byJurisdiction, ([jurisdiction, totals]) => ({ jurisdiction, ...totals })).sort((left, right) =>
+    left.jurisdiction.localeCompare(right.jurisdiction),
+  )
+  const unassignedCount = byJurisdiction.get("Unassigned")?.invoiceCount ?? 0
+  return {
+    startDate: input.startDate,
+    endDate: input.endDate,
+    rows,
+    // Stated as findings, not a disclaimer nobody reads. An accountant seeing
+    // "every invoice is Unassigned" knows to ask why; a table that just says
+    // "Unassigned" looks like a data-entry oversight they should chase.
+    limitations: [
+      ...(unassignedCount > 0
+        ? [
+            `${unassignedCount} of ${rows.reduce((sum, row) => sum + row.invoiceCount, 0)} invoices carry no tax jurisdiction. Arc does not yet capture one at invoicing, so this grouping cannot be used to allocate tax between jurisdictions.`,
+          ]
+        : []),
+      "Use tax on purchases is not included. Arc does not record tax charged on vendor bills, so self-assessed use tax cannot be computed from this ledger.",
+    ],
+    warning: "Summary only. Confirm contractor and resale treatment with a qualified tax professional before filing.",
+  }
 }
 
 export async function createAccountantPackage(input: { periodId?: string; taxYear?: number; orgId?: string }) {

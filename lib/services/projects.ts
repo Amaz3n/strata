@@ -93,6 +93,7 @@ function mapProject(row: any, accountingDimensions?: ProjectAccountingDimensions
     org_id: row.org_id,
     name: row.name,
     status: row.status,
+    phase: row.phase ?? "delivery",
     start_date: row.start_date ?? undefined,
     end_date: row.end_date ?? undefined,
     address,
@@ -131,6 +132,7 @@ function mapProjectNavigationItem(row: any): ProjectNavigationItem {
     org_id: row.org_id,
     name: row.name,
     status: row.status,
+    phase: row.phase ?? "delivery",
     property_type: row.property_type ?? undefined,
     module_overrides: mapProjectModuleOverrides(row),
     financial_settings: financialSettings?.billing_model
@@ -182,7 +184,7 @@ function mapProjectBillingContract(row: any): Contract {
 }
 
 const PROJECT_SELECT = `
-  id, org_id, name, status, start_date, end_date, location, client_id, prospect_id, property_type, project_type, division_id, superintendent_id, description, total_value, retainage_percent, total_contract_value_cents, excluded_from_reporting, is_public_work, require_subtier_waivers, created_at, updated_at,
+  id, org_id, name, status, phase, start_date, end_date, location, client_id, prospect_id, property_type, project_type, division_id, superintendent_id, description, total_value, retainage_percent, total_contract_value_cents, excluded_from_reporting, is_public_work, require_subtier_waivers, created_at, updated_at,
   project_financial_settings(id, org_id, project_id, billing_model, fixed_price_billing_basis, paid_costs_required, proof_required, client_cost_approval_required, open_book_required, cost_codes_enabled, setup_completed_at, metadata),
   project_module_overrides(module_key, enabled),
   contracts(id, org_id, project_id, proposal_id, number, title, status, contract_type, total_cents, currency, markup_percent, gmp_cents, contingency_cents, fixed_fee_cents, fee_presentation, savings_split_owner_pct, savings_split_builder_pct, labor_burden_multiplier, rate_schedule_id, requires_client_cost_approval, open_book, retainage_percent, retainage_applies_to_fee, retainage_release_trigger, retainage_schedule, stored_materials_retainage_percent, terms, effective_date, signed_at, signature_data, parent_contract_id, snapshot, created_at, updated_at)
@@ -258,8 +260,13 @@ async function saveProjectAccountingDimensions(params: {
   if (error) throw new Error(`Failed to save project accounting mapping: ${error.message}`)
 }
 
-export async function listProjects(orgId?: string, context?: OrgServiceContext): Promise<Project[]> {
+export async function listProjects(
+  orgId?: string,
+  context?: OrgServiceContext,
+  options?: { includePrecon?: boolean },
+): Promise<Project[]> {
   const { supabase, orgId: resolvedOrgId, userId } = context || await requireOrgContext(orgId)
+  const includePrecon = options?.includePrecon ?? false
   const divisionProjectIds = await getDivisionScopedProjectIds({ orgId: resolvedOrgId, userId, supabase })
   if (divisionProjectIds?.length === 0) return []
 
@@ -279,10 +286,10 @@ export async function listProjects(orgId?: string, context?: OrgServiceContext):
       (await hasPermission("project.manage", { supabase, orgId: resolvedOrgId, userId })))
 
   if (canSeeAllProjects) {
-    return listProjectsWithClient(supabase, resolvedOrgId, divisionProjectIds)
+    return listProjectsWithClient(supabase, resolvedOrgId, divisionProjectIds, { includePrecon })
   }
 
-  const { data, error } = await supabase
+  let membersQuery = supabase
     .from("project_members")
     .select(`
       project:projects!inner(${PROJECT_SELECT})
@@ -290,6 +297,8 @@ export async function listProjects(orgId?: string, context?: OrgServiceContext):
     .eq("org_id", resolvedOrgId)
     .eq("user_id", userId)
     .eq("status", "active")
+  if (!includePrecon) membersQuery = membersQuery.eq("project.phase", "delivery")
+  const { data, error } = await membersQuery
 
   if (error) {
     throw new Error(`Failed to list assigned projects: ${error.message}`)
@@ -301,12 +310,18 @@ export async function listProjects(orgId?: string, context?: OrgServiceContext):
   return mapProjectsWithAccounting(supabase, resolvedOrgId, rows)
 }
 
-export async function listProjectsWithClient(supabase: SupabaseClient, orgId: string, projectIds: string[] | null = null): Promise<Project[]> {
+export async function listProjectsWithClient(
+  supabase: SupabaseClient,
+  orgId: string,
+  projectIds: string[] | null = null,
+  options?: { includePrecon?: boolean },
+): Promise<Project[]> {
   let query = supabase
     .from("projects")
     .select(PROJECT_SELECT)
     .eq("org_id", orgId)
     .order("created_at", { ascending: false })
+  if (!options?.includePrecon) query = query.eq("phase", "delivery")
   if (projectIds) query = query.in("id", projectIds)
   const { data, error } = await query
 
@@ -324,11 +339,12 @@ export async function listProjectNavigationItemsWithClient(
   const { data, error } = await supabase
     .from("projects")
     .select(`
-      id, org_id, name, status, property_type, created_at, updated_at,
+      id, org_id, name, status, phase, property_type, created_at, updated_at,
       project_financial_settings(project_id, billing_model),
       project_module_overrides(module_key, enabled)
     `)
     .eq("org_id", orgId)
+    .eq("phase", "delivery")
     .order("created_at", { ascending: false })
 
   if (error) {
@@ -394,6 +410,7 @@ export async function createProject({
     org_id: resolvedOrgId,
     name: normalizedInput.name,
     status: normalizedInput.status ?? "active",
+    phase: normalizedInput.phase ?? "delivery",
     start_date: normalizedInput.start_date || null,
     end_date: normalizedInput.end_date || null,
     location: normalizedInput.location ?? (normalizedInput.address ? { address: normalizedInput.address } : null),

@@ -51,6 +51,21 @@ type BillingSource =
   | null
   | undefined
 
+export type RevenueRecognitionBasis = "percentage_of_completion" | "closing"
+
+/**
+ * The single choke point for how a project earns revenue.
+ *
+ * Contract postures earn continuously as cost is incurred (percentage of
+ * completion). A production spec home sold under a purchase agreement earns at
+ * the sale instead, so it has no POC position and must never be asked for one.
+ * Arc Books' revenue recognition, the POC snapshot capture, and the period-close
+ * checks all route through this — never branch on `property_type` inline.
+ */
+export function resolveRevenueRecognitionBasis(config: ProjectFinancialFeatureConfig): RevenueRecognitionBasis {
+  return config.ownerBillingBasis === "closing" ? "closing" : "percentage_of_completion"
+}
+
 export function isCostDrivenBillingModel(model: ProjectBillingModel) {
   return (
     model === "cost_plus_percent" ||

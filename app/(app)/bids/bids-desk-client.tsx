@@ -71,7 +71,6 @@ function bandFor(pkg: DeskPackage, today: Date): Band | null {
 
 function jobHref(pkg: DeskPackage): string | null {
   if (pkg.project_id) return `/projects/${pkg.project_id}/bids/${pkg.id}`
-  if (pkg.prospect_id) return `/pipeline/prospects/${pkg.prospect_id}/bids/${pkg.id}`
   return null
 }
 

@@ -1,7 +1,9 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 
+import { SuccessCheck } from "@/components/portal/success-check"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -13,7 +15,33 @@ const NEW_ENTITY = "new"
 const money = (cents: number, currency: string) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: currency.toUpperCase() }).format(cents / 100)
 
-export function VendorPaymentSetup({ token, context }: { token: string; context: VendorPaymentSetupContext }) {
+const paymentDate = (value: string) =>
+  new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }).format(
+    new Date(value),
+  )
+
+const METHOD_LABELS: Record<string, string> = {
+  ach: "Direct deposit",
+  check: "Check",
+  wire: "Wire",
+  card: "Card",
+  cash: "Cash",
+  other: "Other",
+}
+
+export function VendorPaymentSetup({
+  token,
+  context,
+  justVerified,
+  linkExpired,
+}: {
+  token: string
+  /** True only on the redirect back from a completed Stripe onboarding. */
+  justVerified: boolean
+  /** Stripe bounced the vendor back because the onboarding link timed out. */
+  linkExpired: boolean
+  context: VendorPaymentSetupContext
+}) {
   const { builder } = context
   const relationship = context.relationships.find((candidate) => candidate.orgId === builder.orgId) ?? null
   const linkedEntity = relationship
@@ -22,11 +50,20 @@ export function VendorPaymentSetup({ token, context }: { token: string; context:
   const recipient = linkedEntity?.recipient ?? null
   const isReady = recipient?.status === "ready" && recipient.payoutsEnabled
   const otherBuilders = context.relationships.filter((candidate) => candidate.orgId !== builder.orgId)
+  /**
+   * A payout account this vendor already verified with another builder. It
+   * belongs to their legal entity, not to any builder, so connecting it here is
+   * a confirmation rather than a second round of Stripe onboarding.
+   */
+  const verifiedEntity =
+    context.entities.find((candidate) => candidate.recipient?.status === "ready" && candidate.recipient.payoutsEnabled) ?? null
 
+  const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [selectedEntity, setSelectedEntity] = useState(context.entities[0]?.id ?? NEW_ENTITY)
   const [editingName, setEditingName] = useState(false)
+  const [choosingEntity, setChoosingEntity] = useState(false)
   const [legalName, setLegalName] = useState(builder.companyName)
   const [dbaName, setDbaName] = useState("")
 
@@ -47,7 +84,13 @@ export function VendorPaymentSetup({ token, context }: { token: string; context:
         setError(result.error)
         return
       }
-      window.location.assign(result.data.url)
+      // No url means the existing account was adopted — there is nothing left
+      // to verify, so stay here and show the connected state.
+      if (result.data.url) {
+        window.location.assign(result.data.url)
+        return
+      }
+      router.refresh()
     })
   }
 
@@ -59,10 +102,22 @@ export function VendorPaymentSetup({ token, context }: { token: string; context:
         </div>
       ) : null}
 
+      {linkExpired && !isReady ? (
+        <div className="border border-warning bg-warning/10 px-4 py-3 text-sm">
+          <p className="font-medium">Your verification link expired</p>
+          <p className="mt-1 text-muted-foreground">
+            Nothing was lost — anything you already entered is saved. Start again below to pick up where you left off.
+          </p>
+        </div>
+      ) : null}
+
       <section className="border border-border bg-card p-5">
         {isReady ? (
           <>
-            <h2 className="text-base font-semibold">Verified and ready</h2>
+            {justVerified ? <SuccessCheck className="mb-3" /> : null}
+            <h2 className="text-base font-semibold">
+              {justVerified ? "You're verified. You can be paid." : "Verified and ready"}
+            </h2>
             <p className="mt-1 text-sm text-muted-foreground">
               {linkedEntity?.legalName} is verified. When {builder.orgName} pays you electronically, deposits go to{" "}
               {recipient?.bankName ?? "your verified bank"}
@@ -72,6 +127,29 @@ export function VendorPaymentSetup({ token, context }: { token: string; context:
               To change your payout bank, contact Arc support. Bank changes require independent review before they take
               effect.
             </p>
+          </>
+        ) : verifiedEntity && !choosingEntity ? (
+          <>
+            <h2 className="text-base font-semibold">You&rsquo;re already verified</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {verifiedEntity.legalName} is verified with Arc, and deposits go to{" "}
+              {verifiedEntity.recipient?.bankName ?? "your verified bank"}
+              {verifiedEntity.recipient?.bankLast4 ? ` •••• ${verifiedEntity.recipient.bankLast4}` : ""}. Confirm this is
+              the company {builder.orgName} knows as &ldquo;{builder.companyName}&rdquo; and they can pay you
+              electronically right away — there is nothing to verify again.
+            </p>
+            <div className="mt-5 flex flex-wrap items-center gap-4">
+              <Button onClick={() => start(verifiedEntity.id)} disabled={pending}>
+                {pending ? "Connecting…" : `Connect to ${builder.orgName}`}
+              </Button>
+              <button
+                type="button"
+                onClick={() => setChoosingEntity(true)}
+                className="text-sm underline underline-offset-4 hover:text-muted-foreground"
+              >
+                That&rsquo;s a different company
+              </button>
+            </div>
           </>
         ) : linkedEntity ? (
           <>
@@ -172,6 +250,22 @@ export function VendorPaymentSetup({ token, context }: { token: string; context:
         )}
       </section>
 
+      {!context.builder.w9OnFile ? (
+        <section className="border border-border bg-card p-5">
+          <h2 className="text-base font-semibold">Add your W-9</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {context.builder.orgName} needs a W-9 on file to report what they pay you. Adding it
+            now saves a scramble in January — it takes a minute and you only do it once.
+          </p>
+          <a
+            href={`/s/${token}/compliance`}
+            className="mt-4 inline-flex items-center border border-border px-3 py-2 text-sm font-medium hover:bg-muted"
+          >
+            Upload your W-9
+          </a>
+        </section>
+      ) : null}
+
       {otherBuilders.length > 0 ? (
         <section className="border border-border bg-card p-5">
           <h2 className="text-base font-semibold">Your other Arc builders</h2>
@@ -194,33 +288,80 @@ export function VendorPaymentSetup({ token, context }: { token: string; context:
         </section>
       ) : null}
 
+      {context.inFlightPayments.length > 0 ? (
+        <section className="border border-border bg-card p-5">
+          <h2 className="text-base font-semibold">On the way</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Payments a builder has already released. Arrival dates are estimates from the
+            bank&apos;s normal processing window, not guarantees.
+          </p>
+          <div className="mt-4 overflow-x-auto border border-border">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/40 text-left text-xs text-muted-foreground">
+                  <th className="px-3 py-2 font-medium">Sent</th>
+                  <th className="px-3 py-2 font-medium">Builder</th>
+                  <th className="px-3 py-2 font-medium">Invoice</th>
+                  <th className="px-3 py-2 font-medium">Expected</th>
+                  <th className="px-3 py-2 text-right font-medium">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {context.inFlightPayments.map((payment) => (
+                  <tr key={payment.id} className="border-b border-border last:border-0">
+                    <td className="whitespace-nowrap px-3 py-3 tabular-nums">{paymentDate(payment.initiatedOn)}</td>
+                    <td className="px-3 py-3">{payment.orgName}</td>
+                    <td className="px-3 py-3">{payment.billNumber}</td>
+                    <td className="whitespace-nowrap px-3 py-3 tabular-nums text-muted-foreground">
+                      {payment.expectedEarliest === payment.expectedLatest
+                        ? paymentDate(payment.expectedEarliest)
+                        : `${paymentDate(payment.expectedEarliest)} – ${paymentDate(payment.expectedLatest)}`}
+                    </td>
+                    <td className="px-3 py-3 text-right tabular-nums">{money(payment.amountCents, payment.currency)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
       <section className="border border-border bg-card p-5">
         <h2 className="text-base font-semibold">Recent payments</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Up to 100 recent payment attempts across every builder you are connected to.
+          Up to 100 recent payments across every builder you are connected to, however they were sent.
         </p>
         {context.recentPayments.length === 0 ? (
           <div className="mt-4 border border-border px-4 py-8 text-center text-sm text-muted-foreground">
-            No electronic payments yet.
+            No payments recorded yet.
           </div>
         ) : (
           <div className="mt-4 overflow-x-auto border border-border">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/40 text-left text-xs text-muted-foreground">
+                  <th className="px-3 py-2 font-medium">Date</th>
                   <th className="px-3 py-2 font-medium">Builder</th>
                   <th className="px-3 py-2 font-medium">Invoice</th>
-                  <th className="px-3 py-2 font-medium">Status</th>
+                  <th className="px-3 py-2 font-medium">Method</th>
+                  <th className="px-3 py-2 text-right font-medium">Retainage held</th>
                   <th className="px-3 py-2 text-right font-medium">Amount</th>
                 </tr>
               </thead>
               <tbody>
                 {context.recentPayments.map((payment) => (
                   <tr key={payment.id} className="border-b border-border last:border-0">
+                    <td className="whitespace-nowrap px-3 py-3 tabular-nums">{paymentDate(payment.paidAt)}</td>
                     <td className="px-3 py-3">{payment.orgName}</td>
                     <td className="px-3 py-3">{payment.billNumber}</td>
-                    <td className="px-3 py-3 capitalize text-muted-foreground">
-                      {payment.status.replaceAll("_", " ")}
+                    <td className="px-3 py-3 text-muted-foreground">
+                      {METHOD_LABELS[payment.method] ?? payment.method}
+                      {payment.reference ? (
+                        <span className="mt-0.5 block text-xs">{payment.reference}</span>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-3 text-right tabular-nums text-muted-foreground">
+                      {payment.retainageHeldCents > 0 ? money(payment.retainageHeldCents, payment.currency) : "—"}
                     </td>
                     <td className="px-3 py-3 text-right tabular-nums">
                       {money(payment.amountCents, payment.currency)}

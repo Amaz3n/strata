@@ -39,6 +39,7 @@ export const companyInputSchema = z.object({
   prequalified_at: z.string().optional(),
   rating: z.number().int().min(1).max(5).optional(),
   default_payment_terms: z.string().max(200).optional(),
+  default_payment_method: z.enum(["arc_pay", "check", "wire", "card", "other"]).optional(),
   internal_notes: z.string().max(5000).optional(),
   notes: z.string().max(1000).optional(),
   qbo_vendor_id: z.string().optional(),
@@ -63,5 +64,4 @@ export const companyFiltersSchema = z
 export type CompanyInput = z.infer<typeof companyInputSchema>
 export type CompanyUpdateInput = z.infer<typeof companyUpdateSchema>
 export type CompanyFilters = z.infer<typeof companyFiltersSchema>
-
 

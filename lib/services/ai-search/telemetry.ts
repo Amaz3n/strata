@@ -1,6 +1,6 @@
 import "server-only"
 
-import type { AiSearchTraceEvent } from "@/lib/services/ai-search"
+import type { AiSearchTraceEvent } from "@/lib/services/ai-search/types"
 import type { requireOrgContext } from "@/lib/services/context"
 
 type ResolvedOrgContext = Awaited<ReturnType<typeof requireOrgContext>>

@@ -1,9 +1,14 @@
 # Workstream 09 — Onboarding, Provisioning & Migration
 
+> **Status: SHIPPED (QA acceptance pending) — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for production
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 > Prereq: `00-MASTER-production-expansion.md` read fully — especially §5 (data model),
 > §6 (this doc executes LAST, after every other workstream, but is drafted early so the
 > other docs build importable entities), and §8 (onboarding doctrine — this doc is its
-> full expansion). Also read `docs/client-provisioning-gameplan.md` (shipped July 2026 —
+> full expansion). Also read `docs/plans/client-provisioning-gameplan.md` (shipped July 2026 —
 > the provisioning machinery this doc extends) and the entity DDL in workstreams
 > 01/02/03/08 (importer targets). Workstreams 04/05/06 may not be on disk yet when you
 > read this: where this doc references their entities (POs, start packages), master §5

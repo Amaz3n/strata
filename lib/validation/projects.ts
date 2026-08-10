@@ -12,6 +12,7 @@ export const projectRetainageScheduleSchema = z
 export const projectInputSchema = z.object({
   name: z.string().min(1, "Project name is required"),
   status: z.enum(["planning", "bidding", "active", "on_hold", "completed", "cancelled"]).optional(),
+  phase: z.enum(["precon", "delivery"]).optional(),
   start_date: z.string().nullable().optional(),
   end_date: z.string().nullable().optional(),
   address: z.string().optional(),

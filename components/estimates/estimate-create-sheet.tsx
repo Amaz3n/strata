@@ -15,7 +15,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Calendar } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { Receipt, CalendarDays, ChevronsUpDown, Trash2, Plus, LayoutGrid, ImageIcon, X, ChevronUp, ChevronDown, Loader2, Ruler, ExternalLink } from "@/components/icons"
+import { Receipt, CalendarDays, ChevronsUpDown, Trash2, Plus, LayoutGrid, ImageIcon, X, ChevronUp, ChevronDown, Loader2 } from "@/components/icons"
+import { TakeoffLineBadge } from "@/components/takeoff/takeoff-line-badge"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 import { uploadEstimatePhotoAction } from "@/app/(app)/estimates/actions"
@@ -30,9 +31,13 @@ type LineDraft = {
   description: string
   quantity: number | string
   unit_cost: number | string
+  /** Percent over cost for this line. "" = use the estimate's default markup. */
+  markup_pct: number | string
   cost_code_id: string | undefined
   is_optional: boolean
   is_allowance: boolean
+  /** Optionals sharing a group label are pick-one alternates in the portal. */
+  option_group: string
   source_bid_submission_id?: string
   /**
    * Provenance from other surfaces (today: `takeoff`). Carried verbatim so
@@ -44,9 +49,9 @@ type LineDraft = {
 
 type PhotoDraft = { path: string; url: string; caption: string }
 
-const NEW_LINE: LineDraft = { item_type: "line", description: "", quantity: 1, unit_cost: "", cost_code_id: undefined, is_optional: false, is_allowance: false }
+const NEW_LINE: LineDraft = { item_type: "line", description: "", quantity: 1, unit_cost: "", markup_pct: "", cost_code_id: undefined, is_optional: false, is_allowance: false, option_group: "" }
 const newLine = (): LineDraft => ({ ...NEW_LINE })
-const newSection = (): LineDraft => ({ item_type: "group", description: "", quantity: 1, unit_cost: "", cost_code_id: undefined, is_optional: false, is_allowance: false })
+const newSection = (): LineDraft => ({ item_type: "group", description: "", quantity: 1, unit_cost: "", markup_pct: "", cost_code_id: undefined, is_optional: false, is_allowance: false, option_group: "" })
 
 export type EstimateTemplateOption = {
   id: string
@@ -81,15 +86,21 @@ export type EstimateSheetInitial = {
   recipient_contact_id?: string | null
   recipient_name?: string | null
   recipient_email?: string | null
+  markup_percent?: number | null
+  contingency_percent?: number | null
+  inclusions?: string | null
+  exclusions?: string | null
   photos?: Array<{ path: string; url?: string | null; caption?: string | null }>
   lines?: Array<{
     item_type?: "line" | "group" | null
     description?: string | null
     quantity?: number | null
     unit_cost_cents?: number | null
+    markup_pct?: number | null
     cost_code_id?: string | null
     is_optional?: boolean | null
     is_allowance?: boolean | null
+    option_group?: string | null
     metadata?: Record<string, any> | null
   }>
 }
@@ -163,13 +174,17 @@ export function EstimateCreateSheet({
   const seededLines: LineDraft[] =
     initialEstimate?.lines && initialEstimate.lines.length > 0
       ? initialEstimate.lines.map((line) => ({
-          item_type: line.item_type === "group" ? "group" : "line",
+          item_type: line.item_type === "group" ? ("group" as const) : ("line" as const),
           description: line.description ?? "",
           quantity: line.quantity ?? 1,
           unit_cost: centsToInput(line.unit_cost_cents),
+          // 0 is indistinguishable from the years of hardcoded zeros, so it
+          // seeds as "use default" rather than an explicit 0% override.
+          markup_pct: line.markup_pct ? line.markup_pct : "",
           cost_code_id: line.cost_code_id ?? undefined,
           is_optional: line.is_optional ?? false,
           is_allowance: line.is_allowance ?? false,
+          option_group: line.option_group ?? "",
           metadata: line.metadata ?? undefined,
         }))
       : [newLine()]
@@ -202,29 +217,47 @@ export function EstimateCreateSheet({
   const [validUntilOpen, setValidUntilOpen] = useState(false)
   const [lines, setLines] = useState<LineDraft[]>(seededLines)
   const [showErrors, setShowErrors] = useState(false)
+  // Percent over cost applied to lines without their own markup.
+  const [defaultMarkupPct, setDefaultMarkupPct] = useState<number | string>(
+    initialEstimate?.markup_percent ? initialEstimate.markup_percent : "",
+  )
+  const [contingencyPct, setContingencyPct] = useState<number | string>(
+    initialEstimate?.contingency_percent ? initialEstimate.contingency_percent : "",
+  )
+  const [inclusions, setInclusions] = useState(initialEstimate?.inclusions ?? "")
+  const [exclusions, setExclusions] = useState(initialEstimate?.exclusions ?? "")
   // Sub quotes from the prospect's bid packages, usable as a line's cost basis.
   const [bidQuotes, setBidQuotes] = useState<ProspectBidQuote[]>([])
 
-  // Base total excludes section headers and optional add-ons (shown separately as upgrades).
-  const total = useMemo(
-    () =>
-      lines.reduce(
-        (sum, line) =>
-          line.item_type === "group" || line.is_optional
-            ? sum
-            : sum + (Number(line.unit_cost) || 0) * (Number(line.quantity) || 1),
-        0,
-      ),
-    [lines],
-  )
-  const optionalTotal = useMemo(
-    () =>
-      lines.reduce(
-        (sum, line) => (line.item_type !== "group" && line.is_optional ? sum + (Number(line.unit_cost) || 0) * (Number(line.quantity) || 1) : sum),
-        0,
-      ),
-    [lines],
-  )
+  const effectiveMarkupPct = (line: LineDraft) =>
+    line.markup_pct === "" || line.markup_pct == null
+      ? Number(defaultMarkupPct) || 0
+      : Number(line.markup_pct) || 0
+  const lineCost = (line: LineDraft) => (Number(line.unit_cost) || 0) * (Number(line.quantity) || 1)
+  // What the client pays for the line: cost plus markup.
+  const lineSell = (line: LineDraft) => lineCost(line) * (1 + effectiveMarkupPct(line) / 100)
+
+  // Base totals exclude section headers and optional add-ons (shown separately
+  // as upgrades). Cost is the builder's basis; total is the client's price.
+  const { total, costTotal, optionalTotal } = useMemo(() => {
+    const defaultPct = Number(defaultMarkupPct) || 0
+    let total = 0
+    let costTotal = 0
+    let optionalTotal = 0
+    for (const line of lines) {
+      if (line.item_type === "group") continue
+      const cost = (Number(line.unit_cost) || 0) * (Number(line.quantity) || 1)
+      const pct = line.markup_pct === "" || line.markup_pct == null ? defaultPct : Number(line.markup_pct) || 0
+      const sell = cost * (1 + pct / 100)
+      if (line.is_optional) {
+        optionalTotal += sell
+      } else {
+        total += sell
+        costTotal += cost
+      }
+    }
+    return { total, costTotal, optionalTotal }
+  }, [lines, defaultMarkupPct])
 
   useEffect(() => {
     if (isRevise) return
@@ -292,13 +325,15 @@ export function EstimateCreateSheet({
     if (!template.lines || template.lines.length === 0) return
     setLines(
       template.lines.map((line) => ({
-        item_type: line.item_type === "group" ? "group" : "line",
+        item_type: line.item_type === "group" ? ("group" as const) : ("line" as const),
         description: line.description ?? "",
         quantity: line.quantity ?? 1,
         unit_cost: centsToInput(line.unit_cost_cents),
+        markup_pct: "",
         cost_code_id: line.cost_code_id ?? undefined,
         is_optional: line.is_optional ?? false,
         is_allowance: line.is_allowance ?? false,
+        option_group: "",
       })),
     )
     if (!title.trim()) setTitle(template.name)
@@ -349,6 +384,10 @@ export function EstimateCreateSheet({
     setValidUntil(undefined)
     setValidUntilOpen(false)
     setLines([newLine()])
+    setDefaultMarkupPct("")
+    setContingencyPct("")
+    setInclusions("")
+    setExclusions("")
     setShowErrors(false)
   }
 
@@ -382,15 +421,23 @@ export function EstimateCreateSheet({
       pricing_display: pricingDisplay,
       photos: photos.map((p) => ({ path: p.path, caption: p.caption.trim() || null })),
       valid_until: validUntil ? format(validUntil, "yyyy-MM-dd") : undefined,
+      markup_percent: Number(defaultMarkupPct) || 0,
+      contingency_percent: Number(contingencyPct) || 0,
+      inclusions: inclusions.trim() || undefined,
+      exclusions: exclusions.trim() || undefined,
       lines: lines.map((line) => ({
         cost_code_id: line.item_type === "group" ? undefined : line.cost_code_id,
         description: line.description.trim(),
         quantity: Number(line.quantity) || 1,
         unit_cost_cents: line.item_type === "group" ? 0 : Math.round((Number(line.unit_cost) || 0) * 100),
-        markup_pct: 0,
+        markup_pct: line.item_type === "group" ? 0 : effectiveMarkupPct(line),
         item_type: line.item_type,
         is_optional: line.item_type === "group" ? undefined : line.is_optional,
         is_allowance: line.item_type === "group" ? undefined : line.is_allowance,
+        option_group:
+          line.item_type !== "group" && line.is_optional && line.option_group.trim()
+            ? line.option_group.trim()
+            : undefined,
         source_bid_submission_id: line.item_type === "group" ? undefined : line.source_bid_submission_id,
         metadata: line.metadata,
       })),
@@ -609,6 +656,28 @@ export function EstimateCreateSheet({
                   <Label htmlFor="est-scope">Scope</Label>
                   <Textarea id="est-scope" value={scope} onChange={(e) => setScope(e.target.value)} rows={3} placeholder="Describe what this estimate covers…" />
                 </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="est-inclusions">Included in this price</Label>
+                    <Textarea
+                      id="est-inclusions"
+                      value={inclusions}
+                      onChange={(e) => setInclusions(e.target.value)}
+                      rows={3}
+                      placeholder="One item per line — permits, dumpsters, cleanup…"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="est-exclusions">Not included</Label>
+                    <Textarea
+                      id="est-exclusions"
+                      value={exclusions}
+                      onChange={(e) => setExclusions(e.target.value)}
+                      rows={3}
+                      placeholder="One item per line — landscaping, appliances, utility fees…"
+                    />
+                  </div>
+                </div>
               </div>
 
               {/* Line items */}
@@ -618,7 +687,37 @@ export function EstimateCreateSheet({
                     <Label className="text-sm font-semibold">Line items</Label>
                     <p className="text-xs text-muted-foreground">Group work into sections and mark upgrades as optional add-ons.</p>
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex items-end gap-2">
+                    <div className="w-24 space-y-1">
+                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Default markup</Label>
+                      <div className="relative">
+                        <Input
+                          type="number"
+                          min={0}
+                          step={0.1}
+                          value={defaultMarkupPct}
+                          onChange={(e) => setDefaultMarkupPct(e.target.value)}
+                          placeholder="0"
+                          className={cn("h-8 pr-6 tabular-nums", noSpinner)}
+                        />
+                        <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-sm text-muted-foreground select-none pointer-events-none">%</span>
+                      </div>
+                    </div>
+                    <div className="w-24 space-y-1">
+                      <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Contingency</Label>
+                      <div className="relative">
+                        <Input
+                          type="number"
+                          min={0}
+                          step={0.1}
+                          value={contingencyPct}
+                          onChange={(e) => setContingencyPct(e.target.value)}
+                          placeholder="0"
+                          className={cn("h-8 pr-6 tabular-nums", noSpinner)}
+                        />
+                        <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-sm text-muted-foreground select-none pointer-events-none">%</span>
+                      </div>
+                    </div>
                     <Button type="button" variant="outline" size="sm" onClick={addSection}>
                       <LayoutGrid className="mr-1.5 h-4 w-4" />
                       Section
@@ -632,7 +731,7 @@ export function EstimateCreateSheet({
 
                 <div className="space-y-2.5">
                   {lines.map((line, idx) => {
-                    const lineTotal = (Number(line.unit_cost) || 0) * (Number(line.quantity) || 1)
+                    const lineTotal = lineSell(line)
                     const Reorder = (
                       <div className="flex flex-col">
                         <button type="button" onClick={() => moveLine(idx, -1)} disabled={idx === 0} className="text-muted-foreground hover:text-foreground disabled:opacity-30" aria-label="Move up">
@@ -667,7 +766,7 @@ export function EstimateCreateSheet({
 
                     return (
                       <div key={idx} className={cn("border bg-muted/20 p-3 space-y-3", line.is_optional && "border-primary/40 bg-primary/5")}>
-                        <TakeoffLineBadge line={line} projectId={projectId} />
+                        <TakeoffLineBadge metadata={line.metadata} liveQuantity={line.quantity} projectId={projectId} />
                         {/* Row 1: reorder · description · qty · unit cost */}
                         <div className="flex items-end gap-2">
                           {Reorder}
@@ -707,6 +806,21 @@ export function EstimateCreateSheet({
                                 placeholder="0.00"
                                 className={cn("h-9 pl-7 pr-3 tabular-nums", noSpinner)}
                               />
+                            </div>
+                          </div>
+                          <div className="w-20 space-y-1">
+                            <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Markup</Label>
+                            <div className="relative">
+                              <Input
+                                type="number"
+                                min={0}
+                                step={0.1}
+                                value={line.markup_pct}
+                                onChange={(e) => updateLine(idx, { markup_pct: e.target.value })}
+                                placeholder={defaultMarkupPct !== "" ? String(defaultMarkupPct) : "0"}
+                                className={cn("h-9 pr-6 tabular-nums", noSpinner)}
+                              />
+                              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-sm text-muted-foreground select-none pointer-events-none">%</span>
                             </div>
                           </div>
                           <Button type="button" variant="ghost" size="icon" className="h-9 w-9 shrink-0 text-muted-foreground" onClick={() => removeLine(idx)} disabled={lines.length === 1}>
@@ -771,6 +885,22 @@ export function EstimateCreateSheet({
                             <div className="flex h-9 items-center justify-end px-2 text-sm font-semibold tabular-nums">{money(lineTotal)}</div>
                           </div>
                         </div>
+                        {line.is_optional ? (
+                          <div className="flex items-end gap-2">
+                            <div className="w-56 space-y-1">
+                              <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">Alternate group</Label>
+                              <Input
+                                value={line.option_group}
+                                onChange={(e) => updateLine(idx, { option_group: e.target.value })}
+                                placeholder="e.g. Countertops"
+                                className="h-9"
+                              />
+                            </div>
+                            <p className="pb-2 text-xs text-muted-foreground">
+                              Options with the same group are “choose one” in the portal. Leave blank for an independent add-on.
+                            </p>
+                          </div>
+                        ) : null}
                       </div>
                     )
                   })}
@@ -783,10 +913,28 @@ export function EstimateCreateSheet({
                   </div>
                 ) : null}
 
+                {Number(contingencyPct) > 0 && total > 0 ? (
+                  <div className="flex items-center justify-between text-sm text-muted-foreground">
+                    <span className="text-xs uppercase tracking-wide">Contingency ({Number(contingencyPct)}%)</span>
+                    <span className="tabular-nums">+ {money(total * (Number(contingencyPct) / 100))}</span>
+                  </div>
+                ) : null}
+
                 <div className="flex items-center justify-between border-t-2 border-foreground/80 pt-3">
                   <span className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Base total</span>
-                  <span className="text-xl font-bold tabular-nums">{money(total)}</span>
+                  <span className="text-xl font-bold tabular-nums">{money(total * (1 + (Number(contingencyPct) || 0) / 100))}</span>
                 </div>
+
+                {/* Builder-side only: the client portal and PDF never see cost or margin. */}
+                {total > 0 ? (
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span className="uppercase tracking-wide">Cost {money(costTotal)}</span>
+                    <span className="tabular-nums">
+                      Margin {money(total - costTotal)}
+                      {total > 0 ? ` · ${(((total - costTotal) / total) * 100).toFixed(1)}%` : ""}
+                    </span>
+                  </div>
+                ) : null}
 
                 {/* Pricing display */}
                 <div className="space-y-1.5 pt-1">
@@ -886,59 +1034,5 @@ export function EstimateCreateSheet({
         </form>
       </SheetContent>
     </Sheet>
-  )
-}
-
-/**
- * "This number was measured, not typed."
- *
- * Shown on any line carrying `metadata.takeoff`, with a deep link back to the
- * drawings viewer in takeoff mode with the condition armed. If the quantity has
- * since been hand-edited, the badge says so — otherwise a re-sync would look
- * like it lost someone's change.
- */
-function TakeoffLineBadge({
-  line,
-  projectId,
-}: {
-  line: LineDraft
-  projectId: string
-}) {
-  const takeoff = line.metadata?.takeoff as
-    | { condition_id?: string; measured_quantity?: number; uom?: string; detached?: boolean }
-    | undefined
-  if (!takeoff?.condition_id) return null
-
-  const measured = Number(takeoff.measured_quantity ?? 0)
-  const current = Number(line.quantity) || 0
-  const handEdited = Math.abs(current - measured) > 0.005
-  const unit = (takeoff.uom ?? "").toUpperCase()
-
-  return (
-    <div className="flex flex-wrap items-center gap-2 text-[11px]">
-      <span className="inline-flex items-center gap-1 text-muted-foreground">
-        <Ruler className="h-3 w-3" />
-        Measured{" "}
-        <span className="tabular-nums">
-          {measured.toLocaleString("en-US", { maximumFractionDigits: 1 })} {unit}
-        </span>
-      </span>
-      {takeoff.detached ? (
-        <span className="text-muted-foreground">Takeoff condition deleted</span>
-      ) : handEdited ? (
-        <span className="text-warning">Edited since the takeoff</span>
-      ) : null}
-      {projectId && !takeoff.detached && (
-        <a
-          href={`/projects/${projectId}/drawings?condition=${takeoff.condition_id}`}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center gap-0.5 text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-        >
-          Show on plans
-          <ExternalLink className="h-2.5 w-2.5" />
-        </a>
-      )}
-    </div>
   )
 }

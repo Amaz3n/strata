@@ -15,6 +15,8 @@ export {
   type GpuViewerOptions,
   type OverlaySpec,
   type TileSourceSpec,
+  type ViewerError,
+  type ViewerMetrics,
   type ViewerTransform,
 } from "./gpu-viewer"
 export type {

@@ -1,9 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { generateText } from "ai"
 import { z } from "zod"
 
-import { getPlatformAiFeatureDefaultConfig } from "@/lib/services/ai-config"
-import { getApiKeyForProvider, resolveLanguageModel } from "@/lib/services/ai-search/llm"
+import { runAiObject } from "@/lib/services/ai/gateway"
 import { recordEvent } from "@/lib/services/events"
 
 const requirementSchema = z.object({
@@ -17,13 +15,6 @@ const requirementSchema = z.object({
   })).max(100),
 })
 
-function jsonCandidate(raw: string) {
-  const cleaned = raw.replace(/^```json\s*/i, "").replace(/```$/i, "").trim()
-  const start = cleaned.indexOf("{")
-  const end = cleaned.lastIndexOf("}")
-  return start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned
-}
-
 export async function extractSubmittalRegisterDrafts(input: { supabase: SupabaseClient; orgId: string; sectionId: string; revisionId: string }) {
   const { data: revision, error } = await input.supabase.from("spec_revisions").select("id,org_id,section_id,revision_number,extracted_text,section:spec_sections!inner(id,project_id,section_number,title)").eq("org_id", input.orgId).eq("id", input.revisionId).eq("section_id", input.sectionId).maybeSingle()
   if (error || !revision) throw new Error("Specification revision not found for register extraction")
@@ -31,12 +22,21 @@ export async function extractSubmittalRegisterDrafts(input: { supabase: Supabase
   if (!section) throw new Error("Specification section not found")
   const text = String(revision.extracted_text ?? "").slice(0, 80_000)
   if (!text.trim()) return { created: 0 }
-  const config = await getPlatformAiFeatureDefaultConfig({ supabase: input.supabase, feature: "document_extraction" })
-  const key = getApiKeyForProvider(config.provider)
-  if (!key) throw new Error(`${config.provider} is not configured for submittal extraction`)
-  const prompt = `Extract every explicit submittal obligation from this CSI section. Look for submit, shop drawings, product data, samples, mock-ups, certificates. Return JSON only: {"requirements":[{"type":"product_data|shop_drawing|sample|mock_up|certificate|other","title":string,"clause_text":string,"page":number|null,"lead_time_days":number|null,"confidence":0..1}]}. Quote only the shortest clause needed for traceability. Do not invent obligations.\n\nSECTION ${section.section_number} — ${section.title}\n${text}`
-  const result = await generateText({ model: resolveLanguageModel(config.provider, key, config.model), prompt, abortSignal: AbortSignal.timeout(120_000) })
-  const extracted = requirementSchema.parse(JSON.parse(jsonCandidate(result.text)))
+  const result = await runAiObject({
+    feature: "document_extraction",
+    schema: requirementSchema,
+    system:
+      "You extract explicit submittal obligations from CSI specification sections. Look for submit, shop " +
+      "drawings, product data, samples, mock-ups, certificates. Quote only the shortest clause needed for " +
+      "traceability. Do not invent obligations.",
+    prompt: `SECTION ${section.section_number} — ${section.title}\n${text}`,
+    orgId: input.orgId,
+    entityType: "spec_section",
+    entityId: section.id,
+    timeoutMs: 120_000,
+  })
+  if (!result.ok) throw new Error(`Submittal extraction failed: ${result.message}`)
+  const extracted = result.object
   const rows = extracted.requirements.map((requirement) => ({
     org_id: input.orgId, project_id: section.project_id, spec_section_id: section.id, spec_revision_id: revision.id,
     section_reference: section.section_number, requirement_type: requirement.type, title: requirement.title,

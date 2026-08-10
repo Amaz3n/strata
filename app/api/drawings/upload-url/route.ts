@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server"
 
 import { requireOrgContext } from "@/lib/services/context"
+import { hasProjectPermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { createDrawingPdfUploadUrl } from "@/lib/storage/drawings-pdfs-storage"
 
 export async function POST(request: Request) {
   try {
-    const { supabase, orgId } = await requireOrgContext()
+    const { supabase, orgId, userId } = await requireOrgContext()
     const body = await request.json()
     const projectId = typeof body?.projectId === "string" ? body.projectId : null
     const fileName = typeof body?.fileName === "string" ? body.fileName : null
@@ -29,6 +30,10 @@ export async function POST(request: Request) {
 
     if (projectError || !project) {
       return NextResponse.json({ error: "Project not found." }, { status: 404 })
+    }
+
+    if (!(await hasProjectPermission(userId, projectId, "drawing.upload"))) {
+      return NextResponse.json({ error: "You do not have permission to upload drawings." }, { status: 403 })
     }
 
     const timestamp = Date.now()

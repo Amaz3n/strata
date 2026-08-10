@@ -6,7 +6,7 @@ import { z } from "zod"
 
 import { requireAuth } from "@/lib/auth/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { hasAnyPermission, requireAnyPermission, requirePermission } from "@/lib/services/permissions"
+import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 import {
   clearPlatformOrgContext,
   endImpersonationSession,
@@ -24,14 +24,13 @@ import { createOrgMemberInvite } from "@/lib/services/team"
 import {
   AI_FEATURE_VALUES,
   AI_PROVIDER_VALUES,
+  AI_TIER_VALUES,
   clearPlatformAiFeatureDefaultConfig,
-  defaultModelForFeatureProvider,
-  getPlatformAiFeatureDefaultConfig,
-  normalizeAiProvider,
   upsertPlatformAiFeatureDefaultConfig,
   validateAiProviderModelPair,
 } from "@/lib/services/ai-config"
-import { listOrgAiSearchAccess, setOrgAiSearchAccess } from "@/lib/services/ai-search-access"
+import { invalidateAiPriceCache } from "@/lib/services/ai/usage"
+import { setOrgAiSearchAccess } from "@/lib/services/ai-search-access"
 import { PRODUCT_TIERS } from "@/lib/product-tier"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
@@ -101,12 +100,6 @@ const setOrganizationStatusSchema = z.object({
   orgId: z.string().uuid("Invalid organization id"),
   status: z.enum(["active", "archived"]),
   reason: z.string().max(300).optional(),
-})
-
-const updatePlatformAiDefaultsSchema = z.object({
-  feature: z.enum(AI_FEATURE_VALUES).default("search"),
-  provider: z.enum(AI_PROVIDER_VALUES),
-  model: z.string().trim().max(120).optional(),
 })
 
 const setAiSearchAccessSchema = z.object({
@@ -378,129 +371,136 @@ export async function setOrganizationStatusAction(formData: FormData) {
   })
 }
 
-export async function getPlatformAiDefaultsAction() {
-      const { user } = await requireAuth()
-      await requirePermission("platform.org.access", { userId: user.id })
-
-      const [canManage, config] = await Promise.all([
-        hasAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id }),
-        getPlatformAiFeatureDefaultConfig({ supabase: createServiceSupabaseClient(), feature: "search" }),
-      ])
-
-      return {
-        provider: config.provider,
-        model: config.model,
-        source: config.source,
-        canManage,
-      }
-}
-
-export async function updatePlatformAiDefaultsAction(input: { feature?: string; provider: string; model?: string }) {
-  return run(async () => {
-      const parsed = updatePlatformAiDefaultsSchema.safeParse(input)
-      if (!parsed.success) {
-        return { error: parsed.error.errors[0]?.message ?? "Invalid AI defaults." }
-      }
-
-      const { user } = await requireAuth()
-      await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
-
-      const provider = normalizeAiProvider(parsed.data.provider) ?? "openai"
-      const feature = parsed.data.feature
-      const model = parsed.data.model?.trim() || defaultModelForFeatureProvider(feature, provider)
-      const providerModelError = validateAiProviderModelPair(provider, model)
-      if (providerModelError) {
-        return { error: providerModelError }
-      }
-
-      try {
-        await upsertPlatformAiFeatureDefaultConfig({
-          supabase: createServiceSupabaseClient(),
-          feature,
-          provider,
-          model,
-          updatedBy: user.id,
-        })
-      } catch (error: any) {
-        console.error("Failed to update platform AI defaults", error)
-        return { error: error?.message ?? "Unable to update platform AI defaults." }
-      }
-
-      revalidatePath("/platform")
-      revalidatePath("/settings")
-      return {
-        success: true as const,
-        feature,
-        provider,
-        model,
-        source: "platform" as const,
-      }
-  })
-}
-
-export async function clearPlatformAiDefaultsAction(input: { feature?: string } = {}) {
-  return run(async () => {
-      const feature = AI_FEATURE_VALUES.includes(input.feature as any) ? input.feature as (typeof AI_FEATURE_VALUES)[number] : "search"
-      const { user } = await requireAuth()
-      await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
-
-      try {
-        await clearPlatformAiFeatureDefaultConfig({
-          supabase: createServiceSupabaseClient(),
-          feature,
-        })
-      } catch (error: any) {
-        console.error("Failed to clear platform AI defaults", error)
-        return { error: error?.message ?? "Unable to clear platform AI defaults." }
-      }
-
-      const config = await getPlatformAiFeatureDefaultConfig({ supabase: createServiceSupabaseClient(), feature })
-      revalidatePath("/platform")
-      revalidatePath("/settings")
-      return {
-        success: true as const,
-        feature,
-        provider: config.provider,
-        model: config.model,
-        source: config.source,
-      }
-  })
-}
-
-export async function getAiSearchAccessAction() {
-      const { user } = await requireAuth()
-      await requirePermission("platform.org.access", { userId: user.id })
-
-      const [canManage, orgs] = await Promise.all([
-        hasAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id }),
-        listOrgAiSearchAccess(),
-      ])
-
-      return { canManage, orgs }
-}
-
 export async function setAiSearchAccessAction(input: { orgId: string; enabled: boolean }) {
   return run(async () => {
+      // Throw rather than return an error object: `run` turns a thrown error into
+      // the { success: false, error } envelope, so a failure never arrives wrapped
+      // in a successful result the caller has to unpack a second time.
       const parsed = setAiSearchAccessSchema.safeParse(input)
       if (!parsed.success) {
-        return { error: parsed.error.errors[0]?.message ?? "Invalid AI search access request." }
+        throw new Error(parsed.error.errors[0]?.message ?? "Invalid AI search access request.")
       }
 
       const { user } = await requireAuth()
       await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
 
-      try {
-        await setOrgAiSearchAccess({
-          orgId: parsed.data.orgId,
-          enabled: parsed.data.enabled,
-          actorId: user.id,
-        })
-      } catch (error: any) {
-        console.error("Failed to update AI search access", error)
-        return { error: error?.message ?? "Unable to update AI search access." }
-      }
+      await setOrgAiSearchAccess({
+        orgId: parsed.data.orgId,
+        enabled: parsed.data.enabled,
+        actorId: user.id,
+      })
 
       revalidatePath("/platform")
       return { success: true as const, orgId: parsed.data.orgId, enabled: parsed.data.enabled }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// AI telemetry and controls
+// ---------------------------------------------------------------------------
+
+const updateAiTierSchema = z.object({
+  feature: z.enum(AI_FEATURE_VALUES),
+  tier: z.enum(AI_TIER_VALUES),
+  provider: z.enum(AI_PROVIDER_VALUES),
+  // Free text on purpose: a model released after this code shipped must be
+  // selectable without a deploy. OpenRouter ids are namespaced (`qwen/...`).
+  model: z.string().trim().min(1).max(200),
+})
+
+export async function updateAiTierModelAction(input: unknown) {
+  return run(async () => {
+    const parsed = updateAiTierSchema.safeParse(input)
+    if (!parsed.success) throw new Error(parsed.error.errors[0]?.message ?? "Invalid model routing.")
+
+    const { user } = await requireAuth()
+    await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
+
+    const { feature, tier, provider, model } = parsed.data
+    const mismatch = validateAiProviderModelPair(provider, model)
+    if (mismatch) throw new Error(mismatch)
+
+    await upsertPlatformAiFeatureDefaultConfig({
+      supabase: createServiceSupabaseClient(),
+      feature,
+      tier,
+      provider,
+      model,
+      updatedBy: user.id,
+    })
+
+    revalidatePath("/platform")
+    return { success: true as const, feature, tier, provider, model }
+  })
+}
+
+export async function clearAiTierModelAction(input: unknown) {
+  return run(async () => {
+    const parsed = z
+      .object({ feature: z.enum(AI_FEATURE_VALUES), tier: z.enum(AI_TIER_VALUES) })
+      .safeParse(input)
+    if (!parsed.success) throw new Error("Invalid feature or tier.")
+
+    const { user } = await requireAuth()
+    await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
+
+    await clearPlatformAiFeatureDefaultConfig({
+      supabase: createServiceSupabaseClient(),
+      feature: parsed.data.feature,
+      tier: parsed.data.tier,
+    })
+
+    revalidatePath("/platform")
+    return { success: true as const }
+  })
+}
+
+const modelPriceSchema = z.object({
+  provider: z.enum(AI_PROVIDER_VALUES),
+  model: z.string().trim().min(1).max(200),
+  inputPerMTokUsd: z.number().min(0).max(10_000).nullable(),
+  outputPerMTokUsd: z.number().min(0).max(10_000).nullable(),
+})
+
+/**
+ * Record what a model costs. This is what converts an "unpriced" call — which
+ * the ledger reports as null rather than zero — into real spend.
+ */
+export async function setAiModelPriceAction(input: unknown) {
+  return run(async () => {
+    const parsed = modelPriceSchema.safeParse(input)
+    if (!parsed.success) throw new Error(parsed.error.errors[0]?.message ?? "Invalid price.")
+
+    const { user } = await requireAuth()
+    await requireAnyPermission(["platform.feature_flags.manage", "billing.manage"], { userId: user.id })
+
+    const supabase = createServiceSupabaseClient()
+    const { provider, model, inputPerMTokUsd, outputPerMTokUsd } = parsed.data
+    const key = `${provider}:${model.replace(/^models\//, "")}`
+
+    const { data: existing } = await supabase
+      .from("platform_settings")
+      .select("value")
+      .eq("key", "ai_model_prices")
+      .maybeSingle()
+
+    const current =
+      existing?.value && typeof existing.value === "object" && !Array.isArray(existing.value)
+        ? (existing.value as Record<string, unknown>)
+        : {}
+
+    const next = {
+      ...current,
+      [key]: { input_per_mtok_usd: inputPerMTokUsd, output_per_mtok_usd: outputPerMTokUsd },
+    }
+
+    const { error } = await supabase
+      .from("platform_settings")
+      .upsert({ key: "ai_model_prices", value: next, updated_by: user.id }, { onConflict: "key" })
+    if (error) throw new Error(error.message ?? "Unable to save the model price.")
+
+    invalidateAiPriceCache()
+    revalidatePath("/platform")
+    return { success: true as const, key }
   })
 }

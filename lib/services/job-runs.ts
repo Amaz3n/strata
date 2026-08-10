@@ -17,7 +17,10 @@ export const CRON_JOBS: CronJobDefinition[] = [
   { name: "accounting-process-outbox", path: "/api/accounting/process-outbox", schedule: "*/10 * * * *", scheduleLabel: "Every 10 min", expectedIntervalMinutes: 10 },
   { name: "accounting-process-changes", path: "/api/accounting/process-changes", schedule: "*/15 * * * *", scheduleLabel: "Every 15 min", expectedIntervalMinutes: 15 },
   { name: "accounting-process-inbound", path: "/api/accounting/process-inbound", schedule: "5-59/15 * * * *", scheduleLabel: "Every 15 min", expectedIntervalMinutes: 15 },
-  { name: "process-outbox", path: "/api/jobs/process-outbox", schedule: "0 * * * *", scheduleLabel: "Hourly", expectedIntervalMinutes: 60 },
+  // Carries notification delivery, so its cadence is how long someone waits to
+  // be told a payable needs them. An hour behind the in-app badge made email
+  // the slower channel for the one queue people work from email.
+  { name: "process-outbox", path: "/api/jobs/process-outbox", schedule: "*/10 * * * *", scheduleLabel: "Every 10 min", expectedIntervalMinutes: 10 },
   { name: "drawings-pipeline", path: "/api/jobs/drawings-pipeline", schedule: "*/5 * * * *", scheduleLabel: "Every 5 min", expectedIntervalMinutes: 5 },
   { name: "specs-pipeline", path: "/api/jobs/specs-pipeline", schedule: "*/5 * * * *", scheduleLabel: "Every 5 min", expectedIntervalMinutes: 5 },
   { name: "meeting-transcription", path: "/api/jobs/meeting-transcription", schedule: "*/5 * * * *", scheduleLabel: "Every 5 min", expectedIntervalMinutes: 5 },
@@ -29,7 +32,11 @@ export const CRON_JOBS: CronJobDefinition[] = [
   { name: "compliance-autopilot", path: "/api/jobs/compliance-autopilot", schedule: "20 13 * * *", scheduleLabel: "Daily 13:20 UTC", expectedIntervalMinutes: 1440 },
   { name: "esign", path: "/api/jobs/esign", schedule: "25 13 * * *", scheduleLabel: "Daily 13:25 UTC", expectedIntervalMinutes: 1440 },
   { name: "late-fees", path: "/api/jobs/late-fees", schedule: "30 13 * * *", scheduleLabel: "Daily 13:30 UTC", expectedIntervalMinutes: 1440 },
-  { name: "payment-controls", path: "/api/jobs/payment-controls", schedule: "35 13 * * *", scheduleLabel: "Daily 13:35 UTC", expectedIntervalMinutes: 1440 },
+  // The money tick. Release and submission recovery are minute-sensitive; the
+  // security and reconciliation halves of the old payment-controls job are not.
+  { name: "payment-release", path: "/api/jobs/payment-release", schedule: "*/5 * * * *", scheduleLabel: "Every 5 min", expectedIntervalMinutes: 5 },
+  { name: "payment-controls", path: "/api/jobs/payment-controls", schedule: "35 * * * *", scheduleLabel: "Hourly", expectedIntervalMinutes: 60 },
+  { name: "payment-reconciliation", path: "/api/jobs/payment-reconciliation", schedule: "50 13 * * *", scheduleLabel: "Daily 13:50 UTC", expectedIntervalMinutes: 1440 },
   { name: "task-reminders", path: "/api/jobs/task-reminders", schedule: "*/15 * * * *", scheduleLabel: "Every 15 min", expectedIntervalMinutes: 15 },
   { name: "selection-cutoff-sweep", path: "/api/jobs/selection-cutoff-sweep", schedule: "45 12 * * *", scheduleLabel: "Daily 12:45 UTC", expectedIntervalMinutes: 1440 },
   { name: "purchasing-maintenance", path: "/api/jobs/purchasing-maintenance", schedule: "50 12 * * *", scheduleLabel: "Daily 12:50 UTC", expectedIntervalMinutes: 1440 },
@@ -37,12 +44,18 @@ export const CRON_JOBS: CronJobDefinition[] = [
   { name: "warranty-sla-sweep", path: "/api/jobs/warranty-sla-sweep", schedule: "5 * * * *", scheduleLabel: "Hourly", expectedIntervalMinutes: 60 },
   { name: "invoice-schedules", path: "/api/jobs/invoice-schedules", schedule: "40 13 * * *", scheduleLabel: "Daily 13:40 UTC", expectedIntervalMinutes: 1440 },
   { name: "forecast-snapshots", path: "/api/jobs/forecast-snapshots", schedule: "15 4 * * *", scheduleLabel: "Daily 04:15 UTC", expectedIntervalMinutes: 1440 },
+  // Standing assistant questions. Hourly so an "hourly" cadence is actually
+  // hourly; a daily question simply is not due on most ticks.
+  { name: "ai-standing-questions", path: "/api/jobs/ai-standing-questions", schedule: "40 * * * *", scheduleLabel: "Hourly", expectedIntervalMinutes: 60 },
   { name: "books-projection", path: "/api/jobs/books-projection", schedule: "*/10 * * * *", scheduleLabel: "Every 10 min", expectedIntervalMinutes: 10 },
   { name: "books-maintenance", path: "/api/jobs/books-maintenance", schedule: "15 5 * * *", scheduleLabel: "Daily 05:15 UTC", expectedIntervalMinutes: 1440 },
   { name: "accounting-reconciliation", path: "/api/jobs/accounting-reconciliation", schedule: "45 4 * * *", scheduleLabel: "Daily 04:45 UTC", expectedIntervalMinutes: 1440 },
   { name: "bank-feed-sync", path: "/api/jobs/bank-feed-sync", schedule: "*/15 * * * *", scheduleLabel: "Every 15 min", expectedIntervalMinutes: 15 },
   { name: "report-schedules", path: "/api/jobs/report-schedules", schedule: "0 * * * *", scheduleLabel: "Hourly", expectedIntervalMinutes: 60 },
   { name: "session-cleanup", path: "/api/jobs/session-cleanup", schedule: "45 3 * * *", scheduleLabel: "Daily 3:45 UTC", expectedIntervalMinutes: 1440 },
+  // Reads every other job's heartbeat. Registered here too, so a watchdog that
+  // itself stops running is visible on the same Ops surface.
+  { name: "ops-watchdog", path: "/api/jobs/ops-watchdog", schedule: "20 * * * *", scheduleLabel: "Hourly", expectedIntervalMinutes: 60 },
 ]
 
 const RETENTION_DAYS = 60
@@ -111,12 +124,19 @@ export function withCronRun(
 
     if (response.status === 401) return response
 
+    // A 207 means the handler ran but some units inside it failed — the convention
+    // every fan-out job here uses. `Response.ok` is true for 207, so recording by
+    // `ok` alone filed a partial failure as green telemetry, which is the exact
+    // shape of every silent-failure defect this system has had: a job reporting
+    // success over work that did not happen. `http_status` still tells a partial
+    // failure apart from a total one.
+    const succeeded = response.ok && response.status !== 207
     await recordRun({
       jobName,
-      status: response.ok ? "success" : "failed",
+      status: succeeded ? "success" : "failed",
       startedAt,
       httpStatus: response.status,
-      error: response.ok ? null : await readErrorSnippet(response),
+      error: succeeded ? null : await readErrorSnippet(response),
     })
     return response
   }

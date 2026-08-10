@@ -1,7 +1,7 @@
 # Takeoff — revision re-anchoring (Phase 8)
 
 > Required reading before touching `lib/services/takeoff-reanchor.ts`.
-> Gameplan: `docs/takeoff-gameplan.md` §Phase 8 (capability C3, "living takeoff").
+> Gameplan: `docs/archive/takeoff-gameplan.md` §Phase 8 (capability C3, "living takeoff").
 
 ## 1. The problem
 

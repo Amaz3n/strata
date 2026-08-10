@@ -43,7 +43,7 @@ function parseMode(raw: unknown): "org" | "general" | undefined {
 function parseProjectId(raw: unknown) {
   if (typeof raw !== "string") return undefined
   const trimmed = raw.trim()
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$/i.test(trimmed)
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(trimmed)
     ? trimmed
     : undefined
 }

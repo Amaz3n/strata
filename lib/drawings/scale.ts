@@ -294,7 +294,9 @@ const MIN_SAMPLES = 3
  */
 export function crossCheckDimensionChains(
   tokens: DimensionToken[],
+  options?: { minSamples?: number },
 ): DimensionCheckResult | null {
+  const minSamples = Math.max(2, options?.minSamples ?? MIN_SAMPLES)
   const parsed = tokens
     .map((token) => ({ ...token, feet: parseFeetInches(token.text) }))
     .filter((token): token is DimensionToken & { feet: number } => {
@@ -304,11 +306,11 @@ export function crossCheckDimensionChains(
       return token.feet !== null && token.feet >= 1 && token.feet <= 500
     })
 
-  if (parsed.length < MIN_SAMPLES + 1) return null
+  if (parsed.length < minSamples + 1) return null
 
   const candidates = [
-    evaluateChains(parsed, "horizontal"),
-    evaluateChains(parsed, "vertical"),
+    evaluateChains(parsed, "horizontal", minSamples),
+    evaluateChains(parsed, "vertical", minSamples),
   ].filter((result): result is DimensionCheckResult => result !== null)
 
   if (candidates.length === 0) return null
@@ -323,6 +325,7 @@ export function crossCheckDimensionChains(
 function evaluateChains(
   tokens: Array<DimensionToken & { feet: number }>,
   axis: "horizontal" | "vertical",
+  minSamples: number,
 ): DimensionCheckResult | null {
   // Horizontal chains share a y; vertical chains share an x.
   const groupKey = (token: DimensionToken) => (axis === "horizontal" ? token.y : token.x)
@@ -340,11 +343,11 @@ function evaluateChains(
     if (Math.abs(groupKey(token) - groupKey(current[0])) <= CHAIN_TOLERANCE_UNITS) {
       current.push(token)
     } else {
-      if (current.length >= MIN_SAMPLES + 1) chains.push(current)
+      if (current.length >= minSamples + 1) chains.push(current)
       current = [token]
     }
   }
-  if (current.length >= MIN_SAMPLES + 1) chains.push(current)
+  if (current.length >= minSamples + 1) chains.push(current)
 
   let best: DimensionCheckResult | null = null
 
@@ -362,10 +365,10 @@ function evaluateChains(
       ratios.push((previous.feet + token.feet) / 2 / gap)
     }
 
-    if (ratios.length < MIN_SAMPLES) continue
+    if (ratios.length < minSamples) continue
 
     const kept = rejectOutliers(ratios)
-    if (kept.length < MIN_SAMPLES) continue
+    if (kept.length < minSamples) continue
 
     const sortedKept = [...kept].sort((a, b) => a - b)
     const median = sortedKept[Math.floor(sortedKept.length / 2)]
@@ -386,6 +389,75 @@ function evaluateChains(
   }
 
   return best
+}
+
+// ---------------------------------------------------------------------------
+// Local scale disagreement — the multi-scale sheet
+// ---------------------------------------------------------------------------
+
+/**
+ * A real sheet is rarely at one scale. A 1/4" floor plan shares the page with
+ * 1/2" wall sections and 3" details, and the sheet calibration only describes
+ * the plan. Measure inside a detail and the answer is silently wrong by a factor
+ * of two to twelve — a error nobody catches by reading a total, and one that
+ * ends in a material order.
+ *
+ * This compares the printed dimensions INSIDE a region against the scale the
+ * sheet is calibrated at. It is advisory and one-directional: it only ever says
+ * "the dimensions here disagree with the sheet", never silently re-scales.
+ */
+export interface LocalScaleDisagreement {
+  /** Feet per unit implied by the dimensions printed inside the region. */
+  localFeetPerUnit: number
+  /** What the sheet is calibrated at. */
+  sheetFeetPerUnit: number
+  /** localFeetPerUnit / sheetFeetPerUnit — 2 means everything here reads double. */
+  ratio: number
+  sampleCount: number
+}
+
+/** Under this the two agree; drafting and text placement are not that precise. */
+const LOCAL_SCALE_TOLERANCE = 0.08
+/** A local chain gets a lower bar than a whole-sheet one — a detail has fewer strings. */
+const LOCAL_MIN_SAMPLES = 2
+/** The region is grown by this share of its size before collecting tokens. */
+const LOCAL_REGION_PADDING = 0.25
+
+/**
+ * Returns the disagreement, or null when the region's own dimensions either
+ * agree with the sheet or are too sparse to say anything. Null is the common
+ * answer and means "no reason to doubt this measurement".
+ */
+export function detectLocalScaleDisagreement(input: {
+  tokens: DimensionToken[]
+  region: TextBox
+  sheetFeetPerUnit: number
+}): LocalScaleDisagreement | null {
+  const { tokens, region, sheetFeetPerUnit } = input
+  if (!(sheetFeetPerUnit > 0)) return null
+
+  const padX = Math.max((region.x1 - region.x0) * LOCAL_REGION_PADDING, 1)
+  const padY = Math.max((region.y1 - region.y0) * LOCAL_REGION_PADDING, 1)
+  const inside = tokens.filter(
+    (token) =>
+      token.x >= region.x0 - padX &&
+      token.x <= region.x1 + padX &&
+      token.y >= region.y0 - padY &&
+      token.y <= region.y1 + padY,
+  )
+
+  const local = crossCheckDimensionChains(inside, { minSamples: LOCAL_MIN_SAMPLES })
+  if (!local) return null
+
+  const ratio = local.feetPerUnit / sheetFeetPerUnit
+  if (Math.abs(ratio - 1) <= LOCAL_SCALE_TOLERANCE) return null
+
+  return {
+    localFeetPerUnit: local.feetPerUnit,
+    sheetFeetPerUnit,
+    ratio,
+    sampleCount: local.sampleCount,
+  }
 }
 
 /**

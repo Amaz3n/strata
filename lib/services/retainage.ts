@@ -1,7 +1,93 @@
+import type { SupabaseClient } from "@supabase/supabase-js"
+
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { createInvoice } from "@/lib/services/invoices"
 import { requireAuthorization } from "@/lib/services/authorization"
+
+/**
+ * Both loaders below page with `.range()`, so both impose a total order.
+ * PostgREST resolves a range as `limit/offset` over whatever order the planner
+ * chose; without an ordered key a second page can repeat a row it already
+ * returned and skip another, which silently changes how much retainage an
+ * invoice is recorded as withholding.
+ */
+const RETAINAGE_PAGE_SIZE = 1000
+
+/**
+ * AR retainage withheld per invoice, keyed by invoice id.
+ *
+ * `retainage` is the authoritative home for AR retainage. The other two
+ * representations — `invoices.metadata.retainage_amount_cents` and the negative
+ * `unit = 'retainage'` invoice line — are presentation artifacts and do not agree with
+ * it or each other. Read retainage from here and nowhere else.
+ *
+ * **AR and AP store retainage in opposite directions.** `vendor_bills.total_cents` is
+ * GROSS with retainage in its own column, but `invoices.total_cents` is already NET —
+ * the hold is a negative line inside the invoice. A caller that needs the gross AR
+ * billing must add this value back; a caller measuring what the customer still owes
+ * must not subtract it again.
+ *
+ * Rows are counted whatever their status: releasing retainage is a separate economic
+ * event with its own entry, so it does not change what the original invoice withheld.
+ */
+/**
+ * Invoices that exist only to release retainage, mapped to the amount they release.
+ *
+ * A release invoice bills no new work: its total is retainage that was already billed
+ * and withheld on an earlier invoice, now becoming collectible. Posting it as an
+ * ordinary invoice would credit contract liabilities a second time for the same work
+ * and leave `1110 Retainage receivable` never relieved.
+ */
+export async function loadRetainageReleaseInvoiceCents(args: {
+  supabase: SupabaseClient
+  orgId: string
+}): Promise<Map<string, number>> {
+  const byInvoice = new Map<string, number>()
+  for (let page = 0; ; page += 1) {
+    const from = page * RETAINAGE_PAGE_SIZE
+    const { data, error } = await args.supabase
+      .from("retainage")
+      .select("release_invoice_id, amount_cents")
+      .eq("org_id", args.orgId)
+      .not("release_invoice_id", "is", null)
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, from + RETAINAGE_PAGE_SIZE - 1)
+
+    if (error) throw new Error(`Failed to load retainage release invoices: ${error.message}`)
+    for (const row of data ?? []) {
+      const invoiceId = String(row.release_invoice_id)
+      byInvoice.set(invoiceId, (byInvoice.get(invoiceId) ?? 0) + Number(row.amount_cents ?? 0))
+    }
+    if ((data ?? []).length < RETAINAGE_PAGE_SIZE) return byInvoice
+  }
+}
+
+export async function loadInvoiceRetainageCents(args: {
+  supabase: SupabaseClient
+  orgId: string
+}): Promise<Map<string, number>> {
+  const byInvoice = new Map<string, number>()
+  for (let page = 0; ; page += 1) {
+    const from = page * RETAINAGE_PAGE_SIZE
+    const { data, error } = await args.supabase
+      .from("retainage")
+      .select("invoice_id, amount_cents")
+      .eq("org_id", args.orgId)
+      .not("invoice_id", "is", null)
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, from + RETAINAGE_PAGE_SIZE - 1)
+
+    if (error) throw new Error(`Failed to load invoice retainage: ${error.message}`)
+    for (const row of data ?? []) {
+      const invoiceId = String(row.invoice_id)
+      byInvoice.set(invoiceId, (byInvoice.get(invoiceId) ?? 0) + Number(row.amount_cents ?? 0))
+    }
+    if ((data ?? []).length < RETAINAGE_PAGE_SIZE) return byInvoice
+  }
+}
 
 export async function createRetainageRecord({
   project_id,

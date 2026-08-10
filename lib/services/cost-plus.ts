@@ -15,8 +15,7 @@ import { buildAccountingCoding } from "@/lib/services/accounting-coding"
 import { getProjectFeeBillingSummary, prepareProjectFeeBillingForOwnerInvoice, recordProjectFeeBillingForInvoice, type PreparedProjectFeeBilling } from "@/lib/services/fee-billing"
 import {
   calculateTimeEntryCostCents,
-  postJobCostEntryFromProjectExpense,
-  postJobCostEntryFromExpenseLine,
+  postJobCostEntriesForProjectExpense,
   postJobCostEntryFromTimeEntry,
   postJobCostEntryFromBillLine,
   voidJobCostEntryForSource,
@@ -1102,9 +1101,11 @@ export async function propagateApprovalToLedger(args: { source: "vendor_bill" | 
       .order("sort_order", { ascending: true })
     if (linesError) throw new Error(`Failed to load expense splits: ${linesError.message}`)
 
+    // Billable costs first: the job-cost entry reads them to resolve its billable
+    // linkage and GMP classification.
     if ((lines ?? []).length > 0) {
-      // Split expense: post one ledger row per line, resolving the contract per the
-      // line's project so cross-project allocations bill against the right contract.
+      // Split expense: resolve the contract per the line's project so cross-project
+      // allocations bill against the right contract.
       const projectIds = Array.from(new Set(lines!.map((line) => line.project_id ?? expense.project_id)))
       const contractEntries = await Promise.all(
         projectIds.map(async (projectId) => {
@@ -1114,36 +1115,24 @@ export async function propagateApprovalToLedger(args: { source: "vendor_bill" | 
       )
       const contractByProject = new Map<string, boolean>(contractEntries)
       await Promise.all(
-        lines!.map(async (line) => {
-          const projectId = line.project_id ?? expense.project_id
-          if (contractByProject.get(projectId)) {
-            await upsertBillableCostFromExpenseLine({
-              expenseLineId: line.id,
-              orgId: resolvedOrgId,
-            })
-          }
-          await postJobCostEntryFromExpenseLine({
-            expenseLineId: line.id,
-            orgId: resolvedOrgId,
-          })
-        }),
+        lines!
+          .filter((line) => contractByProject.get(line.project_id ?? expense.project_id))
+          .map((line) => upsertBillableCostFromExpenseLine({ expenseLineId: line.id, orgId: resolvedOrgId })),
       )
-      await scanVariance(lines!.map((line) => line.project_id ?? expense.project_id))
-      return
+    } else {
+      const contract = await getProjectCostContract(supabase, resolvedOrgId, expense.project_id)
+      if (isCostPlusContract(contract)) {
+        await upsertBillableCostFromExpense({
+          expenseId: args.sourceId,
+          orgId: resolvedOrgId,
+        })
+      }
     }
 
-    const contract = await getProjectCostContract(supabase, resolvedOrgId, expense.project_id)
-    if (isCostPlusContract(contract)) {
-      await upsertBillableCostFromExpense({
-        expenseId: args.sourceId,
-        orgId: resolvedOrgId,
-      })
-    }
-    await postJobCostEntryFromProjectExpense({
-      expenseId: args.sourceId,
-      orgId: resolvedOrgId,
-    })
-    await scanVariance([expense.project_id])
+    await postJobCostEntriesForProjectExpense({ expenseId: args.sourceId, orgId: resolvedOrgId })
+    await scanVariance(
+      (lines ?? []).length > 0 ? lines!.map((line) => line.project_id ?? expense.project_id) : [expense.project_id],
+    )
     return
   }
 
@@ -1827,19 +1816,13 @@ async function resyncApprovedExpenseLedger(
           orgId,
         })
       }
-      await postJobCostEntryFromExpenseLine({ expenseLineId: line.id, orgId })
     }
-    return
-  }
-
-  // Collapsed back to a single allocation: re-post the whole-expense ledger rows.
-  if (args.canPostBillable && (await isCostPlusProject(args.expenseProjectId))) {
+  } else if (args.canPostBillable && (await isCostPlusProject(args.expenseProjectId))) {
+    // Collapsed back to a single allocation.
     await upsertBillableCostFromExpense({ expenseId: args.expenseId, orgId })
   }
-  await postJobCostEntryFromProjectExpense({
-    expenseId: args.expenseId,
-    orgId,
-  })
+
+  await postJobCostEntriesForProjectExpense({ expenseId: args.expenseId, orgId })
 }
 
 export const DUPLICATE_EXPENSE_ERROR_PREFIX = "POSSIBLE_DUPLICATE_EXPENSE:"

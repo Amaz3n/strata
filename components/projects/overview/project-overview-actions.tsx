@@ -8,8 +8,7 @@ import { toast } from "sonner"
 import type {
   Project,
   Contact,
-  PortalAccessToken,
-  ExternalIdentity,
+  ProjectAccessPerson,
   Proposal,
   Contract,
   DrawSchedule,
@@ -18,13 +17,12 @@ import type {
 } from "@/lib/types"
 import type { ProjectInput } from "@/lib/validation/projects"
 import {
-  loadSharingDataAction,
-  loadProjectExternalPortalAccountsAction,
+  loadProjectAccessRosterAction,
   revokePortalTokenAction,
   pausePortalTokenAction,
   resumePortalTokenAction,
-  setExternalPortalAccountStatusAction,
   setPortalTokenPinAction,
+  setPortalTokenRequireAccountAction,
   removePortalTokenPinAction,
 } from "@/app/(app)/sharing/actions"
 import { getProjectSettingsAction, updateProjectSettingsAction } from "@/app/(app)/projects/[id]/actions"
@@ -34,13 +32,13 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "@/components/ui/dropdown-menu"
 import { ProjectAvatar } from "@/components/ui/project-avatar"
 
-import { PortalLinkCreator } from "@/components/sharing/portal-link-creator"
-import { AccessTokenList } from "@/components/sharing/access-token-list"
-import { PortalAccountList } from "@/components/sharing/portal-account-list"
+import { usePageTitle } from "@/components/layout/page-title-context"
+import { getProjectPosture } from "@/lib/product-tier"
+import { ProjectInviteForm } from "@/components/sharing/project-invite-form"
+import { ProjectAccessRoster } from "@/components/sharing/project-access-roster"
 import { ProjectSettingsSheet } from "@/components/projects/project-settings-sheet"
 import { ContractDetailSheet } from "@/components/contracts/contract-detail-sheet"
 import { ManageTeamSheet } from "@/components/projects/manage-team-sheet"
@@ -65,7 +63,6 @@ interface ProjectOverviewActionsProps {
   companies: Company[]
   team: ProjectTeamMember[]
   projectVendors: ProjectVendor[]
-  portalTokens: PortalAccessToken[]
   proposals: Proposal[]
   contract: Contract | null
   draws: DrawSchedule[]
@@ -78,13 +75,14 @@ export function ProjectOverviewActions({
   companies,
   team,
   projectVendors,
-  portalTokens: initialPortalTokens,
   proposals,
   contract,
   draws,
   scheduleItemCount,
 }: ProjectOverviewActionsProps) {
   const router = useRouter()
+  const { productTier } = usePageTitle()
+  const posture = getProjectPosture(project.property_type, productTier)
 
   // The header renders from the light `project` prop; the settings sheet needs the full project
   // (financial_settings + billing_contract), which we lazy-load when the sheet opens.
@@ -95,169 +93,84 @@ export function ProjectOverviewActions({
   const [contractSheetOpen, setContractSheetOpen] = useState(false)
   const [manageTeamOpen, setManageTeamOpen] = useState(false)
 
-  const [portalTokensState, setPortalTokensState] = useState<PortalAccessToken[]>(initialPortalTokens)
-  const [externalAccounts, setExternalAccounts] = useState<ExternalIdentity[]>([])
+  const [roster, setRoster] = useState<ProjectAccessPerson[]>([])
   const [sharingLoading, setSharingLoading] = useState(false)
-  const [sharingInitialized, setSharingInitialized] = useState(Boolean(initialPortalTokens.length))
-  const [accountsInitialized, setAccountsInitialized] = useState(false)
+  const [sharingInitialized, setSharingInitialized] = useState(false)
+  const [sharingError, setSharingError] = useState<string | null>(null)
 
-  useEffect(() => {
-    setPortalTokensState(initialPortalTokens)
-    setSharingInitialized(Boolean(initialPortalTokens.length))
-    setAccountsInitialized(false)
-  }, [initialPortalTokens])
+  const activeCount = useMemo(
+    () => roster.filter((person) => person.status === "active").length,
+    [roster],
+  )
 
-  const { clientActiveLinks, subActiveLinks, activeTokens } = useMemo(() => {
-    const activeClient = portalTokensState.filter((token) => token.portal_type === "client" && !token.revoked_at && !token.paused_at).length
-    const activeSubs = portalTokensState.filter((token) => token.portal_type === "sub" && !token.revoked_at && !token.paused_at).length
-    const actives = portalTokensState.filter((token) => !token.revoked_at)
-    return { clientActiveLinks: activeClient, subActiveLinks: activeSubs, activeTokens: actives }
-  }, [portalTokensState])
-
-  const refreshPortalTokens = useCallback(async () => {
+  const refreshRoster = useCallback(async () => {
     setSharingLoading(true)
+    setSharingError(null)
     try {
-      const [tokens, accounts] = await Promise.all([
-        loadSharingDataAction(project.id),
-        loadProjectExternalPortalAccountsAction(project.id),
-      ])
-      setPortalTokensState(tokens)
-      setExternalAccounts(accounts)
+      setRoster(await loadProjectAccessRosterAction(project.id))
       setSharingInitialized(true)
-      setAccountsInitialized(true)
     } catch (error) {
       console.error(error)
-      toast.error("Unable to load sharing links")
+      setSharingError("Unable to load who has access.")
     } finally {
       setSharingLoading(false)
     }
   }, [project.id])
 
-  function handleTokenCreated(token: PortalAccessToken) {
-    setPortalTokensState((prev) => {
-      const existingIndex = prev.findIndex((item) => item.id === token.id)
-      if (existingIndex >= 0) {
-        const next = [...prev]
-        next[existingIndex] = token
-        return next
-      }
-      return [token, ...prev]
-    })
-    setSharingInitialized(true)
+  // Creating access joins contact and company rows for the roster, so the list is
+  // re-read rather than patched optimistically from the returned token.
+  function handleTokenCreated() {
+    void refreshRoster()
   }
 
-  async function handleTokenRevoke(tokenId: string) {
+  async function runRosterAction(
+    label: string,
+    action: () => Promise<unknown>,
+  ) {
     setSharingLoading(true)
     try {
-      unwrapAction(await revokePortalTokenAction({ token_id: tokenId, project_id: project.id }))
-      setPortalTokensState((prev) =>
-        prev.map((token) =>
-          token.id === tokenId ? { ...token, revoked_at: new Date().toISOString() } : token
-        )
-      )
-      toast.success("Access revoked")
+      unwrapAction((await action()) as Parameters<typeof unwrapAction>[0])
+      await refreshRoster()
+      toast.success(label)
     } catch (error) {
       console.error(error)
-      toast.error("Failed to revoke link")
+      toast.error(error instanceof Error ? error.message : "Something went wrong")
     } finally {
       setSharingLoading(false)
     }
   }
 
-  async function handleSetPin(tokenId: string, pin: string) {
-    setSharingLoading(true)
-    try {
-      unwrapAction(await setPortalTokenPinAction({ token_id: tokenId, pin }))
-      setPortalTokensState((prev) =>
-        prev.map((token) => (token.id === tokenId ? { ...token, pin_required: true } : token))
-      )
-      toast.success("PIN updated")
-    } catch (error) {
-      console.error(error)
-      toast.error("Failed to set PIN")
-    } finally {
-      setSharingLoading(false)
-    }
-  }
+  const handleRevoke = (person: ProjectAccessPerson) =>
+    runRosterAction("Access removed", () =>
+      revokePortalTokenAction({ token_id: person.token_id, project_id: project.id }),
+    )
 
-  async function handleTokenPause(tokenId: string) {
-    setSharingLoading(true)
-    try {
-      unwrapAction(await pausePortalTokenAction({ token_id: tokenId, project_id: project.id }))
-      setPortalTokensState((prev) =>
-        prev.map((token) => (token.id === tokenId ? { ...token, paused_at: new Date().toISOString() } : token))
-      )
-      toast.success("Access paused")
-    } catch (error) {
-      console.error(error)
-      toast.error("Failed to pause access")
-    } finally {
-      setSharingLoading(false)
-    }
-  }
+  const handlePause = (person: ProjectAccessPerson) =>
+    runRosterAction("Access paused", () =>
+      pausePortalTokenAction({ token_id: person.token_id, project_id: project.id }),
+    )
 
-  async function handleTokenResume(tokenId: string) {
-    setSharingLoading(true)
-    try {
-      unwrapAction(await resumePortalTokenAction({ token_id: tokenId, project_id: project.id }))
-      setPortalTokensState((prev) =>
-        prev.map((token) => (token.id === tokenId ? { ...token, paused_at: null } : token))
-      )
-      toast.success("Access resumed")
-    } catch (error) {
-      console.error(error)
-      toast.error("Failed to resume access")
-    } finally {
-      setSharingLoading(false)
-    }
-  }
+  const handleResume = (person: ProjectAccessPerson) =>
+    runRosterAction("Access resumed", () =>
+      resumePortalTokenAction({ token_id: person.token_id, project_id: project.id }),
+    )
 
-  async function handleClearPin(tokenId: string) {
-    setSharingLoading(true)
-    try {
-      unwrapAction(await removePortalTokenPinAction({ token_id: tokenId }))
-      setPortalTokensState((prev) =>
-        prev.map((token) => (token.id === tokenId ? { ...token, pin_required: false } : token))
-      )
-      toast.success("PIN removed")
-    } catch (error) {
-      console.error(error)
-      toast.error("Failed to remove PIN")
-    } finally {
-      setSharingLoading(false)
-    }
-  }
+  const handleSetPin = (tokenId: string, pin: string) =>
+    runRosterAction("PIN updated", () => setPortalTokenPinAction({ token_id: tokenId, pin }))
 
-  async function handleSetAccountStatus(accountId: string, status: "active" | "paused" | "revoked") {
-    setSharingLoading(true)
-    try {
-      unwrapAction(await setExternalPortalAccountStatusAction({ account_id: accountId, project_id: project.id, status }))
-      setExternalAccounts((prev) =>
-        prev.map((account) =>
-          account.id === accountId
-            ? {
-                ...account,
-                status,
-                paused_at: status === "paused" ? new Date().toISOString() : null,
-                revoked_at: status === "revoked" ? new Date().toISOString() : null,
-              }
-            : account
-        )
-      )
-      toast.success(`Account ${status}`)
-    } catch (error) {
-      console.error(error)
-      toast.error("Failed to update account status")
-    } finally {
-      setSharingLoading(false)
-    }
-  }
+  const handleClearPin = (tokenId: string) =>
+    runRosterAction("PIN removed", () => removePortalTokenPinAction({ token_id: tokenId }))
+
+  const handleSetRequireAccount = (tokenId: string, requireAccount: boolean) =>
+    runRosterAction(requireAccount ? "Account now required" : "Link-only access allowed", () =>
+      setPortalTokenRequireAccountAction({ token_id: tokenId, require_account: requireAccount }),
+    )
 
   useEffect(() => {
-    if (sharingSheetOpen && (!sharingInitialized || !accountsInitialized)) {
-      void refreshPortalTokens()
+    if (sharingSheetOpen && !sharingInitialized) {
+      void refreshRoster()
     }
-  }, [accountsInitialized, sharingInitialized, sharingSheetOpen, refreshPortalTokens])
+  }, [sharingInitialized, sharingSheetOpen, refreshRoster])
 
   const openSettings = () => {
     startSettingsLoad(async () => {
@@ -319,28 +232,24 @@ export function ProjectOverviewActions({
                 className="sm:max-w-lg sm:ml-auto sm:mr-4 sm:mt-4 sm:h-[calc(100vh-2rem)] shadow-2xl flex flex-col p-0 overflow-hidden fast-sheet-animation"
               >
                 <div className="flex h-full min-h-0 flex-col">
-                  <div className="border-b px-4 py-3.5 sm:px-5 sm:py-4 bg-muted/10">
+                  <div className="border-b border-border px-4 py-3.5 sm:px-5 sm:py-4">
                     <SheetHeader className="text-left">
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-9 w-9 items-center justify-center bg-primary/10 rounded-xl border border-primary/20">
-                          <Share2 className="h-4 w-4 text-primary" />
-                        </div>
-                        <div>
-                          <SheetTitle className="text-sm font-bold tracking-tight text-foreground">Share Project Access</SheetTitle>
-                          <SheetDescription className="text-[11px] text-muted-foreground leading-normal mt-0.5">
-                            Securely invite homeowners and subcontractors via email or direct shareable links.
-                          </SheetDescription>
-                        </div>
-                      </div>
+                      <SheetTitle className="text-sm font-semibold tracking-tight">
+                        Project access
+                      </SheetTitle>
+                      <SheetDescription className="mt-0.5 text-xs leading-normal text-muted-foreground">
+                        Everyone outside your team who can reach {project.name}.
+                      </SheetDescription>
                     </SheetHeader>
                   </div>
 
-                  <ScrollArea className="flex-1 min-h-0 overflow-x-hidden">
-                    <div className="space-y-4 p-4 sm:p-5 overflow-hidden">
-                      <div className="border bg-card p-5 rounded-none shadow-sm">
-                        <PortalLinkCreator
+                  <ScrollArea className="min-h-0 flex-1 overflow-x-hidden">
+                    <div className="space-y-4 overflow-hidden p-4 sm:p-5">
+                      <div className="border border-border bg-card p-5">
+                        <ProjectInviteForm
                           projectId={project.id}
                           project={project}
+                          posture={posture}
                           contacts={contacts}
                           projectVendors={projectVendors}
                           onCreated={handleTokenCreated}
@@ -348,66 +257,46 @@ export function ProjectOverviewActions({
                         />
                       </div>
 
-                      <Accordion type="single" collapsible className="border bg-card rounded-lg">
-                        <AccordionItem value="active-access" className="border-none">
-                          <AccordionTrigger className="px-4 py-3 hover:no-underline">
-                            <div className="flex w-full items-center justify-between gap-2">
-                              <div className="flex items-center gap-2">
-                                <ShieldCheck className="h-4 w-4 text-muted-foreground" />
-                                <span className="text-sm font-medium">Active links</span>
-                              </div>
-                              <div className="flex items-center gap-1.5">
-                                {clientActiveLinks + subActiveLinks > 0 ? (
-                                  <>
-                                    <Badge variant="secondary" className="gap-1 px-2 py-0.5 text-xs">
-                                      <User className="h-3 w-3" />
-                                      {clientActiveLinks}
-                                    </Badge>
-                                    <Badge variant="secondary" className="gap-1 px-2 py-0.5 text-xs">
-                                      <Users className="h-3 w-3" />
-                                      {subActiveLinks}
-                                    </Badge>
-                                  </>
-                                ) : (
-                                  <Badge variant="outline" className="text-xs text-muted-foreground">
-                                    None
-                                  </Badge>
-                                )}
-                              </div>
-                            </div>
-                          </AccordionTrigger>
-                          <AccordionContent className="px-4 pb-4">
-                            <AccessTokenList
-                              projectId={project.id}
-                              tokens={activeTokens}
-                              onRevoke={handleTokenRevoke}
-                              onPause={handleTokenPause}
-                              onResume={handleTokenResume}
-                              isLoading={sharingLoading}
-                              onSetPin={handleSetPin}
-                              onClearPin={handleClearPin}
-                            />
-                          </AccordionContent>
-                        </AccordionItem>
-                      </Accordion>
+                      <div className="space-y-2">
+                        <div className="flex items-baseline justify-between gap-2">
+                          <h3 className="text-sm font-medium">Who has access</h3>
+                          <span className="text-xs tabular-nums text-muted-foreground">
+                            {activeCount} active
+                          </span>
+                        </div>
 
-                      <Accordion type="single" collapsible className="border bg-card rounded-lg">
-                        <AccordionItem value="claimed-accounts" className="border-none">
-                          <AccordionTrigger className="px-4 py-3 hover:no-underline">
-                            <div className="flex w-full items-center justify-between gap-2">
-                              <span className="text-sm font-medium">Claimed accounts</span>
-                              <Badge variant="outline" className="text-xs">{externalAccounts.length}</Badge>
-                            </div>
-                          </AccordionTrigger>
-                          <AccordionContent className="px-4 pb-4">
-                            <PortalAccountList
-                              accounts={externalAccounts}
-                              isLoading={sharingLoading}
-                              onSetStatus={handleSetAccountStatus}
-                            />
-                          </AccordionContent>
-                        </AccordionItem>
-                      </Accordion>
+                        {sharingError ? (
+                          <div className="border border-destructive/20 bg-destructive/5 p-3 text-sm text-destructive">
+                            <p>{sharingError}</p>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="mt-2"
+                              onClick={() => void refreshRoster()}
+                            >
+                              Try again
+                            </Button>
+                          </div>
+                        ) : !sharingInitialized && sharingLoading ? (
+                          <div className="space-y-2">
+                            {[0, 1].map((row) => (
+                              <div key={row} className="h-20 animate-pulse border border-border bg-muted/40" />
+                            ))}
+                          </div>
+                        ) : (
+                          <ProjectAccessRoster
+                            people={roster}
+                            posture={posture}
+                            isLoading={sharingLoading}
+                            onRevoke={handleRevoke}
+                            onPause={handlePause}
+                            onResume={handleResume}
+                            onSetPin={handleSetPin}
+                            onClearPin={handleClearPin}
+                            onSetRequireAccount={handleSetRequireAccount}
+                          />
+                        )}
+                      </div>
                     </div>
                   </ScrollArea>
                 </div>

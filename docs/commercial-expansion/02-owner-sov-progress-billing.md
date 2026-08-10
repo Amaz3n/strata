@@ -1,5 +1,10 @@
 # Workstream 02 — Owner-Side SOV Progress Billing (AIA-style Pay Applications)
 
+> **Status: SHIPPED — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for commercial
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 > Prereq: 00 master + workstream 01 shipped. This is the single most important
 > workstream: commercial GCs bill owners monthly against a Schedule of Values. Arc
 > currently only offers milestone/bank-draw billing (residential) or cost-plus.

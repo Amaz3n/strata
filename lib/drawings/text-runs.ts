@@ -102,3 +102,30 @@ export function parseTextRuns(body: string): TextRun[] {
 export function textRunCenter(run: TextRun): { x: number; y: number } {
   return { x: run.x + run.w / 2, y: run.y + run.h / 2 }
 }
+
+export interface TextRunMatch {
+  /** Index into the sheet's run list. */
+  runIndex: number
+  run: TextRun
+}
+
+/**
+ * Find every run containing `query`, case-insensitively.
+ *
+ * Deliberately substring rather than token matching: the field searches for
+ * fragments of schedule marks and keynotes ("W12x26", "GFI", "09 91 23"),
+ * where whole-word matching would miss more than it helps. Results come back
+ * in reading order, which is how the pipeline emits runs.
+ */
+export function searchTextRuns(runs: TextRun[], query: string): TextRunMatch[] {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return []
+  const matches: TextRunMatch[] = []
+  for (let index = 0; index < runs.length; index += 1) {
+    const run = runs[index]
+    if (run.text.toLowerCase().includes(needle)) {
+      matches.push({ runIndex: index, run })
+    }
+  }
+  return matches
+}

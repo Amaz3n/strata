@@ -165,6 +165,18 @@ export async function signLienWaiver(
     payload: { claimant_name: waiver.claimant_name, amount_cents: waiver.amount_cents },
   })
 
+  // Signing is the moment the document's facts become checkable against the
+  // payable it covers. Best-effort by design: a failed check must never undo a
+  // signature the sub already gave, and the claim can be recomputed later.
+  if (waiver.bill_id) {
+    try {
+      const { verifyBillWaiver } = await import("@/lib/services/ap-document-verification")
+      await verifyBillWaiver(waiver.bill_id, waiver.org_id)
+    } catch {
+      // Verification is advisory; the waiver stands either way.
+    }
+  }
+
   return data
 }
 

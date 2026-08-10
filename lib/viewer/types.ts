@@ -93,6 +93,13 @@ export interface FrameSpec {
 
 export interface SceneRenderer {
   readonly backend: "webgpu" | "webgl2"
+  /**
+   * Fired when the GPU device / context is lost out from under the renderer
+   * (driver reset, GPU process crash, tab backgrounding on iOS). Never fired
+   * for a deliberate destroy(). The renderer and everything it uploaded are
+   * dead once this fires — the owner must tear down and re-negotiate.
+   */
+  onDeviceLost: ((reason: string) => void) | null
   uploadTile(bitmap: ImageBitmap): TileTexture
   destroyTile(texture: TileTexture): void
   render(frame: FrameSpec): void

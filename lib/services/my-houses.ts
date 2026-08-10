@@ -63,7 +63,7 @@ export async function listMyHouses(
     id,start_date,metadata,
     lot:lots!lots_project_id_fkey(id,lot_number,block,community_id,house_plan_id,house_plan_elevation_id,
       community:communities(name),plan:house_plans(code),elevation:house_plan_elevations(code))
-  `, { count: "exact" }).eq("org_id", context.orgId).eq("superintendent_id", userId)
+  `, { count: "exact" }).eq("org_id", context.orgId).eq("phase", "delivery").eq("superintendent_id", userId)
     .eq("property_type", "production").eq("status", "active")
   if (opts.divisionId) projectQuery = projectQuery.eq("division_id", opts.divisionId)
   const { data: projects, error, count } = await projectQuery.order("start_date", { ascending: true, nullsFirst: false })
@@ -120,7 +120,7 @@ export async function listMyHouseWork(
   const userId = opts.userId ?? context.userId
   let projectQuery = context.supabase.from("projects").select(`
     id,lot:lots!lots_project_id_fkey(lot_number,block,community:communities(name))
-  `).eq("org_id", context.orgId).eq("superintendent_id", userId).eq("property_type", "production").eq("status", "active")
+  `).eq("org_id", context.orgId).eq("phase", "delivery").eq("superintendent_id", userId).eq("property_type", "production").eq("status", "active")
   if (opts.divisionId) projectQuery = projectQuery.eq("division_id", opts.divisionId)
   const { data: projects, error: projectError } = await projectQuery.limit(100)
   if (projectError) throw new Error(`Failed to load assigned houses: ${projectError.message}`)

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { formatDistanceToNow } from "date-fns"
-import { Check, Pencil, RefreshCcw, Unplug, X } from "lucide-react"
+import { Check, FileSpreadsheet, Pencil, RefreshCcw, Unplug, X } from "lucide-react"
 import { toast } from "sonner"
 
 import {
@@ -230,7 +230,11 @@ export function AccountingConnectionSheet({ connection, open, onOpenChange, onCh
           <SheetHeader className="space-y-0 border-b border-border px-5 py-4">
             <div className="flex items-start gap-3">
               <div className="flex size-9 shrink-0 items-center justify-center border border-border bg-background p-1.5">
-                <img src={provider.logoUrl} alt="" className="size-full object-contain" />
+                {provider.logoUrl ? (
+                  <img src={provider.logoUrl} alt="" className="size-full object-contain" />
+                ) : (
+                  <FileSpreadsheet className="size-full text-muted-foreground" />
+                )}
               </div>
               <div className="min-w-0 flex-1">
                 {editingLabel ? (

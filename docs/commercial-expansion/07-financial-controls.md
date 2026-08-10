@@ -1,5 +1,10 @@
 # Workstream 07 — Financial Controls: Budget Transfers, Contingency, Prequalification, Vendor Tax
 
+> **Status: SHIPPED — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for commercial
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 > **STATUS — CODE + MIGRATIONS COMPLETE 2026-07-11.** Migrations
 > `20260711120000_budget_transfers.sql`, `20260711120100_vendor_tax.sql`,
 > `20260711120200_prequalification.sql`, and the advisor follow-up

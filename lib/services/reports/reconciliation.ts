@@ -12,6 +12,7 @@
  */
 
 import { isCostDrivenBillingModel, resolveProjectBillingModel } from "@/lib/financials/billing-model"
+import { PAYABLE_VENDOR_BILL_STATUSES } from "@/lib/financials/ledger-status"
 import { requireOrgContext, type OrgServiceContext } from "@/lib/services/context"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { getProjectJobCostActualsByCostCode } from "@/lib/services/job-cost-actuals"
@@ -112,6 +113,9 @@ async function checkInvoiceTotalMismatch(
     .select("id, invoice_number, title, total_cents, tax_cents, status")
     .eq("org_id", ctx.orgId)
     .eq("project_id", projectId)
+    // Deliberately wider than BILLED_INVOICE_STATUSES: this is an arithmetic
+    // integrity check, not an AR balance. A `saved` invoice whose total does not
+    // equal its lines is exactly the one worth catching before it is sent.
     .not("status", "in", "(void,draft)")
 
   if (error) throw error
@@ -187,7 +191,7 @@ async function checkBudgetActualMismatch(
     .select("id, unit_cost_cents, quantity, bill:vendor_bills!inner(id, project_id, status)")
     .eq("org_id", ctx.orgId)
     .eq("bill.project_id", projectId)
-    .in("bill.status", ["approved", "partial", "paid"])
+    .in("bill.status", [...PAYABLE_VENDOR_BILL_STATUSES])
 
   if (error) throw error
   const billLines: Array<{ unit_cost_cents: number | null; quantity: number | null }> = data ?? []
@@ -347,6 +351,10 @@ async function checkBillableNoJobCost(
   )
 
   return billableCosts
+    // Manual adjustments and allowance overages are billing-side corrections: the spend
+    // behind them already posted its own job-cost entry through a bill, expense, or time
+    // entry. They are structurally guaranteed to have no entry of their own, so they are
+    // excluded rather than reported — `job_cost_entries.source_type` cannot hold them.
     .filter((cost) => cost.source_type !== "manual_adjustment" && cost.source_type !== "allowance_overage")
     .filter((cost) => !linkedIds.has(cost.id))
     .map((cost) => ({
@@ -670,6 +678,35 @@ const CHECKS: Array<{
   { name: "Retainage ledger", run: checkRetainageMismatch },
 ]
 
+/**
+ * Run the project integrity checks for one project.
+ *
+ * The authorization gate lives in `getProjectReconciliationReport`, not here: the
+ * nightly reconciliation spine calls this with a service-role context and no user, and
+ * it must produce the same findings the report page shows. One implementation, two
+ * callers — a second copy of these checks is what C2.3 exists to prevent.
+ *
+ * A thrown check degrades to a name in `failedChecks` rather than failing the whole
+ * set, so one broken query cannot hide the other seven.
+ */
+export async function runProjectReconciliationChecks(
+  ctx: OrgServiceContext,
+  projectId: string,
+): Promise<{ exceptions: ReconciliationException[]; failedChecks: string[] }> {
+  const results = await Promise.allSettled(CHECKS.map((check) => check.run(ctx, projectId)))
+
+  const exceptions: ReconciliationException[] = []
+  const failedChecks: string[] = []
+  results.forEach((result, index) => {
+    if (result.status === "fulfilled") {
+      exceptions.push(...result.value)
+    } else {
+      failedChecks.push(CHECKS[index].name)
+    }
+  })
+  return { exceptions, failedChecks }
+}
+
 export async function getProjectReconciliationReport(
   projectId: string,
   orgId?: string,
@@ -687,17 +724,7 @@ export async function getProjectReconciliationReport(
     resourceId: projectId,
   })
 
-  const results = await Promise.allSettled(CHECKS.map((check) => check.run(ctx, projectId)))
-
-  const exceptions: ReconciliationException[] = []
-  const failedChecks: string[] = []
-  results.forEach((result, index) => {
-    if (result.status === "fulfilled") {
-      exceptions.push(...result.value)
-    } else {
-      failedChecks.push(CHECKS[index].name)
-    }
-  })
+  const { exceptions, failedChecks } = await runProjectReconciliationChecks(ctx, projectId)
 
   return {
     project_id: projectId,

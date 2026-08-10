@@ -7,6 +7,7 @@ import { retrieveHybridResults } from "@/lib/services/ai-search/retrieval"
 import {
   addMissingData,
   addRelatedResults,
+  recordBlockedTypes,
   recordToolSummary,
   resultRef,
   setArtifact,
@@ -81,14 +82,20 @@ export function createSearchTools({
               context.orgId,
               context,
             )
-          : await retrieveHybridResults({
-              context,
-              query: input.query,
-              entityTypes,
-              filters,
-              limit,
-              enableHybrid: enableHybridRetrieval,
-            })
+          : await (async () => {
+              const retrieval = await retrieveHybridResults({
+                context,
+                query: input.query,
+                entityTypes,
+                filters,
+                limit,
+                enableHybrid: enableHybridRetrieval,
+              })
+              // Types this asker cannot read never reached the model; the answer
+              // still has to say the view was narrowed.
+              recordBlockedTypes(state, retrieval.blockedTypes)
+              return retrieval.results
+            })()
 
         addRelatedResults(state, results)
         setArtifact(state, buildArtifactForFallback(context.orgId, results))

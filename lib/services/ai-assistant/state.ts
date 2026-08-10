@@ -5,8 +5,9 @@ import type {
   AiSearchCitation,
   AiSearchExportLink,
   AiSearchRelatedResult,
-} from "@/lib/services/ai-search"
+} from "@/lib/services/ai-search/types"
 import type { AiSearchAction } from "@/lib/services/ai-search/actions"
+import type { SupportedFigure } from "@/lib/ai/numeric-audit"
 import type { SearchResult } from "@/lib/services/search"
 
 export interface AssistantToolState {
@@ -17,6 +18,17 @@ export interface AssistantToolState {
   missingData: string[]
   toolSummaries: string[]
   toolRunCount: number
+  /**
+   * Every number a tool actually computed, in whole currency units. The final
+   * answer is audited against this, so a figure the model worked out in its head
+   * can be told apart from one that came out of the database.
+   */
+  figures: SupportedFigure[]
+  /**
+   * Entity types a tool could not read for this asker. Collected so the answer
+   * discloses a narrowed view rather than presenting it as the whole picture.
+   */
+  blockedTypes: Set<string>
 }
 
 export function createAssistantToolState(): AssistantToolState {
@@ -26,7 +38,27 @@ export function createAssistantToolState(): AssistantToolState {
     missingData: [],
     toolSummaries: [],
     toolRunCount: 0,
+    figures: [],
+    blockedTypes: new Set(),
   }
+}
+
+/** Record entity types a tool was not allowed to read on this asker's behalf. */
+export function recordBlockedTypes(state: AssistantToolState, types: string[]) {
+  for (const type of types) state.blockedTypes.add(type)
+}
+
+/**
+ * Declare a number a tool computed.
+ *
+ * Call this for anything a user could reasonably see quoted back at them — a
+ * metric total, a row count, an aging bucket. A figure that is not declared is
+ * a figure the answer cannot cite, which shows up as an unverified-number
+ * caveat rather than as silence.
+ */
+export function recordFigure(state: AssistantToolState, label: string, value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return
+  state.figures.push({ label, value })
 }
 
 export function addRelatedResults(state: AssistantToolState, results: SearchResult[]) {

@@ -67,7 +67,7 @@ import {
 import { Ban, Plus, Building2, Calendar, Copy, Filter, FolderOpen, List, MoreHorizontal, RefreshCcw, Search, Trash2 } from "@/components/icons"
 import { ChevronDown, ChevronUp, Repeat, X } from "lucide-react"
 import { InvoiceBottomBar } from "@/components/invoices/invoice-bottom-bar"
-import { QboSyncSheet } from "@/components/integrations/qbo-sync-sheet"
+import { AccountingSyncSheet } from "@/components/integrations/accounting-sync-sheet"
 
 type StatusKey = "draft" | "saved" | "sent" | "partial" | "paid" | "overdue" | "void"
 type StatusFilter = StatusKey | "all"
@@ -1047,7 +1047,7 @@ export function InvoicesClient({
         </div>
       )}
 
-      <QboSyncSheet
+      <AccountingSyncSheet
         open={queueOpen}
         onOpenChange={setQueueOpen}
         projectId={scopedProject?.id}

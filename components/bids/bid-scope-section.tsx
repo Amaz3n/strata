@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ChevronDown, Plus, Trash2 } from "@/components/icons"
 import { parseCurrencyToCents, type BidWorkbenchContext } from "@/components/bids/bid-workbench-helpers"
+import { TakeoffLineBadge } from "@/components/takeoff/takeoff-line-badge"
 
 const TYPE_OPTIONS: Array<{ value: BidScopeItemType; label: string }> = [
   { value: "base", label: "Base" },
@@ -30,6 +31,11 @@ interface ScopeRow {
   quantity: string
   unit: string
   budget: string
+  /**
+   * Provenance carried verbatim so the badge can show it. Never edited here and
+   * never sent on save — the service leaves the column alone on update.
+   */
+  metadata: Record<string, any> | null
 }
 
 function toRow(item: BidScopeItem): ScopeRow {
@@ -42,6 +48,7 @@ function toRow(item: BidScopeItem): ScopeRow {
     quantity: item.quantity != null ? String(item.quantity) : "",
     unit: item.unit ?? "",
     budget: item.budget_cents != null ? String(item.budget_cents / 100) : "",
+    metadata: item.metadata ?? null,
   }
 }
 
@@ -57,6 +64,7 @@ function blankRow(): ScopeRow {
     quantity: "",
     unit: "",
     budget: "",
+    metadata: null,
   }
 }
 
@@ -241,6 +249,12 @@ export function BidScopeSection({
                       value={row.details}
                       onChange={(event) => update(row.key, { details: event.target.value })}
                       placeholder="Details (optional)"
+                    />
+                    <TakeoffLineBadge
+                      metadata={row.metadata}
+                      liveQuantity={row.quantity}
+                      projectId={context.projectId}
+                      className="mt-1.5"
                     />
                   </TableCell>
                   <TableCell className="px-2 py-1.5">

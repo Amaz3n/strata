@@ -2,9 +2,23 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
 import { buildRenderableTileBaseUrl } from "@/lib/drawings/tile-urls"
+import {
+  DEFAULT_TILES_COOKIE_ENDPOINT,
+  TILES_COOKIE_FRESH_MS,
+  TILES_COOKIE_REFRESH_MS,
+  ensureTilesCookie,
+  getTilesCookieState,
+} from "@/lib/drawings/tiles-cookie-client"
 import { GpuDrawingViewer, type OverlaySpec } from "@/lib/viewer"
-import type { CompareMode, ImageToScreenMatrix, TileManifest } from "@/lib/viewer"
+import type {
+  CompareMode,
+  ImageToScreenMatrix,
+  TileManifest,
+  ViewerError,
+  ViewerMetrics,
+} from "@/lib/viewer"
 
 export type { ImageToScreenMatrix, TileManifest }
 
@@ -12,6 +26,14 @@ export interface TiledDrawingViewerProps {
   tileBaseUrl: string
   tileManifest: TileManifest
   className?: string
+  /**
+   * Fired once per sheet when tiles fail persistently. This component is
+   * shared with the token portals, so it deliberately does not know how to
+   * repair anything — the authed caller supplies that.
+   */
+  onTileLoadFailure?: () => void
+  /** Real load timings. Emitted at each milestone and on teardown. */
+  onMetrics?: (metrics: ViewerMetrics) => void
   onReady?: (viewer: GpuDrawingViewer | null) => void
   onTransformChange?: (args: {
     matrix: ImageToScreenMatrix
@@ -47,49 +69,6 @@ export interface TiledDrawingViewerProps {
 // the same cookie from different routes.
 // ---------------------------------------------------------------------------
 
-const DEFAULT_TILES_COOKIE_ENDPOINT = "/api/drawings/tiles-cookie"
-
-const TILES_COOKIE_REFRESH_MS = 45 * 60 * 1000
-// If tile loads fail while the cookie is younger than this, the failure is
-// almost certainly not auth expiry — skip the recovery round trip.
-const TILES_COOKIE_FRESH_MS = 60 * 1000
-
-type TilesCookieState = { promise: Promise<void> | null; setAt: number }
-const tilesCookieStates = new Map<string, TilesCookieState>()
-
-function getTilesCookieState(endpoint: string): TilesCookieState {
-  let state = tilesCookieStates.get(endpoint)
-  if (!state) {
-    state = { promise: null, setAt: 0 }
-    tilesCookieStates.set(endpoint, state)
-  }
-  return state
-}
-
-function ensureTilesCookie(endpoint: string, options?: { force?: boolean }): Promise<void> {
-  const state = getTilesCookieState(endpoint)
-  if (!options?.force && state.promise) return state.promise
-
-  const promise = fetch(endpoint, {
-    method: "POST",
-    credentials: "include",
-  })
-    .then((response) => {
-      if (!response.ok) {
-        throw new Error(`Failed to set tiles cookie: HTTP ${response.status}`)
-      }
-      state.setAt = Date.now()
-    })
-    .catch((error) => {
-      // Allow the next caller to retry instead of caching the failure forever.
-      if (state.promise === promise) state.promise = null
-      throw error
-    })
-
-  state.promise = promise
-  return promise
-}
-
 function toCompareMode(mode: "overlay" | "difference" | undefined): CompareMode {
   return mode === "difference" ? "difference" : "composite"
 }
@@ -98,6 +77,8 @@ export function TiledDrawingViewer({
   tileBaseUrl,
   tileManifest,
   className,
+  onTileLoadFailure,
+  onMetrics,
   onReady,
   onTransformChange,
   thumbnailUrl,
@@ -109,7 +90,14 @@ export function TiledDrawingViewer({
   const viewerRef = useRef<GpuDrawingViewer | null>(null)
   const onReadyRef = useRef<TiledDrawingViewerProps["onReady"]>(onReady)
   const onTransformChangeRef = useRef<TiledDrawingViewerProps["onTransformChange"]>(onTransformChange)
+  const onMetricsRef = useRef<TiledDrawingViewerProps["onMetrics"]>(onMetrics)
+  const onTileLoadFailureRef =
+    useRef<TiledDrawingViewerProps["onTileLoadFailure"]>(onTileLoadFailure)
   const lastAuthRecoveryAtRef = useRef(0)
+  /** Bumped to force a full viewer rebuild after a terminal failure. */
+  const [retryNonce, setRetryNonce] = useState(0)
+  const [viewerError, setViewerError] = useState<ViewerError | null>(null)
+  const failureReportedRef = useRef(false)
 
   // Thumbnail-first render: show the sheet thumbnail behind the GPU canvas so
   // the user never stares at a blank surface while tiles stream in.
@@ -142,6 +130,14 @@ export function TiledDrawingViewer({
   useEffect(() => {
     onTransformChangeRef.current = onTransformChange
   }, [onTransformChange])
+
+  useEffect(() => {
+    onMetricsRef.current = onMetrics
+  }, [onMetrics])
+
+  useEffect(() => {
+    onTileLoadFailureRef.current = onTileLoadFailure
+  }, [onTileLoadFailure])
 
   const sources = useMemo(
     () => ({
@@ -205,6 +201,22 @@ export function TiledDrawingViewer({
             console.error("[TiledDrawingViewer] Tiles cookie recovery failed:", error)
           })
       },
+      onMetrics: (metrics) => onMetricsRef.current?.(metrics),
+      // Only surface states the user can do something about. A device loss
+      // that is still recovering resolves itself; showing it would flash an
+      // error over a viewer that is about to come back.
+      onError: (error) => {
+        if (error.type === "tiles-unauthorized") return
+        if (error.type === "device-lost" && error.recovering) return
+        setViewerError(error)
+
+        // Tiles that will not load are a server-side problem. Report it once
+        // per sheet and let the caller decide what repair means.
+        if (error.type === "tiles-failed" && !failureReportedRef.current) {
+          failureReportedRef.current = true
+          onTileLoadFailureRef.current?.()
+        }
+      },
     })
     viewerRef.current = viewer
     onReadyRef.current?.(viewer)
@@ -215,7 +227,7 @@ export function TiledDrawingViewer({
       onReadyRef.current?.(null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [secureTilesEnabled, tilesCookieEndpoint])
+  }, [secureTilesEnabled, tilesCookieEndpoint, retryNonce])
 
   // Sheet/manifest/overlay-source changes: reuse the existing viewer via
   // setSource() instead of a destroy/recreate cycle.
@@ -234,9 +246,12 @@ export function TiledDrawingViewer({
     if (overlayMode) viewerRef.current?.setCompareMode(toCompareMode(overlayMode))
   }, [overlayMode])
 
-  // Re-show the thumbnail whenever the sheet (tile source) changes.
+  // Re-show the thumbnail whenever the sheet (tile source) changes, and clear
+  // any failure the previous sheet was carrying.
   useEffect(() => {
     setThumbnailHidden(false)
+    setViewerError(null)
+    failureReportedRef.current = false
   }, [renderableTileBaseUrl])
 
   // The cookie TTL is 1h. Refresh it while any tiled viewer is mounted so new
@@ -266,6 +281,50 @@ export function TiledDrawingViewer({
         />
       ) : null}
       <div ref={containerRef} className="absolute inset-0" />
+      {viewerError && (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-background/90 p-6 text-center">
+          <p className="text-sm font-medium">{viewerErrorTitle(viewerError)}</p>
+          <p className="max-w-sm text-xs text-muted-foreground">
+            {viewerErrorDetail(viewerError)}
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setViewerError(null)
+              setRetryNonce((nonce) => nonce + 1)
+            }}
+          >
+            Try again
+          </Button>
+        </div>
+      )}
     </div>
   )
+}
+
+function viewerErrorTitle(error: ViewerError): string {
+  switch (error.type) {
+    case "renderer-unavailable":
+      return "This browser can't display drawings"
+    case "device-lost":
+      return "The drawing view lost its graphics device"
+    case "tiles-failed":
+      return "This sheet's image failed to load"
+    case "tiles-unauthorized":
+      return "Access to this sheet expired"
+  }
+}
+
+function viewerErrorDetail(error: ViewerError): string {
+  switch (error.type) {
+    case "renderer-unavailable":
+      return "Drawings need WebGPU or WebGL2. Try a different browser, or enable hardware acceleration."
+    case "device-lost":
+      return "This usually happens after the device sleeps or another app takes the GPU."
+    case "tiles-failed":
+      return `${error.failedCount} tiles could not be loaded. We've asked the server to rebuild this sheet — retrying in a moment often fixes it.`
+    case "tiles-unauthorized":
+      return "Your access to these drawing tiles timed out."
+  }
 }

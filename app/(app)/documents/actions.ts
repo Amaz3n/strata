@@ -222,7 +222,7 @@ export async function suggestFileNameAction(
           bytes,
           fileName: file.file_name,
           mimeType: file.mime_type,
-        })
+         orgId,})
         return { ok: true, fileName: suggestion.suggestedFileName }
       } catch (error: any) {
         console.warn("[Documents] AI rename failed", error)

@@ -1,7 +1,32 @@
+import type { PayableRunMembership, PayableTabKey } from "@/lib/services/org-payables"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
-import { isVendorCredit } from "@/lib/financials/payables-rules"
+import { isVendorCredit, payableOutstandingCents } from "@/lib/financials/payables-rules"
 
-export type PayableQueue = "all" | "overdue" | "due_soon" | "needs_review" | "ready" | "synced"
+/**
+ * One lifecycle taxonomy for every payables surface — the desk's tabs are
+ * canonical. A payable sits on exactly one working queue on its way to the
+ * vendor being paid. Due-date urgency is a separate, orthogonal dimension
+ * (see `PayableDueFilter`), never a lifecycle queue of its own.
+ */
+export type PayableQueue = PayableTabKey
+
+export const PAYABLE_QUEUES: PayableQueue[] = ["drafts", "approval", "ready", "inflight", "paid", "all"]
+
+/** Full names everywhere — the rail uses the same words as the desk tabs. */
+export const PAYABLE_QUEUE_LABELS: Record<PayableQueue, string> = {
+  drafts: "Drafts",
+  approval: "Needs approval",
+  ready: "Ready to pay",
+  inflight: "In flight",
+  paid: "Paid",
+  all: "All",
+}
+
+/** Urgency is a filter on top of a queue, not a place a payable lives. */
+export type PayableDueFilter = "any" | "overdue" | "due_soon"
+
+/** Bill id → active run membership, when the surface knows about runs. */
+type RunLookup = Record<string, Pick<PayableRunMembership, "runStatus">>
 
 function dueDateState(bill: VendorBillSummary) {
   if (!bill.due_date || bill.status === "paid") return { overdue: false, dueSoon: false }
@@ -16,39 +41,38 @@ function dueDateState(bill: VendorBillSummary) {
   }
 }
 
-/** A payable still needs coding before it can sync to QuickBooks. */
-export function billNeedsReview(
-  bill: VendorBillSummary,
-  costCodesEnabled: boolean,
-  accountingEnabled = true,
-): boolean {
-  if (isVendorCredit(bill)) return false
-  if (!accountingEnabled) {
-    return bill.status === "pending" || (costCodesEnabled && !bill.actual_cost_code_id)
-  }
-  return (
-    bill.status === "pending" ||
-    !bill.qbo_vendor_id ||
-    (costCodesEnabled && !bill.actual_cost_code_id) ||
-    !bill.qbo_expense_account_id
-  )
+function matchesDueFilter(bill: VendorBillSummary, due: PayableDueFilter): boolean {
+  if (due === "any") return true
+  const state = dueDateState(bill)
+  return due === "overdue" ? state.overdue : state.dueSoon
 }
 
-/** A coded, approved payable that hasn't been pushed to QuickBooks yet. */
-export function billReadyToSync(
-  bill: VendorBillSummary,
-  costCodesEnabled: boolean,
-  accountingEnabled = true,
-): boolean {
-  if (isVendorCredit(bill)) return false
-  if (!accountingEnabled) {
-    return bill.status === "approved" || bill.status === "partial"
+/**
+ * Whether a bill belongs to a queue, mirroring the desk's server-side tab
+ * predicates: drafts and credits stay off every working queue, and a run —
+ * even a draft one — claims a bill for "in flight" so the two surfaces agree.
+ */
+function billInQueue(bill: VendorBillSummary, queue: PayableQueue, runs?: RunLookup): boolean {
+  switch (queue) {
+    case "drafts":
+      return bill.is_draft
+    case "paid":
+      return !bill.is_draft && !isVendorCredit(bill) && bill.status === "paid"
+    case "inflight":
+      return !bill.is_draft && !isVendorCredit(bill) && Boolean(runs?.[bill.id])
+    case "approval":
+      return !bill.is_draft && !isVendorCredit(bill) && bill.status === "pending"
+    case "ready":
+      return (
+        !bill.is_draft &&
+        !isVendorCredit(bill) &&
+        !runs?.[bill.id] &&
+        (bill.status === "approved" || bill.status === "partial") &&
+        payableOutstandingCents(bill) > 0
+      )
+    default:
+      return true
   }
-  return (
-    bill.status !== "pending" &&
-    !billNeedsReview(bill, costCodesEnabled, accountingEnabled) &&
-    bill.qbo_sync_status !== "synced"
-  )
 }
 
 function matchesSearch(bill: VendorBillSummary, query: string, costCodesEnabled: boolean): boolean {
@@ -69,46 +93,35 @@ export function filterPayables(
   {
     search,
     queue,
+    due = "any",
     costCodesEnabled,
-    accountingEnabled = true,
-  }: { search: string; queue: PayableQueue; costCodesEnabled: boolean; accountingEnabled?: boolean },
+    runMembershipByBillId,
+  }: {
+    search: string
+    queue: PayableQueue
+    due?: PayableDueFilter
+    costCodesEnabled: boolean
+    runMembershipByBillId?: RunLookup
+  },
 ): VendorBillSummary[] {
   const query = search.trim().toLowerCase()
-  return bills.filter((bill) => {
-    if (!matchesSearch(bill, query, costCodesEnabled)) return false
-    switch (queue) {
-      case "needs_review":
-        return billNeedsReview(bill, costCodesEnabled, accountingEnabled)
-      case "overdue":
-        return dueDateState(bill).overdue
-      case "due_soon":
-        return dueDateState(bill).dueSoon
-      case "ready":
-        return billReadyToSync(bill, costCodesEnabled, accountingEnabled)
-      case "synced":
-        return accountingEnabled ? bill.qbo_sync_status === "synced" : bill.status === "paid"
-      default:
-        return true
-    }
-  })
+  return bills.filter(
+    (bill) =>
+      matchesSearch(bill, query, costCodesEnabled) &&
+      billInQueue(bill, queue, runMembershipByBillId) &&
+      matchesDueFilter(bill, due),
+  )
 }
 
 export function payableQueueCounts(
   bills: VendorBillSummary[],
-  costCodesEnabled: boolean,
-  accountingEnabled = true,
+  runMembershipByBillId?: RunLookup,
 ): Record<PayableQueue, number> {
-  return bills.reduce(
-    (counts, bill) => {
-      counts.all += 1
-      const due = dueDateState(bill)
-      if (due.overdue) counts.overdue += 1
-      if (due.dueSoon) counts.due_soon += 1
-      if (billNeedsReview(bill, costCodesEnabled, accountingEnabled)) counts.needs_review += 1
-      if (billReadyToSync(bill, costCodesEnabled, accountingEnabled)) counts.ready += 1
-      if (accountingEnabled ? bill.qbo_sync_status === "synced" : bill.status === "paid") counts.synced += 1
-      return counts
-    },
-    { all: 0, overdue: 0, due_soon: 0, needs_review: 0, ready: 0, synced: 0 } as Record<PayableQueue, number>,
-  )
+  const counts: Record<PayableQueue, number> = { drafts: 0, approval: 0, ready: 0, inflight: 0, paid: 0, all: 0 }
+  for (const bill of bills) {
+    for (const queue of PAYABLE_QUEUES) {
+      if (billInQueue(bill, queue, runMembershipByBillId)) counts[queue] += 1
+    }
+  }
+  return counts
 }

@@ -115,7 +115,10 @@ export async function loadFinancialsReviewQueueData(projectId: string) {
         })
       }),
     vendorBills: vendorBills
-      .filter((bill) => bill.status === "pending")
+      // A draft quick capture is a half-entered payable, not something anyone
+      // can review. The org payables desk has always excluded them
+      // (`org-payables.ts`); the project review queue leaked them in.
+      .filter((bill) => bill.status === "pending" && !bill.is_draft)
       .map((bill) => {
         const actualLines = bill.actual_lines ?? []
         const blockingReasons = getVendorBillApprovalBlockingReasons(bill as any, actualLines, gateSettings)

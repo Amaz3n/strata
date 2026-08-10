@@ -966,7 +966,7 @@ export async function getWarrantyCostSummary(params: { orgId?: string; community
 }
 
 async function projectIdsForDivision(supabase: SupabaseClient, orgId: string, divisionId: string) {
-  const { data, error } = await supabase.from("projects").select("id").eq("org_id", orgId).eq("division_id", divisionId).limit(1000)
+  const { data, error } = await supabase.from("projects").select("id").eq("org_id", orgId).eq("phase", "delivery").eq("division_id", divisionId).limit(1000)
   if (error) throw new Error(`Failed to scope warranty projects: ${error.message}`)
   return (data ?? []).map((row) => row.id as string)
 }

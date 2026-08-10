@@ -323,6 +323,135 @@ export interface MobileSessionDTO {
   selected_organization_id: string | null
 }
 
+/** One coded line of a payable, as the approver needs to read it in the field. */
+export interface MobilePayableCodingLineDTO {
+  cost_code: string | null
+  cost_code_name: string | null
+  description: string | null
+  amount_cents: number
+  project_name: string | null
+}
+
+/**
+ * The invoice document itself. `download_url` is a short-lived signed URL, so it
+ * is fetched per request and never cached by the client beyond its expiry.
+ */
+export interface MobilePayableDocumentDTO {
+  file_id: string
+  file_name: string | null
+  mime_type: string | null
+  download_url: string | null
+}
+
+/**
+ * What would likely stop this payable at payment time.
+ *
+ * Advisory only. The canonical release gate is `assertBillReleasable`, which runs
+ * when money actually moves and requires `payment.release` — a permission a field
+ * approver deliberately does not hold. These reasons come from the compliance
+ * facts already recorded against the vendor and the bill, so an approver is not
+ * told a payable is clean when the AP desk can already see that it is not.
+ */
+export interface MobilePayableHoldsDTO {
+  present: boolean
+  reasons: string[]
+}
+
+export interface MobilePayableDTO {
+  id: string
+  bill_number: string | null
+  vendor_name: string | null
+  project_id: string
+  project_name: string | null
+  /** Production posture only — a payable against a house on a lot. */
+  lot_label: string | null
+  community_name: string | null
+  status: string
+  total_cents: number
+  /** Still owed: total less payments and retainage. */
+  outstanding_cents: number
+  currency: string
+  bill_date: string | null
+  due_date: string | null
+  /** Negative when already past due. Null when the bill carries no due date. */
+  days_until_due: number | null
+  /**
+   * Required by the decision endpoint. An approver decides the payable they were
+   * shown, so a value that moved on the desk since this rendered is a conflict.
+   */
+  updated_at: string | null
+  coding: MobilePayableCodingSummaryDTO
+  holds: MobilePayableHoldsDTO
+  document: MobilePayableDocumentDTO | null
+  commitment: MobilePayableCommitmentDTO | null
+  over_budget: boolean
+}
+
+export interface MobilePayableCodingSummaryDTO {
+  lines: MobilePayableCodingLineDTO[]
+  coded_cents: number
+  /** Non-zero means the coding does not add up to the bill total yet. */
+  uncoded_cents: number
+  fully_coded: boolean
+}
+
+export interface MobilePayableCommitmentDTO {
+  id: string
+  title: string | null
+  total_cents: number | null
+  billed_cents: number | null
+}
+
+/**
+ * Advisory evidence already computed against the record. Nothing here is a gate —
+ * it is what a person would look at before deciding.
+ */
+export interface MobilePayableEvidenceDTO {
+  line_match: {
+    commitment_id: string
+    matched_at: string
+    /** Invoice lines nothing on the commitment accounts for. */
+    unmatched_count: number
+    /** Lines billing more than the commitment line authorizes. */
+    over_line_count: number
+    /** How far this bill pushes the commitment past its revised value. */
+    over_commitment_cents: number
+    projected_total_cents: number
+    revised_commitment_cents: number
+    notes: string[]
+  } | null
+  waiver_verification: {
+    matches: boolean
+    confidence: string
+    mismatch_summary: string | null
+  } | null
+}
+
+export interface MobilePayableDetailDTO extends MobilePayableDTO {
+  /** False when the caller may read this payable but not decide it. */
+  can_approve: boolean
+  evidence: MobilePayableEvidenceDTO
+}
+
+export interface MobilePayableDecisionResultDTO {
+  id: string
+  status: string
+  updated_at: string | null
+}
+
+/**
+ * Whole days from today to the due date, negative once it is past due. Both sides
+ * are truncated to a calendar date first so a bill due today reads as 0 rather
+ * than drifting with the clock.
+ */
+export function daysUntilDue(dueDate: string | null | undefined, today: Date = new Date()): number | null {
+  if (!dueDate) return null
+  const due = Date.parse(`${dueDate.slice(0, 10)}T00:00:00.000Z`)
+  if (!Number.isFinite(due)) return null
+  const from = Date.parse(`${today.toISOString().slice(0, 10)}T00:00:00.000Z`)
+  return Math.round((due - from) / 86_400_000)
+}
+
 export interface MobilePageMeta {
   request_id: string
   next_cursor: string | null

@@ -23,6 +23,8 @@ export const estimateLineInputSchema = z.object({
   is_optional: z.boolean().optional(),
   /** Allowance line: included in the total as a placeholder budget the client can reallocate. */
   is_allowance: z.boolean().optional(),
+  /** Optional add-ons sharing a group label are mutually exclusive alternates. */
+  option_group: z.string().trim().max(80).optional(),
   /** Sub bid this line's cost basis was pulled from (estimate builder "Use bid"). */
   source_bid_submission_id: z.string().uuid().optional(),
 })
@@ -46,6 +48,11 @@ export const estimateInputSchema = z.object({
   valid_until: z.string().optional(),
   tax_rate: z.number().optional(),
   markup_percent: z.number().optional(),
+  /** Percent of the base subtotal carried as contingency (taxed like scope). */
+  contingency_percent: z.number().min(0).max(100).optional(),
+  /** Scope qualifications rendered on the portal, PDF, and contract snapshot. */
+  inclusions: z.string().optional(),
+  exclusions: z.string().optional(),
   lines: z.array(estimateLineInputSchema).min(1, "At least one line is required"),
 })
 

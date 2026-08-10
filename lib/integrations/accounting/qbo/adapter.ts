@@ -6,12 +6,21 @@ import { recordEvent } from "@/lib/services/events"
 import { logQBO } from "@/lib/services/accounting-logger"
 import { downloadFilesObject } from "@/lib/storage/files-storage"
 import type { AccountingProvider, PushResult } from "@/lib/integrations/accounting/provider"
-import { getQBOAccessTokenForConnection, refreshQBOConnectionsDueForKeepalive } from "@/lib/services/accounting-connections"
+import { getQBOAccessTokenForConnection, refreshQBOConnectionsDueForKeepalive } from "@/lib/integrations/accounting/qbo/connections"
 import { resolveAccountingTarget } from "@/lib/services/accounting-target"
-import { createOrUpdateQBOEntity, isStaleObjectError, QBO_DELETED_REVIEW_MESSAGE, resolveQBOSyncTarget } from "@/lib/integrations/accounting/qbo/sync-safety"
+import {
+  createOrUpdateQBOEntity,
+  findAlreadyCreatedQBOTransaction,
+  isStaleObjectError,
+  QBO_DELETED_REVIEW_MESSAGE,
+  resolveQBOSyncTarget,
+  withArcTransactionMarker,
+} from "@/lib/integrations/accounting/qbo/sync-safety"
 import { createQBOOAuthState, decryptToken, getQBOAuthUrl, revokeQBOToken } from "@/lib/integrations/accounting/qbo/auth"
 import { drainQboInboundEvents, ingestQboCdcChanges, receiveQboWebhook } from "@/lib/integrations/accounting/qbo/reconcile"
 import { accountingDimension, accountingReference, type AccountingCoding } from "@/lib/services/accounting-coding"
+import { stampLocalFingerprint } from "@/lib/integrations/accounting/local-change"
+import { resolveAccountingExternalId } from "@/lib/services/accounting-sync-state"
 
 export { createOrUpdateQBOEntity, resolveQBOSyncTarget } from "@/lib/integrations/accounting/qbo/sync-safety"
 
@@ -715,6 +724,10 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string, options
   if (existingPaymentSync?.qbo_id) {
     return { success: true, qbo_id: existingPaymentSync.qbo_id }
   }
+  // A sync record with no external id is the fingerprint of an attempt that ran
+  // and did not get to write its result down — the case where QuickBooks may
+  // already hold the payment. See `findAlreadyCreatedQBOTransaction`.
+  const paymentRetryAfterUnknownOutcome = existingPaymentSync != null
 
   try {
     const { data: payment, error } = await supabase
@@ -729,7 +742,18 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string, options
     if (error || !payment) return { success: false, error: error?.message ?? "Payment not found" }
     
     const invoice = Array.isArray(payment.invoice) ? payment.invoice[0] : payment.invoice
-    if (!invoice?.qbo_id) {
+    // C3.4 dual-read: the sync ledger owns this link now, the column is only the
+    // fallback for entities the backfill has not reached.
+    const invoiceExternalId = payment.invoice_id
+      ? await resolveAccountingExternalId(supabase, {
+          orgId,
+          connectionId: resolvedConnectionId,
+          entityType: "invoice",
+          entityId: payment.invoice_id,
+          legacyExternalId: invoice?.qbo_id ?? null,
+        })
+      : null
+    if (!invoiceExternalId) {
       const message = "Invoice not synced to QBO"
       await markSyncRecordError(orgId, "payment", paymentId, message, options?.connectionId)
       if (payment.invoice_id) {
@@ -782,16 +806,29 @@ export async function syncPaymentToQBO(paymentId: string, orgId: string, options
           return { value: cust.Id! }
         })()
 
-    const qboPayment = await client.createPayment({
-      CustomerRef: customerRef,
-      TotalAmt: payment.amount_cents / 100,
-      Line: [
-        {
-          Amount: payment.amount_cents / 100,
-          LinkedTxn: [{ TxnId: invoice.qbo_id, TxnType: "Invoice" }],
-        },
-      ],
-    })
+    const adoptedPaymentId = paymentRetryAfterUnknownOutcome
+      ? await findAlreadyCreatedQBOTransaction({
+          client,
+          entity: "Payment",
+          entityType: "payment",
+          entityId: paymentId,
+          logContext: { orgId },
+        })
+      : null
+
+    const qboPayment = adoptedPaymentId
+      ? { Id: adoptedPaymentId }
+      : await client.createPayment({
+          CustomerRef: customerRef,
+          TotalAmt: payment.amount_cents / 100,
+          PrivateNote: withArcTransactionMarker(null, "payment", paymentId),
+          Line: [
+            {
+              Amount: payment.amount_cents / 100,
+              LinkedTxn: [{ TxnId: invoiceExternalId, TxnType: "Invoice" }],
+            },
+          ],
+        })
 
     await upsertSyncRecord({
       orgId,
@@ -1380,6 +1417,9 @@ export async function syncBillPaymentToQBO(paymentId: string, orgId: string, opt
   if (existingSync?.qbo_id) {
     return { success: true, qbo_id: existingSync.qbo_id }
   }
+  // See the same guard in syncPaymentToQBO: a record with no external id means a
+  // prior attempt's outcome is unknown, and QuickBooks may already hold this.
+  const billPaymentRetryAfterUnknownOutcome = existingSync != null
 
   const { data: payment, error } = await supabase
     .from("payments")
@@ -1390,9 +1430,17 @@ export async function syncBillPaymentToQBO(paymentId: string, orgId: string, opt
 
   if (error || !payment) return { success: false, error: error?.message ?? "Payment not found" }
   let bill = Array.isArray((payment as any).bill) ? (payment as any).bill[0] : (payment as any).bill
-  if (!bill?.qbo_id) {
-    const billId = (payment as any).bill_id as string | undefined
-    if (!billId) return { success: false, error: "Payment is not linked to a vendor bill" }
+  const billId = (payment as any).bill_id as string | undefined
+  if (!billId) return { success: false, error: "Payment is not linked to a vendor bill" }
+  // C3.4 dual-read: the sync ledger owns this link, the column is the fallback.
+  let billExternalId = await resolveAccountingExternalId(supabase, {
+    orgId,
+    connectionId: resolvedConnectionId,
+    entityType: "bill",
+    entityId: billId,
+    legacyExternalId: bill?.qbo_id ?? null,
+  })
+  if (!billExternalId) {
     const billSync = await syncVendorBillToQBO(billId, orgId, { connectionId: resolvedConnectionId })
     if (!billSync.success) {
       return { success: false, error: billSync.error ?? "Bill is not linked to QuickBooks yet" }
@@ -1404,11 +1452,18 @@ export async function syncBillPaymentToQBO(paymentId: string, orgId: string, opt
       .eq("id", billId)
       .maybeSingle()
     bill = refreshedBill
-    if (!bill?.qbo_id) return { success: false, error: "Bill is not linked to QuickBooks yet" }
+    billExternalId = await resolveAccountingExternalId(supabase, {
+      orgId,
+      connectionId: resolvedConnectionId,
+      entityType: "bill",
+      entityId: billId,
+      legacyExternalId: bill?.qbo_id ?? null,
+    })
+    if (!billExternalId) return { success: false, error: "Bill is not linked to QuickBooks yet" }
   }
 
   try {
-    const qboBill = await client.getBillById(bill.qbo_id)
+    const qboBill = await client.getBillById(billExternalId)
     const vendorRef = qboBill?.VendorRef
     if (!vendorRef?.value) {
       return { success: false, error: "QuickBooks bill is missing a vendor reference" }
@@ -1420,22 +1475,41 @@ export async function syncBillPaymentToQBO(paymentId: string, orgId: string, opt
       return { success: false, error: "Choose a default QuickBooks payment account before syncing bill payments" }
     }
 
-    const qboPayment = await client.createBillPayment({
-      VendorRef: vendorRef,
-      PayType: "Check",
-      TxnDate: payment.received_at ? new Date(payment.received_at).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
-      TotalAmt: payment.amount_cents / 100,
-      PrivateNote: payment.reference ?? undefined,
-      CheckPayment: {
-        BankAccountRef: { value: paymentAccountId },
-      },
-      Line: [
-        {
-          Amount: payment.amount_cents / 100,
-          LinkedTxn: [{ TxnId: bill.qbo_id, TxnType: "Bill" }],
-        },
-      ],
-    })
+    // Record the rail the money actually moved on. Everything used to post as a
+    // check, so an auditor reviewing a year of electronic vendor payments saw a
+    // year of checks. QuickBooks has no ACH PayType — the electronic equivalent
+    // is CreditCard against the funding account — so anything not a literal
+    // check maps there rather than misreporting the instrument.
+    const isCheck = String(payment.method ?? "check") === "check"
+    const payType = isCheck ? "Check" : "CreditCard"
+    const adoptedBillPaymentId = billPaymentRetryAfterUnknownOutcome
+      ? await findAlreadyCreatedQBOTransaction({
+          client,
+          entity: "BillPayment",
+          entityType: "bill_payment",
+          entityId: paymentId,
+          logContext: { orgId },
+        })
+      : null
+
+    const qboPayment = adoptedBillPaymentId
+      ? { Id: adoptedBillPaymentId, SyncToken: undefined }
+      : await client.createBillPayment({
+          VendorRef: vendorRef,
+          PayType: payType,
+          TxnDate: payment.received_at ? new Date(payment.received_at).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
+          TotalAmt: payment.amount_cents / 100,
+          PrivateNote: withArcTransactionMarker(payment.reference, "bill_payment", paymentId),
+          ...(isCheck
+            ? { CheckPayment: { BankAccountRef: { value: paymentAccountId } } }
+            : { CreditCardPayment: { CCAccountRef: { value: paymentAccountId } } }),
+          Line: [
+            {
+              Amount: payment.amount_cents / 100,
+              LinkedTxn: [{ TxnId: billExternalId, TxnType: "Bill" }],
+            },
+          ],
+        })
 
     await upsertSyncRecord({
       orgId,
@@ -1466,6 +1540,69 @@ export async function syncBillPaymentToQBO(paymentId: string, orgId: string, opt
   }
 }
 
+/**
+ * Reverse a bill payment in QuickBooks after an ACH return.
+ *
+ * Arc reopens the vendor bill when money comes back; without this the books
+ * diverge permanently — QuickBooks keeps a payment for funds the bank pulled
+ * back, and the bill shows paid there and open here forever.
+ *
+ * Deleting is how QuickBooks reverses a BillPayment (there is no void for this
+ * entity), and it restores the linked bill's open balance, which is exactly the
+ * state a return leaves Arc in.
+ */
+export async function voidBillPaymentInQBO(
+  paymentId: string,
+  orgId: string,
+  reason: string,
+  options?: { connectionId?: string },
+) {
+  const supabase = createServiceSupabaseClient()
+  const resolvedConnectionId = await resolveHealthConnectionId(orgId, options?.connectionId)
+  if (!resolvedConnectionId) return { success: false, error: "No active QBO connection" }
+  const client = await QBOClient.forConnection(resolvedConnectionId)
+  if (!client) return { success: false, error: "No active QBO connection" }
+
+  const { data: record } = await supabase
+    .from("accounting_sync_records")
+    .select("external_id")
+    .eq("org_id", orgId)
+    .eq("connection_id", resolvedConnectionId)
+    .eq("entity_type", "bill_payment")
+    .eq("entity_id", paymentId)
+    .maybeSingle()
+  // Nothing was ever pushed, so there is nothing to reverse. Not an error — a
+  // return can land on a payment whose sync never succeeded.
+  if (!record?.external_id) return { success: true, skipped: true }
+
+  try {
+    // SyncToken has to come from QuickBooks, never from a cached copy: an edit
+    // made in QuickBooks since the push would make a stale token fail.
+    const existing = await client.getBillPaymentById(record.external_id)
+    if (!existing) {
+      await supabase.from("accounting_sync_records").delete().eq("org_id", orgId).eq("connection_id", resolvedConnectionId).eq("entity_type", "bill_payment").eq("entity_id", paymentId)
+      return { success: true, skipped: true }
+    }
+    await client.deleteBillPayment({ Id: existing.Id, SyncToken: existing.SyncToken })
+    await supabase
+      .from("accounting_sync_records")
+      .delete()
+      .eq("org_id", orgId)
+      .eq("connection_id", resolvedConnectionId)
+      .eq("entity_type", "bill_payment")
+      .eq("entity_id", paymentId)
+    await markConnectionHealthy(orgId, options?.connectionId)
+    logQBO("info", "bill_payment_void_success", { orgId, paymentId, qboId: record.external_id, reason })
+    return { success: true, qbo_id: record.external_id }
+  } catch (error: any) {
+    const message = error instanceof QBOError ? error.message : error?.message ?? String(error)
+    await markSyncRecordError(orgId, "bill_payment", paymentId, message, options?.connectionId)
+    await markConnectionErrorIfConnectionLevel(orgId, error, message, options?.connectionId)
+    logQBO("error", "bill_payment_void_failed", { orgId, paymentId, error: message })
+    return { success: false, error: message }
+  }
+}
+
 async function upsertSyncRecord(input: {
   orgId: string
   connectionId?: string | null
@@ -1483,6 +1620,7 @@ async function upsertSyncRecord(input: {
   }
   if (!connectionId) return
 
+  const entityType = input.entityType ?? "invoice"
   await supabase
     .from("accounting_sync_records")
     .upsert(
@@ -1490,7 +1628,7 @@ async function upsertSyncRecord(input: {
         org_id: input.orgId,
         connection_id: connectionId,
         provider: "qbo",
-        entity_type: input.entityType ?? "invoice",
+        entity_type: entityType,
         entity_id: input.entityId,
         external_id: input.qboId,
         external_version: input.syncToken,
@@ -1500,6 +1638,18 @@ async function upsertSyncRecord(input: {
       },
       { onConflict: "org_id,connection_id,entity_type,entity_id" },
     )
+
+  // What we just sent is now what QuickBooks holds, so this is the baseline a
+  // later inbound reconcile measures "did a person change Arc since?" against.
+  // Safe to run before the entity's own `qbo_*` bookkeeping update: the sync
+  // write never touches a fingerprinted field.
+  await stampLocalFingerprint({
+    supabase,
+    orgId: input.orgId,
+    connectionId,
+    entityType,
+    entityId: input.entityId,
+  })
 }
 
 async function claimSyncCreate(input: {
@@ -2073,6 +2223,43 @@ async function requireQboClient(connectionId: string) {
   return client
 }
 
+/**
+ * Post one summarized journal for a closed period.
+ *
+ * The lines arrive already mapped to QuickBooks accounts — the mirror engine
+ * owns the netting and the mapping, this owns the transport. Idempotency rides
+ * on `accounting_sync_records` under `entity_type = "period_summary"`, which the
+ * engine writes; `reference` goes into the memo so the entry is identifiable in
+ * QuickBooks by a human looking for it.
+ */
+async function pushSummaryJournalToQbo(input: {
+  orgId: string
+  connectionId: string
+  reference: string
+  date: string
+  memo: string
+  lines: Array<{ externalAccountId: string; externalAccountName: string | null; debitCents: number; creditCents: number; description: string }>
+}): Promise<PushResult> {
+  if (input.lines.length < 2) throw new Error("A summarized journal needs at least two lines")
+  const qboLines = input.lines.map((line) => ({
+    Amount: (line.debitCents || line.creditCents) / 100,
+    Description: line.description,
+    DetailType: "JournalEntryLineDetail",
+    JournalEntryLineDetail: {
+      PostingType: line.debitCents > 0 ? "Debit" : "Credit",
+      AccountRef: { value: line.externalAccountId, name: line.externalAccountName ?? undefined },
+    },
+  }))
+  const client = await requireQboClient(input.connectionId)
+  const created = await client.createJournalEntry({
+    TxnDate: input.date,
+    PrivateNote: `${input.memo} [${input.reference}]`,
+    Line: qboLines,
+  })
+  if (!created?.Id) throw new Error("QuickBooks did not return the mirrored summary id")
+  return { externalId: String(created.Id), externalVersion: created.SyncToken ? String(created.SyncToken) : null, raw: created }
+}
+
 async function pushBooksJournalToQbo(input: { orgId: string; connectionId: string; journalId: string }): Promise<PushResult> {
   const supabase = createServiceSupabaseClient()
   const { data: existing } = await supabase.from("accounting_sync_records").select("external_id, external_version, status").eq("org_id", input.orgId).eq("connection_id", input.connectionId).eq("entity_type", "journal_entry").eq("entity_id", input.journalId).maybeSingle()
@@ -2123,11 +2310,13 @@ export const qboProvider: AccountingProvider = {
     supportsSubCustomers: true,
     supportsInvoiceNumberReservation: true,
     supportsInvoiceDocNumberSync: true,
+    supportsImport: true,
     supportsCDC: true,
     supportsWebhooks: true,
     supportsAttachments: true,
     supportsJournalEntryPush: true,
     supportsVendorCredits: true,
+    supportsBillPaymentVoid: true,
     updateConcurrency: "sync_token",
     dimensions: ["class", "customer"],
   },
@@ -2159,7 +2348,11 @@ export const qboProvider: AccountingProvider = {
   async pushBillPayment(input) {
     return requirePushResult(await syncBillPaymentToQBO(input.paymentId, input.orgId, { connectionId: input.connectionId }))
   },
+  async voidBillPayment(input) {
+    return requirePushResult(await voidBillPaymentInQBO(input.paymentId, input.orgId, input.reason, { connectionId: input.connectionId }))
+  },
   pushJournalEntry: pushBooksJournalToQbo,
+  pushSummaryJournal: pushSummaryJournalToQbo,
   async listDimensionValues(input) {
     const client = await requireQboClient(input.connectionId)
     if (input.kind === "class") return (await client.listClasses()).map((item) => ({ id: item.id, name: item.name }))

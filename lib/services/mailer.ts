@@ -7,6 +7,8 @@ import { InvoiceReminderEmail } from "@/lib/emails/invoice-reminder-email"
 import { ProjectPortalInviteEmail } from "@/lib/emails/project-portal-invite-email"
 import { InviteTeamMemberEmail } from "@/lib/emails/invite-team-member-email"
 import { PasswordResetEmail } from "@/lib/emails/password-reset-email"
+import { ExternalPasswordResetEmail } from "@/lib/emails/external-password-reset-email"
+import { ExternalVerifyEmail } from "@/lib/emails/external-verify-email"
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY
 const RESEND_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev"
@@ -18,6 +20,8 @@ export interface EmailPayload {
   text?: string
   replyTo?: string | null
   from?: string
+  /** Stable provider key used to suppress duplicate transactional sends. */
+  idempotencyKey?: string
   attachments?: Array<{
     filename: string
     content: string
@@ -167,6 +171,9 @@ export async function sendEmail(payload: EmailPayload): Promise<boolean> {
       headers: {
         Authorization: `Bearer ${RESEND_API_KEY}`,
         "Content-Type": "application/json",
+        ...(payload.idempotencyKey
+          ? { "Idempotency-Key": payload.idempotencyKey }
+          : {}),
       },
       body: JSON.stringify({
         from: payload.from ?? RESEND_FROM_EMAIL,
@@ -306,6 +313,51 @@ export async function sendPasswordResetEmail(payload: PasswordResetEmailPayload)
     subject: `Reset your ${payload.orgName ?? "Arc"} password`,
     html,
     from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
+  })
+}
+
+export interface ExternalPasswordResetEmailPayload {
+  to: string
+  resetLink: string
+}
+
+/** Arc-branded, not builder-branded — an external identity spans every builder. */
+export async function sendExternalPasswordResetEmail(
+  payload: ExternalPasswordResetEmailPayload,
+): Promise<void> {
+  const html = await renderEmailTemplate(
+    ExternalPasswordResetEmail({
+      recipientEmail: payload.to,
+      resetLink: payload.resetLink,
+    }),
+  )
+
+  await sendEmail({
+    to: [payload.to],
+    subject: "Reset your Arc password",
+    html,
+  })
+}
+
+export interface ExternalVerifyEmailPayload {
+  to: string
+  verifyLink: string
+  orgName?: string | null
+}
+
+export async function sendExternalVerifyEmail(payload: ExternalVerifyEmailPayload): Promise<void> {
+  const html = await renderEmailTemplate(
+    ExternalVerifyEmail({
+      recipientEmail: payload.to,
+      orgName: payload.orgName,
+      verifyLink: payload.verifyLink,
+    }),
+  )
+
+  await sendEmail({
+    to: [payload.to],
+    subject: "Confirm your Arc email",
+    html,
   })
 }
 
@@ -617,6 +669,123 @@ export async function sendBidDateUpdateEmail(payload: BidDateUpdateEmailPayload)
   await sendEmail({
     to: [payload.to],
     subject: `Bid Deadline Update: ${payload.bidPackageTitle}`,
+    html,
+    from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
+  })
+}
+
+export interface VendorPayoutDestinationChangedEmailPayload {
+  to: string[]
+  vendorName: string
+  /** Masked only. A full account or routing number never leaves the database. */
+  bankLast4: string | null
+  holdUntil: string
+}
+
+/**
+ * The out-of-band warning that a payout bank changed.
+ *
+ * Sent to the vendor's own administrators, not to whoever made the change, and
+ * deliberately alarming: if this was not them, the cooling period named here is
+ * the window in which it can still be stopped. There is no action button — an
+ * email that offers a one-click "confirm" to a phished recipient is worse than
+ * no email at all.
+ */
+export async function sendVendorPayoutDestinationChangedEmail(
+  payload: VendorPayoutDestinationChangedEmailPayload,
+): Promise<boolean> {
+  if (payload.to.length === 0) return false
+  const holdUntil = new Date(payload.holdUntil).toLocaleString("en-US", { dateStyle: "long", timeStyle: "short", timeZone: "UTC" })
+  const account = payload.bankLast4 ? ` ending ${escapeMessage(payload.bankLast4)}` : ""
+  const html = renderStandardEmailLayout({
+    title: "Your Arc payout bank was changed",
+    messageHtml: `
+      <p style="margin:0 0 14px 0;">The payout bank account on file for ${escapeMessage(payload.vendorName)} was changed to an account${account}.</p>
+      <p style="margin:0 0 14px 0;">Payments to this account are on hold until ${escapeMessage(holdUntil)} UTC while the change settles. Every builder who pays you through Arc has been told as well.</p>
+      <p style="margin:0;"><strong>If you did not make this change, contact Arc support immediately and secure your Stripe account.</strong> Do not reply to this email with any bank details.</p>
+    `,
+  })
+  return sendEmail({
+    to: payload.to,
+    subject: "Action may be required: your Arc payout bank changed",
+    html,
+  })
+}
+
+export interface VendorPaymentInviteEmailPayload {
+  to: string[]
+  recipientName?: string | null
+  companyName: string
+  orgName: string
+  orgSlug?: string | null
+  orgLogoUrl?: string | null
+  setupUrl: string
+}
+
+/**
+ * Asks a vendor to set up electronic payment. Deliberately does not promise a
+ * short flow: a vendor who already verified with another Arc builder only has
+ * to confirm the company, but one starting fresh goes through Stripe.
+ */
+export async function sendVendorPaymentInviteEmail(payload: VendorPaymentInviteEmailPayload): Promise<boolean> {
+  if (payload.to.length === 0) return false
+  const orgName = escapeMessage(payload.orgName)
+  const greeting = payload.recipientName
+    ? `<p style="margin:0 0 14px 0;">Hi ${escapeMessage(payload.recipientName)},</p>`
+    : ""
+
+  const html = renderStandardEmailLayout({
+    title: `Get paid electronically by ${payload.orgName}`,
+    messageHtml: `
+      ${greeting}
+      <p style="margin:0 0 14px 0;">${orgName} pays subcontractors through Arc and would like to pay ${escapeMessage(payload.companyName)} by direct deposit instead of by check.</p>
+      <p style="margin:0 0 14px 0;">You verify your business and payout bank once. The same account then works with every Arc builder you work with, so if you have already done this for another builder there is nothing to set up again — just confirm your company.</p>
+      <p style="margin:0;">${orgName} never sees or enters your bank details.</p>
+    `,
+    buttonText: "Set up direct deposit",
+    buttonUrl: payload.setupUrl,
+    orgName: payload.orgName,
+    orgLogoUrl: payload.orgLogoUrl,
+  })
+
+  return sendEmail({
+    to: payload.to,
+    subject: `${payload.orgName} would like to pay you by direct deposit`,
+    html,
+    from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
+  })
+}
+
+export interface VendorArcPayReadyEmailPayload {
+  to: string
+  recipientName?: string | null
+  companyName: string
+  orgName: string
+  orgSlug?: string | null
+  orgLogoUrl?: string | null
+}
+
+/** Confirms to the teammate who sent the invite that the vendor is payable. */
+export async function sendVendorArcPayReadyEmail(payload: VendorArcPayReadyEmailPayload): Promise<boolean> {
+  const greeting = payload.recipientName
+    ? `<p style="margin:0 0 14px 0;">Hi ${escapeMessage(payload.recipientName)},</p>`
+    : ""
+  const payablesUrl = `${(process.env.NEXT_PUBLIC_APP_URL ?? "https://arcnaples.com").replace(/\/$/, "")}/payables`
+  const html = renderStandardEmailLayout({
+    title: `${payload.companyName} is ready for Arc Pay`,
+    messageHtml: `
+      ${greeting}
+      <p style="margin:0 0 14px 0;">${escapeMessage(payload.companyName)} completed business and payout setup. Bills for this vendor can now be paid through Arc Pay.</p>
+      <p style="margin:0;">Arc only shows masked destination details to your team; the vendor&apos;s full bank information remains with the payment provider.</p>
+    `,
+    buttonText: "Review payables",
+    buttonUrl: payablesUrl,
+    orgName: payload.orgName,
+    orgLogoUrl: payload.orgLogoUrl,
+  })
+  return sendEmail({
+    to: [payload.to],
+    subject: `${payload.companyName} is ready for Arc Pay`,
     html,
     from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
   })

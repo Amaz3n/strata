@@ -63,6 +63,12 @@ export type QuoteDocumentData = {
   subtotalCents?: number | null
   taxCents?: number | null
   totalCents?: number | null
+  /** Contingency already included in totalCents; rendered as its own row. */
+  contingencyCents?: number | null
+  contingencyPercent?: number | null
+  /** Scope qualifications rendered alongside the terms. */
+  inclusions?: string | null
+  exclusions?: string | null
   validUntil?: string | null
   /** Signature lines (proposal variant). Builder places real e-sign fields over these. */
   signers?: QuoteSigner[]
@@ -140,6 +146,10 @@ const styles = StyleSheet.create({
   optionalSection: { marginTop: 22 },
   optionalRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", paddingVertical: 9, borderBottomWidth: 1, borderColor: ROW_LINE, borderStyle: "dashed" },
   optionalAmount: { fontSize: 10, fontWeight: "bold", textAlign: "right" },
+
+  // Contingency (muted row above the total)
+  contingencyRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 18 },
+  contingencyText: { fontSize: 9, color: MUTED },
 
   // Total (single full-width row)
   totalRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderTopWidth: 2, paddingTop: 14, marginTop: 22 },
@@ -227,8 +237,12 @@ function QuoteDocument({ data }: { data: QuoteDocumentData }) {
     ? data.lines.filter((l) => isOptional(l) && isAcceptedOptional(l))
     : data.lines.filter((l) => isOptional(l))
 
+  // Client-facing unit price is the SELL rate (cost + markup); the raw unit
+  // cost is the builder's basis and never appears on the document.
+  const unitSellCents = (line: QuoteLine) =>
+    Math.round((line.unit_cost_cents ?? 0) * (1 + (line.markup_pct ?? 0) / 100))
   const unitLineText = (line: QuoteLine) =>
-    `${line.quantity ?? 1}${line.unit ? ` ${line.unit}` : ""} × ${formatCurrency(line.unit_cost_cents)}`
+    `${line.quantity ?? 1}${line.unit ? ` ${line.unit}` : ""} × ${formatCurrency(unitSellCents(line))}`
 
   const addressLines = (data.orgAddress ?? "").split("\n").map((l) => l.trim()).filter(Boolean)
 
@@ -342,11 +356,34 @@ function QuoteDocument({ data }: { data: QuoteDocumentData }) {
           </View>
         ) : null}
 
+        {/* Contingency — inside the total, shown so the number is honest */}
+        {data.contingencyCents && data.contingencyCents > 0 ? (
+          <View style={styles.contingencyRow}>
+            <Text style={styles.contingencyText}>
+              Contingency{data.contingencyPercent ? ` (${data.contingencyPercent}%)` : ""}
+            </Text>
+            <Text style={styles.contingencyText}>{formatCurrency(data.contingencyCents)}</Text>
+          </View>
+        ) : null}
+
         {/* Total */}
         <View style={[styles.totalRow, { borderColor: accent }]}>
           <Text style={styles.totalLabel}>Total</Text>
           <Text style={[styles.totalValue, { color: accent }]}>{formatCurrency(data.totalCents)}</Text>
         </View>
+
+        {data.inclusions ? (
+          <View style={styles.termsBox} wrap={false}>
+            <Text style={styles.blockLabel}>Included in this price</Text>
+            <Text style={styles.termsText}>{data.inclusions}</Text>
+          </View>
+        ) : null}
+        {data.exclusions ? (
+          <View style={styles.termsBox} wrap={false}>
+            <Text style={styles.blockLabel}>Not included</Text>
+            <Text style={styles.termsText}>{data.exclusions}</Text>
+          </View>
+        ) : null}
 
         {data.terms ? (
           <View style={styles.termsBox} wrap={false}>

@@ -19,6 +19,7 @@ import {
 import { toast } from "sonner"
 
 import { cn } from "@/lib/utils"
+import { DocumentScanOverlay } from "@/components/animation/document-scan-overlay"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -29,13 +30,26 @@ import {
 } from "@/components/ui/dropdown-menu"
 import type { AttachedFile } from "@/components/files"
 import { isImageFile, isPdfFile, formatFileSize } from "@/components/files/types"
+import { padRegion, type DocumentRegion } from "@/lib/ai/field-provenance"
 
 interface PayableDocumentPaneProps {
   attachments: AttachedFile[]
   loading?: boolean
   onAttach?: (files: File[], linkRole?: string) => Promise<void>
   onDetach?: (linkId: string) => Promise<void>
+  /** Local/pre-upload flows replace the active document without attach-then-detach semantics. */
+  onReplace?: (file: File) => Promise<void>
+  /** Creation only needs the invoice canvas, not the supporting-documents tab. */
+  invoiceOnly?: boolean
   projectId?: string
+  /**
+   * Region to frame on the page — where a scanned field was read from. Setting
+   * it also jumps the viewer to that page, which is the whole point: a reviewer
+   * checking a total on page 3 should not have to find page 3.
+   */
+  highlight?: DocumentRegion | null
+  /** True while AI is reading this document — plays the dot-matrix scan overlay over the page. */
+  scanning?: boolean
   className?: string
 }
 
@@ -49,10 +63,14 @@ export function PayableDocumentPane({
   loading = false,
   onAttach,
   onDetach,
+  onReplace,
+  invoiceOnly = false,
   projectId,
+  highlight = null,
+  scanning = false,
   className,
 }: PayableDocumentPaneProps) {
-  const [activeTab, setActiveTab] = useState<"receipt" | "docs">("receipt")
+  const [activeTab, setActiveTab] = useState<"invoice" | "docs">("invoice")
   const [activeId, setActiveId] = useState<string | null>(attachments[0]?.id ?? null)
   const [zoom, setZoom] = useState(1)
   const [rotation, setRotation] = useState(0)
@@ -135,6 +153,13 @@ export function PayableDocumentPane({
     return () => observer.disconnect()
   }, [active?.id])
 
+  // Following a citation means going to its page. Rotation is left alone: the
+  // box is in page space, so a rotated view would put the frame in the wrong
+  // place, and resetting the user's rotation for them is worse than either.
+  useEffect(() => {
+    if (highlight) setActivePage(highlight.page)
+  }, [highlight])
+
   const PdfDocument = pdfComponents?.Document
   const PdfPage = pdfComponents?.Page
   const activePageClamped = Math.min(Math.max(activePage, 1), Math.max(pageCount, 1))
@@ -148,11 +173,15 @@ export function PayableDocumentPane({
 
   const handleReplaceFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? [])
-    if (files.length > 0 && active && onAttach && onDetach) {
+    if (files.length > 0 && (onReplace || (active && onAttach && onDetach))) {
       setIsReplacing(true)
       try {
-        await onAttach(files)
-        await onDetach(active.linkId)
+        if (onReplace) {
+          await onReplace(files[0])
+        } else if (active && onAttach && onDetach) {
+          await onAttach(files)
+          await onDetach(active.linkId)
+        }
         toast.success("Invoice replaced successfully")
       } catch (err) {
         console.error("Replace failed:", err)
@@ -210,35 +239,37 @@ export function PayableDocumentPane({
         <div className="flex gap-6 h-full items-center">
           <button
             type="button"
-            onClick={() => setActiveTab("receipt")}
+            onClick={() => setActiveTab("invoice")}
             className={cn(
               "relative flex h-full items-center text-sm font-semibold transition-colors focus:outline-none",
-              activeTab === "receipt" ? "text-primary" : "text-muted-foreground hover:text-foreground"
+              activeTab === "invoice" ? "text-primary" : "text-muted-foreground hover:text-foreground"
             )}
           >
-            Receipt
-            {activeTab === "receipt" && (
+            Invoice
+            {activeTab === "invoice" && (
               <span className="absolute bottom-0 left-0 right-0 h-[2px] bg-primary" />
             )}
           </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("docs")}
-            className={cn(
-              "relative flex h-full items-center text-sm font-semibold transition-colors focus:outline-none",
-              activeTab === "docs" ? "text-primary" : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            Documents
-            {otherAttachments.length > 0 && (
-              <span className="ml-1.5 rounded-full bg-muted/80 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-                {otherAttachments.length}
-              </span>
-            )}
-            {activeTab === "docs" && (
-              <span className="absolute bottom-0 left-0 right-0 h-[2px] bg-primary" />
-            )}
-          </button>
+          {!invoiceOnly ? (
+            <button
+              type="button"
+              onClick={() => setActiveTab("docs")}
+              className={cn(
+                "relative flex h-full items-center text-sm font-semibold transition-colors focus:outline-none",
+                activeTab === "docs" ? "text-primary" : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              Documents
+              {otherAttachments.length > 0 && (
+                <span className="ml-1.5 rounded-full bg-muted/80 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  {otherAttachments.length}
+                </span>
+              )}
+              {activeTab === "docs" && (
+                <span className="absolute bottom-0 left-0 right-0 h-[2px] bg-primary" />
+              )}
+            </button>
+          ) : null}
         </div>
         {loading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
       </div>
@@ -266,21 +297,21 @@ export function PayableDocumentPane({
           <div className="flex flex-1 items-center justify-center">
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
-        ) : activeTab === "receipt" ? (
-          // Receipt View
+        ) : activeTab === "invoice" ? (
+          // Invoice view
           !active ? (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center p-6 bg-background/30">
               <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
                 <FileText className="h-7 w-7" />
               </span>
               <div>
-                <p className="text-sm font-semibold">No receipt attached</p>
+                <p className="text-sm font-semibold">No invoice attached</p>
                 <p className="text-xs text-muted-foreground mt-1 max-w-[280px]">
-                  Go to the Documents tab or click below to upload a receipt/invoice.
+                  Go to the Documents tab or click below to upload the vendor&apos;s invoice.
                 </p>
                 <Button onClick={handleReplaceClick} className="mt-4" size="sm">
                   <Upload className="mr-2 h-4 w-4" />
-                  Upload receipt
+                  Upload invoice
                 </Button>
               </div>
             </div>
@@ -311,30 +342,48 @@ export function PayableDocumentPane({
                         setIsRendering(false)
                       }}
                     >
-                      <PdfPage
-                        pageNumber={activePageClamped}
-                        width={pageWidth}
-                        rotate={rotation}
-                        renderTextLayer={false}
-                        renderAnnotationLayer={false}
-                        onRenderSuccess={() => setIsRendering(false)}
-                        className={cn("rounded-md shadow-lg", isRendering && "opacity-0")}
-                      />
+                      <div className="relative">
+                        <PdfPage
+                          pageNumber={activePageClamped}
+                          width={pageWidth}
+                          rotate={rotation}
+                          renderTextLayer={false}
+                          renderAnnotationLayer={false}
+                          onRenderSuccess={() => setIsRendering(false)}
+                          className={cn("rounded-md shadow-lg", isRendering && "opacity-0")}
+                        />
+                        {highlight && highlight.page === activePageClamped ? (
+                          <RegionHighlight region={highlight} />
+                        ) : null}
+                        {/* Held back until the page is on screen — a film over
+                            a blank canvas reads as a broken render. */}
+                        {!isRendering ? <DocumentScanOverlay active={scanning} /> : null}
+                      </div>
                     </PdfDocument>
                   </div>
                 ) : isPdf && pdfUrl && pdfLoadFailed ? (
                   <iframe src={`${pdfUrl}#toolbar=0&navpanes=0`} className="h-full w-full bg-white" title={active.file_name} onLoad={() => setIsRendering(false)} />
                 ) : isImage && active.download_url ? (
                   <div className="flex min-h-full items-center justify-center p-4">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={active.download_url}
-                      alt={active.file_name}
-                      className={cn("max-w-full object-contain transition-transform", isRendering && "opacity-0")}
+                    {/* The transform sits on the wrapper, not the image, so a
+                        provenance frame zooms and rotates with the page it marks. */}
+                    <div
+                      className="relative transition-transform"
                       style={{ transform: `scale(${zoom}) rotate(${rotation}deg)` }}
-                      onLoad={() => setIsRendering(false)}
-                      onError={() => setIsRendering(false)}
-                    />
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={active.download_url}
+                        alt={active.file_name}
+                        className={cn("max-w-full object-contain", isRendering && "opacity-0")}
+                        onLoad={() => setIsRendering(false)}
+                        onError={() => setIsRendering(false)}
+                      />
+                      {highlight && highlight.page === 1 && !isRendering ? (
+                        <RegionHighlight region={highlight} />
+                      ) : null}
+                      {!isRendering ? <DocumentScanOverlay active={scanning} /> : null}
+                    </div>
                   </div>
                 ) : !isPdf && !isImage ? (
                   <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center">
@@ -361,11 +410,11 @@ export function PayableDocumentPane({
               <div className="absolute bottom-6 left-6 right-6 z-20 flex justify-between items-center pointer-events-none">
                 {/* Bottom Left controls: Zoom & Rotate */}
                 {(isPdf || isImage) && (
-                  <div className="flex items-center gap-1 pointer-events-auto bg-background/85 backdrop-blur-sm border shadow-lg rounded-full p-1.5">
+                  <div className="flex items-center gap-1 pointer-events-auto bg-background/85 backdrop-blur-sm border shadow-lg p-1.5">
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-8 w-8 rounded-full hover:bg-muted"
+                      className="h-8 w-8 hover:bg-muted"
                       onClick={() => setZoom((z) => Math.max(z - 0.2, 0.5))}
                       title="Zoom out"
                     >
@@ -381,7 +430,7 @@ export function PayableDocumentPane({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-8 w-8 rounded-full hover:bg-muted"
+                      className="h-8 w-8 hover:bg-muted"
                       onClick={() => setZoom((z) => Math.min(z + 0.2, 4))}
                       title="Zoom in"
                     >
@@ -391,7 +440,7 @@ export function PayableDocumentPane({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-8 w-8 rounded-full hover:bg-muted"
+                      className="h-8 w-8 hover:bg-muted"
                       onClick={() => setRotation((r) => (r + 90) % 360)}
                       title="Rotate"
                     >
@@ -402,11 +451,11 @@ export function PayableDocumentPane({
 
                 {/* Bottom Center paging */}
                 {isPdf && pageCount > 1 && (
-                  <div className="flex items-center gap-1 pointer-events-auto bg-background/85 backdrop-blur-sm border shadow-lg rounded-full p-1.5 mx-auto">
+                  <div className="flex items-center gap-1 pointer-events-auto bg-background/85 backdrop-blur-sm border shadow-lg p-1.5 mx-auto">
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-8 w-8 rounded-full hover:bg-muted"
+                      className="h-8 w-8 hover:bg-muted"
                       disabled={activePageClamped <= 1}
                       onClick={() => setActivePage((p) => Math.max(p - 1, 1))}
                       title="Previous page"
@@ -419,7 +468,7 @@ export function PayableDocumentPane({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-8 w-8 rounded-full hover:bg-muted"
+                      className="h-8 w-8 hover:bg-muted"
                       disabled={activePageClamped >= pageCount}
                       onClick={() => setActivePage((p) => Math.min(p + 1, pageCount))}
                       title="Next page"
@@ -436,17 +485,19 @@ export function PayableDocumentPane({
                       <Button
                         variant="outline"
                         size="icon"
-                        className="h-11 w-11 rounded-full bg-background/85 backdrop-blur-sm border shadow-lg hover:bg-background/95 hover:scale-[1.02] transition-transform flex items-center justify-center"
+                        className="h-11 w-11 bg-background/85 backdrop-blur-sm border shadow-lg hover:bg-background/95 flex items-center justify-center"
                         title="Document actions"
                       >
                         <MoreHorizontal className="h-5 w-5 text-foreground" />
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="w-48">
-                      <DropdownMenuItem onClick={handleReplaceClick}>
-                        <Upload className="mr-2 h-4 w-4" />
-                        Replace invoice
-                      </DropdownMenuItem>
+                      {onReplace || (onAttach && onDetach) ? (
+                        <DropdownMenuItem onClick={handleReplaceClick}>
+                          <Upload className="mr-2 h-4 w-4" />
+                          Replace invoice
+                        </DropdownMenuItem>
+                      ) : null}
                       {active.download_url && (
                         <DropdownMenuItem asChild>
                           <a href={active.download_url} download>
@@ -455,14 +506,18 @@ export function PayableDocumentPane({
                           </a>
                         </DropdownMenuItem>
                       )}
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        className="text-destructive focus:text-destructive"
-                        onClick={() => onDetach && onDetach(active.linkId)}
-                      >
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Delete invoice
-                      </DropdownMenuItem>
+                      {onDetach ? (
+                        <>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            className="text-destructive focus:text-destructive"
+                            onClick={() => onDetach(active.linkId)}
+                          >
+                            <Trash2 className="mr-2 h-4 w-4" />
+                            Delete invoice
+                          </DropdownMenuItem>
+                        </>
+                      ) : null}
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
@@ -548,7 +603,7 @@ export function PayableDocumentPane({
                           className="h-8 w-8 hover:bg-muted"
                           onClick={() => {
                             setActiveId(file.id)
-                            setActiveTab("receipt")
+                            setActiveTab("invoice")
                           }}
                           title="View file"
                         >
@@ -582,5 +637,29 @@ export function PayableDocumentPane({
         )}
       </div>
     </div>
+  )
+}
+
+/**
+ * The frame drawn over the spot a scanned value was read from.
+ *
+ * Percentages, not pixels: the region is normalized page space, so the frame
+ * tracks the page at any zoom without recomputing anything. Non-interactive by
+ * design — it is a pointer to evidence, not a control, and it must never sit
+ * between the reviewer and the document underneath.
+ */
+function RegionHighlight({ region }: { region: DocumentRegion }) {
+  const padded = padRegion(region)
+  return (
+    <div
+      aria-hidden
+      className="pointer-events-none absolute border-2 border-primary bg-primary/10 transition-all duration-200"
+      style={{
+        left: `${padded.x0 * 100}%`,
+        top: `${padded.y0 * 100}%`,
+        width: `${(padded.x1 - padded.x0) * 100}%`,
+        height: `${(padded.y1 - padded.y0) * 100}%`,
+      }}
+    />
   )
 }

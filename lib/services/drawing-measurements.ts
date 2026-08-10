@@ -13,9 +13,13 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 
 import {
   computeMarkupQuantity,
+  conditionSourceUom,
   isMeasuringMarkupType,
+  MEASURE_UOM_LABELS,
   MEASURING_MARKUP_TYPES,
   MEASURING_TYPE_UOM,
+  type ConditionFactors,
+  type ConditionUom,
   type ImageSize,
   type MeasureUom,
 } from "@/lib/drawings/measure"
@@ -81,7 +85,9 @@ export function measureMarkup(
 ): { quantity: number | null; uom: MeasureUom | null } {
   if (!isMeasuringMarkupType(data.type)) return { quantity: null, uom: null }
   const measured = computeMarkupQuantity(
-    { type: data.type, points: data.points },
+    // `style` carries the deduction flag, which decides the SIGN of an area —
+    // dropping it here is how a window silently starts adding to the wall.
+    { type: data.type, points: data.points, style: data.style ?? null },
     context.imageSize,
     context.feetPerImagePx,
   )
@@ -92,9 +98,12 @@ export function measureMarkup(
 }
 
 /**
- * A condition sums its members, so every member must measure in the
- * condition's unit. Refusing the assignment here is the only thing stopping
- * square feet from being added to linear feet and priced.
+ * A condition sums its members, so every member must measure in the condition's
+ * SOURCE unit — which is not always the unit it reports. A cubic-yard condition
+ * is measured in square feet and carried down through a depth; a square-foot
+ * condition with a wall height is measured in linear feet. Refusing the
+ * assignment here is the only thing stopping square feet from being added to
+ * linear feet and priced.
  */
 export async function assertConditionAcceptsUom(
   supabase: SupabaseClient,
@@ -104,7 +113,7 @@ export async function assertConditionAcceptsUom(
 ): Promise<void> {
   const { data: condition, error } = await supabase
     .from("takeoff_conditions")
-    .select("id, name, uom")
+    .select("id, name, uom, depth_in, height_ft, pitch_rise, tons_per_cy")
     .eq("org_id", orgId)
     .eq("id", conditionId)
     .maybeSingle()
@@ -118,9 +127,22 @@ export async function assertConditionAcceptsUom(
   if (!uom) {
     throw new Error("Only measurements (linear, area, or count) can belong to a takeoff condition")
   }
-  if (condition.uom !== uom) {
+
+  const factors: ConditionFactors = {
+    depth_in: condition.depth_in === null ? null : Number(condition.depth_in),
+    height_ft: condition.height_ft === null ? null : Number(condition.height_ft),
+    pitch_rise: condition.pitch_rise === null ? null : Number(condition.pitch_rise),
+    tons_per_cy: condition.tons_per_cy === null ? null : Number(condition.tons_per_cy),
+  }
+  const expected = conditionSourceUom(condition.uom as ConditionUom, factors)
+
+  if (expected !== uom) {
+    const reports = MEASURE_UOM_LABELS[condition.uom as ConditionUom]
+    const measures = MEASURE_UOM_LABELS[expected]
     throw new Error(
-      `"${condition.name}" measures in ${String(condition.uom).toUpperCase()} — this markup measures in ${uom.toUpperCase()}`,
+      expected === (condition.uom as string)
+        ? `"${condition.name}" measures in ${measures} — this markup measures in ${MEASURE_UOM_LABELS[uom]}`
+        : `"${condition.name}" reports ${reports} and is measured in ${measures} — this markup measures in ${MEASURE_UOM_LABELS[uom]}`,
     )
   }
 }

@@ -1,5 +1,10 @@
 # Workstream 08 — Daily Reports (Commercial Fields) + Schedule Hardening
 
+> **Status: SHIPPED — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for commercial
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 ## STATUS — CODE COMPLETE 2026-07-11
 
 All five phases are implemented. The additive migration

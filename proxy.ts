@@ -1,6 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { createServerClient } from "@supabase/ssr"
 
+import { normalizeInternalReturnPath } from "@/lib/auth/return-path"
+
 const AUTH_ROUTES = ["/auth/signin", "/auth/signup", "/auth/forgot-password", "/auth/accept-invite"]
 const PUBLIC_ROUTES = ["/proposal", "/e/", "/i/", "/p/", "/s/", "/r/", "/b/", "/d/", "/f/", "/access", "/terms", "/privacy", "/esign-terms"]
 const PUBLIC_API_ROUTES = [
@@ -64,6 +66,11 @@ const PUBLIC_API_ROUTES = [
   "/api/jobs/esign",
   "/api/jobs/late-fees",
   "/api/jobs/payment-controls",
+  "/api/jobs/payment-release",
+  "/api/jobs/payment-reconciliation",
+  "/api/jobs/ops-watchdog",
+  // Standing assistant questions — cron only, self-authenticates via CRON_SECRET.
+  "/api/jobs/ai-standing-questions",
   // Portal drawing sheet PDFs — self-authenticate via the portal access token
   // in the path (no session cookie on client/sub portals).
   "/api/portal/drawings/",
@@ -176,6 +183,7 @@ export async function proxy(request: NextRequest) {
   // Basic authentication checks only - keep proxy lightweight
   if (!user && !isAuthRoute && !isPublicRoute && !isPublicApiRoute) {
     const redirectUrl = new URL("/auth/signin", request.url)
+    redirectUrl.searchParams.set("next", `${request.nextUrl.pathname}${request.nextUrl.search}`)
     return withSupabaseCookies(response, NextResponse.redirect(redirectUrl))
   }
 
@@ -191,7 +199,7 @@ export async function proxy(request: NextRequest) {
   }
 
   if (user && AUTH_ROUTES.includes(pathname)) {
-    const redirectUrl = new URL("/", request.url)
+    const redirectUrl = new URL(normalizeInternalReturnPath(request.nextUrl.searchParams.get("next")), request.url)
     return withSupabaseCookies(response, NextResponse.redirect(redirectUrl))
   }
 

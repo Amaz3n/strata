@@ -23,12 +23,19 @@ import {
 import {
   createPortalAccessToken,
   findReusablePortalAccessToken,
+  setPortalTokenPin,
   setPortalTokenRequireAccount,
+  updatePortalTokenAccessOptions,
 } from "@/lib/services/portal-access"
 import { requireOrgContext } from "@/lib/services/context"
 import { requireAnyPermission } from "@/lib/services/permissions"
 import { sendProjectPortalInviteEmail } from "@/lib/services/mailer"
-import { REVIEWER_DEFAULT_PERMISSIONS, type PortalType, type ReviewerRole } from "@/lib/types"
+import {
+  REVIEWER_DEFAULT_PERMISSIONS,
+  type PortalPermissions,
+  type PortalType,
+  type ReviewerRole,
+} from "@/lib/types"
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 
@@ -162,11 +169,20 @@ export async function sendPortalInviteAction({
   projectId,
   portalType = "sub",
   reviewerRole,
+  expiresAt,
+  permissions,
+  pin,
 }: {
   contactId: string
   projectId: string
   portalType?: PortalType
   reviewerRole?: ReviewerRole
+  /** Access options set alongside the invite. Previously accepted only on the
+   * link path, so emailing an invite silently discarded whatever the builder
+   * had just configured. */
+  expiresAt?: string | null
+  permissions?: Partial<PortalPermissions>
+  pin?: string
 }) {
   return run(async () => {
       const contact = await getContact(contactId)
@@ -210,24 +226,50 @@ export async function sendPortalInviteAction({
           }
         : {}
 
+      // Reviewer seats never inherit client/sub defaults; production buyers get
+      // their own baseline. Explicit choices from the invite form win over both.
+      const basePermissions =
+        portalType === "reviewer" ? REVIEWER_DEFAULT_PERMISSIONS : productionBuyerPermissions
+      const resolvedPermissions = { ...basePermissions, ...(permissions ?? {}) }
+
+      const reusable = await findReusablePortalAccessToken({
+        projectId,
+        portalType,
+        contactId,
+        companyId: resolvedCompanyId,
+        orgId,
+      })
+
       let token =
-        await findReusablePortalAccessToken({
-          projectId,
-          portalType,
-          contactId,
-          companyId: resolvedCompanyId,
-          orgId,
-        }) ??
-        await createPortalAccessToken({
+        reusable ??
+        (await createPortalAccessToken({
           projectId,
           portalType,
           contactId,
           companyId: resolvedCompanyId,
           reviewerRole: portalType === "reviewer" ? (reviewerRole ?? "other") : null,
-          permissions: portalType === "reviewer" ? REVIEWER_DEFAULT_PERMISSIONS : productionBuyerPermissions,
+          permissions: resolvedPermissions,
+          expiresAt: expiresAt ?? null,
           requireAccount: false,
           orgId,
+        }))
+
+      // Re-inviting an existing person keeps their access record — that is the
+      // whole point of person-not-token — so the options apply to the row they
+      // already have rather than being dropped on the floor.
+      if (reusable) {
+        token = await updatePortalTokenAccessOptions({
+          tokenId: reusable.id,
+          expiresAt: expiresAt ?? null,
+          permissions: resolvedPermissions,
+          orgId,
         })
+      }
+
+      if (pin) {
+        await setPortalTokenPin({ tokenId: token.id, pin, orgId })
+        token = { ...token, pin_required: true }
+      }
 
       if (token.require_account) {
         await setPortalTokenRequireAccount({

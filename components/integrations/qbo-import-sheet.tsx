@@ -199,7 +199,7 @@ function sinceDateFor(value: string): string | null {
 }
 
 /**
- * QuickBooks import grid — the body of the "Import" tab inside `QboSyncSheet` (the sheet widens when
+ * QuickBooks import grid — the body of the "Import" tab inside `AccountingSyncSheet` (the sheet widens when
  * this tab is active to make the grid usable). The context project defaults the left filter and is
  * the multi-line header fallback, but every record is importable into its own project (org-wide).
  * Records group by type; the **destination project is an always-visible, inline-editable column** so
@@ -488,7 +488,7 @@ export function QboImportPanel({ active = true, projectId, connectionId, connect
   // actually has records in view — otherwise we'd auto-filter to an empty list.
   useEffect(() => {
     if (defaultFilterApplied.current) return
-    const linkedId = qboLink?.qboCustomerId
+    const linkedId = qboLink?.accountingCustomerId
     if (!linkedId || loading) return
     if (records.some((record) => recordProjectIds(record).includes(linkedId))) {
       setProjectFilter(linkedId)

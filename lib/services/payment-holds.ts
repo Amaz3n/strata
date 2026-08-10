@@ -3,7 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { recordAudit } from "@/lib/services/audit"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { getCompanyComplianceStatusWithClient } from "@/lib/services/compliance-documents"
-import { getComplianceRules } from "@/lib/services/compliance"
+import { getComplianceRules, getComplianceRulesWithClient } from "@/lib/services/compliance"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
@@ -12,40 +12,30 @@ import { ensurePortalLink } from "@/lib/services/portal-links"
 import { getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
 import { listMissingSubtierWaiversForBill } from "@/lib/services/lien-waivers"
 import {
+  coiExtractionSchema,
+  evaluateInsuranceCurrency,
+  isInsuranceDocumentTypeName,
+  summarizeWaiverMismatches,
+  waiverVerificationSchema,
+  type CoiExtraction,
+} from "@/lib/payments/ap-verification"
+import {
+  evaluatePaymentHoldFacts,
+  parsePaymentHoldPolicy,
+  type PaymentHoldEvaluation,
+} from "@/lib/payments/payment-hold-policy"
+import {
   paymentHoldOverrideSchema,
   type PaymentHoldKind,
-  type PaymentHoldLevel,
   type PaymentHoldOverrideInput,
 } from "@/lib/validation/payment-holds"
 
-export interface PaymentHold {
-  kind: PaymentHoldKind
-  level: PaymentHoldLevel
-  message: string
-  cureHref: string | null
-  overridden: boolean
-  overrideReason: string | null
-}
-
-export interface PaymentHoldFacts {
-  projectId: string
-  companyId: string | null
-  complianceCurrent: boolean
-  insuranceCurrent: boolean
-  waiverSigned: boolean
-  retainageRulesMet: boolean
-  fundingRequired: boolean
-  fundingReceived: boolean
-  overrides: Partial<Record<PaymentHoldKind, string>>
-  policy: Partial<Record<PaymentHoldKind, PaymentHoldLevel>>
-}
-
-export interface PaymentHoldEvaluation {
-  holds: PaymentHold[]
-  releasable: boolean
-  warningCount: number
-  blockingCount: number
-}
+export {
+  evaluatePaymentHoldFacts,
+  type PaymentHold,
+  type PaymentHoldEvaluation,
+  type PaymentHoldFacts,
+} from "@/lib/payments/payment-hold-policy"
 
 export interface PaymentReleaseEvidence {
   billId: string
@@ -55,56 +45,71 @@ export interface PaymentReleaseEvidence {
   subtierWaiversRequired: boolean
   missingSubtierWaiverCount: number
   complianceRequired: boolean
+  waiverEvidence: {
+    id: string
+    type: string
+    status: string
+    amountCents: number
+    throughDate: string
+    signedAt: string
+    signedFileId: string | null
+    signatureData: Record<string, unknown>
+  } | null
+  constructionEvidence: {
+    commitmentId: string
+    commitmentType: string
+    commitmentStatus: string
+    authorizedCents: number
+    billedCents: number
+    varianceCents: number
+    poCompletionId: string | null
+    poCompletionStatus: string | null
+    poCompletionAmountCents: number | null
+  } | null
   capturedAt: string
 }
 
-const DEFAULT_POLICY: Record<PaymentHoldKind, PaymentHoldLevel> = {
-  insurance_current: "block",
-  waiver_signed: "block",
-  compliance_docs_approved: "block",
-  retainage_rules_met: "warn",
-  funding_received: "warn",
-}
-
-const HOLD_MESSAGES: Record<PaymentHoldKind, string> = {
-  insurance_current: "Vendor insurance is missing, expired, or awaiting approval",
-  waiver_signed: "A signed lien waiver is required before payment",
-  compliance_docs_approved: "Required compliance documents are incomplete",
-  retainage_rules_met: "Retainage release conditions have not been met",
-  funding_received: "The linked owner invoice has not been paid",
-}
-
-export function evaluatePaymentHoldFacts(facts: PaymentHoldFacts): PaymentHoldEvaluation {
-  const active: Array<{ kind: PaymentHoldKind; failed: boolean; cureHref: string | null }> = [
-    { kind: "insurance_current", failed: !facts.insuranceCurrent, cureHref: facts.companyId ? `/companies/${facts.companyId}?tab=compliance` : null },
-    { kind: "waiver_signed", failed: !facts.waiverSigned, cureHref: `/projects/${facts.projectId}/financials/payables` },
-    { kind: "compliance_docs_approved", failed: !facts.complianceCurrent, cureHref: facts.companyId ? `/companies/${facts.companyId}?tab=compliance` : null },
-    { kind: "retainage_rules_met", failed: !facts.retainageRulesMet, cureHref: `/projects/${facts.projectId}/financials/payables` },
-    { kind: "funding_received", failed: facts.fundingRequired && !facts.fundingReceived, cureHref: `/projects/${facts.projectId}/financials/receivables` },
-  ]
-  const holds = active.filter((item) => item.failed).map((item) => {
-    const overrideReason = facts.overrides[item.kind] ?? null
-    return {
-      kind: item.kind,
-      level: facts.policy[item.kind] ?? DEFAULT_POLICY[item.kind],
-      message: HOLD_MESSAGES[item.kind],
-      cureHref: item.cureHref,
-      overridden: overrideReason !== null,
-      overrideReason,
-    }
-  })
-  const blockingCount = holds.filter((hold) => hold.level === "block" && !hold.overridden).length
-  return { holds, releasable: blockingCount === 0, warningCount: holds.filter((hold) => hold.level === "warn" && !hold.overridden).length, blockingCount }
-}
-
-function parsePolicy(value: unknown): Partial<Record<PaymentHoldKind, PaymentHoldLevel>> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return DEFAULT_POLICY
-  const result: Partial<Record<PaymentHoldKind, PaymentHoldLevel>> = {}
-  for (const kind of Object.keys(DEFAULT_POLICY) as PaymentHoldKind[]) {
-    const level = (value as Record<string, unknown>)[kind]
-    if (level === "block" || level === "warn") result[kind] = level
+/**
+ * The stored waiver-verification claim, shaped for the hold policy. Anything
+ * unparseable is treated as absent: a malformed claim must not invent a hold.
+ */
+function readWaiverVerificationFact(metadata: Record<string, unknown>) {
+  const parsed = waiverVerificationSchema.safeParse(metadata.waiver_verification)
+  if (!parsed.success) return null
+  return {
+    matches: parsed.data.matches,
+    mismatchSummary: parsed.data.matches ? null : summarizeWaiverMismatches(parsed.data.mismatches),
+    documentHref: null,
   }
-  return { ...DEFAULT_POLICY, ...result }
+}
+
+/**
+ * The stored certificate readings for a set of compliance documents.
+ *
+ * This is a read path and it feeds a BLOCK-tier hold, so every failure mode is
+ * the same failure mode: no reading. A missing column, an unparseable claim, a
+ * query error — all return an empty map, which puts the insurance fact back on
+ * the stored status-and-expiry rule that shipped before extraction existed.
+ */
+async function loadCoiExtractions(
+  supabase: SupabaseClient,
+  orgId: string,
+  documentIds: string[],
+): Promise<Map<string, CoiExtraction>> {
+  const readings = new Map<string, CoiExtraction>()
+  if (documentIds.length === 0) return readings
+  const { data, error } = await supabase
+    .from("compliance_documents")
+    .select("id,metadata")
+    .eq("org_id", orgId)
+    .in("id", documentIds)
+    .returns<Array<{ id: string; metadata: Record<string, unknown> | null }>>()
+  if (error || !data) return readings
+  for (const row of data) {
+    const parsed = coiExtractionSchema.safeParse((row.metadata ?? {}).coi_extraction)
+    if (parsed.success) readings.set(row.id, parsed.data)
+  }
+  return readings
 }
 
 async function resolveBillCompany(supabase: SupabaseClient, orgId: string, companyId: string | null, commitmentId: string | null) {
@@ -114,15 +119,19 @@ async function resolveBillCompany(supabase: SupabaseClient, orgId: string, compa
   return data?.company_id ?? null
 }
 
-export async function evaluateHolds(billId: string, orgId?: string): Promise<PaymentHoldEvaluation> {
+export async function evaluateHolds(
+  billId: string,
+  orgId?: string,
+  options: { enqueueWaiverChase?: boolean } = {},
+): Promise<PaymentHoldEvaluation> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const { data: bill, error } = await supabase.from("vendor_bills")
-    .select("id,project_id,company_id,commitment_id,lien_waiver_status,retainage_cents,total_cents,funding_invoice_id")
+    .select("id,project_id,company_id,commitment_id,lien_waiver_status,retainage_cents,total_cents,funding_invoice_id,metadata")
     .eq("org_id", resolvedOrgId).eq("id", billId).maybeSingle()
   if (error || !bill) throw new Error("Vendor bill not found")
   await requireAuthorization({ permission: "payment.release", userId, orgId: resolvedOrgId, projectId: bill.project_id, supabase, resourceType: "vendor_bill", resourceId: billId })
   const companyId = await resolveBillCompany(supabase, resolvedOrgId, bill.company_id, bill.commitment_id)
-  const [{ data: projectPolicy }, { data: orgPolicy }, { data: overrideRows }, compliance, funding] = await Promise.all([
+  const [{ data: projectPolicy }, { data: orgPolicy }, { data: overrideRows }, compliance, funding, rules, { data: projectControls }] = await Promise.all([
     supabase.from("payment_hold_policies").select("conditions,waiver_auto_chase").eq("org_id", resolvedOrgId).eq("project_id", bill.project_id).maybeSingle(),
     supabase.from("payment_hold_policies").select("conditions,waiver_auto_chase").eq("org_id", resolvedOrgId).is("project_id", null).maybeSingle(),
     supabase.from("payment_hold_overrides").select("hold_kind,reason").eq("org_id", resolvedOrgId).eq("bill_id", billId).is("revoked_at", null),
@@ -130,26 +139,51 @@ export async function evaluateHolds(billId: string, orgId?: string): Promise<Pay
     bill.funding_invoice_id
       ? supabase.from("invoices").select("status").eq("org_id", resolvedOrgId).eq("id", bill.funding_invoice_id).maybeSingle()
       : Promise.resolve({ data: null }),
+    getComplianceRulesWithClient(supabase, resolvedOrgId),
+    supabase.from("projects").select("require_subtier_waivers").eq("org_id", resolvedOrgId).eq("id", bill.project_id).maybeSingle(),
   ])
   const overrides = Object.fromEntries((overrideRows ?? []).map((row) => [row.hold_kind, row.reason])) as Partial<Record<PaymentHoldKind, string>>
-  const insuranceDocuments = compliance?.documents.filter((document) => /insurance|certificate|coi/i.test(document.document_type?.name ?? "")) ?? []
-  const insuranceCurrent = insuranceDocuments.length === 0
-    ? compliance?.is_compliant ?? true
-    : insuranceDocuments.some((document) => document.status === "approved" && (!document.expiry_date || document.expiry_date >= new Date().toISOString().slice(0, 10)))
+  const insuranceDocuments = compliance?.documents.filter((document) => isInsuranceDocumentTypeName(document.document_type?.name)) ?? []
+  // Read-only, exactly like the waiver claim below: the certificate is read
+  // when it is uploaded or approved, never here. Bills whose certificates were
+  // never read evaluate on the stored expiry, which is the pre-model behaviour.
+  const coiExtractions = await loadCoiExtractions(supabase, resolvedOrgId, insuranceDocuments.map((document) => document.id))
+  const insurance = evaluateInsuranceCurrency({
+    documents: insuranceDocuments.map((document) => ({
+      status: document.status,
+      storedExpiry: document.expiry_date ?? null,
+      fileId: document.file_id ?? null,
+      extraction: coiExtractions.get(document.id) ?? null,
+    })),
+    todayIso: new Date().toISOString().slice(0, 10),
+    fallbackCompliant: compliance?.is_compliant ?? true,
+  })
   const evaluation = evaluatePaymentHoldFacts({
     projectId: bill.project_id,
     companyId,
     complianceCurrent: compliance?.is_compliant ?? true,
-    insuranceCurrent,
-    waiverSigned: bill.lien_waiver_status === "received" || bill.lien_waiver_status === "signed",
+    insuranceCurrent: insurance.current,
+    insuranceContradiction: insurance.contradiction,
+    // A waiver is only a hold when org policy or the project's sub-tier rule
+    // actually asks for one. `assertBillReleasable` gates its hard waiver checks
+    // on these same two flags — the hold must agree or it blocks payment for a
+    // document nothing requires.
+    waiverRequired: Boolean(rules.require_lien_waiver) || Boolean(projectControls?.require_subtier_waivers),
+    // "received" is the schema's only waiver-in-hand state. The legacy value
+    // "signed" is normalized to "received" at the validation boundary
+    // (lib/validation/vendor-bills.ts) and backfilled in the data.
+    waiverSigned: bill.lien_waiver_status === "received",
+    // Read-only: the claim is computed when the waiver is signed, never here.
+    // A bill with no stored verification passes `null` and raises nothing.
+    waiverVerification: readWaiverVerificationFact((bill.metadata ?? {}) as Record<string, unknown>),
     retainageRulesMet: Number(bill.retainage_cents ?? 0) <= Number(bill.total_cents ?? 0),
     fundingRequired: Boolean(bill.funding_invoice_id),
     fundingReceived: !bill.funding_invoice_id || ["paid", "partial"].includes(funding.data?.status ?? ""),
     overrides,
-    policy: parsePolicy(projectPolicy?.conditions ?? orgPolicy?.conditions),
+    policy: parsePaymentHoldPolicy(projectPolicy?.conditions ?? orgPolicy?.conditions),
   })
   const waiverAutoChase = projectPolicy?.waiver_auto_chase ?? orgPolicy?.waiver_auto_chase ?? true
-  if (waiverAutoChase && evaluation.holds.some((hold) => hold.kind === "waiver_signed" && !hold.overridden)) {
+  if (options.enqueueWaiverChase && waiverAutoChase && evaluation.holds.some((hold) => hold.kind === "waiver_signed" && !hold.overridden)) {
     await enqueueOutboxJob({ orgId: resolvedOrgId, jobType: "chase_vendor_bill_waiver", payload: { bill_id: billId, project_id: bill.project_id }, dedupeByPayloadKeys: ["bill_id"] })
   }
   return evaluation
@@ -168,13 +202,13 @@ export async function assertBillReleasable(
   const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
   const { data: bill, error } = await supabase
     .from("vendor_bills")
-    .select("id,project_id,company_id,commitment_id,bill_date,due_date,metadata,lien_waiver_status")
+    .select("id,project_id,company_id,commitment_id,bill_date,due_date,total_cents,metadata,lien_waiver_status")
     .eq("org_id", resolvedOrgId)
     .eq("id", billId)
     .maybeSingle()
   if (error || !bill) throw new Error("Vendor bill not found")
 
-  const holdEvaluation = await evaluateHolds(billId, resolvedOrgId)
+  const holdEvaluation = await evaluateHolds(billId, resolvedOrgId, { enqueueWaiverChase: true })
   if (!holdEvaluation.releasable) {
     const reasons = holdEvaluation.holds
       .filter((hold) => hold.level === "block" && !hold.overridden)
@@ -249,6 +283,55 @@ export async function assertBillReleasable(
     }
   }
 
+  const waiverRequired = Boolean(rules.require_lien_waiver) || Boolean(projectControls?.require_subtier_waivers)
+  const { data: waiverRow, error: waiverError } = await supabase.from("lien_waivers")
+    .select("id,waiver_type,status,amount_cents,through_date,signed_at,signed_file_id,signature_data")
+    .eq("org_id", resolvedOrgId).eq("bill_id", billId).eq("status", "signed")
+    .in("waiver_type", ["conditional", "final"])
+    .order("signed_at", { ascending: false }).limit(1).maybeSingle()
+  if (waiverError) throw new Error(`Unable to validate signed lien waiver evidence: ${waiverError.message}`)
+  if (waiverRequired && !waiverRow) throw new Error("A signed, bill-linked conditional lien waiver is required before payment")
+  const metadata = (bill.metadata as Record<string, unknown> | null) ?? {}
+  const billingPeriodEnd = String(metadata.billing_period_end ?? bill.due_date ?? bill.bill_date ?? "")
+  if (waiverRequired && waiverRow && /^\d{4}-\d{2}-\d{2}$/.test(billingPeriodEnd) && waiverRow.through_date < billingPeriodEnd) {
+    throw new Error("Lien waiver through-date does not cover this payable period")
+  }
+
+  let constructionEvidence: PaymentReleaseEvidence["constructionEvidence"] = null
+  if (bill.commitment_id) {
+    const [{ data: commitment, error: commitmentError }, { data: changes }, { data: committedBills }, { data: completion }, { data: lot }] = await Promise.all([
+      supabase.from("commitments").select("id,commitment_type,status,total_cents,currency").eq("org_id", resolvedOrgId).eq("id", bill.commitment_id).maybeSingle(),
+      supabase.from("commitment_change_orders").select("total_cents").eq("org_id", resolvedOrgId).eq("commitment_id", bill.commitment_id).in("status", ["approved", "executed"]),
+      supabase.from("vendor_bills").select("id,total_cents,status").eq("org_id", resolvedOrgId).eq("commitment_id", bill.commitment_id),
+      supabase.from("po_completions").select("id,status,amount_cents").eq("org_id", resolvedOrgId).eq("vendor_bill_id", billId).in("status", ["approved", "billed"]).order("approved_at", { ascending: false }).limit(1).maybeSingle(),
+      supabase.from("lots").select("community:communities(pay_on_po_enabled)").eq("org_id", resolvedOrgId).eq("project_id", bill.project_id).limit(1).maybeSingle(),
+    ])
+    if (commitmentError || !commitment) throw new Error("The payable's commitment could not be validated")
+    if (!["approved", "complete"].includes(commitment.status)) throw new Error("The payable commitment is not approved or complete")
+    const authorizedCents = Number(commitment.total_cents ?? 0) + (changes ?? []).reduce((sum, row) => sum + Number(row.total_cents ?? 0), 0)
+    // `vendor_bills.status` is CHECK-constrained to pending|approved|partial|
+    // paid|rejected (migration 20260805091000) — void/cancelled variants cannot
+    // exist. Rejected bills are not obligations and do not count.
+    const billedCents = (committedBills ?? []).filter((row) => String(row.status) !== "rejected").reduce((sum, row) => sum + Number(row.total_cents ?? 0), 0)
+    if (billedCents > authorizedCents) throw new Error("Commitment billing exceeds the approved commitment and change orders")
+    const community = Array.isArray(lot?.community) ? lot.community[0] : lot?.community
+    const requirePoCompletion = commitment.commitment_type === "purchase_order" && community?.pay_on_po_enabled === true
+    if (requirePoCompletion && (!completion || Number(completion.amount_cents ?? 0) < Number(bill.total_cents ?? 0))) {
+      throw new Error("An approved field completion covering this purchase-order bill is required before payment")
+    }
+    constructionEvidence = {
+      commitmentId: commitment.id,
+      commitmentType: commitment.commitment_type,
+      commitmentStatus: commitment.status,
+      authorizedCents,
+      billedCents,
+      varianceCents: authorizedCents - billedCents,
+      poCompletionId: completion?.id ?? null,
+      poCompletionStatus: completion?.status ?? null,
+      poCompletionAmountCents: completion?.amount_cents == null ? null : Number(completion.amount_cents),
+    }
+  }
+
   return {
     billId,
     projectId: bill.project_id,
@@ -257,6 +340,17 @@ export async function assertBillReleasable(
     subtierWaiversRequired: Boolean(projectControls?.require_subtier_waivers),
     missingSubtierWaiverCount,
     complianceRequired: Boolean(rules.block_payment_on_missing_docs),
+    waiverEvidence: waiverRow ? {
+      id: waiverRow.id,
+      type: waiverRow.waiver_type,
+      status: waiverRow.status,
+      amountCents: Number(waiverRow.amount_cents),
+      throughDate: waiverRow.through_date,
+      signedAt: waiverRow.signed_at,
+      signedFileId: waiverRow.signed_file_id,
+      signatureData: (waiverRow.signature_data as Record<string, unknown> | null) ?? {},
+    } : null,
+    constructionEvidence,
     capturedAt: new Date().toISOString(),
   }
 }

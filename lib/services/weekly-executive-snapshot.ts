@@ -1,4 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
+
+import { BILLED_INVOICE_STATUSES, PAYABLE_VENDOR_BILL_STATUSES } from "@/lib/financials/ledger-status"
+import { payableOutstandingCents } from "@/lib/financials/payables-rules"
 import type {
   WeeklySnapshotDecisionItem,
   WeeklySnapshotDriftItem,
@@ -152,6 +155,7 @@ export async function buildWeeklyExecutiveSnapshotForOrg({
       ? supabase
           .from("schedule_items")
           .select("project_id, status, is_critical_path")
+          .eq("org_id", orgId)
           .in("project_id", projectIds)
           .in("status", ["at_risk", "blocked"])
       : Promise.resolve({ data: [] as any[], error: null }),
@@ -159,6 +163,7 @@ export async function buildWeeklyExecutiveSnapshotForOrg({
       ? supabase
           .from("tasks")
           .select("project_id, status, due_date, created_at")
+          .eq("org_id", orgId)
           .in("project_id", projectIds)
           .neq("status", "done")
       : Promise.resolve({ data: [] as any[], error: null }),
@@ -166,27 +171,34 @@ export async function buildWeeklyExecutiveSnapshotForOrg({
       ? supabase
           .from("invoices")
           .select("project_id, status, due_date, balance_due_cents")
+          .eq("org_id", orgId)
           .in("project_id", projectIds)
-          .in("status", ["sent", "partial", "overdue"])
+          .in("status", [...BILLED_INVOICE_STATUSES])
       : Promise.resolve({ data: [] as any[], error: null }),
     projectIds.length > 0
       ? supabase
           .from("change_orders")
           .select("project_id, title, total_cents, days_impact, created_at")
+          .eq("org_id", orgId)
           .in("project_id", projectIds)
           .eq("status", "pending")
       : Promise.resolve({ data: [] as any[], error: null }),
     projectIds.length > 0
       ? supabase
           .from("vendor_bills")
-          .select("project_id, status, bill_number, total_cents, created_at")
+          .select("project_id, status, bill_number, total_cents, paid_cents, retainage_cents, created_at")
+          .eq("org_id", orgId)
           .in("project_id", projectIds)
-          .in("status", ["pending", "approved"])
+          // Two questions, one query: `pending` is the approval backlog (a
+          // workflow queue), the payable set is what the org actually owes and
+          // is the same set AP aging and the control tower sum.
+          .in("status", ["pending", ...PAYABLE_VENDOR_BILL_STATUSES])
       : Promise.resolve({ data: [] as any[], error: null }),
     projectIds.length > 0
       ? supabase
           .from("rfis")
           .select("project_id, subject, due_date, priority, cost_impact_cents, schedule_impact_days, created_at, assigned_to")
+          .eq("org_id", orgId)
           .in("project_id", projectIds)
           .in("status", ["open", "pending"])
       : Promise.resolve({ data: [] as any[], error: null }),
@@ -194,6 +206,7 @@ export async function buildWeeklyExecutiveSnapshotForOrg({
       ? supabase
           .from("submittals")
           .select("project_id, title, due_date, lead_time_days, created_at")
+          .eq("org_id", orgId)
           .in("project_id", projectIds)
           .in("status", ["pending", "submitted", "revise_resubmit"])
       : Promise.resolve({ data: [] as any[], error: null }),
@@ -289,8 +302,20 @@ export async function buildWeeklyExecutiveSnapshotForOrg({
     status: string | null
     bill_number: string | null
     total_cents: number | null
+    paid_cents: number | null
+    retainage_cents: number | null
     created_at: string | null
   }>
+  const payableStatuses: ReadonlySet<string> = new Set<string>(PAYABLE_VENDOR_BILL_STATUSES)
+  /** What the org owes on a bill, on the payables desk's definition. */
+  const billOutstandingCents = (bill: (typeof vendorBillRows)[number]) =>
+    payableStatuses.has(String(bill.status))
+      ? payableOutstandingCents({
+          total_cents: bill.total_cents ?? 0,
+          paid_cents: bill.paid_cents ?? 0,
+          retainage_cents: bill.retainage_cents ?? 0,
+        })
+      : 0
   const rfiRows = (rfisRes.data ?? []) as Array<{
     project_id: string | null
     subject: string | null
@@ -332,8 +357,10 @@ export async function buildWeeklyExecutiveSnapshotForOrg({
         .filter((inv) => inv.project_id === pid && inv.due_date && inv.due_date < asOfDay)
         .reduce((sum, inv) => sum + Math.max(0, inv.balance_due_cents ?? 0), 0)
 
-      const pendingBills = vendorBillRows.filter((bill) => bill.project_id === pid && bill.status === "pending")
-      const pendingBillCents = pendingBills.reduce((sum, bill) => sum + (bill.total_cents ?? 0), 0)
+      const projectBills = vendorBillRows.filter((bill) => bill.project_id === pid)
+      // Approval backlog — a count of work waiting on a person, not money owed.
+      const pendingBills = projectBills.filter((bill) => bill.status === "pending")
+      const outstandingApCents = projectBills.reduce((sum, bill) => sum + billOutstandingCents(bill), 0)
 
       const projectCOs = pendingCORows.filter((co) => co.project_id === pid)
       const pendingCOCents = projectCOs.reduce((sum, co) => sum + Math.abs(co.total_cents ?? 0), 0)
@@ -360,7 +387,7 @@ export async function buildWeeklyExecutiveSnapshotForOrg({
       const costParts: string[] = []
       if (overdueAR > 0) costParts.push(`${formatCents(overdueAR)} overdue AR`)
       if (pendingCOCents > 0) costParts.push(`${formatCents(pendingCOCents)} pending CO`)
-      if (pendingBillCents > 0) costParts.push(`${formatCents(pendingBillCents)} pending bills`)
+      if (outstandingApCents > 0) costParts.push(`${formatCents(outstandingApCents)} AP outstanding`)
       const cost = costParts.length > 0 ? costParts.join(" + ") : "Healthy cash position"
 
       const docs =
@@ -485,9 +512,8 @@ export async function buildWeeklyExecutiveSnapshotForOrg({
 
   const topWatch = watchlistRows[0]
   const topDecision = decisions[0]
-  const pendingBillsCents = vendorBillRows
-    .filter((bill) => bill.status === "pending")
-    .reduce((sum, bill) => sum + (bill.total_cents ?? 0), 0)
+  const outstandingApTotalCents = vendorBillRows.reduce((sum, bill) => sum + billOutstandingCents(bill), 0)
+  const pendingApprovalCount = vendorBillRows.filter((bill) => bill.status === "pending").length
 
   const executiveNotes: string[] = []
 
@@ -507,9 +533,9 @@ export async function buildWeeklyExecutiveSnapshotForOrg({
     executiveNotes.push("Decision backlog is clear; no executive approvals are currently blocked.")
   }
 
-  if (ar30Cents > 0 || pendingBillsCents > 0) {
+  if (ar30Cents > 0 || outstandingApTotalCents > 0) {
     executiveNotes.push(
-      `${formatCents(ar30Cents)} in AR aged 30+ days and ${formatCents(pendingBillsCents)} in pending AP approvals require active cash management this week.`,
+      `${formatCents(ar30Cents)} in AR aged 30+ days and ${formatCents(outstandingApTotalCents)} in outstanding AP${pendingApprovalCount > 0 ? ` (${pendingApprovalCount} bill${pendingApprovalCount === 1 ? "" : "s"} still awaiting approval)` : ""} require active cash management this week.`,
     )
   } else {
     executiveNotes.push("Cash position is healthy this week with no material AR aging or AP approval backlog.")

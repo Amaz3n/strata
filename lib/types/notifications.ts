@@ -24,6 +24,9 @@ export type NotificationType =
   | "invoice_sent"
   | "payment_recorded"
   | "vendor_bill_submitted"
+  | "vendor_bill_approved"
+  | "vendor_bill_rejected"
+  | "vendor_payment_paid"
   | "selection_created"
   | "selection_cutoff_reminder"
   | "selection_cutoff_missed"
@@ -113,12 +116,42 @@ export type NotificationType =
   | "payment_run_approved"
   | "payment_run_rejected"
   | "payment_run_execution_failed"
+  | "payment_submission_needs_recovery"
+  | "payment_operations_alert"
+  | "payment_run_fee_charge_failed"
+  | "vendor_transfer_needs_attention"
   | "vendor_payment_returned"
   | "payment_reconciliation_completed"
   | "vendor_payment_relationship_claimed"
+  | "vendor_payout_destination_changed"
   | "accounting_reconciliation_drift"
 
 export const EMAIL_NOTIFICATION_TYPES = [
+  {
+    key: "vendor_bill_submitted",
+    label: "Payable needs approval",
+    description: "Email me when a vendor invoice arrives and is waiting on my approval.",
+  },
+  {
+    key: "vendor_bill_approved",
+    label: "Payable approved",
+    description: "Email me when a payable I submitted or entered is approved for payment.",
+  },
+  {
+    key: "vendor_bill_rejected",
+    label: "Payable rejected",
+    description: "Email me when a payable I submitted or entered is rejected, with the reason.",
+  },
+  {
+    key: "vendor_payment_paid",
+    label: "Vendor payment completed",
+    description: "Email me when a vendor payment finishes settling and the vendor has been paid.",
+  },
+  {
+    key: "payable_email_ingest",
+    label: "Payable arrived by email",
+    description: "Email me when an invoice sent to our payables address is captured into Arc.",
+  },
   {
     key: "accounting_reconciliation_drift",
     label: "Accounting reconciliation drift",
@@ -180,9 +213,34 @@ export const EMAIL_NOTIFICATION_TYPES = [
     description: "Email me when a vendor payment run fails during provider submission.",
   },
   {
+    key: "vendor_transfer_needs_attention",
+    label: "Vendor transfer blocked",
+    description: "Email me when a builder debit has cleared but the vendor payout could not be sent.",
+  },
+  {
+    key: "payment_run_fee_charge_failed",
+    label: "Arc fee debit failed",
+    description: "Email me when Arc could not collect its fee for a payment run and the balance is still owed.",
+  },
+  {
+    key: "payment_operations_alert",
+    label: "Payment operations alert",
+    description: "Email me when automated monitoring finds a stalled payment release or a reconciliation that stopped running.",
+  },
+  {
+    key: "payment_submission_needs_recovery",
+    label: "Payment submission needs recovery",
+    description: "Email me when Arc cannot tell whether a vendor payment reached the provider and needs a human to confirm it.",
+  },
+  {
     key: "vendor_payment_returned",
     label: "Vendor payment returned",
     description: "Email me when a provider reports a vendor payment return or reversal.",
+  },
+  {
+    key: "vendor_payout_destination_changed",
+    label: "Vendor payout bank changed",
+    description: "Email me when a vendor's payout bank account changes and payments to them are put on hold.",
   },
   {
     key: "payment_reconciliation_completed",

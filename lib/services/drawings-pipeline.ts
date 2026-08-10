@@ -18,6 +18,9 @@ import "server-only"
  *                              critical path; upgrades sheet metadata after
  *                              the sheet is already viewable
  *   generate_drawing_tiles  -> backfill tiles for a legacy sheet version
+ *   detect_drawing_changes  -> after publish, per-sheet visual diff against
+ *                              the prior published version (off the critical
+ *                              path; failure never affects the publish)
  *
  * Splitting is chunked so page-count scales with parallel function instances
  * instead of one long single-threaded WASM loop, and every claimed job
@@ -29,7 +32,18 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { z } from "zod"
 
+import {
+  drawingsVisionConfigured,
+  runDrawingsVisionObject,
+  type VisionImage,
+} from "@/lib/services/ai/drawings-vision"
+import {
+  classifyChangedRegions,
+  type SheetChangeSemantics,
+} from "@/lib/services/drawings-change-semantics"
+import { loadMupdf, type MupdfModule } from "@/lib/services/mupdf-loader"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { downloadDrawingPdfObject } from "@/lib/storage/drawings-pdfs-storage"
 import {
@@ -37,7 +51,7 @@ import {
   uploadTilesObject,
   downloadTilesObject,
 } from "@/lib/storage/drawings-tiles-storage"
-import { buildDrawingsTilesBaseUrl } from "@/lib/storage/drawings-urls"
+import { buildDrawingsTilesBaseUrl, getDrawingsTilesBaseUrl } from "@/lib/storage/drawings-urls"
 import { triggerDrawingsPipeline } from "@/lib/services/drawings-pipeline-trigger"
 import { inheritPublishedMarkupsToRevision } from "@/lib/services/drawing-markups"
 import {
@@ -48,6 +62,20 @@ import {
   type ExtractedVectors,
 } from "@/lib/drawings/vector-extract"
 import { encodeTextRuns, TEXT_RUNS_FILE, type TextRun } from "@/lib/drawings/text-runs"
+import {
+  CALLOUT_LINKS_ALGO,
+  extractCalloutLinks,
+  parseStoredCalloutLinks,
+  resolveCalloutLinks,
+  type ResolvedCalloutLink,
+} from "@/lib/drawings/callout-links"
+import {
+  CHANGE_DETECTION_ALGO,
+  diffGrayRasters,
+  dziLevelSize,
+  pickDiffLevel,
+  readyLevelCountForLongEdge,
+} from "@/lib/drawings/change-detection"
 import {
   buildCalibrationProposal,
   crossCheckDimensionChains,
@@ -71,6 +99,7 @@ export const DRAWING_PIPELINE_JOB_TYPES = [
   "generate_drawing_tiles",
   "backfill_drawing_page_text",
   "extract_drawing_vectors",
+  "detect_drawing_changes",
 ] as const
 
 const SHEET_NUMBER_MAX_LENGTH = 50
@@ -99,6 +128,34 @@ const TILE_PATH_GENERATION = `r${RENDER_DPI}-${TILE_SIZE}-${TILE_FORMAT}`
 
 function tilesBasePath(orgId: string, sourceHash: string, pageIndex: number): string {
   return `${orgId}/${sourceHash}/${TILE_PATH_GENERATION}/page-${pageIndex}`
+}
+/**
+ * Long edge (px) the coarse pyramid must reach before a sheet goes live.
+ * Uploading coarse-to-fine, everything through this level is a handful of
+ * tiles (~10% of the pyramid); the top one or two levels are ~90% of it, so
+ * publishing here makes the sheet viewable an order of magnitude sooner.
+ * 1600 covers a fit-to-screen view on a retina laptop within ~1.4× upscale.
+ */
+const MIN_READY_LONG_EDGE = 1600
+/** requestSheetTileRepair ignores repeat reports inside this window. */
+const TILE_REPAIR_COOLDOWN_MINUTES = 10
+/** Sheets diffed per detect_drawing_changes run before self-chaining. */
+const CHANGE_DETECTION_BATCH = 6
+/** Long edge (px) change detection rasterizes each version at. */
+const CHANGE_DETECTION_LONG_EDGE = 1024
+
+/**
+ * True when a manifest describes a finished pyramid. While tiles stream in,
+ * the row temporarily carries a `Partial: true` manifest (see
+ * `generateTilesForVersion`); such a version is viewable but must not be
+ * treated as "has tiles" by the pipeline's skip checks or donor selection.
+ */
+function isCompleteTileManifest(manifest: unknown): boolean {
+  return (
+    !!manifest &&
+    typeof manifest === "object" &&
+    (manifest as Record<string, unknown>).Partial !== true
+  )
 }
 // Pages per split_drawing_chunk job. Splitting is single-threaded WASM CPU,
 // so throughput comes from running many chunks on parallel instances.
@@ -161,8 +218,6 @@ type VisionSheetMetadata = {
   statedScale?: string | null
 }
 
-type VisionProvider = "google" | "openai"
-
 interface ClaimedJob {
   job_id: number
   org_id: string
@@ -174,17 +229,6 @@ interface ClaimedJob {
 // ============================================================================
 // MuPDF (WASM) helpers
 // ============================================================================
-
-type MupdfModule = typeof import("mupdf")
-
-let mupdfModulePromise: Promise<MupdfModule> | null = null
-
-export function loadMupdf(): Promise<MupdfModule> {
-  if (!mupdfModulePromise) {
-    mupdfModulePromise = import("mupdf")
-  }
-  return mupdfModulePromise
-}
 
 async function loadSharp() {
   const sharpModule = await import("sharp")
@@ -612,6 +656,9 @@ async function processJob(supabase: SupabaseClient, job: ClaimedJob): Promise<bo
       case "extract_drawing_vectors":
         await handleExtractDrawingVectors(supabase, job)
         break
+      case "detect_drawing_changes":
+        await handleDetectDrawingChanges(supabase, job)
+        break
       // Retire any queued jobs from the removed room-extraction feature
       // without retrying them or writing another artifact.
       case "extract_drawing_spaces":
@@ -812,7 +859,7 @@ async function handleProcessDrawingSet(supabase: SupabaseClient, job: ClaimedJob
     pageCount,
     setTitle,
     targetSheet,
-    aiVision: payload.aiVision ?? null,
+    visionConfigured: await drawingsVisionConfigured(),
   }
 
   if (pageCount <= SPLIT_CHUNK_SIZE) {
@@ -880,7 +927,11 @@ interface SplitChunkInput {
   pageCount: number
   setTitle: string
   targetSheet: { id: string; sheet_number: string; sheet_title?: string | null; discipline?: string | null } | null
-  aiVision: unknown
+  /**
+   * Resolved once per job, not per page: whether vision can run is a registry
+   * read, and a 400-sheet set would otherwise ask four hundred times.
+   */
+  visionConfigured: boolean
   chunkIndex: number
   chunkStart: number
   chunkEnd: number
@@ -946,7 +997,7 @@ async function handleSplitDrawingChunk(supabase: SupabaseClient, job: ClaimedJob
       targetSheet: payload.targetSheet && typeof payload.targetSheet === "object"
         ? (payload.targetSheet as SplitChunkInput["targetSheet"])
         : null,
-      aiVision: payload.aiVision ?? null,
+      visionConfigured: await drawingsVisionConfigured(),
       chunkIndex,
       chunkStart: requireNumber(payload.chunkStart, "chunkStart"),
       chunkEnd: requireNumber(payload.chunkEnd, "chunkEnd"),
@@ -970,7 +1021,7 @@ async function splitChunkPages(
 ) {
   const {
     orgId, projectId, drawingSetId, draftRevisionId, sourceFileId, sourceHash,
-    pageCount, setTitle, targetSheet, aiVision, chunkIndex, chunkStart, chunkEnd,
+    pageCount, setTitle, targetSheet, visionConfigured, chunkIndex, chunkStart, chunkEnd,
     doc, mupdf,
   } = input
 
@@ -987,6 +1038,8 @@ async function splitChunkPages(
     .eq("org_id", orgId)
     .eq("source_hash", sourceHash)
     .not("tile_manifest", "is", null)
+    // Mid-upload partial manifests never donate (key absent on complete rows).
+    .is("tile_manifest->Partial", null)
     .neq("drawing_revision_id", draftRevisionId)
     .gte("page_index", chunkStart)
     .lt("page_index", chunkEnd)
@@ -999,7 +1052,7 @@ async function splitChunkPages(
     const pageNumber = pageIndex + 1
 
     const detected = detectSheetMetadata({ pageText, setTitle, pageNumber })
-    const visionPending = shouldUseVisionFallback(detected, pageText, { aiVision })
+    const visionPending = shouldUseVisionFallback(detected, pageText, visionConfigured)
 
     // Cross-page/cross-upload uniqueness is enforced by the DB unique index on
     // (project_id, sheet_number); collisions resolve on insert.
@@ -1132,7 +1185,6 @@ async function splitChunkPages(
               discipline: targetSheet.discipline ?? null,
             }
           : null,
-        aiVision: aiVision ?? null,
       },
       run_at: new Date().toISOString(),
     })
@@ -1200,7 +1252,7 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
     payload.detected && typeof payload.detected === "object"
       ? (payload.detected as DetectedSheetMetadata)
       : detectSheetMetadata({ pageText, setTitle, pageNumber })
-  const visionPending = shouldUseVisionFallback(detected, pageText, payload)
+  const visionPending = shouldUseVisionFallback(detected, pageText, await drawingsVisionConfigured())
   const isTargetPage = Boolean(payload.isTargetPage && payload.targetSheet)
   const targetSheet = isTargetPage ? (payload.targetSheet as Record<string, any>) : null
   const tentativeSheetNumber =
@@ -1239,7 +1291,9 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
   if (!versionRow) {
     throw new Error(`Version ${versionId} vanished for page ${pageNumber}`)
   }
-  if (versionRow.tile_manifest) {
+  // A PARTIAL manifest (crash between the early publish and pyramid
+  // completion) must fall through and re-tile — only a finished pyramid skips.
+  if (isCompleteTileManifest(versionRow.tile_manifest)) {
     console.log(`[drawings-pipeline] Page ${pageNumber} already tiled for revision ${draftRevisionId}`)
     return
   }
@@ -1368,11 +1422,29 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
     }
   }
 
+  // ---- Callout links (same pass — the text runs are already in memory) ----
+  // Enrichment only: a failure never fails the page, the sheet just has no
+  // jump targets until the vector backfill revisits it.
+  let calloutLinks: Record<string, unknown> | null = null
+  if (vectorAligned && textRuns.length > 0) {
+    try {
+      calloutLinks = await computeCalloutLinksMetadata(supabase, {
+        orgId,
+        projectId,
+        sheetId,
+        runs: textRuns,
+      })
+    } catch (error) {
+      console.warn(`[drawings-pipeline] Callout extraction failed for page ${pageNumber}:`, error)
+    }
+  }
+
   // ---- Merge render-derived metadata onto the (split-created) version ----
   const mergedMetadata = {
     ...((versionRow.extracted_metadata ?? {}) as Record<string, unknown>),
     ...(calibrationProposal ? { calibration_proposal: calibrationProposal } : {}),
     ...(vectors ? { vector_stats: { ...vectorStatsMetadata(vectors), aligned: vectorAligned } } : {}),
+    ...(calloutLinks ? { callout_links: calloutLinks } : {}),
     ...(scaledDown ? { render_scaled: true } : {}),
   }
   await supabase
@@ -1414,7 +1486,6 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
           pageText: pageText.slice(0, PAGE_TEXT_PAYLOAD_MAX_CHARS),
           detected,
           visionPaths,
-          aiVision: payload.aiVision ?? null,
         },
         run_at: new Date().toISOString(),
       })
@@ -1675,6 +1746,9 @@ async function findDonorVersion(
     .eq("source_hash", sourceHash)
     .eq("page_index", pageIndex)
     .not("tile_manifest", "is", null)
+    // Never adopt a mid-upload partial pyramid: the adopter would keep the
+    // truncated manifest after the donor's own row gets the full one.
+    .is("tile_manifest->Partial", null)
     .neq("id", excludeVersionId)
     .order("created_at", { ascending: false })
     .limit(1)
@@ -1704,6 +1778,11 @@ async function adoptDonorRender(
     ...(donorMeta.calibration_proposal ? { calibration_proposal: donorMeta.calibration_proposal } : {}),
     ...(donorMeta.vector_stats ? { vector_stats: donorMeta.vector_stats } : {}),
     ...(donorMeta.spaces ? { spaces: donorMeta.spaces } : {}),
+    // Callout links store printed sheet NUMBERS and resolve to sheet ids at
+    // read time against the READING project's register, so carrying them
+    // across a cross-project adoption (sixty lots off one plan set) stays
+    // correct — same printed content, each project resolves its own sheets.
+    ...(donorMeta.callout_links ? { callout_links: donorMeta.callout_links } : {}),
     ...(donorMeta.render_scaled ? { render_scaled: donorMeta.render_scaled } : {}),
   }
 
@@ -1841,10 +1920,12 @@ async function handleEnrichDrawingMetadata(supabase: SupabaseClient, job: Claime
     return
   }
 
-  const images: Array<{ dataUrl: string }> = []
+  // Raw bytes, not data URLs: the gateway hands file parts to the provider
+  // directly, so base64-ing them here only inflated the payload by a third.
+  const images: VisionImage[] = []
   for (const cropPath of visionPaths) {
     const bytes = await downloadTilesObject({ supabase, path: cropPath })
-    images.push({ dataUrl: `data:image/webp;base64,${bytes.toString("base64")}` })
+    images.push({ data: bytes, mediaType: "image/webp" })
   }
   if (images.length === 0) {
     await cleanupCrops()
@@ -1862,7 +1943,8 @@ async function handleEnrichDrawingMetadata(supabase: SupabaseClient, job: Claime
       setTitle,
       pageNumber,
       initial: detected,
-      payload,
+      orgId,
+      sheetVersionId,
     })
   } catch (error) {
     if (job.retry_count + 1 >= MAX_JOB_RETRIES) {
@@ -1981,7 +2063,11 @@ async function handleGenerateDrawingTiles(supabase: SupabaseClient, job: Claimed
   // for pyramids written before tile paths were generation-segmented (mixed
   // render geometries under one cached-immutable path).
   const force = payload.force === true
-  if (!force && version.tile_manifest && version.tile_base_url) {
+  if (
+    !force &&
+    isCompleteTileManifest(version.tile_manifest) &&
+    version.tile_base_url
+  ) {
     console.log(`[drawings-pipeline] Tiles already exist for version ${sheetVersionId}, skipping`)
     return
   }
@@ -2087,6 +2173,88 @@ async function handleGenerateDrawingTiles(supabase: SupabaseClient, job: Claimed
       console.warn("[drawings-pipeline] MV refresh after tiles failed:", error)
     }
   }
+}
+
+// ============================================================================
+// Tile self-heal
+// ============================================================================
+
+export interface TileRepairResult {
+  /** True when a repair job was enqueued by THIS call. */
+  queued: boolean
+  reason: "queued" | "already_queued" | "cooldown"
+}
+
+/**
+ * Recover a sheet whose tiles are missing or 404ing: enqueue a forced
+ * `generate_drawing_tiles` for the version (force re-renders even when a
+ * manifest exists — the same path that repairs pre-generation pyramids).
+ *
+ * Rate-limited so repeated client reports cannot stampede the queue: skipped
+ * while a forced repair for the version is already pending/processing, and
+ * skipped when one ran within the last TILE_REPAIR_COOLDOWN_MINUTES. Both
+ * skips still kick the runner — if the earlier job is stranded in the queue,
+ * the kick is what un-strands it.
+ *
+ * Callers own auth: verify org context and drawing permission before calling.
+ */
+export async function requestSheetTileRepair(input: {
+  orgId: string
+  sheetVersionId: string
+}): Promise<TileRepairResult> {
+  const { orgId, sheetVersionId } = input
+  const supabase = createServiceSupabaseClient()
+
+  const { data: version, error: versionError } = await supabase
+    .from("drawing_sheet_versions")
+    .select("id")
+    .eq("org_id", orgId)
+    .eq("id", sheetVersionId)
+    .maybeSingle()
+  if (versionError || !version) {
+    throw new Error("Sheet version not found")
+  }
+
+  const repairPayload = { orgId, sheetVersionId, force: true }
+
+  const { count: inFlight } = await supabase
+    .from("outbox")
+    .select("id", { count: "exact", head: true })
+    .eq("org_id", orgId)
+    .eq("job_type", "generate_drawing_tiles")
+    .contains("payload", repairPayload)
+    .in("status", ["pending", "processing"])
+  if ((inFlight ?? 0) > 0) {
+    await triggerDrawingsPipeline()
+    return { queued: false, reason: "already_queued" }
+  }
+
+  const cooldownCutoff = new Date(
+    Date.now() - TILE_REPAIR_COOLDOWN_MINUTES * 60_000,
+  ).toISOString()
+  const { count: recent } = await supabase
+    .from("outbox")
+    .select("id", { count: "exact", head: true })
+    .eq("org_id", orgId)
+    .eq("job_type", "generate_drawing_tiles")
+    .contains("payload", repairPayload)
+    .gte("updated_at", cooldownCutoff)
+  if ((recent ?? 0) > 0) {
+    return { queued: false, reason: "cooldown" }
+  }
+
+  const { error: insertError } = await supabase.from("outbox").insert({
+    org_id: orgId,
+    job_type: "generate_drawing_tiles",
+    payload: repairPayload,
+    run_at: new Date().toISOString(),
+  })
+  if (insertError) {
+    throw new Error(`Failed to queue tile repair: ${insertError.message}`)
+  }
+
+  await triggerDrawingsPipeline()
+  return { queued: true, reason: "queued" }
 }
 
 // ============================================================================
@@ -2212,7 +2380,7 @@ async function handleExtractDrawingVectors(supabase: SupabaseClient, job: Claime
   const { data: candidates, error } = await supabase
     .from("drawing_sheet_versions")
     .select(
-      "id, file_id, page_index, image_width, image_height, tiles_base_path, extracted_metadata, drawing_revision_id, drawing_sheets!inner(current_revision_id)",
+      "id, file_id, page_index, image_width, image_height, tiles_base_path, extracted_metadata, drawing_revision_id, drawing_sheet_id, drawing_sheets!inner(current_revision_id, project_id)",
     )
     .eq("org_id", orgId)
     .not("tile_manifest", "is", null)
@@ -2300,6 +2468,7 @@ async function handleExtractDrawingVectors(supabase: SupabaseClient, job: Claime
           pageOriginY: Math.min(bounds[1], bounds[3]),
         })
 
+        let calloutLinks: Record<string, unknown> | null = null
         if (aligned && extracted.storedSegmentCount > 0) {
           await uploadTilesObject({
             supabase,
@@ -2321,6 +2490,27 @@ async function handleExtractDrawingVectors(supabase: SupabaseClient, job: Claime
               bytes: Buffer.from(encodeTextRuns(textRuns), "utf8"),
               contentType: "application/json",
             })
+            // Same-pass callout extraction: this backfill is also how sheets
+            // processed before the feature existed get their jump targets.
+            try {
+              // The !inner embed is many-to-one, so PostgREST returns an
+              // object at runtime; supabase-js statically types it as an
+              // array. Tolerate both shapes rather than casting.
+              const sheetJoin = Array.isArray(version.drawing_sheets)
+                ? version.drawing_sheets[0]
+                : version.drawing_sheets
+              calloutLinks = await computeCalloutLinksMetadata(supabase, {
+                orgId,
+                projectId: requireString(sheetJoin?.project_id, "project_id"),
+                sheetId: requireString(version.drawing_sheet_id, "drawing_sheet_id"),
+                runs: textRuns,
+              })
+            } catch (calloutError) {
+              console.warn(
+                `[drawings-pipeline] Callout extraction failed for version ${version.id}:`,
+                calloutError,
+              )
+            }
           }
         }
 
@@ -2330,6 +2520,7 @@ async function handleExtractDrawingVectors(supabase: SupabaseClient, job: Claime
             extracted_metadata: {
               ...((version.extracted_metadata ?? {}) as Record<string, unknown>),
               vector_stats: { ...vectorStatsMetadata(extracted), aligned },
+              ...(calloutLinks ? { callout_links: calloutLinks } : {}),
             },
           })
           .eq("org_id", orgId)
@@ -2397,10 +2588,555 @@ export async function enqueueVectorBackfill(orgId: string) {
 }
 
 // ============================================================================
-// Tiling (DZI pyramid via native libvips dzsave)
+// Sheet-to-sheet callout links (extraction wiring + read-time resolution)
+// ============================================================================
+
+/**
+ * Roster cap when building the known-sheet-number set. Commercial sets run to
+ * ~900 sheets; 2000 is headroom, not a truncation anyone should hit. Past the
+ * cap some links simply fail the known-sheet gate — fewer links, never wrong
+ * ones.
+ */
+const CALLOUT_KNOWN_SHEET_CAP = 2000
+
+/**
+ * Extract callout links from a sheet's text runs against the project's sheet
+ * register, returning the `extracted_metadata.callout_links` blob.
+ *
+ * Sequencing: links store the target sheet number AS PRINTED and resolve to a
+ * sheet id only at read time (`getSheetCalloutLinks`). Extraction still takes
+ * the known-number set — but purely as a precision gate for bare references.
+ * That split is deliberate:
+ *
+ * - Sheet rows for the whole upload are created at SPLIT time, before page
+ *   jobs run, so same-set targets are present for the gate even on a brand
+ *   new project.
+ * - Detail bubbles (`5/A-501`) are stored even when the target is not known
+ *   yet, so a structural set that references an architectural set uploaded
+ *   next week lights up the moment those sheets exist — no re-extraction
+ *   pass, no stale-id problem, and renumbering a sheet re-points every link
+ *   automatically.
+ * - The one recall cost: a BARE reference whose target sheet did not exist at
+ *   extraction time stays unextracted until the vector backfill (or a
+ *   re-upload) revisits the sheet. Precision-first, by design.
+ */
+async function computeCalloutLinksMetadata(
+  supabase: SupabaseClient,
+  input: { orgId: string; projectId: string; sheetId: string; runs: TextRun[] },
+): Promise<Record<string, unknown>> {
+  const { data, error } = await supabase
+    .from("drawing_sheets")
+    .select("id, sheet_number")
+    .eq("org_id", input.orgId)
+    .eq("project_id", input.projectId)
+    .limit(CALLOUT_KNOWN_SHEET_CAP)
+  if (error) throw new Error(`Failed to list sheet numbers for callouts: ${error.message}`)
+
+  const rows = (data ?? []) as Array<{ id: string; sheet_number: string | null }>
+  const ownSheetNumber = rows.find((row) => row.id === input.sheetId)?.sheet_number ?? null
+  const { links, truncated } = extractCalloutLinks({
+    runs: input.runs,
+    knownSheetNumbers: rows
+      .map((row) => row.sheet_number)
+      .filter((number): number is string => typeof number === "string" && number.length > 0),
+    ownSheetNumber,
+  })
+  // Stored even when empty: the algo marker records "computed, nothing found"
+  // so a future re-extraction pass can tell absence from never-ran.
+  return {
+    algo: CALLOUT_LINKS_ALGO,
+    links,
+    truncated,
+    computed_at: new Date().toISOString(),
+  }
+}
+
+/**
+ * Read a sheet version's callout links with printed targets resolved to real
+ * `drawing_sheets.id`s on the project, ready for viewer navigation.
+ *
+ * Unresolved targets (sheet not uploaded yet, ambiguous after normalization)
+ * are filtered out — the viewer only receives links it can navigate — and a
+ * link resolving back to its own sheet (possible after renumbering) is
+ * dropped. Uses the service client: the caller must already have authorized
+ * read access to the project (the drawings service's sheet-read gate), same
+ * as every other read in this pipeline.
+ */
+export async function getSheetCalloutLinks(input: {
+  orgId: string
+  projectId: string
+  sheetVersionId: string
+}): Promise<ResolvedCalloutLink[]> {
+  const supabase = createServiceSupabaseClient()
+  const [versionResult, sheetsResult] = await Promise.all([
+    supabase
+      .from("drawing_sheet_versions")
+      .select(
+        "id, drawing_sheet_id, callout_links:extracted_metadata->callout_links, drawing_sheets!inner(project_id)",
+      )
+      .eq("org_id", input.orgId)
+      .eq("id", input.sheetVersionId)
+      .maybeSingle(),
+    supabase
+      .from("drawing_sheets")
+      .select("id, sheet_number")
+      .eq("org_id", input.orgId)
+      .eq("project_id", input.projectId)
+      .limit(CALLOUT_KNOWN_SHEET_CAP),
+  ])
+
+  if (versionResult.error) {
+    throw new Error(`Failed to load sheet version: ${versionResult.error.message}`)
+  }
+  if (sheetsResult.error) {
+    throw new Error(`Failed to list project sheets: ${sheetsResult.error.message}`)
+  }
+
+  const version = versionResult.data as {
+    drawing_sheet_id: string
+    callout_links: unknown
+    drawing_sheets: { project_id: string } | null
+  } | null
+  // Version must belong to the project the caller was authorized on.
+  if (!version || version.drawing_sheets?.project_id !== input.projectId) return []
+
+  const stored = parseStoredCalloutLinks(version.callout_links)
+  if (!stored || stored.links.length === 0) return []
+
+  const sheets = ((sheetsResult.data ?? []) as Array<{ id: string; sheet_number: string | null }>)
+    .filter((row): row is { id: string; sheet_number: string } => typeof row.sheet_number === "string")
+    .map((row) => ({ id: row.id, sheetNumber: row.sheet_number }))
+  return resolveCalloutLinks(stored.links, sheets, version.drawing_sheet_id)
+}
+
+// ============================================================================
+// Job: detect_drawing_changes (post-publish visual diff, self-chaining)
+// ============================================================================
+
+/**
+ * Queue change detection for a just-published revision. Never throws: this is
+ * enrichment, and a publish must not fail because a diff could not be queued
+ * (contrast `reanchor_takeoff_markups`, which is correctness-critical and
+ * fails the publish loudly). Deduped per revision.
+ */
+export async function enqueueDrawingChangeDetection(input: {
+  orgId: string
+  revisionId: string
+}): Promise<void> {
+  try {
+    const supabase = createServiceSupabaseClient()
+    const { count } = await supabase
+      .from("outbox")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", input.orgId)
+      .eq("job_type", "detect_drawing_changes")
+      .contains("payload", { revisionId: input.revisionId })
+      .in("status", ["pending", "processing"])
+    if ((count ?? 0) > 0) return
+
+    const { error } = await supabase.from("outbox").insert({
+      org_id: input.orgId,
+      job_type: "detect_drawing_changes",
+      payload: { orgId: input.orgId, revisionId: input.revisionId },
+      run_at: new Date().toISOString(),
+    })
+    if (error) throw new Error(error.message)
+    await triggerDrawingsPipeline()
+  } catch (error) {
+    console.warn("[drawings-pipeline] Failed to queue change detection:", error)
+  }
+}
+
+/**
+ * Diff each sheet of a published revision against the sheet's prior published
+ * version: changed-pixel ratio plus changed-region bounding boxes, stored on
+ * the new version's `extracted_metadata.change_detection`. Rasters come from
+ * the tiles already in R2 at a coarse pyramid level — the PDF is never
+ * re-rendered. Per-sheet failures are logged and skipped; a batch of sheets
+ * per run, self-chaining on the sheet-id cursor.
+ */
+async function handleDetectDrawingChanges(supabase: SupabaseClient, job: ClaimedJob) {
+  const payload = job.payload ?? {}
+  const orgId = requireString(payload.orgId ?? job.org_id, "orgId")
+  const revisionId = requireString(payload.revisionId, "revisionId")
+  const afterSheetId = typeof payload.afterSheetId === "string" ? payload.afterSheetId : null
+
+  let query = supabase
+    .from("drawing_sheet_versions")
+    .select(
+      "id, drawing_sheet_id, source_hash, created_at, tile_manifest, tiles_base_path, tile_base_url, extracted_metadata",
+    )
+    .eq("org_id", orgId)
+    .eq("drawing_revision_id", revisionId)
+    .order("drawing_sheet_id", { ascending: true })
+    .limit(CHANGE_DETECTION_BATCH + 1)
+  if (afterSheetId) query = query.gt("drawing_sheet_id", afterSheetId)
+
+  const { data, error } = await query
+  if (error) throw new Error(`Change detection query failed: ${error.message}`)
+  const rows = data ?? []
+  const batch = rows.slice(0, CHANGE_DETECTION_BATCH)
+  if (batch.length === 0) return
+
+  for (const row of batch) {
+    try {
+      await detectChangesForVersion(supabase, orgId, revisionId, row as ChangeDetectionVersionRow)
+    } catch (versionError) {
+      // One unreadable sheet must not block the rest of the revision.
+      console.warn(
+        `[drawings-pipeline] Change detection failed for version ${(row as { id: string }).id}:`,
+        versionError,
+      )
+    }
+  }
+
+  if (rows.length > batch.length) {
+    await supabase.from("outbox").insert({
+      org_id: orgId,
+      job_type: "detect_drawing_changes",
+      payload: {
+        orgId,
+        revisionId,
+        afterSheetId: (batch[batch.length - 1] as { drawing_sheet_id: string }).drawing_sheet_id,
+      },
+      run_at: new Date().toISOString(),
+    })
+    await triggerDrawingsPipeline()
+  }
+}
+
+interface ChangeDetectionVersionRow {
+  id: string
+  drawing_sheet_id: string
+  source_hash: string | null
+  created_at: string
+  tile_manifest: Record<string, any> | null
+  tiles_base_path: string | null
+  tile_base_url: string | null
+  extracted_metadata: Record<string, any> | null
+}
+
+async function detectChangesForVersion(
+  supabase: SupabaseClient,
+  orgId: string,
+  revisionId: string,
+  row: ChangeDetectionVersionRow,
+) {
+  // The latest published version of the same sheet from any other revision —
+  // "what the field was building from before this issue".
+  const { data: priorRows } = await supabase
+    .from("drawing_sheet_versions")
+    .select(
+      "id, source_hash, tile_manifest, tiles_base_path, tile_base_url, drawing_revisions!inner(status)",
+    )
+    .eq("org_id", orgId)
+    .eq("drawing_sheet_id", row.drawing_sheet_id)
+    .neq("drawing_revision_id", revisionId)
+    .eq("drawing_revisions.status", "published")
+    .lt("created_at", row.created_at)
+    .order("created_at", { ascending: false })
+    .limit(1)
+  const prior = priorRows?.[0] as
+    | (Omit<ChangeDetectionVersionRow, "drawing_sheet_id" | "created_at" | "extracted_metadata">)
+    | undefined
+  if (!prior) return // first published version of this sheet — nothing to compare
+
+  const existing = (row.extracted_metadata ?? {}).change_detection as
+    | Record<string, unknown>
+    | undefined
+  if (
+    existing &&
+    existing.compared_to_version_id === prior.id &&
+    existing.algo === CHANGE_DETECTION_ALGO
+  ) {
+    return // already computed against this exact predecessor (job retry)
+  }
+
+  const writeResult = async (result: Record<string, unknown>) => {
+    // Re-read right before writing: sibling jobs (vector backfill) also
+    // read-modify-write extracted_metadata, and a stale base would drop keys.
+    const { data: fresh } = await supabase
+      .from("drawing_sheet_versions")
+      .select("extracted_metadata")
+      .eq("org_id", orgId)
+      .eq("id", row.id)
+      .maybeSingle()
+    const freshMeta = (fresh?.extracted_metadata ?? {}) as Record<string, unknown>
+    const { error: writeError } = await supabase
+      .from("drawing_sheet_versions")
+      .update({
+        extracted_metadata: {
+          ...freshMeta,
+          change_detection: {
+            algo: CHANGE_DETECTION_ALGO,
+            compared_to_version_id: prior.id,
+            computed_at: new Date().toISOString(),
+            ...result,
+          },
+        },
+      })
+      .eq("org_id", orgId)
+      .eq("id", row.id)
+    if (writeError) {
+      throw new Error(`Failed to store change detection: ${writeError.message}`)
+    }
+  }
+
+  // Identical source content (unchanged sheet in a re-issue, or the same PDF
+  // re-uploaded) — nothing to download, by definition nothing changed.
+  if (row.source_hash && prior.source_hash === row.source_hash) {
+    await writeResult({
+      changed_ratio: 0,
+      regions: [],
+      region_count: 0,
+      identical_source: true,
+    })
+    return
+  }
+
+  const current = await loadDiffRaster(supabase, row, null)
+  if (!current) {
+    console.warn(`[drawings-pipeline] Change detection: no readable tiles for version ${row.id}`)
+    return
+  }
+  const before = await loadDiffRaster(supabase, prior, {
+    width: current.width,
+    height: current.height,
+  })
+  if (!before) {
+    console.warn(`[drawings-pipeline] Change detection: no readable tiles for prior ${prior.id}`)
+    return
+  }
+
+  const diff = diffGrayRasters(current.data, before.data, current.width, current.height)
+
+  // A different aspect ratio (rotated or re-plotted sheet) makes the fill
+  // resize distort the prior raster; the ratio is still indicative but the
+  // regions are not exact, so say so.
+  const aspectMismatch =
+    Math.abs(current.aspect - before.sourceAspect) / current.aspect > 0.02
+
+  // What kind of change each region is, and what it touches. Strictly additive:
+  // the pixel result is written whether or not this runs, so a sheet always has
+  // a diff even when no provider is configured or the classifier fails.
+  let semantics: SheetChangeSemantics | null = null
+  if (diff.regions.length > 0 && (await drawingsVisionConfigured())) {
+    try {
+      semantics = await classifyChangedRegions({
+        supabase,
+        orgId,
+        sheetId: row.drawing_sheet_id,
+        sheetVersionId: row.id,
+        priorVersion: prior,
+        currentVersion: row,
+        regions: diff.regions.map((region) => ({
+          x: region.x,
+          y: region.y,
+          w: region.w,
+          h: region.h,
+        })),
+      })
+    } catch (error) {
+      console.warn(`[drawings-pipeline] Change classification failed for ${row.id}:`, error)
+    }
+  }
+
+  await writeResult({
+    changed_ratio: diff.changedRatio,
+    regions: diff.regions,
+    region_count: diff.regionCount,
+    basis: { width: current.width, height: current.height },
+    ...(aspectMismatch ? { notes: ["aspect_mismatch"] } : {}),
+    ...(semantics ? { semantics } : {}),
+  })
+}
+
+interface DiffRaster {
+  data: Uint8Array
+  width: number
+  height: number
+  /** Aspect ratio of the raster as produced. */
+  aspect: number
+  /** Aspect ratio of the version's own image, before any resize-to-match. */
+  sourceAspect: number
+}
+
+/**
+ * Assemble a coarse grayscale raster for a version from its tiles in R2:
+ * pick the cheapest pyramid level covering CHANGE_DETECTION_LONG_EDGE,
+ * download its (few) tiles, composite, and optionally resize to match the
+ * raster it will be diffed against. Returns null when the version has no
+ * complete pyramid to read.
+ */
+async function loadDiffRaster(
+  supabase: SupabaseClient,
+  row: {
+    tile_manifest: Record<string, any> | null
+    tiles_base_path: string | null
+    tile_base_url: string | null
+  },
+  resizeTo: { width: number; height: number } | null,
+): Promise<DiffRaster | null> {
+  const manifest = row.tile_manifest
+  if (!isCompleteTileManifest(manifest)) return null
+  const basePath = resolveTilesBasePathForRow(row)
+  if (!basePath) return null
+
+  const imageW = Number(manifest?.Image?.Size?.Width ?? 0)
+  const imageH = Number(manifest?.Image?.Size?.Height ?? 0)
+  if (!(imageW > 0) || !(imageH > 0)) return null
+
+  const format =
+    typeof manifest?.Image?.Format === "string" && manifest.Image.Format
+      ? manifest.Image.Format.trim().toLowerCase()
+      : "png"
+  const levels =
+    typeof manifest?.Levels === "number" && Number.isFinite(manifest.Levels)
+      ? Math.max(1, Math.floor(manifest.Levels))
+      : 1
+  // Legacy single-image manifests: one full-size tile at tiles/0/0_0.
+  const tileSize =
+    levels <= 1 ? Math.max(imageW, imageH) : Math.max(1, Number(manifest?.Image?.TileSize ?? 512))
+  const overlap = levels <= 1 ? 0 : Math.max(0, Number(manifest?.Image?.Overlap ?? 0))
+
+  const level = pickDiffLevel(imageW, imageH, levels, CHANGE_DETECTION_LONG_EDGE)
+  const levelDims = dziLevelSize(imageW, imageH, levels, level)
+  const cols = Math.ceil(levelDims.width / tileSize)
+  const tileRows = Math.ceil(levelDims.height / tileSize)
+
+  const placements: Array<{ x: number; y: number }> = []
+  for (let y = 0; y < tileRows; y++) {
+    for (let x = 0; x < cols; x++) placements.push({ x, y })
+  }
+  const tileBuffers = await Promise.all(
+    placements.map(({ x, y }) =>
+      downloadTilesObject({ supabase, path: `${basePath}/tiles/${level}/${x}_${y}.${format}` }),
+    ),
+  )
+
+  const sharp = await loadSharp()
+  // Legacy single-image manifests: the one tile IS the sheet — feed it to the
+  // resize pass directly instead of round-tripping a full-size raw canvas.
+  // Tiled pyramids need two passes: sharp composites AFTER resize in a single
+  // pipeline, so the mosaic must be flattened to a buffer first.
+  let sourceInput: Buffer
+  let sourceRaw: { width: number; height: number; channels: 3 } | null = null
+  if (placements.length === 1 && overlap === 0) {
+    sourceInput = tileBuffers[0]
+  } else {
+    sourceInput = await sharp({
+      create: {
+        width: levelDims.width,
+        height: levelDims.height,
+        channels: 3,
+        background: { r: 255, g: 255, b: 255 },
+      },
+    })
+      .composite(
+        placements.map(({ x, y }, index) => ({
+          input: tileBuffers[index],
+          left: x * tileSize - (x > 0 ? overlap : 0),
+          top: y * tileSize - (y > 0 ? overlap : 0),
+        })),
+      )
+      .raw()
+      .toBuffer()
+    sourceRaw = { width: levelDims.width, height: levelDims.height, channels: 3 }
+  }
+
+  // Cap the working size: the chosen level can be up to 2× the target edge
+  // (and a legacy single image is the FULL sheet), and the diff loop only
+  // needs region-detection resolution.
+  const target = resizeTo ?? scaleToLongEdge(levelDims, CHANGE_DETECTION_LONG_EDGE)
+  const { data, info } = await sharp(
+    sourceInput,
+    sourceRaw ? { raw: sourceRaw } : { limitInputPixels: SHARP_PIXEL_LIMIT },
+  )
+    .resize(target.width, target.height, { fit: "fill" })
+    // Slight blur so anti-aliasing and encoder noise don't read as changes.
+    .blur(0.8)
+    .greyscale()
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+
+  return {
+    data: new Uint8Array(data.buffer, data.byteOffset, data.length),
+    width: info.width,
+    height: info.height,
+    aspect: info.width / info.height,
+    sourceAspect: levelDims.width / levelDims.height,
+  }
+}
+
+/** Proportionally shrink to fit the long edge; identity when already smaller. */
+function scaleToLongEdge(
+  size: { width: number; height: number },
+  longEdge: number,
+): { width: number; height: number } {
+  const currentLong = Math.max(size.width, size.height)
+  if (currentLong <= longEdge) return size
+  const scale = longEdge / currentLong
+  return {
+    width: Math.max(1, Math.round(size.width * scale)),
+    height: Math.max(1, Math.round(size.height * scale)),
+  }
+}
+
+/**
+ * Storage path of a version's tiles. Modern rows store it; legacy rows only
+ * carry the public `tile_base_url`, which is `${publicBase}/${path}` by
+ * construction, so the path is recoverable by stripping the base.
+ */
+function resolveTilesBasePathForRow(row: {
+  tiles_base_path?: string | null
+  tile_base_url?: string | null
+}): string | null {
+  if (typeof row.tiles_base_path === "string" && row.tiles_base_path) {
+    return row.tiles_base_path
+  }
+  const publicBase = getDrawingsTilesBaseUrl()
+  if (
+    publicBase &&
+    typeof row.tile_base_url === "string" &&
+    row.tile_base_url.startsWith(`${publicBase}/`)
+  ) {
+    return row.tile_base_url.slice(publicBase.length + 1)
+  }
+  return null
+}
+
+// ============================================================================
 // Tiling (DZI pyramid via native libvips dzsave)
 // ============================================================================
 
+/**
+ * Build and upload the tile pyramid, coarse levels first, and make the sheet
+ * viewable BEFORE the fine levels finish. The top one or two levels are ~90%
+ * of a pyramid's tiles, so waiting for them multiplied time-to-first-pixel by
+ * ten for no visual benefit at fit-to-screen zoom.
+ *
+ * Partial-visibility approach (of the two options — truncated manifest vs. a
+ * ready-levels field — this is the truncated manifest, chosen because the
+ * shipped viewer needs no change to honor it):
+ *
+ *  - Once every level through MIN_READY_LONG_EDGE is durable in R2, the DB row
+ *    gets a manifest describing ONLY those levels: `Levels` truncated and
+ *    `Image.Size` set to the top ready level's dimensions. Ceil-halving
+ *    composes exactly (`ceil(ceil(n/2)/2) === ceil(n/4)`), so that truncated
+ *    pyramid is bit-for-bit a valid standalone DZI of the downsampled sheet —
+ *    `TilePyramid` clamps every request to `Levels - 1`, so no request can
+ *    ever target a tile that is not uploaded yet. Zooming past the ready
+ *    resolution just upscales until the full manifest lands. Markups, vectors
+ *    and measurements are normalized 0..1, so the temporarily smaller image
+ *    space stays self-consistent.
+ *  - The partial manifest carries `Partial: true`; `isCompleteTileManifest`
+ *    keeps the pipeline's skip checks and donor selection from mistaking it
+ *    for a finished pyramid.
+ *  - Immutable-CDN invariant (see TILE_PATH_GENERATION): no R2 object is ever
+ *    rewritten. The partial manifest lives only in the mutable DB row;
+ *    `manifest.json` is uploaded exactly once, at completion, with the full
+ *    pyramid. Each tile and the thumbnail land on their final path once.
+ */
 async function generateTilesForVersion(
   supabase: SupabaseClient,
   input: {
@@ -2421,43 +3157,102 @@ async function generateTilesForVersion(
     throw new Error("Missing DRAWINGS_TILES_BASE_URL/NEXT_PUBLIC_DRAWINGS_TILES_BASE_URL")
   }
 
+  const sharp = await loadSharp()
+
+  // Final thumbnail first: it is one tiny object, and the early row update
+  // below repoints thumbnail_url from the split-stage low-res placeholder.
+  const thumbBuffer = await sharp(pngBuffer, { limitInputPixels: SHARP_PIXEL_LIMIT })
+    .resize(256, 256, { fit: "inside" })
+    .webp({ quality: TILE_WEBP_QUALITY })
+    .toBuffer()
+  const thumbPath = `${basePath}/thumbnail.${TILE_FORMAT}`
+  await uploadTilesObject({ supabase, path: thumbPath, bytes: thumbBuffer, contentType: `image/${TILE_FORMAT}` })
+  const thumbnailUrl = `${tileBaseUrl}/thumbnail.${TILE_FORMAT}`
+
   // libvips writes the whole pyramid in one pass (single decode), which is an
   // order of magnitude cheaper than re-encoding per level and per tile.
   const scratchDir = await mkdtemp(path.join(tmpdir(), "arc-dz-"))
   let levels: number
   try {
     const outBase = path.join(scratchDir, "pyramid")
-    const sharp = await loadSharp()
     await sharp(pngBuffer, { limitInputPixels: SHARP_PIXEL_LIMIT })
       .webp({ quality: TILE_WEBP_QUALITY })
       .tile({ size: TILE_SIZE, overlap: 0, layout: "dz" })
       .toFile(`${outBase}.dz`)
 
     const filesDir = `${outBase}_files`
-    const levelDirs = (await readdir(filesDir)).filter((name) => /^\d+$/.test(name))
+    const levelDirs = (await readdir(filesDir))
+      .filter((name) => /^\d+$/.test(name))
+      .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10))
     if (levelDirs.length === 0) {
       throw new Error("dzsave produced no pyramid levels")
     }
-    levels = Math.max(...levelDirs.map((name) => Number.parseInt(name, 10))) + 1
+    levels = Number.parseInt(levelDirs[levelDirs.length - 1], 10) + 1
 
-    const tiles: Array<{ level: string; name: string }> = []
-    for (const level of levelDirs) {
-      const names = await readdir(path.join(filesDir, level))
-      for (const name of names) tiles.push({ level, name })
+    const uploadLevels = async (dirs: string[]) => {
+      const tiles: Array<{ level: string; name: string }> = []
+      for (const level of dirs) {
+        const names = await readdir(path.join(filesDir, level))
+        for (const name of names) tiles.push({ level, name })
+      }
+      for (let i = 0; i < tiles.length; i += TILE_UPLOAD_CONCURRENCY) {
+        await Promise.all(
+          tiles.slice(i, i + TILE_UPLOAD_CONCURRENCY).map(async ({ level, name }) => {
+            const bytes = await readFile(path.join(filesDir, level, name))
+            await uploadTilesObject({
+              supabase,
+              path: `${basePath}/tiles/${level}/${name}`,
+              bytes,
+              contentType: `image/${TILE_FORMAT}`,
+            })
+          }),
+        )
+      }
     }
 
-    for (let i = 0; i < tiles.length; i += TILE_UPLOAD_CONCURRENCY) {
-      await Promise.all(
-        tiles.slice(i, i + TILE_UPLOAD_CONCURRENCY).map(async ({ level, name }) => {
-          const bytes = await readFile(path.join(filesDir, level, name))
-          await uploadTilesObject({
-            supabase,
-            path: `${basePath}/tiles/${level}/${name}`,
-            bytes,
-            contentType: `image/${TILE_FORMAT}`,
-          })
-        }),
-      )
+    const readyLevels = readyLevelCountForLongEdge(width, height, levels, MIN_READY_LONG_EDGE)
+    const coarseDirs = levelDirs.filter((name) => Number.parseInt(name, 10) < readyLevels)
+    const fineDirs = levelDirs.filter((name) => Number.parseInt(name, 10) >= readyLevels)
+
+    await uploadLevels(coarseDirs)
+
+    if (fineDirs.length > 0) {
+      // Coarse levels are durable — publish the truncated manifest so the
+      // sheet is viewable while the fine levels (the bulk) keep uploading.
+      // Best-effort: a failed early update only delays visibility to the
+      // final update below, so it must not fail the job.
+      const readySize = dziLevelSize(width, height, levels, readyLevels - 1)
+      const { error: earlyError } = await supabase
+        .from("drawing_sheet_versions")
+        .update({
+          tile_manifest: {
+            Image: {
+              xmlns: "http://schemas.microsoft.com/deepzoom/2008",
+              Format: TILE_FORMAT,
+              Overlap: 0,
+              TileSize: TILE_SIZE,
+              Size: { Width: readySize.width, Height: readySize.height },
+            },
+            Levels: readyLevels,
+            Partial: true,
+          },
+          tile_base_url: tileBaseUrl,
+          source_hash: sourceHash,
+          tile_levels: readyLevels,
+          thumbnail_url: thumbnailUrl,
+          image_width: width,
+          image_height: height,
+          page_index: pageIndex,
+        })
+        .eq("id", versionId)
+      if (earlyError) {
+        console.warn(
+          `[drawings-pipeline] Early partial-manifest update failed for version ${versionId}:`,
+          earlyError.message,
+        )
+      }
+
+      await uploadLevels(fineDirs)
     }
   } finally {
     await rm(scratchDir, { recursive: true, force: true })
@@ -2473,14 +3268,6 @@ async function generateTilesForVersion(
     },
     Levels: levels,
   }
-
-  const sharp = await loadSharp()
-  const thumbBuffer = await sharp(pngBuffer, { limitInputPixels: SHARP_PIXEL_LIMIT })
-    .resize(256, 256, { fit: "inside" })
-    .webp({ quality: TILE_WEBP_QUALITY })
-    .toBuffer()
-  const thumbPath = `${basePath}/thumbnail.${TILE_FORMAT}`
-  await uploadTilesObject({ supabase, path: thumbPath, bytes: thumbBuffer, contentType: `image/${TILE_FORMAT}` })
 
   const manifestPath = `${basePath}/manifest.json`
   await uploadTilesObject({
@@ -2710,31 +3497,52 @@ function normalizeWhitespace(value: string): string {
 // AI vision fallback (ported from the worker; buffer-based instead of files)
 // ============================================================================
 
+/**
+ * Vision only earns its cost when the text pass is weak or absent. The caller
+ * resolves `visionConfigured` once per job rather than per page — it is a
+ * registry read, and asking it four hundred times for one set is four hundred
+ * round trips to learn the same thing.
+ */
 function shouldUseVisionFallback(
   detected: DetectedSheetMetadata,
   pageText: string,
-  payload?: Record<string, any>,
+  visionConfigured: boolean,
 ): boolean {
-  const provider = getVisionProvider(payload)
-  if (!getVisionApiKey(provider)) return false
+  if (!visionConfigured) return false
   if (!pageText.trim()) return true
   return detected.method !== "label" || detected.confidence === "low"
 }
 
+/**
+ * The title-block read. Structured output means the shape is guaranteed, so the
+ * ten-alias normaliser and the fence-stripping parser this used to need are gone
+ * — what remains below is domain validation (is that a real discipline code, is
+ * that a scale we can actually parse), which no schema can express.
+ */
+const sheetMetadataSchema = z.object({
+  sheet_number: z.string().nullable().describe("Title-block sheet number, e.g. A-101, E1.1, S2.0"),
+  sheet_title: z.string().nullable().describe("Title-block sheet title"),
+  discipline: z
+    .enum(["A", "S", "M", "E", "P", "FP", "C", "L", "I", "G", "T", "SP", "D", "X"])
+    .nullable(),
+  confidence: z.enum(["high", "medium", "low"]),
+  notes: z.array(z.string()),
+  stated_scale: z
+    .string()
+    .nullable()
+    .describe("Drawing scale copied verbatim from the title block, or null"),
+})
+
 async function detectSheetMetadataWithVision(input: {
-  images: Array<{ dataUrl: string }>
+  images: VisionImage[]
   pageText: string
   setTitle: string
   pageNumber: number
   initial: DetectedSheetMetadata
-  payload?: Record<string, any>
+  orgId: string
+  sheetVersionId: string
 }): Promise<VisionSheetMetadata | null> {
-  const { images, pageText, setTitle, pageNumber, initial, payload } = input
-  const provider = getVisionProvider(payload)
-  const apiKey = getVisionApiKey(provider)
-  if (!apiKey) return null
-
-  const model = getVisionModel(provider, payload)
+  const { images, pageText, setTitle, pageNumber, initial } = input
   const prompt = [
       "You are extracting metadata from one construction drawing page.",
       `Project set title: ${setTitle}`,
@@ -2743,9 +3551,6 @@ async function detectSheetMetadataWithVision(input: {
       pageText.trim()
         ? `Extracted PDF text (may be partial): ${truncateValue(pageText, 4000)}`
         : "Extracted PDF text is empty, so rely on the image.",
-      "Return only JSON with these keys: sheet_number, sheet_title, discipline, confidence, notes, stated_scale.",
-      "discipline must be one of: A, S, M, E, P, FP, C, L, I, G, T, SP, D, X.",
-      "confidence must be one of: high, medium, low.",
       "If uncertain, preserve the existing guess unless the image clearly shows a better answer.",
       "Prefer title block values like E1.1, A-101, S2.0, etc.",
       // The scale drives every measured quantity on the sheet, so a guess is
@@ -2753,214 +3558,31 @@ async function detectSheetMetadataWithVision(input: {
       "stated_scale: copy the drawing scale from the title block EXACTLY as printed, e.g. \"1/4\\\" = 1'-0\\\"\" or \"1\\\" = 20'\". Use null if the sheet says NTS / AS NOTED / VARIES, or if you cannot read a single scale. Never infer or calculate it.",
     ].join("\n")
 
-  const rawText = await generateVisionResponseText({ provider, apiKey, model, prompt, images, pageNumber })
-  if (!rawText) return null
-
-  const parsed = parseVisionJson(rawText)
+  const parsed = await runDrawingsVisionObject({
+    schema: sheetMetadataSchema,
+    prompt,
+    images,
+    orgId: input.orgId,
+    entityType: "drawing_sheet_version",
+    entityId: input.sheetVersionId,
+  })
   if (!parsed) return null
 
   const sheetNumber = normalizeSheetNumberCandidate(parsed.sheet_number ?? "")
-  const discipline =
-    typeof parsed.discipline === "string" && DISCIPLINE_CODES.has(parsed.discipline.toUpperCase())
-      ? parsed.discipline.toUpperCase()
-      : sheetNumber
-        ? detectDiscipline(sheetNumber)
-        : null
+  // The schema constrains the enum, but a model may still name a discipline that
+  // contradicts the number it just read; the number wins, because that is what
+  // every downstream grouping keys on.
+  const discipline = parsed.discipline ?? (sheetNumber ? detectDiscipline(sheetNumber) : null)
   const sheetTitle = sanitizeTitle(parsed.sheet_title ?? "")
-  const confidence = normalizeConfidence(parsed.confidence)
-  const notes = Array.isArray(parsed.notes)
-    ? parsed.notes.filter((note: unknown): note is string => typeof note === "string").slice(0, 6)
-    : []
+  const notes = parsed.notes.filter((note) => note.trim()).slice(0, 6)
   // Only keep a scale this codebase can actually parse — an unparseable string
   // would become a proposal nobody could apply.
   const statedScale =
-    typeof parsed.stated_scale === "string" && parseStatedScale(parsed.stated_scale)
+    parsed.stated_scale && parseStatedScale(parsed.stated_scale)
       ? truncateValue(parsed.stated_scale, 60)
       : null
 
-  return { sheetNumber, sheetTitle, discipline, confidence, notes, statedScale }
-}
-
-/** Is a drawings-vision provider configured for this deployment? */
-export function drawingsVisionConfigured(): boolean {
-  return getVisionApiKey(getVisionProvider()) !== null
-}
-
-/**
- * One prompt + images → raw model text on the configured drawings-vision
- * provider. The floorplan interpreter's vision assist rides the SAME provider,
- * key and model resolution as title-block enrichment — one knob, not two.
- */
-export async function runDrawingsVisionPrompt(input: {
-  prompt: string
-  images: Array<{ dataUrl: string }>
-  signal?: AbortSignal
-}): Promise<string | null> {
-  const provider = getVisionProvider()
-  const apiKey = getVisionApiKey(provider)
-  if (!apiKey) return null
-  const model = getVisionModel(provider)
-  return generateVisionResponseText({
-    provider,
-    apiKey,
-    model,
-    prompt: input.prompt,
-    images: input.images,
-    pageNumber: 0,
-    signal: input.signal,
-  })
-}
-
-function getPayloadVisionConfig(payload?: Record<string, any>): { provider?: VisionProvider; model?: string } {
-  const raw = payload?.aiVision ?? payload?.ai_vision
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
-
-  const record = raw as Record<string, unknown>
-  const providerValue = typeof record.provider === "string" ? record.provider.trim().toLowerCase() : ""
-  const modelValue = typeof record.model === "string" ? record.model.trim() : ""
-  const provider = providerValue === "openai" || providerValue === "google" ? providerValue : undefined
-
-  return { provider, model: modelValue || undefined }
-}
-
-function getVisionProvider(payload?: Record<string, any>): VisionProvider {
-  const payloadProvider = getPayloadVisionConfig(payload).provider
-  if (payloadProvider) return payloadProvider
-
-  const configured = (
-    process.env.DRAWINGS_VISION_PROVIDER ||
-    process.env.AI_DRAWINGS_VISION_PROVIDER ||
-    process.env.AI_VISION_PROVIDER ||
-    "google"
-  )
-    .trim()
-    .toLowerCase()
-
-  return configured === "openai" ? "openai" : "google"
-}
-
-function getVisionApiKey(provider: VisionProvider): string | null {
-  if (provider === "openai") {
-    return process.env.OPENAI_API_KEY?.trim() || null
-  }
-  return (
-    process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim() ||
-    process.env.GEMINI_API_KEY?.trim() ||
-    null
-  )
-}
-
-function getVisionModel(provider: VisionProvider, payload?: Record<string, any>): string {
-  const payloadModel = getPayloadVisionConfig(payload).model
-  if (payloadModel) return payloadModel
-
-  if (provider === "openai") {
-    return (
-      process.env.DRAWINGS_VISION_MODEL ||
-      process.env.AI_DRAWINGS_VISION_MODEL ||
-      process.env.OPENAI_DRAWINGS_VISION_MODEL ||
-      process.env.OPENAI_VISION_MODEL ||
-      "gpt-4.1-mini"
-    )
-  }
-
-  return (
-    process.env.DRAWINGS_VISION_MODEL ||
-    process.env.AI_DRAWINGS_VISION_MODEL ||
-    process.env.GOOGLE_DRAWINGS_VISION_MODEL ||
-    process.env.GEMINI_VISION_MODEL ||
-    process.env.GOOGLE_VISION_MODEL ||
-    "gemini-2.5-flash-lite"
-  )
-}
-
-async function generateVisionResponseText(input: {
-  provider: VisionProvider
-  apiKey: string
-  model: string
-  prompt: string
-  images: Array<{ dataUrl: string }>
-  pageNumber: number
-  signal?: AbortSignal
-}): Promise<string | null> {
-  const { provider, apiKey, model, prompt, images, pageNumber, signal } = input
-
-  if (provider === "openai") {
-    const baseUrl = (process.env.OPENAI_BASE_URL || process.env.OPENAI_COMPAT_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "")
-    const response = await fetch(`${baseUrl}/responses`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      signal,
-      body: JSON.stringify({
-        model,
-        input: [
-          {
-            role: "user",
-            content: [
-              { type: "input_text", text: prompt },
-              ...images.map((image, index) => ({
-                type: "input_image",
-                image_url: image.dataUrl,
-                detail: index === 0 ? "low" : "high",
-              })),
-            ],
-          },
-        ],
-      }),
-    })
-
-    if (!response.ok) {
-      const body = await response.text()
-      throw new Error(`OpenAI vision failed for page ${pageNumber}: ${response.status} ${body.slice(0, 300)}`)
-    }
-
-    const payload = (await response.json()) as any
-    return extractOpenAiResponseText(payload)
-  }
-
-  const normalizedModel = model.startsWith("models/") ? model : `models/${model}`
-  const endpoint =
-    process.env.GEMINI_BASE_URL?.replace(/\/$/, "") ||
-    "https://generativelanguage.googleapis.com/v1beta"
-
-  const response = await fetch(
-    `${endpoint}/${normalizedModel}:generateContent?key=${encodeURIComponent(apiKey)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal,
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { text: prompt },
-              ...images.map((image) => {
-                const [, mimeType = "image/webp", data = ""] =
-                  image.dataUrl.match(/^data:(.*?);base64,(.*)$/) || []
-                return { inline_data: { mime_type: mimeType, data } }
-              }),
-            ],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.1,
-          responseMimeType: "application/json",
-        },
-      }),
-    },
-  )
-
-  if (!response.ok) {
-    const body = await response.text()
-    throw new Error(`Gemini vision failed for page ${pageNumber}: ${response.status} ${body.slice(0, 300)}`)
-  }
-
-  const payload = (await response.json()) as any
-  return extractGeminiResponseText(payload)
+  return { sheetNumber, sheetTitle, discipline, confidence: parsed.confidence, notes, statedScale }
 }
 
 /**
@@ -3024,110 +3646,6 @@ async function buildVisionCropBuffers(pngBuffer: Buffer): Promise<Buffer[]> {
   ])
 
   return [full, ...crops]
-}
-
-function extractOpenAiResponseText(payload: any): string {
-  if (typeof payload?.output_text === "string" && payload.output_text.trim()) {
-    return payload.output_text.trim()
-  }
-
-  const output = Array.isArray(payload?.output) ? payload.output : []
-  const texts: string[] = []
-  for (const item of output) {
-    const content = Array.isArray(item?.content) ? item.content : []
-    for (const entry of content) {
-      if (entry?.type === "output_text" && typeof entry?.text === "string") {
-        texts.push(entry.text)
-      }
-    }
-  }
-  return texts.join("\n").trim()
-}
-
-function extractGeminiResponseText(payload: any): string {
-  const candidates = Array.isArray(payload?.candidates) ? payload.candidates : []
-  const texts: string[] = []
-
-  for (const candidate of candidates) {
-    const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : []
-    for (const part of parts) {
-      if (typeof part?.text === "string" && part.text.trim()) {
-        texts.push(part.text.trim())
-      }
-    }
-  }
-
-  return texts.join("\n").trim()
-}
-
-/**
- * One vision call against a drawing image, using the same provider, key, and
- * model resolution the enrichment pipeline uses. Takeoff's click-to-trace
- * shares this so there is a single place where "which model looks at a sheet"
- * is answered, and a single env var to change it.
- *
- * Returns null when no provider is configured — callers degrade to manual.
- */
-export async function runDrawingVision(input: {
-  prompt: string
-  images: Array<{ dataUrl: string }>
-  timeoutMs?: number
-}): Promise<any | null> {
-  const provider = getVisionProvider()
-  const apiKey = getVisionApiKey(provider)
-  if (!apiKey) return null
-
-  const controller = input.timeoutMs ? new AbortController() : null
-  const timeout = controller
-    ? setTimeout(() => controller.abort(), input.timeoutMs)
-    : null
-  let rawText: string | null
-  try {
-    rawText = await generateVisionResponseText({
-      provider,
-      apiKey,
-      model: getVisionModel(provider),
-      prompt: input.prompt,
-      images: input.images,
-      pageNumber: 1,
-      signal: controller?.signal,
-    })
-  } catch (error) {
-    if (controller?.signal.aborted) {
-      console.warn("[drawings-vision] Interactive request timed out", {
-        timeoutMs: input.timeoutMs,
-      })
-      return null
-    }
-    throw error
-  } finally {
-    if (timeout) clearTimeout(timeout)
-  }
-  if (!rawText) return null
-  return parseVisionJson(rawText)
-}
-
-/** True when a vision provider is configured; gates the AI-assist affordances. */
-export function isDrawingVisionConfigured(): boolean {
-  return !!getVisionApiKey(getVisionProvider())
-}
-
-function parseVisionJson(raw: string): any | null {
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)
-  const candidate = fenced?.[1] ?? raw
-  const jsonMatch = candidate.match(/\{[\s\S]*\}/)
-  if (!jsonMatch) return null
-
-  try {
-    return JSON.parse(jsonMatch[0])
-  } catch {
-    return null
-  }
-}
-
-function normalizeConfidence(value: unknown): DetectionConfidence {
-  if (value === "high" || value === "medium" || value === "low") return value
-  return "low"
 }
 
 function mergeDetectedSheetMetadata(

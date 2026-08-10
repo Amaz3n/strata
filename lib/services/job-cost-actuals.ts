@@ -6,17 +6,31 @@ import {
   type JobCostGroupBy,
 } from "@/lib/financials/job-cost-rules"
 import { resolveGmpClassificationForCostSource, type GmpClassification } from "@/lib/financials/gmp-classification"
-import { calculateTimeEntryCostCents } from "@/lib/financials/job-cost-calculations"
+import { PAYABLE_VENDOR_BILL_STATUSES } from "@/lib/financials/ledger-status"
+import {
+  calculateExpenseCostCents,
+  calculateTimeEntryCostCents,
+  expenseCreditSign,
+} from "@/lib/financials/job-cost-calculations"
 import { requireOrgContext } from "@/lib/services/context"
 
 export type { JobCostActualByCostCode } from "@/lib/financials/job-cost-rules"
 
+/**
+ * Every source type is a real spend event. `billable_costs` additionally carries
+ * `manual_adjustment` and `allowance_overage`, but those are billing-side corrections
+ * on cost-plus contracts — the spend behind them already entered through a bill,
+ * expense, or time entry and posted its own row here. Giving them a job-cost entry
+ * would double-count them against the budget.
+ */
 export type JobCostSourceType =
   | "vendor_bill_line"
   | "project_expense"
   | "project_expense_line"
   | "time_entry"
-  | "manual_adjustment"
+
+/** An entry is `posted` from birth; the only transition is voiding it. */
+export type JobCostEntryStatus = "posted" | "voided"
 
 export interface JobCostEntry {
   id: string
@@ -28,7 +42,7 @@ export interface JobCostEntry {
   source_id: string
   incurred_on: string
   cost_cents: number
-  status: "pending" | "approved" | "posted" | "voided"
+  status: JobCostEntryStatus
   is_billable: boolean
   gmp_classification?: GmpClassification | null
   billable_cost_id?: string | null
@@ -41,13 +55,27 @@ function toDateOnly(value?: string | null) {
   return value.slice(0, 10)
 }
 
+/**
+ * Callers that already hold a client use it directly; everyone else resolves the
+ * request's org context. Background work (the accounting importers, cron jobs) runs
+ * service-role with no user session, so it must pass both client and org explicitly
+ * rather than hand-rolling its own `job_cost_entries` writes.
+ */
+async function resolveJobCostContext(args: { supabase?: SupabaseClient; orgId?: string }) {
+  if (!args.supabase) return requireOrgContext(args.orgId)
+  if (!args.orgId) throw new Error("Organization is required when a Supabase client is supplied")
+  return { supabase: args.supabase, orgId: args.orgId }
+}
+
+export type JobCostPostingContext = { orgId?: string; supabase?: SupabaseClient }
+
 export { calculateTimeEntryCostCents }
 
 
 async function findBillableCostForSource(args: {
   supabase: SupabaseClient
   orgId: string
-  sourceType: Exclude<JobCostSourceType, "manual_adjustment">
+  sourceType: JobCostSourceType
   sourceId: string
 }) {
   const { data, error } = await args.supabase
@@ -77,7 +105,7 @@ async function upsertJobCostEntry(
     source_id: string
     incurred_on: string
     cost_cents: number
-    status?: "pending" | "approved" | "posted" | "voided"
+    status?: JobCostEntryStatus
     is_billable?: boolean
     gmp_classification?: GmpClassification | null
     billable_cost_id?: string | null
@@ -116,8 +144,8 @@ async function upsertJobCostEntry(
   return data as JobCostEntry
 }
 
-export async function postJobCostEntryFromBillLine(args: { billLineId: string; orgId?: string }) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(args.orgId)
+export async function postJobCostEntryFromBillLine(args: { billLineId: string } & JobCostPostingContext) {
+  const { supabase, orgId: resolvedOrgId } = await resolveJobCostContext(args)
   const { data: line, error } = await supabase
     .from("bill_lines")
     .select(`
@@ -134,7 +162,7 @@ export async function postJobCostEntryFromBillLine(args: { billLineId: string; o
   // (multi-project bills); fall back to the bill's project when the line is untagged.
   const lineProjectId = (line as any).project_id ?? bill?.project_id
   if (!lineProjectId) throw new Error("Bill line is missing project context")
-  if (!["approved", "partial", "paid"].includes(String(bill.status))) {
+  if (!(PAYABLE_VENDOR_BILL_STATUSES as readonly string[]).includes(String(bill.status))) {
     throw new Error("Vendor bill must be approved before it posts to job cost")
   }
 
@@ -180,8 +208,10 @@ export async function postJobCostEntryFromBillLine(args: { billLineId: string; o
   })
 }
 
-export async function postJobCostEntryFromProjectExpense(args: { expenseId: string; orgId?: string }) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(args.orgId)
+/** Private: callers go through `postJobCostEntriesForProjectExpense`, which decides
+ * header vs. splits. Posting a header directly would double-count a split expense. */
+async function postJobCostEntryFromProjectExpense(args: { expenseId: string } & JobCostPostingContext) {
+  const { supabase, orgId: resolvedOrgId } = await resolveJobCostContext(args)
   const { data: expense, error } = await supabase
     .from("project_expenses")
     .select("*")
@@ -218,7 +248,11 @@ export async function postJobCostEntryFromProjectExpense(args: { expenseId: stri
     source_type: "project_expense",
     source_id: expense.id,
     incurred_on: expense.expense_date,
-    cost_cents: Number(expense.amount_cents ?? 0) + Number(expense.tax_cents ?? 0),
+    cost_cents: calculateExpenseCostCents({
+      amountCents: expense.amount_cents,
+      taxCents: expense.tax_cents,
+      metadata: expense.metadata,
+    }),
     is_billable: Boolean(billable?.id && billable.is_billable !== false && billable.status !== "excluded"),
     gmp_classification: gmpClassification,
     billable_cost_id: expense.billable_cost_id ?? billable?.id ?? null,
@@ -226,7 +260,7 @@ export async function postJobCostEntryFromProjectExpense(args: { expenseId: stri
     metadata: {
       ...(expense.metadata ?? {}),
       gmp_classification: gmpClassification,
-      source_label: "project_expense",
+      source_label: expenseCreditSign(expense.metadata) === -1 ? "project_expense_credit" : "project_expense",
       expense_status: expense.status,
       description: expense.description ?? expense.vendor_name_text ?? null,
       vendor_company_id: expense.vendor_company_id ?? null,
@@ -236,13 +270,14 @@ export async function postJobCostEntryFromProjectExpense(args: { expenseId: stri
   })
 }
 
-export async function postJobCostEntryFromExpenseLine(args: { expenseLineId: string; orgId?: string }) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(args.orgId)
+/** Private: see `postJobCostEntryFromProjectExpense`. */
+async function postJobCostEntryFromExpenseLine(args: { expenseLineId: string } & JobCostPostingContext) {
+  const { supabase, orgId: resolvedOrgId } = await resolveJobCostContext(args)
   const { data: line, error } = await supabase
     .from("project_expense_lines")
     .select(`
       id, org_id, expense_id, project_id, cost_code_id, budget_line_id, description, amount_cents, metadata,
-      expense:project_expenses(id, org_id, project_id, expense_date, status, vendor_company_id, vendor_name_text, receipt_file_id)
+      expense:project_expenses(id, org_id, project_id, expense_date, status, vendor_company_id, vendor_name_text, receipt_file_id, description, metadata)
     `)
     .eq("org_id", resolvedOrgId)
     .eq("id", args.expenseLineId)
@@ -281,8 +316,9 @@ export async function postJobCostEntryFromExpenseLine(args: { expenseLineId: str
     budget_line_id: (line as any).budget_line_id ?? null,
     source_type: "project_expense_line",
     source_id: line.id,
+    // A split inherits its parent's direction: every line of a credit is a credit.
+    cost_cents: Math.round(Number(line.amount_cents ?? 0)) * expenseCreditSign(expense.metadata),
     incurred_on: expense.expense_date,
-    cost_cents: Number(line.amount_cents ?? 0),
     is_billable: Boolean(billable?.id && billable.is_billable !== false && billable.status !== "excluded"),
     gmp_classification: gmpClassification,
     billable_cost_id: billable?.id ?? null,
@@ -290,7 +326,8 @@ export async function postJobCostEntryFromExpenseLine(args: { expenseLineId: str
     metadata: {
       ...(line.metadata ?? {}),
       gmp_classification: gmpClassification,
-      source_label: "project_expense_line",
+      source_label:
+        expenseCreditSign(expense.metadata) === -1 ? "project_expense_credit_line" : "project_expense_line",
       expense_id: expense.id,
       expense_status: expense.status,
       description: line.description ?? expense.description ?? expense.vendor_name_text ?? null,
@@ -301,8 +338,8 @@ export async function postJobCostEntryFromExpenseLine(args: { expenseLineId: str
   })
 }
 
-export async function postJobCostEntryFromTimeEntry(args: { timeEntryId: string; orgId?: string }) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(args.orgId)
+export async function postJobCostEntryFromTimeEntry(args: { timeEntryId: string } & JobCostPostingContext) {
+  const { supabase, orgId: resolvedOrgId } = await resolveJobCostContext(args)
   const { data: entry, error } = await supabase
     .from("time_entries")
     .select("*")
@@ -361,8 +398,8 @@ export async function postJobCostEntryFromTimeEntry(args: { timeEntryId: string;
   })
 }
 
-export async function postJobCostActualsForVendorBill(args: { billId: string; orgId?: string }) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(args.orgId)
+export async function postJobCostActualsForVendorBill(args: { billId: string } & JobCostPostingContext) {
+  const { supabase, orgId: resolvedOrgId } = await resolveJobCostContext(args)
   const { data: lines, error } = await supabase
     .from("bill_lines")
     .select("id")
@@ -372,12 +409,46 @@ export async function postJobCostActualsForVendorBill(args: { billId: string; or
   if (error) throw new Error(`Failed to load bill lines for job cost: ${error.message}`)
 
   for (const line of lines ?? []) {
-    await postJobCostEntryFromBillLine({ billLineId: line.id, orgId: resolvedOrgId })
+    await postJobCostEntryFromBillLine({ billLineId: line.id, orgId: resolvedOrgId, supabase: args.supabase })
   }
 }
 
-export async function voidJobCostEntriesForVendorBill(args: { billId: string; orgId?: string }) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(args.orgId)
+/**
+ * The one entry point for costing an expense, split or not.
+ *
+ * A split expense posts one entry per line. Any header entry from before the split
+ * is voided in the same pass — leaving it posted would double-count the expense
+ * against the budget.
+ */
+export async function postJobCostEntriesForProjectExpense(args: { expenseId: string } & JobCostPostingContext) {
+  const { supabase, orgId: resolvedOrgId } = await resolveJobCostContext(args)
+  const { data: lines, error } = await supabase
+    .from("project_expense_lines")
+    .select("id")
+    .eq("org_id", resolvedOrgId)
+    .eq("expense_id", args.expenseId)
+    .order("sort_order", { ascending: true })
+
+  if (error) throw new Error(`Failed to load expense splits for job cost: ${error.message}`)
+
+  if ((lines ?? []).length === 0) {
+    await postJobCostEntryFromProjectExpense({ expenseId: args.expenseId, orgId: resolvedOrgId, supabase: args.supabase })
+    return
+  }
+
+  for (const line of lines ?? []) {
+    await postJobCostEntryFromExpenseLine({ expenseLineId: line.id, orgId: resolvedOrgId, supabase: args.supabase })
+  }
+  await voidJobCostEntryForSource({
+    sourceType: "project_expense",
+    sourceId: args.expenseId,
+    orgId: resolvedOrgId,
+    supabase: args.supabase,
+  })
+}
+
+export async function voidJobCostEntriesForVendorBill(args: { billId: string } & JobCostPostingContext) {
+  const { supabase, orgId: resolvedOrgId } = await resolveJobCostContext(args)
   const { data: lines, error } = await supabase
     .from("bill_lines")
     .select("id")
@@ -398,12 +469,13 @@ export async function voidJobCostEntriesForVendorBill(args: { billId: string; or
   if (updateError) throw new Error(`Failed to void job-cost entries: ${updateError.message}`)
 }
 
-export async function voidJobCostEntryForSource(args: {
-  sourceType: Exclude<JobCostSourceType, "manual_adjustment">
-  sourceId: string
-  orgId?: string
-}) {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(args.orgId)
+export async function voidJobCostEntryForSource(
+  args: {
+    sourceType: JobCostSourceType
+    sourceId: string
+  } & JobCostPostingContext,
+) {
+  const { supabase, orgId: resolvedOrgId } = await resolveJobCostContext(args)
   const { error } = await supabase
     .from("job_cost_entries")
     .update({ status: "voided" })
@@ -425,9 +497,7 @@ export async function getProjectJobCostActualsByCostCode({
   supabase?: SupabaseClient
   groupBy?: JobCostGroupBy
 }): Promise<JobCostActualByCostCode[]> {
-  const context = providedSupabase ? { supabase: providedSupabase, orgId: orgId as string } : await requireOrgContext(orgId)
-  if (!context.orgId) throw new Error("Organization is required to load job-cost actuals")
-  const { supabase, orgId: resolvedOrgId } = context
+  const { supabase, orgId: resolvedOrgId } = await resolveJobCostContext({ supabase: providedSupabase, orgId })
   const { data, error } = await supabase
     .from("job_cost_entries")
     .select("org_id, cost_code_id, budget_line_id, source_type, source_id, cost_cents, status, is_billable, cost_code:cost_codes(cost_type), budget_line:budget_lines(cost_type, cost_code:cost_codes(cost_type))")

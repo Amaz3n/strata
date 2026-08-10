@@ -72,7 +72,9 @@ import { CompanyCommitments } from "@/components/companies/company-commitments";
 import { CompanyPayables } from "@/components/companies/company-payables";
 import { CompanyComplianceTab } from "@/components/companies/company-compliance-tab";
 import { PrequalificationCard } from "@/components/companies/prequalification-card";
+import { VendorPaymentCard } from "@/components/companies/vendor-payment-card";
 import type { Prequalification } from "@/lib/services/prequalification";
+import type { CompanyPaymentReadiness } from "@/lib/services/vendor-payment-invitations";
 import {
   EmptyState,
   Section,
@@ -321,6 +323,7 @@ export function CompanyDetailPage({
   canEdit,
   canArchive,
   prequalification = null,
+  paymentReadiness = null,
 }: {
   company: Company & { contacts: Contact[] };
   projectHistory: { id: string; name: string }[];
@@ -333,6 +336,7 @@ export function CompanyDetailPage({
   canEdit: boolean;
   canArchive: boolean;
   prequalification?: Prequalification | null;
+  paymentReadiness?: CompanyPaymentReadiness | null;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -602,9 +606,14 @@ export function CompanyDetailPage({
         </div>
       ) : null}
       {isVendorCompany ? (
-        <div className="border-t p-4">
-          <PrequalificationCard companyId={company.id} prequalification={prequalification} canEdit={canEdit} />
-        </div>
+        <>
+          <div className="border-t p-4">
+            <VendorPaymentCard companyId={company.id} readiness={paymentReadiness} canEdit={canEdit} />
+          </div>
+          <div className="border-t p-4">
+            <PrequalificationCard companyId={company.id} prequalification={prequalification} canEdit={canEdit} />
+          </div>
+        </>
       ) : null}
     </Section>
   );

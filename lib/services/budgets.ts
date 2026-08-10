@@ -2,6 +2,8 @@ import { cache } from "react"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { z } from "zod"
 
+import { BILLED_INVOICE_STATUSES, PAYABLE_VENDOR_BILL_STATUSES } from "@/lib/financials/ledger-status"
+
 import { recordAudit } from "@/lib/services/audit"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { requireOrgContext } from "@/lib/services/context"
@@ -785,7 +787,7 @@ async function getBudgetWithActualsInternal(
         .select("id")
         .eq("org_id", orgId)
         .eq("project_id", projectId)
-        .in("status", ["sent", "partial", "paid", "overdue"]),
+        .in("status", [...BILLED_INVOICE_STATUSES]),
       "invoices",
     ),
     selectIds(
@@ -812,7 +814,7 @@ async function getBudgetWithActualsInternal(
         .select("id")
         .eq("org_id", orgId)
         .eq("project_id", projectId)
-        .in("status", ["approved", "partial", "paid"])
+        .in("status", [...PAYABLE_VENDOR_BILL_STATUSES])
         .not("commitment_id", "is", null),
       "approved commitment bills",
     ),

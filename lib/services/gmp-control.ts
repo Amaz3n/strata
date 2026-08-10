@@ -313,7 +313,7 @@ async function sumGmpActuals({
     .select("cost_cents, gmp_classification, metadata")
     .eq("org_id", orgId)
     .eq("project_id", projectId)
-    .in("status", ["approved", "posted"])
+    .eq("status", "posted")
 
   if (error) {
     throw new Error(`Failed to load GMP actuals: ${error.message}`)

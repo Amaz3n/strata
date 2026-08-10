@@ -1,4 +1,4 @@
-import { getQBOAccessToken, getQBOAccessTokenForConnection } from "@/lib/services/accounting-connections"
+import { getQBOAccessToken, getQBOAccessTokenForConnection } from "@/lib/integrations/accounting/qbo/connections"
 import { logQBO } from "@/lib/services/accounting-logger"
 import { qboCompanyBaseUrl, qboEnvironmentLabel } from "@/lib/integrations/accounting/qbo/config"
 import { escapeQboQueryLiteral } from "@/lib/integrations/accounting/qbo/query"
@@ -832,6 +832,21 @@ export class QBOClient {
     return result.BillPayment
   }
 
+  /**
+   * Delete a bill payment, which is how QuickBooks reverses one — there is no
+   * void operation for BillPayment as there is for Invoice. Deleting reopens the
+   * linked bill's balance, which is exactly what an ACH return means happened.
+   */
+  async deleteBillPayment(billPayment: { Id: string; SyncToken: string }): Promise<void> {
+    if (!billPayment.Id || !billPayment.SyncToken) {
+      throw new Error("BillPayment Id and SyncToken required for delete")
+    }
+    await this.request("POST", "billpayment?operation=delete", {
+      Id: billPayment.Id,
+      SyncToken: billPayment.SyncToken,
+    })
+  }
+
   async createJournalEntry(journalEntry: any): Promise<any> {
     const result = await this.request<{ JournalEntry: any }>("POST", "journalentry", journalEntry)
     return result.JournalEntry
@@ -1029,6 +1044,40 @@ export class QBOClient {
         String(b?.TxnDate ?? "").localeCompare(String(a?.TxnDate ?? "")) ||
         String(a?.Id ?? "").localeCompare(String(b?.Id ?? "")),
     )
+  }
+
+  /**
+   * Find a transaction this company file already holds that carries `marker` in
+   * its PrivateNote.
+   *
+   * QuickBooks has no idempotency key on create. When a create succeeds but its
+   * response is lost — a timeout near the function cap is the usual way — the
+   * retry has no way to tell "never created" from "created, never heard back",
+   * and posts the money a second time. Arc stamps its own transaction id into
+   * PrivateNote on create so the retry can look for its own work and adopt it.
+   *
+   * PrivateNote is not a filterable field in the QBO query language, so the
+   * filter is on TxnDate (which is) and the marker is matched here. `SELECT *`
+   * is deliberate: QBO rejects queries that name complex columns.
+   */
+  async findTransactionByPrivateNote(
+    entity: "Payment" | "BillPayment",
+    marker: string,
+    opts?: { sinceDate?: string | null },
+  ): Promise<{ Id?: string; SyncToken?: string; PrivateNote?: string } | null> {
+    const normalizedMarker = String(marker ?? "").trim()
+    if (!normalizedMarker) return null
+    const since =
+      opts?.sinceDate && /^\d{4}-\d{2}-\d{2}$/.test(opts.sinceDate)
+        ? `TxnDate >= '${this.toQboStringLiteral(opts.sinceDate)}'`
+        : undefined
+
+    const rows = await this.queryEntity<{ Id?: string; SyncToken?: string; PrivateNote?: string }>(entity, {
+      whereClause: since,
+      orderBy: "TxnDate DESC",
+      maxResults: 1000,
+    })
+    return rows.find((row) => String(row?.PrivateNote ?? "").includes(normalizedMarker)) ?? null
   }
 
   async uploadAttachmentForEntity(params: {

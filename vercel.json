@@ -14,7 +14,7 @@
     },
     {
       "path": "/api/jobs/process-outbox",
-      "schedule": "0 * * * *"
+      "schedule": "*/10 * * * *"
     },
     {
       "path": "/api/jobs/drawings-pipeline",
@@ -61,8 +61,20 @@
       "schedule": "30 13 * * *"
     },
     {
+      "path": "/api/jobs/payment-release",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/jobs/payment-controls",
-      "schedule": "35 13 * * *"
+      "schedule": "35 * * * *"
+    },
+    {
+      "path": "/api/jobs/payment-reconciliation",
+      "schedule": "50 13 * * *"
+    },
+    {
+      "path": "/api/jobs/ops-watchdog",
+      "schedule": "20 * * * *"
     },
     {
       "path": "/api/jobs/task-reminders",
@@ -115,6 +127,10 @@
     {
       "path": "/api/jobs/session-cleanup",
       "schedule": "45 3 * * *"
+    },
+    {
+      "path": "/api/jobs/ai-standing-questions",
+      "schedule": "40 * * * *"
     }
   ],
   "functions": {
@@ -167,6 +183,12 @@
       "maxDuration": 120
     },
     "app/api/jobs/payment-controls/route.ts": {
+      "maxDuration": 120
+    },
+    "app/api/jobs/payment-release/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/jobs/payment-reconciliation/route.ts": {
       "maxDuration": 300
     },
     "app/api/jobs/task-reminders/route.ts": {

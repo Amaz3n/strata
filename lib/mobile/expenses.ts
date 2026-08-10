@@ -7,7 +7,7 @@ import { listProjects } from "@/lib/services/projects"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { uploadCostPlusFile } from "@/lib/services/cost-plus-files"
-import { extractExpenseReceiptFromFile } from "@/lib/services/receipt-extraction"
+import { extractExpenseReceiptFromFile } from "@/lib/services/document-extraction"
 import { createFilesDownloadUrl } from "@/lib/storage/files-storage"
 
 const PAYMENT_METHODS = [

@@ -1,24 +1,17 @@
 import { NextRequest, NextResponse } from "next/server"
 
+import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
+
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { SEARCH_CONFIGS, type SearchEntityType } from "@/lib/services/search-config"
 import { REINDEX_JOB_TYPE } from "@/lib/services/search-index"
 
 export const runtime = "nodejs"
 
-const CRON_SECRET = process.env.CRON_SECRET
 const PAGE_SIZE = 1000
 // Cap how many reindex jobs a single invocation enqueues so the request stays
 // bounded; call repeatedly (or per type/org) to backfill larger datasets.
 const MAX_ENQUEUE_PER_CALL = 5000
-
-function isAuthorized(request: NextRequest) {
-  if (process.env.NODE_ENV !== "production") return true
-  const authHeader = request.headers.get("authorization") ?? request.headers.get("Authorization")
-  const bearer = typeof authHeader === "string" ? authHeader.trim() : ""
-  const legacy = request.headers.get("x-cron-secret")
-  return Boolean(CRON_SECRET) && (bearer === `Bearer ${CRON_SECRET}` || legacy === CRON_SECRET)
-}
 
 function resolveTypes(requested: string | null): SearchEntityType[] {
   const all = Object.keys(SEARCH_CONFIGS) as SearchEntityType[]
@@ -34,7 +27,7 @@ function resolveTypes(requested: string | null): SearchEntityType[] {
 // for existing rows. The outbox worker then upserts search_documents (and
 // embeddings) with retries. Idempotent: re-running simply re-enqueues upserts.
 export async function POST(request: NextRequest) {
-  if (!isAuthorized(request)) {
+  if (!isAuthorizedCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 

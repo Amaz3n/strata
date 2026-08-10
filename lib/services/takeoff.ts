@@ -22,12 +22,29 @@ import { requirePermission } from "@/lib/services/permissions"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 import { calculateEstimateTotals } from "@/lib/financials/estimate-totals"
-import { applyWaste, extendedCents, QUANTITY_EPSILON, type MeasureUom } from "@/lib/drawings/measure"
+import {
+  conditionSourceUom,
+  extendedCents,
+  MEASURE_UOM_LABELS,
+  QUANTITY_EPSILON,
+  type ConditionFactors,
+  type ConditionUom,
+  type MeasureUom,
+} from "@/lib/drawings/measure"
+import {
+  classifySyncRow,
+  rollUpCondition,
+  CONDITION_SHEET_BREAKDOWN_CAP,
+  type ConditionSheetBreakdown,
+  type ConditionTotals,
+  type RollupMember,
+} from "@/lib/drawings/condition-rollup"
 import { nextConditionColor } from "@/lib/drawings/takeoff-palette"
 import {
   assignMarkupsToConditionSchema,
   conditionRollupFiltersSchema,
   createTakeoffConditionSchema,
+  factorRuleViolation,
   syncConditionsSchema,
   updateTakeoffConditionSchema,
   type AssignMarkupsToConditionInput,
@@ -39,24 +56,35 @@ import {
 } from "@/lib/validation/takeoff"
 
 const CONDITION_SELECT =
-  "id, org_id, project_id, house_plan_version_id, name, uom, cost_code_id, color, waste_pct, unit_cost_cents, share_with_clients, notes, sort_order, created_by, created_at, updated_at"
+  "id, org_id, project_id, house_plan_version_id, name, uom, depth_in, height_ft, pitch_rise, tons_per_cy, cost_code_id, color, waste_pct, unit_cost_cents, share_with_clients, notes, sort_order, created_by, created_at, updated_at"
 
-/** Per-condition sheet breakdown cap. Beyond this the panel says "+N more". */
-export const CONDITION_SHEET_BREAKDOWN_CAP = 12
 /** Hard cap on conditions per scope, so the panel is never unbounded. */
 export const CONDITION_LIST_CAP = 200
+
+/**
+ * Two estimators on one job is normal, and takeoff has no realtime layer. This
+ * is not collaboration — it is the guard that stops the second save from
+ * silently erasing the first. Callers that pass the `updated_at` they rendered
+ * get this back instead of a lost edit.
+ */
+export const STALE_WRITE = "Changed by someone else — reload before saving."
 
 // ============================================================================
 // TYPES
 // ============================================================================
 
-export interface TakeoffCondition {
+export interface TakeoffCondition extends ConditionFactors {
   id: string
   org_id: string
   project_id: string | null
   house_plan_version_id: string | null
   name: string
-  uom: MeasureUom
+  /** What the condition REPORTS. Members measure in `conditionSourceUom(...)`. */
+  uom: ConditionUom
+  depth_in: number | null
+  height_ft: number | null
+  pitch_rise: number | null
+  tons_per_cy: number | null
   cost_code_id: string | null
   color: string
   waste_pct: number
@@ -69,41 +97,18 @@ export interface TakeoffCondition {
   updated_at: string
 }
 
-export interface ConditionSheetBreakdown {
-  drawing_sheet_id: string
-  sheet_number: string
-  sheet_title: string | null
-  quantity: number
-  markup_count: number
-}
+export type { ConditionSheetBreakdown }
+export { CONDITION_SHEET_BREAKDOWN_CAP }
 
-export interface ConditionRollup {
+/**
+ * One condition's totals, plus where it was last pushed.
+ *
+ * The arithmetic and every classification rule behind these numbers lives in
+ * `lib/drawings/condition-rollup.ts` — pure, and tested without a database,
+ * because this is the shape money is decided in.
+ */
+export interface ConditionRollup extends ConditionTotals {
   condition: TakeoffCondition
-  /** Sum of member quantities on the sheets' current revisions. */
-  measured_quantity: number
-  /** measured_quantity uplifted by waste_pct — the number that gets priced. */
-  effective_quantity: number
-  markup_count: number
-  /**
-   * Members still pinned to a superseded sheet version. They are EXCLUDED from
-   * the quantity: a measurement taken on Rev 2 is not evidence about Rev 3.
-   * Phase 8 turns this into a review queue.
-   */
-  stale_markup_count: number
-  /** Members whose sheet has no scale yet, so they measure nothing. */
-  unscaled_markup_count: number
-  /**
-   * Members carried onto a new revision and awaiting confirmation. Excluded
-   * from the quantity — the panel prompts instead of silently counting.
-   */
-  pending_review_count: number
-  cost_code: { id: string; code: string; name: string; unit: string | null } | null
-  /** Pinned rate, else the cost code default, else null. */
-  effective_unit_cost_cents: number | null
-  rate_source: "pinned" | "cost_code" | null
-  extended_cents: number | null
-  sheets: ConditionSheetBreakdown[]
-  sheets_truncated: number
   /** Set once this condition has been pushed somewhere. */
   sync: ConditionSyncState | null
 }
@@ -126,7 +131,7 @@ export interface ConditionSyncState {
 export interface ConditionSyncPreviewRow {
   condition_id: string
   condition_name: string
-  uom: MeasureUom
+  uom: ConditionUom
   /** Null when the destination has no matching line yet. */
   current_quantity: number | null
   next_quantity: number
@@ -140,6 +145,13 @@ export interface ConditionSyncPreviewRow {
 // MAPPERS
 // ============================================================================
 
+/** Postgres `numeric` arrives as a string; an absent factor must stay null. */
+function numericOrNull(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
 function mapCondition(row: any): TakeoffCondition {
   return {
     id: row.id,
@@ -147,7 +159,11 @@ function mapCondition(row: any): TakeoffCondition {
     project_id: row.project_id ?? null,
     house_plan_version_id: row.house_plan_version_id ?? null,
     name: row.name,
-    uom: row.uom as MeasureUom,
+    uom: row.uom as ConditionUom,
+    depth_in: numericOrNull(row.depth_in),
+    height_ft: numericOrNull(row.height_ft),
+    pitch_rise: numericOrNull(row.pitch_rise),
+    tons_per_cy: numericOrNull(row.tons_per_cy),
     cost_code_id: row.cost_code_id ?? null,
     color: row.color,
     waste_pct: Number(row.waste_pct ?? 0),
@@ -258,6 +274,10 @@ export async function createTakeoffCondition(
       house_plan_version_id: parsed.house_plan_version_id ?? null,
       name: parsed.name,
       uom: parsed.uom,
+      depth_in: parsed.depth_in ?? null,
+      height_ft: parsed.height_ft ?? null,
+      pitch_rise: parsed.pitch_rise ?? null,
+      tons_per_cy: parsed.tons_per_cy ?? null,
       cost_code_id: parsed.cost_code_id ?? null,
       color,
       waste_pct: parsed.waste_pct ?? 0,
@@ -315,6 +335,11 @@ export async function updateTakeoffCondition(
   conditionId: string,
   updates: UpdateTakeoffConditionInput,
   orgId?: string,
+  /**
+   * The `updated_at` the caller last saw. When supplied, the write is refused if
+   * the row moved underneath them — see `STALE_WRITE`.
+   */
+  seenUpdatedAt?: string | null,
 ): Promise<TakeoffCondition> {
   const parsed = updateTakeoffConditionSchema.parse(updates)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
@@ -334,6 +359,10 @@ export async function updateTakeoffCondition(
   const payload: Record<string, unknown> = {}
   for (const key of [
     "name",
+    "depth_in",
+    "height_ft",
+    "pitch_rise",
+    "tons_per_cy",
     "cost_code_id",
     "color",
     "waste_pct",
@@ -347,14 +376,47 @@ export async function updateTakeoffCondition(
 
   if (Object.keys(payload).length === 0) return mapCondition(existing)
 
-  const { data, error } = await supabase
+  // The factors are validated against the condition's stored uom, which the
+  // update never carries. Merge before checking, or a CY condition could have
+  // its depth cleared through a shape Zod considers complete.
+  const merged = { ...mapCondition(existing), ...payload } as {
+    uom: ConditionUom
+  } & ConditionFactors
+  const violation = factorRuleViolation(merged)
+  if (violation) throw new Error(violation)
+
+  // Setting or clearing a wall height flips which unit members must measure in.
+  // Doing that under a populated condition would leave every member illegal, so
+  // it is refused the same way changing `uom` is.
+  const beforeSource = conditionSourceUom(existing.uom as ConditionUom, mapCondition(existing))
+  const afterSource = conditionSourceUom(merged.uom, merged)
+  if (beforeSource !== afterSource) {
+    const { count } = await supabase
+      .from("drawing_markups")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", resolvedOrgId)
+      .eq("condition_id", conditionId)
+    if ((count ?? 0) > 0) {
+      throw new Error(
+        `Setting a wall height changes what "${existing.name}" measures, from ` +
+          `${MEASURE_UOM_LABELS[beforeSource]} to ${MEASURE_UOM_LABELS[afterSource]}. ` +
+          `Release its ${count} measurement${count === 1 ? "" : "s"} first.`,
+      )
+    }
+  }
+
+  let updateQuery = supabase
     .from("takeoff_conditions")
     .update(payload)
     .eq("org_id", resolvedOrgId)
     .eq("id", conditionId)
-    .select(CONDITION_SELECT)
-    .single()
+  if (seenUpdatedAt) updateQuery = updateQuery.eq("updated_at", seenUpdatedAt)
 
+  const { data, error } = await updateQuery.select(CONDITION_SELECT).maybeSingle()
+
+  if (!error && !data && seenUpdatedAt) {
+    throw new Error(STALE_WRITE)
+  }
   if (error || !data) {
     throw new Error(`Failed to update takeoff condition: ${error?.message}`)
   }
@@ -493,25 +555,36 @@ export async function assignMarkupsToCondition(
   if (parsed.condition_id) {
     const { data: condition } = await supabase
       .from("takeoff_conditions")
-      .select("id, name, uom")
+      .select(CONDITION_SELECT)
       .eq("org_id", resolvedOrgId)
       .eq("id", parsed.condition_id)
       .maybeSingle()
 
     if (!condition) throw new Error("Takeoff condition not found")
+    const mapped = mapCondition(condition)
+    const sourceUom = conditionSourceUom(mapped.uom, mapped)
 
     const { data: markups } = await supabase
       .from("drawing_markups")
-      .select("id, uom")
+      .select("id, uom, drawing_sheet_id, drawing_sheets!inner(project_id)")
       .eq("org_id", resolvedOrgId)
       .in("id", parsed.markup_ids)
 
-    const mismatched = (markups ?? []).filter((m) => m.uom !== condition.uom)
+    const mismatched = (markups ?? []).filter((m) => m.uom !== sourceUom)
     if (mismatched.length > 0) {
       throw new Error(
-        `${mismatched.length} of these measurements do not measure in ${String(condition.uom).toUpperCase()}`,
+        `${mismatched.length} of these measurements do not measure in ${MEASURE_UOM_LABELS[sourceUom]}` +
+          (sourceUom !== mapped.uom
+            ? ` — "${mapped.name}" reports ${MEASURE_UOM_LABELS[mapped.uom]}, measured as ${MEASURE_UOM_LABELS[sourceUom]}`
+            : ""),
       )
     }
+
+    // A condition may only claim geometry from its own scope. Without this a
+    // caller could hand it markup ids from any project in the org and the org
+    // filter alone would let them through — the quantities would be real, and
+    // measured off somebody else's house.
+    await assertMarkupsInScope(supabase, resolvedOrgId, mapped, markups ?? [])
   }
 
   const { data, error } = await supabase
@@ -537,22 +610,71 @@ export async function assignMarkupsToCondition(
   return data?.length ?? 0
 }
 
+/**
+ * A condition may only claim geometry from its own scope.
+ *
+ * For a project condition that means the markup's sheet belongs to the same
+ * project. For a plan-version condition it means the sheet belongs to a project
+ * built from that plan — the plan has no drawings of its own, so it borrows a
+ * lot's, exactly as `listPlanDrawingSources` describes.
+ */
+async function assertMarkupsInScope(
+  supabase: SupabaseClient,
+  orgId: string,
+  condition: TakeoffCondition,
+  // PostgREST types an embedded row as an array even when the FK makes it
+  // one-to-one, so both shapes are read rather than cast away.
+  markups: Array<{ drawing_sheets?: unknown }>,
+): Promise<void> {
+  const sheetProjectIds = new Set(
+    markups
+      .flatMap((markup) => {
+        const embedded = markup.drawing_sheets
+        const rows = Array.isArray(embedded) ? embedded : embedded ? [embedded] : []
+        return rows.map((row) => (row as { project_id?: unknown }).project_id)
+      })
+      .filter((id): id is string => typeof id === "string"),
+  )
+  if (sheetProjectIds.size === 0) return
+
+  if (condition.project_id) {
+    const foreign = Array.from(sheetProjectIds).filter((id) => id !== condition.project_id)
+    if (foreign.length > 0) {
+      throw new Error(`"${condition.name}" cannot measure sheets from another project`)
+    }
+    return
+  }
+
+  const { data: version } = await supabase
+    .from("house_plan_versions")
+    .select("house_plan_id")
+    .eq("org_id", orgId)
+    .eq("id", condition.house_plan_version_id as string)
+    .maybeSingle()
+
+  if (!version) throw new Error("Takeoff condition's plan version not found")
+
+  const { data: lots } = await supabase
+    .from("lots")
+    .select("project_id")
+    .eq("org_id", orgId)
+    .eq("house_plan_id", version.house_plan_id as string)
+    .in("project_id", Array.from(sheetProjectIds))
+
+  const allowed = new Set((lots ?? []).map((lot: any) => lot.project_id as string))
+  const foreign = Array.from(sheetProjectIds).filter((id) => !allowed.has(id))
+  if (foreign.length > 0) {
+    throw new Error(
+      `"${condition.name}" can only measure sheets from a house built on its plan`,
+    )
+  }
+}
+
 // ============================================================================
 // ROLLUP
 // ============================================================================
 
-interface MemberRow {
-  id: string
-  condition_id: string
-  quantity: number | null
-  sheet_version_id: string | null
-  drawing_sheet_id: string
-  sheet_number: string
-  sheet_title: string | null
-  is_current_version: boolean
-  /** Carried forward by a revision and awaiting human confirmation. */
-  pending_review: boolean
-}
+type MemberRow = RollupMember & { sheet_version_id: string | null }
 
 /**
  * The panel's entire data set, in four queries regardless of how many
@@ -610,72 +732,22 @@ async function getConditionRollupWithContext(
 
   return conditions.map((condition) => {
     const memberRows = membersByCondition.get(condition.id) ?? []
-    // A measurement carried forward by a revision does NOT count until a human
-    // confirms it — see docs/takeoff-reanchor-design.md. It is neither current
-    // nor stale; it is a question.
-    const onCurrentVersion = memberRows.filter((m) => m.is_current_version)
-    const current = onCurrentVersion.filter((m) => !m.pending_review)
-    const pendingReview = onCurrentVersion.length - current.length
-    const stale = memberRows.length - onCurrentVersion.length
-    const unscaled = current.filter((m) => m.quantity === null).length
-
-    const measured = current.reduce((sum, m) => sum + (m.quantity ?? 0), 0)
-    const effective = applyWaste(measured, condition.waste_pct)
-
     const costCode = condition.cost_code_id ? costCodeById.get(condition.cost_code_id) : null
-    const pinned = condition.unit_cost_cents
-    const fallback = costCode?.default_unit_cost_cents ?? null
-    const rate = pinned ?? fallback ?? null
-
-    const sheets = buildSheetBreakdown(current)
+    const totals = rollUpCondition(condition, memberRows, costCode ?? null)
     const sync = syncStates.get(condition.id) ?? null
 
     return {
       condition,
-      measured_quantity: Math.round(measured * 100) / 100,
-      effective_quantity: effective,
-      markup_count: current.length,
-      stale_markup_count: stale,
-      unscaled_markup_count: unscaled,
-      pending_review_count: pendingReview,
-      cost_code: costCode
-        ? { id: costCode.id, code: costCode.code, name: costCode.name, unit: costCode.unit ?? null }
-        : null,
-      effective_unit_cost_cents: rate,
-      rate_source: pinned != null ? "pinned" : fallback != null ? "cost_code" : null,
-      extended_cents: rate != null ? extendedCents(effective, rate) : null,
-      sheets: sheets.slice(0, CONDITION_SHEET_BREAKDOWN_CAP),
-      sheets_truncated: Math.max(0, sheets.length - CONDITION_SHEET_BREAKDOWN_CAP),
+      ...totals,
       sync: sync
         ? {
             ...sync,
-            quantity_changed: Math.abs(sync.synced_quantity - effective) > QUANTITY_EPSILON,
+            quantity_changed:
+              Math.abs(sync.synced_quantity - totals.effective_quantity) > QUANTITY_EPSILON,
           }
         : null,
     }
   })
-}
-
-function buildSheetBreakdown(members: MemberRow[]): ConditionSheetBreakdown[] {
-  const bySheet = new Map<string, ConditionSheetBreakdown>()
-  for (const member of members) {
-    const existing = bySheet.get(member.drawing_sheet_id)
-    if (existing) {
-      existing.quantity += member.quantity ?? 0
-      existing.markup_count += 1
-    } else {
-      bySheet.set(member.drawing_sheet_id, {
-        drawing_sheet_id: member.drawing_sheet_id,
-        sheet_number: member.sheet_number,
-        sheet_title: member.sheet_title,
-        quantity: member.quantity ?? 0,
-        markup_count: 1,
-      })
-    }
-  }
-  return Array.from(bySheet.values())
-    .map((s) => ({ ...s, quantity: Math.round(s.quantity * 100) / 100 }))
-    .sort((a, b) => b.quantity - a.quantity || a.sheet_number.localeCompare(b.sheet_number))
 }
 
 /**
@@ -741,8 +813,29 @@ async function loadConditionMembers(
       row.drawing_sheet_versions?.drawing_revision_id ===
         row.drawing_sheets?.current_revision_id,
     pending_review: row.data?.style?.reanchor?.state === "needs_review",
+    is_deduction: row.data?.style?.deduction === true,
   }))
 }
+
+/**
+ * Every destination a condition can be pushed to, and the column naming its
+ * target. The panel's badge reads all three: a condition synced only to a bid
+ * package used to show as never-synced, which meant its drift was invisible
+ * until someone opened the sync dialog.
+ */
+const SYNC_STATE_SOURCES: ReadonlyArray<{
+  destination: TakeoffDestination
+  table: string
+  targetColumn: string
+}> = [
+  { destination: "estimate", table: "estimate_items", targetColumn: "estimate_id" },
+  { destination: "bid_scope", table: "bid_scope_items", targetColumn: "bid_package_id" },
+  {
+    destination: "plan_takeoff",
+    table: "house_plan_takeoff_lines",
+    targetColumn: "house_plan_version_id",
+  },
+]
 
 /**
  * Where each condition was last pushed. Read from the destination line's own
@@ -758,35 +851,38 @@ async function loadSyncStates(
   const syncedAtByCondition = new Map<string, string>()
 
   const pages = await Promise.all(
-    chunk(conditionIds, ID_CHUNK_SIZE).map(async (conditionIdChunk) => {
-      const { data, error } = await supabase
-        .from("estimate_items")
-        .select("id, estimate_id, quantity, metadata")
-        .eq("org_id", orgId)
-        .in("metadata->takeoff->>condition_id", conditionIdChunk)
-        .limit(1000)
-      if (error) throw new Error(`Failed to load takeoff sync state: ${error.message}`)
-      return data ?? []
-    }),
+    SYNC_STATE_SOURCES.flatMap((source) =>
+      chunk(conditionIds, ID_CHUNK_SIZE).map(async (conditionIdChunk) => {
+        const { data, error } = await supabase
+          .from(source.table)
+          .select(`id, ${source.targetColumn}, quantity, metadata`)
+          .eq("org_id", orgId)
+          .in("metadata->takeoff->>condition_id", conditionIdChunk)
+          .limit(1000)
+        if (error) throw new Error(`Failed to load takeoff sync state: ${error.message}`)
+        return (data ?? []).map((row: any) => ({ row, source }))
+      }),
+    ),
   )
-  for (const estimateLines of pages) {
-    for (const line of estimateLines ?? []) {
-      const takeoff = ((line.metadata ?? {}) as any).takeoff ?? {}
+
+  for (const page of pages) {
+    for (const { row, source } of page) {
+      const takeoff = ((row.metadata ?? {}) as any).takeoff ?? {}
       const conditionId = takeoff.condition_id as string | undefined
       if (!conditionId) continue
-      // A condition synced to two estimates: the panel shows the most recent
-      // sync, deterministically — not whichever row the database returned last.
+      // A condition synced to two places: the panel shows the most recent sync,
+      // deterministically — not whichever row the database returned last.
       const syncedAt = (takeoff.synced_at as string) ?? ""
       const bestSoFar = syncedAtByCondition.get(conditionId)
       if (bestSoFar !== undefined && bestSoFar >= syncedAt) continue
       syncedAtByCondition.set(conditionId, syncedAt)
 
       const syncedQuantity = Number(takeoff.measured_quantity ?? 0)
-      const liveQuantity = Number(line.quantity ?? 0)
+      const liveQuantity = Number(row.quantity ?? 0)
       states.set(conditionId, {
-        destination: "estimate",
-        target_id: line.estimate_id as string,
-        line_id: line.id as string,
+        destination: source.destination,
+        target_id: row[source.targetColumn] as string,
+        line_id: row.id as string,
         synced_quantity: syncedQuantity,
         synced_at: syncedAt || null,
         hand_edited: Math.abs(liveQuantity - syncedQuantity) > QUANTITY_EPSILON,
@@ -810,22 +906,38 @@ export async function getConditionLandingSheet(
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("takeoff.read", { supabase, orgId: resolvedOrgId, userId })
 
-  const { data } = await supabase
-    .from("drawing_markups")
-    .select("drawing_sheet_id, quantity")
-    .eq("org_id", resolvedOrgId)
-    .eq("condition_id", conditionId)
-    .limit(1000)
-
-  if (!data || data.length === 0) return null
-
+  // Paginated, not capped. A dense condition whose first thousand markups
+  // happen to sit on a detail sheet would otherwise deep-link an estimator to
+  // the wrong page and look like a bug in the link, not in the read.
   const totals = new Map<string, number>()
-  for (const row of data) {
-    const sheetId = row.drawing_sheet_id as string
-    totals.set(sheetId, (totals.get(sheetId) ?? 0) + Number(row.quantity ?? 0))
+  let cursor: string | null = null
+  for (;;) {
+    let query = supabase
+      .from("drawing_markups")
+      .select("id, drawing_sheet_id, quantity")
+      .eq("org_id", resolvedOrgId)
+      .eq("condition_id", conditionId)
+      .order("id", { ascending: true })
+      .limit(MEMBER_PAGE_SIZE)
+    if (cursor) query = query.gt("id", cursor)
+
+    const { data: page, error } = await query
+    if (error) {
+      throw new Error(`Failed to find the condition's sheets: ${error.message}`)
+    }
+    if (!page || page.length === 0) break
+    for (const row of page) {
+      const sheetId = row.drawing_sheet_id as string
+      totals.set(sheetId, (totals.get(sheetId) ?? 0) + Math.abs(Number(row.quantity ?? 0)))
+    }
+    if (page.length < MEMBER_PAGE_SIZE) break
+    cursor = page[page.length - 1].id as string
   }
 
-  const best = Array.from(totals.entries()).sort((a, b) => b[1] - a[1])[0]
+  if (totals.size === 0) return null
+  const best = Array.from(totals.entries()).sort(
+    (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+  )[0]
   return best ? { drawing_sheet_id: best[0] } : null
 }
 
@@ -853,36 +965,14 @@ export async function previewConditionSync(
   return rollups.map((rollup) => {
     const existing = existingLines.get(rollup.condition.id)
     const next = rollup.effective_quantity
-    const rate = rollup.effective_unit_cost_cents
+    const live = existing ? Number(existing.quantity ?? 0) : null
+    const lastSynced = existing ? Number(existing.lastSyncedQuantity ?? 0) : null
 
-    if (!existing) {
-      return {
-        condition_id: rollup.condition.id,
-        condition_name: rollup.condition.name,
-        uom: rollup.condition.uom,
-        current_quantity: null,
-        next_quantity: next,
-        unit_cost_cents: rate,
-        action: "create" as const,
-      }
-    }
-
-    const lastSynced = Number(existing.lastSyncedQuantity ?? 0)
-    const live = Number(existing.quantity ?? 0)
-    const handEdited = Math.abs(live - lastSynced) > QUANTITY_EPSILON
-
-    if (handEdited) {
-      return {
-        condition_id: rollup.condition.id,
-        condition_name: rollup.condition.name,
-        uom: rollup.condition.uom,
-        current_quantity: live,
-        next_quantity: next,
-        unit_cost_cents: rate,
-        action: "drift" as const,
-        last_synced_quantity: lastSynced,
-      }
-    }
+    const action = classifySyncRow({
+      nextQuantity: next,
+      liveQuantity: live,
+      lastSyncedQuantity: lastSynced,
+    })
 
     return {
       condition_id: rollup.condition.id,
@@ -890,8 +980,11 @@ export async function previewConditionSync(
       uom: rollup.condition.uom,
       current_quantity: live,
       next_quantity: next,
-      unit_cost_cents: rate,
-      action: Math.abs(live - next) > QUANTITY_EPSILON ? ("update" as const) : ("unchanged" as const),
+      unit_cost_cents: rollup.effective_unit_cost_cents,
+      action,
+      // Only meaningful on drift: the number the last sync wrote, which is what
+      // makes "someone typed over this" visible rather than just asserted.
+      ...(action === "drift" ? { last_synced_quantity: lastSynced ?? 0 } : {}),
     }
   })
 }
@@ -1227,6 +1320,16 @@ async function insertDestinationLine(
   const provenance = buildTakeoffProvenance(payload)
 
   if (destination === "estimate") {
+    // The condition's rate is a COST; the estimate's default markup turns it
+    // into the client price, same as a hand-typed line left on the default.
+    const { data: target } = await supabase
+      .from("estimates")
+      .select("metadata")
+      .eq("org_id", orgId)
+      .eq("id", targetId)
+      .maybeSingle()
+    const defaultMarkupPct = Number((target?.metadata as any)?.markup_percent ?? 0) || 0
+
     const { error } = await supabase.from("estimate_items").insert({
       org_id: orgId,
       estimate_id: targetId,
@@ -1236,7 +1339,7 @@ async function insertDestinationLine(
       quantity,
       unit: condition.uom,
       unit_cost_cents: rate,
-      markup_pct: 0,
+      markup_pct: defaultMarkupPct,
       sort_order: sortOrder,
       metadata: { takeoff: provenance },
     })
@@ -1369,6 +1472,7 @@ async function recalculateEstimateTotals(
   if (!estimate) return
 
   const taxRate = Number((estimate.metadata as any)?.tax_rate ?? 0)
+  const contingencyPct = Number((estimate.metadata as any)?.contingency_percent ?? 0)
   const totals = calculateEstimateTotals(
     (lines ?? []).map((line: any) => ({
       item_type: line.item_type,
@@ -1378,6 +1482,7 @@ async function recalculateEstimateTotals(
       is_optional: (line.metadata ?? {}).is_optional === true,
     })),
     taxRate,
+    contingencyPct,
   )
 
   await supabase

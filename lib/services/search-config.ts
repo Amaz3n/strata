@@ -347,7 +347,7 @@ export const SEARCH_CONFIGS: Record<SearchEntityType, SearchEntityConfig> = {
     titleField: 'id',
     subtitleFields: ['status', 'payment_count', 'total_debit_cents'],
     searchableFields: ['status', 'currency', 'idempotency_key'],
-    hrefTemplate: '/payables/payment-runs?run={id}',
+    hrefTemplate: '/payables?run={id}',
   },
   budget: {
     table: 'budgets',

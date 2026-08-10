@@ -1,5 +1,10 @@
 # 08 — Accounting Abstraction & Multi-Entity Connections
 
+> **Status: SHIPPED (QA acceptance pending) — retained as reference.**
+> `CLAUDE.md` designates this suite authoritative context for production
+> posture. It describes work that has been built; where this document and the
+> code disagree, the code wins.
+
 > **STATUS: P0/P1 HARDENING AND NEUTRAL BACKFILL APPLIED; APPLICATION DEPLOY
 > AND SOAK-GATED DESTRUCTIVE CLEANUP PENDING (2026-07-23)**
 >

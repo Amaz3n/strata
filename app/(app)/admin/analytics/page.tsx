@@ -5,7 +5,9 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { requireAnyPermissionGuard } from "@/lib/auth/guards"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { DemoUsageSheet } from "@/components/platform/demo-usage-sheet"
 import { getSystemMetrics, getUsageTrends } from "@/lib/services/admin"
+import { getDemoUsageSummary } from "@/lib/services/platform-demo-usage"
 import { cn } from "@/lib/utils"
 
 export const dynamic = "force-dynamic"
@@ -21,12 +23,19 @@ function formatBytes(bytes: number): string {
 }
 
 async function AnalyticsData() {
-  const [metrics, trends] = await Promise.all([getSystemMetrics(), getUsageTrends()])
+  // Demo-org usage is a usage metric, so it reads from this page rather than
+  // from a launcher on the Platform index that had nothing else to do.
+  const [metrics, trends, demoUsage] = await Promise.all([
+    getSystemMetrics(),
+    getUsageTrends(),
+    getDemoUsageSummary(),
+  ])
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-background">
-      <div className="relative z-20 shrink-0 border-b bg-background/95 px-4 py-3 backdrop-blur-sm">
+      <div className="relative z-20 flex shrink-0 items-center justify-between gap-3 border-b bg-background/95 px-4 py-3 backdrop-blur-sm">
         <span className="text-sm font-semibold">Analytics</span>
+        <DemoUsageSheet summary={demoUsage} />
       </div>
 
       <div className="relative z-10 min-h-0 flex-1 overflow-auto">

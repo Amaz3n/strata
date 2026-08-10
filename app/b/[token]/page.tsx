@@ -4,7 +4,12 @@ import {
   recordBidPortalAccess,
   validateBidPortalToken,
 } from "@/lib/services/bid-portal"
-import { getExternalPortalGateContext, getExternalPortalWorkspaceContext, hasExternalPortalGrantForToken } from "@/lib/services/external-portal-auth"
+import {
+  ensureExternalPortalAccessForToken,
+  getExternalPortalGateContext,
+  getExternalPortalWorkspaceContext,
+  isExternalAccessClaimed,
+} from "@/lib/services/external-portal-auth"
 import { BidPortalClient } from "@/components/bid-portal/bid-portal-client"
 import { PortalAccountGate } from "@/components/portal/account/portal-account-gate"
 import { Button } from "@/components/ui/button"
@@ -53,13 +58,22 @@ export default async function BidPortalPage({ params }: BidPortalPageProps) {
     )
   }
 
-  if (access.require_account) {
-    const hasAccountAccess = await hasExternalPortalGrantForToken({
+  // Same rule as every other portal: once the invited person has an Arc account
+  // the link is a pointer to a sign-in, not a credential. Phase 6 folds bid access
+  // into `portal_access_tokens` and this page becomes a redirect — until then the
+  // shared services are applied here so `/b` cannot drift from the others again.
+  const claimed = access.require_account || (await isExternalAccessClaimed({ token, tokenType: "bid" }))
+  let identityVerified = false
+
+  if (claimed) {
+    identityVerified = await ensureExternalPortalAccessForToken({
       orgId: access.org_id,
       tokenId: access.id,
       tokenType: "bid",
+      token,
     })
-    if (!hasAccountAccess) {
+
+    if (!identityVerified) {
       const gateContext = await getExternalPortalGateContext({ token, tokenType: "bid" })
       return (
         <PortalAccountGate
@@ -70,12 +84,13 @@ export default async function BidPortalPage({ params }: BidPortalPageProps) {
           initialEmail={gateContext?.expectedEmail ?? ""}
           suggestedFullName={gateContext?.suggestedFullName ?? ""}
           emailLocked={gateContext?.emailLocked}
+          hasExistingAccount={claimed}
         />
       )
     }
   }
 
-  const hasPinAccess = access.pin_required ? await isBidPortalPinVerified(token) : true
+  const hasPinAccess = !access.pin_required || identityVerified || (await isBidPortalPinVerified(token))
   if (!hasPinAccess) {
     const workspace = await getExternalPortalWorkspaceContext({ orgId: access.org_id })
     return <BidPortalClient token={token} access={access} data={EMPTY_BID_PORTAL_DATA} pinRequired workspace={workspace} />

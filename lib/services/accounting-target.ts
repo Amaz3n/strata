@@ -141,7 +141,7 @@ async function countSyncedTransactionsForScope(input: {
   let projectIds: string[] = []
   if (input.projectId) projectIds = [input.projectId]
   else if (input.divisionId) {
-    const { data } = await supabase.from("projects").select("id").eq("org_id", input.orgId).eq("division_id", input.divisionId)
+    const { data } = await supabase.from("projects").select("id").eq("org_id", input.orgId).eq("phase", "delivery").eq("division_id", input.divisionId)
     projectIds = (data ?? []).map((row) => row.id)
   } else if (input.communityId) {
     const { data } = await supabase.from("lots").select("project_id").eq("org_id", input.orgId).eq("community_id", input.communityId).not("project_id", "is", null)
@@ -242,10 +242,12 @@ export async function getProjectAccountingLink(input: { projectId: string; orgId
   return {
     mapId: projectMap?.id ?? null,
     connectionId: target?.connection.id ?? null,
+    // One neutral name for the customer dimension. The `qboCustomerId` /
+    // `qboCustomerName` aliases that used to sit beside these were the same two
+    // values under a provider's name, which is how a "neutral" DTO teaches every
+    // consumer to think in QuickBooks.
     accountingCustomerId: target?.dimensions.customer?.id ?? null,
     accountingCustomerName: target?.dimensions.customer?.name ?? null,
-    qboCustomerId: target?.dimensions.customer?.id ?? null,
-    qboCustomerName: target?.dimensions.customer?.name ?? null,
     target,
   }
 }

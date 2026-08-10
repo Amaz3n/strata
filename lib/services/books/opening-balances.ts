@@ -317,6 +317,7 @@ export async function postOpeningBalanceBatch(batchId: string, orgId?: string) {
     entryKind: "opening",
     memo: `Opening balances at ${batchResult.data.cutover_date}`,
     postingKey: `opening:${batchId}:${batchResult.data.digest}`,
+    projectionVersion: 1,
     policyVersion: 1,
     sourceType: "opening_balance_batch",
     sourceId: batchId,

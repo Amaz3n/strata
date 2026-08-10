@@ -3,6 +3,7 @@ import "server-only"
 import { generateText } from "ai"
 import { z } from "zod"
 import { getPlatformAiFeatureDefaultConfig } from "@/lib/services/ai-config"
+import { runAiObject } from "@/lib/services/ai/gateway"
 import { getApiKeyForProvider, resolveLanguageModel } from "@/lib/services/ai-search/llm"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
@@ -106,7 +107,7 @@ export async function transcribeConstructionAudio(bytes: Buffer, mimeType: strin
     if (!result.text.trim()) throw new Error("Google transcription returned no text")
     return result.text.trim()
   }
-  throw new Error("Anthropic does not expose an audio transcription endpoint; choose OpenAI or Google")
+  throw new Error("This provider does not expose an audio transcription endpoint; choose OpenAI or Google")
 }
 
 export async function processPendingMeetingTranscripts(limit = 3) {
@@ -129,7 +130,7 @@ export async function processPendingMeetingTranscripts(limit = 3) {
         const result = await generateText({ model: resolveLanguageModel("google", key, config.model), messages: [{ role: "user", content: [{ type: "text", text: "Transcribe this construction meeting audio verbatim. Preserve speaker labels when discernible. Return transcript text only." }, { type: "file", data: bytes, mediaType: file.mime_type ?? "audio/webm", filename: file.file_name ?? "meeting.webm" }] }], abortSignal: AbortSignal.timeout(15 * 60_000) })
         text = result.text.trim(); if (!text) throw new Error("Google transcription returned no text")
       } else {
-        throw new Error("Anthropic does not expose an audio transcription endpoint; choose OpenAI or Google")
+        throw new Error("This provider does not expose an audio transcription endpoint; choose OpenAI or Google")
       }
       await supabase.from("meeting_transcripts").update({ status: "ready", transcript_text: text, transcribed_at: new Date().toISOString() }).eq("id", row.id)
       completed += 1
@@ -141,10 +142,6 @@ export async function processPendingMeetingTranscripts(limit = 3) {
   return { processed: (rows ?? []).length, completed, failed }
 }
 
-function jsonCandidate(raw: string) {
-  const cleaned = raw.replace(/^```json\s*/i, "").replace(/```$/i, "").trim(); const start = cleaned.indexOf("{"); const end = cleaned.lastIndexOf("}")
-  return start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned
-}
 
 export async function draftMinutesFromTranscript(transcriptId: string, orgId?: string) {
   const context = await requireOrgContext(orgId)
@@ -153,15 +150,21 @@ export async function draftMinutesFromTranscript(transcriptId: string, orgId?: s
   if (!transcript?.transcript_text) throw new Error("Transcript is not ready")
   const meeting = await getMeeting(transcript.meeting_id, context.orgId)
   if (meeting.status === "finalized") throw new Error("Finalized meeting minutes are locked")
-  const config = await getPlatformAiFeatureDefaultConfig({ supabase: createServiceSupabaseClient(), feature: "meeting_minutes" })
-  const key = getApiKeyForProvider(config.provider); if (!key) throw new Error(`${config.provider} is not configured`)
-  const prompt = `Extract proposed meeting-minutes updates. Return JSON only: {"existing_items":[{"item_id":"uuid","discussion_update":string|null,"proposed_status":"open|closed|info"|null,"proposed_bic":string|null,"proposed_due":"YYYY-MM-DD"|null}],"new_items":[{"topic":string,"discussion":string|null,"status":"open|closed|info","ball_in_court":string|null,"due_date":"YYYY-MM-DD"|null}]}. Never invent facts.\n\nCURRENT REGISTER:\n${JSON.stringify(meeting.items.map((item) => ({ item_id: item.id, number: item.item_number, topic: item.topic, discussion: item.discussion, status: item.status, bic: item.ball_in_court, due: item.due_date, linked: item.linked_entity })))}\n\nTRANSCRIPT:\n${transcript.transcript_text}`
-  let parsed: MeetingDraftProposals | null = null; let lastError = "Invalid structured response"
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const result = await generateText({ model: resolveLanguageModel(config.provider, key, config.model), prompt: attempt ? `${prompt}\n\nYour previous response was invalid. Return ONLY schema-compliant JSON.` : prompt, abortSignal: AbortSignal.timeout(90_000) })
-    try { parsed = proposalsSchema.parse(JSON.parse(jsonCandidate(result.text))); break } catch (error) { lastError = error instanceof Error ? error.message : lastError }
-  }
-  if (!parsed) throw new Error(`AI proposals failed validation after retry: ${lastError}`)
+  const result = await runAiObject({
+    feature: "meeting_minutes",
+    schema: proposalsSchema,
+    system:
+      "You extract proposed meeting-minutes updates from a transcript against the current item register. " +
+      "Never invent facts. Only reference item_ids present in the register.",
+    prompt: `CURRENT REGISTER:\n${JSON.stringify(meeting.items.map((item) => ({ item_id: item.id, number: item.item_number, topic: item.topic, discussion: item.discussion, status: item.status, bic: item.ball_in_court, due: item.due_date, linked: item.linked_entity })))}\n\nTRANSCRIPT:\n${transcript.transcript_text}`,
+    orgId: context.orgId,
+    entityType: "meeting_transcript",
+    entityId: transcriptId,
+    timeoutMs: 90_000,
+  })
+  if (!result.ok) throw new Error(`AI proposals failed: ${result.message}`)
+  // Re-parse so schema defaults (review_status, nullable fields) are applied.
+  const parsed: MeetingDraftProposals = proposalsSchema.parse(result.object)
   const knownIds = new Set(meeting.items.map((item) => item.id)); parsed.existing_items = parsed.existing_items.filter((item) => knownIds.has(item.item_id))
   const { error } = await context.supabase.from("meeting_transcripts").update({ draft_proposals: parsed }).eq("org_id", context.orgId).eq("id", transcriptId)
   if (error) throw new Error(`Failed to store draft proposals: ${error.message}`)

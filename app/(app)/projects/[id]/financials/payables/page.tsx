@@ -8,6 +8,9 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { getProjectFinancialSetupStatusForProject } from "@/lib/services/project-financial-setup"
 import { loadFinancialsOverviewData } from "../page-data"
 import { evaluateHolds } from "@/lib/services/payment-holds"
+import { isVendorPayoutSetupOpen } from "@/lib/services/payment-rail-setup"
+import { getPaymentApprovalRouting } from "@/lib/services/payment-approvers"
+import { requireOrgContext } from "@/lib/services/context"
 
 import { unwrapAction } from "@/lib/action-result"
 
@@ -15,26 +18,40 @@ export const dynamic = "force-dynamic"
 
 interface PageProps {
   params: Promise<{ id: string }>
+  searchParams: Promise<{ queue?: string; q?: string; page?: string; pageSize?: string; bill?: string }>
 }
 
-export default async function FinancialsPayablesPage({ params }: PageProps) {
-  const { id } = await params
+export default async function FinancialsPayablesPage({ params, searchParams }: PageProps) {
+  const [{ id }, query] = await Promise.all([params, searchParams])
 
   return (
     <Suspense fallback={<FinancialsChildSkeleton title="Payables" />}>
-      <FinancialsPayablesData id={id} />
+      <FinancialsPayablesData id={id} query={query} />
     </Suspense>
   )
 }
 
-async function FinancialsPayablesData({ id }: { id: string }) {
-  const [{ project }, data, setupStatus] = await Promise.all([
+async function FinancialsPayablesData({ id, query }: { id: string; query: { queue?: string; q?: string; page?: string; pageSize?: string; bill?: string } }) {
+  const [{ project }, data, setupStatus, paymentContext] = await Promise.all([
     loadFinancialsOverviewData(id),
-    fetchPayablesTabDataAction(id),
+    fetchPayablesTabDataAction(id, { queue: query.queue, search: query.q, page: Number(query.page) || 1, pageSize: Number(query.pageSize) || 50 }),
     getProjectFinancialSetupStatusForProject(id),
+    requireOrgContext().then(async ({ orgId, userId }) => ({
+      railOpen: await isVendorPayoutSetupOpen(orgId),
+      viewerUserId: userId,
+    })),
   ])
-  const holdEntries = await Promise.all(data.vendorBills.map(async (bill) => [bill.id, await evaluateHolds(bill.id).catch(() => null)] as const))
-  const holdEvaluations = Object.fromEntries(holdEntries.filter((entry): entry is readonly [string, NonNullable<(typeof entry)[1]>] => entry[1] !== null))
+  const { railOpen, viewerUserId } = paymentContext
+  const paymentRouting = railOpen
+    ? await getPaymentApprovalRouting().catch(() => null)
+    : null
+  // Only the open payable's holds. `holdEvaluations` feeds the detail pane and
+  // nothing in the list, so evaluating every row cost roughly seven queries per
+  // bill plus a compliance lookup on every render — 350+ round trips for a page
+  // showing one. The org desk already loads this per bill on selection.
+  const openBillId = query.bill && data.vendorBills.some((bill) => bill.id === query.bill) ? query.bill : null
+  const openBillHolds = openBillId ? await evaluateHolds(openBillId).catch(() => null) : null
+  const holdEvaluations = openBillId && openBillHolds ? { [openBillId]: openBillHolds } : {}
 
   return (
     <PageLayout
@@ -50,6 +67,9 @@ async function FinancialsPayablesData({ id }: { id: string }) {
       <PayablesTab
         projectId={project.id}
         vendorBills={data.vendorBills}
+        pagination={data.vendorBillsPage}
+        initialQueue={query.queue ?? "needs_review"}
+        initialSearch={query.q ?? ""}
         costCodes={data.costCodes}
         budgetLines={data.budgetLines}
         costCodesEnabled={setupStatus.costCodesEnabled}
@@ -58,6 +78,11 @@ async function FinancialsPayablesData({ id }: { id: string }) {
         complianceStatusByCompanyId={data.complianceStatusByCompanyId}
         loadErrors={data.errors}
         holdEvaluations={holdEvaluations}
+        railOpen={railOpen}
+        paymentReadinessByCompanyId={data.paymentReadinessByCompanyId}
+        runMembershipByBillId={data.runMembershipByBillId}
+        viewerMayApproveRuns={Boolean(paymentRouting?.viewerMayApprove)}
+        approvalViewer={{ userId: viewerUserId, approvers: paymentRouting?.approvers ?? [] }}
       />
     </PageLayout>
   )

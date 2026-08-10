@@ -3,10 +3,12 @@ import { Suspense } from "react"
 import { ControlTowerLookahead } from "@/components/control-tower/control-tower-lookahead"
 import { ControlTowerStats } from "@/components/control-tower/control-tower-stats"
 import { ControlTowerWatch } from "@/components/control-tower/control-tower-watch"
+import { ControlTowerWip } from "@/components/control-tower/control-tower-wip"
 import {
   ControlTowerLookaheadSkeleton,
   ControlTowerStatsSkeleton,
   ControlTowerWatchSkeleton,
+  ControlTowerWipSkeleton,
 } from "@/components/control-tower/control-tower-skeletons"
 import {
   getControlTowerExceptionsBand,
@@ -14,6 +16,7 @@ import {
   getControlTowerPortfolioHealth,
   getControlTowerProjectsBand,
   getControlTowerScheduleBand,
+  getControlTowerWipBand,
   getWatchlist,
 } from "@/lib/services/dashboard"
 
@@ -30,6 +33,9 @@ export function ControlTowerDesk() {
     <div className="flex min-h-full flex-col">
       <Suspense fallback={<ControlTowerStatsSkeleton />}>
         <StatsBand />
+      </Suspense>
+      <Suspense fallback={<ControlTowerWipSkeleton />}>
+        <WipBand />
       </Suspense>
       <div className="grid flex-1 grid-cols-1 lg:grid-cols-2">
         <Suspense fallback={<ControlTowerLookaheadSkeleton />}>
@@ -66,6 +72,11 @@ async function StatsBand() {
       dueItems={scheduleBand.dueItems}
     />
   )
+}
+
+async function WipBand() {
+  const band = await getControlTowerWipBand()
+  return <ControlTowerWip band={band} />
 }
 
 async function LookaheadBand() {

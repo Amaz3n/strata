@@ -14,6 +14,7 @@ import { sendEmail, renderEmailTemplate, getOrgSenderEmail } from "@/lib/service
 import { InvoiceEmail } from "@/lib/emails/invoice-email"
 import { getNextInvoiceNumber, markReservationUsed, releaseInvoiceNumberReservation } from "@/lib/services/invoice-numbers"
 import { enqueueInvoiceSync } from "@/lib/services/accounting-sync"
+import { isSyncableInvoiceStatus } from "@/lib/financials/ledger-status"
 import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { releaseInvoiceFromBillingPeriod } from "@/lib/services/billing-periods"
@@ -459,10 +460,14 @@ async function upsertRetainageForInvoice(params: {
   }
 }
 
+/**
+ * Which invoices reach the external accounting system. The set itself lives in
+ * `lib/financials/ledger-status.ts` next to the GL sets it intentionally
+ * differs from — read the note there before widening or narrowing it.
+ */
 function shouldQueueQboSync(status?: string | null, clientVisible?: boolean | null) {
   if (clientVisible) return true
-  const normalized = String(status ?? "").toLowerCase()
-  return normalized === "saved" || normalized === "sent" || normalized === "partial" || normalized === "paid" || normalized === "overdue"
+  return isSyncableInvoiceStatus(status)
 }
 
 function invoiceMetadataDrawIds(metadata: Record<string, any> | null | undefined): string[] {

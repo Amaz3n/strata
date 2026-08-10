@@ -29,6 +29,7 @@ import {
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 import { requestPrequalification, reviewPrequalification } from "@/lib/services/prequalification"
+import { inviteCompanyToPaymentSetup } from "@/lib/services/vendor-payment-invitations"
 
 async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   try {
@@ -81,6 +82,15 @@ export async function restoreCompanyAction(companyId: string) {
       revalidatePath(`/companies/${companyId}`)
       revalidatePath("/directory")
       return true
+  })
+}
+
+export async function inviteCompanyToPaymentSetupAction(companyId: string) {
+  return run(async () => {
+    const result = await inviteCompanyToPaymentSetup({ companyId })
+    revalidatePath(`/companies/${companyId}`)
+    revalidatePath("/payables")
+    return result
   })
 }
 

@@ -232,14 +232,21 @@ export async function getEstimateForEditAction(estimateId: string) {
         recipient_contact_id: (data.recipient_contact_id as string | null) ?? null,
         recipient_name: (data.recipient as any)?.full_name ?? adHocRecipient?.name ?? null,
         recipient_email: (data.recipient as any)?.email ?? adHocRecipient?.email ?? null,
+        markup_percent: typeof metadata.markup_percent === "number" ? metadata.markup_percent : 0,
+        contingency_percent: typeof metadata.contingency_percent === "number" ? metadata.contingency_percent : 0,
+        inclusions: typeof metadata.inclusions === "string" ? metadata.inclusions : "",
+        exclusions: typeof metadata.exclusions === "string" ? metadata.exclusions : "",
         lines: items.map((item: any) => ({
           description: (item.description as string) ?? "",
           quantity: (item.quantity as number) ?? 1,
           unit_cost_cents: (item.unit_cost_cents as number) ?? 0,
+          markup_pct: (item.markup_pct as number) ?? 0,
           cost_code_id: (item.cost_code_id as string | null) ?? null,
           item_type: (item.item_type === "group" ? "group" : "line") as "line" | "group",
           is_optional: item.metadata?.is_optional === true,
           is_allowance: item.metadata?.is_allowance === true,
+          option_group: typeof item.metadata?.option_group === "string" ? item.metadata.option_group : null,
+          metadata: (item.metadata as Record<string, any> | null) ?? undefined,
         })),
       }
 }
