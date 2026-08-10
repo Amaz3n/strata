@@ -1,5 +1,7 @@
 "use server"
 
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { recordExtractionCorrection } from "@/lib/services/vendor-extraction-memory"
 import { revalidatePath } from "next/cache"
 
 import { getProjectCostCodesEnabled } from "@/lib/financials/cost-codes-enabled"
@@ -14,6 +16,15 @@ import {
 } from "@/lib/services/payable-approvals"
 import type { DecidePaymentRunInput } from "@/lib/validation/fintech-payments"
 import { actionError, type ActionResult } from "@/lib/action-result"
+import {
+  cancelPaymentRun,
+  getPaymentRunSetupData,
+  submitPaymentRun,
+} from "@/lib/services/payment-runs"
+import type { PaymentApprovalRouting } from "@/lib/services/payment-approvers"
+import type { ProviderSettlementWindow } from "@/lib/payments/settlement-estimate"
+import type { ApFeePolicy } from "@/lib/payments/fee-engine"
+import { decidePaymentRiskReview, type DecidePaymentRiskInput } from "@/lib/services/payment-risk"
 import { listProjectBudgetLines } from "@/lib/services/budgets"
 import { requireOrgContext } from "@/lib/services/context"
 import {
@@ -24,10 +35,10 @@ import type { PaymentHoldEvaluation } from "@/lib/services/payment-holds"
 import {
   extractPayableInvoiceFromFile,
   type ExtractedPayableInvoice,
-} from "@/lib/services/receipt-extraction"
+} from "@/lib/services/document-extraction"
+import { getVendorPayableProfile, type VendorPayableProfile } from "@/lib/services/companies"
 import type { PaymentHoldOverrideInput } from "@/lib/validation/payment-holds"
 import type { BudgetLineOption } from "@/lib/types"
-import { deletePayableView, savePayableView, type SavedPayableView } from "@/lib/services/payable-views"
 
 export interface OrgPayableContext {
   projectId: string
@@ -99,7 +110,6 @@ export async function decidePayableApprovalAction(
   try {
     const data = await decidePayableApproval(input)
     revalidatePath("/payables")
-    revalidatePath("/payables/payment-runs")
     return { success: true, data }
   } catch (error) {
     return actionError(error)
@@ -116,26 +126,6 @@ export async function overridePaymentHoldAction(
 ): Promise<ActionResult<PaymentHoldEvaluation>> {
   try {
     return { success: true, data: await overridePaymentHold(input) }
-  } catch (error) {
-    return actionError(error)
-  }
-}
-
-export async function savePayableViewAction(input: { id?: string; name: string; projectId?: string; filters: unknown; isDefault?: boolean }): Promise<ActionResult<SavedPayableView>> {
-  try {
-    const data = await savePayableView(input)
-    revalidatePath("/payables")
-    return { success: true, data }
-  } catch (error) {
-    return actionError(error)
-  }
-}
-
-export async function deletePayableViewAction(id: string): Promise<ActionResult<{ deleted: true }>> {
-  try {
-    await deletePayableView(id)
-    revalidatePath("/payables")
-    return { success: true, data: { deleted: true } }
   } catch (error) {
     return actionError(error)
   }
@@ -173,5 +163,134 @@ export async function extractPayableInvoiceAction(
       success: true,
       data: { ok: false, error: error instanceof Error ? error.message : "Could not scan invoice" },
     }
+  }
+}
+
+/**
+ * The vendor's standing with this org, for the card that replaces the vendor
+ * picker once a vendor is on the payable. Never blocks bill entry: a vendor the
+ * viewer has no history permission for reads as a vendor with no history.
+ */
+export async function getPayableVendorProfileAction(
+  companyId: string,
+): Promise<ActionResult<VendorPayableProfile | null>> {
+  try {
+    return { success: true, data: await getVendorPayableProfile(companyId) }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
+/**
+ * What the desk needs to turn a selection into a payment run: which bank the
+ * debit comes from, who it routes to for approval, and how the fees price.
+ *
+ * Deliberately lighter than `getPaymentRunSetupData` — the desk already has the
+ * bills, so it never needs the eligible-bill list that surface computed.
+ */
+export interface PayableBatchEligibleBill {
+  id: string
+  /**
+   * The early-pay discount still available on this bill, if any — computed by
+   * `getPaymentRunSetupData` so the preparer sees the money before choosing to
+   * pay, not after. Advisory in the UI; the destination and amounts are
+   * resolved server-side when the run is prepared.
+   */
+  discount: { byDate: string; amountCents: number; netAmountCents: number } | null
+}
+
+export async function getPayableBatchSetupAction(): Promise<
+  ActionResult<{
+    fundingSources: Array<{ id: string; label: string; isDefault: boolean }>
+    routing: PaymentApprovalRouting
+    requiredApprovals: number
+    requesterMayApprove: boolean
+    settlementWindow: ProviderSettlementWindow
+    feePolicy: ApFeePolicy
+    eligibleBills: PayableBatchEligibleBill[]
+  }>
+> {
+  try {
+    const setup = await getPaymentRunSetupData()
+    return {
+      success: true,
+      data: {
+        fundingSources: setup.fundingSources,
+        routing: setup.routing,
+        requiredApprovals: setup.requiredApprovals,
+        requesterMayApprove: setup.requesterMayApprove,
+        settlementWindow: setup.settlementWindow,
+        feePolicy: setup.feePolicy,
+        eligibleBills: setup.eligibleBills.map((entry) => ({ id: entry.id, discount: entry.discount })),
+      },
+    }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
+/** Freeze a prepared run and send it to its approvers. */
+export async function submitPayableBatchAction(
+  input: { run_id: string; scheduled_for?: string | null },
+): Promise<ActionResult<{ id: string; status: string }>> {
+  try {
+    const data = await submitPaymentRun({
+      run_id: input.run_id,
+      scheduled_for: input.scheduled_for ?? null,
+    })
+    revalidatePath("/payables")
+    return { success: true, data: { id: data.id, status: data.status } }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
+/** Discard a prepared run the preparer backed out of, so its bills free up again. */
+export async function discardPayableBatchAction(runId: string): Promise<ActionResult<{ id: string }>> {
+  try {
+    await cancelPaymentRun(runId)
+    revalidatePath("/payables")
+    return { success: true, data: { id: runId } }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
+/** Clear or confirm an automated risk block. Requires step-up; the preparer cannot decide their own. */
+export async function decidePaymentRiskReviewAction(
+  input: DecidePaymentRiskInput,
+): Promise<ActionResult<{ id: string; decision: string }>> {
+  try {
+    const data = await decidePaymentRiskReview(input)
+    revalidatePath("/payables")
+    return { success: true, data }
+  } catch (error) {
+    return actionError(error)
+  }
+}
+
+/**
+ * Record how a human corrected a scanned invoice, so the next one from this
+ * vendor reads better. Fire-and-forget from the create sheet: a failure here
+ * must never affect the payable that was just created.
+ */
+export async function recordExtractionCorrectionAction(input: {
+  companyId: string
+  read: { billNumber: string | null; totalDollars: number | null; lineCount: number }
+  corrected: { billNumber: string | null; totalDollars: number | null; lineCount: number }
+}): Promise<ActionResult<{ recorded: true }>> {
+  try {
+    const { orgId } = await requireOrgContext()
+    await recordExtractionCorrection({
+      supabase: createServiceSupabaseClient(),
+      orgId,
+      companyId: input.companyId,
+      read: input.read,
+      corrected: input.corrected,
+    })
+    return { success: true, data: { recorded: true } }
+  } catch (error) {
+    console.warn("[PayableExtraction] Could not record correction", error)
+    return { success: true, data: { recorded: true } }
   }
 }

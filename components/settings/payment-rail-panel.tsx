@@ -591,7 +591,9 @@ export function PaymentRailPanel({
       <PaymentApproversGroup
         approvers={settings.approvals.approvers}
         candidates={settings.approvals.candidates}
+        viewerUserId={settings.approvals.viewerUserId}
         approvalMode={settings.policy.approvalMode}
+        requesterMayApprove={settings.policy.requesterMayApprove}
         canManage={settings.canManage}
       />
 

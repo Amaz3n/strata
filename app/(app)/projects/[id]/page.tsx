@@ -143,7 +143,6 @@ async function ProjectData({ id }: { id: string }) {
         endDate={project.end_date}
         totalActualCents={budgetSummary?.totalActualCents ?? health.financial.actualCents}
         adjustedBudgetCents={budgetSummary?.adjustedBudgetCents}
-        totalInvoicedCents={budgetSummary?.totalInvoicedCents ?? health.financial.invoicedCents}
         totalExpensesCents={budgetSummary?.totalActualCents ?? health.financial.actualCents}
       />
 

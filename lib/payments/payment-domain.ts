@@ -31,9 +31,15 @@ export const DISBURSEMENT_STATUSES = [
 export type DisbursementStatus = (typeof DISBURSEMENT_STATUSES)[number]
 export type PaymentApprovalMode = "sole" | "dual"
 
+/**
+ * Runs are immutable after creation. There is no edit path and no return to
+ * draft: a material change means cancel + rebuild, and a content-hash mismatch
+ * at decide/execute rejects the stale copy. Every state after `draft` is only
+ * reachable forward or into `canceled`.
+ */
 const PAYMENT_RUN_TRANSITIONS: Record<PaymentRunStatus, readonly PaymentRunStatus[]> = {
   draft: ["pending_approval", "canceled"],
-  pending_approval: ["draft", "approved", "canceled"],
+  pending_approval: ["approved", "canceled"],
   approved: ["processing", "canceled"],
   processing: ["partially_paid", "paid", "partially_failed", "failed"],
   partially_paid: ["paid", "partially_failed"],
@@ -87,24 +93,16 @@ export function requiredApprovalCount(mode: PaymentApprovalMode) {
   return mode === "dual" ? 2 : 1
 }
 
-export function assertApprovalQuorum(input: {
-  mode: PaymentApprovalMode
-  requesterId: string
-  approvals: Array<{ approverId: string; decision: "approved" | "rejected" }>
-}) {
-  if (input.approvals.some((approval) => approval.approverId === input.requesterId)) {
-    throw new Error("Payment run requester cannot approve their own run")
-  }
-  if (input.approvals.some((approval) => approval.decision === "rejected")) {
-    throw new Error("Payment run has been rejected")
-  }
-  const distinctApprovers = new Set(
-    input.approvals.filter((approval) => approval.decision === "approved").map((approval) => approval.approverId),
-  )
-  const required = requiredApprovalCount(input.mode)
-  if (distinctApprovers.size < required) {
-    throw new Error(`Payment run requires ${required} distinct approval${required === 1 ? "" : "s"}`)
-  }
+/**
+ * A run freezes the owner's self-approval choice inside its control snapshot.
+ * Reading the live policy would retroactively weaken or strand a submitted
+ * payment when an administrator changes the setting later.
+ */
+export function requesterMayApprovePaymentRun(controlSnapshot: unknown) {
+  if (!controlSnapshot || typeof controlSnapshot !== "object" || Array.isArray(controlSnapshot)) return false
+  const policy = Reflect.get(controlSnapshot, "policy")
+  if (!policy || typeof policy !== "object" || Array.isArray(policy)) return false
+  return Reflect.get(policy, "requester_may_approve") === true
 }
 
 /**

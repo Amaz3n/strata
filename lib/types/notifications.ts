@@ -123,6 +123,7 @@ export type NotificationType =
   | "vendor_payment_returned"
   | "payment_reconciliation_completed"
   | "vendor_payment_relationship_claimed"
+  | "vendor_payout_destination_changed"
   | "accounting_reconciliation_drift"
 
 export const EMAIL_NOTIFICATION_TYPES = [
@@ -235,6 +236,11 @@ export const EMAIL_NOTIFICATION_TYPES = [
     key: "vendor_payment_returned",
     label: "Vendor payment returned",
     description: "Email me when a provider reports a vendor payment return or reversal.",
+  },
+  {
+    key: "vendor_payout_destination_changed",
+    label: "Vendor payout bank changed",
+    description: "Email me when a vendor's payout bank account changes and payments to them are put on hold.",
   },
   {
     key: "payment_reconciliation_completed",

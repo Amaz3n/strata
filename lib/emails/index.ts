@@ -18,6 +18,10 @@ export {
   type WeeklyExecutiveSnapshotEmailProps,
 } from "./weekly-executive-snapshot-email"
 export {
+  AccountingReconciliationEmail,
+  type AccountingReconciliationEmailProps,
+} from "./accounting-reconciliation-email"
+export {
   ComplianceDocumentReviewedEmail,
   type ComplianceDocumentReviewedEmailProps,
 } from "./compliance-document-reviewed-email"
@@ -36,3 +40,8 @@ export {
   SubmittalNotificationEmail,
   type SubmittalNotificationEmailProps,
 } from "./submittal-notification-email"
+export { RemittanceAdviceEmail, type RemittanceAdviceEmailProps } from "./remittance-advice-email"
+export {
+  VendorBillDecisionEmail,
+  type VendorBillDecisionEmailProps,
+} from "./vendor-bill-decision-email"

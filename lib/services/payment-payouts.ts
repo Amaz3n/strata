@@ -44,10 +44,55 @@ export async function releaseMaturedVendorTransfers(): Promise<{
   if (error) throw new Error(`Unable to claim matured vendor transfers: ${error.message}`)
   const rows = (data ?? []) as MaturedTransferRow[]
 
+  // The memo follows the payable into the provider transfer. It is read only
+  // after the claim has fixed the disbursement set, and never affects routing,
+  // amount, or destination authority.
+  const disbursementIds = rows.map((row) => row.disbursement_id)
+  const { data: disbursementItems } = disbursementIds.length > 0
+    ? await supabase.from("disbursements").select("id,run_item_id").in("id", disbursementIds)
+    : { data: [] }
+  const runItemIds = (disbursementItems ?? []).map((row) => row.run_item_id).filter(Boolean)
+  const { data: runItems } = runItemIds.length > 0
+    ? await supabase.from("payment_run_items").select("id,bill_id").in("id", runItemIds)
+    : { data: [] }
+  const billIds = (runItems ?? []).map((row) => row.bill_id).filter(Boolean)
+  const { data: bills } = billIds.length > 0
+    ? await supabase.from("vendor_bills").select("id,metadata").in("id", billIds)
+    : { data: [] }
+  const billByRunItem = new Map((runItems ?? []).map((item) => [item.id, item.bill_id]))
+  const runItemByDisbursement = new Map((disbursementItems ?? []).map((item) => [item.id, item.run_item_id]))
+  const memoByBill = new Map((bills ?? []).map((bill) => {
+    const memo = bill.metadata && typeof bill.metadata === "object" && !Array.isArray(bill.metadata)
+      ? Reflect.get(bill.metadata, "payment_memo")
+      : null
+    return [bill.id, typeof memo === "string" ? memo.slice(0, 140) : ""]
+  }))
+
+  // Which orgs still have the rail armed. The env switch alone is a platform
+  // control and says nothing about one builder.
+  const orgIds = [...new Set(rows.map((row) => row.org_id))]
+  const { data: policies, error: policyError } = orgIds.length > 0
+    ? await supabase.from("payment_rail_policies").select("org_id,enabled").in("org_id", orgIds)
+    : { data: [], error: null }
+  if (policyError) throw new Error(`Unable to load payment policies for transfer release: ${policyError.message}`)
+  const railEnabledByOrg = new Map((policies ?? []).map((policy) => [policy.org_id, Boolean(policy.enabled)]))
+
   const released: string[] = []
   const failed: Array<{ disbursementId: string; error: string }> = []
   for (const row of rows) {
     try {
+      // DECISION — money already debited does NOT complete while an org's rail
+      // is disabled. Disabling is an explicit control action and the likeliest
+      // reason to take it is suspected compromise, which is exactly when the
+      // remaining irreversible step must not fire. Holding is recoverable: the
+      // funds sit on the platform balance, the disbursement stays
+      // `funds_available`, and re-enabling the rail lets the next sweep complete
+      // it. Transferring is not recoverable. The vendor waiting is a real cost,
+      // which is why this is loud rather than silent — it raises
+      // `vendor_transfer_needs_attention` on every tick until someone acts.
+      if (!railEnabledByOrg.get(row.org_id)) {
+        throw new Error("This organization's electronic payments are disabled; the cleared funds are held until it is re-enabled")
+      }
       // Re-read the destination rather than trusting the claim: a payout account
       // put under a security hold between clearing and release must not be paid.
       const { data: recipient } = await supabase
@@ -63,6 +108,9 @@ export async function releaseMaturedVendorTransfers(): Promise<{
       }
 
       const provider = getPaymentRailProvider(recipient.provider)
+      const runItemId = runItemByDisbursement.get(row.disbursement_id)
+      const billId = runItemId ? billByRunItem.get(runItemId) : null
+      const paymentMemo = billId ? memoByBill.get(billId) : ""
       const result = await provider.createVendorTransfer({
         disbursementId: row.disbursement_id,
         orgId: row.org_id,
@@ -75,7 +123,8 @@ export async function releaseMaturedVendorTransfers(): Promise<{
         // key and the provider refuses to create a second transfer. On this rail
         // a duplicate is a vendor paid twice.
         idempotencyKey: `disbursement:${row.disbursement_id}:transfer`,
-        metadata: { disbursement_id: row.disbursement_id, payment_run_id: row.run_id },
+        memo: paymentMemo || undefined,
+        metadata: { disbursement_id: row.disbursement_id, payment_run_id: row.run_id, ...(paymentMemo ? { payment_memo: paymentMemo } : {}) },
       })
 
       assertDisbursementTransition("funds_available", "transfer_pending")

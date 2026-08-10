@@ -6,7 +6,7 @@ const test = require("node:test")
 const {
   applyVisionProposal,
   buildFloorplanVisionPrompt,
-  parseFloorplanVisionProposal,
+  sanitizeFloorplanVisionProposal,
   VISION_WALL_CONFIDENCE,
 } = require("../lib/drawings/floorplan-vision")
 
@@ -59,16 +59,40 @@ test("the prompt pins the coordinate contract", () => {
   assert.match(prompt, /First Floor/)
 })
 
-test("proposals parse through code fences and prose; garbage does not", () => {
-  const fenced = 'Here you go:\n```json\n{"walls":[{"x0":0,"y0":0.5,"x1":0.4,"y1":0.5}],"rooms":[]}\n```'
-  const parsed = parseFloorplanVisionProposal(fenced)
-  assert.equal(parsed.walls.length, 1)
-  assert.equal(parseFloorplanVisionProposal("no json here"), null)
-  assert.equal(parseFloorplanVisionProposal('{"walls":[],"rooms":[]}'), null)
-  // Out-of-range coordinates clamp instead of poisoning the level.
-  const clamped = parseFloorplanVisionProposal('{"walls":[{"x0":-2,"y0":0.5,"x1":9,"y1":0.5}]}')
+test("an empty proposal is null, so the vector level is left alone", () => {
+  assert.equal(sanitizeFloorplanVisionProposal({ walls: [], rooms: [] }), null)
+})
+
+test("out-of-range coordinates clamp instead of poisoning the level", () => {
+  const clamped = sanitizeFloorplanVisionProposal({
+    walls: [{ x0: -2, y0: 0.5, x1: 9, y1: 0.5 }],
+    rooms: [],
+  })
   assert.equal(clamped.walls[0].x0, 0)
   assert.equal(clamped.walls[0].x1, 1)
+})
+
+test("non-finite coordinates drop the wall rather than the whole proposal", () => {
+  const result = sanitizeFloorplanVisionProposal({
+    walls: [
+      { x0: Number.NaN, y0: 0.5, x1: 0.4, y1: 0.5 },
+      { x0: 0, y0: 0.5, x1: 0.4, y1: 0.5 },
+    ],
+    rooms: [],
+  })
+  assert.equal(result.walls.length, 1)
+})
+
+test("a blank room label is dropped, and whitespace is collapsed", () => {
+  const result = sanitizeFloorplanVisionProposal({
+    walls: [],
+    rooms: [
+      { x: 0.3, y: 0.4, label: "   " },
+      { x: 0.5, y: 0.6, label: "  GREAT   ROOM " },
+    ],
+  })
+  assert.equal(result.rooms.length, 1)
+  assert.equal(result.rooms[0].label, "GREAT ROOM")
 })
 
 test("a wall only the vision model saw is added low-confidence and closes the room", () => {

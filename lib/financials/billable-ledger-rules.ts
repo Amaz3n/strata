@@ -2,6 +2,7 @@ import {
   isCostDrivenBillingModel,
   type ProjectBillingModel,
 } from "@/lib/financials/billing-model"
+import { PAYABLE_VENDOR_BILL_STATUSES } from "@/lib/financials/ledger-status"
 
 export type BillableLedgerSourceType = "vendor_bill_line" | "project_expense" | "time_entry"
 
@@ -15,7 +16,10 @@ export function assertCostSourceCanEnterBillableLedger(params: {
     throw new Error("Only cost-driven projects can move source costs into the billable ledger.")
   }
 
-  if (params.sourceType === "vendor_bill_line" && !["approved", "partial", "paid"].includes(params.sourceStatus)) {
+  if (
+    params.sourceType === "vendor_bill_line" &&
+    !(PAYABLE_VENDOR_BILL_STATUSES as readonly string[]).includes(params.sourceStatus)
+  ) {
     throw new Error("Vendor bill must be approved before it enters the billable ledger.")
   }
 

@@ -12,13 +12,25 @@ import {
   createPlaidLinkToken,
   connectPlaidItem,
 } from "@/lib/services/books/bank-feeds";
-import { createAdjustingJournal } from "@/lib/services/books/bookkeeping";
+import {
+  createAdjustingJournal,
+  createRecurringPostingTemplate,
+  JOURNAL_ENTRY_KINDS,
+  listJournalEntries,
+  listRecurringPostingTemplates,
+  setRecurringTemplateStatus,
+} from "@/lib/services/books/bookkeeping";
 import {
   closeBankReconciliation,
   confirmBankMatch,
   createBankReconciliation,
-  suggestBankMatches,
+  reviewUnmatchedBankTransactions,
 } from "@/lib/services/books/bank-reconciliation";
+import {
+  categorizeBankTransaction,
+  listBankRules,
+  setBankRuleActive,
+} from "@/lib/services/books/bank-rules";
 import {
   approveBooksComparisonRun,
   createBooksComparisonRun,
@@ -34,6 +46,10 @@ import {
 import { createCompleteBooksExport } from "@/lib/services/books/exports";
 import { requireBooksWorkspaceEnabled } from "@/lib/services/books/module";
 import {
+  getAccountActivity,
+  getStatementsForPeriod,
+} from "@/lib/services/books/statement-detail";
+import {
   createOpeningBalanceBatch,
   approveOpeningBalanceBatch,
   postOpeningBalanceBatch,
@@ -46,6 +62,10 @@ import {
   runBooksCloseChecklist,
 } from "@/lib/services/books/period-close";
 import { requestLedgerRebuildDrill } from "@/lib/services/books/rebuild";
+import {
+  resolveReconciliationItem,
+  runReconciliationNow,
+} from "@/lib/services/books/reconciliation";
 import { requireAuthorization } from "@/lib/services/authorization";
 import { requireOrgContext } from "@/lib/services/context";
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
@@ -62,6 +82,192 @@ async function run<T>(operation: () => Promise<T>): Promise<ActionResult<T>> {
   } catch (error) {
     return actionError(error);
   }
+}
+
+/**
+ * Read-only counterpart to `run`. Skips `revalidatePath` on purpose: changing the
+ * statement period or opening a drill-down mutates nothing, and revalidating
+ * would re-fetch the entire Books workspace on every interaction.
+ */
+async function read<T>(operation: () => Promise<T>): Promise<ActionResult<T>> {
+  try {
+    await requireBooksWorkspaceEnabled();
+    return { success: true, data: await operation() };
+  } catch (error) {
+    return actionError(error);
+  }
+}
+
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Expected an ISO date");
+
+export async function loadStatementsAction(input: {
+  startDate: string;
+  endDate: string;
+  comparePriorYear?: boolean;
+}) {
+  return read(() =>
+    getStatementsForPeriod(
+      z
+        .object({
+          startDate: isoDate,
+          endDate: isoDate,
+          comparePriorYear: z.boolean().optional(),
+        })
+        .parse(input),
+    ),
+  );
+}
+
+export async function loadBankReviewTrayAction(input: { bankAccountId?: string | null } = {}) {
+  return read(() =>
+    reviewUnmatchedBankTransactions(
+      z.object({ bankAccountId: z.string().uuid().nullable().optional() }).parse(input),
+    ),
+  );
+}
+
+export async function confirmBankMatchAction(input: {
+  bankTransactionId: string;
+  journalLineId: string;
+  amountCents: number;
+  confidence: number;
+}) {
+  return run(() =>
+    confirmBankMatch(
+      z
+        .object({
+          bankTransactionId: z.string().uuid(),
+          journalLineId: z.string().uuid(),
+          amountCents: z.number().int().positive(),
+          confidence: z.number().min(0).max(1),
+        })
+        .transform((parsed) => ({
+          ...parsed,
+          matchType: parsed.confidence >= 0.95 ? ("exact" as const) : ("suggested" as const),
+        }))
+        .parse(input),
+    ),
+  );
+}
+
+export async function categorizeBankTransactionAction(input: {
+  bankTransactionId: string;
+  glAccountId: string;
+  projectId?: string | null;
+  memo?: string | null;
+  appliedRuleId?: string | null;
+  learn?: boolean;
+}) {
+  return run(() =>
+    categorizeBankTransaction(
+      z
+        .object({
+          bankTransactionId: z.string().uuid(),
+          glAccountId: z.string().uuid(),
+          projectId: z.string().uuid().nullable().optional(),
+          memo: z.string().max(200).nullable().optional(),
+          appliedRuleId: z.string().uuid().nullable().optional(),
+          learn: z.boolean().optional(),
+        })
+        .parse(input),
+    ),
+  );
+}
+
+export async function listBankRulesAction() {
+  return read(() => listBankRules());
+}
+
+export async function setBankRuleActiveAction(input: { ruleId: string; active: boolean }) {
+  return run(() =>
+    setBankRuleActive(
+      z.object({ ruleId: z.string().uuid(), active: z.boolean() }).parse(input),
+    ),
+  );
+}
+
+export async function listJournalEntriesAction(input: {
+  entryKinds?: string[];
+  startDate?: string;
+  endDate?: string;
+}) {
+  return read(() =>
+    listJournalEntries(
+      z
+        .object({
+          entryKinds: z.array(z.enum(JOURNAL_ENTRY_KINDS)).optional(),
+          startDate: isoDate.optional(),
+          endDate: isoDate.optional(),
+        })
+        .parse(input),
+    ),
+  );
+}
+
+export async function listRecurringTemplatesAction() {
+  return read(() => listRecurringPostingTemplates());
+}
+
+export async function createRecurringTemplateAction(input: {
+  name: string;
+  memo: string;
+  frequency: "weekly" | "monthly" | "quarterly" | "annually";
+  nextRunOn: string;
+  endOn?: string | null;
+  autoPost?: boolean;
+  lines: Array<z.infer<typeof journalLineSchema>>;
+}) {
+  return run(() =>
+    createRecurringPostingTemplate(
+      z
+        .object({
+          name: z.string().min(2),
+          memo: z.string().min(4, "An explanatory memo is required"),
+          frequency: z.enum(["weekly", "monthly", "quarterly", "annually"]),
+          nextRunOn: isoDate,
+          endOn: isoDate.nullable().optional(),
+          autoPost: z.boolean().optional(),
+          lines: z.array(journalLineSchema).min(2, "A template needs at least two lines"),
+        })
+        .parse(input),
+    ),
+  );
+}
+
+export async function setRecurringTemplateStatusAction(input: {
+  templateId: string;
+  status: "active" | "paused" | "completed";
+}) {
+  return run(() =>
+    setRecurringTemplateStatus(
+      z
+        .object({
+          templateId: z.string().uuid(),
+          status: z.enum(["active", "paused", "completed"]),
+        })
+        .parse(input),
+    ),
+  );
+}
+
+export async function loadAccountActivityAction(input: {
+  accountId: string;
+  startDate: string;
+  endDate: string;
+  projectId?: string | null;
+}) {
+  return read(() =>
+    getAccountActivity(
+      z
+        .object({
+          accountId: z.string().uuid(),
+          startDate: isoDate,
+          endDate: isoDate,
+          projectId: z.string().uuid().nullable().optional(),
+        })
+        .parse(input),
+    ),
+  );
 }
 
 export async function createAccountingPeriodAction(formData: FormData) {
@@ -105,6 +311,29 @@ export async function createBooksExportAction(
 ) {
   return run(() => createCompleteBooksExport({ exportType }));
 }
+export async function runReconciliationNowAction() {
+  return run(() => runReconciliationNow());
+}
+/**
+ * Dispose of one reconciliation finding. `resolved` says it is fixed — the sweep
+ * will open it again tonight if it is not. `explained` and `ignored` accept a known
+ * difference and need a reason on the record.
+ */
+export async function resolveReconciliationItemAction(input: {
+  itemId: string;
+  disposition: "resolved" | "explained" | "ignored";
+  explanation?: string;
+}) {
+  return run(() =>
+    resolveReconciliationItem({
+      itemId: z.string().uuid().parse(input.itemId),
+      disposition: z
+        .enum(["resolved", "explained", "ignored"])
+        .parse(input.disposition),
+      explanation: z.string().max(2000).optional().parse(input.explanation),
+    }),
+  );
+}
 export async function runLedgerRebuildAction() {
   return run(() => requestLedgerRebuildDrill());
 }
@@ -121,30 +350,6 @@ export async function exchangePlaidPublicTokenAction(input: {
   institutionName?: string | null;
 }) {
   return run(() => connectPlaidItem(input));
-}
-
-export async function matchBestBankTransactionAction(
-  transactionId: string,
-  amountCents: number,
-) {
-  return run(async () => {
-    const candidates = await suggestBankMatches({
-      bankTransactionId: z.string().uuid().parse(transactionId),
-    });
-    const best = candidates[0];
-    if (!best)
-      throw new Error(
-        "No posted ledger line matches this amount within ten days",
-      );
-    const id = await confirmBankMatch({
-      bankTransactionId: transactionId,
-      journalLineId: best.journalLineId,
-      amountCents: z.number().int().positive().parse(amountCents),
-      matchType: best.confidence >= 0.95 ? "exact" : "suggested",
-      confidence: best.confidence,
-    });
-    return { id, confidence: best.confidence };
-  });
 }
 
 export async function excludeBankTransactionAction(
@@ -227,27 +432,36 @@ export async function approveBooksComparisonAction(
   });
 }
 
-export async function createAdjustingJournalAction(formData: FormData) {
+const journalLineSchema = z.object({
+  accountCode: z.string().min(1),
+  debitCents: z.number().int().nonnegative(),
+  creditCents: z.number().int().nonnegative(),
+  description: z.string().optional(),
+  projectId: z.string().uuid().optional(),
+  companyId: z.string().uuid().optional(),
+});
+
+export async function postAdjustingJournalAction(input: {
+  entryDate: string;
+  memo: string;
+  reversingOn?: string | null;
+  lines: Array<z.infer<typeof journalLineSchema>>;
+}) {
   return run(async () => {
-    const entryDate = z.string().parse(formData.get("entryDate"));
-    const memo = z.string().min(4).parse(formData.get("memo"));
-    const lines = z
-      .array(
-        z.object({
-          accountCode: z.string(),
-          debitCents: z.number().int().nonnegative(),
-          creditCents: z.number().int().nonnegative(),
-          description: z.string().optional(),
-          projectId: z.string().uuid().optional(),
-          companyId: z.string().uuid().optional(),
-        }),
-      )
-      .parse(JSON.parse(z.string().parse(formData.get("lines"))));
-    const reversingOn = z
-      .string()
-      .optional()
-      .parse(formData.get("reversingOn") || undefined);
-    return createAdjustingJournal({ entryDate, memo, lines, reversingOn });
+    const parsed = z
+      .object({
+        entryDate: isoDate,
+        memo: z.string().min(4, "An explanatory memo is required"),
+        reversingOn: isoDate.nullable().optional(),
+        lines: z.array(journalLineSchema).min(2, "A journal entry needs at least two lines"),
+      })
+      .parse(input);
+    return createAdjustingJournal({
+      entryDate: parsed.entryDate,
+      memo: parsed.memo,
+      lines: parsed.lines,
+      reversingOn: parsed.reversingOn ?? undefined,
+    });
   });
 }
 
@@ -266,50 +480,42 @@ export async function setGlAccountActiveAction(accountId: string, active: boolea
   return run(() => setGlAccountActive(z.string().uuid().parse(accountId), z.boolean().parse(active)));
 }
 
-export async function importOpeningBalancesAction(formData: FormData) {
-  return run(async () => {
-    const cutoverDate = z.string().parse(formData.get("cutoverDate"));
-    const sourceFilename = z
-      .string()
-      .optional()
-      .parse(formData.get("sourceFilename") || undefined);
-    const sourceContent = z
-      .string()
-      .min(2)
-      .parse(formData.get("sourceContent"));
-    const lines = z
-      .array(
-        z.object({
-          accountCode: z.string(),
-          subledgerType: z
-            .enum([
-              "ar",
-              "ap",
-              "bank",
-              "credit_card",
-              "loan",
-              "fixed_asset",
-              "deposit",
-              "equity",
-              "other",
-            ])
-            .optional(),
-          sourceEntityType: z.string().optional(),
-          sourceEntityId: z.string().optional(),
-          projectId: z.string().uuid().optional(),
-          companyId: z.string().uuid().optional(),
-          description: z.string(),
-          debitCents: z.number().int().nonnegative(),
-          creditCents: z.number().int().nonnegative(),
-          details: z.record(z.unknown()).optional(),
-        }),
-      )
-      .parse(JSON.parse(sourceContent));
+const openingLineSchema = z.object({
+  accountCode: z.string().min(1),
+  subledgerType: z
+    .enum(["ar", "ap", "bank", "credit_card", "loan", "fixed_asset", "deposit", "equity", "other"])
+    .optional(),
+  sourceEntityType: z.string().optional(),
+  sourceEntityId: z.string().optional(),
+  projectId: z.string().uuid().optional(),
+  companyId: z.string().uuid().optional(),
+  description: z.string(),
+  debitCents: z.number().int().nonnegative(),
+  creditCents: z.number().int().nonnegative(),
+  details: z.record(z.unknown()).optional(),
+});
+
+export async function importOpeningBalancesAction(input: {
+  cutoverDate: string;
+  sourceFilename?: string | null;
+  /** What the person actually pasted, kept verbatim as the batch's provenance. */
+  sourceContent: string;
+  lines: Array<z.infer<typeof openingLineSchema>>;
+}) {
+  return run(() => {
+    const parsed = z
+      .object({
+        cutoverDate: isoDate,
+        sourceFilename: z.string().max(200).nullable().optional(),
+        sourceContent: z.string().min(2),
+        lines: z.array(openingLineSchema).min(2, "An opening batch needs at least two lines"),
+      })
+      .parse(input);
     return createOpeningBalanceBatch({
-      cutoverDate,
-      sourceFilename,
-      sourceContent,
-      lines,
+      cutoverDate: parsed.cutoverDate,
+      sourceFilename: parsed.sourceFilename ?? undefined,
+      sourceContent: parsed.sourceContent,
+      lines: parsed.lines,
     });
   });
 }

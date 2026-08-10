@@ -12,11 +12,68 @@ export type GlAccountType = "asset" | "liability" | "equity" | "income" | "cogs"
 export type NormalBalance = "debit" | "credit"
 export type CashFlowCategory = "operating" | "investing" | "financing" | "cash"
 
+/**
+ * Semantic buckets the statements and close checks branch on. Free-text subtypes
+ * would let a typo silently orphan an account from the balance sheet, so the set
+ * is closed here and mirrored by a CHECK constraint on `gl_accounts.subtype`.
+ */
+export const GL_ACCOUNT_SUBTYPES = [
+  "cash",
+  "undeposited_funds",
+  "accounts_receivable",
+  "retainage_receivable",
+  "costs_in_excess",
+  "work_in_progress",
+  "prepaid_expenses",
+  "fixed_assets",
+  "accumulated_depreciation",
+  "other_asset",
+  "accounts_payable",
+  "retainage_payable",
+  "credit_card",
+  "payroll_clearing",
+  "sales_use_tax",
+  "customer_deposits",
+  "billings_in_excess",
+  "current_debt",
+  "long_term_debt",
+  "other_liability",
+  "owner_equity",
+  "owner_contributions",
+  "owner_distributions",
+  "retained_earnings",
+  "construction_revenue",
+  "other_revenue",
+  "early_pay_discount",
+  "job_costs",
+  "subcontractor_costs",
+  "material_costs",
+  "direct_labor",
+  "equipment_costs",
+  "warranty_costs",
+  "rent",
+  "insurance",
+  "software",
+  "professional_fees",
+  "utilities",
+  "bank_fees",
+  "interest",
+  "payroll",
+  "depreciation",
+  "other_expense",
+] as const
+
+export type GlAccountSubtype = (typeof GL_ACCOUNT_SUBTYPES)[number]
+
+export function isGlAccountSubtype(value: string): value is GlAccountSubtype {
+  return (GL_ACCOUNT_SUBTYPES as readonly string[]).includes(value)
+}
+
 export type ChartAccountTemplate = {
   code: string
   name: string
   accountType: GlAccountType
-  subtype: string
+  subtype: GlAccountSubtype
   normalBalance: NormalBalance
   cashFlowCategory?: CashFlowCategory
   system: boolean
@@ -36,12 +93,42 @@ export type JournalEntryDraft = {
   entryDate: string
   entryKind: "operational" | "adjusting" | "opening" | "poc" | "closing" | "reversal"
   memo: string
+  /**
+   * Unique per organization. MUST embed `projectionVersion` so that re-projecting
+   * under a new rule set writes a parallel version instead of colliding with the
+   * old one on `journal_entries.unique (org_id, posting_key)` — re-projection is
+   * the correctness escape hatch and it depends on this.
+   */
   postingKey: string
+  projectionVersion: number
   policyVersion: number
   sourceType?: string
   sourceId?: string
   reversalOfEntryId?: string
   lines: JournalLineDraft[]
+}
+
+/**
+ * Builds a version-scoped posting key. Every posting rule routes through this.
+ *
+ * `sourceVersion` distinguishes successive economic revisions of the same source
+ * record: when a bill's amount genuinely changes, the projector supersedes the
+ * old fact, reverses its entry, and posts a new one — which needs a key that does
+ * not collide with the entry it replaces. `projectionVersion` does the same for a
+ * change to the posting rules themselves.
+ */
+export function buildPostingKey(
+  base: string,
+  versions: { projectionVersion: number; sourceVersion?: number },
+) {
+  const sourceVersion = versions.sourceVersion ?? 1
+  if (!Number.isSafeInteger(versions.projectionVersion) || versions.projectionVersion <= 0) {
+    throw new Error("Projection version must be a positive integer")
+  }
+  if (!Number.isSafeInteger(sourceVersion) || sourceVersion <= 0) {
+    throw new Error("Source version must be a positive integer")
+  }
+  return `${base}:s${sourceVersion}:v${versions.projectionVersion}`
 }
 
 export type AccountingFactDraft = {

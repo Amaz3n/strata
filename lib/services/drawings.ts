@@ -2223,7 +2223,8 @@ export async function detectSheetVersionScale(
     return null
   }
 
-  const { detectCalibrationProposal, loadMupdf } = await import("@/lib/services/drawings-pipeline")
+  const { detectCalibrationProposal } = await import("@/lib/services/drawings-pipeline")
+  const { loadMupdf } = await import("@/lib/services/mupdf-loader")
   const { downloadDrawingPdfObject } = await import("@/lib/storage/drawings-pdfs-storage")
 
   const pdfBytes = await downloadDrawingPdfObject({

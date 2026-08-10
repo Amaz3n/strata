@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import { format } from "date-fns"
-import { CalendarDays } from "lucide-react"
+import { CalendarDays, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
@@ -38,6 +38,8 @@ interface DateFieldProps {
   placeholder?: string
   id?: string
   disabled?: boolean
+  /** Earliest selectable day, as `YYYY-MM-DD`. */
+  min?: string
   /** Renders a clear control once a date is set. */
   clearable?: boolean
   className?: string
@@ -54,6 +56,7 @@ export function DateField({
   placeholder = "Pick a date",
   id,
   disabled = false,
+  min,
   clearable = false,
   className,
 }: DateFieldProps) {
@@ -63,7 +66,7 @@ export function DateField({
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
       {label ? <Label htmlFor={id}>{label}</Label> : null}
-      <div className="flex items-center gap-1">
+      <div className="relative">
         <Popover open={open} onOpenChange={setOpen}>
           <PopoverTrigger asChild>
             <Button
@@ -72,7 +75,7 @@ export function DateField({
               variant="outline"
               disabled={disabled}
               className={cn(
-                "w-full justify-start text-left font-normal tabular-nums",
+                "w-full justify-start pr-10 text-left font-normal tabular-nums",
                 !selected && "text-muted-foreground",
               )}
             >
@@ -84,6 +87,7 @@ export function DateField({
             <Calendar
               mode="single"
               selected={selected}
+              disabled={min ? { before: parseDateValue(min) ?? new Date(0) } : undefined}
               onSelect={(date) => {
                 onChange(formatDateValue(date))
                 setOpen(false)
@@ -96,12 +100,16 @@ export function DateField({
           <Button
             type="button"
             variant="ghost"
-            size="sm"
+            size="icon"
             disabled={disabled}
-            onClick={() => onChange("")}
-            className="shrink-0 text-muted-foreground"
+            onClick={(event) => {
+              event.stopPropagation()
+              onChange("")
+            }}
+            className="absolute right-1 top-1/2 size-7 -translate-y-1/2 text-muted-foreground hover:text-foreground"
           >
-            Clear
+            <X className="size-3.5" />
+            <span className="sr-only">Clear date</span>
           </Button>
         ) : null}
       </div>

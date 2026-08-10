@@ -59,6 +59,14 @@ The money product should extend that control point:
 6. Arc Books consumes the resulting accounting events; it does not infer them from
    mutable payment status fields.
 
+The payable enters this control system through one creation workspace: invoice and
+supporting document on one side; invoice facts, construction coding, payment terms,
+retainage, discount, and lien-waiver intent on the other. A review-ready create may
+carry all of that context into approval. A quick draft is deliberately not eligible
+for approval, payment-run selection, or automatic approval until a person completes
+it. Vision and AI suggestions accelerate preparation but never release money or
+bypass the existing hold and approval gates.
+
 This creates a defensible system of control and record around the moment money moves.
 Cards, early pay, capital referrals, and treasury are possible expansions, but they
 must follow a reliable AP rail rather than compete with it for initial focus.

@@ -127,6 +127,10 @@
     {
       "path": "/api/jobs/session-cleanup",
       "schedule": "45 3 * * *"
+    },
+    {
+      "path": "/api/jobs/ai-standing-questions",
+      "schedule": "40 * * * *"
     }
   ],
   "functions": {

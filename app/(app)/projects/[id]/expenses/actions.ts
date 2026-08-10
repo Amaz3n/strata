@@ -7,7 +7,7 @@ import { listProjects } from "@/lib/services/projects"
 import { getProjectFinancialSettings } from "@/lib/services/project-financial-setup"
 import { getOrgCostCodesEnabled } from "@/lib/financials/cost-codes-enabled"
 import { uploadCostPlusFile } from "@/lib/services/cost-plus-files"
-import { extractExpenseReceiptFromFile, type ExtractedExpenseReceipt } from "@/lib/services/receipt-extraction"
+import { extractExpenseReceiptFromFile, type ExtractedExpenseReceipt } from "@/lib/services/document-extraction"
 import {
   approveProjectExpense,
   createProjectExpense,
@@ -21,6 +21,7 @@ import { getProvider } from "@/lib/integrations/accounting/registry"
 import { processAccountingPush } from "@/lib/services/accounting-sync"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { buildAccountingCoding } from "@/lib/services/accounting-coding"
+import { recordCodingTouch } from "@/lib/services/books/coding-rules"
 
 import { unwrapAction, actionError, type ActionResult  } from "@/lib/action-result"
 
@@ -30,6 +31,65 @@ async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   } catch (error) {
     return actionError(error)
   }
+}
+
+type ExpenseCoding = { costCodeId: string | null; budgetLineId: string | null }
+
+/** Whether an update touches either coding field at all. */
+function recodes(updateData: Record<string, unknown>) {
+  return "cost_code_id" in updateData || "budget_line_id" in updateData
+}
+
+async function loadExpenseCoding(input: {
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"]
+  orgId: string
+  projectId: string
+  expenseId: string
+  when: boolean
+}): Promise<ExpenseCoding> {
+  if (!input.when) return { costCodeId: null, budgetLineId: null }
+  const { data } = await input.supabase
+    .from("project_expenses")
+    .select("cost_code_id, budget_line_id")
+    .eq("org_id", input.orgId)
+    .eq("project_id", input.projectId)
+    .eq("id", input.expenseId)
+    .maybeSingle()
+  return { costCodeId: data?.cost_code_id ?? null, budgetLineId: data?.budget_line_id ?? null }
+}
+
+/**
+ * Expenses are the second-largest coding surface after payables, and were
+ * entirely uninstrumented — the zero-touch metric only ever saw vendor bills,
+ * which made it unreadable as a rate. `recordCodingTouch` drops fields whose
+ * value did not move, so saving an expense without recoding it counts as zero.
+ */
+async function recordExpenseCodingTouch(input: {
+  expenseId: string
+  projectId: string
+  orgId: string
+  prior: ExpenseCoding
+  updateData: Record<string, unknown>
+}) {
+  if (!recodes(input.updateData)) return
+  await recordCodingTouch({
+    entityType: "project_expense",
+    entityId: input.expenseId,
+    changes: [
+      {
+        field: "cost_code",
+        previousValue: input.prior.costCodeId,
+        nextValue: ("cost_code_id" in input.updateData ? input.updateData.cost_code_id : input.prior.costCodeId) as string | null,
+      },
+      {
+        field: "budget_line",
+        previousValue: input.prior.budgetLineId,
+        nextValue: ("budget_line_id" in input.updateData ? input.updateData.budget_line_id : input.prior.budgetLineId) as string | null,
+      },
+    ],
+    projectId: input.projectId,
+    orgId: input.orgId,
+  })
 }
 
 export interface CreateMyExpenseInput {
@@ -142,7 +202,9 @@ function matchingExpenseQboStatuses(value: string) {
   const term = value.toLowerCase()
   const labels: Record<string, string[]> = {
     pending: ["pending", "pending sync"],
-    synced: ["synced", "quickbooks", "qbo"],
+    // Searchable aliases, not provider names: typing "quickbooks" matched the
+    // synced filter while typing the name of any other connected system did not.
+    synced: ["synced", "pushed", "accounting"],
     error: ["error", "sync error"],
     needs_review: ["needs review", "requires review", "needs coding", "review"],
     skipped: ["skipped", "disabled"],
@@ -582,6 +644,8 @@ export async function updateProjectExpenseDetailsAction(
         return await listProjectExpensesAction(projectId)
       }
 
+      const prior = await loadExpenseCoding({ supabase, orgId, projectId, expenseId, when: recodes(updateData) })
+
       const { error } = await supabase
         .from("project_expenses")
         .update(updateData)
@@ -590,6 +654,7 @@ export async function updateProjectExpenseDetailsAction(
         .eq("id", expenseId)
 
       if (error) throw new Error(`Failed to update expense: ${error.message}`)
+      await recordExpenseCodingTouch({ expenseId, projectId, orgId, prior, updateData })
       revalidate(projectId)
       return await listProjectExpensesAction(projectId)
   })
@@ -692,7 +757,7 @@ export async function updateProjectExpenseWorkspaceAction(
 
       const { data: existing, error: existingError } = await supabase
         .from("project_expenses")
-        .select("id, qbo_transaction_type, qbo_expense_account_id, qbo_payment_account_id, qbo_ap_account_id, qbo_vendor_id, qbo_sync_status")
+        .select("id, cost_code_id, budget_line_id, qbo_transaction_type, qbo_expense_account_id, qbo_payment_account_id, qbo_ap_account_id, qbo_vendor_id, qbo_sync_status")
         .eq("org_id", orgId)
         .eq("project_id", projectId)
         .eq("id", expenseId)
@@ -746,6 +811,14 @@ export async function updateProjectExpenseWorkspaceAction(
         .eq("project_id", projectId)
         .eq("id", expenseId)
       if (error) throw new Error(`Failed to save expense: ${error.message}`)
+
+      await recordExpenseCodingTouch({
+        expenseId,
+        projectId,
+        orgId,
+        prior: { costCodeId: existing.cost_code_id ?? null, budgetLineId: existing.budget_line_id ?? null },
+        updateData,
+      })
 
       await replaceProjectExpenseLines({ expenseId, lines: input.lines })
 

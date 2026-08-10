@@ -1,184 +1,150 @@
 "use client"
 
-import { useEffect, useState, useTransition } from "react"
-import { toast } from "sonner"
-import { Check, ChevronsUpDown, MoreHorizontal } from "lucide-react"
+import { MoreHorizontal } from "lucide-react"
 
-import { inviteCompanyToPaymentSetupAction, listCompaniesAction } from "@/app/(app)/companies/actions"
-import { Badge } from "@/components/ui/badge"
+import { TradeBadge } from "@/components/companies/trade-badge"
+import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
 import { Button } from "@/components/ui/button"
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Label } from "@/components/ui/label"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { unwrapAction } from "@/lib/action-result"
-import type { Company } from "@/lib/types"
-import type { CompanyPaymentReadinessStatus } from "@/lib/services/vendor-payment-invitations"
-import type { VendorBillSummary } from "@/lib/services/vendor-bills"
-import { vendorLabel, vendorLinkBadge } from "../payables-ui"
+import type { VendorPayableProfile } from "@/lib/services/companies"
 import { cn } from "@/lib/utils"
+import { VendorPaymentInviteButton } from "./vendor-payment-invite"
 
-const VENDOR_TYPES = new Set(["subcontractor", "supplier", "other"])
-const RESULT_CAP = 30
+/** What this org can do with this vendor's money today, said plainly. */
+const READINESS: Record<
+  VendorPayableProfile["paymentReadiness"],
+  { label: string; tone: string }
+> = {
+  ready: { label: "Ready for Arc Pay", tone: "bg-success" },
+  verifying: { label: "Arc Pay setup in progress", tone: "bg-warning" },
+  invited: { label: "Invited to set up payments", tone: "bg-warning" },
+  not_started: { label: "Not set up for Arc Pay", tone: "bg-muted-foreground/40" },
+  suspended: { label: "Payments paused", tone: "bg-warning" },
+  revoked: { label: "Payments revoked", tone: "bg-destructive" },
+}
 
-const READINESS_BADGES: Record<CompanyPaymentReadinessStatus, { label: string; className: string }> = {
-  ready: { label: "ACH ready", className: "border-success/25 bg-success/10 text-success" },
-  verifying: { label: "Bank verification pending", className: "border-warning/25 bg-warning/10 text-warning" },
-  invited: { label: "Invited to set up payments", className: "border-border bg-accent text-accent-foreground" },
-  not_started: { label: "Paid by check", className: "border-border bg-muted text-muted-foreground" },
+function Stat({ label, value, muted }: { label: string; value: string; muted?: boolean }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-xs font-medium text-muted-foreground">{label}</p>
+      <p
+        className={cn(
+          "mt-1 truncate text-sm font-medium tabular-nums",
+          muted ? "text-muted-foreground" : "text-foreground",
+        )}
+      >
+        {value}
+      </p>
+    </div>
+  )
 }
 
 /**
- * Who gets paid, whether they can be paid electronically, and the controls to
- * change either. Vendor search hits the server on demand — the org directory is
- * never loaded wholesale just to power this picker.
+ * The vendor as a standing relationship rather than a value in a picker.
+ *
+ * Once a vendor is on the payable, the question stops being "which vendor" and
+ * becomes "do I know this vendor, do we already owe them, and can we pay them" —
+ * which is what an AP clerk is actually deciding when a scanned invoice arrives
+ * with a vendor already matched. Changing the vendor is still one click away,
+ * because the scan gets it wrong often enough that hiding the escape hatch would
+ * be worse than showing a dropdown nobody uses.
  */
 export function PayableVendorCard({
-  bill,
-  accountingEnabled,
-  railOpen,
-  readiness,
-  onSelectCompany,
+  name,
+  profile,
+  loading,
+  onChangeVendor,
   onEditVendor,
-  onInvited,
+  onPaymentInvited,
 }: {
-  bill: VendorBillSummary
-  accountingEnabled: boolean
-  railOpen: boolean
-  readiness?: CompanyPaymentReadinessStatus
-  onSelectCompany: (company: Company) => void
+  name: string
+  profile: VendorPayableProfile | null
+  loading: boolean
+  onChangeVendor: () => void
   onEditVendor: () => void
-  onInvited: () => void
+  onPaymentInvited: () => void
 }) {
-  const [pickerOpen, setPickerOpen] = useState(false)
-  const [query, setQuery] = useState("")
-  const [results, setResults] = useState<Company[]>([])
-  const [searching, setSearching] = useState(false)
-  const [isInviting, startInviting] = useTransition()
-
-  // Debounced server search, only while the picker is open.
-  useEffect(() => {
-    if (!pickerOpen) return
-    let cancelled = false
-    setSearching(true)
-    const handle = setTimeout(() => {
-      listCompaniesAction(query.trim() ? { search: query.trim() } : undefined)
-        .then((rows) => {
-          if (cancelled) return
-          setResults(rows.filter((company) => VENDOR_TYPES.has(company.company_type ?? "")).slice(0, RESULT_CAP))
-        })
-        .catch(() => {
-          if (!cancelled) setResults([])
-        })
-        .finally(() => {
-          if (!cancelled) setSearching(false)
-        })
-    }, 250)
-    return () => {
-      cancelled = true
-      clearTimeout(handle)
-    }
-  }, [pickerOpen, query])
-
-  const invite = () => {
-    const companyId = bill.company_id
-    if (!companyId) return
-    startInviting(async () => {
-      try {
-        const result = unwrapAction(await inviteCompanyToPaymentSetupAction(companyId))
-        toast.success(`Invitation sent to ${result.companyName}`)
-        onInvited()
-      } catch (error) {
-        toast.error("Unable to send the invitation", { description: (error as Error).message })
-      }
-    })
-  }
-
-  const readinessBadge = railOpen && bill.company_id ? READINESS_BADGES[readiness ?? "not_started"] : null
-  const showInvite = railOpen && bill.company_id && (readiness === "not_started" || readiness === "invited" || !readiness)
+  const readiness = profile ? READINESS[profile.paymentReadiness] : null
 
   return (
-    <div className="flex items-start justify-between gap-3">
-      <div className="min-w-0">
-        <Label className="microlabel">Vendor</Label>
-        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2">
-          <span className="truncate text-base font-semibold">{vendorLabel(bill)}</span>
-          {readinessBadge ? (
-            <Badge variant="outline" className={cn("font-normal", readinessBadge.className)}>
-              {readinessBadge.label}
-            </Badge>
-          ) : null}
-          {accountingEnabled ? vendorLinkBadge(bill) : null}
+    <div className="border bg-muted/20">
+      <div className="flex items-start justify-between gap-3 px-4 pt-3.5">
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-2">
+            <p className="truncate text-sm font-semibold">{profile?.name ?? name}</p>
+            {profile?.trade ? <TradeBadge trade={profile.trade} /> : null}
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            {readiness ? (
+              <span className="flex items-center gap-1.5">
+                <span className={cn("size-1.5 rounded-full", readiness.tone)} aria-hidden />
+                {readiness.label}
+              </span>
+            ) : null}
+            {profile && !["ready", "suspended", "revoked"].includes(profile.paymentReadiness) ? (
+              <VendorPaymentInviteButton
+                companyId={profile.companyId}
+                readiness={profile.paymentReadiness}
+                onInvited={onPaymentInvited}
+              />
+            ) : null}
+            {profile?.paymentTerms ? <span>{profile.paymentTerms}</span> : null}
+          </div>
         </div>
-        {bill.commitment_title ? (
-          <p className="mt-1 truncate text-xs text-muted-foreground">Against {bill.commitment_title}</p>
-        ) : null}
-        {accountingEnabled && !bill.qbo_vendor_id ? (
-          <p className="mt-1 text-xs text-muted-foreground">No QuickBooks vendor linked yet. Link or create one before syncing.</p>
-        ) : null}
-        {showInvite ? (
-          <Button variant="link" size="sm" className="mt-0.5 h-auto p-0 text-xs" disabled={isInviting} onClick={invite}>
-            {isInviting ? "Sending…" : readiness === "invited" ? "Remind vendor to set up electronic payments" : "Invite vendor to set up electronic payments"}
-          </Button>
-        ) : null}
-      </div>
-
-      <div className="flex shrink-0 items-center gap-1">
-        <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
-          <PopoverTrigger asChild>
-            <Button type="button" variant="ghost" size="sm" className="h-8 gap-1 px-2 text-xs text-muted-foreground">
-              Change
-              <ChevronsUpDown className="h-3.5 w-3.5" />
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent className="w-80 p-0" align="end">
-            <Command shouldFilter={false}>
-              <CommandInput value={query} onValueChange={setQuery} placeholder="Search vendors…" />
-              <CommandList className="max-h-72 overflow-y-auto">
-                <CommandEmpty>{searching ? "Searching…" : "No matching vendors."}</CommandEmpty>
-                <CommandGroup>
-                  {results.map((company) => (
-                    <CommandItem
-                      key={company.id}
-                      value={company.id}
-                      onSelect={() => {
-                        setPickerOpen(false)
-                        onSelectCompany(company)
-                      }}
-                    >
-                      <Check className={cn("mr-2 size-4", company.id === bill.company_id ? "opacity-100" : "opacity-0")} />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-xs font-medium">{company.name}</span>
-                        {accountingEnabled ? (
-                          <span className="block truncate text-[10px] text-muted-foreground">
-                            {company.qbo_vendor_id ? `QuickBooks: ${company.qbo_vendor_name ?? "Linked"}` : "No QuickBooks vendor linked"}
-                          </span>
-                        ) : null}
-                      </span>
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-              </CommandList>
-            </Command>
-          </PopoverContent>
-        </Popover>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button type="button" variant="ghost" size="icon" className="size-8">
-              <MoreHorizontal className="h-4 w-4" />
+            <Button type="button" variant="ghost" size="icon" className="-mr-1 size-8 shrink-0">
+              <MoreHorizontal className="size-4" />
               <span className="sr-only">Vendor actions</span>
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-52">
+          <DropdownMenuContent align="end" className="w-48">
+            <DropdownMenuItem onClick={onChangeVendor}>Change vendor</DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem onClick={onEditVendor}>Edit vendor details</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      {loading ? (
+        <div className="grid grid-cols-3 gap-4 px-4 pb-3.5 pt-3" aria-label="Loading vendor history">
+          <div className="h-8 animate-pulse bg-muted" />
+          <div className="h-8 animate-pulse bg-muted" />
+          <div className="h-8 animate-pulse bg-muted" />
+        </div>
+      ) : profile && profile.canViewBills ? (
+        <div className="mt-3 grid grid-cols-3 gap-4 border-t px-4 py-3">
+          <Stat
+            label={`Paid · ${Math.round(profile.trailingDays / 30)} mo`}
+            value={formatMoneyFromCents(profile.paidCents)}
+            muted={profile.paidCents === 0}
+          />
+          <Stat
+            label="Open"
+            value={formatMoneyFromCents(profile.openCents)}
+            muted={profile.openCents === 0}
+          />
+          <Stat
+            label="Bills"
+            value={
+              profile.billCount === 0
+                ? "First bill"
+                : `${profile.billCount}${profile.openBillCount > 0 ? ` · ${profile.openBillCount} open` : ""}`
+            }
+            muted={profile.billCount === 0}
+          />
+        </div>
+      ) : (
+        <div className="mt-3 border-t px-4 py-3 text-xs text-muted-foreground">
+          {profile ? "Your role cannot see this vendor’s billing history." : "No billing history with this vendor yet."}
+        </div>
+      )}
     </div>
   )
 }

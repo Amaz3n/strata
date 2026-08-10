@@ -141,24 +141,40 @@ A new entity is not done when its table and page exist. In the **same change**:
 ## Design
 
 Full standard: **`docs/design.md`** — read it before building any new surface.
-The hard rules:
 
-- **Two zones.** `app/(app)/**` is ascetic: no gradients, no glows, no
-  glassmorphism, no hero/marquee banners, no decorative color, no idle animation.
-  Auth pages, token portals, and legal/marketing are expressive. Only three
-  identity elements cross into the ascetic zone (see `docs/design.md` §1).
+**The target is a quiet, modern console with Linear/Vercel-level craft.** The
+restraint below is brand identity, not fear of design — inside the system, aim
+high: clear typographic hierarchy (weight and size), a consistent spacing
+rhythm, tight alignment, visible interactive states (hover, focus, selected,
+disabled), and confident state color wherever there is state to report. A flat
+gray wall where nothing has hierarchy is as much a failure as a decorated one.
+The best Arc screens are dense, calm, and instantly scannable.
+
+Mechanical rules (linted or structural):
+
 - **Tokens only** — no hex/rgb/oklch literals, no raw Tailwind palette classes.
-  Tokens are `oklch`; never wrap one in `hsl()`. **Linted** — new `.tsx` errors;
-  132 legacy files are grandfathered in `.eslintrc.js` (`pnpm lint:tokens`).
-  Clean a file → delete its path from that list. Never add one.
-- **Radius is 0.** Never set a radius class to control shape; `--radius` owns it.
+  Tokens are `oklch`; never wrap one in `hsl()`. 132 legacy files are
+  grandfathered in `.eslintrc.js` (`pnpm lint:tokens`). Clean a file → delete
+  its path from that list. Never add one.
+- **Radius is 0** — `--radius` owns shape; don't set radius classes.
   `rounded-full` for chips, dots, and avatars only.
-- **Color is state,** never decoration and never section identity.
-- **Dense tables over cards,** `tabular-nums` for money, match your siblings'
-  type sizes and spacing.
-- **Every view ships empty, loading, error, and dark mode.** Missing any = unfinished.
-- Motion: one `.desk-rise` entrance per page, hover ≤200ms, no infinite animation
-  except live-progress indicators for work actually happening.
+
+Judgment rules:
+
+- **Two zones.** `app/(app)/**` is the ascetic zone: structure comes from
+  spacing, alignment, and subtle surface shifts — not gradients, glows,
+  hero banners, or decorative color. Auth pages, token portals, and
+  legal/marketing are expressive: depth, gradient, and motion are welcome
+  there. Three identity elements cross into the ascetic zone (`docs/design.md` §1).
+- **Color reports state** — status, aging, success/late, money deltas — and
+  should be used confidently for that. It is never section identity or ornament;
+  equally, a screen that reports state in plain gray is hiding information.
+- **Dense tables over card grids** for anything users scan; `tabular-nums`
+  right-aligned money; match sibling pages' type sizes, row heights, and spacing.
+- **Every view ships empty, loading, error, and dark mode.** Loading = skeleton
+  matching the real layout, not a spinner. Missing any = unfinished.
+- Motion: one `.desk-rise` entrance per page, hover ≤200ms, still when idle
+  (live-progress indicators for real work are the only exception).
 
 ## Leave no trash
 

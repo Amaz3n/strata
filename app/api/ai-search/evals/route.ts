@@ -1,115 +1,87 @@
 import { NextRequest, NextResponse } from "next/server"
 
-import { askAiSearch } from "@/lib/services/ai-search"
-import { getAiSearchRuntimeFlags } from "@/lib/services/ai-search-flags"
-import { runAiSearchEvalHarness, type AiSearchEvalCase } from "@/lib/services/ai-search/evals"
-import { requireOrgContext } from "@/lib/services/context"
+import { requireAnyPermissionGuard } from "@/lib/auth/guards"
+import { logger } from "@/lib/logging/logger"
+import { DEFAULT_EVAL_CASES, runAiAssistantEvals } from "@/lib/services/ai-assistant/evals"
+import type { EvalCase } from "@/lib/ai/eval-scoring"
 
 export const runtime = "nodejs"
+// Twelve cases through the real tool loop, sequentially.
+export const maxDuration = 300
 
-function parseGate(input: unknown) {
-  if (!input || typeof input !== "object") return undefined
-  const value = input as Record<string, unknown>
-  return {
-    minPassRate: typeof value.minPassRate === "number" ? value.minPassRate : undefined,
-    minCitationCoverageRate:
-      typeof value.minCitationCoverageRate === "number" ? value.minCitationCoverageRate : undefined,
-    minAvgRelatedResults: typeof value.minAvgRelatedResults === "number" ? value.minAvgRelatedResults : undefined,
-    maxFailedCases: typeof value.maxFailedCases === "number" ? value.maxFailedCases : undefined,
-  }
-}
+/**
+ * Run the assistant eval suite against the CALLER'S org.
+ *
+ * Not in `PUBLIC_API_ROUTES`: this must sit behind the normal auth proxy, and it
+ * is permission-gated on top of that. It spends real tokens and answers real
+ * questions about real records, so it belongs in the QA org — Arc has no staging
+ * environment, and pointing it at a customer org would put their data through a
+ * dozen model calls for a test run.
+ *
+ * POST so it is never triggered by a link, a prefetch, or a crawler.
+ */
 
-function parseCases(input: unknown): AiSearchEvalCase[] | undefined {
-  if (!Array.isArray(input)) return undefined
+function parseCases(input: unknown): EvalCase[] | null {
+  if (!Array.isArray(input)) return null
 
-  const normalized: AiSearchEvalCase[] = []
+  const cases: EvalCase[] = []
   for (const item of input) {
     if (!item || typeof item !== "object") continue
     const value = item as Record<string, unknown>
-    if (typeof value.id !== "string" || typeof value.category !== "string" || typeof value.query !== "string") {
-      continue
-    }
+    if (typeof value.id !== "string" || typeof value.question !== "string") continue
 
-    const category =
-      value.category === "lookup" ||
-      value.category === "aggregate" ||
-      value.category === "cross_domain" ||
-      value.category === "diagnostic" ||
-      value.category === "follow_up"
-        ? value.category
-        : null
-    if (!category) continue
+    const stringArray = (raw: unknown) =>
+      Array.isArray(raw) ? raw.filter((entry): entry is string => typeof entry === "string") : undefined
 
-    normalized.push({
-      id: value.id.trim(),
-      category,
-      query: value.query.trim(),
-      mustIncludeAny: Array.isArray(value.mustIncludeAny)
-        ? value.mustIncludeAny.filter((keyword): keyword is string => typeof keyword === "string" && keyword.trim().length > 0)
-        : undefined,
-      minCitations:
-        typeof value.minCitations === "number" && Number.isFinite(value.minCitations) ? value.minCitations : undefined,
-      minRelatedResults:
-        typeof value.minRelatedResults === "number" && Number.isFinite(value.minRelatedResults) ? value.minRelatedResults : undefined,
+    cases.push({
+      id: value.id,
+      question: value.question,
+      scope: value.scope === "project" ? "project" : "org",
+      expectKeywords: stringArray(value.expectKeywords),
+      forbidKeywords: stringArray(value.forbidKeywords),
+      requiresGrounding: value.requiresGrounding === true,
+      expectRefusal: value.expectRefusal === true,
     })
   }
 
-  return normalized.length > 0 ? normalized : undefined
+  return cases.length > 0 ? cases : null
 }
 
 export async function POST(request: NextRequest) {
+  await requireAnyPermissionGuard(["org.admin", "platform.support.read"])
+
+  let cases: EvalCase[] = DEFAULT_EVAL_CASES
   try {
-    const context = await requireOrgContext()
-    const flags = await getAiSearchRuntimeFlags(context)
-    if (!flags.evalHarness) {
-      return NextResponse.json({ error: "AI eval harness is disabled for this org." }, { status: 403 })
-    }
+    const body = await request.json()
+    cases = parseCases((body as { cases?: unknown })?.cases) ?? DEFAULT_EVAL_CASES
+  } catch {
+    // No body, or an unparseable one: run the standing suite.
+  }
 
-    const body = (await request.json().catch(() => ({}))) as {
-      cases?: unknown
-      mode?: unknown
-      gate?: unknown
-      requirePass?: unknown
-    }
-    const mode = body.mode === "general" ? "general" : "org"
-    const cases = parseCases(body.cases)
-    const gate = parseGate(body.gate)
-    const requirePass = body.requirePass === true
-
-    const run = await runAiSearchEvalHarness({
-      cases,
-      execute: (query) => askAiSearch(query, { mode, limit: 20 }),
-      gate,
-    })
-
-    if (requirePass && run.gate && !run.gate.passed) {
-      return NextResponse.json(
-        {
-          mode,
-          ranAt: new Date().toISOString(),
-          summary: run.summary,
-          gate: run.gate,
-          results: run.results.map((item) => ({
-            ...item,
-            answer: item.answer.slice(0, 4000),
-          })),
-        },
-        { status: 412 },
-      )
-    }
-
+  try {
+    const report = await runAiAssistantEvals(cases)
     return NextResponse.json({
-      mode,
-      ranAt: new Date().toISOString(),
-      summary: run.summary,
-      gate: run.gate,
-      results: run.results.map((item) => ({
-        ...item,
-        answer: item.answer.slice(0, 4000),
+      summary: report.summary,
+      errored: report.errored,
+      totalLatencyMs: report.totalLatencyMs,
+      // The full response bodies are deliberately left out: they can be long,
+      // and what a failing run needs is which check failed and on what.
+      runs: report.runs.map((run) => ({
+        id: run.case.id,
+        question: run.case.question,
+        latencyMs: run.latencyMs,
+        error: run.error,
+        passed: run.result?.passed ?? false,
+        score: run.result?.score ?? 0,
+        failedChecks:
+          run.result?.checks.filter((check) => !check.passed).map((check) => ({
+            name: check.name,
+            detail: check.detail,
+          })) ?? [],
       })),
     })
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to run AI search eval harness."
-    return NextResponse.json({ error: message }, { status: 500 })
+    logger.error("AI assistant eval run failed", { error })
+    return NextResponse.json({ error: "Eval run failed" }, { status: 500 })
   }
 }

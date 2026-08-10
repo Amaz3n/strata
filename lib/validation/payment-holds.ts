@@ -2,7 +2,9 @@ import { z } from "zod"
 
 export const paymentHoldKindSchema = z.enum([
   "insurance_current",
+  "insurance_verified",
   "waiver_signed",
+  "waiver_verified",
   "compliance_docs_approved",
   "retainage_rules_met",
   "funding_received",

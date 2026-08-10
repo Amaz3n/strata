@@ -4,40 +4,31 @@ import { z } from "zod"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { requireAuthorization } from "@/lib/services/authorization"
+import { draftFromFact, isRetiredFactKind } from "@/lib/services/books/fact-drafts"
 import { booksDigest } from "@/lib/services/books/hash"
-import {
-  postBillPayment,
-  postCustomerInvoice,
-  postExpense,
-  postInvoicePayment,
-  postVendorBill,
-} from "@/lib/services/books/posting-rules"
+import { resolveProjectionVersion } from "@/lib/services/books/projector"
 import type { JournalEntryDraft } from "@/lib/services/books/types"
 import { requireOrgContext } from "@/lib/services/context"
+
+/**
+ * The orphan scan has no natural bound, so it is paged rather than capped, and
+ * it still records `scan_capped` if it ever hits the ceiling — a determinism
+ * drill that quietly examined the first 200 rows would report "passed" for a
+ * ledger full of entries nobody projected.
+ */
+const ORPHAN_SCAN_PAGE_SIZE = 500
+const ORPHAN_SCAN_LIMIT = 5000
 
 const factSchema = z.object({
   id: z.string().uuid(),
   source_type: z.string(),
   source_id: z.string().uuid(),
+  source_version: z.number().int(),
+  fact_kind: z.string(),
   accounting_date: z.string(),
   policy_version: z.number().int(),
   payload: z.record(z.unknown()),
 })
-
-function textValue(value: unknown, fallback = "") { return typeof value === "string" ? value : fallback }
-function centsValue(value: unknown) { return typeof value === "number" && Number.isSafeInteger(value) ? value : 0 }
-function optionalId(value: unknown) { return typeof value === "string" && value.length > 0 ? value : undefined }
-
-export function rebuildDraftFromFact(fact: z.infer<typeof factSchema>): JournalEntryDraft | null {
-  const row = fact.payload
-  const common = { id: fact.source_id, date: fact.accounting_date, policyVersion: fact.policy_version, projectId: optionalId(row.project_id) }
-  if (fact.source_type === "vendor_bill") return postVendorBill({ ...common, companyId: optionalId(row.company_id), memo: `Vendor bill ${textValue(row.bill_number)}`.trim(), grossCents: centsValue(row.total_cents), retainageCents: centsValue(row.retainage_cents) })
-  if (fact.source_type === "invoice") return postCustomerInvoice({ ...common, memo: textValue(row.title, `Invoice ${textValue(row.invoice_number)}`), grossCents: centsValue(row.total_cents), retainageCents: centsValue(row.retainage_cents) })
-  if (fact.source_type === "invoice_payment") return postInvoicePayment({ ...common, memo: "Customer payment", amountCents: centsValue(row.amount_cents) })
-  if (fact.source_type === "bill_payment") return postBillPayment({ ...common, memo: "Vendor bill payment", amountCents: centsValue(row.amount_cents) })
-  if (fact.source_type === "expense") return postExpense({ ...common, companyId: optionalId(row.vendor_company_id), memo: textValue(row.description, "Expense"), amountCents: centsValue(row.amount_cents) + centsValue(row.tax_cents) })
-  return null
-}
 
 function normalizedDraft(draft: JournalEntryDraft) {
   return {
@@ -52,6 +43,7 @@ function normalizedDraft(draft: JournalEntryDraft) {
 
 export async function runLedgerRebuildDrillForOrg(orgId: string) {
   const service = createServiceSupabaseClient()
+  const projectionVersion = await resolveProjectionVersion(orgId)
   const { data: run, error: runError } = await service.from("ledger_rebuild_runs").insert({ org_id: orgId, status: "running" }).select("id").single()
   if (runError) throw new Error(`Failed to start ledger rebuild drill: ${runError.message}`)
   const runId = z.object({ id: z.string().uuid() }).parse(run).id
@@ -61,10 +53,14 @@ export async function runLedgerRebuildDrillForOrg(orgId: string) {
   const rebuilt: unknown[] = []
   try {
     for (let from = 0; ; from += 250) {
-      const { data, error } = await service.from("accounting_facts").select("id, source_type, source_id, accounting_date, policy_version, payload").eq("org_id", orgId).order("created_at").range(from, from + 249)
+      const { data, error } = await service.from("accounting_facts").select("id, source_type, source_id, source_version, fact_kind, accounting_date, policy_version, payload").eq("org_id", orgId).order("created_at").order("id").range(from, from + 249)
       if (error) throw new Error(error.message)
-      const facts = z.array(factSchema).parse(data ?? [])
-      sourceFactCount += facts.length
+      const page = z.array(factSchema).parse(data ?? [])
+      sourceFactCount += page.length
+      // A retirement fact records that a source left the projectable set. Its
+      // entry was already reversed, so producing no draft is the right answer,
+      // not an unsupported fact kind.
+      const facts = page.filter((fact) => !isRetiredFactKind(fact.fact_kind))
       const ids = facts.map((fact) => fact.id)
       const { data: entries, error: entryError } = ids.length > 0
         ? await service.from("journal_entries").select("id, fact_id, entry_date, entry_kind, memo, posting_key, policy_version, lines:journal_lines(line_no, project_id, company_id, debit_cents, credit_cents, description, dimensions, account:gl_accounts(code))").eq("org_id", orgId).in("fact_id", ids).eq("status", "posted")
@@ -73,7 +69,17 @@ export async function runLedgerRebuildDrillForOrg(orgId: string) {
       const entryByFact = new Map((entries ?? []).map((entry) => [entry.fact_id, entry]))
       for (const fact of facts) {
         let expected: JournalEntryDraft | null = null
-        try { expected = rebuildDraftFromFact(fact) } catch (error) {
+        try {
+          expected = draftFromFact({
+            sourceType: fact.source_type,
+            sourceId: fact.source_id,
+            accountingDate: fact.accounting_date,
+            payload: fact.payload,
+            sourceVersion: fact.source_version,
+            projectionVersion,
+            policyVersion: fact.policy_version,
+          })
+        } catch (error) {
           differences.push({ fact_id: fact.id, type: "invalid_fact", message: error instanceof Error ? error.message : String(error) })
           continue
         }
@@ -96,13 +102,47 @@ export async function runLedgerRebuildDrillForOrg(orgId: string) {
         rebuiltEntryCount += 1
         if (booksDigest(actualNormalized) !== booksDigest(expectedNormalized)) differences.push({ fact_id: fact.id, type: "journal_divergence", expected: expectedNormalized, actual: actualNormalized })
       }
-      if (facts.length < 250) break
+      if (page.length < 250) break
     }
+    // The drill also has to look the other way. Iterating facts alone can only
+    // ever report a missing journal, so an operational entry posted without a
+    // fact behind it — anything that bypassed the projector — would be
+    // invisible. Adjusting, opening, closing and reversal entries are authored
+    // deliberately and are expected to have no fact.
+    let orphanScanCapped = false
+    for (let from = 0; ; from += ORPHAN_SCAN_PAGE_SIZE) {
+      const { data: orphanEntries, error: orphanError } = await service
+        .from("journal_entries")
+        .select("id, posting_key, entry_date")
+        .eq("org_id", orgId)
+        .eq("status", "posted")
+        .eq("entry_kind", "operational")
+        .is("fact_id", null)
+        .order("entry_date", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, from + ORPHAN_SCAN_PAGE_SIZE - 1)
+      if (orphanError) throw new Error(orphanError.message)
+      const orphanPage = orphanEntries ?? []
+      for (const entry of orphanPage) {
+        differences.push({ type: "unexpected_journal", entry_id: entry.id, posting_key: entry.posting_key, entry_date: entry.entry_date })
+      }
+      if (orphanPage.length < ORPHAN_SCAN_PAGE_SIZE) break
+      if (from + ORPHAN_SCAN_PAGE_SIZE >= ORPHAN_SCAN_LIMIT) {
+        orphanScanCapped = true
+        break
+      }
+    }
+    // Recorded first so it survives the evidence cap below: a truncated scan that
+    // lost its own truncation marker is exactly the failure this replaces.
+    if (orphanScanCapped) {
+      differences.unshift({ type: "orphan_scan_capped", scan_capped: true, scanned: ORPHAN_SCAN_LIMIT })
+    }
+
     const rebuiltDigest = booksDigest(rebuilt)
     const status = differences.length === 0 ? "passed" : "failed"
     const { error: updateError } = await service.from("ledger_rebuild_runs").update({ status, source_fact_count: sourceFactCount, rebuilt_entry_count: rebuiltEntryCount, rebuilt_digest: rebuiltDigest, differences: differences.slice(0, 200), completed_at: new Date().toISOString() }).eq("org_id", orgId).eq("id", runId)
     if (updateError) throw new Error(updateError.message)
-    return { runId, status, sourceFactCount, rebuiltEntryCount, rebuiltDigest, differences }
+    return { runId, status, sourceFactCount, rebuiltEntryCount, rebuiltDigest, differences, orphanScanCapped }
   } catch (error) {
     await service.from("ledger_rebuild_runs").update({ status: "failed", source_fact_count: sourceFactCount, rebuilt_entry_count: rebuiltEntryCount, differences: [{ type: "run_error", message: error instanceof Error ? error.message : String(error) }], completed_at: new Date().toISOString() }).eq("org_id", orgId).eq("id", runId)
     throw error
@@ -117,7 +157,10 @@ export async function requestLedgerRebuildDrill(orgId?: string) {
 
 export async function runScheduledLedgerRebuildDrills() {
   const service = createServiceSupabaseClient()
-  const { data, error } = await service.from("books_settings").select("org_id").eq("workspace_enabled", true).in("arc_ledger_mode", ["parallel", "official"]).order("org_id")
+  // Shadow-mode organizations are drilled too. Restricting this to parallel and
+  // official meant the determinism check never ran for anyone during the phase
+  // where the ledger is least trusted and most likely to be wrong.
+  const { data, error } = await service.from("books_settings").select("org_id").eq("workspace_enabled", true).in("arc_ledger_mode", ["shadow", "parallel", "official"]).order("org_id")
   if (error) throw new Error(`Failed to load Books rebuild organizations: ${error.message}`)
   const results = []
   for (const row of data ?? []) results.push(await runLedgerRebuildDrillForOrg(row.org_id))

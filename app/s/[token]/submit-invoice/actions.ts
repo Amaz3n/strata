@@ -3,6 +3,7 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { createVendorBillFromPortal } from "@/lib/services/vendor-bills"
+import { extractPayableInvoiceFromFile } from "@/lib/services/document-extraction"
 import { vendorBillCreateSchema, type VendorBillCreate } from "@/lib/validation/vendor-bills"
 import { deleteFilesObjects, uploadFilesObject } from "@/lib/storage/files-storage"
 
@@ -181,5 +182,87 @@ export async function uploadInvoiceFileAction({
       success: false,
       error: err instanceof Error ? err.message : "Failed to upload file",
     }
+  }
+}
+
+export interface ScanPortalInvoiceResult {
+  success: boolean
+  error?: string
+  data?: {
+    billNumber: string | null
+    billDate: string | null
+    dueDate: string | null
+    totalDollars: number | null
+    description: string | null
+    confidence: "high" | "medium" | "low"
+    notes: string[]
+    lines: Array<{ description: string; quantity: number | null; unit: string | null; amountDollars: number }>
+  }
+}
+
+/**
+ * Read a subcontractor's own invoice for them.
+ *
+ * Subs typing an invoice they are already uploading is pure duplicate work, and
+ * the same scan already runs on the builder side. Deliberately narrower than the
+ * internal path: the sub is an external party, so the result never carries a
+ * vendor match, a duplicate verdict, or anything derived from the org's records.
+ * They get their own document read back, nothing about anyone else's.
+ */
+export async function scanPortalInvoiceAction({
+  token,
+  formData,
+}: {
+  token: string
+  formData: FormData
+}): Promise<ScanPortalInvoiceResult> {
+  try {
+    const portalToken = await assertPortalActionAccess(token, {
+      portalType: "sub",
+      requireCompany: true,
+      permission: "can_submit_invoices",
+    })
+    if (!portalToken.company_id) return { success: false, error: "Invalid portal type" }
+
+    const file = formData.get("file")
+    if (!(file instanceof File)) return { success: false, error: "No file provided" }
+
+    // The portal knows the vendor before the scan, so prior corrections on this
+    // vendor's invoices inform the read.
+    const extraction = await extractPayableInvoiceFromFile(file, {
+      orgId: portalToken.org_id,
+      companyId: portalToken.company_id,
+    })
+
+    if (!extraction.billable) {
+      return {
+        success: false,
+        error: extraction.notes[0] ?? "That does not look like an invoice.",
+      }
+    }
+
+    return {
+      success: true,
+      data: {
+        billNumber: extraction.billNumber,
+        billDate: extraction.billDate,
+        dueDate: extraction.dueDate,
+        totalDollars: extraction.totalDollars,
+        description: extraction.description,
+        confidence: extraction.confidence,
+        // Only the sub's own document is described back; the mismatch note is
+        // useful to them, the duplicate note would leak the builder's ledger.
+        notes: extraction.sumMismatch ? extraction.notes.slice(0, 1) : [],
+        lines: extraction.lines.map((line) => ({
+          description: line.description,
+          quantity: line.quantity,
+          unit: line.unit,
+          amountDollars: line.amountCents / 100,
+        })),
+      },
+    }
+  } catch (error) {
+    console.warn("[PortalInvoiceScan] Scan failed", error)
+    return { success: false, error: "Could not read that invoice. You can enter the details manually." }
   }
 }

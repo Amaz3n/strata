@@ -68,7 +68,7 @@ export function PayableHoldsPanel({
 
   return (
     <>
-      <ul className="divide-y border">
+      <ul className="divide-y border bg-background">
         {evaluation.holds.map((hold) => (
           <li key={hold.kind} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-3 py-2 text-sm">
             <div className="flex min-w-0 items-baseline gap-2">
@@ -87,6 +87,11 @@ export function PayableHoldsPanel({
                 <span className="truncate text-xs text-muted-foreground">— {hold.overrideReason}</span>
               ) : null}
             </div>
+            {hold.detail && !hold.overridden ? (
+              // The specific fields that disagree — a hold the reader can check
+              // themselves rather than a verdict they have to trust.
+              <p className="w-full text-xs text-muted-foreground">{hold.detail}</p>
+            ) : null}
             {!hold.overridden ? (
               <div className="flex shrink-0 items-center gap-1">
                 {hold.cureHref ? (

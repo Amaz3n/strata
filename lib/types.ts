@@ -70,6 +70,7 @@ export interface Company {
   prequalified_at?: string
   rating?: number
   default_payment_terms?: string
+  default_payment_method?: "arc_pay" | "check" | "wire" | "card" | "other"
   internal_notes?: string
   notes?: string
   qbo_vendor_id?: string | null

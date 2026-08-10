@@ -1,6 +1,7 @@
 import "server-only"
 
-import { getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
+import { VendorBillDecisionEmail } from "@/lib/emails/vendor-bill-decision-email"
+import { getOrgSenderEmail, renderEmailTemplate, sendEmail } from "@/lib/services/mailer"
 import { ensurePortalLink } from "@/lib/services/portal-links"
 import { recordEvent } from "@/lib/services/events"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -22,16 +23,6 @@ function firstRelation<T>(value: T | T[] | null | undefined): T | null {
   return value ?? null
 }
 
-function escapeHtml(value: string) {
-  return value.replace(/[&<>"']/g, (character) =>
-    character === "&" ? "&amp;"
-      : character === "<" ? "&lt;"
-      : character === ">" ? "&gt;"
-      : character === '"' ? "&quot;"
-      : "&#39;",
-  )
-}
-
 type BillNoticeKind = "approved" | "rejected"
 
 /**
@@ -44,23 +35,18 @@ export async function sendVendorBillDecisionNotice(input: {
   billId: string
   kind: BillNoticeKind
   reason?: string | null
+  eventId?: string | null
 }) {
   const client = createServiceSupabaseClient()
   const { data: bill } = await client
     .from("vendor_bills")
     .select(
-      "id,project_id,company_id,bill_number,total_cents,metadata,commitment:commitments(company_id),company:companies(name,email),project:projects(name),org:orgs(name,slug,logo_url)",
+      "id,project_id,company_id,bill_number,total_cents,commitment:commitments(company_id),company:companies(name,email),project:projects(name),org:orgs(name,slug,logo_url)",
     )
     .eq("org_id", input.orgId)
     .eq("id", input.billId)
     .maybeSingle()
   if (!bill) return { sent: false as const, reason: "no_bill" as const }
-
-  // Only invoices the vendor actually sent get a decision notice. A payable the
-  // builder keyed in themselves is their own internal record, and emailing a
-  // vendor about paperwork they never submitted invites a confused phone call.
-  const metadata = (bill.metadata as Record<string, unknown> | null) ?? {}
-  if (metadata.submitted_via_portal !== true) return { sent: false as const, reason: "not_vendor_submitted" as const }
 
   const commitment = firstRelation(bill.commitment)
   const companyId = bill.company_id ?? commitment?.company_id ?? null
@@ -93,11 +79,17 @@ export async function sendVendorBillDecisionNotice(input: {
   }
 
   const approved = input.kind === "approved"
-  const messageHtml = approved
-    ? `<p>${escapeHtml(org?.name ?? "Your customer")} approved ${escapeHtml(invoiceLabel)}${project?.name ? ` on ${escapeHtml(project.name)}` : ""} for payment. You will get a separate notice when the payment is sent.</p>`
-    : `<p>${escapeHtml(org?.name ?? "Your customer")} could not accept ${escapeHtml(invoiceLabel)}${project?.name ? ` on ${escapeHtml(project.name)}` : ""}.</p>${
-        input.reason ? `<p style="margin-top:12px"><strong>Reason given:</strong><br>${escapeHtml(input.reason)}</p>` : ""
-      }<p style="margin-top:12px">Correct it and submit again — you do not need to start a new contract or purchase order.</p>`
+  const html = await renderEmailTemplate(
+    VendorBillDecisionEmail({
+      orgName: org?.name,
+      orgLogoUrl: org?.logo_url,
+      kind: input.kind,
+      invoiceLabel,
+      projectName: project?.name ?? null,
+      reason: input.reason,
+      actionHref: buttonUrl,
+    }),
+  )
 
   const sent = await sendEmail({
     from: getOrgSenderEmail(org?.slug, org?.name),
@@ -105,15 +97,8 @@ export async function sendVendorBillDecisionNotice(input: {
     subject: approved
       ? `Approved: ${bill.bill_number ?? "your invoice"}`
       : `Not accepted: ${bill.bill_number ?? "your invoice"}`,
-    html: renderStandardEmailLayout({
-      title: approved ? "Invoice approved" : "Invoice not accepted",
-      messageHtml,
-      buttonText: buttonUrl ? "View your invoices" : undefined,
-      buttonUrl,
-      orgName: org?.name,
-      orgLogoUrl: org?.logo_url,
-      showManageSettings: false,
-    }),
+    html,
+    idempotencyKey: `vendor-bill-${input.kind}-${input.eventId ?? bill.id}`,
   })
   if (!sent) return { sent: false as const, reason: "send_failed" as const }
 

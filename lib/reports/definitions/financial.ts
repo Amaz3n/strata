@@ -16,7 +16,7 @@ import { getProjectReconciliationReport } from "@/lib/services/reports/reconcili
 import { RECONCILIATION_QUEUE_LABELS } from "@/lib/services/reports/reconciliation-types"
 import { getVendor1099Report } from "@/lib/services/reports/vendor-1099"
 import { requireOrgContext } from "@/lib/services/context"
-import { buildBalanceSheet, buildCashFlowStatement, buildGeneralLedger, buildProfitAndLoss, buildTrialBalance } from "@/lib/services/books/statements"
+import { buildBalanceSheet, buildCashBasisStatement, buildCashFlowStatement, buildGeneralLedger, buildProfitAndLoss, buildTrialBalance } from "@/lib/services/books/statements"
 import { getPocJournalReview } from "@/lib/services/accounting-export"
 import { getOrgWipOverUnderReport, getProjectWipOverUnderReport, type WipOverUnderRow } from "@/lib/services/reports/wip-over-under"
 
@@ -193,6 +193,62 @@ const booksCashFlow: ReportDefinition = {
           ],
           rows: rows.map((row) => ({ key: row.key, cells: { category: row.label, amount: row.amount } })),
           totals: { category: "Net change", amount: report.netChangeInCashCents },
+        },
+      ],
+    }
+  },
+}
+
+/**
+ * The statement a cash-basis filer hands their accountant at year end. Presented
+ * as the conversion, not just the result — the adjustment lines are what let a
+ * CPA tie it back to the accrual statements in the same catalog.
+ */
+const booksCashBasis: ReportDefinition = {
+  slug: "books-cash-basis",
+  title: "Cash Basis Summary",
+  summary:
+    "Accrual results converted to a cash basis, showing every conversion adjustment.",
+  group: "financial",
+  scopes: ["org"],
+  permissions: ["books.read"],
+  available: (ctx) => ctx.hasArcBooks,
+  params: [{ key: "period", kind: "period", label: "Period" }],
+  run: async (ctx) => {
+    const range = periodRange(ctx.params.period ?? "ytd")
+    const start = range.from ?? "1900-01-01"
+    const end = range.to ?? new Date().toISOString().slice(0, 10)
+    const report = await buildCashBasisStatement(await booksOrgId(), start, end)
+    const rows: ReportRow[] = [
+      { key: "revenue", cells: { line: "Revenue, accrual basis", amount: report.accrualRevenueCents } },
+      ...report.revenueAdjustments.map((adjustment, index) => ({
+        key: `revenue-adjustment-${index}`,
+        cells: { line: `    ${adjustment.label}`, amount: adjustment.amountCents },
+      })),
+      { key: "receipts", cells: { line: "Cash collected", amount: report.cashReceiptsCents } },
+      { key: "costs", cells: { line: "Costs and expenses, accrual basis", amount: report.accrualCostCents } },
+      ...report.costAdjustments.map((adjustment, index) => ({
+        key: `cost-adjustment-${index}`,
+        cells: { line: `    ${adjustment.label}`, amount: adjustment.amountCents },
+      })),
+      { key: "paid", cells: { line: "Cash paid", amount: report.cashPaidCents } },
+      { key: "accrual-net", cells: { line: "Net income, accrual basis", amount: report.accrualNetIncomeCents } },
+    ]
+    return {
+      subtitle: `${start} through ${end} · cost of revenue and operating expenses converted together`,
+      stats: [
+        { key: "cash", label: "Net income, cash basis", value: formatMoneyCents(report.cashNetIncomeCents) },
+        { key: "accrual", label: "Net income, accrual basis", value: formatMoneyCents(report.accrualNetIncomeCents) },
+      ],
+      tables: [
+        {
+          key: "conversion",
+          columns: [
+            { key: "line", header: "Conversion" },
+            { key: "amount", header: "Amount", type: "money" },
+          ],
+          rows,
+          totals: { line: "Net income, cash basis", amount: report.cashNetIncomeCents },
         },
       ],
     }
@@ -735,6 +791,10 @@ const payAppRegister: ReportDefinition = {
           key: "retainage",
           label: "Retainage held",
           value: formatMoneyCents(totals.retainage_held_cents),
+          // Certified on the pay application, which is a contractual document.
+          // The retainage receivable Books reports comes from the `retainage`
+          // ledger and can legitimately differ until a release posts.
+          detail: "Per latest pay application",
           tone: totals.retainage_held_cents > 0 ? "warning" : undefined,
         },
         {
@@ -1035,16 +1095,23 @@ const projectProfitability: ReportDefinition = {
     })
 
     return {
-      subtitle: `${report.basis === "cash" ? "Cash" : "Accrual"} basis${from ? ` · ${from} to ${to}` : ""}`,
+      subtitle: `${report.basis_label}${from ? ` · ${from} to ${to}` : ""}`,
       notice:
         report.suggested_group_by !== report.group_by
           ? {
               tone: "info",
               message: `Cost-code coverage is thin here — grouping by ${report.suggested_group_by} will read more cleanly.`,
             }
-          : undefined,
+          : report.basis === "cash"
+            ? { tone: "info", message: report.basis_description }
+            : undefined,
       stats: [
-        { key: "income", label: "Income", value: formatMoneyCents(report.total_income_cents) },
+        {
+          key: "income",
+          label: "Income",
+          value: formatMoneyCents(report.total_income_cents),
+          detail: report.basis_label,
+        },
         { key: "cost", label: "Cost of work", value: formatMoneyCents(report.total_cost_cents) },
         {
           key: "gross",
@@ -1463,6 +1530,7 @@ function taxYearOptions() {
 export const FINANCIAL_REPORTS: ReportDefinition[] = [
   booksTrialBalance,
   booksProfitAndLoss,
+  booksCashBasis,
   booksBalanceSheet,
   booksCashFlow,
   booksGeneralLedger,

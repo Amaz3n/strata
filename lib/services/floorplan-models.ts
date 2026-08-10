@@ -38,7 +38,7 @@ import { parseVectorsBin } from "@/lib/drawings/vector-snap"
 import { parseTextRuns, TEXT_RUNS_FILE, type TextRun } from "@/lib/drawings/text-runs"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
-import { drawingsVisionConfigured } from "@/lib/services/drawings-pipeline"
+import { drawingsVisionConfigured } from "@/lib/services/ai/drawings-vision"
 import { assistFloorplanModelWithVision } from "@/lib/services/floorplan-vision-assist"
 import { recordEvent } from "@/lib/services/events"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
@@ -935,7 +935,7 @@ export async function runFloorplanInterpretation(input: {
   const nameOf = (sheet: SelectedSheet) => sheet.sheetNumber || sheet.sheetTitle || "a sheet"
   // Sheets with no vector linework (scans) can still be traced by the vision
   // assist below — flagged loudly, because a traced level is a proposal.
-  const visionAvailable = drawingsVisionConfigured()
+  const visionAvailable = await drawingsVisionConfigured()
   const scanTraced: string[] = []
   // Sheets whose scale came from an unconfirmed pipeline proposal rather than
   // a human calibration. The model still builds, but it says so on the record.
@@ -1034,7 +1034,7 @@ export async function runFloorplanInterpretation(input: {
   // Vision assist: confirm what the vectors found, add what they missed, name
   // what the text runs could not — and trace scans outright. Best-effort; the
   // vector-only model stands if it fails.
-  const vision = await assistFloorplanModelWithVision({ supabase, model, tilesBasePathBySheet })
+  const vision = await assistFloorplanModelWithVision({ supabase, model, tilesBasePathBySheet, orgId })
   // A sheet that looked like a floor plan but could not be used is a MISSING
   // STOREY, and the geometry alone will never reveal it. Say so on the record.
   const warnings = skipped.map((entry) =>

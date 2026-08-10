@@ -126,6 +126,8 @@ import type {
 import { SheetRegister } from "@/components/drawings/register/sheet-register"
 import dynamic from "next/dynamic"
 import { RevisionReviewDialog, DistributeRevisionDialog } from "./revision-review-dialog"
+import { RevisionChangeReportSheet } from "./revision-change-report-sheet"
+import { SetCoherenceSheet } from "./set-coherence-sheet"
 import { CreateFromDrawingDialog } from "./create-from-drawing-dialog"
 
 import { unwrapAction } from "@/lib/action-result"
@@ -453,6 +455,9 @@ export function DrawingsSetsView({
   const [reviewOpen, setReviewOpen] = useState(false)
   // Post-publish (or on-demand) distribution of a published revision to portals.
   const [distributeTarget, setDistributeTarget] = useState<{ id: string; label: string | null } | null>(null)
+  // The "what changed" report for a published issuance the user is inspecting.
+  const [changeReportTarget, setChangeReportTarget] = useState<{ id: string; label: string } | null>(null)
+  const [setCheckOpen, setSetCheckOpen] = useState(false)
   const [reviewRevisionId, setReviewRevisionId] = useState<string | null>(null)
   const [pendingDraft, setPendingDraft] = useState<RevisionDraftStatus | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -1947,6 +1952,18 @@ export function DrawingsSetsView({
                       />
                     )}
                     {selectedProjectId && liveSheets.length > 0 ? (
+                      <DropdownMenuItem onClick={() => setSetCheckOpen(true)}>
+                        <Search className="mr-2 h-4 w-4" />
+                        Check set for gaps
+                      </DropdownMenuItem>
+                    ) : (
+                      <DisabledUploadMenuItem
+                        icon={Search}
+                        label="Check set for gaps"
+                        reason="Publish sheets before checking the set for missing references."
+                      />
+                    )}
+                    {selectedProjectId && liveSheets.length > 0 ? (
                       <DropdownMenuItem
                         onClick={() => {
                           window.open(
@@ -2008,6 +2025,18 @@ export function DrawingsSetsView({
             {" — showing each sheet as of this revision."}
             {snapshotLoading && " Loading…"}
           </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7"
+            onClick={() => {
+              const revision = registerRevisions.find((r) => r.id === revisionFilter)
+              if (!revision) return
+              setChangeReportTarget({ id: revision.id, label: issuanceDisplayLabel(revision) })
+            }}
+          >
+            What changed
+          </Button>
           <Button
             size="sm"
             variant="outline"
@@ -2921,6 +2950,23 @@ export function DrawingsSetsView({
               label: pendingDraft?.id === revisionId ? issuanceDisplayLabel(pendingDraft) : null,
             })
           }
+        />
+      )}
+
+      <SetCoherenceSheet
+        open={setCheckOpen}
+        onOpenChange={setSetCheckOpen}
+        projectId={selectedProjectId ?? null}
+      />
+
+      {changeReportTarget && (
+        <RevisionChangeReportSheet
+          open
+          onOpenChange={(open) => {
+            if (!open) setChangeReportTarget(null)
+          }}
+          revisionId={changeReportTarget.id}
+          revisionLabel={changeReportTarget.label}
         />
       )}
 

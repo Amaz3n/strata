@@ -302,18 +302,20 @@ export const ASSIST_COORD_GRID = 1000
 export const ASSIST_MAX_SYMBOL_MATCHES = 400
 
 /**
- * One [x, y] pair on the assist grid. Extra trailing values are tolerated (some
- * models append a confidence), but every value must be a finite on-grid number —
- * a NaN or an off-grid coordinate means the answer is not trustworthy.
+ * The shape the vision model answers a symbol count in.
+ *
+ * Objects rather than [x, y] tuples: a tuple invites a model to append a third
+ * value, and the old tolerate-extras array schema existed only to survive that.
+ * Naming the axes makes the malformed answer unrepresentable instead of
+ * forgiven. An empty list is a valid "looked, not confident".
  */
-const assistGridPointSchema = z
-  .array(z.number().finite().min(0).max(ASSIST_COORD_GRID))
-  .min(2)
-  .transform((entry) => [entry[0], entry[1]] as [number, number])
-
-/** Shape of the vision symbol-count answer. An empty list is a valid "not confident". */
 export const assistSymbolPointsSchema = z.object({
-  points: z.array(assistGridPointSchema),
+  points: z.array(
+    z.object({
+      x: z.number().min(0).max(ASSIST_COORD_GRID).describe("Symbol centre, 0..1000 left to right"),
+      y: z.number().min(0).max(ASSIST_COORD_GRID).describe("Symbol centre, 0..1000 top to bottom"),
+    }),
+  ),
 })
 
 /** Click coordinates arriving from the viewer, in sheet-normalized space. */

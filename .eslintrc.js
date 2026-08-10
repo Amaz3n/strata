@@ -94,7 +94,6 @@ const GRANDFATHERED = [
   "components/help/help-shell.tsx",
   "components/home/production-home.tsx",
   "components/integrations/qbo-import-sheet.tsx",
-  "components/integrations/qbo-sync-sheet.tsx",
   "components/integrations/stripe-connection-card.tsx",
   "components/invoices/arc-invoice-document.tsx",
   "components/invoices/invoice-bottom-bar.tsx",

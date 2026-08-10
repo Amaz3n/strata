@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { getProjectFinancialSetupStatusForProject } from "@/lib/services/project-financial-setup"
 import { loadFinancialsOverviewData } from "../page-data"
 import { listBudgetSnapshots } from "@/lib/services/budgets"
+import { getProjectPocPosition } from "@/lib/services/poc"
 import { BudgetSnapshotComparison } from "@/components/financials/budget-snapshot-comparison"
 
 import { unwrapAction } from "@/lib/action-result"
@@ -29,11 +30,14 @@ export default async function FinancialsBudgetPage({ params }: PageProps) {
 }
 
 async function FinancialsBudgetData({ id }: { id: string }) {
-  const [{ project, contract }, data, setupStatus, snapshots] = await Promise.all([
+  const [{ project, contract }, data, setupStatus, snapshots, poc] = await Promise.all([
     loadFinancialsOverviewData(id),
     fetchBudgetTabDataAction(id),
     getProjectFinancialSetupStatusForProject(id),
     listBudgetSnapshots(id).catch(() => []),
+    // The WIP band needs both revenue sides. A viewer who may see the budget but
+    // not invoices simply loses the band rather than the page.
+    getProjectPocPosition(id).catch(() => null),
   ])
 
   return (
@@ -50,6 +54,7 @@ async function FinancialsBudgetData({ id }: { id: string }) {
         projectId={project.id}
         project={project}
         contractValueCents={contract?.total_cents ?? 0}
+        poc={poc}
         budgetData={data.budgetData}
         costCodes={data.costCodes}
         costCodesEnabled={setupStatus.costCodesEnabled}

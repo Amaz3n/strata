@@ -1,5 +1,15 @@
 export type AccountingReference = { id: string; name: string | null }
 
+/** How a record's cost coding was arrived at. Stored on the record's metadata. */
+export const CODING_SOURCES = ["rule", "learned", "ai", "manual"] as const
+
+export type CodingSource = (typeof CODING_SOURCES)[number]
+
+/** Narrow an untyped metadata value to a coding source, or null. */
+export function readCodingSource(value: unknown): CodingSource | null {
+  return CODING_SOURCES.includes(value as CodingSource) ? (value as CodingSource) : null
+}
+
 export type AccountingCoding = {
   transaction_type?: string | null
   expense_account?: AccountingReference | null

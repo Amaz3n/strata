@@ -139,6 +139,7 @@ export const fileProvider: AccountingProvider = {
     supportsSubCustomers: false,
     supportsInvoiceNumberReservation: false,
     supportsInvoiceDocNumberSync: false,
+    supportsImport: false,
     supportsCDC: false,
     supportsWebhooks: false,
     supportsAttachments: false,

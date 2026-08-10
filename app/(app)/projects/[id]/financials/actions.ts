@@ -73,6 +73,7 @@ import type {
   RetainageReleaseInput,
 } from "@/lib/validation/pay-applications"
 import { requireOrgContext } from "@/lib/services/context"
+import { loadPayablePaymentDecorations } from "@/lib/services/org-payables"
 import { listBudgetTransfers } from "@/lib/services/budget-transfers"
 import { generatePurchaseOrders, listGenerationRuns, listPoExceptions } from "@/lib/services/po-generation"
 
@@ -266,12 +267,18 @@ export async function fetchPayablesTabDataAction(projectId: string, query: { pag
       const complianceStatusResult = await Promise.allSettled([getCompaniesComplianceStatus(companyIds)])
       const complianceStatusByCompanyId =
         complianceStatusResult[0].status === "fulfilled" ? complianceStatusResult[0].value : {}
+      const paymentDecorations = await loadPayablePaymentDecorations(vendorBills).catch(() => ({
+        paymentReadinessByCompanyId: {},
+        runMembershipByBillId: {},
+      }))
 
       return {
         vendorBills,
         vendorBillsPage,
         complianceRules,
         complianceStatusByCompanyId,
+        paymentReadinessByCompanyId: paymentDecorations.paymentReadinessByCompanyId,
+        runMembershipByBillId: paymentDecorations.runMembershipByBillId,
         costCodes,
         budgetLines,
         errors: [

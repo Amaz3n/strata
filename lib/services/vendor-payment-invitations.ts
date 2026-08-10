@@ -17,7 +17,16 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
  * *this* builder can pay them is the `(org_id, company_id)` relationship — which
  * is why readiness lives on the company record and not on any project.
  */
-export type CompanyPaymentReadinessStatus = "ready" | "verifying" | "invited" | "not_started"
+export type CompanyPaymentReadinessStatus =
+  | "ready"
+  | "verifying"
+  | "invited"
+  | "not_started"
+  /** Access was deliberately paused or withdrawn — NOT the same as never
+   *  started. Reporting these as `not_started` offered an Invite button the
+   *  service then refused; they surface honestly instead. */
+  | "suspended"
+  | "revoked"
 
 export interface CompanyPaymentReadiness {
   companyId: string
@@ -30,6 +39,8 @@ const RELATIONSHIP_STATUS_TO_READINESS: Record<string, CompanyPaymentReadinessSt
   onboarding: "verifying",
   claim_pending: "verifying",
   invited: "invited",
+  suspended: "suspended",
+  revoked: "revoked",
 }
 
 export async function listCompanyPaymentReadiness(
@@ -60,21 +71,38 @@ export async function listCompanyPaymentReadiness(
 }
 
 /**
- * The sub portal link the invitation points at.
+ * The sub portal link one named contact follows to set up payout.
  *
- * `portal_access_tokens.project_id` is NOT NULL, so a payment invitation — a
- * company-level ask — still has to ride a project-scoped credential. Reusing the
- * vendor's existing sub link keeps that invisible to them; only a vendor who has
- * never been given portal access needs a new one minted, and it is scoped to the
- * project the builder most recently did business with them on.
+ * Deliberately per-person, never per-company. A payment invitation used to mint
+ * a single contact-less token and mail the same bearer URL to up to five people:
+ * whoever opened it — including anyone it was forwarded to — could register an
+ * arbitrary email against it, claim the vendor company and point every future
+ * ACH run at their own bank. `portal_access_tokens.contact_id` is what binds a
+ * link to a person, and payout setup is only ever authorized on a bound row
+ * (`requireVendorPayoutPortalAccess`). This is CLAUDE.md's doctrine applied to
+ * money: the person is the unit, the link is a field.
+ *
+ * Reusing this contact's existing sub link is still right — the row IS their
+ * access, and the token string is only how it is delivered — but it is now
+ * matched on `contact_id`, so a company-wide link can never be handed back.
+ *
+ * `portal_access_tokens.project_id` is NOT NULL, so a company-level ask still
+ * has to ride a project-scoped credential; a newly minted one is scoped to the
+ * project the builder most recently did business with this vendor on.
  */
-async function resolveVendorPortalLink(orgId: string, companyId: string, userId: string) {
+async function resolveContactPayoutLink(input: {
+  orgId: string
+  companyId: string
+  contactId: string
+  userId: string
+}) {
   const supabase = createServiceSupabaseClient()
   const { data: existing } = await supabase
     .from("portal_access_tokens")
     .select("token_encrypted")
-    .eq("org_id", orgId)
-    .eq("company_id", companyId)
+    .eq("org_id", input.orgId)
+    .eq("company_id", input.companyId)
+    .eq("contact_id", input.contactId)
     .eq("portal_type", "sub")
     .is("revoked_at", null)
     .is("paused_at", null)
@@ -88,8 +116,8 @@ async function resolveVendorPortalLink(orgId: string, companyId: string, userId:
   const { data: bill } = await supabase
     .from("vendor_bills")
     .select("project_id")
-    .eq("org_id", orgId)
-    .eq("company_id", companyId)
+    .eq("org_id", input.orgId)
+    .eq("company_id", input.companyId)
     .not("project_id", "is", null)
     .order("created_at", { ascending: false })
     .limit(1)
@@ -102,11 +130,12 @@ async function resolveVendorPortalLink(orgId: string, companyId: string, userId:
   const { error } = await supabase.from("portal_access_tokens").insert({
     token_hash: hashPortalToken(plaintextToken),
     token_encrypted: encryptPortalToken(plaintextToken),
-    org_id: orgId,
+    org_id: input.orgId,
     project_id: bill.project_id,
-    company_id: companyId,
+    company_id: input.companyId,
+    contact_id: input.contactId,
     portal_type: "sub",
-    created_by: userId,
+    created_by: input.userId,
   })
   if (error) throw new Error(`Unable to create the vendor portal link: ${error.message}`)
   return plaintextToken
@@ -159,7 +188,6 @@ export async function inviteCompanyToPaymentSetup(input: { companyId: string }, 
     throw new Error(`${company.name} has no contact with an email address. Add one in the directory first.`)
   }
 
-  const token = await resolveVendorPortalLink(context.orgId, company.id, context.userId)
   const nowIso = new Date().toISOString()
 
   // Only claim the relationship when the vendor has not already started. An
@@ -181,15 +209,29 @@ export async function inviteCompanyToPaymentSetup(input: { companyId: string }, 
       .eq("id", relationship.id)
   }
 
-  const sent = await sendVendorPaymentInviteEmail({
-    to: recipients.map((contact) => contact.email),
-    recipientName: recipients.length === 1 ? recipients[0].full_name : null,
-    companyName: company.name,
-    orgName: org?.name ?? "Your builder",
-    orgSlug: org?.slug ?? null,
-    orgLogoUrl: org?.logo_url ?? null,
-    setupUrl: `${(process.env.NEXT_PUBLIC_APP_URL ?? "https://arcnaples.com").replace(/\/$/, "")}/s/${token}/payments`,
-  })
+  // One link per person, each bound to that contact's own token row. Mailing a
+  // single shared URL to five people is exactly what made the payout-setup link
+  // a bearer credential; a per-contact link cannot be claimed by whoever it was
+  // forwarded to, because the claim path enforces the bound contact's email.
+  const baseUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "https://arcnaples.com").replace(/\/$/, "")
+  const deliveries = await Promise.all(recipients.map(async (contact) => {
+    const token = await resolveContactPayoutLink({
+      orgId: context.orgId,
+      companyId: company.id,
+      contactId: contact.id,
+      userId: context.userId,
+    })
+    return sendVendorPaymentInviteEmail({
+      to: [contact.email],
+      recipientName: contact.full_name,
+      companyName: company.name,
+      orgName: org?.name ?? "Your builder",
+      orgSlug: org?.slug ?? null,
+      orgLogoUrl: org?.logo_url ?? null,
+      setupUrl: `${baseUrl}/s/${token}/payments`,
+    })
+  }))
+  const sent = deliveries.some(Boolean)
 
   await Promise.all([
     recordEvent({
@@ -198,7 +240,7 @@ export async function inviteCompanyToPaymentSetup(input: { companyId: string }, 
       eventType: "vendor_payment_invitation_sent",
       entityType: "company",
       entityId: company.id,
-      payload: { recipients: recipients.length, delivered: sent },
+      payload: { recipients: recipients.length, delivered: deliveries.filter(Boolean).length },
     }),
     recordAudit({
       orgId: context.orgId,

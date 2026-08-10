@@ -11,7 +11,7 @@ import type {
   AiSearchArtifact,
   AiSearchArtifactDataset,
   AiSearchExportLink,
-} from "@/lib/services/ai-search"
+} from "@/lib/services/ai-search/types"
 import type { AgingBucket } from "@/lib/services/reports/aging"
 import type { ARAgingReport } from "@/lib/services/reports/ar-aging"
 import type { SearchEntityType, SearchResult } from "@/lib/services/search"

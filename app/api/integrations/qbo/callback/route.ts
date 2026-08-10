@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { cookies } from "next/headers"
 
 import { exchangeCodeForTokens, fetchQBOCompanyInfo, verifyQBOOAuthState } from "@/lib/integrations/accounting/qbo/auth"
-import { upsertQBOConnection } from "@/lib/services/accounting-connections"
+import { upsertQBOConnection } from "@/lib/integrations/accounting/qbo/connections"
 import { requireOrgMembership } from "@/lib/auth/context"
 import { logQBO } from "@/lib/services/accounting-logger"
 

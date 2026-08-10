@@ -5,7 +5,7 @@ import { z } from "zod"
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
-import { requirePermission } from "@/lib/services/permissions"
+import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
 import { requireRecentPaymentStepUp } from "@/lib/services/payment-step-up"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
@@ -51,7 +51,10 @@ export interface BlockedPaymentRun {
  */
 export async function listBlockedPaymentRuns(orgId?: string): Promise<BlockedPaymentRun[]> {
   const context = await requireOrgContext(orgId)
-  await requirePermission("payment.reconcile", context)
+  // Viewing the queue is for anyone who can act on payments after the fact:
+  // approvers (who clear blocks) and reconcilers (who audit them). Acting on a
+  // block stays `payments.approve_run` in decidePaymentRiskReview.
+  await requireAnyPermission(["payments.approve_run", "payment.reconcile"], context)
   const supabase = createServiceSupabaseClient()
 
   const { data: reviews, error } = await supabase
@@ -99,6 +102,31 @@ export async function listBlockedPaymentRuns(orgId?: string): Promise<BlockedPay
   })
 }
 
+/**
+ * The blocking codes on the run's most recent automated review — the exact set
+ * the reviewer is being shown in the queue, and therefore the exact set their
+ * decision is allowed to clear.
+ */
+async function latestBlockingSignalCodes(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  orgId: string,
+  runId: string,
+): Promise<string[]> {
+  const { data } = await supabase
+    .from("payment_risk_reviews")
+    .select("signals,decision")
+    .eq("org_id", orgId)
+    .eq("run_id", runId)
+    .eq("review_type", "automated")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (!data || data.decision !== "block" || !Array.isArray(data.signals)) return []
+  return [...new Set((data.signals as PaymentRiskSignal[])
+    .filter((signal) => signal?.severity === "block" && typeof signal.code === "string")
+    .map((signal) => signal.code))]
+}
+
 const decideRiskSchema = z.object({
   run_id: z.string().uuid(),
   decision: z.enum(["allow", "block"]),
@@ -138,6 +166,16 @@ export async function decidePaymentRiskReview(input: DecidePaymentRiskInput, org
     throw new Error("This payment run is no longer waiting on a risk decision")
   }
 
+  // What the reviewer is actually looking at. The decision is recorded against
+  // these codes and clears only these codes: a standing per-run "allow" also
+  // waived every block that appeared afterwards, so clearing three failed
+  // disbursements at submit silently waived a payout destination claimed the
+  // next morning. A signal nobody reviewed must still stop the run.
+  const clearedCodes = parsed.decision === "allow" ? await latestBlockingSignalCodes(supabase, context.orgId, parsed.run_id) : []
+  if (parsed.decision === "allow" && clearedCodes.length === 0) {
+    throw new Error("This payment run is not currently blocked by any risk signal")
+  }
+
   const { data: review, error: insertError } = await supabase
     .from("payment_risk_reviews")
     .insert({
@@ -146,7 +184,13 @@ export async function decidePaymentRiskReview(input: DecidePaymentRiskInput, org
       review_type: "manual",
       decision: parsed.decision,
       risk_score: parsed.decision === "allow" ? 0 : 100,
-      signals: [{ code: "manual_review", severity: "observe", reason: parsed.reason, step_up_verified_at: stepUpVerifiedAt }],
+      signals: [{
+        code: "manual_review",
+        severity: "observe",
+        reason: parsed.reason,
+        step_up_verified_at: stepUpVerifiedAt,
+        cleared_codes: clearedCodes,
+      }],
       reviewed_by: context.userId,
       reviewed_at: new Date().toISOString(),
     })

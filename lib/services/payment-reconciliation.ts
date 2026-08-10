@@ -12,6 +12,31 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 /** Provider round-trips in flight while reconciling one org's period. */
 const SETTLEMENT_CONCURRENCY = 8
+/**
+ * How long a payment may sit mid-flight before it is an exception rather than a
+ * settlement window.
+ *
+ * The rail's own worst case is a five-business-day debit plus a two-day payout,
+ * so anything past four days without reaching a terminal state has stopped
+ * moving for a reason nobody has looked at. Production had a run `processing`
+ * and its disbursement frozen at `transfer_pending` for six days with no sweep,
+ * no alert and no exception — the money had left the builder and never reached
+ * the vendor, and the only reason anyone found out was a manual audit.
+ */
+const STALE_PAYMENT_STATE_HOURS = 96
+/** Non-terminal disbursement states. Anything here is still owed to someone. */
+const NON_TERMINAL_DISBURSEMENT_STATUSES = [
+  "created",
+  "submitted",
+  "debit_pending",
+  "funds_available",
+  "transfer_pending",
+  "payout_pending",
+]
+/** Non-terminal run states. `draft`/`pending_approval` wait on people, not on money. */
+const NON_TERMINAL_RUN_STATUSES = ["processing", "partially_failed"]
+/** Upper bound on stale rows examined per reconciliation. */
+const STALE_SWEEP_LIMIT = 200
 /** Upper bound on orgs examined per tick; the time budget is the real limit. */
 const RECONCILIATION_ORG_SWEEP_LIMIT = 500
 /** Leaves headroom under the route's 300s maxDuration for the final writes. */
@@ -69,6 +94,87 @@ async function loadAllDisbursementsForPeriod(orgId: string, provider: string, pe
     if ((data ?? []).length < pageSize) break
   }
   return rows
+}
+
+/**
+ * Payments that stopped moving, raised as exceptions on this reconciliation run.
+ *
+ * Deliberately not scoped to the reconciliation period: a disbursement stuck for
+ * six days falls out of a one-day window on day two, which is exactly how one
+ * sat unnoticed. It uses the existing exception machinery rather than a parallel
+ * one, so a stuck payment lands in the same Ops queue, with the same resolve
+ * flow, as every other discrepancy. `timing_difference` is the honest status —
+ * the provider and Arc do not disagree about the amount, the money simply has
+ * not arrived — and `provider_reference` names the state and its age so the row
+ * is actionable without opening anything.
+ */
+async function flagStalePaymentStates(reconciliationRunId: string, orgId: string): Promise<number> {
+  const supabase = createServiceSupabaseClient()
+  const cutoff = new Date(Date.now() - STALE_PAYMENT_STATE_HOURS * 60 * 60 * 1000).toISOString()
+  const [{ data: staleDisbursements, error: disbursementError }, { data: staleRuns, error: runError }] = await Promise.all([
+    supabase.from("disbursements")
+      .select("id,run_id,status,amount_cents,provider_payment_id,created_at")
+      .eq("org_id", orgId)
+      .in("status", NON_TERMINAL_DISBURSEMENT_STATUSES)
+      .lte("created_at", cutoff)
+      .order("created_at", { ascending: true })
+      .limit(STALE_SWEEP_LIMIT),
+    supabase.from("payment_runs")
+      .select("id,status,total_debit_cents,processing_started_at,created_at")
+      .eq("org_id", orgId)
+      .in("status", NON_TERMINAL_RUN_STATUSES)
+      .lte("created_at", cutoff)
+      .order("created_at", { ascending: true })
+      .limit(STALE_SWEEP_LIMIT),
+  ])
+  if (disbursementError) throw new Error(`Unable to load stale disbursements: ${disbursementError.message}`)
+  if (runError) throw new Error(`Unable to load stale payment runs: ${runError.message}`)
+
+  const ageHours = (since: unknown) => Math.floor((Date.now() - new Date(String(since)).getTime()) / (60 * 60 * 1000))
+  const rows = [
+    ...(staleDisbursements ?? []).map((disbursement) => ({
+      disbursement_id: disbursement.id as string | null,
+      expected_cents: Number(disbursement.amount_cents),
+      provider_reference: `stale:disbursement:${disbursement.status}:${ageHours(disbursement.created_at)}h`,
+    })),
+    ...(staleRuns ?? []).map((run) => ({
+      disbursement_id: null,
+      expected_cents: Number(run.total_debit_cents),
+      provider_reference: `stale:payment_run:${run.id}:${run.status}:${ageHours(run.processing_started_at ?? run.created_at)}h`,
+    })),
+  ]
+  if (rows.length === 0) return 0
+
+  const { error: insertError } = await supabase.from("payment_reconciliation_items").insert(
+    rows.map((row) => ({
+      reconciliation_run_id: reconciliationRunId,
+      org_id: orgId,
+      disbursement_id: row.disbursement_id,
+      provider_reference: row.provider_reference,
+      expected_cents: row.expected_cents,
+      provider_cents: 0,
+      difference_cents: -row.expected_cents,
+      status: "timing_difference",
+    })),
+  )
+  if (insertError) throw new Error(`Unable to record stale payment exceptions: ${insertError.message}`)
+
+  // Loud, not logged. A payment that stopped moving is the worst intermediate
+  // state on this rail, and the reconciliation summary alone does not page
+  // anyone — this event does.
+  await recordEvent({
+    orgId,
+    eventType: "payment_operations_alert",
+    entityType: "payment_reconciliation_run",
+    entityId: reconciliationRunId,
+    payload: {
+      reason: "stale_payment_state",
+      stale_disbursements: (staleDisbursements ?? []).length,
+      stale_runs: (staleRuns ?? []).length,
+      threshold_hours: STALE_PAYMENT_STATE_HOURS,
+    },
+  })
+  return rows.length
 }
 
 async function performPaymentReconciliation(input: { period_start: string; period_end: string }, orgId: string, actorId?: string) {
@@ -166,6 +272,51 @@ async function performPaymentReconciliation(input: { period_start: string; perio
         if (feeError) throw new Error(`Unable to record processor-fee reconciliation: ${feeError.message}`)
       }
     }
+
+    // Arc's own per-run fee debits. A fee charge sitting in `failed` is a
+    // standing receivable, and until it was walked here nothing counted it —
+    // disbursement reconciliation only ever saw the vendors' money. The run
+    // totals stay vendor-only (that is what `expected_cents` means); fee
+    // discrepancies surface as their own exception items.
+    const { data: feeCharges, error: feeChargesError } = await supabase.from("payment_run_fee_charges")
+      .select("id,run_id,provider_payment_id,status,amount_cents")
+      .eq("org_id", orgId).eq("provider", providerKey)
+      .gte("created_at", parsed.period_start).lt("created_at", parsed.period_end)
+    if (feeChargesError) throw new Error(`Unable to load fee charges for reconciliation: ${feeChargesError.message}`)
+    const feeSettlements = await mapWithConcurrency(
+      feeCharges ?? [],
+      SETTLEMENT_CONCURRENCY,
+      (charge) => charge.provider_payment_id
+        ? provider.retrieveSettlement({ providerPaymentId: String(charge.provider_payment_id) })
+        : Promise.resolve(null),
+    )
+    for (const [index, charge] of (feeCharges ?? []).entries()) {
+      const expectedFeeCents = Number(charge.amount_cents)
+      const settlement = feeSettlements[index]
+      const arcCollectedCents = charge.status === "succeeded" ? expectedFeeCents : 0
+      const providerCollectedCents = settlement?.exists && settlement.status === "settled" ? settlement.debitAmountCents : 0
+      const feeStatus = !settlement || !settlement.exists
+        // Never collected at the provider — an uncollected fee is a receivable
+        // someone chases, whether the charge failed or was never submitted.
+        ? "missing_provider"
+        : providerCollectedCents !== arcCollectedCents
+          ? settlement.status === "pending" ? "timing_difference" : "amount_mismatch"
+          : "matched"
+      if (feeStatus !== "matched") exceptionCount += 1
+      const { error: feeItemError } = await supabase.from("payment_reconciliation_items").insert({
+        reconciliation_run_id: run.id,
+        org_id: orgId,
+        disbursement_id: null,
+        provider_reference: charge.provider_payment_id ? `${charge.provider_payment_id}:fee_charge` : `fee_charge:${charge.id}`,
+        expected_cents: expectedFeeCents,
+        provider_cents: providerCollectedCents,
+        difference_cents: providerCollectedCents - expectedFeeCents,
+        status: feeStatus,
+      })
+      if (feeItemError) throw new Error(`Unable to record fee-charge reconciliation: ${feeItemError.message}`)
+    }
+
+    exceptionCount += await flagStalePaymentStates(run.id, orgId)
 
     const differenceCents = providerCents - expectedCents
     const status = exceptionCount > 0 || differenceCents !== 0 ? "exceptions" : "balanced"

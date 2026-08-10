@@ -1,7 +1,12 @@
 import "server-only"
 
 import { ENTITY_HREF_FALLBACKS, ENTITY_INTENTS } from "@/lib/services/ai-search/config"
+import {
+  filterResultsByPermission,
+  visibleSearchEntityTypes,
+} from "@/lib/ai/search-visibility"
 import type { requireOrgContext } from "@/lib/services/context"
+import { getUserPermissions } from "@/lib/services/permissions"
 import {
   EMBEDDING_MODEL,
   embeddingsConfigured,
@@ -226,6 +231,23 @@ async function ensureSemanticEmbeddingsForResults(context: ResolvedOrgContext, r
   }
 }
 
+export interface HybridRetrieval {
+  results: SearchResult[]
+  /**
+   * Entity types the asker's role cannot read. Non-empty means the answer is
+   * built on a deliberately partial view and must say so.
+   */
+  blockedTypes: string[]
+}
+
+/**
+ * Retrieve, scoped to both what the org owns AND what this person may read.
+ *
+ * RLS handles the first half. The second half is enforced here, and it is
+ * enforced BEFORE the query rather than after: a record the asker has no
+ * clearance for must never enter the model's context, because once it has, no
+ * amount of filtering the answer afterwards can unsee it.
+ */
 export async function retrieveHybridResults({
   context,
   query,
@@ -240,10 +262,22 @@ export async function retrieveHybridResults({
   filters: { projectId?: string; status?: string[] }
   limit: number
   enableHybrid: boolean
-}) {
+}): Promise<HybridRetrieval> {
+  const granted = new Set(await getUserPermissions(context.userId, context.orgId))
+  const permittedTypes = visibleSearchEntityTypes(entityTypes, granted)
+
+  // Every requested type was blocked: there is nothing to retrieve, and running
+  // the query anyway would be asking the database for rows we would discard.
+  if (permittedTypes.length === 0 && entityTypes.length > 0) {
+    return {
+      results: [],
+      blockedTypes: [...new Set(entityTypes.filter((type) => !permittedTypes.includes(type)))].sort(),
+    }
+  }
+
   const lexical = await searchEntities(
     query,
-    entityTypes,
+    permittedTypes,
     filters,
     { limit, sortBy: "updated_at" },
     context.orgId,
@@ -258,13 +292,21 @@ export async function retrieveHybridResults({
     const semantic = await searchSemanticDocuments({
       context,
       query,
-      entityTypes,
+      entityTypes: permittedTypes,
       limit: Math.min(SEMANTIC_RETRIEVAL_LIMIT, Math.max(limit, 12)),
     })
     merged = mergeHybridResults(merged, semantic, limit)
   }
 
-  void ensureSemanticEmbeddingsForResults(context, merged)
+  // An empty `entityTypes` means "search everything", so the pre-filter had
+  // nothing to narrow; the sweep below is what enforces clearance in that case.
+  const filtered = filterResultsByPermission(merged, granted)
 
-  return merged
+  void ensureSemanticEmbeddingsForResults(context, filtered.visible)
+
+  const preFilterBlocked = entityTypes.filter((type) => !permittedTypes.includes(type))
+  return {
+    results: filtered.visible,
+    blockedTypes: [...new Set([...preFilterBlocked, ...filtered.blockedTypes])].sort(),
+  }
 }

@@ -32,7 +32,18 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { z } from "zod"
 
+import {
+  drawingsVisionConfigured,
+  runDrawingsVisionObject,
+  type VisionImage,
+} from "@/lib/services/ai/drawings-vision"
+import {
+  classifyChangedRegions,
+  type SheetChangeSemantics,
+} from "@/lib/services/drawings-change-semantics"
+import { loadMupdf, type MupdfModule } from "@/lib/services/mupdf-loader"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { downloadDrawingPdfObject } from "@/lib/storage/drawings-pdfs-storage"
 import {
@@ -207,8 +218,6 @@ type VisionSheetMetadata = {
   statedScale?: string | null
 }
 
-type VisionProvider = "google" | "openai"
-
 interface ClaimedJob {
   job_id: number
   org_id: string
@@ -220,17 +229,6 @@ interface ClaimedJob {
 // ============================================================================
 // MuPDF (WASM) helpers
 // ============================================================================
-
-type MupdfModule = typeof import("mupdf")
-
-let mupdfModulePromise: Promise<MupdfModule> | null = null
-
-export function loadMupdf(): Promise<MupdfModule> {
-  if (!mupdfModulePromise) {
-    mupdfModulePromise = import("mupdf")
-  }
-  return mupdfModulePromise
-}
 
 async function loadSharp() {
   const sharpModule = await import("sharp")
@@ -861,7 +859,7 @@ async function handleProcessDrawingSet(supabase: SupabaseClient, job: ClaimedJob
     pageCount,
     setTitle,
     targetSheet,
-    aiVision: payload.aiVision ?? null,
+    visionConfigured: await drawingsVisionConfigured(),
   }
 
   if (pageCount <= SPLIT_CHUNK_SIZE) {
@@ -929,7 +927,11 @@ interface SplitChunkInput {
   pageCount: number
   setTitle: string
   targetSheet: { id: string; sheet_number: string; sheet_title?: string | null; discipline?: string | null } | null
-  aiVision: unknown
+  /**
+   * Resolved once per job, not per page: whether vision can run is a registry
+   * read, and a 400-sheet set would otherwise ask four hundred times.
+   */
+  visionConfigured: boolean
   chunkIndex: number
   chunkStart: number
   chunkEnd: number
@@ -995,7 +997,7 @@ async function handleSplitDrawingChunk(supabase: SupabaseClient, job: ClaimedJob
       targetSheet: payload.targetSheet && typeof payload.targetSheet === "object"
         ? (payload.targetSheet as SplitChunkInput["targetSheet"])
         : null,
-      aiVision: payload.aiVision ?? null,
+      visionConfigured: await drawingsVisionConfigured(),
       chunkIndex,
       chunkStart: requireNumber(payload.chunkStart, "chunkStart"),
       chunkEnd: requireNumber(payload.chunkEnd, "chunkEnd"),
@@ -1019,7 +1021,7 @@ async function splitChunkPages(
 ) {
   const {
     orgId, projectId, drawingSetId, draftRevisionId, sourceFileId, sourceHash,
-    pageCount, setTitle, targetSheet, aiVision, chunkIndex, chunkStart, chunkEnd,
+    pageCount, setTitle, targetSheet, visionConfigured, chunkIndex, chunkStart, chunkEnd,
     doc, mupdf,
   } = input
 
@@ -1050,7 +1052,7 @@ async function splitChunkPages(
     const pageNumber = pageIndex + 1
 
     const detected = detectSheetMetadata({ pageText, setTitle, pageNumber })
-    const visionPending = shouldUseVisionFallback(detected, pageText, { aiVision })
+    const visionPending = shouldUseVisionFallback(detected, pageText, visionConfigured)
 
     // Cross-page/cross-upload uniqueness is enforced by the DB unique index on
     // (project_id, sheet_number); collisions resolve on insert.
@@ -1183,7 +1185,6 @@ async function splitChunkPages(
               discipline: targetSheet.discipline ?? null,
             }
           : null,
-        aiVision: aiVision ?? null,
       },
       run_at: new Date().toISOString(),
     })
@@ -1251,7 +1252,7 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
     payload.detected && typeof payload.detected === "object"
       ? (payload.detected as DetectedSheetMetadata)
       : detectSheetMetadata({ pageText, setTitle, pageNumber })
-  const visionPending = shouldUseVisionFallback(detected, pageText, payload)
+  const visionPending = shouldUseVisionFallback(detected, pageText, await drawingsVisionConfigured())
   const isTargetPage = Boolean(payload.isTargetPage && payload.targetSheet)
   const targetSheet = isTargetPage ? (payload.targetSheet as Record<string, any>) : null
   const tentativeSheetNumber =
@@ -1485,7 +1486,6 @@ async function handleProcessDrawingPage(supabase: SupabaseClient, job: ClaimedJo
           pageText: pageText.slice(0, PAGE_TEXT_PAYLOAD_MAX_CHARS),
           detected,
           visionPaths,
-          aiVision: payload.aiVision ?? null,
         },
         run_at: new Date().toISOString(),
       })
@@ -1920,10 +1920,12 @@ async function handleEnrichDrawingMetadata(supabase: SupabaseClient, job: Claime
     return
   }
 
-  const images: Array<{ dataUrl: string }> = []
+  // Raw bytes, not data URLs: the gateway hands file parts to the provider
+  // directly, so base64-ing them here only inflated the payload by a third.
+  const images: VisionImage[] = []
   for (const cropPath of visionPaths) {
     const bytes = await downloadTilesObject({ supabase, path: cropPath })
-    images.push({ dataUrl: `data:image/webp;base64,${bytes.toString("base64")}` })
+    images.push({ data: bytes, mediaType: "image/webp" })
   }
   if (images.length === 0) {
     await cleanupCrops()
@@ -1941,7 +1943,8 @@ async function handleEnrichDrawingMetadata(supabase: SupabaseClient, job: Claime
       setTitle,
       pageNumber,
       initial: detected,
-      payload,
+      orgId,
+      sheetVersionId,
     })
   } catch (error) {
     if (job.retry_count + 1 >= MAX_JOB_RETRIES) {
@@ -2913,12 +2916,38 @@ async function detectChangesForVersion(
   const aspectMismatch =
     Math.abs(current.aspect - before.sourceAspect) / current.aspect > 0.02
 
+  // What kind of change each region is, and what it touches. Strictly additive:
+  // the pixel result is written whether or not this runs, so a sheet always has
+  // a diff even when no provider is configured or the classifier fails.
+  let semantics: SheetChangeSemantics | null = null
+  if (diff.regions.length > 0 && (await drawingsVisionConfigured())) {
+    try {
+      semantics = await classifyChangedRegions({
+        supabase,
+        orgId,
+        sheetId: row.drawing_sheet_id,
+        sheetVersionId: row.id,
+        priorVersion: prior,
+        currentVersion: row,
+        regions: diff.regions.map((region) => ({
+          x: region.x,
+          y: region.y,
+          w: region.w,
+          h: region.h,
+        })),
+      })
+    } catch (error) {
+      console.warn(`[drawings-pipeline] Change classification failed for ${row.id}:`, error)
+    }
+  }
+
   await writeResult({
     changed_ratio: diff.changedRatio,
     regions: diff.regions,
     region_count: diff.regionCount,
     basis: { width: current.width, height: current.height },
     ...(aspectMismatch ? { notes: ["aspect_mismatch"] } : {}),
+    ...(semantics ? { semantics } : {}),
   })
 }
 
@@ -3468,31 +3497,52 @@ function normalizeWhitespace(value: string): string {
 // AI vision fallback (ported from the worker; buffer-based instead of files)
 // ============================================================================
 
+/**
+ * Vision only earns its cost when the text pass is weak or absent. The caller
+ * resolves `visionConfigured` once per job rather than per page — it is a
+ * registry read, and asking it four hundred times for one set is four hundred
+ * round trips to learn the same thing.
+ */
 function shouldUseVisionFallback(
   detected: DetectedSheetMetadata,
   pageText: string,
-  payload?: Record<string, any>,
+  visionConfigured: boolean,
 ): boolean {
-  const provider = getVisionProvider(payload)
-  if (!getVisionApiKey(provider)) return false
+  if (!visionConfigured) return false
   if (!pageText.trim()) return true
   return detected.method !== "label" || detected.confidence === "low"
 }
 
+/**
+ * The title-block read. Structured output means the shape is guaranteed, so the
+ * ten-alias normaliser and the fence-stripping parser this used to need are gone
+ * — what remains below is domain validation (is that a real discipline code, is
+ * that a scale we can actually parse), which no schema can express.
+ */
+const sheetMetadataSchema = z.object({
+  sheet_number: z.string().nullable().describe("Title-block sheet number, e.g. A-101, E1.1, S2.0"),
+  sheet_title: z.string().nullable().describe("Title-block sheet title"),
+  discipline: z
+    .enum(["A", "S", "M", "E", "P", "FP", "C", "L", "I", "G", "T", "SP", "D", "X"])
+    .nullable(),
+  confidence: z.enum(["high", "medium", "low"]),
+  notes: z.array(z.string()),
+  stated_scale: z
+    .string()
+    .nullable()
+    .describe("Drawing scale copied verbatim from the title block, or null"),
+})
+
 async function detectSheetMetadataWithVision(input: {
-  images: Array<{ dataUrl: string }>
+  images: VisionImage[]
   pageText: string
   setTitle: string
   pageNumber: number
   initial: DetectedSheetMetadata
-  payload?: Record<string, any>
+  orgId: string
+  sheetVersionId: string
 }): Promise<VisionSheetMetadata | null> {
-  const { images, pageText, setTitle, pageNumber, initial, payload } = input
-  const provider = getVisionProvider(payload)
-  const apiKey = getVisionApiKey(provider)
-  if (!apiKey) return null
-
-  const model = getVisionModel(provider, payload)
+  const { images, pageText, setTitle, pageNumber, initial } = input
   const prompt = [
       "You are extracting metadata from one construction drawing page.",
       `Project set title: ${setTitle}`,
@@ -3501,9 +3551,6 @@ async function detectSheetMetadataWithVision(input: {
       pageText.trim()
         ? `Extracted PDF text (may be partial): ${truncateValue(pageText, 4000)}`
         : "Extracted PDF text is empty, so rely on the image.",
-      "Return only JSON with these keys: sheet_number, sheet_title, discipline, confidence, notes, stated_scale.",
-      "discipline must be one of: A, S, M, E, P, FP, C, L, I, G, T, SP, D, X.",
-      "confidence must be one of: high, medium, low.",
       "If uncertain, preserve the existing guess unless the image clearly shows a better answer.",
       "Prefer title block values like E1.1, A-101, S2.0, etc.",
       // The scale drives every measured quantity on the sheet, so a guess is
@@ -3511,214 +3558,31 @@ async function detectSheetMetadataWithVision(input: {
       "stated_scale: copy the drawing scale from the title block EXACTLY as printed, e.g. \"1/4\\\" = 1'-0\\\"\" or \"1\\\" = 20'\". Use null if the sheet says NTS / AS NOTED / VARIES, or if you cannot read a single scale. Never infer or calculate it.",
     ].join("\n")
 
-  const rawText = await generateVisionResponseText({ provider, apiKey, model, prompt, images, pageNumber })
-  if (!rawText) return null
-
-  const parsed = parseVisionJson(rawText)
+  const parsed = await runDrawingsVisionObject({
+    schema: sheetMetadataSchema,
+    prompt,
+    images,
+    orgId: input.orgId,
+    entityType: "drawing_sheet_version",
+    entityId: input.sheetVersionId,
+  })
   if (!parsed) return null
 
   const sheetNumber = normalizeSheetNumberCandidate(parsed.sheet_number ?? "")
-  const discipline =
-    typeof parsed.discipline === "string" && DISCIPLINE_CODES.has(parsed.discipline.toUpperCase())
-      ? parsed.discipline.toUpperCase()
-      : sheetNumber
-        ? detectDiscipline(sheetNumber)
-        : null
+  // The schema constrains the enum, but a model may still name a discipline that
+  // contradicts the number it just read; the number wins, because that is what
+  // every downstream grouping keys on.
+  const discipline = parsed.discipline ?? (sheetNumber ? detectDiscipline(sheetNumber) : null)
   const sheetTitle = sanitizeTitle(parsed.sheet_title ?? "")
-  const confidence = normalizeConfidence(parsed.confidence)
-  const notes = Array.isArray(parsed.notes)
-    ? parsed.notes.filter((note: unknown): note is string => typeof note === "string").slice(0, 6)
-    : []
+  const notes = parsed.notes.filter((note) => note.trim()).slice(0, 6)
   // Only keep a scale this codebase can actually parse — an unparseable string
   // would become a proposal nobody could apply.
   const statedScale =
-    typeof parsed.stated_scale === "string" && parseStatedScale(parsed.stated_scale)
+    parsed.stated_scale && parseStatedScale(parsed.stated_scale)
       ? truncateValue(parsed.stated_scale, 60)
       : null
 
-  return { sheetNumber, sheetTitle, discipline, confidence, notes, statedScale }
-}
-
-/** Is a drawings-vision provider configured for this deployment? */
-export function drawingsVisionConfigured(): boolean {
-  return getVisionApiKey(getVisionProvider()) !== null
-}
-
-/**
- * One prompt + images → raw model text on the configured drawings-vision
- * provider. The floorplan interpreter's vision assist rides the SAME provider,
- * key and model resolution as title-block enrichment — one knob, not two.
- */
-export async function runDrawingsVisionPrompt(input: {
-  prompt: string
-  images: Array<{ dataUrl: string }>
-  signal?: AbortSignal
-}): Promise<string | null> {
-  const provider = getVisionProvider()
-  const apiKey = getVisionApiKey(provider)
-  if (!apiKey) return null
-  const model = getVisionModel(provider)
-  return generateVisionResponseText({
-    provider,
-    apiKey,
-    model,
-    prompt: input.prompt,
-    images: input.images,
-    pageNumber: 0,
-    signal: input.signal,
-  })
-}
-
-function getPayloadVisionConfig(payload?: Record<string, any>): { provider?: VisionProvider; model?: string } {
-  const raw = payload?.aiVision ?? payload?.ai_vision
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
-
-  const record = raw as Record<string, unknown>
-  const providerValue = typeof record.provider === "string" ? record.provider.trim().toLowerCase() : ""
-  const modelValue = typeof record.model === "string" ? record.model.trim() : ""
-  const provider = providerValue === "openai" || providerValue === "google" ? providerValue : undefined
-
-  return { provider, model: modelValue || undefined }
-}
-
-function getVisionProvider(payload?: Record<string, any>): VisionProvider {
-  const payloadProvider = getPayloadVisionConfig(payload).provider
-  if (payloadProvider) return payloadProvider
-
-  const configured = (
-    process.env.DRAWINGS_VISION_PROVIDER ||
-    process.env.AI_DRAWINGS_VISION_PROVIDER ||
-    process.env.AI_VISION_PROVIDER ||
-    "google"
-  )
-    .trim()
-    .toLowerCase()
-
-  return configured === "openai" ? "openai" : "google"
-}
-
-function getVisionApiKey(provider: VisionProvider): string | null {
-  if (provider === "openai") {
-    return process.env.OPENAI_API_KEY?.trim() || null
-  }
-  return (
-    process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim() ||
-    process.env.GEMINI_API_KEY?.trim() ||
-    null
-  )
-}
-
-function getVisionModel(provider: VisionProvider, payload?: Record<string, any>): string {
-  const payloadModel = getPayloadVisionConfig(payload).model
-  if (payloadModel) return payloadModel
-
-  if (provider === "openai") {
-    return (
-      process.env.DRAWINGS_VISION_MODEL ||
-      process.env.AI_DRAWINGS_VISION_MODEL ||
-      process.env.OPENAI_DRAWINGS_VISION_MODEL ||
-      process.env.OPENAI_VISION_MODEL ||
-      "gpt-4.1-mini"
-    )
-  }
-
-  return (
-    process.env.DRAWINGS_VISION_MODEL ||
-    process.env.AI_DRAWINGS_VISION_MODEL ||
-    process.env.GOOGLE_DRAWINGS_VISION_MODEL ||
-    process.env.GEMINI_VISION_MODEL ||
-    process.env.GOOGLE_VISION_MODEL ||
-    "gemini-2.5-flash-lite"
-  )
-}
-
-async function generateVisionResponseText(input: {
-  provider: VisionProvider
-  apiKey: string
-  model: string
-  prompt: string
-  images: Array<{ dataUrl: string }>
-  pageNumber: number
-  signal?: AbortSignal
-}): Promise<string | null> {
-  const { provider, apiKey, model, prompt, images, pageNumber, signal } = input
-
-  if (provider === "openai") {
-    const baseUrl = (process.env.OPENAI_BASE_URL || process.env.OPENAI_COMPAT_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "")
-    const response = await fetch(`${baseUrl}/responses`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      signal,
-      body: JSON.stringify({
-        model,
-        input: [
-          {
-            role: "user",
-            content: [
-              { type: "input_text", text: prompt },
-              ...images.map((image, index) => ({
-                type: "input_image",
-                image_url: image.dataUrl,
-                detail: index === 0 ? "low" : "high",
-              })),
-            ],
-          },
-        ],
-      }),
-    })
-
-    if (!response.ok) {
-      const body = await response.text()
-      throw new Error(`OpenAI vision failed for page ${pageNumber}: ${response.status} ${body.slice(0, 300)}`)
-    }
-
-    const payload = (await response.json()) as any
-    return extractOpenAiResponseText(payload)
-  }
-
-  const normalizedModel = model.startsWith("models/") ? model : `models/${model}`
-  const endpoint =
-    process.env.GEMINI_BASE_URL?.replace(/\/$/, "") ||
-    "https://generativelanguage.googleapis.com/v1beta"
-
-  const response = await fetch(
-    `${endpoint}/${normalizedModel}:generateContent?key=${encodeURIComponent(apiKey)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal,
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { text: prompt },
-              ...images.map((image) => {
-                const [, mimeType = "image/webp", data = ""] =
-                  image.dataUrl.match(/^data:(.*?);base64,(.*)$/) || []
-                return { inline_data: { mime_type: mimeType, data } }
-              }),
-            ],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.1,
-          responseMimeType: "application/json",
-        },
-      }),
-    },
-  )
-
-  if (!response.ok) {
-    const body = await response.text()
-    throw new Error(`Gemini vision failed for page ${pageNumber}: ${response.status} ${body.slice(0, 300)}`)
-  }
-
-  const payload = (await response.json()) as any
-  return extractGeminiResponseText(payload)
+  return { sheetNumber, sheetTitle, discipline, confidence: parsed.confidence, notes, statedScale }
 }
 
 /**
@@ -3782,110 +3646,6 @@ async function buildVisionCropBuffers(pngBuffer: Buffer): Promise<Buffer[]> {
   ])
 
   return [full, ...crops]
-}
-
-function extractOpenAiResponseText(payload: any): string {
-  if (typeof payload?.output_text === "string" && payload.output_text.trim()) {
-    return payload.output_text.trim()
-  }
-
-  const output = Array.isArray(payload?.output) ? payload.output : []
-  const texts: string[] = []
-  for (const item of output) {
-    const content = Array.isArray(item?.content) ? item.content : []
-    for (const entry of content) {
-      if (entry?.type === "output_text" && typeof entry?.text === "string") {
-        texts.push(entry.text)
-      }
-    }
-  }
-  return texts.join("\n").trim()
-}
-
-function extractGeminiResponseText(payload: any): string {
-  const candidates = Array.isArray(payload?.candidates) ? payload.candidates : []
-  const texts: string[] = []
-
-  for (const candidate of candidates) {
-    const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : []
-    for (const part of parts) {
-      if (typeof part?.text === "string" && part.text.trim()) {
-        texts.push(part.text.trim())
-      }
-    }
-  }
-
-  return texts.join("\n").trim()
-}
-
-/**
- * One vision call against a drawing image, using the same provider, key, and
- * model resolution the enrichment pipeline uses. Takeoff's click-to-trace
- * shares this so there is a single place where "which model looks at a sheet"
- * is answered, and a single env var to change it.
- *
- * Returns null when no provider is configured — callers degrade to manual.
- */
-export async function runDrawingVision(input: {
-  prompt: string
-  images: Array<{ dataUrl: string }>
-  timeoutMs?: number
-}): Promise<any | null> {
-  const provider = getVisionProvider()
-  const apiKey = getVisionApiKey(provider)
-  if (!apiKey) return null
-
-  const controller = input.timeoutMs ? new AbortController() : null
-  const timeout = controller
-    ? setTimeout(() => controller.abort(), input.timeoutMs)
-    : null
-  let rawText: string | null
-  try {
-    rawText = await generateVisionResponseText({
-      provider,
-      apiKey,
-      model: getVisionModel(provider),
-      prompt: input.prompt,
-      images: input.images,
-      pageNumber: 1,
-      signal: controller?.signal,
-    })
-  } catch (error) {
-    if (controller?.signal.aborted) {
-      console.warn("[drawings-vision] Interactive request timed out", {
-        timeoutMs: input.timeoutMs,
-      })
-      return null
-    }
-    throw error
-  } finally {
-    if (timeout) clearTimeout(timeout)
-  }
-  if (!rawText) return null
-  return parseVisionJson(rawText)
-}
-
-/** True when a vision provider is configured; gates the AI-assist affordances. */
-export function isDrawingVisionConfigured(): boolean {
-  return !!getVisionApiKey(getVisionProvider())
-}
-
-function parseVisionJson(raw: string): any | null {
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)
-  const candidate = fenced?.[1] ?? raw
-  const jsonMatch = candidate.match(/\{[\s\S]*\}/)
-  if (!jsonMatch) return null
-
-  try {
-    return JSON.parse(jsonMatch[0])
-  } catch {
-    return null
-  }
-}
-
-function normalizeConfidence(value: unknown): DetectionConfidence {
-  if (value === "high" || value === "medium" || value === "low") return value
-  return "low"
 }
 
 function mergeDetectedSheetMetadata(

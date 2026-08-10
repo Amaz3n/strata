@@ -1,12 +1,32 @@
+import type { PayableRunMembership, PayableTabKey } from "@/lib/services/org-payables"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import { isVendorCredit, payableOutstandingCents } from "@/lib/financials/payables-rules"
 
 /**
- * One lifecycle taxonomy for every payables surface. Queues describe where a
- * payable sits on its way to the vendor being paid — never accounting-sync
- * bookkeeping, which is an outcome that follows the lifecycle on its own.
+ * One lifecycle taxonomy for every payables surface — the desk's tabs are
+ * canonical. A payable sits on exactly one working queue on its way to the
+ * vendor being paid. Due-date urgency is a separate, orthogonal dimension
+ * (see `PayableDueFilter`), never a lifecycle queue of its own.
  */
-export type PayableQueue = "all" | "overdue" | "due_soon" | "needs_review" | "payable" | "paid"
+export type PayableQueue = PayableTabKey
+
+export const PAYABLE_QUEUES: PayableQueue[] = ["drafts", "approval", "ready", "inflight", "paid", "all"]
+
+/** Full names everywhere — the rail uses the same words as the desk tabs. */
+export const PAYABLE_QUEUE_LABELS: Record<PayableQueue, string> = {
+  drafts: "Drafts",
+  approval: "Needs approval",
+  ready: "Ready to pay",
+  inflight: "In flight",
+  paid: "Paid",
+  all: "All",
+}
+
+/** Urgency is a filter on top of a queue, not a place a payable lives. */
+export type PayableDueFilter = "any" | "overdue" | "due_soon"
+
+/** Bill id → active run membership, when the surface knows about runs. */
+type RunLookup = Record<string, Pick<PayableRunMembership, "runStatus">>
 
 function dueDateState(bill: VendorBillSummary) {
   if (!bill.due_date || bill.status === "paid") return { overdue: false, dueSoon: false }
@@ -21,16 +41,38 @@ function dueDateState(bill: VendorBillSummary) {
   }
 }
 
-/** Still needs a human: unapproved, or missing the coding approval requires. */
-function needsReview(bill: VendorBillSummary, costCodesEnabled: boolean): boolean {
-  if (isVendorCredit(bill)) return false
-  return bill.status === "pending" || (costCodesEnabled && !bill.actual_cost_code_id)
+function matchesDueFilter(bill: VendorBillSummary, due: PayableDueFilter): boolean {
+  if (due === "any") return true
+  const state = dueDateState(bill)
+  return due === "overdue" ? state.overdue : state.dueSoon
 }
 
-/** Approved with money still owed — the queue a payment run draws from. */
-function isPayable(bill: VendorBillSummary): boolean {
-  if (isVendorCredit(bill)) return false
-  return (bill.status === "approved" || bill.status === "partial") && payableOutstandingCents(bill) > 0
+/**
+ * Whether a bill belongs to a queue, mirroring the desk's server-side tab
+ * predicates: drafts and credits stay off every working queue, and a run —
+ * even a draft one — claims a bill for "in flight" so the two surfaces agree.
+ */
+function billInQueue(bill: VendorBillSummary, queue: PayableQueue, runs?: RunLookup): boolean {
+  switch (queue) {
+    case "drafts":
+      return bill.is_draft
+    case "paid":
+      return !bill.is_draft && !isVendorCredit(bill) && bill.status === "paid"
+    case "inflight":
+      return !bill.is_draft && !isVendorCredit(bill) && Boolean(runs?.[bill.id])
+    case "approval":
+      return !bill.is_draft && !isVendorCredit(bill) && bill.status === "pending"
+    case "ready":
+      return (
+        !bill.is_draft &&
+        !isVendorCredit(bill) &&
+        !runs?.[bill.id] &&
+        (bill.status === "approved" || bill.status === "partial") &&
+        payableOutstandingCents(bill) > 0
+      )
+    default:
+      return true
+  }
 }
 
 function matchesSearch(bill: VendorBillSummary, query: string, costCodesEnabled: boolean): boolean {
@@ -48,40 +90,38 @@ function matchesSearch(bill: VendorBillSummary, query: string, costCodesEnabled:
 
 export function filterPayables(
   bills: VendorBillSummary[],
-  { search, queue, costCodesEnabled }: { search: string; queue: PayableQueue; costCodesEnabled: boolean },
+  {
+    search,
+    queue,
+    due = "any",
+    costCodesEnabled,
+    runMembershipByBillId,
+  }: {
+    search: string
+    queue: PayableQueue
+    due?: PayableDueFilter
+    costCodesEnabled: boolean
+    runMembershipByBillId?: RunLookup
+  },
 ): VendorBillSummary[] {
   const query = search.trim().toLowerCase()
-  return bills.filter((bill) => {
-    if (!matchesSearch(bill, query, costCodesEnabled)) return false
-    switch (queue) {
-      case "needs_review":
-        return needsReview(bill, costCodesEnabled)
-      case "overdue":
-        return dueDateState(bill).overdue
-      case "due_soon":
-        return dueDateState(bill).dueSoon
-      case "payable":
-        return isPayable(bill)
-      case "paid":
-        return bill.status === "paid"
-      default:
-        return true
-    }
-  })
+  return bills.filter(
+    (bill) =>
+      matchesSearch(bill, query, costCodesEnabled) &&
+      billInQueue(bill, queue, runMembershipByBillId) &&
+      matchesDueFilter(bill, due),
+  )
 }
 
-export function payableQueueCounts(bills: VendorBillSummary[], costCodesEnabled: boolean): Record<PayableQueue, number> {
-  return bills.reduce(
-    (counts, bill) => {
-      counts.all += 1
-      const due = dueDateState(bill)
-      if (due.overdue) counts.overdue += 1
-      if (due.dueSoon) counts.due_soon += 1
-      if (needsReview(bill, costCodesEnabled)) counts.needs_review += 1
-      if (isPayable(bill)) counts.payable += 1
-      if (bill.status === "paid") counts.paid += 1
-      return counts
-    },
-    { all: 0, overdue: 0, due_soon: 0, needs_review: 0, payable: 0, paid: 0 } as Record<PayableQueue, number>,
-  )
+export function payableQueueCounts(
+  bills: VendorBillSummary[],
+  runMembershipByBillId?: RunLookup,
+): Record<PayableQueue, number> {
+  const counts: Record<PayableQueue, number> = { drafts: 0, approval: 0, ready: 0, inflight: 0, paid: 0, all: 0 }
+  for (const bill of bills) {
+    for (const queue of PAYABLE_QUEUES) {
+      if (billInQueue(bill, queue, runMembershipByBillId)) counts[queue] += 1
+    }
+  }
+  return counts
 }

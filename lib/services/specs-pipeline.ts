@@ -2,12 +2,11 @@ import "server-only"
 
 import { createHash } from "node:crypto"
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { generateText } from "ai"
 import { z } from "zod"
 
-import { getPlatformAiFeatureDefaultConfig } from "@/lib/services/ai-config"
-import { getApiKeyForProvider, resolveLanguageModel } from "@/lib/services/ai-search/llm"
-import { extractPageTextLines, loadMupdf } from "@/lib/services/drawings-pipeline"
+import { runAiObject } from "@/lib/services/ai/gateway"
+import { extractPageTextLines } from "@/lib/services/drawings-pipeline"
+import { loadMupdf } from "@/lib/services/mupdf-loader"
 import { enqueueReindex } from "@/lib/services/search-index"
 import { triggerSpecsPipeline } from "@/lib/services/specs-pipeline-trigger"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -41,17 +40,20 @@ function detectHeading(lines: string[]): Omit<Boundary, "pageIndex"> | null {
 async function classifyAmbiguousPage(lines: string[], supabase: SupabaseClient) {
   const pageText = lines.slice(0, 80).join("\n").slice(0, 8_000)
   if (!pageText || !/(?:SECTION|\b\d{2}\s\d{2}\s\d{2}\b)/i.test(pageText)) return null
-  const config = await getPlatformAiFeatureDefaultConfig({ supabase, feature: "spec_classification" })
-  const apiKey = getApiKeyForProvider(config.provider)
-  if (!apiKey) return null
-  const result = await generateText({
-    model: resolveLanguageModel(config.provider, apiKey, config.model), temperature: 0, maxOutputTokens: 180, timeout: 12_000,
-    system: "Classify a construction specification page. Return only JSON. Never invent a section if the page is a table of contents or continuation page.",
-    prompt: `If this page begins a CSI section, return {"section_number":"NN NN NN","title":"..."}; otherwise return null.\n\n${pageText}`,
+  // Nullable answers need a wrapper: a bare `null` is not a JSON object, and
+  // "this page starts no section" is the common case here.
+  const result = await runAiObject({
+    feature: "spec_classification",
+    schema: z.object({ heading: headingSchema.nullable() }),
+    system:
+      "Classify a construction specification page. Never invent a section if the page is a table of " +
+      "contents or a continuation page.",
+    prompt: `If this page begins a CSI section, return its heading; otherwise return null.\n\n${pageText}`,
+    timeoutMs: 12_000,
+    // Only ambiguous pages reach here; escalating every one would undo the gate.
+    allowEscalation: false,
   })
-  const raw = result.text.trim().replace(/^```json\s*/i, "").replace(/```$/i, "").trim()
-  if (raw === "null") return null
-  try { return headingSchema.parse(JSON.parse(raw)) } catch { return null }
+  return result.ok ? result.object.heading : null
 }
 
 async function ensureSectionFile(input: { supabase: SupabaseClient; orgId: string; projectId: string; uploadId: string; sectionNumber: string; title: string; bytes: Buffer; actorId: string | null }) {

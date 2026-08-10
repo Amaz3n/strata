@@ -1,9 +1,18 @@
+import { PAYABLE_VENDOR_BILL_STATUSES } from "@/lib/financials/ledger-status"
+import { SYSTEM_ACCOUNT_CODES } from "@/lib/services/books/chart-of-accounts"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
 
-export type AccountingExportKind = "ap" | "job_cost" | "journal"
+/**
+ * Flat operational exports. Double-entry journals are NOT produced here — Arc
+ * Books owns posting, and the `books-general-ledger` report is the journal
+ * export. A second journal builder with hardcoded account names existed here and
+ * disagreed with the posting rules on retainage; it was deleted rather than kept
+ * in parallel.
+ */
+export type AccountingExportKind = "ap" | "job_cost"
 
 function csvCell(value: unknown) {
   const text = value == null ? "" : String(value)
@@ -83,7 +92,7 @@ export async function createAccountingExport(input: { kind: AccountingExportKind
           .select("id,project_id,bill_number,bill_date,due_date,total_cents,accounting_coding,company:companies(name),commitment:commitments(company:companies(name))")
           .eq("org_id", context.orgId)
           .in("project_id", projectIds)
-          .in("status", ["approved", "partial", "paid"])
+          .in("status", [...PAYABLE_VENDOR_BILL_STATUSES])
           .gte("bill_date", input.startDate)
           .lte("bill_date", input.endDate)
           .order("bill_date"),
@@ -144,55 +153,36 @@ export async function createAccountingExport(input: { kind: AccountingExportKind
       })
       csv = toCsv(headers, [...billRows, ...paymentRows])
     }
-  } else if (input.kind === "job_cost") {
+  } else {
+    // Read the job-cost subledger directly. This used to recompute cost from
+    // project_expenses and bill_lines, which made it a separate derivation that
+    // could not agree with the budget page or the GL.
     const headers = ["project", "project_id", "community", "division", "cost_code", "period", "amount_cents"]
     if (projectIds.length === 0) csv = toCsv(headers, [])
     else {
-      const [{ data: expenses, error }, { data: bills, error: billError }] = await Promise.all([
-        context.supabase
-          .from("project_expenses")
-          .select("project_id,expense_date,amount_cents,tax_cents,cost_code:cost_codes(code,name)")
-          .eq("org_id", context.orgId)
-          .in("project_id", projectIds)
-          .in("status", ["approved", "locked"])
-          .gte("expense_date", input.startDate)
-          .lte("expense_date", input.endDate),
-        context.supabase
-          .from("vendor_bills")
-          .select("project_id,bill_date,lines:bill_lines(unit_cost_cents,quantity,cost_code:cost_codes(code,name))")
-          .eq("org_id", context.orgId)
-          .in("project_id", projectIds)
-          .in("status", ["approved", "partial", "paid"])
-          .gte("bill_date", input.startDate)
-          .lte("bill_date", input.endDate),
-      ])
-      if (error || billError) throw new Error(`Unable to build job-cost export: ${error?.message ?? billError?.message}`)
+      const { data: entries, error } = await context.supabase
+        .from("job_cost_entries")
+        .select("project_id,incurred_on,cost_cents,cost_code:cost_codes(code,name)")
+        .eq("org_id", context.orgId)
+        .in("project_id", projectIds)
+        .eq("status", "posted")
+        .gte("incurred_on", input.startDate)
+        .lte("incurred_on", input.endDate)
+      if (error) throw new Error(`Unable to build job-cost export: ${error.message}`)
       const totals = new Map<string, { projectId: string; code: string; period: string; amount: number }>()
-      const add = (projectId: string, code: string, date: string, amount: number) => {
-        const period = String(date).slice(0, 7)
-        const key = `${projectId}:${code}:${period}`
+      for (const entry of entries ?? []) {
+        const code = Array.isArray(entry.cost_code) ? entry.cost_code[0] : entry.cost_code
+        const label = [code?.code, code?.name].filter(Boolean).join(" ") || "Uncoded"
+        const period = String(entry.incurred_on).slice(0, 7)
+        const key = `${entry.project_id}:${label}:${period}`
         const current = totals.get(key)
-        totals.set(key, { projectId, code, period, amount: (current?.amount ?? 0) + amount })
+        totals.set(key, {
+          projectId: entry.project_id,
+          code: label,
+          period,
+          amount: (current?.amount ?? 0) + Number(entry.cost_cents ?? 0),
+        })
       }
-      for (const expense of expenses ?? []) {
-        const code = Array.isArray(expense.cost_code) ? expense.cost_code[0] : expense.cost_code
-        add(
-          expense.project_id,
-          [code?.code, code?.name].filter(Boolean).join(" ") || "Uncoded",
-          expense.expense_date,
-          Number(expense.amount_cents ?? 0) + Number(expense.tax_cents ?? 0),
-        )
-      }
-      for (const bill of bills ?? [])
-        for (const line of bill.lines ?? []) {
-          const code = Array.isArray(line.cost_code) ? line.cost_code[0] : line.cost_code
-          add(
-            bill.project_id,
-            [code?.code, code?.name].filter(Boolean).join(" ") || "Uncoded",
-            bill.bill_date,
-            Math.round(Number(line.unit_cost_cents ?? 0) * Number(line.quantity ?? 1)),
-          )
-        }
       csv = toCsv(
         headers,
         [...totals.values()].map((row) => {
@@ -200,74 +190,6 @@ export async function createAccountingExport(input: { kind: AccountingExportKind
           return [ref?.name ?? row.projectId, row.projectId, ref?.community, ref?.division, row.code, row.period, row.amount]
         }),
       )
-    }
-  } else {
-    const headers = ["date", "account", "dimension", "debit_cents", "credit_cents", "memo", "source_type", "source_id"]
-    if (projectIds.length === 0) csv = toCsv(headers, [])
-    else {
-      const [{ data: invoices, error }, { data: expenses, error: expenseError }, { data: bills, error: billError }] = await Promise.all([
-        context.supabase
-          .from("invoices")
-          .select("id,project_id,issue_date,invoice_number,total_cents")
-          .eq("org_id", context.orgId)
-          .in("project_id", projectIds)
-          .gte("issue_date", input.startDate)
-          .lte("issue_date", input.endDate)
-          .neq("status", "void")
-          .order("issue_date"),
-        context.supabase
-          .from("project_expenses")
-          .select("id,project_id,expense_date,description,amount_cents,tax_cents,accounting_coding")
-          .eq("org_id", context.orgId)
-          .in("project_id", projectIds)
-          .in("status", ["approved", "locked"])
-          .gte("expense_date", input.startDate)
-          .lte("expense_date", input.endDate),
-        context.supabase
-          .from("vendor_bills")
-          .select("id,project_id,bill_date,bill_number,total_cents,accounting_coding")
-          .eq("org_id", context.orgId)
-          .in("project_id", projectIds)
-          .in("status", ["approved", "partial", "paid"])
-          .gte("bill_date", input.startDate)
-          .lte("bill_date", input.endDate),
-      ])
-      if (error || expenseError || billError) throw new Error(`Unable to build journal export: ${error?.message ?? expenseError?.message ?? billError?.message}`)
-      const invoiceRows = (invoices ?? []).flatMap((invoice) => {
-        const project = projectRefs.get(invoice.project_id)
-        const memo = `Invoice ${invoice.invoice_number ?? invoice.id}`
-        return [
-          [invoice.issue_date, "Accounts receivable", project?.name ?? invoice.project_id, invoice.total_cents, 0, memo, "invoice", invoice.id],
-          [invoice.issue_date, "Revenue", project?.name ?? invoice.project_id, 0, invoice.total_cents, memo, "invoice", invoice.id],
-        ]
-      })
-      const expenseRows = [
-        ...(expenses ?? []).map((row) => ({
-          ...row,
-          date: row.expense_date,
-          amount: Number(row.amount_cents ?? 0) + Number(row.tax_cents ?? 0),
-          memo: row.description || `Expense ${row.id}`,
-          source: "expense",
-          credit: "Cash / card",
-        })),
-        ...(bills ?? []).map((row) => ({
-          ...row,
-          date: row.bill_date,
-          amount: Number(row.total_cents ?? 0),
-          memo: `Bill ${row.bill_number ?? row.id}`,
-          source: "bill",
-          credit: "Accounts payable",
-        })),
-      ].flatMap((row) => {
-        const project = projectRefs.get(row.project_id)
-        const coding = row.accounting_coding as { expense_account?: { name?: string; id?: string } } | null
-        const expenseAccount = coding?.expense_account?.name ?? coding?.expense_account?.id ?? "Job cost"
-        return [
-          [row.date, expenseAccount, project?.name ?? row.project_id, row.amount, 0, row.memo, row.source, row.id],
-          [row.date, row.credit, project?.name ?? row.project_id, 0, row.amount, row.memo, row.source, row.id],
-        ]
-      })
-      csv = toCsv(headers, [...invoiceRows, ...expenseRows])
     }
   }
 
@@ -307,6 +229,17 @@ export type PocJournalReviewRow = {
 }
 
 async function buildPocJournalReview(context: Awaited<ReturnType<typeof requireOrgContext>>, input: { asOf: string }) {
+  const { data: chart, error: chartError } = await context.supabase
+    .from("gl_accounts")
+    .select("code, name")
+    .eq("org_id", context.orgId)
+  if (chartError) throw new Error(`Unable to load the chart of accounts: ${chartError.message}`)
+  const nameByCode = new Map((chart ?? []).map((row) => [row.code, row.name]))
+  const accountLabel = (code: string) => {
+    const name = nameByCode.get(code)
+    return name ? `${code} ${name}` : code
+  }
+
   const { data, error } = await context.supabase
     .from("poc_snapshots")
     .select("id, project_id, as_of, over_under_cents, inputs_hash, project:projects(name)")
@@ -353,10 +286,15 @@ async function buildPocJournalReview(context: Awaited<ReturnType<typeof requireO
       rows.push({ ...common, key: `${current.id}:${rows.length + 1}`, account: debitAccount, debitCents: amount, creditCents: 0 })
       rows.push({ ...common, key: `${current.id}:${rows.length + 1}`, account: creditAccount, debitCents: 0, creditCents: amount })
     }
-    if (contractAssetDelta > 0) pushPair("1150 Contract assets / costs in excess", "4000 Construction revenue", contractAssetDelta)
-    if (contractAssetDelta < 0) pushPair("4000 Construction revenue", "1150 Contract assets / costs in excess", Math.abs(contractAssetDelta))
-    if (contractLiabilityDelta > 0) pushPair("4000 Construction revenue", "2350 Contract liabilities / billings in excess", contractLiabilityDelta)
-    if (contractLiabilityDelta < 0) pushPair("2350 Contract liabilities / billings in excess", "4000 Construction revenue", Math.abs(contractLiabilityDelta))
+    // Resolved from the chart rather than re-typed, so a renamed or re-coded
+    // account cannot make this export disagree with what Books actually posts.
+    const contractAsset = accountLabel(SYSTEM_ACCOUNT_CODES.contractAsset)
+    const contractLiability = accountLabel(SYSTEM_ACCOUNT_CODES.contractLiability)
+    const revenue = accountLabel(SYSTEM_ACCOUNT_CODES.constructionRevenue)
+    if (contractAssetDelta > 0) pushPair(contractAsset, revenue, contractAssetDelta)
+    if (contractAssetDelta < 0) pushPair(revenue, contractAsset, Math.abs(contractAssetDelta))
+    if (contractLiabilityDelta > 0) pushPair(revenue, contractLiability, contractLiabilityDelta)
+    if (contractLiabilityDelta < 0) pushPair(contractLiability, revenue, Math.abs(contractLiabilityDelta))
   }
   return { asOf: input.asOf, rows }
 }

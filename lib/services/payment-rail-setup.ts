@@ -7,6 +7,10 @@ import { getPaymentRailProvider } from "@/lib/integrations/payments/payment-rail
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
+import {
+  sendVendorArcPayReadyEmail,
+  sendVendorPayoutDestinationChangedEmail,
+} from "@/lib/services/mailer"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
 import { requireRecentPaymentStepUp } from "@/lib/services/payment-step-up"
 import {
@@ -14,7 +18,11 @@ import {
   listPaymentApproverCandidates,
   type PaymentRunApprover,
 } from "@/lib/services/payment-approvers"
-import { claimVendorCompany, getVendorPaymentPortalContext } from "@/lib/services/vendor-payment-identities"
+import {
+  claimVendorCompany,
+  getVendorPaymentPortalContext,
+  requireVendorPayoutPortalAccess,
+} from "@/lib/services/vendor-payment-identities"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import {
   startVendorPayoutSetupSchema,
@@ -25,6 +33,32 @@ import {
 
 const DEFAULT_PROVIDER = "stripe"
 
+/**
+ * The payout-destination cooling period.
+ *
+ * A change of destination is the single highest-value event on this rail, and
+ * `payment_recipient_accounts.destination_locked_until` / `destination_version`
+ * existed to hold one — but nothing ever wrote them, so the control was read in
+ * four places and enforced nowhere. The bounds mirror the funding-source cooling
+ * window the policy already exposes (`control_change_cooling_hours`, 24–168h,
+ * 72h default), because they answer the same question about the other end of the
+ * same payment.
+ */
+const DEFAULT_DESTINATION_COOLING_HOURS = 72
+const MIN_DESTINATION_COOLING_HOURS = 24
+const MAX_DESTINATION_COOLING_HOURS = 168
+
+function firstRelation<T>(value: T | T[] | null | undefined): T | null {
+  if (Array.isArray(value)) return value[0] ?? null
+  return value ?? null
+}
+
+function clampCoolingHours(value: unknown): number {
+  const hours = Number(value)
+  if (!Number.isFinite(hours)) return DEFAULT_DESTINATION_COOLING_HOURS
+  return Math.min(MAX_DESTINATION_COOLING_HOURS, Math.max(MIN_DESTINATION_COOLING_HOURS, Math.round(hours)))
+}
+
 function jsonString(value: unknown, key: string) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null
   const candidate = Reflect.get(value, key)
@@ -34,10 +68,10 @@ function jsonString(value: unknown, key: string) {
 async function listRecipientRelationships(recipientAccountId: string) {
   const supabase = createServiceSupabaseClient()
   const pageSize = 500
-  const rows: Array<{ id: string; org_id: string }> = []
+  const rows: Array<{ id: string; org_id: string; company_id: string; invited_by: string | null }> = []
   for (let from = 0; ; from += pageSize) {
     const { data, error } = await supabase.from("vendor_payment_relationships")
-      .select("id,org_id")
+      .select("id,org_id,company_id,invited_by")
       .eq("recipient_account_id", recipientAccountId)
       .in("status", ["invited", "claim_pending", "onboarding", "active"])
       .range(from, from + pageSize - 1)
@@ -45,6 +79,42 @@ async function listRecipientRelationships(recipientAccountId: string) {
     rows.push(...(data ?? []))
     if ((data ?? []).length < pageSize) return rows
   }
+}
+
+async function notifyArcPayInviters(
+  relationships: Array<{ org_id: string; company_id: string; invited_by: string | null }>,
+) {
+  const invited = relationships.filter(
+    (relationship): relationship is { org_id: string; company_id: string; invited_by: string } =>
+      Boolean(relationship.invited_by),
+  )
+  if (invited.length === 0) return
+  const supabase = createServiceSupabaseClient()
+  const userIds = [...new Set(invited.map((relationship) => relationship.invited_by))]
+  const companyIds = [...new Set(invited.map((relationship) => relationship.company_id))]
+  const orgIds = [...new Set(invited.map((relationship) => relationship.org_id))]
+  const [{ data: users }, { data: companies }, { data: orgs }] = await Promise.all([
+    supabase.from("app_users").select("id,email,full_name").in("id", userIds),
+    supabase.from("companies").select("id,name").in("id", companyIds),
+    supabase.from("orgs").select("id,name,slug,logo_url").in("id", orgIds),
+  ])
+  const userById = new Map((users ?? []).map((user) => [user.id, user]))
+  const companyById = new Map((companies ?? []).map((company) => [company.id, company]))
+  const orgById = new Map((orgs ?? []).map((org) => [org.id, org]))
+  await Promise.all(invited.map((relationship) => {
+    const user = userById.get(relationship.invited_by)
+    const company = companyById.get(relationship.company_id)
+    const org = orgById.get(relationship.org_id)
+    if (!user?.email || !company) return Promise.resolve(false)
+    return sendVendorArcPayReadyEmail({
+      to: user.email,
+      recipientName: user.full_name,
+      companyName: company.name,
+      orgName: org?.name ?? "Arc",
+      orgSlug: org?.slug ?? null,
+      orgLogoUrl: org?.logo_url ?? null,
+    })
+  }))
 }
 
 export interface PaymentRailSettings {
@@ -57,6 +127,8 @@ export interface PaymentRailSettings {
     configured: boolean
     enabled: boolean
     approvalMode: "sole" | "dual"
+    /** True only for explicitly owner-operated organizations. */
+    requesterMayApprove: boolean
     coolingHours: number
     perPaymentLimitCents: number | null
     perRunLimitCents: number | null
@@ -88,6 +160,7 @@ export interface PaymentRailSettings {
   approvals: {
     approvers: PaymentRunApprover[]
     candidates: Array<{ userId: string; name: string; email: string | null }>
+    viewerUserId: string
   }
   canManage: boolean
   canApprove: boolean
@@ -98,7 +171,7 @@ export async function getPaymentRailSettings(orgId?: string): Promise<PaymentRai
   await requirePermission("payment.release", context)
   const supabase = createServiceSupabaseClient()
   const [{ data: policy }, { data: fundingSources }, { data: changes }, canManage, canApprove] = await Promise.all([
-    supabase.from("payment_rail_policies").select("enabled,approval_mode,control_change_cooling_hours,per_payment_limit_cents,per_run_limit_cents,daily_limit_cents,waiver_jurisdiction").eq("org_id", context.orgId).maybeSingle(),
+    supabase.from("payment_rail_policies").select("enabled,approval_mode,requester_may_approve,control_change_cooling_hours,per_payment_limit_cents,per_run_limit_cents,daily_limit_cents,waiver_jurisdiction").eq("org_id", context.orgId).maybeSingle(),
     supabase.from("org_funding_sources").select("id,provider,bank_name,last4,verification_status,status,is_default,usable_after").eq("org_id", context.orgId).order("created_at", { ascending: false }).limit(20),
     supabase.from("payment_control_change_requests").select("id,funding_source_id,requested_by_user_id,status,required_approvals,apply_after,proposed_masked_details").eq("org_id", context.orgId).eq("kind", "org_funding_source").in("status", ["pending_approval", "cooling_off"]).order("created_at", { ascending: false }).limit(20),
     hasPermission("payments.manage_rail", context),
@@ -117,6 +190,7 @@ export async function getPaymentRailSettings(orgId?: string): Promise<PaymentRai
       configured: Boolean(policy),
       enabled: Boolean(policy?.enabled),
       approvalMode: policy?.approval_mode === "sole" ? "sole" : "dual",
+      requesterMayApprove: policy?.requester_may_approve === true,
       coolingHours: Number(policy?.control_change_cooling_hours ?? 72),
       perPaymentLimitCents: policy?.per_payment_limit_cents == null ? null : Number(policy.per_payment_limit_cents),
       perRunLimitCents: policy?.per_run_limit_cents == null ? null : Number(policy.per_run_limit_cents),
@@ -149,6 +223,7 @@ export async function getPaymentRailSettings(orgId?: string): Promise<PaymentRai
     approvals: {
       approvers: routing.approvers,
       candidates,
+      viewerUserId: routing.viewerUserId,
     },
     canManage,
     canApprove,
@@ -160,7 +235,12 @@ export async function updatePaymentRailPolicy(input: UpdatePaymentRailPolicyInpu
   const context = await requireOrgContext(orgId)
   await requirePermission("payments.manage_rail", context)
   const supabase = createServiceSupabaseClient()
-  const { data: existing } = await supabase.from("payment_rail_policies").select("id,enabled,approval_mode").eq("org_id", context.orgId).maybeSingle()
+  const { data: existing } = await supabase.from("payment_rail_policies").select("id,enabled,approval_mode,requester_may_approve").eq("org_id", context.orgId).maybeSingle()
+  const nextApprovalMode = parsed.approval_mode ?? existing?.approval_mode ?? "dual"
+  const nextRequesterMayApprove = parsed.requester_may_approve ?? existing?.requester_may_approve ?? false
+  if (nextRequesterMayApprove && nextApprovalMode !== "sole") {
+    throw new Error("Owner approval can only be used with one required approval")
+  }
   if (parsed.enabled) {
     const { count } = await supabase.from("org_funding_sources").select("id", { count: "exact", head: true }).eq("org_id", context.orgId).eq("status", "active")
     if (!count) throw new Error("Approve and activate a funding source before enabling electronic payments")
@@ -168,16 +248,17 @@ export async function updatePaymentRailPolicy(input: UpdatePaymentRailPolicyInpu
   const payload = {
     org_id: context.orgId,
     ...parsed,
-    requester_may_approve: false,
+    approval_mode: nextApprovalMode,
+    requester_may_approve: nextRequesterMayApprove,
     require_dual_for_control_changes: true,
     waiver_jurisdiction: "FL",
     updated_by: context.userId,
     ...(!existing ? { created_by: context.userId } : {}),
   }
-  const { data, error } = await supabase.from("payment_rail_policies").upsert(payload, { onConflict: "org_id" }).select("id,enabled,approval_mode").single()
+  const { data, error } = await supabase.from("payment_rail_policies").upsert(payload, { onConflict: "org_id" }).select("id,enabled,approval_mode,requester_may_approve").single()
   if (error || !data) throw new Error(`Unable to save payment policy: ${error?.message}`)
   await Promise.all([
-    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "payment_rail_policy_updated", entityType: "payment_rail_policy", entityId: data.id, payload: { enabled: data.enabled, approval_mode: data.approval_mode } }),
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "payment_rail_policy_updated", entityType: "payment_rail_policy", entityId: data.id, payload: { enabled: data.enabled, approval_mode: data.approval_mode, requester_may_approve: data.requester_may_approve } }),
     recordAudit({ orgId: context.orgId, actorId: context.userId, action: existing ? "update" : "insert", entityType: "payment_rail_policy", entityId: data.id, before: existing, after: payload }),
   ])
   return data
@@ -215,6 +296,16 @@ export async function isVendorPayoutSetupOpen(orgId: string) {
  *
  * Returns false when the entity has no usable recipient yet, which leaves the
  * caller to run the normal provider flow.
+ *
+ * Deliberately NOT a destination change, and so deliberately not held by
+ * `applyDestinationChangeHold`. Nothing about the payout account moves here —
+ * this builder is mapped onto a destination that already existed and that other
+ * builders are already paying. `destination_locked_until` lives on the recipient
+ * account, which the vendor entity owns globally, so freezing it for a mapping
+ * would stop every other builder's payments to a bank that did not change. The
+ * control that does cover this case is per-relationship and already blocks:
+ * `recently_claimed_vendor_relationship` holds the first payment to a freshly
+ * claimed relationship for the org's `new_vendor_hold_hours`.
  */
 async function adoptVerifiedRecipient(input: { vendorEntityId: string; relationshipId: string }) {
   const supabase = createServiceSupabaseClient()
@@ -231,9 +322,14 @@ async function adoptVerifiedRecipient(input: { vendorEntityId: string; relations
     .from("vendor_payment_relationships")
     .update({ recipient_account_id: recipient.id, status: "active" })
     .eq("id", input.relationshipId)
-    .select("id,org_id")
-    .single()
-  if (error || !relationship) throw new Error(`Unable to link the verified payout account: ${error?.message}`)
+    .neq("status", "active")
+    .select("id,org_id,company_id,invited_by")
+    .maybeSingle()
+  if (error) throw new Error(`Unable to link the verified payout account: ${error.message}`)
+  // Another return/webhook may have activated the same relationship first.
+  // The ready account was still adopted successfully; only that first writer
+  // owns the email notification.
+  if (!relationship) return true
   await Promise.all([
     recordEvent({
       orgId: relationship.org_id,
@@ -251,6 +347,7 @@ async function adoptVerifiedRecipient(input: { vendorEntityId: string; relations
       source: "vendor_portal",
     }),
   ])
+  await notifyArcPayInviters([relationship])
   return true
 }
 
@@ -265,6 +362,14 @@ async function adoptVerifiedRecipient(input: { vendorEntityId: string; relations
  */
 export async function startVendorPayoutSetup(input: StartVendorPayoutSetupInput) {
   const parsed = startVendorPayoutSetupSchema.parse(input)
+  // `isVendorPayoutSetupOpen` gated the page and nothing else, so invoking this
+  // action directly created claims, relationships and live Stripe Express
+  // accounts for builders that never opened the rail. UI visibility is not
+  // authorization; the server decides.
+  const access = await requireVendorPayoutPortalAccess(parsed.portal_token)
+  if (!(await isVendorPayoutSetupOpen(access.orgId))) {
+    throw new Error("This builder has not opened vendor payments yet")
+  }
   const claim = await claimVendorCompany({
     portal_token: parsed.portal_token,
     vendor_entity_id: parsed.vendor_entity_id,
@@ -354,6 +459,123 @@ async function createVendorRecipientOnboarding(parsed: { vendor_entity_id: strin
   return { url, recipientId: recipient.id, status: recipient.status }
 }
 
+/**
+ * Freeze a payout destination that just changed, and tell everyone it affects.
+ *
+ * The vendor entity owns one payout account, so the hold is global to that
+ * account by construction — which is correct for the case it exists for: the
+ * bank behind it genuinely changed for every builder at once. The window is the
+ * longest any affected builder configured, because the most cautious org on a
+ * shared destination sets the floor for the rest.
+ *
+ * The version bump is a compare-and-swap on the value just read, so two webhooks
+ * racing the same account cannot both think they applied the first change.
+ *
+ * Nothing here carries a full account or routing number. The masked last four is
+ * the same thing the settings screen already shows, and it is the whole point of
+ * the notification — the person who knows the vendor's bank did not change has
+ * to be able to recognise that it did.
+ */
+async function applyDestinationChangeHold(input: {
+  recipientId: string
+  vendorEntityId: string
+  previousVersion: number
+  previous: { bankName: string | null; bankLast4: string | null }
+  next: { bankName: string | null; bankLast4: string | null }
+  source: string
+}) {
+  const supabase = createServiceSupabaseClient()
+  const relationships = await listRecipientRelationships(input.recipientId)
+  const affectedOrgIds = [...new Set(relationships.map((relationship) => relationship.org_id))]
+  const { data: policies } = affectedOrgIds.length > 0
+    ? await supabase.from("payment_rail_policies").select("org_id,control_change_cooling_hours").in("org_id", affectedOrgIds)
+    : { data: [] }
+  const coolingHours = (policies ?? []).reduce(
+    (longest, policy) => Math.max(longest, clampCoolingHours(policy.control_change_cooling_hours)),
+    DEFAULT_DESTINATION_COOLING_HOURS,
+  )
+  const lockedUntil = new Date(Date.now() + coolingHours * 60 * 60 * 1000).toISOString()
+  const { data: locked, error } = await supabase
+    .from("payment_recipient_accounts")
+    .update({ destination_locked_until: lockedUntil, destination_version: input.previousVersion + 1 })
+    .eq("id", input.recipientId)
+    .eq("destination_version", input.previousVersion)
+    .select("id,destination_version,destination_locked_until")
+    .maybeSingle()
+  if (error) throw new Error(`Unable to hold the changed payout destination: ${error.message}`)
+  // Lost the race to a concurrent change. The other writer applied its own hold,
+  // so the destination is frozen either way and re-stamping would only shorten
+  // or lengthen someone else's window.
+  if (!locked) return null
+
+  await Promise.all(affectedOrgIds.flatMap((orgId) => [
+    recordEvent({
+      orgId,
+      eventType: "vendor_payout_destination_changed",
+      entityType: "payment_recipient_account",
+      entityId: input.recipientId,
+      payload: {
+        vendor_entity_id: input.vendorEntityId,
+        destination_version: locked.destination_version,
+        locked_until: lockedUntil,
+        cooling_hours: coolingHours,
+        previous_bank_last4: input.previous.bankLast4,
+        bank_last4: input.next.bankLast4,
+        bank_name: input.next.bankName,
+        source: input.source,
+      },
+    }),
+    recordAudit({
+      orgId,
+      action: "update",
+      entityType: "payment_recipient_account",
+      entityId: input.recipientId,
+      before: { payout_bank_name: input.previous.bankName, payout_bank_last4: input.previous.bankLast4, destination_version: input.previousVersion },
+      after: { payout_bank_name: input.next.bankName, payout_bank_last4: input.next.bankLast4, destination_version: locked.destination_version, destination_locked_until: lockedUntil },
+      source: input.source,
+    }),
+  ]))
+
+  await notifyVendorOfDestinationChange({
+    vendorEntityId: input.vendorEntityId,
+    bankLast4: input.next.bankLast4,
+    lockedUntil,
+  })
+  return { lockedUntil, destinationVersion: locked.destination_version, affectedOrgIds }
+}
+
+/**
+ * Tell the vendor's own administrators, out of band, that their payout bank
+ * changed. If the change was not theirs this email is the only thing that
+ * reaches them before the hold expires.
+ */
+async function notifyVendorOfDestinationChange(input: {
+  vendorEntityId: string
+  bankLast4: string | null
+  lockedUntil: string
+}) {
+  const supabase = createServiceSupabaseClient()
+  const { data: memberships } = await supabase
+    .from("vendor_entity_memberships")
+    .select("identity:vendor_portal_identities(email)")
+    .eq("vendor_entity_id", input.vendorEntityId)
+    .eq("status", "active")
+    .in("role", ["owner", "administrator"])
+    .limit(20)
+  const recipients = [...new Set((memberships ?? []).flatMap((row) => {
+    const identity = firstRelation(row.identity as { email?: string | null } | Array<{ email?: string | null }> | null)
+    return identity?.email ? [identity.email] : []
+  }))]
+  if (recipients.length === 0) return
+  const { data: entity } = await supabase.from("vendor_entities").select("legal_name").eq("id", input.vendorEntityId).maybeSingle()
+  await sendVendorPayoutDestinationChangedEmail({
+    to: recipients,
+    vendorName: entity?.legal_name ?? "your company",
+    bankLast4: input.bankLast4,
+    holdUntil: input.lockedUntil,
+  })
+}
+
 export async function syncVendorRecipient(
   providerAccountId: string,
   providerKey = DEFAULT_PROVIDER,
@@ -362,6 +584,17 @@ export async function syncVendorRecipient(
   const provider = getPaymentRailProvider(providerKey)
   const snapshot = await provider.retrieveRecipient(providerAccountId)
   const supabase = createServiceSupabaseClient()
+  // The destination as Arc last knew it, read before the sync overwrites it. A
+  // provider-side bank swap — a vendor's compromised Stripe login is the whole
+  // threat — arrives here as an ordinary `account.updated` and used to be
+  // absorbed silently, so the next run paid the new bank with no hold and no
+  // notification.
+  const { data: priorRecipient } = await supabase
+    .from("payment_recipient_accounts")
+    .select("id,payout_bank_name,payout_bank_last4,destination_version")
+    .eq("provider", providerKey)
+    .eq("provider_account_id", providerAccountId)
+    .maybeSingle()
   const { data: recipient, error } = await supabase.from("payment_recipient_accounts").update({
     status: snapshot.status,
     details_submitted: snapshot.detailsSubmitted,
@@ -375,16 +608,42 @@ export async function syncVendorRecipient(
   }).eq("provider", providerKey).eq("provider_account_id", providerAccountId).select("id,vendor_entity_id,status").maybeSingle()
   if (error) throw new Error(`Unable to sync vendor recipient: ${error.message}`)
   if (!recipient) return null
+
+  // Only an actual change of a destination Arc already knew. Onboarding filling
+  // the bank in for the first time is not a change — that relationship is held
+  // by `recently_claimed_vendor_relationship` instead.
+  const previousBankLast4 = priorRecipient?.payout_bank_last4 ?? null
+  const previousBankName = priorRecipient?.payout_bank_name ?? null
+  const destinationChanged = Boolean(previousBankLast4)
+    && (previousBankLast4 !== (snapshot.bankLast4 ?? null) || previousBankName !== (snapshot.bankName ?? null))
+  if (destinationChanged) {
+    await applyDestinationChangeHold({
+      recipientId: recipient.id,
+      vendorEntityId: recipient.vendor_entity_id,
+      previousVersion: Number(priorRecipient?.destination_version ?? 0),
+      previous: { bankName: previousBankName, bankLast4: previousBankLast4 },
+      next: { bankName: snapshot.bankName ?? null, bankLast4: snapshot.bankLast4 ?? null },
+      source: auditSource,
+    })
+  }
+
   const relationships = await listRecipientRelationships(recipient.id)
-  const relationshipStatus = snapshot.status === "ready" ? "active" : "onboarding"
-  await Promise.all(relationships.flatMap((relationship) => [
-    supabase.from("vendor_payment_relationships")
+  const relationshipStatus = snapshot.status === "ready" && snapshot.payoutsEnabled ? "active" : "onboarding"
+  const newlyActivated = await Promise.all(relationships.map(async (relationship) => {
+    let update = supabase.from("vendor_payment_relationships")
       .update({ status: relationshipStatus })
       .eq("org_id", relationship.org_id)
-      .eq("id", relationship.id),
-    recordEvent({ orgId: relationship.org_id, eventType: "vendor_recipient_status_updated", entityType: "payment_recipient_account", entityId: recipient.id, payload: { status: snapshot.status, payouts_enabled: snapshot.payoutsEnabled } }),
-    recordAudit({ orgId: relationship.org_id, action: "update", entityType: "payment_recipient_account", entityId: recipient.id, after: { status: snapshot.status, payouts_enabled: snapshot.payoutsEnabled }, source: auditSource }),
-  ]))
+      .eq("id", relationship.id)
+    if (relationshipStatus === "active") update = update.neq("status", "active")
+    const { data: changed, error: updateError } = await update.select("id").maybeSingle()
+    if (updateError) throw new Error(`Unable to update vendor payment relationship: ${updateError.message}`)
+    await Promise.all([
+      recordEvent({ orgId: relationship.org_id, eventType: "vendor_recipient_status_updated", entityType: "payment_recipient_account", entityId: recipient.id, payload: { status: snapshot.status, payouts_enabled: snapshot.payoutsEnabled } }),
+      recordAudit({ orgId: relationship.org_id, action: "update", entityType: "payment_recipient_account", entityId: recipient.id, after: { status: snapshot.status, payouts_enabled: snapshot.payoutsEnabled }, source: auditSource }),
+    ])
+    return changed && relationshipStatus === "active" ? relationship : null
+  }))
+  await notifyArcPayInviters(newlyActivated.filter((relationship) => relationship !== null))
   return recipient
 }
 

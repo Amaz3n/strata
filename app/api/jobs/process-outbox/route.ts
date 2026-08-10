@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
+
+import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
 import { createHash } from "node:crypto"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -24,7 +26,8 @@ import { confirmSelectionFromEnvelopeExecution } from "@/lib/services/selections
 import { recomputeProjectSelectionCutoffs } from "@/lib/services/selection-cutoffs"
 import { enrollProjectWarrantyCoverageFromSystem } from "@/lib/services/warranty"
 import { reanchorRevisionMeasurements } from "@/lib/services/takeoff-reanchor"
-import { isEmailNotificationTypeEnabled, isEmailEligibleNotificationType } from "@/lib/services/notifications"
+import { isEmailNotificationTypeEnabled } from "@/lib/services/notifications"
+import { deliverNotificationEmail } from "@/lib/services/notification-email-delivery"
 import { isApnsConfigured, sendApnsNotification } from "@/lib/services/apns"
 import { buildDrawingsTilesBaseUrl } from "@/lib/storage/drawings-urls"
 import {
@@ -39,6 +42,7 @@ import { processInboundBillEmail } from "@/lib/services/payables-email-ingest"
 import { processQuickCaptureDraft } from "@/lib/services/quick-capture"
 import { processPhotoCaption } from "@/lib/services/photo-intelligence"
 import { classifyProjectEmail, processInboundProjectEmail } from "@/lib/services/project-email-ingest"
+import { extractCoiFacts } from "@/lib/services/ap-document-verification"
 import { sendVendorBillWaiverChase } from "@/lib/services/payment-holds"
 import { FLOORPLAN_INTERPRET_JOB, runFloorplanInterpretation } from "@/lib/services/floorplan-models"
 import { propagateApprovalToLedger } from "@/lib/services/cost-plus"
@@ -102,7 +106,6 @@ if (typeof globalThis.Path2D === "undefined") {
 
 export const runtime = "nodejs"
 
-const CRON_SECRET = process.env.CRON_SECRET
 const MAX_RETRIES = 3
 // Lightweight jobs (emails, indexing) run first; drawing pipeline jobs are
 // drained afterwards with the remaining time budget.
@@ -139,36 +142,10 @@ const OUTBOX_JOB_TYPES = [
   "process_inbound_project_email",
   "classify_project_email",
   "chase_vendor_bill_waiver",
+  "extract_coi_facts",
   "project_vendor_bill_approval",
   FLOORPLAN_INTERPRET_JOB,
 ]
-
-function isAuthorizedCronRequest(request: NextRequest) {
-  const isDev = process.env.NODE_ENV !== "production"
-  if (isDev) return true
-
-  // Vercel Cron sets this header to "1"
-  const isVercelCron = request.headers.get("x-vercel-cron") === "1"
-
-  // Preferred: Vercel Cron can send Authorization: Bearer $CRON_SECRET automatically
-  const authHeader =
-    request.headers.get("authorization") ?? request.headers.get("Authorization")
-
-  const bearer = typeof authHeader === "string" ? authHeader.trim() : ""
-  const legacyHeader = request.headers.get("x-cron-secret")
-
-  const secretOk =
-    (!!CRON_SECRET && bearer === `Bearer ${CRON_SECRET}`) ||
-    (!!CRON_SECRET && legacyHeader === CRON_SECRET)
-
-  // If a secret is configured, require it (even for Vercel cron).
-  if (CRON_SECRET) {
-    return secretOk
-  }
-
-  // Otherwise, allow Vercel cron-triggered requests.
-  return isVercelCron
-}
 
 // Create a VISIBLE test image for the tiled viewer
 export async function PATCH(request: NextRequest) {
@@ -226,8 +203,6 @@ export async function PATCH(request: NextRequest) {
     }, { status: 500 })
   }
 }
-
-
 
 async function createVisibleTestImage(orgId: string, supabase: any) {
   // Create a HIGHLY VISIBLE test image with bright colors
@@ -606,6 +581,12 @@ async function processOutboxQueue(request: NextRequest) {
         const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
         if (!billId) throw new Error("Waiver chase is missing bill_id")
         await sendVendorBillWaiverChase(job.org_id, billId)
+      } else if (job.job_type === "extract_coi_facts") {
+        const fileId = typeof job.payload?.file_id === "string" ? job.payload.file_id : null
+        if (!fileId) throw new Error("Certificate-of-insurance extraction is missing file_id")
+        // Returns its outcome as data — an unreadable certificate completes the
+        // job and leaves the payment hold on the stored expiry.
+        await extractCoiFacts(fileId, job.org_id)
       } else if (job.job_type === "project_vendor_bill_approval") {
         const billId = typeof job.payload?.bill_id === "string" ? job.payload.bill_id : null
         if (!billId) throw new Error("Vendor-bill approval projection is missing bill_id")
@@ -755,76 +736,7 @@ async function deliverNotificationJob(supabase: ReturnType<typeof createServiceS
     throw new Error("Missing notificationId")
   }
 
-  const { data: notification, error: notifError } = await supabase
-    .from("notifications")
-    .select("id, org_id, user_id, notification_type, payload, created_at")
-    .eq("id", notificationId)
-    .maybeSingle()
-
-  if (notifError || !notification) {
-    throw new Error(`Notification not found (${notifError?.message ?? "unknown error"})`)
-  }
-
-  // Email is an allowlist: non-eligible types are in-app only, regardless of
-  // whether the user has a prefs row. Bail before sending anything.
-  if (!isEmailEligibleNotificationType(notification.notification_type)) {
-    return
-  }
-
-  const { data: prefs } = await supabase
-    .from("user_notification_prefs")
-    .select("email_enabled, email_type_settings")
-    .eq("org_id", notification.org_id)
-    .eq("user_id", notification.user_id)
-    .maybeSingle()
-
-  if (prefs && prefs.email_enabled === false) {
-    return
-  }
-  if (prefs && !isEmailNotificationTypeEnabled(prefs.email_type_settings, notification.notification_type)) {
-    return
-  }
-
-  const { data: user, error: userError } = await supabase
-    .from("app_users")
-    .select("email, full_name")
-    .eq("id", notification.user_id)
-    .maybeSingle()
-
-  if (userError || !user?.email) {
-    throw new Error("User email not found")
-  }
-
-  const { data: org } = await supabase
-    .from("orgs")
-    .select("name, logo_url, slug")
-    .eq("id", notification.org_id)
-    .maybeSingle()
-
-  const nPayload = (notification.payload ?? {}) as any
-  const title = typeof nPayload.title === "string" ? nPayload.title : `Arc: ${notification.notification_type}`
-  const message = typeof nPayload.message === "string" ? nPayload.message : ""
-
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"
-  const href = buildNotificationHref(nPayload)
-  const buttonUrl = href ? `${appUrl}${href}` : undefined
-
-  const html = renderStandardEmailLayout({
-    title,
-    messageHtml: `Hi ${escapeHtml(user.full_name || "there")},<br/><br/>${escapeHtml(message)}`,
-    buttonText: "View in Arc",
-    buttonUrl,
-    orgName: org?.name,
-    orgLogoUrl: org?.logo_url,
-    appUrl,
-  })
-
-  await sendEmail({
-    to: [user.email],
-    subject: title,
-    html,
-    from: getOrgSenderEmail(org?.slug, org?.name),
-  })
+  await deliverNotificationEmail(notificationId, supabase)
 }
 
 async function sendDailyLogMentionEmailJob(supabase: ReturnType<typeof createServiceSupabaseClient>, job: any) {
@@ -1800,51 +1712,6 @@ async function refreshDrawingSheetsListJob(supabase: ReturnType<typeof createSer
   const { error } = await supabase.rpc("refresh_drawing_sheets_list")
   if (error) {
     throw new Error(`refresh_drawing_sheets_list failed: ${error.message}`)
-  }
-}
-
-
-function buildNotificationHref(payload: any): string | null {
-  const projectId = typeof payload?.project_id === "string" ? payload.project_id : null
-  const entityType = typeof payload?.entity_type === "string" ? payload.entity_type : null
-  const entityId = typeof payload?.entity_id === "string" ? payload.entity_id : null
-  const logId = typeof payload?.daily_log_id === "string" ? payload.daily_log_id : null
-
-  // Pipeline estimates live outside the project workspace; route to the
-  // prospect pipeline (or the standalone estimates list) so the CTA still works.
-  if (entityType === "estimate") {
-    return typeof payload?.prospect_id === "string" ? "/pipeline" : "/estimates"
-  }
-
-  // A payment approval is decided on the payable itself, not on the run: the
-  // approver needs the bill, its documents, and its holds in front of them.
-  if (entityType === "payment_run") {
-    return typeof payload?.bill_id === "string" ? `/payables?bill=${payload.bill_id}` : "/payables/payment-runs"
-  }
-
-  if (!projectId) return null
-
-  switch (entityType) {
-    case "rfi":
-      return `/projects/${projectId}/rfis`
-    case "submittal":
-      return `/projects/${projectId}/submittals`
-    case "invoice":
-      return `/projects/${projectId}/invoices`
-    case "change_order":
-      return `/projects/${projectId}/change-orders`
-    case "file":
-      return entityId ? `/projects/${projectId}/documents?fileId=${entityId}` : `/projects/${projectId}/documents`
-    case "drawing_set":
-    case "drawing_sheet":
-    case "drawing_revision":
-      return `/projects/${projectId}/drawings`
-    case "task":
-      return `/projects/${projectId}/tasks`
-    case "daily_log":
-      return logId ? `/projects/${projectId}/daily-logs?logId=${logId}` : `/projects/${projectId}/daily-logs`
-    default:
-      return `/projects/${projectId}`
   }
 }
 

@@ -1,10 +1,13 @@
 "use server"
 
+import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
+import { resolveBilledCents } from "@/lib/financials/poc-inputs"
 import { requireOrgContext } from "@/lib/services/context"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { getBudgetWithActuals } from "@/lib/services/budgets"
 import { getProjectJobCostActualsByCostCode } from "@/lib/services/job-cost-actuals"
 import { getProjectContract } from "@/lib/services/contracts"
+import { getProjectPocPosition } from "@/lib/services/poc"
 import type { Project, ScheduleItem, Task, DrawSchedule, Rfi, Submittal, PunchItem, CloseoutItem, WarrantyRequest, FileMetadata, Proposal, Contract } from "@/lib/types"
 import { differenceInCalendarDays, parseISO, isBefore, isAfter, addDays, subDays } from "date-fns"
 import type { ProjectActivity } from "./actions"
@@ -83,10 +86,8 @@ export interface ProjectOverviewDTO {
     adjustedBudgetCents: number
     totalCommittedCents: number
     totalActualCents: number
-    totalInvoicedCents: number
     varianceCents: number
     variancePercent: number
-    grossMarginPercent: number
     trendPercent?: number
     status: "ok" | "warning" | "over"
   }
@@ -141,6 +142,7 @@ export async function getProjectOverviewAction(projectId: string): Promise<Proje
     scheduleItemCountData,
     approvedCOTotal,
     budgetData,
+    pocPosition,
   ] = await Promise.all([
     getTaskCounts(supabase, orgId, projectId, today),
     getScheduleCounts(supabase, orgId, projectId, today),
@@ -159,6 +161,10 @@ export async function getProjectOverviewAction(projectId: string): Promise<Proje
     getScheduleItemCount(supabase, orgId, projectId),
     getApprovedChangeOrderTotal(supabase, orgId, projectId),
     getBudgetSummary(orgId, projectId),
+    // Same call the budget tab makes, same catch: the position needs both
+    // budget.read and invoice.read, and resolves to null on a project with no
+    // budget. `getBilledTotal` covers those cases with the identical definition.
+    getProjectPocPosition(projectId, orgId).catch(() => null),
   ])
 
   // Calculate timeline stats
@@ -176,20 +182,18 @@ export async function getProjectOverviewAction(projectId: string): Promise<Proje
   // Calculate financial health data
   const nextDraw = drawsData.find(d => d.status === "pending" || (d.status as string) === "scheduled")
 
-  // Invoiced and actuals must not depend on a budget existing. When a project has
-  // invoices (e.g. imported from QBO) but no budget, getBudgetSummary returns null,
-  // which previously zeroed the Billed and Margin KPIs. Fall back to computing these
-  // directly so the overview reflects real invoiced/cost data regardless of budget setup.
-  let invoicedCents = budgetData?.totalInvoicedCents ?? 0
-  let actualCents = budgetData?.totalActualCents ?? 0
-  if (!budgetData) {
-    const [directInvoiced, directActual] = await Promise.all([
-      getInvoicedTotal(supabase, orgId, projectId),
-      getActualTotal(supabase, orgId, projectId),
-    ])
-    invoicedCents = directInvoiced
-    actualCents = directActual
-  }
+  // "Billed" here is the same quantity the budget tab shows one click away:
+  // `poc.billedCents`, the sum of invoice TOTALS in `BILLED_INVOICE_STATUSES`.
+  // It used to read the budget summary's `total_invoiced_cents`, which is built
+  // from cost-coded invoice LINES (`unit_price × quantity`) — a different number
+  // whenever an invoice carries tax or is uncoded, and the exact substitution
+  // `lib/financials/poc-inputs.ts` bans. The two tabs disagreed on screen.
+  const invoicedCents = pocPosition ? pocPosition.billedCents : await getBilledTotal(supabase, orgId, projectId)
+
+  // Actuals must not depend on a budget existing. When a project has invoices
+  // (e.g. imported from QBO) but no budget, getBudgetSummary returns null, which
+  // previously zeroed the Margin KPI.
+  const actualCents = budgetData ? budgetData.totalActualCents : await getActualTotal(supabase, orgId, projectId)
 
   const health: HealthCounts = {
     tasks: taskCounts,
@@ -718,31 +722,25 @@ async function getApprovedChangeOrderTotal(supabase: any, orgId: string, project
   return (data ?? []).reduce((sum: number, row: any) => sum + (row.total_cents ?? 0), 0)
 }
 
-// Direct invoiced total, mirroring the budget service's status filter and line math.
-// Used as a fallback when the project has no budget so the Billed/Margin KPIs still
-// reflect real invoices (including QBO-imported ones).
-async function getInvoicedTotal(supabase: any, orgId: string, projectId: string): Promise<number> {
-  const { data: invoices } = await supabase
+/**
+ * Billed to date when no POC position is available (no budget yet, or the reader
+ * lacks one of the two permissions the position needs).
+ *
+ * Deliberately the same arithmetic `resolveBilledCents` performs inside the
+ * position — invoice TOTALS in the billed set — so the overview never states a
+ * different "Billed" than the budget tab. It used to sum invoice LINES
+ * (`unit_price × quantity`), which drops tax and anything uncoded.
+ */
+async function getBilledTotal(supabase: any, orgId: string, projectId: string): Promise<number> {
+  const { data, error } = await supabase
     .from("invoices")
-    .select("id")
+    .select("total_cents")
     .eq("org_id", orgId)
     .eq("project_id", projectId)
-    .in("status", ["sent", "partial", "paid", "overdue"])
+    .in("status", [...BILLED_INVOICE_STATUSES])
 
-  const invoiceIds = (invoices ?? []).map((i: any) => i.id)
-  if (invoiceIds.length === 0) return 0
-
-  const { data: lines } = await supabase
-    .from("invoice_lines")
-    .select("unit_price_cents, quantity")
-    .eq("org_id", orgId)
-    .in("invoice_id", invoiceIds)
-
-  const total = (lines ?? []).reduce(
-    (sum: number, line: any) => sum + (line.unit_price_cents ?? 0) * (line.quantity ?? 1),
-    0,
-  )
-  return Math.round(total)
+  if (error) throw new Error(`Failed to load billed invoices: ${error.message}`)
+  return resolveBilledCents((data ?? []).map((row: { total_cents: number | null }) => row.total_cents))
 }
 
 // Direct job-cost actuals total, used as a fallback when no budget exists.
@@ -751,6 +749,11 @@ async function getActualTotal(supabase: any, orgId: string, projectId: string): 
   return actuals.reduce((sum, a) => sum + a.actual_cents, 0)
 }
 
+/**
+ * Budget-side facts only. Billed revenue and the margin computed from it are
+ * added by the caller from the POC position, so the overview cannot state a
+ * different "Billed" than the budget tab.
+ */
 async function getBudgetSummary(orgId: string, projectId: string) {
   try {
     const budgetData = await getBudgetWithActuals(projectId, orgId)
@@ -759,22 +762,21 @@ async function getBudgetSummary(orgId: string, projectId: string) {
     const adjustedBudget = budgetData.summary.adjusted_budget_cents ?? 0
     const totalCommitted = budgetData.summary.total_committed_cents ?? 0
     const totalActual = budgetData.summary.total_actual_cents ?? 0
-    const totalInvoiced = budgetData.summary.total_invoiced_cents ?? 0
     const variance = adjustedBudget > 0 ? totalActual : 0
     const variancePercent = adjustedBudget > 0 ? Math.round((totalActual / adjustedBudget) * 100) : 0
-    const grossMarginPercent = totalInvoiced > 0 ? Math.round(((totalInvoiced - totalActual) / totalInvoiced) * 100) : 0
 
     return {
       adjustedBudgetCents: adjustedBudget,
       totalCommittedCents: totalCommitted,
       totalActualCents: totalActual,
-      totalInvoicedCents: totalInvoiced,
       varianceCents: variance,
       variancePercent,
-      grossMarginPercent,
       trendPercent: 0,
-      status: variancePercent > 100 ? "over" : variancePercent > 90 ? "warning" : "ok",
-    } as const
+      status: (variancePercent > 100 ? "over" : variancePercent > 90 ? "warning" : "ok") as
+        | "ok"
+        | "warning"
+        | "over",
+    }
   } catch (error) {
     console.warn("Failed to get budget summary", error)
     return null

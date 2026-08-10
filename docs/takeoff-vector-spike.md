@@ -1,3 +1,6 @@
+> The spike harness script has been removed; its findings are the durable part
+> and the production port lives in `lib/drawings/vector-extract.ts`.
+
 # Takeoff — vector extraction spike (Phase 4)
 
 > **Status: harness shipped, verdict NOT signed off.**
@@ -22,17 +25,14 @@ the geometry was right there burns tokens and latency on every click.
 ## 2. How to run it
 
 ```bash
-node scripts/takeoff-vector-spike.mjs --project <projectId> --limit 8
 ```
 
 Other modes:
 
 ```bash
-node scripts/takeoff-vector-spike.mjs --sheets <sheetId>,<sheetId>
 ```
 
 ```bash
-node scripts/takeoff-vector-spike.mjs --file ./sample-plans.pdf --page 2
 ```
 
 The script is **read-only** — it downloads PDFs and prints numbers. It needs
@@ -80,7 +80,8 @@ different drafting sources): 26-014 Mullenger SFH renovation, 26-027 Design West
 Morrison condo, and Oakwood Residence. 20 sheets total, mixing floor plans,
 foundation plans, elevations, sections, site plans, details, and schedules.
 (Note: the harness as originally committed downloaded from Supabase Storage and
-could not run at all — PDFs live in R2. Fixed in `scripts/takeoff-vector-spike.mjs`
+could not run at all — PDFs live in R2. Fixed in the spike harness (since removed;
+the production port is `lib/drawings/vector-extract.ts`)
 the same day; run with `npx tsx`, not bare `node`, on Node 20.)
 
 **26-014 Mullenger (8 sheets — all C):**

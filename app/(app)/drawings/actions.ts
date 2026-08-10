@@ -115,12 +115,19 @@ import { createPhotoFromDrawingInputSchema } from "@/lib/validation/drawings"
 import { createFileRecord, buildInternalFileUrl } from "@/lib/services/files"
 import { triggerDrawingsPipeline } from "@/lib/services/drawings-pipeline-trigger"
 import {
+  buildRevisionChangeReport,
+  type RevisionChangeReport,
+} from "@/lib/services/drawings-change-semantics"
+import {
+  analyzeProjectSetCoherence,
+  type ProjectSetCoherenceReport,
+} from "@/lib/services/drawings-set-coherence"
+import {
   requireAnyPermission,
   requirePermission,
   requireProjectPermission,
 } from "@/lib/services/permissions"
 import type { TileRepairResult } from "@/lib/services/drawings-pipeline"
-import { getPlatformAiFeatureDefaultConfig } from "@/lib/services/ai-config"
 import { createRfi } from "@/lib/services/rfis"
 import { createProjectTaskAction } from "@/app/(app)/projects/[id]/actions"
 import { recordAudit } from "@/lib/services/audit"
@@ -523,11 +530,6 @@ export async function createDrawingSetFromUpload(input: {
       }
 
       const draftRevisionId = draftRevision.id as string
-      const drawingsVisionConfig = await getPlatformAiFeatureDefaultConfig({
-        supabase,
-        feature: "drawings_vision",
-      })
-
       // Trigger processing via outbox system
       try {
         console.log(`[Upload] Queueing processing jobs for drawing set: ${drawingSet.id}`)
@@ -546,11 +548,6 @@ export async function createDrawingSetFromUpload(input: {
               draftRevisionId,
               orgId: orgId,
               targetSheetId: targetSheet?.id,
-              aiVision: {
-                provider: drawingsVisionConfig.provider,
-                model: drawingsVisionConfig.model,
-                source: drawingsVisionConfig.source,
-              },
             },
             run_at: new Date().toISOString(),
           })
@@ -640,11 +637,6 @@ export async function retryDraftRevisionAction(revisionId: string): Promise<Acti
         .in("status", ["pending", "failed"])
         .contains("payload", { draftRevisionId: revisionId })
 
-      const drawingsVisionConfig = await getPlatformAiFeatureDefaultConfig({
-        supabase,
-        feature: "drawings_vision",
-      })
-
       const { error: jobError } = await supabase.from("outbox").insert({
         org_id: orgId,
         job_type: "process_drawing_set",
@@ -655,11 +647,6 @@ export async function retryDraftRevisionAction(revisionId: string): Promise<Acti
           sourceFileId: revision.source_file_id,
           storagePath: fileData.storage_path,
           draftRevisionId: revisionId,
-          aiVision: {
-            provider: drawingsVisionConfig.provider,
-            model: drawingsVisionConfig.model,
-            source: drawingsVisionConfig.source,
-          },
         },
         run_at: new Date().toISOString(),
       })
@@ -741,11 +728,6 @@ export async function retryProcessingAction(setId: string): Promise<ActionResult
         throw new Error("Source file not found")
       }
 
-      const drawingsVisionConfig = await getPlatformAiFeatureDefaultConfig({
-        supabase,
-        feature: "drawings_vision",
-      })
-
       // Queue processing again (worker path supports R2-backed uploads)
       try {
         const { error: jobError } = await supabase
@@ -759,11 +741,6 @@ export async function retryProcessingAction(setId: string): Promise<ActionResult
               projectId: set.project_id,
               sourceFileId: set.source_file_id,
               storagePath: fileData.storage_path,
-              aiVision: {
-                provider: drawingsVisionConfig.provider,
-                model: drawingsVisionConfig.model,
-                source: drawingsVisionConfig.source,
-              },
             },
             run_at: new Date().toISOString(),
           })
@@ -802,6 +779,38 @@ export async function listDrawingRevisionsAction(
   filters: Partial<DrawingRevisionListFilters> = {}
 ): Promise<DrawingRevision[]> {
       return listDrawingRevisions(filters)
+}
+
+/**
+ * Check a project's drawing set against itself: callouts pointing at sheets that
+ * are not in the package, numbering holes, detail sheets nothing references, and
+ * specified divisions with no drawings.
+ *
+ * Entirely deterministic — the callout graph and the sheet register are already
+ * extracted, so no model is involved and the answer is the same every time.
+ */
+export async function checkDrawingSetCoherenceAction(
+  projectId: string,
+): Promise<ActionResult<ProjectSetCoherenceReport>> {
+  return run(() => analyzeProjectSetCoherence({ projectId }))
+}
+
+/**
+ * What changed in a published issuance, and what it touches.
+ *
+ * A read of what the pipeline already stored — no model call happens here, so
+ * this is cheap enough to open on demand. Returns `null` when change detection
+ * has not reached this revision yet, which the UI says out loud rather than
+ * rendering as "nothing changed".
+ */
+export async function getRevisionChangeReportAction(
+  revisionId: string,
+): Promise<ActionResult<RevisionChangeReport>> {
+  return run(async () => {
+    const { supabase, orgId, userId } = await requireOrgContext()
+    await requirePermission("drawing.read", { supabase, orgId, userId })
+    return buildRevisionChangeReport({ supabase, orgId, revisionId })
+  })
 }
 
 /**

@@ -178,8 +178,8 @@ export function ProjectSettingsSheet({ project, contract, contacts = [], open, o
       if (cancelled) return
       setAccountingMapId(link.mapId)
       setAccountingConnectionId(link.connectionId)
-      setQboCustomerId(link.qboCustomerId)
-      setQboCustomerName(link.qboCustomerName)
+      setQboCustomerId(link.accountingCustomerId)
+      setQboCustomerName(link.accountingCustomerName)
       setQboClassId(link.target?.dimensions.class?.id ?? null)
       setQboClassName(link.target?.dimensions.class?.name ?? null)
     }).catch(() => {})

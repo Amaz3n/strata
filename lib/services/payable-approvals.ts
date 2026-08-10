@@ -4,6 +4,7 @@ import { z } from "zod"
 
 import { getPaymentRailProvider } from "@/lib/integrations/payments/payment-rail-registry"
 import { payableOutstandingCents } from "@/lib/financials/payables-rules"
+import { requesterMayApprovePaymentRun } from "@/lib/payments/payment-domain"
 import type { ProviderSettlementWindow } from "@/lib/payments/settlement-estimate"
 import { requireOrgContext } from "@/lib/services/context"
 import { getPaymentApprovalRouting } from "@/lib/services/payment-approvers"
@@ -17,8 +18,15 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { decidePaymentRunSchema } from "@/lib/validation/fintech-payments"
 
 export const preparePayableApprovalSchema = z.object({
-  bill_id: z.string().uuid(),
-  amount_cents: z.number().int().positive(),
+  /**
+   * One or many. A run is the envelope an approver signs for, so a batch is the
+   * normal case and a single bill is just a batch of one — the same code path
+   * either way, rather than a second one that drifts.
+   */
+  bills: z
+    .array(z.object({ bill_id: z.string().uuid(), amount_cents: z.number().int().positive() }))
+    .min(1, "Select at least one payable")
+    .max(200, "A payment run holds up to 200 payables"),
   funding_source_id: z.string().uuid(),
   idempotency_key: z.string().trim().min(8).max(200),
 })
@@ -35,14 +43,19 @@ export interface PreparedPayableApproval {
   processorFeeCents: number
   platformFeeCents: number
   requiredApprovals: number
+  /** How many separate ACH payments this run makes — one per payable. */
+  paymentCount: number
 }
 
 /**
- * Turn one payable into a payment run that is ready to submit for approval.
+ * Turn selected payables into one payment run, ready to submit for approval.
  *
- * The preparer's act is a single decision — "pay this bill, from this account,
- * for this amount" — so the coding approval the run requires is folded in here
- * rather than left as a separate button the clerk has to remember to press.
+ * The run is the envelope an approver signs for, so the batch — not the bill —
+ * is the natural unit here. Fees are still quoted per payable, because each one
+ * is its own ACH payment to its own vendor and the provider charges accordingly;
+ * they are merely collected in a single debit so a run does not pay a processor
+ * fee to collect a processor fee.
+ *
  * Nothing is submitted and no money moves; that is `submitPaymentRun`.
  */
 export async function preparePayableApproval(
@@ -54,81 +67,89 @@ export async function preparePayableApproval(
   await requirePermission("payment.release", context)
   const supabase = createServiceSupabaseClient()
 
-  const { data: bill, error } = await supabase
+  const billIds = parsed.bills.map((entry) => entry.bill_id)
+  if (new Set(billIds).size !== billIds.length) {
+    throw new Error("The same payable was selected twice")
+  }
+
+  const { data: bills, error } = await supabase
     .from("vendor_bills")
-    .select(
-      "id,status,company_id,total_cents,paid_cents,retainage_cents,bill_number",
-    )
+    .select("id,status,company_id,total_cents,paid_cents,retainage_cents,bill_number,metadata")
     .eq("org_id", context.orgId)
-    .eq("id", parsed.bill_id)
-    .maybeSingle()
-  if (error || !bill) throw new Error("Vendor bill not found")
-  if (!bill.company_id) throw new Error("This payable has no vendor to pay")
+    .in("id", billIds)
+  if (error) throw new Error(`Unable to load the selected payables: ${error.message}`)
+  if (!bills || bills.length !== billIds.length) throw new Error("One or more payables were not found")
+  const billById = new Map(bills.map((bill) => [bill.id, bill]))
 
-  const outstandingCents = payableOutstandingCents({
-    total_cents: Number(bill.total_cents ?? 0),
-    paid_cents: Number(bill.paid_cents ?? 0),
-    retainage_cents: Number(bill.retainage_cents ?? 0),
+  const companyIds = [...new Set(bills.map((bill) => bill.company_id).filter((id): id is string => Boolean(id)))]
+  const [{ data: relationships }, { data: companies }] = await Promise.all([
+    // The payee's destination is resolved server-side — a client must never get
+    // to name the bank account a payment lands in.
+    supabase
+      .from("vendor_payment_relationships")
+      .select("company_id,recipient_account_id,status")
+      .eq("org_id", context.orgId)
+      .eq("status", "active")
+      .in("company_id", companyIds.length > 0 ? companyIds : [""]),
+    supabase
+      .from("companies")
+      .select("id,name")
+      .eq("org_id", context.orgId)
+      .in("id", companyIds.length > 0 ? companyIds : [""]),
+  ])
+  const recipientByCompany = new Map((relationships ?? []).map((row) => [row.company_id, row.recipient_account_id]))
+  const nameByCompany = new Map((companies ?? []).map((row) => [row.id, row.name]))
+
+  const items = parsed.bills.map((entry) => {
+    const bill = billById.get(entry.bill_id)
+    if (!bill) throw new Error("One or more payables were not found")
+    const label = bill.bill_number ? `Invoice ${bill.bill_number}` : "A payable"
+    if (!bill.company_id) throw new Error(`${label} has no vendor to pay`)
+
+    // Approving the obligation and releasing the money are two decisions, and
+    // preparing a payment must never quietly make them one.
+    if (bill.status === "rejected") throw new Error(`${label} was rejected. Reopen it before paying.`)
+    if (bill.status === "pending") throw new Error(`${label} has to be approved before a payment can be prepared for it`)
+
+    // The builder said they would pay this one themselves. Paying it here as
+    // well is how a vendor gets paid twice, so it is refused rather than warned.
+    if ((bill.metadata as Record<string, unknown> | null)?.payment_channel === "external") {
+      throw new Error(`${label} is set to be paid outside Arc. Change its payment method on the payable to pay it here.`)
+    }
+
+    const outstandingCents = payableOutstandingCents({
+      total_cents: Number(bill.total_cents ?? 0),
+      paid_cents: Number(bill.paid_cents ?? 0),
+      retainage_cents: Number(bill.retainage_cents ?? 0),
+    })
+    if (entry.amount_cents > outstandingCents) {
+      throw new Error(`${label} is set to pay more than its outstanding balance`)
+    }
+
+    const recipientAccountId = recipientByCompany.get(bill.company_id)
+    if (!recipientAccountId) throw new Error(`The vendor on ${label} has not finished payout verification yet`)
+
+    return {
+      bill_id: entry.bill_id,
+      amount_cents: entry.amount_cents,
+      retainage_held_cents: 0,
+      payees: [
+        {
+          payee_kind: "primary_vendor" as const,
+          method: "ach" as const,
+          recipient_account_id: recipientAccountId,
+          payee_name: nameByCompany.get(bill.company_id) ?? "Vendor",
+          amount_cents: entry.amount_cents,
+        },
+      ],
+    }
   })
-  if (parsed.amount_cents > outstandingCents) {
-    throw new Error(
-      "Payment amount is more than this payable's outstanding balance",
-    )
-  }
-
-  // Approving the obligation and releasing the money are two decisions, and this
-  // used to quietly make them one: preparing a payment auto-approved a pending
-  // bill, so the preparer became its approver of record without ever choosing to
-  // be. That is the same separation `assertExternalPaymentControls` enforces on
-  // the check path, and the workspace already reflects it — a pending payable
-  // sits in the review stage and offers Approve, never Pay.
-  if (bill.status === "rejected") {
-    throw new Error("This payable was rejected. Reopen it before preparing a payment.")
-  }
-  if (bill.status === "pending") {
-    throw new Error("This payable has to be approved before a payment can be prepared for it")
-  }
-
-  // The payee's destination is resolved server-side — a client must never get to
-  // name the bank account a payment lands in.
-  const { data: relationship } = await supabase
-    .from("vendor_payment_relationships")
-    .select("recipient_account_id,status")
-    .eq("org_id", context.orgId)
-    .eq("company_id", bill.company_id)
-    .eq("status", "active")
-    .maybeSingle()
-  if (!relationship?.recipient_account_id) {
-    throw new Error("This vendor has not finished payout verification yet")
-  }
-
-  const { data: company } = await supabase
-    .from("companies")
-    .select("name")
-    .eq("org_id", context.orgId)
-    .eq("id", bill.company_id)
-    .maybeSingle()
 
   const run = await createPaymentRun(
     {
       funding_source_id: parsed.funding_source_id,
       idempotency_key: parsed.idempotency_key,
-      items: [
-        {
-          bill_id: parsed.bill_id,
-          amount_cents: parsed.amount_cents,
-          retainage_held_cents: 0,
-          payees: [
-            {
-              payee_kind: "primary_vendor",
-              method: "ach",
-              recipient_account_id: relationship.recipient_account_id,
-              payee_name: company?.name ?? "Vendor",
-              amount_cents: parsed.amount_cents,
-            },
-          ],
-        },
-      ],
+      items,
     },
     context.orgId,
   )
@@ -136,10 +157,11 @@ export async function preparePayableApproval(
   return {
     runId: run.id,
     totalDebitCents: run.totalDebitCents,
-    vendorAmountCents: parsed.amount_cents,
+    vendorAmountCents: run.vendorAmountCents,
     processorFeeCents: run.processorFeeCents,
     platformFeeCents: run.platformFeeCents,
     requiredApprovals: run.requiredApprovals,
+    paymentCount: items.length,
   }
 }
 
@@ -165,6 +187,22 @@ export interface PayableApprovalDetail {
   viewerMayDecide: boolean
   /** Why they cannot, when they cannot — shown instead of a dead button. */
   blockedReason: string | null
+  /**
+   * Every payable in the run, not just the one that was clicked. The signature
+   * binds to the whole frozen set, so showing a single line beside the run's
+   * total made the approver sign for money they could not see.
+   */
+  items: Array<{
+    billId: string
+    billNumber: string | null
+    vendorName: string
+    projectName: string | null
+    vendorAmountCents: number
+    /** Quoted per payable: each is its own ACH payment, priced on its own amount. */
+    processorFeeCents: number
+    platformFeeCents: number
+    releasableAtSubmission: boolean
+  }>
 }
 
 /**
@@ -196,11 +234,20 @@ export async function getPayableApprovalDetail(
     .maybeSingle()
   if (!item) return null
 
+  // The whole run, because that is what the approval binds to.
+  const { data: runItems } = await supabase
+    .from("payment_run_items")
+    .select("bill_id,vendor_amount_cents,processor_fee_cents,platform_fee_cents,hold_snapshot,bill:vendor_bills(bill_number,company:companies(name)),project:projects(name)")
+    .eq("org_id", context.orgId)
+    .eq("run_id", item.run_id)
+    .order("created_at")
+    .limit(200)
+
   const [{ data: run }, { data: approvals }, routing] = await Promise.all([
     supabase
       .from("payment_runs")
       .select(
-        "id,status,content_hash,total_debit_cents,required_approvals,requested_by,requested_at,funding_source_id,scheduled_for",
+        "id,status,content_hash,total_debit_cents,required_approvals,requested_by,requested_at,funding_source_id,scheduled_for,control_snapshot",
       )
       .eq("org_id", context.orgId)
       .eq("id", item.run_id)
@@ -234,10 +281,11 @@ export async function getPayableApprovalDetail(
       ?.approvalLimitCents ?? null
   const totalDebitCents = Number(run.total_debit_cents)
   const isPreparer = run.requested_by === context.userId
+  const preparerMayApprove = requesterMayApprovePaymentRun(run.control_snapshot)
 
   const blockedReason = !routing.viewerMayApprove
     ? "Your role does not allow approving payments"
-    : isPreparer
+    : isPreparer && !preparerMayApprove
       ? "You prepared this payment, so someone else has to approve it"
       : viewerLimitCents != null && totalDebitCents > viewerLimitCents
         ? "This payment is above your approval limit"
@@ -264,6 +312,22 @@ export async function getPayableApprovalDetail(
     submittedAt: run.requested_at ?? null,
     viewerMayDecide: run.status === "pending_approval" && !blockedReason,
     blockedReason,
+    items: (runItems ?? []).map((row) => {
+      const rowBill = Array.isArray(row.bill) ? row.bill[0] : row.bill
+      const rowCompany = rowBill && (Array.isArray(rowBill.company) ? rowBill.company[0] : rowBill.company)
+      const rowProject = Array.isArray(row.project) ? row.project[0] : row.project
+      const holds = (row.hold_snapshot ?? {}) as { blockingCount?: number }
+      return {
+        billId: row.bill_id,
+        billNumber: rowBill?.bill_number ?? null,
+        vendorName: rowCompany?.name ?? "Vendor",
+        projectName: rowProject?.name ?? null,
+        vendorAmountCents: Number(row.vendor_amount_cents),
+        processorFeeCents: Number(row.processor_fee_cents),
+        platformFeeCents: Number(row.platform_fee_cents),
+        releasableAtSubmission: Number(holds.blockingCount ?? 0) === 0,
+      }
+    }),
   }
 }
 

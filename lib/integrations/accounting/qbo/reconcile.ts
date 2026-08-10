@@ -4,8 +4,16 @@ import type { QBOClient, QBOPaymentSnapshot } from "@/lib/integrations/accountin
 import { QBOClient as QBOClientFactory } from "@/lib/integrations/accounting/qbo/client"
 import { extractIntuitEntityEvents, verifyIntuitWebhookSignature } from "@/lib/integrations/accounting/qbo/webhook"
 import { qboPurchaseIsCredit } from "@/lib/integrations/accounting/qbo/import-rules"
+import {
+  arcChangedSinceSync,
+  computeLocalFingerprint,
+  stampLocalFingerprint,
+  storedLocalFingerprint,
+} from "@/lib/integrations/accounting/local-change"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { isPayableVendorBillStatus } from "@/lib/financials/ledger-status"
 import { logQBO } from "@/lib/services/accounting-logger"
+import { resolveLedgerAuthority, type LedgerAuthority } from "@/lib/services/books/authority"
 import { recordEvent } from "@/lib/services/events"
 import { rememberAccountingInvoiceNumberCursor } from "@/lib/services/invoice-numbers"
 
@@ -109,10 +117,10 @@ async function resolveLocalSyncMapping(
   connectionId: string,
   entityType: string,
   externalId: string,
-): Promise<{ entityId: string; externalVersion: string | null } | null> {
+): Promise<{ entityId: string; externalVersion: string | null; localFingerprint: string | null } | null> {
   const { data: rows } = await supabase
     .from("accounting_sync_records")
-    .select("entity_id, external_version, status, last_synced_at")
+    .select("entity_id, external_version, status, last_synced_at, metadata")
     .eq("org_id", orgId)
     .eq("connection_id", connectionId)
     .eq("entity_type", entityType)
@@ -122,7 +130,11 @@ async function resolveLocalSyncMapping(
 
   const match = (rows ?? []).find((row) => row.status === "synced") ?? rows?.[0]
   if (!match?.entity_id) return null
-  return { entityId: match.entity_id as string, externalVersion: (match.external_version as string | null) ?? null }
+  return {
+    entityId: match.entity_id as string,
+    externalVersion: (match.external_version as string | null) ?? null,
+    localFingerprint: storedLocalFingerprint(match.metadata),
+  }
 }
 
 /**
@@ -161,6 +173,17 @@ async function upsertInvoiceSyncRecord(params: {
     },
     { onConflict: "org_id,connection_id,entity_type,entity_id" },
   )
+
+  // Runs after the invoice row itself has been written, so the recorded
+  // fingerprint describes the reconciled state. Anything that differs from it
+  // later was moved by a person.
+  await stampLocalFingerprint({
+    supabase: params.supabase,
+    orgId: params.orgId,
+    connectionId: params.connectionId,
+    entityType: "invoice",
+    entityId: params.invoiceId,
+  })
 }
 
 export async function reconcileInvoiceFromQbo(params: {
@@ -234,13 +257,14 @@ export async function reconcileInvoiceFromQbo(params: {
 
   const { data: localInvoice } = await params.supabase
     .from("invoices")
-    .select("updated_at, qbo_synced_at, subtotal_cents, tax_cents, total_cents, balance_due_cents")
+    .select("subtotal_cents, tax_cents, total_cents, balance_due_cents")
     .eq("org_id", params.orgId)
     .eq("id", invoiceId)
     .maybeSingle()
-  const localUpdatedAt = localInvoice?.updated_at ? new Date(localInvoice.updated_at).getTime() : 0
-  const localSyncedAt = localInvoice?.qbo_synced_at ? new Date(localInvoice.qbo_synced_at).getTime() : 0
-  const arcChangedAfterSync = localUpdatedAt > localSyncedAt
+  const arcChangedAfterSync = arcChangedSinceSync({
+    storedFingerprint: mapping.localFingerprint,
+    currentFingerprint: computeLocalFingerprint("invoice", localInvoice),
+  })
   const amountsDiffer =
     (totalCents !== null && Number(localInvoice?.total_cents ?? 0) !== totalCents) ||
     (balanceCents !== null && Number(localInvoice?.balance_due_cents ?? 0) !== Math.max(balanceCents, 0)) ||
@@ -333,7 +357,7 @@ async function reconcileProjectExpenseFromQbo(params: {
   const expenseId = mapping.entityId
   const { data: localExpense } = await params.supabase
     .from("project_expenses")
-    .select("amount_cents, tax_cents, status, metadata")
+    .select("amount_cents, tax_cents, status, metadata, expense_date, qbo_vendor_id, qbo_expense_account_id")
     .eq("org_id", params.orgId)
     .eq("id", expenseId)
     .maybeSingle()
@@ -376,6 +400,46 @@ async function reconcileProjectExpenseFromQbo(params: {
 
   const localTotalCents = Number((localExpense as any)?.amount_cents ?? 0) + Number((localExpense as any)?.tax_cents ?? 0)
   const localStatus = String((localExpense as any)?.status ?? "")
+
+  // Both-sides check, same standard as invoices: when Arc edited this expense
+  // after the last sync AND QBO's payload differs materially, neither side may
+  // silently win. When Arc has not changed, QBO still wins below.
+  const localData = localExpense as any
+  const arcChangedAfterSync = arcChangedSinceSync({
+    storedFingerprint: mapping.localFingerprint,
+    currentFingerprint: computeLocalFingerprint("project_expense", localExpense),
+  })
+  const qboVendorId = vendorRef?.value != null ? String(vendorRef.value) : null
+  const materiallyDiffers =
+    (totalCents !== null && localTotalCents > 0 && totalCents !== localTotalCents) ||
+    (qboVendorId !== null && localData?.qbo_vendor_id != null && qboVendorId !== String(localData.qbo_vendor_id)) ||
+    (txnDate !== null && localData?.expense_date != null && txnDate !== String(localData.expense_date)) ||
+    (accountRef?.value != null && localData?.qbo_expense_account_id != null && String(accountRef.value) !== String(localData.qbo_expense_account_id))
+  if (arcChangedAfterSync && materiallyDiffers) {
+    const reason = `Both Arc and QuickBooks changed this ${params.entityName === "bill" ? "bill" : "expense"} since the last sync.`
+    await params.supabase
+      .from("project_expenses")
+      .update({ qbo_sync_status: "needs_review", qbo_sync_error: reason })
+      .eq("org_id", params.orgId)
+      .eq("id", expenseId)
+    await params.supabase.from("accounting_sync_records").upsert(
+      {
+        org_id: params.orgId,
+        connection_id: params.connectionId,
+        entity_type: "project_expense",
+        entity_id: expenseId,
+        provider: "qbo",
+        external_id: params.qboId,
+        external_version: qboTxn.SyncToken ?? null,
+        last_synced_at: nowIso,
+        status: "needs_review",
+        error_message: reason,
+      },
+      { onConflict: "org_id,connection_id,entity_type,entity_id" },
+    )
+    return { reconciled: false as const, reason }
+  }
+
   if (totalCents !== null && localTotalCents > 0 && totalCents !== localTotalCents && ["approved", "invoiced", "locked"].includes(localStatus)) {
     await params.supabase
       .from("project_expenses")
@@ -445,6 +509,14 @@ async function reconcileProjectExpenseFromQbo(params: {
     { onConflict: "org_id,connection_id,entity_type,entity_id" },
   )
 
+  await stampLocalFingerprint({
+    supabase: params.supabase,
+    orgId: params.orgId,
+    connectionId: params.connectionId,
+    entityType: "project_expense",
+    entityId: expenseId,
+  })
+
   return { reconciled: true as const }
 }
 
@@ -479,7 +551,12 @@ async function reconcileVendorBillFromQbo(params: {
 
   const [qboBill, localResult] = await Promise.all([
     params.client.getBillById(params.qboId),
-    params.supabase.from("vendor_bills").select("total_cents, status").eq("org_id", params.orgId).eq("id", billId).maybeSingle(),
+    params.supabase
+      .from("vendor_bills")
+      .select("total_cents, status, qbo_vendor_id, bill_date, due_date, qbo_expense_account_id")
+      .eq("org_id", params.orgId)
+      .eq("id", billId)
+      .maybeSingle(),
   ])
   if (!qboBill) {
     return { reconciled: false as const, reason: "QBO bill not found" }
@@ -492,7 +569,54 @@ async function reconcileVendorBillFromQbo(params: {
   const local = localResult.data as any
   const qboTotalCents = toCents(qboBill.TotalAmt)
   const localTotalCents = Number(local?.total_cents ?? 0)
-  if (qboTotalCents !== null && localTotalCents > 0 && qboTotalCents !== localTotalCents && ["approved", "partial", "paid"].includes(String(local?.status ?? ""))) {
+  const firstAccountLine = (qboBill.Line ?? []).find((line: any) => line?.AccountBasedExpenseLineDetail?.AccountRef)
+  const accountRef = firstAccountLine?.AccountBasedExpenseLineDetail?.AccountRef
+
+  // Both-sides check, same standard as invoices: when Arc edited this bill after
+  // the last sync AND QBO's payload differs materially, neither side may silently
+  // win — a person picks. When Arc has not changed, QBO still wins below.
+  const arcChangedAfterSync = arcChangedSinceSync({
+    storedFingerprint: mapping.localFingerprint,
+    currentFingerprint: computeLocalFingerprint("bill", local),
+  })
+  const qboBillDate = normalizeDate(qboBill.TxnDate)
+  const qboDueDate = normalizeDate(qboBill.DueDate)
+  const qboVendorId = qboBill.VendorRef?.value != null ? String(qboBill.VendorRef.value) : null
+  const materiallyDiffers =
+    (qboTotalCents !== null && qboTotalCents !== localTotalCents) ||
+    (qboVendorId !== null && local?.qbo_vendor_id != null && qboVendorId !== String(local.qbo_vendor_id)) ||
+    (qboBillDate !== null && local?.bill_date != null && qboBillDate !== String(local.bill_date)) ||
+    (qboDueDate !== null && local?.due_date != null && qboDueDate !== String(local.due_date)) ||
+    (accountRef?.value != null && local?.qbo_expense_account_id != null && String(accountRef.value) !== String(local.qbo_expense_account_id))
+  if (arcChangedAfterSync && materiallyDiffers) {
+    const reason = "Both Arc and QuickBooks changed this bill since the last sync."
+    await params.supabase
+      .from("vendor_bills")
+      .update({ qbo_sync_status: "needs_review", qbo_sync_error: reason })
+      .eq("org_id", params.orgId)
+      .eq("id", billId)
+    await params.supabase.from("accounting_sync_records").upsert(
+      {
+        org_id: params.orgId,
+        connection_id: params.connectionId,
+        entity_type: "bill",
+        entity_id: billId,
+        provider: "qbo",
+        external_id: params.qboId,
+        external_version: qboBill.SyncToken ?? null,
+        last_synced_at: nowIso,
+        status: "needs_review",
+        error_message: reason,
+      },
+      { onConflict: "org_id,connection_id,entity_type,entity_id" },
+    )
+    return { reconciled: false as const, reason }
+  }
+
+  // Only a bill Arc already treats as an incurred payable is worth stopping a
+  // person for — the GL set, not the sync set, because the risk being guarded is
+  // QuickBooks silently repricing something Arc has already posted.
+  if (qboTotalCents !== null && localTotalCents > 0 && qboTotalCents !== localTotalCents && isPayableVendorBillStatus(local?.status)) {
     await params.supabase
       .from("vendor_bills")
       .update({
@@ -505,8 +629,6 @@ async function reconcileVendorBillFromQbo(params: {
     return { reconciled: true as const }
   }
 
-  const firstAccountLine = (qboBill.Line ?? []).find((line: any) => line?.AccountBasedExpenseLineDetail?.AccountRef)
-  const accountRef = firstAccountLine?.AccountBasedExpenseLineDetail?.AccountRef
   const update: Record<string, unknown> = {
     qbo_id: params.qboId,
     qbo_sync_status: "synced",
@@ -552,6 +674,14 @@ async function reconcileVendorBillFromQbo(params: {
     { onConflict: "org_id,connection_id,entity_type,entity_id" },
   )
 
+  await stampLocalFingerprint({
+    supabase: params.supabase,
+    orgId: params.orgId,
+    connectionId: params.connectionId,
+    entityType: "bill",
+    entityId: billId,
+  })
+
   return { reconciled: true as const }
 }
 
@@ -565,11 +695,16 @@ async function reconcileBillPaymentFromQbo(params: {
 }) {
   const normalizedOp = String(params.operation ?? "").toLowerCase()
   if (normalizedOp === "delete") {
+    // Terminal by nature: the object this row points at is gone from QuickBooks
+    // and no sync can bring it back, so the message has to say what the person
+    // is choosing between rather than just reporting the disagreement.
     await params.supabase
       .from("accounting_sync_records")
       .update({
         status: "conflict",
-        error_message: "The linked QuickBooks bill payment was deleted.",
+        error_message:
+          "The linked QuickBooks bill payment was deleted, but Arc still shows this vendor payment as made. " +
+          "Syncing cannot resolve this. Either re-enter the payment in QuickBooks, or void it in Arc if the money did not move.",
         last_synced_at: new Date().toISOString(),
       })
       .eq("org_id", params.orgId)
@@ -773,14 +908,10 @@ export async function ingestQboCdcChanges(input: {
     .maybeSingle()
   if (!connection?.org_id) return { scanned: 0, inserted: 0 }
 
-  const { data: booksPosture, error: booksPostureError } = await supabase
-    .from("books_settings")
-    .select("ledger_authority, external_sync_posture")
-    .eq("org_id", connection.org_id)
-    .maybeSingle()
-  // During the additive migration rollout the table may not exist yet. Preserve
-  // existing external-authoritative behavior in that one compatibility case.
-  if (!booksPostureError && booksPosture?.ledger_authority === "arc") {
+  // Fails closed: an unreadable authority row throws rather than letting an
+  // Arc-authoritative org's ledger be overwritten from outside. CDC ingestion is
+  // cron-driven, so the throw surfaces on the job run and the next pass retries.
+  if ((await resolveLedgerAuthority(connection.org_id, supabase)) === "arc") {
     return { scanned: 0, inserted: 0 }
   }
 
@@ -931,12 +1062,20 @@ export async function drainQboInboundEvents(input: { limit: number }): Promise<{
         continue
       }
 
-      const { data: booksPosture, error: booksPostureError } = await supabase
-        .from("books_settings")
-        .select("ledger_authority, external_sync_posture")
-        .eq("org_id", connection.org_id)
-        .maybeSingle()
-      if (!booksPostureError && booksPosture?.ledger_authority === "arc") {
+      // Fails closed: without knowing who owns the ledger this event must not be
+      // applied. Erroring the single event reschedules it on the backoff rather
+      // than aborting the rest of the drain.
+      let ledgerAuthority: LedgerAuthority
+      try {
+        ledgerAuthority = await resolveLedgerAuthority(connection.org_id, supabase)
+      } catch (authorityError) {
+        const message = authorityError instanceof Error ? authorityError.message : "Unable to resolve ledger authority"
+        await markEventProcessed(supabase, row.id, "error", message, row.attempts ?? 0)
+        processed += 1
+        continue
+      }
+
+      if (ledgerAuthority === "arc") {
         await markEventProcessed(supabase, row.id, "ignored", "Arc is authoritative; external changes are drift-only")
         await recordEvent({
           orgId: connection.org_id,

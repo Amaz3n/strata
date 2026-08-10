@@ -302,6 +302,10 @@ function SymbolCountBar({
         <div className="text-muted-foreground">
           Click a dot to drop it, anywhere else to add one
           {proposal.truncated && " · more than the search will return"}
+          {/* What the sheet's own linework did with the model's answer. Silence
+              here would make a checked count and an unchecked one look alike. */}
+          {proposal.discarded ? ` · ${proposal.discarded} discarded with nothing drawn there` : ""}
+          {proposal.unverified && " · not checked against linework on this sheet"}
         </div>
       </div>
       <Button
@@ -340,6 +344,10 @@ interface SymbolProposalState {
   source: "geometry" | "vision"
   /** The search hit its ceiling; the count is a floor, not a total. */
   truncated: boolean
+  /** Vision proposals thrown out for having no linework under them. */
+  discarded?: number
+  /** The sheet had no vectors to check the proposals against. */
+  unverified?: boolean
 }
 
 const MEASURE_TOOLS: Array<{
@@ -1092,6 +1100,8 @@ export function DrawingViewer({
           points,
           source: "vision",
           truncated: proposal.truncated,
+          discarded: proposal.discarded,
+          unverified: proposal.unverified,
         })
         measureToolsRef.current.setDraftPoints("count", points)
       } catch (error) {

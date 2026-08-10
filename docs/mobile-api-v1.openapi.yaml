@@ -422,6 +422,83 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { description: Project not found }
+  /payables:
+    get:
+      summary: List payables awaiting the caller's approval
+      description: >
+        Scoped to projects where the caller holds `bill.approve`. Ordered by due
+        date, oldest first. Page-numbered rather than cursored: the queue is a
+        deadline list that changes as approvals land.
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: search
+          in: query
+          description: Matches bill number or vendor name.
+          schema: { type: string, maxLength: 120 }
+      responses:
+        "200": { description: Approval queue with pagination }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: Caller may not approve payables in this organization }
+  /payables/{id}:
+    get:
+      summary: Read one payable in decision detail
+      description: >
+        Adds the invoice document and advisory evidence (commitment line match,
+        lien-waiver verification) to the list row. `can_approve` is false when the
+        caller may read but not decide, or when a blocking payment hold stands.
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: Payable detail }
+        "400": { description: Invalid payable id }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: Payable not found }
+  /payables/{id}/decision:
+    post:
+      summary: Approve or reject a payable
+      description: >
+        Delegates to the same service the web desk uses, so `bill.approve`, the
+        rejection-reason rule, and ledger propagation are identical. No step-up
+        challenge: approving a bill accepts an obligation rather than releasing
+        money, matching the web control model. `expected_updated_at` is required
+        and must echo the value the client was shown.
+      parameters:
+        - $ref: "#/components/parameters/OrganizationHeader"
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision, expected_updated_at]
+              properties:
+                decision: { type: string, enum: [approved, rejected] }
+                expected_updated_at: { type: string }
+                reason:
+                  type: string
+                  minLength: 8
+                  maxLength: 1000
+                  description: Required when rejecting; shown to the vendor verbatim.
+      responses:
+        "200": { description: Decision recorded }
+        "400": { description: Invalid decision payload }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { description: The payable changed since it was read }
+        "422": { description: The decision was refused by the approval rules }
   /devices:
     post:
       summary: Register an APNs device token for push notifications

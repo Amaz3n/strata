@@ -6,6 +6,7 @@ import { quoteApDisbursementFee, type ApFeePolicy } from "@/lib/payments/fee-eng
 import {
   assertDisbursementTransition,
   createPaymentRunContentHash,
+  requesterMayApprovePaymentRun,
   requiredApprovalCount,
   type PaymentApprovalMode,
 } from "@/lib/payments/payment-domain"
@@ -29,6 +30,7 @@ import {
   postApFeeChargeSubmittedLedger,
   postDisbursementSubmittedLedger,
 } from "@/lib/services/payment-ledger"
+import { transitionPaymentRunStatus } from "@/lib/services/payment-provider-events"
 import { hasPermission, requirePermission } from "@/lib/services/permissions"
 import { requireRecentPaymentStepUp } from "@/lib/services/payment-step-up"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -104,6 +106,13 @@ interface PaymentRunReviewRow {
   completed_at: string | null
   created_at: string
   scheduled_for: string | null
+  control_snapshot: Record<string, unknown> | null
+}
+
+function selectedApproverIds(value: unknown): string[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return []
+  const ids = Reflect.get(value, "preferred_approver_ids")
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : []
 }
 
 interface PaymentRunApprovalReviewRow {
@@ -178,13 +187,14 @@ async function loadApFeePolicy(orgId: string): Promise<ApFeePolicy> {
 
 async function loadPaymentPolicy(orgId: string) {
   const supabase = createServiceSupabaseClient()
-  const { data, error } = await supabase.from("payment_rail_policies").select("enabled,approval_mode,per_payment_limit_cents,per_run_limit_cents,daily_limit_cents,waiver_jurisdiction,require_waiver_snapshot").eq("org_id", orgId).maybeSingle()
+  const { data, error } = await supabase.from("payment_rail_policies").select("enabled,approval_mode,requester_may_approve,per_payment_limit_cents,per_run_limit_cents,daily_limit_cents,waiver_jurisdiction,require_waiver_snapshot").eq("org_id", orgId).maybeSingle()
   if (error) throw new Error(`Unable to load payment policy: ${error.message}`)
   if (!data) throw new Error("Configure the organization's payment policy before creating a run")
   return data
 }
 
 function paymentRunHashValue(run: Record<string, unknown>, items: Array<Record<string, unknown>>) {
+  const approverIds = selectedApproverIds(run.control_snapshot)
   return {
     funding_source_id: run.funding_source_id,
     currency: run.currency,
@@ -193,6 +203,7 @@ function paymentRunHashValue(run: Record<string, unknown>, items: Array<Record<s
     // The release date is part of what gets approved. Moving it after approval has
     // to invalidate those approvals exactly like moving an amount would.
     scheduled_for: run.scheduled_for ?? null,
+    preferred_approver_ids: [...approverIds].sort(),
     totals: {
       vendor_amount_cents: run.vendor_amount_cents,
       processor_fee_cents: run.processor_fee_cents,
@@ -254,7 +265,7 @@ export async function createPaymentRun(input: CreatePaymentRunInput, orgId?: str
   if (funding.usable_after && new Date(funding.usable_after) > new Date()) throw new Error("Funding source is still in its security cooling period")
 
   const billIds = parsed.items.map((item) => item.bill_id)
-  const { data: bills, error: billsError } = await supabase.from("vendor_bills").select("id,org_id,project_id,company_id,status,total_cents,paid_cents,retainage_cents,currency,bill_number,lien_waiver_status").eq("org_id", context.orgId).in("id", billIds)
+  const { data: bills, error: billsError } = await supabase.from("vendor_bills").select("id,org_id,project_id,company_id,status,total_cents,paid_cents,retainage_cents,currency,bill_number,lien_waiver_status,metadata").eq("org_id", context.orgId).in("id", billIds)
   if (billsError || !bills || bills.length !== billIds.length) throw new Error("One or more vendor bills were not found")
   await requirePaymentProjectAccess(context, bills.map((bill) => bill.project_id))
   const billById = new Map(bills.map((bill) => [bill.id, bill]))
@@ -306,6 +317,25 @@ export async function createPaymentRun(input: CreatePaymentRunInput, orgId?: str
 
   const approvalMode: PaymentApprovalMode = policy.approval_mode === "sole" ? "sole" : "dual"
   const requiredApprovals = requiredApprovalCount(approvalMode)
+  const requesterMayApprove = policy.requester_may_approve === true && approvalMode === "sole"
+  const preferredApproverIds = [...new Set(bills.flatMap((bill) => selectedApproverIds(bill.metadata)))]
+  if (preferredApproverIds.length > 0) {
+    const routing = await getPaymentApprovalRouting(context.orgId)
+    const eligibleIds = new Set(routing.approvers.filter((approver) => approver.permitted).map((approver) => approver.userId))
+    if (preferredApproverIds.some((id) => !eligibleIds.has(id))) {
+      throw new Error("A preferred payment approver is no longer eligible. Update the payable approval route.")
+    }
+    const eligiblePreferredIds = requesterMayApprove
+      ? preferredApproverIds
+      : preferredApproverIds.filter((id) => id !== context.userId)
+    if (eligiblePreferredIds.length < requiredApprovals) {
+      throw new Error(
+        requesterMayApprove
+          ? `Choose at least ${requiredApprovals} eligible payment approver${requiredApprovals === 1 ? "" : "s"}.`
+          : `Choose at least ${requiredApprovals} eligible payment approver${requiredApprovals === 1 ? "" : "s"} other than the preparer.`,
+      )
+    }
+  }
   const currency = bills[0]?.currency ?? "usd"
   if (bills.some((bill) => String(bill.currency ?? "usd").toLowerCase() !== String(currency).toLowerCase())) {
     throw new Error("A payment run can only contain bills in one currency")
@@ -353,7 +383,7 @@ export async function createPaymentRun(input: CreatePaymentRunInput, orgId?: str
     p_processor_fee_cents: processorFeeCents,
     p_platform_fee_cents: platformFeeCents,
     p_total_debit_cents: totalDebitCents,
-    p_control_snapshot: { policy, fee_policy: feePolicy, funding_source_status: funding.status, request_fingerprint: requestFingerprint },
+    p_control_snapshot: { policy, fee_policy: feePolicy, funding_source_status: funding.status, request_fingerprint: requestFingerprint, preferred_approver_ids: preferredApproverIds },
     p_idempotency_key: parsed.idempotency_key,
     p_items: atomicItems,
   })
@@ -427,8 +457,9 @@ export async function submitPaymentRun(input: SubmitPaymentRunInput, orgId?: str
   // Notification copy has to say what is being approved, so the event carries the
   // bill context rather than making every recipient open the run to find out.
   const summary = await summarizeRunForNotification(parsedRunId, context.orgId, material.items)
+  const approverIds = selectedApproverIds(material.run.control_snapshot)
   await Promise.all([
-    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "payment_run_submitted", entityType: "payment_run", entityId: parsedRunId, payload: { content_hash: contentHash, total_debit_cents: Number(material.run.total_debit_cents), required_approvals: Number(material.run.required_approvals), scheduled_for: parsed.scheduled_for, ...summary } }),
+    recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "payment_run_submitted", entityType: "payment_run", entityId: parsedRunId, payload: { content_hash: contentHash, total_debit_cents: Number(material.run.total_debit_cents), required_approvals: Number(material.run.required_approvals), scheduled_for: parsed.scheduled_for, approver_ids: approverIds, ...summary } }),
     recordAudit({ orgId: context.orgId, actorId: context.userId, action: "update", entityType: "payment_run", entityId: parsedRunId, before: { status: "draft" }, after: { status: "pending_approval", content_hash: contentHash, scheduled_for: parsed.scheduled_for } }),
   ])
   return { id: parsedRunId, status: "pending_approval", content_hash: contentHash, scheduled_for: parsed.scheduled_for }
@@ -514,6 +545,12 @@ export async function decidePaymentRun(
   const supabase = createServiceSupabaseClient()
   const material = await loadRunHashMaterial(parsed.run_id, context.orgId)
   if (material.contentHash !== parsed.content_hash || material.run.content_hash !== parsed.content_hash) throw new Error("Payment run changed after review; reload it before deciding")
+  if (
+    material.run.requested_by === context.userId &&
+    !requesterMayApprovePaymentRun(material.run.control_snapshot)
+  ) {
+    throw new Error("You prepared this payment, so someone else has to approve it")
+  }
   // Permission says you *can* approve; the roster says the org designated you to,
   // and for which work — a division-scoped approver cannot release a run that
   // reaches outside their division.
@@ -528,6 +565,10 @@ export async function decidePaymentRun(
     totalDebitCents: Number(material.run.total_debit_cents),
     divisionIds: runDivisionIds,
   })
+  const preferredApprovers = selectedApproverIds(material.run.control_snapshot)
+  if (preferredApprovers.length > 0 && !preferredApprovers.includes(context.userId)) {
+    throw new Error("This payment run was routed to different approvers")
+  }
   const { data, error } = await supabase.rpc("decide_payment_run_atomic", {
     p_org_id: context.orgId,
     p_run_id: parsed.run_id,
@@ -589,8 +630,11 @@ async function enqueueScheduledRelease(input: { orgId: string; runId: string; re
     jobType: RELEASE_JOB_TYPE,
     payload: { run_id: input.runId, revision: input.revision },
     runAt: scheduledReleaseInstant(input.scheduledFor),
-    // Revision is part of the key because invalidated approvals return the run to
-    // draft; the next approval is a genuinely different release to schedule.
+    // Runs are immutable after creation, so `revision` never changes today; a
+    // material change means cancel + rebuild, and the content hash rejects
+    // stale copies at decide/execute. The revision stays in the dedupe key as
+    // an invariant: if run editing is ever added, the edit MUST bump revision
+    // so the re-approved run schedules a genuinely new release.
     dedupeByPayloadKeys: ["run_id", "revision"],
   })
 }
@@ -782,9 +826,6 @@ async function assertRunRiskAllowed(run: Record<string, unknown>, items: Array<R
   const policyValue = controlSnapshot ? Reflect.get(controlSnapshot, "policy") : null
   const policy = policyValue && typeof policyValue === "object" && !Array.isArray(policyValue) ? policyValue : null
   const signals: Array<Record<string, unknown>> = []
-  const perRunLimitCents = policy ? Reflect.get(policy, "per_run_limit_cents") : null
-  const dailyLimitCents = policy ? Reflect.get(policy, "daily_limit_cents") : null
-  if (perRunLimitCents && Number(run.total_debit_cents) > Number(perRunLimitCents)) signals.push({ code: "run_limit_exceeded", severity: "block" })
   const dayStart = new Date(); dayStart.setUTCHours(0, 0, 0, 0)
   const failureWindowStart = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
   const relationshipIds = [...new Set(items.map((item) => item.relationship_id).filter((value): value is string => typeof value === "string"))]
@@ -796,12 +837,29 @@ async function assertRunRiskAllowed(run: Record<string, unknown>, items: Array<R
       : Promise.resolve({ data: [] }),
     // Read live, not from the run's frozen control snapshot: these are fraud
     // controls, and tightening one has to bind runs that were built before it.
-    supabase.from("payment_rail_policies").select("new_vendor_hold_hours,max_inflight_cents").eq("org_id", orgId).maybeSingle(),
+    supabase.from("payment_rail_policies").select("new_vendor_hold_hours,max_inflight_cents,per_run_limit_cents,daily_limit_cents").eq("org_id", orgId).maybeSingle(),
   ])
+
+  // The two spend limits bind live for exactly the reason the two above do:
+  // lowering a limit is a fraud response, and it has to reach runs that were
+  // built before it. They used to be read only from the frozen snapshot, so a
+  // run prepared under yesterday's ceiling kept it. The tighter of the two wins,
+  // which means tightening binds and loosening cannot unbind what the approver
+  // was shown; the snapshot stays on the run as evidence of that.
+  const tighterLimit = (frozen: unknown, live: unknown): number | null => {
+    const values = [frozen, live].map((value) => (value == null ? null : Number(value))).filter(
+      (value): value is number => value !== null && Number.isFinite(value),
+    )
+    return values.length === 0 ? null : Math.min(...values)
+  }
+  const perRunLimitCents = tighterLimit(policy ? Reflect.get(policy, "per_run_limit_cents") : null, livePolicy?.per_run_limit_cents)
+  const dailyLimitCents = tighterLimit(policy ? Reflect.get(policy, "daily_limit_cents") : null, livePolicy?.daily_limit_cents)
+  if (perRunLimitCents && Number(run.total_debit_cents) > perRunLimitCents) signals.push({ code: "run_limit_exceeded", severity: "block" })
+
   // Fees ride their own debit, so the daily limit measures the vendor money that
   // actually left the bank rather than a total that includes an accrual.
   const dailyCents = (dailyRows ?? []).reduce((sum, row) => sum + Number(row.amount_cents), 0) + Number(run.total_debit_cents)
-  if (dailyLimitCents && dailyCents > Number(dailyLimitCents)) signals.push({ code: "daily_limit_exceeded", severity: "block", daily_cents: dailyCents })
+  if (dailyLimitCents && dailyCents > dailyLimitCents) signals.push({ code: "daily_limit_exceeded", severity: "block", daily_cents: dailyCents })
   if ((recentFailureCount ?? 0) >= 3) signals.push({ code: "repeated_payment_failures", severity: "block", count: recentFailureCount })
   const duplicateBillIds = items.map((item) => item.bill_id)
   if (new Set(duplicateBillIds).size !== duplicateBillIds.length) signals.push({ code: "duplicate_bill", severity: "block" })
@@ -856,44 +914,55 @@ async function assertRunRiskAllowed(run: Record<string, unknown>, items: Array<R
     }
   }
 
-  const blocked = signals.some((signal) => signal.severity === "block")
+  const blockingCodes = signals.filter((signal) => signal.severity === "block").map((signal) => String(signal.code))
   // A human with the permission can clear a block, and that decision is its own
   // immutable row. Without this a `repeated_payment_failures` signal stopped an
   // org's entire AP for 24 hours with no way for anyone to look at it and say
   // the payments were fine — which on a Friday means subs wait until Monday.
-  const override = blocked ? await findManualRiskOverride(supabase, orgId, String(run.id)) : null
-  const decision = blocked && !override ? "block" : "allow"
-  const riskScore = blocked ? 100 : signals.length > 0 ? 25 : 0
+  const override = blockingCodes.length > 0 ? await findManualRiskOverride(supabase, orgId, String(run.id)) : null
+  // The override clears the signals the reviewer actually saw and nothing else.
+  // It used to be a standing per-run "allow": someone clearing
+  // `repeated_payment_failures` at submit silently cleared whatever appeared
+  // later at execution too — `recently_claimed_vendor_relationship`,
+  // `inflight_exposure_exceeded`, `daily_limit_exceeded`. A signal that was not
+  // in front of the reviewer has never been reviewed.
+  const uncleared = override ? blockingCodes.filter((code) => !override.clearedCodes.includes(code)) : blockingCodes
+  const decision = uncleared.length > 0 ? "block" : "allow"
+  const riskScore = blockingCodes.length > 0 ? 100 : signals.length > 0 ? 25 : 0
   const { error } = await supabase.from("payment_risk_reviews").insert({
     org_id: orgId,
     run_id: run.id,
     review_type: "automated",
     decision,
-    signals: override ? [...signals, { code: "manual_override_applied", severity: "observe", review_id: override }] : signals,
+    signals: override
+      ? [...signals, { code: "manual_override_applied", severity: "observe", review_id: override.id, cleared_codes: override.clearedCodes }]
+      : signals,
     risk_score: riskScore,
   })
   if (error) throw new Error(`Unable to record payment risk review: ${error.message}`)
   if (decision !== "allow") {
-    const codes = signals.filter((signal) => signal.severity === "block").map((signal) => String(signal.code)).join(", ")
-    throw new Error(`Payment run is blocked by automated risk controls (${codes}). A payments reviewer can release it from the risk queue.`)
+    throw new Error(`Payment run is blocked by automated risk controls (${uncleared.join(", ")}). A payments reviewer can release it from the risk queue.`)
   }
 }
 
 /**
- * A standing manual `allow` for this run, if a reviewer granted one.
+ * The manual `allow` a reviewer granted for this run, and exactly what it covers.
  *
- * Bound to the run rather than to a content hash because any material change
- * returns the run to draft and invalidates its approvals — so an override
- * cannot outlive the thing it was granted for.
+ * Bound to the run rather than to a content hash because runs are immutable
+ * after creation: a material change means cancel + rebuild as a new run, and a
+ * hash mismatch at decide/execute rejects any stale copy — so an override
+ * cannot outlive the thing it was granted for. It is bound to the signal codes
+ * of the review it cleared for a second reason: an override must not outgrow it
+ * either.
  */
 async function findManualRiskOverride(
   supabase: ReturnType<typeof createServiceSupabaseClient>,
   orgId: string,
   runId: string,
-): Promise<string | null> {
+): Promise<{ id: string; clearedCodes: string[] } | null> {
   const { data } = await supabase
     .from("payment_risk_reviews")
-    .select("id")
+    .select("id,signals")
     .eq("org_id", orgId)
     .eq("run_id", runId)
     .eq("review_type", "manual")
@@ -901,7 +970,18 @@ async function findManualRiskOverride(
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()
-  return data?.id ?? null
+  if (!data) return null
+  return { id: data.id, clearedCodes: readClearedRiskCodes(data.signals) }
+}
+
+/** The block codes a manual review recorded as cleared, from its signal rows. */
+function readClearedRiskCodes(signals: unknown): string[] {
+  if (!Array.isArray(signals)) return []
+  return [...new Set(signals.flatMap((signal) => {
+    if (!signal || typeof signal !== "object" || Array.isArray(signal)) return []
+    const cleared = Reflect.get(signal, "cleared_codes")
+    return Array.isArray(cleared) ? cleared.filter((code): code is string => typeof code === "string") : []
+  }))]
 }
 
 export async function executePaymentRun(runId: string, orgId?: string) {
@@ -912,6 +992,12 @@ export async function executePaymentRun(runId: string, orgId?: string) {
   if (process.env.FINTECH_PAYMENTS_EXECUTION_ENABLED !== "true") throw new Error("Electronic payment execution is disabled pending provider and legal approval")
   const flagEnabled = await isFeatureEnabledForOrg({ supabase, orgId: context.orgId, flagKey: EXECUTION_FLAG, defaultEnabled: false })
   if (!flagEnabled) throw new Error("Electronic payment execution is not enabled for this organization")
+  // The org's own kill switch, re-read at the moment money would move. Checking
+  // it only in `createPaymentRun` meant an admin disabling the rail did not stop
+  // runs that were already approved — including scheduled releases that fire
+  // days later with nobody watching. Disabling the rail has to stop payments.
+  const executionPolicy = await loadPaymentPolicy(context.orgId)
+  if (!executionPolicy.enabled) throw new Error("Electronic payments are not enabled for this organization")
   const material = await loadRunHashMaterial(parsedRunId, context.orgId)
   await requirePaymentProjectAccess(context, material.items.map((item) => item.project_id))
   if (!["approved", "processing"].includes(material.run.status)) throw new Error("Payment run must be fully approved before execution")
@@ -951,11 +1037,27 @@ export async function executePaymentRun(runId: string, orgId?: string) {
       const { data: relationship } = await supabase.from("vendor_payment_relationships")
         .select("recipient_account_id,vendor_entity_id,status")
         .eq("org_id", context.orgId).eq("id", item.relationship_id).maybeSingle()
-      const trustedRecipientId = payee.payee_kind === "primary_vendor" ? relationship?.recipient_account_id : payee.recipient_account_id
+      // The destination the approvers signed for, taken from the frozen run
+      // content the content hash covers — never re-read live. `createPaymentRun`
+      // is still the only thing that decides a primary vendor's destination, so
+      // a client-supplied one is as ignored here as it was there; what changed is
+      // that execution honours the snapshot instead of following the
+      // relationship pointer to wherever it points now. A portal re-claim
+      // rewrites relationship and recipient together, so the live pointer could
+      // send an approved run to a bank no approver ever saw.
+      const trustedRecipientId = payee.recipient_account_id
+      if (typeof trustedRecipientId !== "string") throw new Error(`Payee ${payee.payee_name} has no approved payout destination`)
+      if (payee.payee_kind === "primary_vendor" && relationship?.recipient_account_id !== trustedRecipientId) {
+        throw new Error(`The payout destination for ${payee.payee_name} changed after this run was approved. Cancel it and build a new run so the change is approved.`)
+      }
       const { data: recipient } = await supabase.from("payment_recipient_accounts").select("id,vendor_entity_id,provider,provider_account_id,status,payouts_enabled,destination_locked_until").eq("id", trustedRecipientId).maybeSingle()
       if (!relationship || relationship.status !== "active" || recipient?.vendor_entity_id !== relationship.vendor_entity_id) throw new Error(`Payee ${payee.payee_name} is not bound to this vendor relationship`)
       if (!recipient || recipient.provider !== funding.provider || recipient.status !== "ready" || !recipient.payouts_enabled) throw new Error(`Payee ${payee.payee_name} is no longer ready for ACH`)
       if (recipient.destination_locked_until && new Date(recipient.destination_locked_until) > new Date()) throw new Error(`Payee ${payee.payee_name} has a payout destination security hold`)
+      // `revision` is constant today because runs are immutable after creation.
+      // It stays in the key as an invariant: if run editing is ever added, the
+      // edit MUST bump revision so a re-approved run submits fresh debits
+      // instead of replaying the provider's cached responses.
       const idempotencyKey = `${parsedRunId}:${payee.id}:v${material.run.revision}`
       const isLastPayee = payeeIndex === payees.length - 1
       const payeeProcessorFeeCents = isLastPayee
@@ -1119,6 +1221,9 @@ async function collectRunFees(input: {
   const amountCents = processorFeeCents + platformFeeCents
   if (amountCents <= 0) return null
 
+  // Same invariant as the disbursement keys: `revision` is constant because
+  // runs are immutable after creation, and MUST be bumped if editing is ever
+  // added, so an edited run's fee is a new charge rather than a replay.
   const idempotencyKey = `payment_run_fee:${runId}:v${input.run.revision}`
   let { data: charge } = await input.supabase.from("payment_run_fee_charges")
     .select("id,status,amount_cents").eq("org_id", input.orgId).eq("idempotency_key", idempotencyKey).maybeSingle()
@@ -1172,14 +1277,19 @@ async function collectRunFees(input: {
       metadata: { payment_run_id: runId },
     })
     if (result.status === "failed") throw new Error("Provider rejected the Arc fee debit")
+    // Never mark the fee settled here. An ACH debit is not collected at
+    // submission — `funds_available` from the synchronous response is the
+    // provider accepting the intent, not the charge clearing. Settlement is
+    // stamped by `processFeeChargeEvent` when the payment_intent.succeeded
+    // webhook for this PaymentIntent actually arrives.
+    const submittedStatus = result.status === "debit_pending" || result.status === "funds_available" ? "debit_pending" : "submitted"
     await input.supabase.from("payment_run_fee_charges").update({
-      status: result.status === "funds_available" ? "succeeded" : result.status === "debit_pending" ? "debit_pending" : "submitted",
+      status: submittedStatus,
       provider_payment_id: result.providerPaymentId,
       submitted_at: input.effectiveAt,
-      ...(result.status === "funds_available" ? { settled_at: input.effectiveAt } : {}),
     }).eq("org_id", input.orgId).eq("id", charge.id).eq("status", "created")
     await postApFeeChargeSubmittedLedger({ orgId: input.orgId, runId, feeChargeId: charge.id, amountCents, currency, effectiveAt: input.effectiveAt })
-    return { id: charge.id, amountCents, status: result.status }
+    return { id: charge.id, amountCents, status: submittedStatus }
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : "Arc fee debit failed"
     await input.supabase.from("payment_run_fee_charges").update({
@@ -1205,7 +1315,13 @@ async function rollUpExecutionFailure(input: { supabase: ReturnType<typeof creat
   await input.supabase.from("payment_run_item_payees").update({ status: "failed" }).eq("org_id", input.orgId).eq("id", input.payeeId)
   await input.supabase.from("payment_run_items").update({ status: "failed", failure_reason: input.message }).eq("org_id", input.orgId).eq("id", input.itemId)
   const { count } = await input.supabase.from("disbursements").select("id", { count: "exact", head: true }).eq("org_id", input.orgId).eq("run_id", input.runId).not("status", "in", "(failed,canceled)")
-  await input.supabase.from("payment_runs").update({ status: (count ?? 0) > 0 ? "partially_failed" : "failed", completed_at: new Date().toISOString() }).eq("org_id", input.orgId).eq("id", input.runId)
+  await transitionPaymentRunStatus({
+    supabase: input.supabase,
+    orgId: input.orgId,
+    runId: input.runId,
+    toStatus: (count ?? 0) > 0 ? "partially_failed" : "failed",
+    extraPatch: { completed_at: new Date().toISOString() },
+  })
 }
 
 export interface PaymentRunListRow {
@@ -1255,7 +1371,7 @@ export async function listPaymentRuns(orgId?: string, scopedProjectIds: string[]
     : scopedProjectIds.length === 0
       ? []
       : (await supabase.from("payment_run_items").select("run_id").eq("org_id", context.orgId).in("project_id", scopedProjectIds)).data?.map((row) => row.run_id) ?? []
-  let runQuery = supabase.from("payment_runs").select("id,status,currency,payment_count,vendor_amount_cents,processor_fee_cents,platform_fee_cents,total_debit_cents,approval_mode_snapshot,required_approvals,content_hash,requested_by,requested_at,approved_at,processing_started_at,completed_at,created_at,scheduled_for").eq("org_id", context.orgId)
+  let runQuery = supabase.from("payment_runs").select("id,status,currency,payment_count,vendor_amount_cents,processor_fee_cents,platform_fee_cents,total_debit_cents,approval_mode_snapshot,required_approvals,content_hash,requested_by,requested_at,approved_at,processing_started_at,completed_at,created_at,scheduled_for,control_snapshot").eq("org_id", context.orgId)
   if (scopedRunIds !== null) runQuery = scopedRunIds.length > 0 ? runQuery.in("id", Array.from(new Set(scopedRunIds))) : runQuery.eq("id", "00000000-0000-0000-0000-000000000000")
   const [routing, runResult] = await Promise.all([
     getPaymentApprovalRouting(context.orgId),
@@ -1345,14 +1461,19 @@ export async function listPaymentRuns(orgId?: string, scopedProjectIds: string[]
     listItemsByRunId.set(item.run_id, rows)
   }
   // A run is approvable by this viewer when they are designated (or the org named
-  // nobody and they hold the permission), they did not prepare it, and it fits
-  // under their personal approval ceiling.
+  // nobody and they hold the permission), the frozen policy permits their role
+  // in the run, and it fits under their personal approval ceiling.
   const viewerEntries = routing.approvers.filter((approver) => approver.userId === context.userId)
   // Mirrors assertUserMayApproveRun: the best ceiling across every entry that
   // covers the run. A UI that offers a button the server will refuse is worse
   // than no button.
-  const viewerCanApprove = (requestedBy: string, totalDebitCents: number, runDivisions: string[]) => {
-    if (!routing.viewerMayApprove || requestedBy === context.userId) return false
+  const viewerCanApprove = (requestedBy: string, totalDebitCents: number, runDivisions: string[], controlSnapshot: unknown) => {
+    if (
+      !routing.viewerMayApprove ||
+      (requestedBy === context.userId && !requesterMayApprovePaymentRun(controlSnapshot))
+    ) return false
+    const preferredApprovers = selectedApproverIds(controlSnapshot)
+    if (preferredApprovers.length > 0 && !preferredApprovers.includes(context.userId)) return false
     if (viewerEntries.length === 0) return true
     const covering = viewerEntries.filter((entry) =>
       !entry.divisionId || (runDivisions.length > 0 && runDivisions.every((division) => division === entry.divisionId)),
@@ -1385,7 +1506,7 @@ export async function listPaymentRuns(orgId?: string, scopedProjectIds: string[]
     scheduled_for: row.scheduled_for ?? null,
     details_truncated: detailsTruncated,
     can_cancel: row.requested_by === context.userId && ["draft", "pending_approval", "approved"].includes(row.status),
-    can_approve: viewerCanApprove(row.requested_by, Number(row.total_debit_cents), divisionsByRunId.get(row.id) ?? []),
+    can_approve: viewerCanApprove(row.requested_by, Number(row.total_debit_cents), divisionsByRunId.get(row.id) ?? [], row.control_snapshot),
     approvals: approvalsByRunId.get(row.id) ?? [],
     items: listItemsByRunId.get(row.id) ?? [],
   }))
@@ -1410,6 +1531,10 @@ export interface PaymentRunSetupData {
   }>
   /** Who a submitted run routes to, so the preparer can be told before submitting. */
   routing: PaymentApprovalRouting
+  /** Minimum distinct decisions the current rail policy requires. */
+  requiredApprovals: number
+  /** Whether the preparer may provide the run's one required approval. */
+  requesterMayApprove: boolean
   /**
    * The rail's own timing, shipped to the client so the date picker can show the
    * vendor-receipt estimate as the preparer moves the date. Estimate only — see
@@ -1427,10 +1552,14 @@ export async function getPaymentRunSetupData(orgId?: string, scopedProjectIds: s
   let billsQuery = supabase.from("vendor_bills")
     .select("id,bill_number,total_cents,paid_cents,retainage_cents,status,company_id,project_id,due_date,bill_date,early_pay_discount_percent,early_pay_discount_days")
     .eq("org_id", context.orgId).in("status", ["approved", "partial"])
+    // A payable the builder chose to pay themselves is not a candidate for a
+    // run, however enrolled its vendor is.
+    .or("metadata->>payment_channel.is.null,metadata->>payment_channel.neq.external")
   if (scopedProjectIds !== null) billsQuery = scopedProjectIds.length > 0 ? billsQuery.in("project_id", scopedProjectIds) : billsQuery.eq("project_id", "00000000-0000-0000-0000-000000000000")
-  const [routing, feePolicy, { data: fundingSources, error: fundingError }, { data: bills, error: billsError }] = await Promise.all([
+  const [routing, feePolicy, policy, { data: fundingSources, error: fundingError }, { data: bills, error: billsError }] = await Promise.all([
     getPaymentApprovalRouting(context.orgId),
     loadApFeePolicy(context.orgId),
+    loadPaymentPolicy(context.orgId),
     supabase.from("org_funding_sources")
       .select("id,bank_name,last4,is_default,status,usable_after,provider")
       .eq("org_id", context.orgId)
@@ -1511,6 +1640,8 @@ export async function getPaymentRunSetupData(orgId?: string, scopedProjectIds: s
       }]
     }),
     routing,
+    requiredApprovals: requiredApprovalCount(policy.approval_mode === "sole" ? "sole" : "dual"),
+    requesterMayApprove: policy.requester_may_approve === true && policy.approval_mode === "sole",
     // Every active funding source in an org is on the same rail today; the default
     // one decides which adapter's timing the preparer is shown.
     settlementWindow: getPaymentRailProvider((fundingSources ?? [])[0]?.provider ?? undefined).settlementWindow,

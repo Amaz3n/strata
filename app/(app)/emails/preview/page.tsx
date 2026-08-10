@@ -1,6 +1,7 @@
 import Link from "next/link"
 import { PageLayout } from "@/components/layout/page-layout"
 import {
+  AccountingReconciliationEmail,
   BidInviteEmail,
   InvoiceEmail,
   InvoiceReminderEmail,
@@ -24,6 +25,7 @@ type TemplateId =
   | "compliance-uploaded"
   | "compliance-reviewed"
   | "weekly-executive-snapshot"
+  | "accounting-reconciliation"
 
 const TEMPLATE_OPTIONS: Array<{ id: TemplateId; label: string; description: string }> = [
   { id: "rfi-notification", label: "RFI Notification", description: "Created, response, and decision updates." },
@@ -38,6 +40,11 @@ const TEMPLATE_OPTIONS: Array<{ id: TemplateId; label: string; description: stri
     id: "weekly-executive-snapshot",
     label: "Weekly Executive Snapshot",
     description: "Executive portfolio digest for active projects, risk, and financial exposure.",
+  },
+  {
+    id: "accounting-reconciliation",
+    label: "Reconciliation Drift",
+    description: "Nightly finding queue: what stopped tying out, ranked by severity and money.",
   },
 ]
 
@@ -338,6 +345,79 @@ export default async function EmailPreviewPage({ searchParams }: { searchParams:
               "Cash trend is mixed: collections slowed in medical and multifamily portfolios while AP approvals remain backlogged.",
               "Current risk concentration is acceptable if Naples steel and Southport glazing decisions are resolved on time.",
             ],
+          })
+        case "accounting-reconciliation":
+          return AccountingReconciliationEmail({
+            orgName: sample.orgName,
+            orgLogoUrl: sample.orgLogoUrl,
+            recipientName: sample.recipientName,
+            runDateLabel: "Nightly pass · Feb 22, 2026",
+            headline: "24 new findings",
+            metrics: [
+              { label: "New tonight", value: "24" },
+              { label: "Open total", value: "24" },
+              { label: "Critical", value: "7", tone: "critical" },
+              { label: "Unexplained", value: "$74,514", tone: "critical" },
+              { label: "Cleared", value: "3" },
+            ],
+            findings: [
+              {
+                label: "Budget/Actuals Mismatch",
+                severity: "critical",
+                description:
+                  "Job-cost entries ($257,303.04) are less than approved vendor bill totals ($306,838.00) — $49,534.96 gap",
+                projectName: "Naples Bay Villas",
+                amountLabel: "$49,535",
+                href: "#",
+              },
+              {
+                label: "Budget/Actuals Mismatch",
+                severity: "critical",
+                description:
+                  "Job-cost entries ($5,900.63) are less than approved vendor bill totals ($30,879.69) — $24,979.06 gap",
+                projectName: "Harbor Townhomes",
+                amountLabel: "$24,979",
+                href: "#",
+              },
+              {
+                label: "Sync failing with an error",
+                severity: "critical",
+                description:
+                  "QBO API Error 400: code 610 — Object Not Found. Something this bill references has been made inactive in QuickBooks.",
+                amountLabel: null,
+                href: null,
+              },
+              {
+                label: "Accounting connection needs re-authorization",
+                severity: "critical",
+                description: "QuickBooks connection is expired — nothing is syncing until it is reconnected.",
+                href: null,
+              },
+              {
+                label: "Records waiting to sync",
+                severity: "warning",
+                description: "Arc invoice changed after its last QuickBooks sync and QuickBooks amounts differ.",
+                href: null,
+              },
+              {
+                label: "Accounting connection not responding",
+                severity: "warning",
+                description: "QuickBooks connection has not been reached since Feb 19, 2026.",
+                href: null,
+              },
+            ],
+            remainingCount: 18,
+            groups: [
+              { label: "Sync failing with an error", severity: "critical", countLabel: "2", amountLabel: null },
+              { label: "Accounting connection needs re-authorization", severity: "critical", countLabel: "2", amountLabel: null },
+              { label: "Budget/Actuals Mismatch", severity: "critical", countLabel: "2", amountLabel: "$74,514" },
+              { label: "Records waiting to sync", severity: "warning", countLabel: "15", amountLabel: null },
+              { label: "Accounting connection not responding", severity: "warning", countLabel: "3", amountLabel: null },
+            ],
+            coverageNotes: [
+              "Arc Books is off for this org, so ledger tie-outs and journal checks did not run.",
+            ],
+            queueUrl: "#",
           })
         default:
           return RfiNotificationEmail({

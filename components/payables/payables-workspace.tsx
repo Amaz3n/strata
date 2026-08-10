@@ -11,26 +11,20 @@ import {
 import { useRouter } from "next/navigation"
 import { format } from "date-fns"
 import {
-  ArrowLeft,
-  ArrowRight,
   Building2,
   CalendarDays,
-  CheckCircle2,
   ExternalLink,
   Layers,
   MoreHorizontal,
-  Pencil,
-  Receipt,
 } from "lucide-react"
 import { toast } from "sonner"
 
 import { cn } from "@/lib/utils"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Calendar } from "@/components/ui/calendar"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Textarea } from "@/components/ui/textarea"
+import { isPaymentStepUpError, usePaymentStepUp } from "@/components/payments/payment-step-up"
 import {
   Popover,
   PopoverContent,
@@ -80,6 +74,9 @@ import { WorkspaceShell } from "@/components/financials/workspace/workspace-shel
 import { WorkspaceListPanel } from "@/components/financials/workspace/workspace-list-panel"
 import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
 import { getCompanyAction } from "@/app/(app)/companies/actions"
+import { assessPayableApprovalSignalsAction } from "@/app/(app)/payables/approval-signals-actions"
+import type { EvenFlowPriceAssessment } from "@/lib/financials/even-flow-price-anomaly"
+import type { BillScheduleAssessment } from "@/lib/financials/bill-schedule-crosscheck"
 import {
   attachFileAction,
   detachFileLinkAction,
@@ -110,11 +107,13 @@ import type { BudgetLineOption, Company, CostCode } from "@/lib/types"
 import {
   filterPayables,
   payableQueueCounts,
+  PAYABLE_QUEUES,
+  PAYABLE_QUEUE_LABELS,
   type PayableQueue,
 } from "./payables-filters"
 import { PayableDocumentPane } from "./payable-document-pane"
 import { AccountingSyncBadge } from "@/components/accounting/accounting-sync-badge"
-import { dueDateClassName, getDueState, vendorLabel } from "./payables-ui"
+import { dueDisplay, vendorLabel } from "./payables-ui"
 import {
   billStatus,
   formIsDirty,
@@ -126,11 +125,14 @@ import {
   type PayableFormState,
   type PayableStage,
 } from "./workspace/payable-form"
-import { PayableHoldsPanel } from "./workspace/payable-holds"
+import { PayableActionBand } from "./workspace/payable-action-band"
+import { PayableAmount } from "./workspace/payable-amount"
+import { PayableIdentity } from "./workspace/payable-identity"
 import { PayablePayView } from "./workspace/payable-pay-view"
 import { PayableReviewView } from "./workspace/payable-review-view"
+import { PayableTerms } from "./workspace/payable-terms"
 import { PayableTimeline } from "./workspace/payable-timeline"
-import { PayableVendorCard } from "./workspace/payable-vendor-card"
+import { RecordSection } from "./workspace/record-section"
 import {
   PayableLinesEditor,
   supportsBillableCosts,
@@ -165,6 +167,11 @@ interface PayablesWorkspaceProps {
   qboExpenseAccounts: QBOAccountOption[]
   qboApAccounts: QBOAccountOption[]
   qboDefaults: { expenseAccountId?: string; apAccountId?: string }
+  accountingDimensions?: Array<{
+    key: string
+    label: string
+    values: QBOAccountOption[]
+  }>
   onChanged: () => void
   /** Server hold evaluations by bill id — the release gate's own verdict. */
   holdEvaluations?: Record<string, PaymentHoldEvaluation>
@@ -174,35 +181,28 @@ interface PayablesWorkspaceProps {
   runMembershipByBillId?: Record<string, PayableRunMembership>
   /** Whether the viewer is designated to approve payment runs in this org. */
   viewerMayApproveRuns?: boolean
+  /** Identity and labels used to enforce the selected route in the bill UI. */
+  approvalViewer?: {
+    userId: string
+    approvers: Array<{ userId: string; name: string }>
+  } | null
+  /**
+   * Server-computed per-queue totals (the desk's tab summaries). When provided,
+   * the rail reports these real org-wide counts instead of tallying the one
+   * page of bills it happens to hold.
+   */
+  queueTotals?: Partial<Record<PayableQueue, { count: number }>>
 }
 
-const STAGE_BADGES: Record<PayableStage, { label: string; className: string }> =
-  {
-    credit: {
-      label: "Credit",
-      className: "border-border text-muted-foreground",
-    },
-    review: {
-      label: "Needs approval",
-      className: "border-warning/25 bg-warning/10 text-warning",
-    },
-    rejected: {
-      label: "Rejected",
-      className: "border-destructive/25 bg-destructive/10 text-destructive",
-    },
-    in_run: {
-      label: "In payment run",
-      className: "border-primary/25 bg-primary/10 text-primary",
-    },
-    payable: {
-      label: "Approved",
-      className: "border-border bg-accent text-accent-foreground",
-    },
-    paid: {
-      label: "Paid",
-      className: "border-success/25 bg-success/10 text-success",
-    },
-  }
+/**
+ * Which stages will accept an edit at all. While a payable is live — draft,
+ * in review, approved but unpaid, or a credit — its fields are inputs drawn as
+ * text: click any value and type. Once money is in motion or the record is
+ * closed (in a run, rejected, paid) it is evidence, and evidence is read-only.
+ */
+function stageAcceptsEdits(stage: PayableStage) {
+  return stage === "draft" || stage === "review" || stage === "credit" || stage === "payable"
+}
 
 export function PayablesWorkspace({
   projectId,
@@ -220,15 +220,21 @@ export function PayablesWorkspace({
   qboExpenseAccounts,
   qboApAccounts,
   qboDefaults,
+  accountingDimensions = [],
   holdEvaluations = {},
   railOpen = false,
   paymentReadinessByCompanyId = {},
   runMembershipByBillId = {},
   viewerMayApproveRuns = false,
+  approvalViewer = null,
+  queueTotals,
   onChanged,
 }: PayablesWorkspaceProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
+  // Arc Books is Arc's ledger, not an external file waiting for a push. It uses
+  // the same coding fields but must never present vendor-link or manual-sync UI.
+  const accountingSyncEnabled = accountingEnabled && accountingProvider !== "arc_books"
 
   const [search, setSearch] = useState("")
   const [queueFilter, setQueueFilter] = useState<PayableQueue>("all")
@@ -260,14 +266,10 @@ export function PayablesWorkspace({
    * meant neither ever ran.
    */
   const [checkNumber, setCheckNumber] = useState("")
-  const [rejecting, setRejecting] = useState(false)
-  const [rejectionReason, setRejectionReason] = useState("")
+  const { requireStepUp, stepUpPrompt } = usePaymentStepUp()
   const [paymentDate, setPaymentDate] = useState(() =>
     format(new Date(), "yyyy-MM-dd"),
   )
-
-  /** Post-approval bills open read-only; editing is an explicit decision. */
-  const [amending, setAmending] = useState(false)
 
   // Overrides recorded from this workspace refresh the evaluation immediately,
   // without waiting for the parent surface to reload its hold map.
@@ -299,6 +301,13 @@ export function PayablesWorkspace({
     () => bills.find((bill) => bill.id === selectedBillId) ?? null,
     [bills, selectedBillId],
   )
+  const [approvalSignals, setApprovalSignals] =
+    useState<{ evenFlow: EvenFlowPriceAssessment | null; schedule: BillScheduleAssessment | null } | null>(null)
+  // Until the fresh check lands, paint whatever was cached on the payable the
+  // last time it was opened — the assessment is stored on the bill, so there is
+  // no reason to show nothing while the server confirms it is still current.
+  const evenFlowAssessment = approvalSignals ? approvalSignals.evenFlow : (selectedBill?.even_flow_price ?? null)
+  const scheduleAssessment = approvalSignals ? approvalSignals.schedule : (selectedBill?.bill_schedule ?? null)
   // Mutations are keyed by bill; the project only decides which pages get revalidated.
   // Org-wide there is no page project, so the payable's own project stands in.
   const contextProjectId = projectId ?? selectedBill?.project_id ?? ""
@@ -329,12 +338,23 @@ export function PayablesWorkspace({
 
   const filtered = useMemo(
     () =>
-      filterPayables(bills, { search, queue: queueFilter, costCodesEnabled }),
-    [bills, search, queueFilter, costCodesEnabled],
+      filterPayables(bills, {
+        search,
+        queue: queueFilter,
+        costCodesEnabled,
+        runMembershipByBillId,
+      }),
+    [bills, search, queueFilter, costCodesEnabled, runMembershipByBillId],
   )
-  const counts = useMemo(
-    () => payableQueueCounts(bills, costCodesEnabled),
-    [bills, costCodesEnabled],
+  // Real totals from the server when the parent has them; otherwise an honest
+  // tally of the bills this surface was actually given.
+  const pageCounts = useMemo(
+    () => payableQueueCounts(bills, runMembershipByBillId),
+    [bills, runMembershipByBillId],
+  )
+  const queueCount = useCallback(
+    (queue: PayableQueue) => queueTotals?.[queue]?.count ?? pageCounts[queue],
+    [pageCounts, queueTotals],
   )
 
   const sortedCostCodes = useMemo(
@@ -367,13 +387,8 @@ export function PayablesWorkspace({
   )
   const [form, setForm] = useState<PayableFormState | null>(null)
 
-  // Fields stay editable while the payable is still being reviewed; after
-  // approval the record is locked and reopened only by an explicit Amend.
-  const editable =
-    Boolean(form) &&
-    (stage === "review" ||
-      stage === "credit" ||
-      (stage === "payable" && amending))
+  const canEdit = stageAcceptsEdits(stage)
+  const editable = Boolean(form) && canEdit
 
   const isDirty = Boolean(form && baseline && formIsDirty(form, baseline))
 
@@ -434,11 +449,10 @@ export function PayablesWorkspace({
   // Reset the workspace whenever the selected bill (or its baseline) changes.
   useEffect(() => {
     setForm(baseline)
-    setAmending(false)
     setSidePane(null)
     setPaymentFormOpen(false)
     setPaymentAmount("")
-    setPaymentMethod(selectedBill?.payment_method ?? "check")
+    setPaymentMethod(selectedBill?.payment_method ?? selectedBill?.preferred_payment_method ?? "check")
     setPaymentRef(selectedBill?.payment_reference ?? "")
     setPaymentDate(format(new Date(), "yyyy-MM-dd"))
     setReassignProjectId(selectedBill?.project_id ?? "")
@@ -467,6 +481,31 @@ export function PayablesWorkspace({
       cancelled = true
     }
   }, [selectedBill])
+
+  // Approval-time signals for the payable that is actually open: how its trade
+  // costs compare with every other lot of the same house plan, and whether the
+  // work is on the calendar yet. Computed for one bill on demand rather than
+  // across a queue that is routinely hundreds long, and cached server-side
+  // against a fingerprint, so re-opening a payable costs almost nothing.
+  useEffect(() => {
+    if (!selectedBillId) {
+      setApprovalSignals(null)
+      return
+    }
+    let cancelled = false
+    setApprovalSignals(null)
+    assessPayableApprovalSignalsAction(selectedBillId)
+      .then((result) => {
+        if (cancelled || !result.success) return
+        setApprovalSignals({ evenFlow: result.data.evenFlow, schedule: result.data.schedule })
+      })
+      .catch((error) =>
+        console.error("Failed to check the payable against the plan and schedule", error),
+      )
+    return () => {
+      cancelled = true
+    }
+  }, [selectedBillId])
 
   useEffect(() => {
     const companyId = selectedBill?.company_id ?? vendorEditorCompanyId
@@ -570,7 +609,7 @@ export function PayablesWorkspace({
     })
   }
 
-  const setStatus = (status: "approved" | "partial" | "paid") => {
+  const setStatus = (status: "approved" | "partial" | "paid", stepUpRetry = false) => {
     clearOptimisticSync(selectedBill.id)
     startTransition(async () => {
       try {
@@ -605,6 +644,13 @@ export function PayablesWorkspace({
           ),
         )
         if (!result.success) {
+          // Recording a payment above the org's per-payment limit demands a
+          // second factor, which the client cannot know in advance. Rather than
+          // a dead-end toast, ask for the code and run it again.
+          if (!stepUpRetry && isPaymentStepUpError(result.error)) {
+            void requireStepUp(() => setStatus(status, true))
+            return
+          }
           toast.error(result.error)
           return
         }
@@ -653,6 +699,7 @@ export function PayablesWorkspace({
       qbo_ap_account_name: getApAccountName(
         line.qboApAccountId || form.qboApAccountId,
       ),
+      accounting_dimensions: line.accountingDimensions,
     }))
     const hasInvalidLine = actualLines.some(
       (line) =>
@@ -699,8 +746,6 @@ export function PayablesWorkspace({
                 amount_cents: line.amount_cents ?? 0,
               })),
               retainage_percent: retainagePercent,
-              early_pay_discount_percent: form.discountPercent.trim() ? Number(form.discountPercent) : null,
-              early_pay_discount_days: form.discountDays.trim() ? Number(form.discountDays) : null,
               lien_waiver_status: normalizeLienWaiverStatus(form.lienWaiver),
               qbo_expense_account_id: form.qboExpenseAccountId || undefined,
               qbo_expense_account_name: getExpenseAccountName(
@@ -716,7 +761,6 @@ export function PayablesWorkspace({
           return
         }
         toast.success("Payable saved")
-        setAmending(false)
         onChanged()
       } catch (error) {
         toast.error((error as Error).message)
@@ -749,8 +793,8 @@ export function PayablesWorkspace({
    * Refusing a payable. The reason is required because it is what the vendor is
    * shown — a rejection with no explanation gets the same invoice back.
    */
-  const rejectPayable = () => {
-    const reason = rejectionReason.trim()
+  const rejectPayable = (rawReason: string) => {
+    const reason = rawReason.trim()
     if (reason.length < 8) {
       toast.error("Tell the vendor why in at least a few words")
       return
@@ -769,8 +813,6 @@ export function PayablesWorkspace({
         ),
       )
       if (result.success) {
-        setRejecting(false)
-        setRejectionReason("")
         toast.success("Payable rejected")
         onChanged()
       } else {
@@ -892,25 +934,39 @@ export function PayablesWorkspace({
     return Number.isNaN(parsed.getTime()) ? undefined : parsed
   }
 
-  const stageBadge =
-    stage === "payable" && currentStatus === "partial"
-      ? {
-          label: "Partly paid",
-          className: "border-primary/25 bg-primary/10 text-primary",
-        }
-      : STAGE_BADGES[stage]
-  // The viewer is a designated approver, this run is pending, and they did not
-  // prepare it — the one case where the workspace has an approval to offer.
+  // The viewer is designated, the run is pending, and either someone else
+  // prepared it or this owner-operated run explicitly permits self-approval.
   const awaitingViewerApproval = Boolean(
     runMembership &&
     viewerMayApproveRuns &&
     runMembership.runStatus === "pending_approval" &&
-    !runMembership.preparedByViewer,
+    (!runMembership.preparedByViewer || runMembership.requesterMayApprove),
   )
-  const showRecordPayment =
-    !selectedIsVendorCredit &&
-    (stage === "payable" || (currentStatus === "paid" && balanceCents > 0)) &&
-    !runMembership
+
+  const designatedBillApproverIds = selectedBill?.preferred_approver_ids ?? []
+  const mayDecideBillApproval =
+    designatedBillApproverIds.length === 0 ||
+    Boolean(approvalViewer && designatedBillApproverIds.includes(approvalViewer.userId))
+  const designatedBillApproverNames = designatedBillApproverIds
+    .map((id) => approvalViewer?.approvers.find((approver) => approver.userId === id)?.name)
+    .filter((name): name is string => Boolean(name))
+  const approvalWaitingLabel =
+    designatedBillApproverNames.length > 0
+      ? `Waiting for approval from ${new Intl.ListFormat("en", { style: "long", type: "disjunction" }).format(designatedBillApproverNames)}.`
+      : "Waiting for a designated approver."
+
+  /** What sits under the vendor name: the reference facts, none of them repeated. */
+  const subtitleParts = [
+    selectedIsVendorCredit
+      ? selectedBill.bill_number
+        ? `Credit ${selectedBill.bill_number}`
+        : "Vendor credit"
+      : selectedBill.bill_number
+        ? `Bill ${selectedBill.bill_number}`
+        : "Payable",
+    ...(projectId ? [] : [selectedBill.project_name ?? "Unassigned project"]),
+    attachments.length === 1 ? "1 document" : `${attachments.length} documents`,
+  ]
 
   const listPanel = (
     <WorkspaceListPanel<VendorBillSummary, PayableQueue>
@@ -919,14 +975,11 @@ export function PayablesWorkspace({
       search={search}
       onSearchChange={setSearch}
       searchPlaceholder="Search vendor, bill..."
-      queues={[
-        { key: "all", label: "All", count: counts.all },
-        { key: "overdue", label: "Late", count: counts.overdue },
-        { key: "due_soon", label: "Soon", count: counts.due_soon },
-        { key: "needs_review", label: "Review", count: counts.needs_review },
-        { key: "payable", label: "Pay", count: counts.payable },
-        { key: "paid", label: "Paid", count: counts.paid },
-      ]}
+      queues={PAYABLE_QUEUES.map((queue) => ({
+        key: queue,
+        label: PAYABLE_QUEUE_LABELS[queue],
+        count: queueCount(queue),
+      }))}
       activeQueue={queueFilter}
       onQueueChange={setQueueFilter}
       items={filtered}
@@ -953,13 +1006,11 @@ export function PayablesWorkspace({
               </span>
             </div>
             <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-              <span className={dueDateClassName(bill.due_date, bill.status)}>
-                {bill.due_date
-                  ? getDueState(bill.due_date, bill.status).label
-                  : "No due date"}
+              <span className={cn("tabular-nums", dueDisplay(bill).className)}>
+                {bill.due_date ? dueDisplay(bill).text : "No due date"}
               </span>
               <span className="flex shrink-0 items-center gap-1">
-                {rowRun ? (
+                {rowRun && rowRun.runStatus !== "draft" ? (
                   <span className="font-medium text-primary">In run</span>
                 ) : null}
                 {bill.is_shared ? (
@@ -1002,6 +1053,7 @@ export function PayablesWorkspace({
 
   return (
     <>
+      {stepUpPrompt}
       <WorkspaceShell
         open
         onClose={() =>
@@ -1027,723 +1079,207 @@ export function PayablesWorkspace({
               aria-hidden={payViewOpen}
               {...(payViewOpen ? { inert: true } : {})}
             >
-              {/* ————— Header: what this is, and where it stands ————— */}
-              <div className="flex h-16 shrink-0 items-center justify-between gap-3 border-b px-4">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 md:hidden"
-                    onClick={() => requestSelectBill(null)}
-                    title="Back"
-                  >
-                    <ArrowLeft className="h-4 w-4" />
-                  </Button>
-                  <h2 className="min-w-0 truncate text-lg font-semibold leading-tight">
-                    {selectedIsVendorCredit
-                      ? selectedBill.bill_number
-                        ? `Vendor credit ${selectedBill.bill_number}`
-                        : "Vendor credit"
-                      : selectedBill.bill_number
-                        ? `Bill ${selectedBill.bill_number}`
-                        : "Payable"}
-                  </h2>
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  {accountingEnabled ? (
-                    <AccountingSyncBadge
-                      status={effectiveSyncStatus ?? "not_synced"}
-                      error={selectedBill.qbo_sync_error}
-                      externalId={selectedBill.qbo_id}
-                    />
-                  ) : null}
-                  <Badge
-                    variant="outline"
-                    className={cn("font-normal", stageBadge.className)}
-                  >
-                    {stageBadge.label}
-                  </Badge>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="size-8"
-                      >
-                        <MoreHorizontal className="h-4 w-4" />
-                        <span className="sr-only">More actions</span>
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-56">
-                      {accountingEnabled && !selectedIsReassignablePayable ? (
-                        <DropdownMenuItem
-                          disabled={
-                            isPending || effectiveSyncStatus === "synced"
-                          }
-                          onClick={syncToAccounting}
-                        >
-                          Sync to {accountingProviderName ?? "accounting"}
-                        </DropdownMenuItem>
-                      ) : null}
-                      {selectedIsReassignablePayable ? (
-                        <DropdownMenuItem
-                          disabled={reassignBlockedBySplit}
-                          onClick={() => setReassignOpen(true)}
-                        >
-                          Reassign to another project…
-                        </DropdownMenuItem>
-                      ) : null}
-                      <DropdownMenuItem onClick={openVendorEditor}>
-                        Edit vendor details
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              </div>
-
-              <div className="min-h-0 flex-1 overflow-y-auto">
-                {/* ————— Money: the four numbers that matter ————— */}
-                <div className="border-b px-4 py-4 sm:px-6">
-                  {selectedIsVendorCredit ? (
-                    <div className="flex flex-wrap items-end justify-between gap-4">
-                      <div>
-                        <p className="microlabel">Credit amount</p>
-                        <p className="mt-1 font-mono text-2xl font-medium tabular-nums tracking-tight">
-                          {formatMoneyFromCents(billTotalCents)}
-                        </p>
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        Reduces project cost
-                        {accountingEnabled ? ` · managed in ${accountingProviderName ?? "accounting"}` : ""}
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
-                      <div>
-                        <p className="microlabel">Total</p>
-                        <p className="mt-1 font-mono text-2xl font-medium tabular-nums tracking-tight">
-                          {formatMoneyFromCents(billTotalCents)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="microlabel">Paid</p>
-                        <p className="mt-1 font-mono text-lg font-medium tabular-nums text-success">
-                          {formatMoneyFromCents(selectedBill.paid_cents ?? 0)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="microlabel">Retained</p>
-                        <p className="mt-1 font-mono text-lg font-medium tabular-nums text-muted-foreground">
-                          {formatMoneyFromCents(heldRetainageCents)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="microlabel">Balance</p>
-                        <p
-                          className={cn(
-                            "mt-1 font-mono text-lg font-medium tabular-nums",
-                            balanceCents > 0
-                              ? "text-foreground"
-                              : "text-muted-foreground",
-                          )}
-                        >
-                          {formatMoneyFromCents(balanceCents)}
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {selectedBill.over_budget ? (
-                    <div className="mt-3 border border-destructive/20 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive">
-                      This payable exceeds the linked commitment. Review the
-                      contract balance before approval.
-                    </div>
-                  ) : null}
-                </div>
-
-                <div className="space-y-8 px-4 py-6 sm:px-6">
-                  {/* ————— The one thing to do right now ————— */}
-                  {stage === "review" ? (
-                    <section className="space-y-3">
-                      {evaluation ? (
-                        <PayableHoldsPanel
-                          billId={selectedBill.id}
-                          evaluation={evaluation}
-                          onOverridden={(next) =>
-                            setLocalHolds((prev) => ({
-                              ...prev,
-                              [selectedBill.id]: next,
-                            }))
-                          }
-                        />
-                      ) : null}
-                      {/*
-                        Approving the obligation is its own act, separate from
-                        releasing the money. Jumping straight into the payment
-                        pane made the preparer the approver of record without
-                        ever asking them to be.
-                      */}
-                      <Button
-                        className="group h-11 w-full justify-between"
-                        disabled={isPending || blocked}
-                        onClick={() => setStatus("approved")}
-                      >
-                        <span className="flex items-center gap-2">
-                          <CheckCircle2 className="h-4 w-4" />
-                          {blocked
-                            ? "Blocked by payment holds"
-                            : `Approve for payment · ${formatMoneyFromCents(billTotalCents)}`}
-                        </span>
-                        {!blocked ? (
-                          <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+              {/* ————— Identity: who is owed, and where it stands ————— */}
+              <PayableIdentity
+                bill={selectedBill}
+                stage={stage}
+                status={currentStatus}
+                subtitleParts={subtitleParts}
+                railOpen={railOpen}
+                readiness={readiness}
+                canChangeVendor={canEdit}
+                onSelectCompany={handleSelectCompany}
+                accountingEnabled={accountingSyncEnabled}
+                onBack={() => requestSelectBill(null)}
+                onClose={() => requestSelectBill(null)}
+                actions={
+                  <>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button type="button" variant="ghost" size="icon" className="size-8">
+                          <MoreHorizontal className="h-4 w-4" />
+                          <span className="sr-only">More actions</span>
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-56">
+                        {accountingSyncEnabled && !selectedIsReassignablePayable ? (
+                          <DropdownMenuItem
+                            disabled={isPending || effectiveSyncStatus === "synced"}
+                            onClick={syncToAccounting}
+                          >
+                            Sync to {accountingProviderName ?? "accounting"}
+                          </DropdownMenuItem>
                         ) : null}
-                      </Button>
-                      {canPayElectronically ? (
-                        <p className="text-xs text-muted-foreground">
-                          Once approved you can pay it by ACH, and a second person releases the run.
-                        </p>
-                      ) : null}
+                        {selectedIsReassignablePayable ? (
+                          <DropdownMenuItem
+                            disabled={reassignBlockedBySplit}
+                            onClick={() => setReassignOpen(true)}
+                          >
+                            Reassign to another project…
+                          </DropdownMenuItem>
+                        ) : null}
+                        <DropdownMenuItem onClick={openVendorEditor}>
+                          Edit vendor details
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </>
+                }
+              />
 
-                      {rejecting ? (
-                        <div className="space-y-2 border border-border p-3">
-                          <Label className="microlabel" htmlFor="rejection-reason">
-                            Why is this being rejected?
-                          </Label>
-                          <Textarea
-                            id="rejection-reason"
-                            rows={3}
-                            value={rejectionReason}
-                            onChange={(event) => setRejectionReason(event.target.value)}
-                            placeholder="Wrong contract, quantities don't match the delivery ticket, missing backup…"
+              {/* ————— The number, at the size it deserves ————— */}
+              <PayableAmount
+                bill={selectedBill}
+                isVendorCredit={selectedIsVendorCredit}
+                totalCents={billTotalCents}
+                paidCents={selectedBill.paid_cents ?? 0}
+                retainedCents={heldRetainageCents}
+                balanceCents={balanceCents}
+                accountingProviderName={accountingProviderName}
+                accountingEnabled={accountingSyncEnabled}
+              />
+
+              {/* ————— The one open question, or nothing at all ————— */}
+              <PayableActionBand
+                bill={selectedBill}
+                stage={stage}
+                isPending={isPending}
+                blocked={blocked}
+                evaluation={evaluation}
+                onHoldOverridden={(next) =>
+                  setLocalHolds((prev) => ({ ...prev, [selectedBill.id]: next }))
+                }
+                totalCents={billTotalCents}
+                balanceCents={balanceCents}
+                mayDecideApproval={mayDecideBillApproval}
+                approvalWaitingLabel={approvalWaitingLabel}
+                onApprove={() => setStatus("approved")}
+                onReject={rejectPayable}
+                onReopen={reopenPayable}
+                canPayElectronically={canPayElectronically}
+                railOpen={railOpen}
+                readiness={readiness}
+                onPayElectronically={() => setSidePane("pay")}
+                recordPaymentOpen={paymentFormOpen}
+                onToggleRecordPayment={() => setPaymentFormOpen((open) => !open)}
+                runMembership={runMembership}
+                awaitingViewerApproval={awaitingViewerApproval}
+                onReviewRun={() => setSidePane("review")}
+                onVendorInvited={onChanged}
+                recordPaymentForm={
+                  <div className="space-y-4 border bg-background p-4">
+                    <div className="microlabel">Record a payment made outside Arc</div>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <div className="space-y-1.5">
+                        <Label className="microlabel">Amount</Label>
+                        <div className="relative">
+                          <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-xs text-muted-foreground">
+                            $
+                          </span>
+                          <Input
+                            className="h-9 pl-7 tabular-nums"
+                            placeholder={((balanceCents || billTotalCents) / 100).toFixed(2)}
+                            value={paymentAmount}
+                            onChange={(event) => setPaymentAmount(event.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label className="microlabel">Method</Label>
+                        <Select value={paymentMethod} onValueChange={setPaymentMethod}>
+                          <SelectTrigger className="h-9 w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="check">Check</SelectItem>
+                            <SelectItem value="ach">ACH</SelectItem>
+                            <SelectItem value="card">Credit card</SelectItem>
+                            <SelectItem value="wire">Wire</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="flex flex-col space-y-1.5">
+                        <Label className="microlabel">Payment date</Label>
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className={cn(
+                                "h-9 w-full justify-start text-left text-[13px]",
+                                !paymentDate && "text-muted-foreground",
+                              )}
+                            >
+                              <CalendarDays className="mr-2 h-4 w-4 shrink-0 text-muted-foreground" />
+                              <span className="truncate">
+                                {paymentDate && parseDate(paymentDate)
+                                  ? format(parseDate(paymentDate) ?? new Date(), "MMM d, yyyy")
+                                  : "Pick a date"}
+                              </span>
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-auto p-0" align="start">
+                            <Calendar
+                              mode="single"
+                              selected={parseDate(paymentDate)}
+                              onSelect={(date) =>
+                                setPaymentDate(date ? format(date, "yyyy-MM-dd") : "")
+                              }
+                              initialFocus
+                            />
+                          </PopoverContent>
+                        </Popover>
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label className="microlabel">Reference</Label>
+                        <Input
+                          className="h-9"
+                          placeholder={
+                            paymentMethod === "check" ? "Joint payees, memo" : "Transaction ID"
+                          }
+                          value={paymentRef}
+                          onChange={(event) => setPaymentRef(event.target.value)}
+                        />
+                      </div>
+                      {paymentMethod === "check" ? (
+                        <div className="space-y-1.5">
+                          <Label className="microlabel">Check number</Label>
+                          <Input
+                            className="h-9 tabular-nums"
+                            placeholder="1042"
+                            value={checkNumber}
+                            onChange={(event) => setCheckNumber(event.target.value)}
                           />
                           <p className="text-xs text-muted-foreground">
-                            The vendor is sent this, so write it for them.
+                            Checked against every other payment so the same check cannot be
+                            recorded twice.
                           </p>
-                          <div className="flex gap-2">
-                            <Button
-                              variant="destructive"
-                              className="h-9"
-                              disabled={isPending || rejectionReason.trim().length < 8}
-                              onClick={rejectPayable}
-                            >
-                              {isPending ? "Rejecting…" : "Reject payable"}
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              className="h-9"
-                              disabled={isPending}
-                              onClick={() => {
-                                setRejecting(false)
-                                setRejectionReason("")
-                              }}
-                            >
-                              Cancel
-                            </Button>
-                          </div>
                         </div>
-                      ) : (
-                        <Button
-                          variant="ghost"
-                          className="h-9 w-full text-muted-foreground"
-                          disabled={isPending}
-                          onClick={() => setRejecting(true)}
-                        >
-                          Reject this payable
-                        </Button>
-                      )}
-                    </section>
-                  ) : null}
-
-                  {stage === "rejected" ? (
-                    <section className="space-y-3 border border-border p-4">
-                      <div>
-                        <p className="text-sm font-medium">Rejected</p>
-                        {selectedBill.rejection_reason ? (
-                          <p className="mt-1 text-sm text-muted-foreground">
-                            {selectedBill.rejection_reason}
-                          </p>
-                        ) : null}
-                      </div>
-                      <Button
-                        variant="outline"
-                        className="h-9"
-                        disabled={isPending}
-                        onClick={reopenPayable}
-                      >
-                        {isPending ? "Reopening…" : "Reopen for review"}
-                      </Button>
-                    </section>
-                  ) : null}
-
-                  {stage === "in_run" && runMembership ? (
-                    <section
-                      className={cn(
-                        "flex items-center justify-between gap-3 border p-4",
-                        awaitingViewerApproval
-                          ? "border-primary/30 bg-primary/5"
-                          : "bg-card",
-                      )}
+                      ) : null}
+                    </div>
+                    <Button
+                      className="h-9 w-full"
+                      disabled={isPending || blocked}
+                      onClick={() => setStatus("paid")}
                     >
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium">
-                          {awaitingViewerApproval
-                            ? "This payment is waiting for your approval"
-                            : runMembership.preparedByViewer
-                              ? "You submitted this payment"
-                              : "This bill is in a payment run"}
-                        </p>
-                        <p className="mt-0.5 text-xs text-muted-foreground">
-                          {awaitingViewerApproval
-                            ? `${formatMoneyFromCents(runMembership.totalDebitCents)} debit, ready for you to review and approve.`
-                            : runMembership.preparedByViewer
-                              ? "You cannot approve your own run — it is with your designated approvers now."
-                              : `It cannot be edited or paid another way while the run is ${runMembership.runStatus.replaceAll("_", " ")}.`}
-                        </p>
-                      </div>
-                      {awaitingViewerApproval ? (
-                        <Button
-                          size="sm"
-                          className="shrink-0"
-                          onClick={() => setSidePane("review")}
-                        >
-                          Review &amp; approve
-                        </Button>
-                      ) : (
-                        <Button
-                          asChild
-                          variant="outline"
-                          size="sm"
-                          className="shrink-0"
-                        >
-                          <a href="/payables/payment-runs">View run</a>
-                        </Button>
-                      )}
-                    </section>
-                  ) : null}
+                      {isPending ? "Recording…" : "Post payment"}
+                    </Button>
+                  </div>
+                }
+              />
 
-                  {showRecordPayment ? (
-                    <section className="space-y-3">
-                      {evaluation ? (
-                        <PayableHoldsPanel
-                          billId={selectedBill.id}
-                          evaluation={evaluation}
-                          onOverridden={(next) =>
-                            setLocalHolds((prev) => ({
-                              ...prev,
-                              [selectedBill.id]: next,
-                            }))
-                          }
-                        />
-                      ) : null}
-                      <div className="flex flex-col gap-2 sm:flex-row">
-                        {canPayElectronically ? (
-                          <Button
-                            className="h-11 flex-1 justify-between"
-                            disabled={blocked}
-                            onClick={() => setSidePane("pay")}
-                          >
-                            <span className="flex items-center gap-2">
-                              <Receipt className="h-4 w-4" />
-                              {blocked
-                                ? "Payment blocked by holds"
-                                : `Pay ${formatMoneyFromCents(balanceCents)} by ACH`}
-                            </span>
-                            {!blocked ? (
-                              <ArrowRight className="h-4 w-4" />
-                            ) : null}
-                          </Button>
-                        ) : null}
-                        <Button
-                          variant={canPayElectronically ? "outline" : "default"}
-                          className="h-11 flex-1"
-                          disabled={blocked}
-                          onClick={() => setPaymentFormOpen((open) => !open)}
-                        >
-                          {canPayElectronically
-                            ? "Record external payment"
-                            : blocked
-                              ? "Payment blocked by holds"
-                              : "Record payment"}
-                        </Button>
-                      </div>
-                      {railOpen &&
-                      !canPayElectronically &&
-                      !selectedIsVendorCredit ? (
-                        <p className="text-xs text-muted-foreground">
-                          {readiness === "verifying"
-                            ? "This vendor is verifying their bank account — ACH will be available once verification completes."
-                            : "This vendor cannot be paid electronically yet. Invite them from the vendor card below."}
-                        </p>
-                      ) : null}
-
-                      {paymentFormOpen ? (
-                        <div className="space-y-4 border bg-card p-4">
-                          <div className="microlabel">
-                            Record a payment made outside Arc
-                          </div>
-                          <div className="grid gap-4 sm:grid-cols-2">
-                            <div className="space-y-1.5">
-                              <Label className="microlabel">Amount</Label>
-                              <div className="relative">
-                                <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-xs text-muted-foreground">
-                                  $
-                                </span>
-                                <Input
-                                  className="h-10 pl-7 font-semibold"
-                                  placeholder={(
-                                    (balanceCents || billTotalCents) / 100
-                                  ).toFixed(2)}
-                                  value={paymentAmount}
-                                  onChange={(event) =>
-                                    setPaymentAmount(event.target.value)
-                                  }
-                                />
-                              </div>
-                            </div>
-                            <div className="space-y-1.5">
-                              <Label className="microlabel">Method</Label>
-                              <Select
-                                value={paymentMethod}
-                                onValueChange={setPaymentMethod}
-                              >
-                                <SelectTrigger className="h-10 w-full">
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="check">Check</SelectItem>
-                                  <SelectItem value="ach">ACH</SelectItem>
-                                  <SelectItem value="card">
-                                    Credit card
-                                  </SelectItem>
-                                  <SelectItem value="wire">Wire</SelectItem>
-                                </SelectContent>
-                              </Select>
-                            </div>
-                            <div className="flex flex-col space-y-1.5">
-                              <Label className="microlabel">Payment date</Label>
-                              <Popover>
-                                <PopoverTrigger asChild>
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    className={cn(
-                                      "h-10 w-full justify-start text-left text-sm font-semibold",
-                                      !paymentDate && "text-muted-foreground",
-                                    )}
-                                  >
-                                    <CalendarDays className="mr-2 h-4 w-4 shrink-0 text-muted-foreground" />
-                                    <span className="truncate">
-                                      {paymentDate && parseDate(paymentDate)
-                                        ? format(parseDate(paymentDate)!, "PPP")
-                                        : "Pick a date"}
-                                    </span>
-                                  </Button>
-                                </PopoverTrigger>
-                                <PopoverContent
-                                  className="w-auto p-0"
-                                  align="start"
-                                >
-                                  <Calendar
-                                    mode="single"
-                                    selected={parseDate(paymentDate)}
-                                    onSelect={(date) =>
-                                      setPaymentDate(
-                                        date ? format(date, "yyyy-MM-dd") : "",
-                                      )
-                                    }
-                                    initialFocus
-                                  />
-                                </PopoverContent>
-                              </Popover>
-                            </div>
-                            <div className="space-y-1.5">
-                              <Label className="microlabel">Reference</Label>
-                              <Input
-                                className="h-10"
-                                placeholder={paymentMethod === "check" ? "Joint payees, memo" : "Transaction ID"}
-                                value={paymentRef}
-                                onChange={(event) =>
-                                  setPaymentRef(event.target.value)
-                                }
-                              />
-                            </div>
-                          </div>
-                          {paymentMethod === "check" ? (
-                            <div className="space-y-1.5">
-                              <Label className="microlabel">Check number</Label>
-                              <Input
-                                className="h-10"
-                                placeholder="1042"
-                                value={checkNumber}
-                                onChange={(event) =>
-                                  setCheckNumber(event.target.value)
-                                }
-                              />
-                              <p className="text-xs text-muted-foreground">
-                                Checked against every other payment so the same check cannot be recorded twice.
-                              </p>
-                            </div>
-                          ) : null}
-                          <Button
-                            className="h-10 w-full"
-                            disabled={isPending || blocked}
-                            onClick={() => setStatus("paid")}
-                          >
-                            {isPending ? "Recording…" : "Post payment"}
-                          </Button>
-                        </div>
-                      ) : null}
-                    </section>
-                  ) : null}
-
-                  {/* ————— Evidence trail ————— */}
-                  <PayableTimeline
-                    bill={selectedBill}
-                    runMembership={runMembership}
-                    accountingEnabled={accountingEnabled}
-                  />
-
-                  {/* ————— Vendor ————— */}
-                  <section className="border bg-card p-4">
-                    <PayableVendorCard
-                      bill={selectedBill}
-                      accountingEnabled={accountingEnabled}
-                      railOpen={railOpen}
-                      readiness={readiness}
-                      onSelectCompany={handleSelectCompany}
-                      onEditVendor={openVendorEditor}
-                      onInvited={onChanged}
-                    />
-                  </section>
-
-                  {/* ————— Details: editable while under review, locked after ————— */}
-                  <section className="space-y-4">
-                    <div className="flex items-center justify-between">
-                      <h3 className="microlabel">
-                        {selectedIsVendorCredit
-                          ? "Credit details"
-                          : "Bill details"}
-                      </h3>
-                      {stage === "payable" && !amending ? (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 gap-1.5 px-2 text-xs text-muted-foreground"
-                          onClick={() => setAmending(true)}
-                        >
-                          <Pencil className="h-3 w-3" />
-                          Amend
-                        </Button>
-                      ) : null}
-                    </div>
-
-                    {editable ? (
-                      <div className="grid gap-4 sm:grid-cols-3">
-                        <div className="space-y-1.5">
-                          <Label className="microlabel">
-                            {selectedIsVendorCredit
-                              ? "Credit #"
-                              : "Invoice / bill #"}
-                          </Label>
-                          <Input
-                            value={form.billNumber}
-                            onChange={(event) =>
-                              setForm((prev) =>
-                                prev
-                                  ? { ...prev, billNumber: event.target.value }
-                                  : prev,
-                              )
-                            }
-                            placeholder="e.g. INV-12345"
-                            className="h-10 text-sm font-semibold"
-                          />
-                        </div>
-                        <div className="flex flex-col space-y-1.5">
-                          <Label className="microlabel">Invoice date</Label>
-                          <Popover>
-                            <PopoverTrigger asChild>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                className={cn(
-                                  "h-10 w-full justify-start text-left text-sm font-semibold",
-                                  !form.billDate && "text-muted-foreground",
-                                )}
-                              >
-                                <CalendarDays className="mr-2 h-4 w-4 shrink-0 text-muted-foreground" />
-                                <span className="truncate">
-                                  {form.billDate && parseDate(form.billDate)
-                                    ? format(parseDate(form.billDate)!, "PPP")
-                                    : "Pick a date"}
-                                </span>
-                              </Button>
-                            </PopoverTrigger>
-                            <PopoverContent
-                              className="w-auto p-0"
-                              align="start"
-                            >
-                              <Calendar
-                                mode="single"
-                                selected={parseDate(form.billDate)}
-                                onSelect={(date) =>
-                                  setForm((prev) =>
-                                    prev
-                                      ? {
-                                          ...prev,
-                                          billDate: date
-                                            ? format(date, "yyyy-MM-dd")
-                                            : "",
-                                        }
-                                      : prev,
-                                  )
-                                }
-                                initialFocus
-                              />
-                            </PopoverContent>
-                          </Popover>
-                        </div>
-                        <div className="flex flex-col space-y-1.5">
-                          <Label className="microlabel">Due date</Label>
-                          <Popover>
-                            <PopoverTrigger asChild>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                className={cn(
-                                  "h-10 w-full justify-start text-left text-sm font-semibold",
-                                  !form.dueDate && "text-muted-foreground",
-                                )}
-                              >
-                                <CalendarDays className="mr-2 h-4 w-4 shrink-0 text-muted-foreground" />
-                                <span className="truncate">
-                                  {form.dueDate && parseDate(form.dueDate)
-                                    ? format(parseDate(form.dueDate)!, "PPP")
-                                    : "Pick a date"}
-                                </span>
-                              </Button>
-                            </PopoverTrigger>
-                            <PopoverContent
-                              className="w-auto p-0"
-                              align="start"
-                            >
-                              <Calendar
-                                mode="single"
-                                selected={parseDate(form.dueDate)}
-                                onSelect={(date) =>
-                                  setForm((prev) =>
-                                    prev
-                                      ? {
-                                          ...prev,
-                                          dueDate: date
-                                            ? format(date, "yyyy-MM-dd")
-                                            : "",
-                                        }
-                                      : prev,
-                                  )
-                                }
-                                initialFocus
-                              />
-                            </PopoverContent>
-                          </Popover>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="grid gap-4 border p-3 sm:grid-cols-3">
-                        <div>
-                          <p className="microlabel">
-                            {selectedIsVendorCredit
-                              ? "Credit #"
-                              : "Invoice / bill #"}
-                          </p>
-                          <p className="mt-1 text-sm font-semibold">
-                            {selectedBill.bill_number ?? "—"}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="microlabel">Invoice date</p>
-                          <p className="mt-1 text-sm tabular-nums">
-                            {selectedBill.bill_date
-                              ? format(
-                                  parseDate(selectedBill.bill_date)!,
-                                  "MMM d, yyyy",
-                                )
-                              : "—"}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="microlabel">Due date</p>
-                          <p className="mt-1 text-sm tabular-nums">
-                            {selectedBill.due_date
-                              ? format(
-                                  parseDate(selectedBill.due_date)!,
-                                  "MMM d, yyyy",
-                                )
-                              : "—"}
-                          </p>
-                        </div>
-                      </div>
-                    )}
-                  </section>
-
-                  {/* ————— Shared-across-projects affordance ————— */}
-                  {selectedBill.is_shared &&
-                  selectedBill.shared_projects &&
-                  selectedBill.shared_projects.length > 1 ? (
-                    <div className="space-y-2 border bg-card p-4">
-                      <div className="microlabel flex items-center gap-2">
-                        <Layers className="h-3.5 w-3.5 text-primary" />
-                        Shared across {selectedBill.shared_projects.length}{" "}
-                        projects
-                      </div>
-                      <div className="space-y-1">
-                        {selectedBill.shared_projects.map((share) => {
-                          const isCurrent = share.id === contextProjectId
-                          return (
-                            <div
-                              key={share.id}
-                              className="flex items-center justify-between gap-2 text-sm"
-                            >
-                              <button
-                                type="button"
-                                disabled={isCurrent}
-                                onClick={() =>
-                                  router.push(
-                                    `/projects/${share.id}/financials/payables?bill=${selectedBill.id}`,
-                                  )
-                                }
-                                className={cn(
-                                  "truncate text-left",
-                                  isCurrent
-                                    ? "font-semibold"
-                                    : "text-primary hover:underline",
-                                )}
-                              >
-                                {share.name ??
-                                  projects.find(
-                                    (project) => project.id === share.id,
-                                  )?.name ??
-                                  "Project"}
-                                {isCurrent ? " (this project)" : ""}
-                              </button>
-                              <span className="shrink-0 tabular-nums">
-                                {formatMoneyFromCents(share.amount_cents)}
-                              </span>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {/* ————— Allocation ————— */}
+              {/* ————— The record: one continuous document, no drawers ————— */}
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <RecordSection label="Allocation">
+                  <CodingProvenance bill={selectedBill} />
+                  <LineMatchEvidence bill={selectedBill} />
+                  <EvenFlowPriceEvidence assessment={evenFlowAssessment} />
+                  <ScheduleCrosscheckEvidence assessment={scheduleAssessment} />
                   <PayableLinesEditor
                     lines={form.splitLines}
                     onLinesChange={(updater) =>
                       setForm((prev) =>
-                        prev
-                          ? { ...prev, splitLines: updater(prev.splitLines) }
-                          : prev,
+                        prev ? { ...prev, splitLines: updater(prev.splitLines) } : prev,
                       )
                     }
                     locked={!editable}
@@ -1754,6 +1290,8 @@ export function PayablesWorkspace({
                     costCodesEnabled={costCodesEnabled}
                     budgetLines={budgetLines}
                     accountingEnabled={accountingEnabled}
+                    accountingProviderName={accountingProviderName}
+                    accountingDimensions={accountingDimensions}
                     qboExpenseAccounts={qboExpenseAccounts}
                     qboApAccounts={qboApAccounts}
                     billTotalCents={billTotalCents}
@@ -1763,166 +1301,91 @@ export function PayablesWorkspace({
                     headerQboApAccountId={form.qboApAccountId}
                     defaultBillable={defaultBillable}
                   />
+                </RecordSection>
 
-                  {/* ————— Terms: retainage & waiver ————— */}
-                  {!selectedIsVendorCredit ? (
-                    <section className="space-y-4">
-                      <h3 className="microlabel">Retention & waiver</h3>
-                      <div className="grid grid-cols-2 gap-6">
-                        <div className="space-y-1.5">
-                          <Label className="microlabel">Retainage %</Label>
-                          {editable ? (
-                            <Input
-                              type="number"
-                              step="0.1"
-                              value={form.retainage}
-                              onChange={(event) =>
-                                setForm((prev) =>
-                                  prev
-                                    ? { ...prev, retainage: event.target.value }
-                                    : prev,
+                {/* One bill, several jobs: where else this cost landed. */}
+                {selectedBill.is_shared &&
+                selectedBill.shared_projects &&
+                selectedBill.shared_projects.length > 1 ? (
+                  <RecordSection label="Shared">
+                    <div className="space-y-0.5">
+                      {selectedBill.shared_projects.map((share) => {
+                        const isCurrent = share.id === contextProjectId
+                        return (
+                          <div
+                            key={share.id}
+                            className="flex items-center justify-between gap-2 text-sm"
+                          >
+                            <button
+                              type="button"
+                              disabled={isCurrent}
+                              onClick={() =>
+                                router.push(
+                                  `/projects/${share.id}/financials/payables?bill=${selectedBill.id}`,
                                 )
                               }
-                              placeholder="0"
-                              className="h-10 font-semibold"
-                            />
-                          ) : (
-                            <p className="text-sm font-semibold tabular-nums">
-                              {selectedBill.retainage_percent != null
-                                ? `${selectedBill.retainage_percent}%`
-                                : "—"}
-                            </p>
-                          )}
-                          {heldRetainageCents > 0 ? (
-                            <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                              <span>
-                                {formatMoneyFromCents(heldRetainageCents)} held
-                              </span>
-                              <Button
-                                type="button"
-                                variant="link"
-                                className="h-auto p-0 text-xs"
-                                disabled={isPending}
-                                onClick={releaseHeldRetainage}
-                              >
-                                Release
-                              </Button>
-                            </div>
-                          ) : null}
-                        </div>
-                        <div className="space-y-1.5">
-                          <Label className="microlabel">Lien waiver</Label>
-                          {editable ? (
-                            <Select
-                              value={form.lienWaiver}
-                              onValueChange={(value) =>
-                                setForm((prev) =>
-                                  prev ? { ...prev, lienWaiver: value } : prev,
-                                )
-                              }
+                              className={cn(
+                                "truncate text-left",
+                                isCurrent ? "font-medium" : "text-primary hover:underline",
+                              )}
                             >
-                              <SelectTrigger className="h-10 w-full">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="not_required">
-                                  Not required
-                                </SelectItem>
-                                <SelectItem value="requested">
-                                  Requested
-                                </SelectItem>
-                                <SelectItem value="received">
-                                  Received
-                                </SelectItem>
-                              </SelectContent>
-                            </Select>
-                          ) : (
-                            <p className="text-sm font-semibold capitalize">
-                              {normalizeLienWaiverStatus(
-                                selectedBill.lien_waiver_status,
-                              ).replaceAll("_", " ")}
-                            </p>
-                          )}
-                        </div>
-                      </div>
+                              {share.name ??
+                                projects.find((project) => project.id === share.id)?.name ??
+                                "Project"}
+                              {isCurrent ? " (this project)" : ""}
+                            </button>
+                            <span className="shrink-0 font-mono tabular-nums">
+                              {formatMoneyFromCents(share.amount_cents)}
+                            </span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </RecordSection>
+                ) : null}
 
-                      {/*
-                        Discount terms the payment-run builder already knows how
-                        to price. Until there was somewhere to type them, the
-                        saving it offers could never appear.
-                      */}
-                      <div className="grid grid-cols-2 gap-6">
-                        <div className="space-y-1.5">
-                          <Label className="microlabel">Early-pay discount %</Label>
-                          {editable ? (
-                            <Input
-                              type="number"
-                              step="0.1"
-                              value={form.discountPercent}
-                              onChange={(event) =>
-                                setForm((prev) =>
-                                  prev ? { ...prev, discountPercent: event.target.value } : prev,
-                                )
-                              }
-                              placeholder="0"
-                              className="h-10 font-semibold"
-                            />
-                          ) : (
-                            <p className="text-sm font-semibold tabular-nums">
-                              {selectedBill.early_pay_discount_percent != null
-                                ? `${selectedBill.early_pay_discount_percent}%`
-                                : "—"}
-                            </p>
-                          )}
-                        </div>
-                        <div className="space-y-1.5">
-                          <Label className="microlabel">If paid within (days)</Label>
-                          {editable ? (
-                            <Input
-                              type="number"
-                              step="1"
-                              value={form.discountDays}
-                              onChange={(event) =>
-                                setForm((prev) =>
-                                  prev ? { ...prev, discountDays: event.target.value } : prev,
-                                )
-                              }
-                              placeholder="10"
-                              className="h-10 font-semibold"
-                            />
-                          ) : (
-                            <p className="text-sm font-semibold tabular-nums">
-                              {selectedBill.early_pay_discount_days != null
-                                ? `${selectedBill.early_pay_discount_days} days`
-                                : "—"}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                    </section>
-                  ) : null}
+                <PayableTerms
+                  bill={selectedBill}
+                  form={form}
+                  onChange={(patch) => setForm((prev) => (prev ? { ...prev, ...patch } : prev))}
+                  editable={editable}
+                  isVendorCredit={selectedIsVendorCredit}
+                  heldRetainageCents={heldRetainageCents}
+                  onReleaseRetainage={releaseHeldRetainage}
+                  isPending={isPending}
+                />
 
-                  {/* ————— Accounting: an outcome, not a workflow ————— */}
-                  {accountingEnabled ? (
-                    <section className="space-y-2 border-t pt-4">
-                      <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
-                        <div className="flex items-center gap-2">
-                          <span className="microlabel">{accountingProviderName ?? "Accounting"}</span>
-                          <AccountingSyncBadge
-                            status={effectiveSyncStatus ?? "not_synced"}
-                            error={effectiveSyncError}
-                            externalId={effectiveExternalId}
-                          />
-                        </div>
-                        <div className="flex items-center gap-3">
+                <RecordSection label="Activity">
+                  <PayableTimeline
+                    bill={selectedBill}
+                    runMembership={runMembership}
+                    accountingEnabled={accountingSyncEnabled}
+                  />
+                </RecordSection>
+
+                {accountingSyncEnabled ? (
+                  <RecordSection label={accountingProviderName ?? "Accounting"}>
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                        <AccountingSyncBadge
+                          status={effectiveSyncStatus ?? "not_synced"}
+                          error={effectiveSyncError}
+                          externalId={effectiveExternalId}
+                        />
+                        <div className="flex items-center gap-4">
                           {effectiveExternalId && accountingProvider === "qbo" ? (
                             <a
-                              href={qboTxnUrl(isVendorCredit(selectedBill) ? "vendorcredit" : "bill", effectiveExternalId) ?? undefined}
+                              href={
+                                qboTxnUrl(
+                                  selectedIsVendorCredit ? "vendorcredit" : "bill",
+                                  effectiveExternalId,
+                                ) ?? undefined
+                              }
                               target="_blank"
                               rel="noreferrer"
-                              className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
+                              className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
                             >
-                              Open in {accountingProviderName ?? "accounting"}{" "}
+                              Open in {accountingProviderName ?? "accounting"}
                               <ExternalLink className="h-3 w-3" />
                             </a>
                           ) : null}
@@ -1931,9 +1394,7 @@ export function PayablesWorkspace({
                               variant="ghost"
                               size="sm"
                               className="h-7 px-2 text-xs text-muted-foreground"
-                              disabled={
-                                isPending || effectiveSyncStatus === "synced"
-                              }
+                              disabled={isPending || effectiveSyncStatus === "synced"}
                               onClick={syncToAccounting}
                             >
                               Sync now
@@ -1942,37 +1403,34 @@ export function PayablesWorkspace({
                         </div>
                       </div>
                       {effectiveSyncStatus === "error" && effectiveSyncError ? (
-                        <p className="text-[11px] font-medium text-destructive">
-                          {effectiveSyncError}
+                        <p className="text-xs font-medium text-destructive">{effectiveSyncError}</p>
+                      ) : null}
+                      {!selectedBill.qbo_vendor_id ? (
+                        <p className="text-xs text-muted-foreground">
+                          No {accountingProviderName ?? "accounting"} vendor is linked to{" "}
+                          {vendorLabel(selectedBill)} yet. Link or create one from the vendor record
+                          before syncing.
                         </p>
                       ) : null}
-                    </section>
-                  ) : null}
-                </div>
+                    </div>
+                  </RecordSection>
+                ) : null}
               </div>
 
-              {/* ————— Footer: document actions only ————— */}
-              <div className="flex items-center justify-between gap-3 border-t bg-muted/10 px-4 py-3 sm:px-6">
-                <span className="text-xs text-muted-foreground">
-                  {isDirty ? "Unsaved changes" : ""}
-                </span>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={() => requestSelectBill(null)}
-                  >
-                    Close
-                  </Button>
-                  {editable ? (
-                    <Button
-                      disabled={isPending || !isDirty}
-                      onClick={saveDetails}
-                    >
-                      {isPending ? "Saving..." : "Save changes"}
+              {/* ————— Save bar: only once there is something to save ————— */}
+              {editable && isDirty ? (
+                <div className="flex shrink-0 items-center justify-between gap-3 border-t bg-muted/30 px-6 py-2.5 sm:px-8">
+                  <span className="text-xs text-muted-foreground">Unsaved changes</span>
+                  <div className="flex items-center gap-2">
+                    <Button variant="ghost" size="sm" onClick={() => setForm(baseline)}>
+                      Discard
                     </Button>
-                  ) : null}
+                    <Button size="sm" disabled={isPending} onClick={saveDetails}>
+                      {isPending ? "Saving…" : "Save changes"}
+                    </Button>
+                  </div>
                 </div>
-              </div>
+              ) : null}
             </div>
 
             <div
@@ -2105,6 +1563,115 @@ export function PayablesWorkspace({
       </AlertDialog>
     </>
   )
+}
+
+/**
+ * Where the coding came from, so an approver knows how hard to look. Quiet text
+ * for a confident machine, warning tone only when the confidence is low; a
+ * human-coded bill says nothing at all.
+ */
+function CodingProvenance({ bill }: { bill: VendorBillSummary }) {
+  const source = bill.coding_source
+  const raw = bill.coding_confidence
+  const percent =
+    typeof raw === "number" ? Math.round(raw <= 1 ? raw * 100 : raw) : null
+  const low = percent !== null && percent < 50
+  const parts: string[] = []
+  if (source === "ai") {
+    parts.push(`Coded by AI${percent !== null ? ` · ${percent}% confidence` : ""}${low ? " — review the allocation" : ""}`)
+  } else if (source === "rule" || source === "learned") {
+    parts.push(`Coded from a learned rule${percent !== null ? ` · ${percent}% confidence` : ""}`)
+  }
+  // Where the numbers came from matters as much as where the codes did: a
+  // low-confidence scan is the approver's cue to check the document pane.
+  if (bill.extraction_confidence) parts.push(`Scanned with ${bill.extraction_confidence} confidence`)
+  if (parts.length === 0) return null
+  const lowExtraction = bill.extraction_confidence === "low"
+  return (
+    <p className={cn("mb-2 text-xs", low || lowExtraction ? "font-medium text-warning" : "text-muted-foreground")}>
+      {parts.join(" · ")}
+    </p>
+  )
+}
+
+/**
+ * What the invoice's lines bill against the commitment. Advisory evidence, so
+ * it states the exceptions and stays quiet when everything reconciles — an
+ * approver should only have to read this when there is something to read.
+ */
+function LineMatchEvidence({ bill }: { bill: VendorBillSummary }) {
+  const assessment = bill.line_match
+  if (!assessment) return null
+  const { rollup } = assessment
+  const exceptions = assessment.lines.filter((line) => line.matchKind === "unmatched" || line.overCommitmentLine)
+  const remainingCents = Math.max(0, rollup.revisedCommitmentCents - rollup.projectedTotalCents)
+  const hasProblem = exceptions.length > 0 || rollup.overCommitmentCents > 0
+
+  return (
+    <div className="mb-2 space-y-1 text-xs">
+      <p className={cn(hasProblem ? "font-medium text-warning" : "text-muted-foreground")}>
+        {rollup.overCommitmentCents > 0
+          ? `Bills ${formatLineMatchCents(rollup.projectedTotalCents)} against a ${formatLineMatchCents(rollup.revisedCommitmentCents)} commitment — ${formatLineMatchCents(rollup.overCommitmentCents)} over`
+          : `Bills ${formatLineMatchCents(rollup.projectedTotalCents)} of ${formatLineMatchCents(rollup.revisedCommitmentCents)} committed — ${formatLineMatchCents(remainingCents)} remaining`}
+      </p>
+      {exceptions.map((line, index) => (
+        <p key={`${line.commitmentLineId ?? "unmatched"}-${index}`} className="text-muted-foreground">
+          <span className="text-foreground">{line.invoiceLine.description}</span>
+          {line.commitmentLineNumber ? ` · line ${line.commitmentLineNumber}` : " · no matching commitment line"}
+          {line.note ? ` — ${line.note}` : ""}
+        </p>
+      ))}
+      {assessment.notes.map((note) => (
+        <p key={note} className="text-muted-foreground">{note}</p>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * What every other lot of this house plan was billed for the same trade.
+ * Silent unless a cost code is genuinely out of line with its plan-mates, and
+ * each claim carries its own arithmetic — the comparison basis and the sample
+ * count — so an approver can check it rather than take it on faith. Paying more
+ * than the plan usually does is worth a second look; paying less is not, so only
+ * the former takes the warning tone.
+ */
+function EvenFlowPriceEvidence({ assessment }: { assessment: EvenFlowPriceAssessment | null }) {
+  if (!assessment || assessment.claims.length === 0) return null
+  return (
+    <div className="mb-2 space-y-1 text-xs">
+      {assessment.claims.map((claim) => (
+        <p
+          key={claim.costCodeId}
+          className={cn(claim.direction === "above" ? "font-medium text-warning" : "text-muted-foreground")}
+        >
+          {claim.claim}
+        </p>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * Whether the work this invoice bills for has reached the calendar. Checked
+ * only where a schedule item carries the bill's own cost code, and quiet unless
+ * the bill lands well ahead of the trade's scheduled start.
+ */
+function ScheduleCrosscheckEvidence({ assessment }: { assessment: BillScheduleAssessment | null }) {
+  if (!assessment || assessment.findings.length === 0) return null
+  return (
+    <div className="mb-2 space-y-1 text-xs">
+      {assessment.findings.map((finding) => (
+        <p key={finding.scheduleItemId} className="font-medium text-warning">
+          {finding.claim}
+        </p>
+      ))}
+    </div>
+  )
+}
+
+function formatLineMatchCents(cents: number): string {
+  return (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
 }
 
 function mapAttachment(link: FileLinkWithFile): AttachedFile {

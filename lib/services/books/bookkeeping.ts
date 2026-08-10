@@ -31,6 +31,263 @@ async function requireBooksAdjust(orgId?: string) {
   return context;
 }
 
+/** Reading the journal is not the same right as writing to it. */
+async function requireBooksRead(orgId?: string) {
+  const context = await requireOrgContext(orgId);
+  await requireAuthorization({
+    permission: "books.read",
+    userId: context.userId,
+    orgId: context.orgId,
+    supabase: context.supabase,
+    resourceType: "journal_entry",
+    resourceId: context.orgId,
+    logDecision: true,
+  });
+  return context;
+}
+
+export const JOURNAL_ENTRY_KINDS = [
+  "operational",
+  "adjusting",
+  "opening",
+  "poc",
+  "closing",
+  "reversal",
+] as const
+
+export type JournalEntryKind = (typeof JOURNAL_ENTRY_KINDS)[number]
+
+const JOURNAL_PAGE_CAP = 200
+
+/**
+ * Journal entries by where they came from.
+ *
+ * The question this answers is the one an auditor opens with: what in this ledger
+ * did a person write, as opposed to what the projector derived from a bill? C1
+ * directive 9 left that unanswerable from the product — hand-posted adjustments
+ * are legitimate but were invisible next to projected entries, distinguishable
+ * only by reading `posting_key` prefixes.
+ *
+ * Lines are embedded rather than fetched per row: entries are capped, an entry
+ * has a handful of lines, and an audit view where you must click every row to see
+ * the debits is not one anybody will use.
+ */
+export async function listJournalEntries(input: {
+  entryKinds?: JournalEntryKind[];
+  startDate?: string;
+  endDate?: string;
+  orgId?: string;
+} = {}) {
+  const context = await requireBooksRead(input.orgId);
+  const service = createServiceSupabaseClient();
+
+  let query = service
+    .from("journal_entries")
+    .select(
+      "id, entry_date, entry_kind, status, memo, posting_key, source_type, source_id, posted_at, posted_by, reversal_of_entry_id, " +
+        "lines:journal_lines(id, debit_cents, credit_cents, description, project_id, account:gl_accounts(code, name))",
+    )
+    .eq("org_id", context.orgId)
+    .order("entry_date", { ascending: false })
+    .order("created_at", { ascending: false })
+    .range(0, JOURNAL_PAGE_CAP);
+  if (input.entryKinds?.length) query = query.in("entry_kind", input.entryKinds);
+  if (input.startDate) query = query.gte("entry_date", input.startDate);
+  if (input.endDate) query = query.lte("entry_date", input.endDate);
+
+  const { data, error } = await query;
+  if (error) throw new Error(`Failed to load journal entries: ${error.message}`);
+
+  const entrySchema = z.object({
+    id: z.string().uuid(),
+    entry_date: z.string(),
+    entry_kind: z.string(),
+    status: z.string(),
+    memo: z.string().nullable(),
+    posting_key: z.string(),
+    source_type: z.string().nullable(),
+    source_id: z.string().nullable(),
+    posted_at: z.string().nullable(),
+    posted_by: z.string().uuid().nullable(),
+    reversal_of_entry_id: z.string().uuid().nullable(),
+    lines: z.array(
+      z.object({
+        id: z.string().uuid(),
+        debit_cents: z.number().int(),
+        credit_cents: z.number().int(),
+        description: z.string().nullable(),
+        project_id: z.string().uuid().nullable(),
+        account: z
+          .union([
+            z.object({ code: z.string(), name: z.string() }),
+            z.array(z.object({ code: z.string(), name: z.string() })),
+          ])
+          .nullable(),
+      }),
+    ),
+  });
+  const parsed = z.array(entrySchema).parse(data ?? []);
+  const truncated = parsed.length > JOURNAL_PAGE_CAP;
+  const page = truncated ? parsed.slice(0, JOURNAL_PAGE_CAP) : parsed;
+
+  // Who posted it is half the audit question, and `posted_by` is only a uuid.
+  const posterIds = Array.from(
+    new Set(page.map((entry) => entry.posted_by).filter((id): id is string => Boolean(id))),
+  );
+  const posterNames = new Map<string, string>();
+  if (posterIds.length > 0) {
+    const { data: users } = await service
+      .from("app_users")
+      .select("id, full_name, email")
+      .in("id", posterIds);
+    for (const user of users ?? []) {
+      posterNames.set(String(user.id), String(user.full_name || user.email || "Unknown"));
+    }
+  }
+
+  return {
+    truncated,
+    rowCap: JOURNAL_PAGE_CAP,
+    entries: page.map((entry) => {
+      const lines = entry.lines.map((line) => {
+        const account = Array.isArray(line.account) ? line.account[0] : line.account;
+        return {
+          id: line.id,
+          accountCode: account?.code ?? "",
+          accountName: account?.name ?? "",
+          debitCents: line.debit_cents,
+          creditCents: line.credit_cents,
+          description: line.description,
+          projectId: line.project_id,
+        };
+      });
+      return {
+        id: entry.id,
+        entryDate: entry.entry_date,
+        entryKind: entry.entry_kind,
+        status: entry.status,
+        memo: entry.memo ?? "",
+        postingKey: entry.posting_key,
+        sourceType: entry.source_type,
+        sourceId: entry.source_id,
+        postedAt: entry.posted_at,
+        postedByName: entry.posted_by ? posterNames.get(entry.posted_by) ?? null : null,
+        isReversal: Boolean(entry.reversal_of_entry_id),
+        // A hand-authored entry has no fact behind it. That is the whole
+        // distinction this view exists to draw.
+        isManual: entry.entry_kind === "adjusting" || entry.entry_kind === "opening",
+        totalCents: lines.reduce((sum, line) => sum + line.debitCents, 0),
+        lines,
+      };
+    }),
+  };
+}
+
+export type JournalEntryListing = Awaited<ReturnType<typeof listJournalEntries>>;
+export type JournalEntrySummary = JournalEntryListing["entries"][number];
+
+export async function listRecurringPostingTemplates(orgId?: string) {
+  const context = await requireBooksRead(orgId);
+  const service = createServiceSupabaseClient();
+  const { data, error } = await service
+    .from("recurring_posting_templates")
+    .select(
+      "id, name, memo, frequency, next_run_on, end_on, status, auto_post, requires_approval, " +
+        "lines:recurring_posting_lines(id, line_no, debit_cents, credit_cents, description, account:gl_accounts(code, name))",
+    )
+    .eq("org_id", context.orgId)
+    .order("next_run_on", { ascending: true })
+    .limit(100);
+  if (error) throw new Error(`Failed to load recurring templates: ${error.message}`);
+
+  const templateSchema = z.object({
+    id: z.string().uuid(),
+    name: z.string(),
+    memo: z.string(),
+    frequency: z.string(),
+    next_run_on: z.string(),
+    end_on: z.string().nullable(),
+    status: z.string(),
+    auto_post: z.boolean(),
+    requires_approval: z.boolean(),
+    lines: z.array(
+      z.object({
+        id: z.string().uuid(),
+        line_no: z.number().int(),
+        debit_cents: z.number().int(),
+        credit_cents: z.number().int(),
+        description: z.string().nullable(),
+        account: z
+          .union([
+            z.object({ code: z.string(), name: z.string() }),
+            z.array(z.object({ code: z.string(), name: z.string() })),
+          ])
+          .nullable(),
+      }),
+    ),
+  });
+
+  return z
+    .array(templateSchema)
+    .parse(data ?? [])
+    .map((template) => ({
+      id: template.id,
+      name: template.name,
+      memo: template.memo,
+      frequency: template.frequency,
+      nextRunOn: template.next_run_on,
+      endOn: template.end_on,
+      status: template.status,
+      autoPost: template.auto_post,
+      requiresApproval: template.requires_approval,
+      lines: [...template.lines]
+        .sort((left, right) => left.line_no - right.line_no)
+        .map((line) => {
+          const account = Array.isArray(line.account) ? line.account[0] : line.account;
+          return {
+            id: line.id,
+            accountCode: account?.code ?? "",
+            accountName: account?.name ?? "",
+            debitCents: line.debit_cents,
+            creditCents: line.credit_cents,
+            description: line.description,
+          };
+        }),
+      totalCents: template.lines.reduce((sum, line) => sum + line.debit_cents, 0),
+    }));
+}
+
+/**
+ * Pause, resume, or retire a template.
+ *
+ * Deleting is not offered: a template that has already posted entries is part of
+ * the ledger's history, and `completed` records that it stopped without pretending
+ * it never ran.
+ */
+export async function setRecurringTemplateStatus(input: {
+  templateId: string;
+  status: "active" | "paused" | "completed";
+  orgId?: string;
+}) {
+  const context = await requireBooksAdjust(input.orgId);
+  const service = createServiceSupabaseClient();
+  const { error } = await service
+    .from("recurring_posting_templates")
+    .update({ status: input.status, updated_by: context.userId })
+    .eq("org_id", context.orgId)
+    .eq("id", input.templateId);
+  if (error) throw new Error(`Failed to update the recurring template: ${error.message}`);
+  await recordEvent({
+    orgId: context.orgId,
+    actorId: context.userId,
+    eventType: "books.recurring_template_status_changed",
+    entityType: "recurring_posting_template",
+    entityId: input.templateId,
+    payload: { status: input.status },
+  });
+  return { success: true as const };
+}
+
 export async function createAdjustingJournal(input: {
   entryDate: string;
   memo: string;
@@ -51,6 +308,9 @@ export async function createAdjustingJournal(input: {
     entryKind: "adjusting",
     memo: input.memo.trim(),
     postingKey: `adjustment:${digest}`,
+    // Hand-authored entries are not projections, so they stay at version 1 and
+    // are keyed by their own content digest.
+    projectionVersion: 1,
     policyVersion: 1,
     lines: input.lines,
   };
@@ -65,6 +325,7 @@ export async function createAdjustingJournal(input: {
       entryKind: "reversal",
       memo: `Automatic reversal: ${draft.memo}`,
       postingKey: `scheduled_reversal:${posted.id}:${input.reversingOn}`,
+      projectionVersion: draft.projectionVersion,
       policyVersion: draft.policyVersion,
       reversalOfEntryId: posted.id,
       lines: draft.lines.map((line) => ({
@@ -97,6 +358,7 @@ export async function createRecurringPostingTemplate(input: {
     entryKind: "adjusting",
     memo: input.memo,
     postingKey: "validation",
+    projectionVersion: 1,
     policyVersion: 1,
     lines: input.lines,
   };
@@ -246,6 +508,7 @@ export async function processRecurringPostings(
         entryKind: "adjusting",
         memo: template.memo,
         postingKey: `recurring:${template.id}:${template.next_run_on}`,
+        projectionVersion: 1,
         policyVersion: policyByOrg.get(template.org_id) ?? 1,
         sourceType: "recurring_posting_template",
         sourceId: template.id,
@@ -265,3 +528,7 @@ export async function processRecurringPostings(
   }
   return { attempted: data?.length ?? 0, posted, awaitingApproval };
 }
+
+export type RecurringPostingTemplate = Awaited<
+  ReturnType<typeof listRecurringPostingTemplates>
+>[number];

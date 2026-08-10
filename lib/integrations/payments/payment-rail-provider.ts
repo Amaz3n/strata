@@ -73,6 +73,8 @@ export interface ProviderVendorTransferInput {
   providerChargeId: string | null
   transferGroup: string
   idempotencyKey: string
+  /** Remittance note. Providers may display this in transfer history; bank statement display is rail-dependent. */
+  memo?: string
   metadata: Record<string, string>
 }
 

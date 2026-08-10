@@ -1,0 +1,482 @@
+"use server"
+
+import { requireOrgContext } from "@/lib/services/context"
+import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { listInvoices } from "@/lib/services/invoices"
+import { enqueueAccountingPush, processAccountingPush, type AccountingPushEntityType } from "@/lib/services/accounting-sync"
+import { ACCOUNTING_PROVIDERS } from "@/lib/integrations/accounting/catalog"
+import { getProvider, isAccountingProviderKey } from "@/lib/integrations/accounting/registry"
+
+export type AccountingSyncEntityType = "invoice" | "expense" | "bill" | "payment" | "bill_payment" | "webhook_event"
+
+export type AccountingSyncQueueItem = {
+  id: string
+  entityType: AccountingSyncEntityType
+  projectId: string | null
+  label: string
+  sublabel: string | null
+  amountCents: number
+  status: "pending" | "error" | "needs_review" | "conflict"
+  error: string | null
+  externalId: string | null
+  lastAttemptAt: string | null
+  date: string | null
+}
+
+export type AccountingSyncQueue = {
+  connected: boolean
+  /**
+   * Which accounting system this org actually posts to. The queue names it
+   * rather than assuming QuickBooks — the push layer has been provider-neutral
+   * since the accounting abstraction landed, and only the labels were pinned.
+   * Null when the org has no connection at all.
+   */
+  provider: { key: string; name: string; supportsImport: boolean } | null
+  items: AccountingSyncQueueItem[]
+}
+
+export type AccountingSyncHistoryItem = {
+  id: string
+  entityType: string
+  entityId: string
+  projectId: string | null
+  label: string
+  status: string
+  direction: string
+  externalId: string | null
+  error: string | null
+  syncedAt: string | null
+}
+
+function mapStatus(value?: string | null): "pending" | "error" | "needs_review" | "conflict" {
+  if (value === "error") return "error"
+  if (value === "needs_review") return "needs_review"
+  if (value === "conflict") return "conflict"
+  return "pending"
+}
+
+/**
+ * Everything waiting to reach the org's accounting system (pending) or that failed
+ * (error), across every entity type. Invoices/expenses/bills still carry their own
+ * `qbo_sync_status` column from before the accounting abstraction; payments live only
+ * in the shared `accounting_sync_records` ledger. Org-scoped on every query, because
+ * the service client bypasses RLS.
+ */
+export async function listAccountingSyncQueueAction(params?: { projectId?: string | null }): Promise<AccountingSyncQueue> {
+  const { orgId } = await requireOrgContext()
+  const supabase = createServiceSupabaseClient()
+  const projectId = params?.projectId ?? null
+
+  const [{ data: connections }, { data: anyConnections }, { data: projectRows }] = await Promise.all([
+    supabase.from("accounting_connections").select("id, provider, external_account_id").eq("org_id", orgId).eq("status", "active").order("connected_at", { ascending: true }),
+    // Any connection, healthy or not: an expired one still tells us which
+    // system this org's backlog is waiting on, and that is exactly the state
+    // where naming it matters most.
+    supabase.from("accounting_connections").select("provider").eq("org_id", orgId).order("connected_at", { ascending: false }).limit(1),
+    supabase.from("projects").select("id, name").eq("org_id", orgId),
+  ])
+  const realmIds = (connections ?? [])
+    .map((row) => row.external_account_id)
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+  const connected = (connections ?? []).length > 0
+  // With multiple active connections (e.g. a batch file export plus a live
+  // two-way one), the header names one of them. Prefer whichever can also
+  // import, so the Import tab is not hidden by an incidental ordering on
+  // connected_at. Asked as a capability, not as a provider name: the next
+  // adapter with a read API has to win this the moment it is registered, and a
+  // hardcoded `provider === "qbo"` would keep pinning the header to QuickBooks.
+  const primaryConnection =
+    (connections ?? []).find(
+      (row) => isAccountingProviderKey(row.provider) && getProvider(row.provider).capabilities.supportsImport,
+    ) ?? connections?.[0] ?? null
+  const providerKey = primaryConnection?.provider ?? anyConnections?.[0]?.provider ?? null
+  const provider = providerKey && isAccountingProviderKey(providerKey)
+    ? {
+        key: providerKey,
+        name: ACCOUNTING_PROVIDERS[providerKey].name,
+        supportsImport: getProvider(providerKey).capabilities.supportsImport,
+      }
+    : null
+  const projectName = new Map<string, string>(
+    ((projectRows ?? []) as any[]).map((row) => [row.id as string, row.name as string]),
+  )
+
+  const [invoicesAll, expensesRes, billsRes, paymentRecordsRes, webhookEventsRes] = await Promise.all([
+    listInvoices({ orgId }),
+    supabase
+      .from("project_expenses")
+      .select(
+        "id, project_id, description, vendor_name_text, expense_date, amount_cents, tax_cents, qbo_sync_status, qbo_sync_error, vendor_company:companies(name)",
+      )
+      .eq("org_id", orgId)
+      .in("qbo_sync_status", ["pending", "error", "needs_review"])
+      .order("expense_date", { ascending: false }),
+    supabase
+      .from("vendor_bills")
+      .select(
+        "id, project_id, bill_number, bill_date, total_cents, qbo_sync_status, qbo_sync_error, commitment:commitments(title, company:companies(name))",
+      )
+      .eq("org_id", orgId)
+      .in("qbo_sync_status", ["pending", "error", "needs_review"])
+      .order("bill_date", { ascending: false }),
+    supabase
+      .from("accounting_sync_records")
+      .select("entity_id, entity_type, status, error_message, external_id, last_synced_at, created_at")
+      .eq("org_id", orgId)
+      .in("entity_type", ["payment", "bill_payment"])
+      // "conflict" is how a provider-side deletion of a posted payment is
+      // recorded; leaving it out of the queue made the divergence invisible.
+      .in("status", ["pending", "error", "needs_review", "conflict"]),
+    supabase
+      .from("qbo_webhook_events")
+      .select("id, entity_name, entity_qbo_id, operation, process_error, attempts, received_at, processed_at")
+      .in("realm_id", realmIds.length > 0 ? realmIds : [""])
+      .eq("process_status", "error")
+      .order("received_at", { ascending: false })
+      .limit(25),
+  ])
+
+  const invoices = invoicesAll.filter(
+    (invoice) =>
+      (invoice.qbo_sync_status === "pending" || invoice.qbo_sync_status === "error" || invoice.qbo_sync_status === "needs_review") &&
+      (!projectId || invoice.project_id === projectId),
+  )
+  const expenses = ((expensesRes.data ?? []) as any[]).filter((expense) => !projectId || expense.project_id === projectId)
+  const bills = ((billsRes.data ?? []) as any[]).filter((bill) => !projectId || bill.project_id === projectId)
+  const paymentRecords = (paymentRecordsRes.data ?? []) as any[]
+  const deadLetterEvents = projectId ? [] : ((webhookEventsRes.data ?? []) as any[])
+
+  // Latest sync record per entity (external id / last attempt / error) on invoices, expenses, bills.
+  const recordLookup = new Map<string, { externalId: string | null; lastAttemptAt: string | null; error: string | null }>()
+  const idsByType: Record<string, string[]> = {
+    invoice: invoices.map((i) => i.id),
+    project_expense: expenses.map((e) => e.id as string),
+    bill: bills.map((b) => b.id as string),
+    // Vendor credits live in vendor_bills but their sync records are keyed
+    // "vendor_credit"; without this their state never reached the queue rows.
+    vendor_credit: bills.map((b) => b.id as string),
+  }
+  await Promise.all(
+    Object.entries(idsByType).map(async ([entityType, ids]) => {
+      if (ids.length === 0) return
+      const { data } = await supabase
+        .from("accounting_sync_records")
+        .select("entity_id, external_id, last_synced_at, created_at, error_message")
+        .eq("org_id", orgId)
+        .eq("entity_type", entityType)
+        .in("entity_id", ids)
+        .order("last_synced_at", { ascending: false })
+      for (const record of data ?? []) {
+        const key = `${entityType === "vendor_credit" ? "bill" : entityType}:${record.entity_id}`
+        if (recordLookup.has(key)) continue
+        recordLookup.set(key, {
+          externalId: record.external_id ?? null,
+          lastAttemptAt: (record.last_synced_at ?? record.created_at) as string | null,
+          error: record.error_message ?? null,
+        })
+      }
+    }),
+  )
+
+  const items: AccountingSyncQueueItem[] = []
+
+  for (const invoice of invoices) {
+    const record = recordLookup.get(`invoice:${invoice.id}`)
+    items.push({
+      id: invoice.id,
+      entityType: "invoice",
+      projectId: invoice.project_id ?? null,
+      label: invoice.invoice_number || invoice.title || "Invoice",
+      sublabel: invoice.project_id ? projectName.get(invoice.project_id) ?? null : null,
+      amountCents: invoice.total_cents ?? invoice.totals?.total_cents ?? 0,
+      status: mapStatus(invoice.qbo_sync_status),
+      error: record?.error ?? null,
+      externalId: record?.externalId ?? null,
+      lastAttemptAt: record?.lastAttemptAt ?? null,
+      date: invoice.issue_date ?? null,
+    })
+  }
+
+  for (const expense of expenses) {
+    const record = recordLookup.get(`project_expense:${expense.id}`)
+    const vendor = (expense.vendor_company as { name?: string } | null)?.name ?? expense.vendor_name_text ?? null
+    items.push({
+      id: expense.id as string,
+      entityType: "expense",
+      projectId: (expense.project_id as string | null) ?? null,
+      label: (expense.description as string)?.trim() || vendor || "Expense",
+      sublabel: vendor ?? (expense.project_id ? projectName.get(expense.project_id as string) ?? null : null),
+      amountCents: Number(expense.amount_cents ?? 0) + Number(expense.tax_cents ?? 0),
+      status: mapStatus(expense.qbo_sync_status as string),
+      error: (expense.qbo_sync_error as string | null) ?? record?.error ?? null,
+      externalId: record?.externalId ?? null,
+      lastAttemptAt: record?.lastAttemptAt ?? null,
+      date: (expense.expense_date as string) ?? null,
+    })
+  }
+
+  for (const bill of bills) {
+    const record = recordLookup.get(`bill:${bill.id}`)
+    const commitment = bill.commitment as { title?: string; company?: { name?: string } } | null
+    items.push({
+      id: bill.id as string,
+      entityType: "bill",
+      projectId: (bill.project_id as string | null) ?? null,
+      label: bill.bill_number ? `Bill ${bill.bill_number}` : commitment?.title || "Vendor bill",
+      sublabel: commitment?.company?.name ?? (bill.project_id ? projectName.get(bill.project_id as string) ?? null : null),
+      amountCents: Number(bill.total_cents ?? 0),
+      status: mapStatus(bill.qbo_sync_status as string),
+      error: (bill.qbo_sync_error as string | null) ?? record?.error ?? null,
+      externalId: record?.externalId ?? null,
+      lastAttemptAt: record?.lastAttemptAt ?? null,
+      date: (bill.bill_date as string) ?? null,
+    })
+  }
+
+  // Payments and bill payments — sourced from the sync ledger, enriched from the payments table.
+  if (paymentRecords.length > 0) {
+    const paymentIds = paymentRecords.map((record) => record.entity_id as string).filter(Boolean)
+    const { data: paymentRows } = await supabase
+      .from("payments")
+      .select(
+        "id, amount_cents, received_at, created_at, invoice:invoices(invoice_number, title, project_id), bill:vendor_bills(bill_number, project_id)",
+      )
+      .eq("org_id", orgId)
+      .in("id", paymentIds)
+    const paymentById = new Map<string, any>((paymentRows ?? []).map((row) => [row.id as string, row]))
+
+    for (const record of paymentRecords) {
+      const payment = paymentById.get(record.entity_id as string)
+      const isBillPayment = record.entity_type === "bill_payment"
+      const paymentProjectId = (isBillPayment ? payment?.bill?.project_id : payment?.invoice?.project_id) ?? null
+      if (projectId && paymentProjectId !== projectId) continue
+      const reference = isBillPayment
+        ? payment?.bill?.bill_number
+          ? `Bill ${payment.bill.bill_number}`
+          : "vendor bill"
+        : payment?.invoice?.invoice_number || payment?.invoice?.title || "invoice"
+      items.push({
+        id: record.entity_id as string,
+        entityType: isBillPayment ? "bill_payment" : "payment",
+        projectId: paymentProjectId,
+        label: `Payment · ${reference}`,
+        sublabel: null,
+        amountCents: Number(payment?.amount_cents ?? 0),
+        status: mapStatus(record.status as string),
+        error: record.error_message ?? null,
+        externalId: record.external_id ?? null,
+        lastAttemptAt: (record.last_synced_at ?? record.created_at) as string | null,
+        date: (payment?.received_at ?? payment?.created_at) as string | null,
+      })
+    }
+  }
+
+  for (const event of deadLetterEvents) {
+    items.push({
+      id: event.id as string,
+      entityType: "webhook_event",
+      projectId: null,
+      label: `${String(event.entity_name ?? "Webhook")} ${String(event.entity_qbo_id ?? "")}`.trim(),
+      sublabel: String(event.operation ?? "inbound"),
+      amountCents: 0,
+      status: "error",
+      error: (event.process_error as string | null) ?? "Webhook processing failed",
+      externalId: (event.entity_qbo_id as string | null) ?? null,
+      lastAttemptAt: ((event.processed_at ?? event.received_at) as string | null) ?? null,
+      date: (event.received_at as string | null) ?? null,
+    })
+  }
+
+  return { connected, provider, items }
+}
+
+/**
+ * Push a single item to the accounting system now. Throws on failure so the UI
+ * can surface it; returns whether anything was actually pushed, because "Arc is
+ * the ledger of record" skips are a success that must not read as "Synced".
+ */
+export async function syncAccountingItemAction(
+  entityType: AccountingSyncEntityType,
+  id: string,
+): Promise<{ skipped: boolean; reason: "books_authoritative" | null }> {
+  const { orgId } = await requireOrgContext()
+  if (entityType === "webhook_event") {
+    const result = await retryQboWebhookEventAction(id)
+    if (!result.success) throw new Error(result.error ?? "Unable to retry webhook event")
+    return { skipped: false, reason: null }
+  }
+  const mapped: AccountingPushEntityType = entityType === "expense" ? "project_expense" : entityType === "bill" ? "vendor_bill" : entityType
+  const result = await processAccountingPush({ orgId, entityType: mapped, entityId: id })
+  if (result.skippedReason === "books_authoritative") return { skipped: true, reason: "books_authoritative" }
+  return { skipped: Boolean(result.skipped), reason: null }
+}
+
+/**
+ * Requeue every pending/failed item.
+ *
+ * These go back through the outbox rather than being pushed inline. Pushing a
+ * backlog serially inside one server action meant a large queue ran past the
+ * request budget and died partway, with no record of where it stopped and no
+ * retry for the half that never ran. The outbox already has the retry, the
+ * backoff and the deduplication.
+ *
+ * Webhook replays stay inline: they only reset a row so the inbound drain picks
+ * them up, and there is nothing to enqueue.
+ */
+export async function syncAllAccountingPendingAction(params?: { projectId?: string | null }): Promise<{ queued: number; failed: number; errors: string[] }> {
+  const { orgId } = await requireOrgContext()
+  const { items } = await listAccountingSyncQueueAction({ projectId: params?.projectId })
+
+  let queued = 0
+  let failed = 0
+  const errors: string[] = []
+  for (const item of items) {
+    try {
+      if (item.entityType === "webhook_event") {
+        const result = await retryQboWebhookEventAction(item.id)
+        if (!result.success) throw new Error(result.error ?? "Unable to retry webhook event")
+        queued += 1
+        continue
+      }
+      const mapped: AccountingPushEntityType = item.entityType === "expense" ? "project_expense" : item.entityType === "bill" ? "vendor_bill" : item.entityType
+      const result = await enqueueAccountingPush({ orgId, entityType: mapped, entityId: item.id })
+      if (result.queued) {
+        queued += 1
+      } else {
+        failed += 1
+        errors.push(`${item.label}: ${describeEnqueueBlock(result.reason)}`)
+      }
+    } catch (error) {
+      failed += 1
+      errors.push(`${item.label}: ${error instanceof Error ? error.message : "Sync failed"}`)
+    }
+  }
+  return { queued, failed, errors }
+}
+
+/** Why a transaction could not even be queued, in words a bookkeeper can act on. */
+function describeEnqueueBlock(reason: string): string {
+  switch (reason) {
+    case "unconnected":
+      return "No accounting connection is mapped to this transaction."
+    case "cutover_freeze":
+      return "Held by an accounting cutover freeze."
+    case "books_authoritative":
+      return "Arc Books owns this ledger, so nothing is pushed out."
+    case "inbound_only":
+      return "This record came from the accounting system and is not pushed back."
+    case "connection_mismatch":
+      return "It belongs to a different accounting connection than the one now mapped."
+    case "disabled":
+      return "Automatic sync is turned off for this connection."
+    case "connection_unhealthy":
+      return "The accounting connection needs to be reconnected."
+    default:
+      return "Could not be queued."
+  }
+}
+
+/**
+ * Replay a dead-lettered inbound webhook. Deliberately still QBO-named: it resets a
+ * row in `qbo_webhook_events`, which is a QuickBooks-only table. No other adapter
+ * has an inbound webhook stream to replay.
+ */
+export async function retryQboWebhookEventAction(id: string): Promise<{ success: boolean; error: string | null }> {
+  await requireOrgContext()
+  const supabase = createServiceSupabaseClient()
+  const { error } = await supabase
+    .from("qbo_webhook_events")
+    .update({
+      process_status: "pending",
+      process_error: null,
+      attempts: 0,
+      next_attempt_at: null,
+      processed_at: null,
+    })
+    .eq("id", id)
+    .eq("process_status", "error")
+
+  if (error) return { success: false, error: error.message }
+  return { success: true, error: null }
+}
+
+export async function listAccountingSyncHistoryAction(params?: { projectId?: string | null; limit?: number }): Promise<AccountingSyncHistoryItem[]> {
+  const { orgId } = await requireOrgContext()
+  const supabase = createServiceSupabaseClient()
+  const projectId = params?.projectId ?? null
+  const limit = params?.limit ?? 50
+
+  const { data: records } = await supabase
+    .from("accounting_sync_records")
+    .select("id, entity_type, entity_id, external_id, last_synced_at, sync_direction, status, error_message, created_at")
+    .eq("org_id", orgId)
+    .order("last_synced_at", { ascending: false })
+    .limit(limit)
+
+  const rows = (records ?? []) as any[]
+  if (rows.length === 0) return []
+
+  const idsByType = rows.reduce<Record<string, string[]>>((acc, row) => {
+    const key = String(row.entity_type ?? "")
+    if (!acc[key]) acc[key] = []
+    acc[key].push(String(row.entity_id))
+    return acc
+  }, {})
+
+  const [invoiceRows, expenseRows, billRows, paymentRows] = await Promise.all([
+    idsByType.invoice?.length
+      ? supabase.from("invoices").select("id, project_id, invoice_number, title").eq("org_id", orgId).in("id", idsByType.invoice)
+      : Promise.resolve({ data: [] as any[] }),
+    idsByType.project_expense?.length
+      ? supabase.from("project_expenses").select("id, project_id, description, vendor_name_text").eq("org_id", orgId).in("id", idsByType.project_expense)
+      : Promise.resolve({ data: [] as any[] }),
+    idsByType.bill?.length
+      ? supabase.from("vendor_bills").select("id, project_id, bill_number").eq("org_id", orgId).in("id", idsByType.bill)
+      : Promise.resolve({ data: [] as any[] }),
+    idsByType.payment?.length || idsByType.bill_payment?.length
+      ? supabase
+          .from("payments")
+          .select("id, project_id, amount_cents")
+          .eq("org_id", orgId)
+          .in("id", [...(idsByType.payment ?? []), ...(idsByType.bill_payment ?? [])])
+      : Promise.resolve({ data: [] as any[] }),
+  ])
+
+  const invoiceById = new Map((invoiceRows.data ?? []).map((row: any) => [row.id, row]))
+  const expenseById = new Map((expenseRows.data ?? []).map((row: any) => [row.id, row]))
+  const billById = new Map((billRows.data ?? []).map((row: any) => [row.id, row]))
+  const paymentById = new Map((paymentRows.data ?? []).map((row: any) => [row.id, row]))
+
+  return rows
+    .map((row): AccountingSyncHistoryItem => {
+      const entityType = String(row.entity_type ?? "")
+      const entityId = String(row.entity_id)
+      const invoice = invoiceById.get(entityId)
+      const expense = expenseById.get(entityId)
+      const bill = billById.get(entityId)
+      const payment = paymentById.get(entityId)
+      const projectIdForRow = invoice?.project_id ?? expense?.project_id ?? bill?.project_id ?? payment?.project_id ?? null
+      const label =
+        invoice?.invoice_number ??
+        invoice?.title ??
+        expense?.description ??
+        expense?.vendor_name_text ??
+        (bill?.bill_number ? `Bill ${bill.bill_number}` : null) ??
+        (payment ? "Payment" : null) ??
+        entityType.replaceAll("_", " ")
+
+      return {
+        id: row.id,
+        entityType,
+        entityId,
+        projectId: projectIdForRow,
+        label,
+        status: row.status ?? "synced",
+        direction: row.sync_direction ?? "outbound",
+        externalId: row.external_id ?? null,
+        error: row.error_message ?? null,
+        syncedAt: row.last_synced_at ?? row.created_at ?? null,
+      }
+    })
+    .filter((item) => !projectId || item.projectId === projectId)
+}

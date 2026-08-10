@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
+
+import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
 import { after } from "next/server"
 
 import {
@@ -11,23 +13,8 @@ import { withCronRun } from "@/lib/services/job-runs"
 export const runtime = "nodejs"
 export const maxDuration = 800
 
-const CRON_SECRET = process.env.CRON_SECRET
-
-function isAuthorized(request: NextRequest) {
-  if (process.env.NODE_ENV !== "production") return true
-
-  const authHeader = request.headers.get("authorization") ?? ""
-  const legacyHeader = request.headers.get("x-cron-secret")
-  const secretOk =
-    (!!CRON_SECRET && authHeader.trim() === `Bearer ${CRON_SECRET}`) ||
-    (!!CRON_SECRET && legacyHeader === CRON_SECRET)
-
-  if (CRON_SECRET) return secretOk
-  return request.headers.get("x-vercel-cron") === "1"
-}
-
 async function handle(request: NextRequest) {
-  if (!isAuthorized(request)) {
+  if (!isAuthorizedCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 

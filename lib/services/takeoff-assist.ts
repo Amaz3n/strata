@@ -26,9 +26,18 @@ import { assertConditionAcceptsUom } from "@/lib/services/drawing-measurements"
 import { createDrawingMarkup } from "@/lib/services/drawing-markups"
 import {
   drawingsVisionConfigured,
-  runDrawingsVisionPrompt,
-} from "@/lib/services/drawings-pipeline"
-import { stitchSheetImageDataUrl } from "@/lib/services/floorplan-vision-assist"
+  runDrawingsVisionObject,
+} from "@/lib/services/ai/drawings-vision"
+import { renderSheetWindowImage } from "@/lib/services/drawings-sheet-images"
+import {
+  mergeWindowPoints,
+  planVisionWindows,
+  separationForExemplar,
+  windowPointToSheet,
+} from "@/lib/drawings/vision-windows"
+import { verifySymbolProposals } from "@/lib/drawings/symbol-verify"
+import { parseVectorsBin } from "@/lib/drawings/vector-snap"
+import { downloadTilesObject } from "@/lib/storage/drawings-tiles-storage"
 import {
   acceptSymbolMatchesSchema,
   assistSymbolPointsSchema,
@@ -44,6 +53,17 @@ export interface VisionSymbolProposal {
   points: Array<[number, number]>
   /** True when the model hit the ceiling — the caller must disclose it. */
   truncated: boolean
+  /**
+   * Proposals dropped for having no linework under them. Reported rather than
+   * hidden: an estimator who sees "found 24, discarded 3" learns something
+   * about the sheet that a bare 24 never tells them.
+   */
+  discarded: number
+  /**
+   * True when the sheet had too few vectors to check against (a scan). The
+   * count stands, but nothing confirmed it, and the viewer says so.
+   */
+  unverified: boolean
 }
 
 /**
@@ -51,14 +71,30 @@ export interface VisionSymbolProposal {
  * it, so a sheet with no vectors on an org with no vision provider says "no
  * scale of help available here" rather than spinning and failing.
  */
-export function symbolVisionAvailable(): boolean {
+export function symbolVisionAvailable(): Promise<boolean> {
   return drawingsVisionConfigured()
 }
 
-function buildSymbolCountPrompt(): string {
+/** A user is waiting on this; fail visibly rather than hang the action. */
+const VISION_TIMEOUT_MS = 45_000
+/** Source pixels each window should span, so it arrives near 1:1. */
+const VISION_WINDOW_PIXELS = 2048
+/** Ceiling on model calls for one assist run. */
+const MAX_VISION_WINDOWS = 9
+/**
+ * Exemplar window when the viewer sent no snap extent — roughly a device symbol
+ * at the pipeline's 150 DPI render. Only used for verification: it decides how
+ * much linework counts as "under" a point, not what gets searched.
+ */
+const DEFAULT_EXEMPLAR_RADIUS_PX = 24
+
+function buildSymbolCountPrompt(exemplar: { x: number; y: number }): string {
+  const exemplarX = Math.round(exemplar.x * ASSIST_COORD_GRID)
+  const exemplarY = Math.round(exemplar.y * ASSIST_COORD_GRID)
   return [
     "You are looking at one sheet from a set of construction drawings.",
-    "A red box marks ONE example symbol.",
+    `ONE example symbol sits at approximately [${exemplarX}, ${exemplarY}] on the`,
+    "coordinate grid described below. Look there first and identify that symbol.",
     "",
     "Find every OTHER occurrence of that same symbol on this sheet.",
     "",
@@ -70,23 +106,10 @@ function buildSymbolCountPrompt(): string {
     "- Do not include anything inside a legend, schedule, or title block.",
     "- If you are not confident, return fewer points. An empty list is a valid answer.",
     "",
-    `Answer with JSON only: {"points": [[x, y], ...]} where x and y are integers`,
-    `from 0 to ${ASSIST_COORD_GRID}, measured from the top-left of the image,`,
-    "and each point is the CENTRE of one matched symbol.",
+    `Coordinates run from 0 to ${ASSIST_COORD_GRID}, measured from the top-left of`,
+    "the image, and each point is the CENTRE of one matched symbol.",
     `Return at most ${ASSIST_MAX_SYMBOL_MATCHES} points.`,
   ].join("\n")
-}
-
-/** Tolerate a fenced block or leading prose around the JSON. */
-function extractJsonObject(raw: string): unknown | null {
-  const start = raw.indexOf("{")
-  const end = raw.lastIndexOf("}")
-  if (start === -1 || end <= start) return null
-  try {
-    return JSON.parse(raw.slice(start, end + 1))
-  } catch {
-    return null
-  }
 }
 
 /**
@@ -105,7 +128,7 @@ export async function findSymbolMatchesByVision(
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("takeoff.read", { supabase, orgId: resolvedOrgId, userId })
 
-  if (!drawingsVisionConfigured()) return null
+  if (!(await drawingsVisionConfigured())) return null
 
   const { data: version } = await supabase
     .from("drawing_sheet_versions")
@@ -124,56 +147,150 @@ export async function findSymbolMatchesByVision(
   const imageHeight = Number(manifestSize?.Height ?? version.image_height ?? 0)
   if (!(imageWidth > 0) || !(imageHeight > 0)) return null
 
-  let dataUrl: string | null = null
-  try {
-    dataUrl = await stitchSheetImageDataUrl({
+  // Cover the search area with overlapping windows rendered near native
+  // resolution, instead of one whole-sheet image squashed to 2048px. A symbol
+  // that was six pixels across in the old path is now legible.
+  const plan = planVisionWindows({
+    imageWidth,
+    imageHeight,
+    targetPixels: VISION_WINDOW_PIXELS,
+    maxWindows: MAX_VISION_WINDOWS,
+    region: parsed.region ?? undefined,
+  })
+  if (plan.windows.length === 0) return null
+
+  // The exemplar has to appear in every window's prompt, so each one is asked
+  // the same question about the same symbol.
+  const exemplarWindow = plan.windows.find(
+    (window) =>
+      parsed.x >= window.x0 && parsed.x <= window.x1 && parsed.y >= window.y0 && parsed.y <= window.y1,
+  ) ?? plan.windows[0]
+  const exemplarImage = await renderSheetWindowImage({
+    supabase,
+    tilesBasePath: version.tiles_base_path as string,
+    imageWidth,
+    imageHeight,
+    window: exemplarWindow,
+  }).catch(() => null)
+  if (!exemplarImage) return null
+
+  const exemplarInWindow: [number, number] = [
+    (parsed.x - exemplarWindow.x0) / Math.max(1e-6, exemplarWindow.x1 - exemplarWindow.x0),
+    (parsed.y - exemplarWindow.y0) / Math.max(1e-6, exemplarWindow.y1 - exemplarWindow.y0),
+  ]
+
+  const collected: Array<[number, number]> = []
+  let truncated = false
+  let anyAnswered = false
+
+  for (const window of plan.windows) {
+    const image = await renderSheetWindowImage({
       supabase,
       tilesBasePath: version.tiles_base_path as string,
       imageWidth,
       imageHeight,
-    })
-  } catch {
-    return null
+      window,
+    }).catch(() => null)
+    if (!image) continue
+
+    const answer = await runDrawingsVisionObject({
+      schema: assistSymbolPointsSchema,
+      prompt: buildSymbolCountPrompt({ x: exemplarInWindow[0], y: exemplarInWindow[1] }),
+      // Exemplar first so the model sees the reference before the search area.
+      images: window === exemplarWindow ? [image] : [exemplarImage, image],
+      orgId: resolvedOrgId,
+      entityType: "drawing_sheet",
+      entityId: parsed.drawing_sheet_id,
+      timeoutMs: VISION_TIMEOUT_MS,
+    }).catch(() => null)
+    if (!answer) continue
+    anyAnswered = true
+
+    if (answer.points.length > ASSIST_MAX_SYMBOL_MATCHES) truncated = true
+    for (const point of answer.points.slice(0, ASSIST_MAX_SYMBOL_MATCHES)) {
+      collected.push(
+        windowPointToSheet(window, [point.x / ASSIST_COORD_GRID, point.y / ASSIST_COORD_GRID]),
+      )
+    }
   }
-  if (!dataUrl) return null
 
-  const raw = await runDrawingsVisionPrompt({
-    prompt: buildSymbolCountPrompt(),
-    images: [{ dataUrl }],
+  // Every window failing is "cannot help", which the viewer words differently
+  // from "looked and found nothing".
+  if (!anyAnswered) return null
+
+  const separation = separationForExemplar({
+    searchRadiusPx: parsed.search_radius_px,
+    imageWidth,
+    imageHeight,
   })
-  if (!raw) return null
-
-  const json = extractJsonObject(raw)
-  if (!json) return null
-  const result = assistSymbolPointsSchema.safeParse(json)
-  if (!result.success) return null
-
-  const truncated = result.data.points.length > ASSIST_MAX_SYMBOL_MATCHES
-  const points = result.data.points
-    .slice(0, ASSIST_MAX_SYMBOL_MATCHES)
-    .map(([x, y]) => [x / ASSIST_COORD_GRID, y / ASSIST_COORD_GRID] as [number, number])
-    // The model was pointed at the whole sheet; a region restriction is the
-    // user's instruction and outranks anything it returned outside it.
+  const merged = mergeWindowPoints(collected, separation)
+    // A region restriction is the user's instruction and outranks any hit
+    // an overlapping window contributed from outside it.
     .filter(([x, y]) => {
       if (!parsed.region) return true
       const { x0, y0, x1, y1 } = parsed.region
       return (
-        x >= Math.min(x0, x1) &&
-        x <= Math.max(x0, x1) &&
-        y >= Math.min(y0, y1) &&
-        y <= Math.max(y0, y1)
+        x >= Math.min(x0, x1) && x <= Math.max(x0, x1) && y >= Math.min(y0, y1) && y <= Math.max(y0, y1)
       )
     })
+    .slice(0, ASSIST_MAX_SYMBOL_MATCHES)
+
+  if (collected.length > ASSIST_MAX_SYMBOL_MATCHES) truncated = true
+
+  // The sheet's own linework gets the last word. On a vector sheet a proposal
+  // with nothing drawn under it is discarded before it can become a count; on a
+  // scan there is nothing to check against and the count ships unverified.
+  const segments = await loadSheetSegments(supabase, version.tiles_base_path as string)
+  const verdict = verifySymbolProposals({
+    proposals: merged.map(([x, y]) => ({ x, y })),
+    segments,
+    imageSize: { width: imageWidth, height: imageHeight },
+    exemplar: { x: parsed.x, y: parsed.y },
+    radiusPx: parsed.search_radius_px ?? DEFAULT_EXEMPLAR_RADIUS_PX,
+  })
+  const points: Array<[number, number]> = verdict.supported.map((point) => [point.x, point.y])
 
   await recordEvent({
     orgId: resolvedOrgId,
     eventType: "takeoff_symbol_vision_proposed",
     entityType: "drawing_sheet",
     entityId: parsed.drawing_sheet_id,
-    payload: { proposed: points.length, truncated },
+    payload: {
+      proposed: points.length,
+      discarded: verdict.rejected.length,
+      unverified: verdict.skipped,
+      truncated,
+    },
   })
 
-  return { points, truncated }
+  return {
+    points,
+    truncated,
+    discarded: verdict.rejected.length,
+    unverified: verdict.skipped,
+  }
+}
+
+/**
+ * The sheet's extracted linework, or an empty set.
+ *
+ * A missing or unreadable `vectors.bin` is the normal case for a scan, which is
+ * exactly the sheet the vision fallback exists to serve — so it degrades to
+ * "nothing to verify against" rather than to an error.
+ */
+async function loadSheetSegments(
+  supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"],
+  tilesBasePath: string,
+): Promise<Float32Array> {
+  try {
+    const buffer = await downloadTilesObject({ supabase, path: `${tilesBasePath}/vectors.bin` })
+    const parsed = parseVectorsBin(
+      buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer,
+    )
+    return parsed?.segments ?? new Float32Array(0)
+  } catch {
+    return new Float32Array(0)
+  }
 }
 
 export interface AcceptSymbolMatchesResult {

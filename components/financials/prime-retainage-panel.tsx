@@ -77,6 +77,14 @@ export function PrimeRetainagePanel({ projectId, sov }: { projectId: string; sov
             {formatMoney(availableCents)} available to release across {heldLines.length} line
             {heldLines.length === 1 ? "" : "s"}.
           </p>
+          {/* Two representations exist and neither is wrong: the SOV carries the
+              contractual per-line hold a G702 is certified against, while the
+              `retainage` ledger carries the receivable Books reports. Say which
+              one this is so the two are never read as one number. */}
+          <p className="text-xs text-muted-foreground/80">
+            Schedule-of-values hold, per the contract. The retainage receivable balance is on the
+            Retainage tab.
+          </p>
         </div>
         <Popover open={releaseOpen} onOpenChange={setReleaseOpen}>
           <PopoverTrigger asChild>

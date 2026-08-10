@@ -19,7 +19,7 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { formatMoneyFromCents } from "@/components/financials/workspace/workspace-helpers"
 import { estimateSettlement } from "@/lib/payments/settlement-estimate"
-import { PaymentStepUpGate } from "@/components/payments/payment-step-up-gate"
+import { usePaymentStepUp } from "@/components/payments/payment-step-up"
 import type { PayableApprovalDetail } from "@/lib/services/payable-approvals"
 import type { PaymentHoldEvaluation } from "@/lib/services/payment-holds"
 import type { VendorBillSummary } from "@/lib/services/vendor-bills"
@@ -63,6 +63,7 @@ export function PayableReviewView({
     body: string
   } | null>(null)
   const [isPending, startTransition] = useTransition()
+  const { requireStepUp, stepUpPrompt } = usePaymentStepUp()
 
   useEffect(() => {
     if (!open) return
@@ -106,7 +107,9 @@ export function PayableReviewView({
         data.result === "released"
           ? {
               title: "Payment released",
-              body: `${formatMoneyFromCents(detail.vendorAmountCents)} is on its way to ${vendorLabel(bill)}. The bill updates itself as the provider confirms each stage.`,
+              body: detail.items.length > 1
+                ? `${formatMoneyFromCents(detail.totalDebitCents)} is on its way to ${detail.items.length} vendors. Each bill updates itself as the provider confirms each stage.`
+                : `${formatMoneyFromCents(detail.vendorAmountCents)} is on its way to ${vendorLabel(bill)}. The bill updates itself as the provider confirms each stage.`,
             }
           : data.result === "rejected"
             ? {
@@ -128,6 +131,14 @@ export function PayableReviewView({
     })
   }
 
+  // A run with several payables makes the item-level figures misleading on their
+  // own: the approver is signing for the whole envelope, so the summary reports
+  // the run and the per-payable lines carry the detail.
+  const isBatch = (detail?.items.length ?? 0) > 1
+  const runProcessorFeeCents = detail?.items.reduce((sum, item) => sum + item.processorFeeCents, 0) ?? 0
+  const runPlatformFeeCents = detail?.items.reduce((sum, item) => sum + item.platformFeeCents, 0) ?? 0
+  const releasedAmountCents = isBatch ? (detail?.totalDebitCents ?? 0) : (detail?.vendorAmountCents ?? 0)
+
   const blockingHolds =
     holds?.holds.filter((hold) => hold.level === "block" && !hold.overridden) ??
     []
@@ -143,6 +154,7 @@ export function PayableReviewView({
 
   return (
     <div className="flex h-full flex-col">
+      {stepUpPrompt}
       <div className="flex h-16 shrink-0 items-center gap-2 border-b px-4">
         <Button
           variant="ghost"
@@ -190,9 +202,13 @@ export function PayableReviewView({
               {/* What is being released */}
               <div className="border">
                 <div className="flex items-baseline justify-between border-b px-4 py-3">
-                  <span className="text-sm">{vendorLabel(bill)} receives</span>
+                  <span className="text-sm">
+                    {isBatch
+                      ? `${detail.items.length} vendors receive`
+                      : `${vendorLabel(bill)} receives`}
+                  </span>
                   <span className="font-mono text-lg font-medium tabular-nums">
-                    {formatMoneyFromCents(detail.vendorAmountCents)}
+                    {formatMoneyFromCents(releasedAmountCents)}
                   </span>
                 </div>
                 <div className="flex items-baseline justify-between bg-muted/20 px-4 py-3">
@@ -211,26 +227,30 @@ export function PayableReviewView({
                   is signing for money leaving the bank, and these do not.
                 */}
                 <div className="border-t px-4 py-3">
-                  <p className="microlabel">Collected separately · one Arc fee debit per run</p>
+                  <p className="microlabel">
+                    {isBatch
+                      ? `Priced per payment · ${detail.items.length} payments · one Arc fee debit per run`
+                      : "Collected separately · one Arc fee debit per run"}
+                  </p>
                   <div className="mt-2 flex items-baseline justify-between">
                     <span className="text-sm text-muted-foreground">
                       Provider processing cost
                     </span>
                     <span className="font-mono text-sm tabular-nums text-muted-foreground">
-                      {formatMoneyFromCents(detail.processorFeeCents)}
+                      {formatMoneyFromCents(isBatch ? runProcessorFeeCents : detail.processorFeeCents)}
                     </span>
                   </div>
                   <div className="mt-1.5 flex items-baseline justify-between">
                     <span className="text-sm text-muted-foreground">
                       Arc fee
-                      {detail.platformFeeCents === 0 ? (
+                      {(isBatch ? runPlatformFeeCents : detail.platformFeeCents) === 0 ? (
                         <span className="ml-2 text-xs text-muted-foreground/80">
                           No Arc markup
                         </span>
                       ) : null}
                     </span>
                     <span className="font-mono text-sm tabular-nums text-muted-foreground">
-                      {formatMoneyFromCents(detail.platformFeeCents)}
+                      {formatMoneyFromCents(isBatch ? runPlatformFeeCents : detail.platformFeeCents)}
                     </span>
                   </div>
                 </div>
@@ -267,6 +287,43 @@ export function PayableReviewView({
                   </p>
                 ) : null}
               </div>
+
+              {/*
+                Every payable in the run. The signature binds to the frozen set,
+                so an approver who can only see the payable they happened to open
+                is signing for money they were never shown.
+              */}
+              {detail.items.length > 1 ? (
+                <div className="border">
+                  <div className="flex items-baseline justify-between gap-2 border-b bg-muted/20 px-4 py-2">
+                    <span className="text-xs font-medium">
+                      {detail.items.length} payments in this run
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      One ACH transfer each
+                    </span>
+                  </div>
+                  <ul className="max-h-56 divide-y overflow-y-auto">
+                    {detail.items.map((item) => (
+                      <li key={item.billId} className="flex items-baseline justify-between gap-3 px-4 py-2 text-xs">
+                        <span className="min-w-0 truncate">
+                          <span className="text-foreground">{item.billNumber ?? "Payable"}</span>{" "}
+                          <span className="text-muted-foreground">
+                            · {item.vendorName}
+                            {item.projectName ? ` · ${item.projectName}` : ""}
+                          </span>
+                          {item.releasableAtSubmission ? null : (
+                            <span className="text-warning"> · review release evidence</span>
+                          )}
+                        </span>
+                        <span className="shrink-0 font-mono tabular-nums">
+                          {formatMoneyFromCents(item.vendorAmountCents)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
 
               {/* The bill it pays */}
               <dl className="divide-y border text-sm">
@@ -362,29 +419,27 @@ export function PayableReviewView({
                       : " as soon as you confirm. ACH payments cannot be recalled once sent."}
                   </p>
                   {/*
-                    The server requires a fresh second factor here. Asking for it
-                    at the confirm step means the approver is challenged instead
-                    of being handed an error after committing to the decision.
+                    The server requires a genuine second factor verified in the
+                    last ten minutes. It is asked for on the press, not before —
+                    a code box in front of an unread decision helps nobody.
                   */}
-                  <PaymentStepUpGate description="Enter the 6-digit code from your authenticator app to release this payment.">
-                    <div className="flex gap-2">
-                      <Button
-                        variant="outline"
-                        className="h-10 flex-1"
-                        disabled={isPending}
-                        onClick={() => setStep("review")}
-                      >
-                        Back
-                      </Button>
-                      <Button
-                        className="h-10 flex-1"
-                        disabled={isPending}
-                        onClick={() => decide("approved")}
-                      >
-                        {isPending ? "Releasing…" : "Confirm & release"}
-                      </Button>
-                    </div>
-                  </PaymentStepUpGate>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      className="h-10 flex-1"
+                      disabled={isPending}
+                      onClick={() => setStep("review")}
+                    >
+                      Back
+                    </Button>
+                    <Button
+                      className="h-10 flex-1"
+                      disabled={isPending}
+                      onClick={() => void requireStepUp(() => decide("approved"))}
+                    >
+                      {isPending ? "Releasing…" : "Confirm & release"}
+                    </Button>
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-3 border p-4">
@@ -398,26 +453,24 @@ export function PayableReviewView({
                     onChange={(event) => setReason(event.target.value)}
                     placeholder="The preparer sees this."
                   />
-                  <PaymentStepUpGate description="Enter the 6-digit code from your authenticator app to record this decision.">
-                    <div className="flex gap-2">
-                      <Button
-                        variant="outline"
-                        className="h-10 flex-1"
-                        disabled={isPending}
-                        onClick={() => setStep("review")}
-                      >
-                        Back
-                      </Button>
-                      <Button
-                        className={cn("h-10 flex-1")}
-                        variant="destructive"
-                        disabled={isPending || reason.trim().length < 8}
-                        onClick={() => decide("rejected")}
-                      >
-                        {isPending ? "Rejecting…" : "Reject payment"}
-                      </Button>
-                    </div>
-                  </PaymentStepUpGate>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      className="h-10 flex-1"
+                      disabled={isPending}
+                      onClick={() => setStep("review")}
+                    >
+                      Back
+                    </Button>
+                    <Button
+                      className={cn("h-10 flex-1")}
+                      variant="destructive"
+                      disabled={isPending || reason.trim().length < 8}
+                      onClick={() => void requireStepUp(() => decide("rejected"))}
+                    >
+                      {isPending ? "Rejecting…" : "Reject payment"}
+                    </Button>
+                  </div>
                 </div>
               )}
             </>

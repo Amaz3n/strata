@@ -1,8 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { generateText } from "ai"
 
-import { getPlatformAiFeatureDefaultConfig } from "@/lib/services/ai-config"
-import { getApiKeyForProvider, resolveLanguageModel } from "@/lib/services/ai-search/llm"
+import { runAiObject } from "@/lib/services/ai/gateway"
 import { isAiSearchEnabledForOrg } from "@/lib/services/ai-search-flags"
 import { recordAudit } from "@/lib/services/audit"
 import { requireAuthorization } from "@/lib/services/authorization"
@@ -59,25 +57,26 @@ export async function queueQuickCapture(input: QuickCaptureInput, orgId?: string
   return queueQuickCaptureForActor(input, { supabase: context.supabase, orgId: context.orgId, userId: context.userId })
 }
 
-function jsonCandidate(raw: string) {
-  const cleaned = raw.replace(/^```json\s*/i, "").replace(/```$/i, "").trim()
-  const start = cleaned.indexOf("{")
-  const end = cleaned.lastIndexOf("}")
-  return start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned
-}
-
-async function extractDraft(transcript: string, preferredTarget: string | null): Promise<QuickCaptureExtractedPayload> {
-  const serviceClient = createServiceSupabaseClient()
-  const config = await getPlatformAiFeatureDefaultConfig({ supabase: serviceClient, feature: "document_extraction" })
-  const key = getApiKeyForProvider(config.provider)
-  if (!key) throw new Error(`${config.provider} is not configured for quick capture`)
-  const prompt = `Turn this construction field note into ONE typed draft. Return JSON only with: target_type (punch_item|observation|daily_log_note|task|rfi_draft), title, description, location (string|null), due_date (YYYY-MM-DD|null), priority (low|normal|high|urgent), observation_kind (safety|quality|null), observation_category (positive|at_risk|deficiency|null), confidence (0..1). Never invent names, dates, or locations. ${preferredTarget ? `Prefer ${preferredTarget} unless clearly wrong.` : ""}\n\nFIELD NOTE:\n${transcript}`
-  let lastError = "Invalid structured response"
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const result = await generateText({ model: resolveLanguageModel(config.provider, key, config.model), prompt: attempt ? `${prompt}\nReturn only schema-compliant JSON.` : prompt, abortSignal: AbortSignal.timeout(90_000) })
-    try { return quickCaptureExtractedPayloadSchema.parse(JSON.parse(jsonCandidate(result.text))) } catch (error) { lastError = error instanceof Error ? error.message : lastError }
-  }
-  throw new Error(`Quick-capture extraction failed validation: ${lastError}`)
+async function extractDraft(transcript: string, preferredTarget: string | null, orgId: string): Promise<QuickCaptureExtractedPayload> {
+  const result = await runAiObject({
+    feature: "document_extraction",
+    schema: quickCaptureExtractedPayloadSchema,
+    system:
+      "You turn a construction field note into ONE typed draft. Never invent names, dates, or locations; " +
+      "use null when the note does not say.",
+    prompt: [
+      preferredTarget ? `Prefer target_type ${preferredTarget} unless clearly wrong.` : "",
+      `FIELD NOTE:\n${transcript}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
+    orgId,
+    entityType: "quick_capture_draft",
+    timeoutMs: 90_000,
+  })
+  if (!result.ok) throw new Error(`Quick-capture extraction failed: ${result.message}`)
+  // Re-parse so schema defaults land on any field the model omitted.
+  return quickCaptureExtractedPayloadSchema.parse(result.object)
 }
 
 export async function processQuickCaptureDraft(draftId: string, orgId: string) {
@@ -98,7 +97,7 @@ export async function processQuickCaptureDraft(draftId: string, orgId: string) {
     }
     if (!transcript) throw new Error("Capture has no transcript")
     const preferred = draft.extracted_payload && typeof draft.extracted_payload === "object" && !Array.isArray(draft.extracted_payload) && typeof draft.extracted_payload.preferred_target === "string" ? draft.extracted_payload.preferred_target : null
-    const extracted = await extractDraft(transcript, preferred)
+    const extracted = await extractDraft(transcript, preferred, orgId)
     const { data, error: updateError } = await serviceClient.from("quick_capture_drafts").update({ status: "ready", target_type: extracted.target_type, transcript, extracted_payload: extracted, confidence: extracted.confidence }).eq("org_id", orgId).eq("id", draftId).select(DRAFT_SELECT).single()
     if (updateError || !data) throw new Error(`Failed to save quick-capture draft: ${updateError?.message}`)
     await recordEvent({ orgId, actorId: draft.created_by, eventType: "quick_capture_ready", entityType: "quick_capture_draft", entityId: draftId, payload: { project_id: draft.project_id, target_type: extracted.target_type, confidence: extracted.confidence } })

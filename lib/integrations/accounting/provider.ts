@@ -30,6 +30,13 @@ export interface AccountingCapabilities {
   supportsInvoiceNumberReservation: boolean
   supportsInvoiceDocNumberSync: boolean
   supportsCDC: boolean
+  /**
+   * Whether the provider can be READ from to pull existing records into Arc.
+   * A batch/file target can be written to but never queried, so this is what
+   * the import surface gates on — the UI used to compare the provider key,
+   * which is the check a second adapter has to go edit.
+   */
+  supportsImport: boolean
   supportsWebhooks: boolean
   supportsAttachments: boolean
   supportsJournalEntryPush: boolean
@@ -98,6 +105,30 @@ export interface AccountingProvider {
    */
   voidBillPayment?(input: { orgId: string; connectionId: string; paymentId: string; reason: string }): Promise<PushResult>
   pushJournalEntry?(input: { orgId: string; connectionId: string; journalId: string }): Promise<PushResult>
+  /**
+   * Push ONE summarized journal per period, at account grain.
+   *
+   * This is the mirror's real shape. Pushing per source transaction turns the
+   * external system into an unreadable dump of Arc's operational history, which
+   * is the opposite of what a CPA filing from it needs: a monthly summary they
+   * can tie to a trial balance. The lines are already mapped to external
+   * accounts by the caller, so this is transport only.
+   */
+  pushSummaryJournal?(input: {
+    orgId: string
+    connectionId: string
+    /** Stable key for idempotency — the same period must never post twice. */
+    reference: string
+    date: string
+    memo: string
+    lines: Array<{
+      externalAccountId: string
+      externalAccountName: string | null
+      debitCents: number
+      creditCents: number
+      description: string
+    }>
+  }): Promise<PushResult>
   /**
    * Build the URL a user is sent to in order to authorize a new connection.
    * The returned state must round-trip through the provider's OAuth callback.

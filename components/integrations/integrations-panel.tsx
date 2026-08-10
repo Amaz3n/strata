@@ -34,7 +34,7 @@ import type { StripeConnectedAccount } from "@/lib/services/stripe-connected-acc
 import { AccountingConnectionSheet } from "@/components/integrations/accounting-connection-sheet"
 import { AccountingRoutingDialog } from "@/components/integrations/accounting-routing-dialog"
 import { ConnectionStatusBadge, accountingStatusLabel, accountingStatusTone } from "@/components/integrations/connection-status"
-import { QboSyncSheet } from "@/components/integrations/qbo-sync-sheet"
+import { AccountingSyncSheet } from "@/components/integrations/accounting-sync-sheet"
 import { cn } from "@/lib/utils"
 import { StripeConnectionSheet, stripeStatus } from "@/components/integrations/stripe-connection-sheet"
 import type { ConnectionTone } from "@/components/integrations/connection-status"
@@ -47,7 +47,6 @@ interface Props {
 const EXPORT_KINDS: { kind: AccountingExportKind; label: string }[] = [
   { kind: "ap", label: "A/P" },
   { kind: "job_cost", label: "Job cost" },
-  { kind: "journal", label: "Journal" },
 ]
 
 const SCOPE_LABELS: Record<AccountingRoute["scope"], string> = {
@@ -209,7 +208,7 @@ export function IntegrationsPanel({ initialStripe = null }: Props) {
   const activeConnection = connections.find((row) => row.id === activeConnectionId) ?? null
   const syncPosture = overview?.syncPosture ?? null
   const stuckCount = syncPosture
-    ? syncPosture.errorCount + syncPosture.needsReviewCount + syncPosture.failedJobCount
+    ? syncPosture.errorCount + syncPosture.needsReviewCount + syncPosture.conflictCount + syncPosture.failedJobCount
     : 0
 
   const connect = async (providerKey: AccountingProviderKey) => {
@@ -372,11 +371,12 @@ export function IntegrationsPanel({ initialStripe = null }: Props) {
             description="Transactions on their way to your accounting file, and any that stopped."
           />
           <div className="border border-border bg-card">
-            <div className="grid grid-cols-2 divide-x divide-border border-b border-border sm:grid-cols-4">
+            <div className="grid grid-cols-2 divide-x divide-border border-b border-border sm:grid-cols-5">
               {[
                 { label: "Waiting", value: syncPosture.pendingCount },
                 { label: "Failed", value: syncPosture.errorCount },
                 { label: "Needs review", value: syncPosture.needsReviewCount },
+                { label: "Conflict", value: syncPosture.conflictCount },
                 { label: "Gave up", value: syncPosture.failedJobCount },
               ].map((tile) => (
                 <div key={tile.label} className="px-4 py-3">
@@ -622,7 +622,7 @@ export function IntegrationsPanel({ initialStripe = null }: Props) {
         imported transaction has to land somewhere. The queue and history are
         org-wide and belong here.
       */}
-      <QboSyncSheet
+      <AccountingSyncSheet
         open={syncSheetOpen}
         onOpenChange={(next) => {
           setSyncSheetOpen(next)

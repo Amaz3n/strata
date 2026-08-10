@@ -322,6 +322,7 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     "vendor_transfer_needs_attention",
     "vendor_payment_returned",
     "payment_reconciliation_completed",
+    "vendor_payout_destination_changed",
   ])
   if (paymentOperationalEvents.has(event.event_type)) {
     const permissionKeys = event.event_type === "payment_reconciliation_completed"
@@ -372,6 +373,10 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     }
     // An org that designated approvers has said who owns this decision; mailing
     // everyone who merely holds the permission would train them to ignore it.
+    const routedApprovers = Array.isArray(event.payload?.approver_ids)
+      ? uniqUserIds(event.payload.approver_ids.filter((value): value is string => typeof value === "string"))
+      : []
+    if (routedApprovers.length > 0) return routedApprovers.filter((id) => id !== actorId)
     const { data: designated } = await supabase.from("payment_run_approvers").select("user_id").eq("org_id", orgId)
     if ((designated ?? []).length > 0) {
       return uniqUserIds((designated ?? []).map((row) => row.user_id)).filter((id) => id !== actorId)
@@ -433,8 +438,8 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     "commitment_created",
     "budget_created",
     "invoice_number_changed",
-    "qbo_connected",
-    "qbo_disconnected",
+    "accounting_connected",
+    "accounting_disconnected",
   ])
 
   if (BID_NOTIFICATION_EVENTS.has(event.event_type)) {
@@ -487,7 +492,7 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
   const payablePermissions = payableApprovalEvents[event.event_type]
   if (payablePermissions) {
     if (!projectId) return []
-    return getProjectFinancialNotificationRecipients({
+    const eligibleRecipients = await getProjectFinancialNotificationRecipients({
       supabase,
       orgId,
       projectId,
@@ -495,6 +500,50 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
       permissions: payablePermissions,
       policyVersion: "payable-lifecycle-v1",
     })
+    if (event.event_type !== "vendor_bill_submitted") {
+      const payloadSubmitterId = typeof event.payload?.submitted_by_user_id === "string"
+        ? event.payload.submitted_by_user_id
+        : null
+      const { data: submissionEvent } = payloadSubmitterId
+        ? { data: null }
+        : await supabase
+            .from("events")
+            .select("payload")
+            .eq("org_id", orgId)
+            .eq("entity_type", "vendor_bill")
+            .eq("entity_id", event.entity_id)
+            .eq("event_type", "vendor_bill_submitted")
+            .order("created_at", { ascending: true })
+            .limit(1)
+            .maybeSingle()
+      const originalPayload = submissionEvent?.payload && typeof submissionEvent.payload === "object"
+        ? submissionEvent.payload as Record<string, unknown>
+        : null
+      const submitterId = payloadSubmitterId ?? (
+        typeof originalPayload?.actor_id === "string" ? originalPayload.actor_id : null
+      )
+
+      // Decisions go back to the person who submitted the payable. Keep the
+      // permission-derived intersection so an archived or de-scoped submitter
+      // cannot receive a link to a bill they can no longer access.
+      return submitterId
+        ? eligibleRecipients.filter((userId) => userId === submitterId)
+        : eligibleRecipients
+    }
+
+    // A payable created in the new bill workspace names its intended approvers.
+    // Intersect with the permission-derived audience above so client metadata
+    // can narrow notification delivery but can never widen access to the bill.
+    const routedApproverIds = Array.isArray(event.payload?.approver_ids)
+      ? uniqUserIds(
+          event.payload.approver_ids.filter(
+            (value): value is string => typeof value === "string",
+          ),
+        )
+      : []
+    if (routedApproverIds.length === 0) return eligibleRecipients
+    const routedSet = new Set(routedApproverIds)
+    return eligibleRecipients.filter((userId) => routedSet.has(userId))
   }
 
   // Every failure mode of a payment run was emailed and success was not, so the
@@ -658,6 +707,32 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
         title: "Task completed",
         message: fallbackMessage,
         projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+
+    case "accounting_reconciliation_drift":
+      // Without this case the in-app notification rendered its raw lowercase
+      // event type as a title and linked nowhere, so the one alert that says
+      // the books stopped agreeing looked like noise.
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "accounting_reconciliation_drift" as NotificationType,
+        title:
+          typeof safePayload.new_discrepancy_count === "number"
+            ? `${safePayload.new_discrepancy_count} new reconciliation ${safePayload.new_discrepancy_count === 1 ? "issue" : "issues"}`
+            : "Accounting reconciliation drift",
+        message: fallbackMessage,
+        // `/reports/accounting-reconciliation` is not a route — the reconciliation
+        // report's slug is `reconciliation` and it is project-scoped. The org-wide
+        // finding queue lives on the period-close tab, which is also where an item
+        // can be explained or resolved.
+        metadata: {
+          href: "/books/close",
+          new_discrepancy_count: safePayload.new_discrepancy_count,
+        },
         entityType: entity_type,
         entityId: entity_id,
         eventId: event.id,
@@ -936,6 +1011,27 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
         type: "vendor_transfer_needs_attention" as NotificationType,
         title: `Vendor payout blocked${amount ? `: ${amount}` : ""}`,
         message: `This payment was debited from your bank and has not reached the vendor${reason ? ` (${reason})` : ""}. Arc is holding the funds and will retry, but someone should check the vendor's payout account.`,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
+    /**
+     * A vendor's payout bank changed. This is the "change the payee, pay
+     * immediately" vector, so the copy names the masked account and the hold
+     * rather than describing it as a routine settings update. Nothing beyond the
+     * last four ever appears here.
+     */
+    case "vendor_payout_destination_changed": {
+      const last4 = typeof safePayload.bank_last4 === "string" ? safePayload.bank_last4 : null
+      const lockedUntil = typeof safePayload.locked_until === "string" ? safePayload.locked_until : null
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "vendor_payout_destination_changed" as NotificationType,
+        title: `Vendor payout bank changed${last4 ? ` to •••• ${last4}` : ""}`,
+        message: `A vendor you pay through Arc has a new payout bank account. Payments to them are held${lockedUntil ? ` until ${new Date(lockedUntil).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" })} UTC` : ""}. Confirm the change with someone you already know at the vendor, using a number you already have.`,
         entityType: entity_type,
         entityId: entity_id,
         eventId: event.id,

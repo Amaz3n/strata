@@ -8,13 +8,16 @@ const {
   extractLinkedQboAmounts,
   extractLinkedQboIds,
   isUsableQboPaymentMapping,
-  qboImportedExpenseCostCents,
   qboImportProviderPaymentId,
   qboJournalEntryLineAmounts,
   qboPurchaseCreditCents,
   qboPurchaseIsCredit,
   qboVendorCreditCents,
 } = require("../lib/integrations/accounting/qbo/import-rules")
+const {
+  calculateExpenseCostCents,
+  expenseCreditSign,
+} = require("../lib/financials/job-cost-calculations")
 const {
   isVendorCredit,
   payableOutstandingCents,
@@ -161,7 +164,7 @@ test("journal-entry credits keep a nonnegative expense magnitude and post a nega
   })
 
   assert.equal(
-    qboImportedExpenseCostCents({
+    calculateExpenseCostCents({
       amountCents: 845000,
       taxCents: 0,
       metadata: { source: "journal_entry", qbo_signed_amount_cents: -845000 },
@@ -169,13 +172,23 @@ test("journal-entry credits keep a nonnegative expense magnitude and post a nega
     -845000,
   )
   assert.equal(
-    qboImportedExpenseCostCents({
+    calculateExpenseCostCents({
       amountCents: 845000,
       taxCents: 0,
       metadata: { source: "journal_entry" },
     }),
     845000,
   )
+  // Credits cost the job a negative amount whatever the stored sign, and splits
+  // inherit the parent expense's direction.
+  assert.equal(
+    calculateExpenseCostCents({ amountCents: 12500, taxCents: 0, metadata: { source: "expense_credit" } }),
+    -12500,
+  )
+  assert.equal(calculateExpenseCostCents({ amountCents: 12500, taxCents: 300, metadata: null }), 12800)
+  assert.equal(expenseCreditSign({ source: "expense_credit_split" }), -1)
+  assert.equal(expenseCreditSign({ source: "purchase_split" }), 1)
+  assert.equal(expenseCreditSign(null), 1)
 
   const importSource = require("node:fs").readFileSync(
     require("node:path").join(__dirname, "../lib/integrations/accounting/qbo/import.ts"),
@@ -243,8 +256,17 @@ test("QBO purchase credits import as inbound-only expense credits with negative 
   assert.match(importSource, /repairExistingExpenseCreditRows/)
   assert.doesNotMatch(importExpenseCreditBlock, /if \(existing\?\.id\) return \{ skipped: true as const \}/)
   assert.match(importSource, /entityType: "project_expense"[\s\S]*pushable: false[\s\S]*metadata: \{ source: "expense_credit" \}/)
-  assert.match(importSource, /source_label: isExpenseCredit \? "project_expense_credit" : "project_expense"/)
-  assert.match(importSource, /qboImportedExpenseCostCents/)
+  // Imported costs post through the subledger service, never hand-rolled rows: that is
+  // what gives them GMP classification, budget-line bucketing, and billable linkage.
+  assert.match(importSource, /postJobCostEntriesForProjectExpense\(\{ expenseId, orgId: ctx\.orgId, supabase: ctx\.supabase \}\)/)
+  assert.match(importSource, /postJobCostActualsForVendorBill\(\{ billId, orgId: ctx\.orgId, supabase: ctx\.supabase \}\)/)
+  assert.doesNotMatch(importSource, /job_cost_entries"\)\.upsert/)
+
+  const jobCostSource = require("node:fs").readFileSync(
+    require("node:path").join(__dirname, "../lib/services/job-cost-actuals.ts"),
+    "utf8",
+  )
+  assert.match(jobCostSource, /source_label: expenseCreditSign\(expense\.metadata\) === -1 \? "project_expense_credit" : "project_expense"/)
 })
 
 test("outbound vendor bills preserve job costing without creating billable customer charges", () => {
@@ -273,9 +295,11 @@ test("QBO-imported payables can split by line project while whole-payable reassi
     "utf8",
   )
 
+  // The per-line project cell of the allocation table, from the select that owns
+  // it to the coding column that follows it.
   const lineProjectSelect = linesEditorSource.slice(
-    linesEditorSource.indexOf("<Label className=\"microlabel mb-1 block\">Project</Label>"),
-    linesEditorSource.indexOf("<Label className=\"microlabel mb-1 block\">Amount</Label>"),
+    linesEditorSource.indexOf("value={line.projectId}"),
+    linesEditorSource.indexOf('codingColumn === "cost_code" ? ('),
   )
 
   assert.match(lineProjectSelect, /projectId: value/)

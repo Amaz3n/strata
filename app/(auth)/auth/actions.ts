@@ -5,6 +5,7 @@ import { createHash, randomBytes } from "node:crypto"
 import { redirect } from "next/navigation"
 import { z } from "zod"
 
+import { normalizeInternalReturnPath } from "@/lib/auth/return-path"
 import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server"
 import { enforceAuthRateLimit } from "@/lib/services/auth-rate-limit"
 import {
@@ -124,7 +125,7 @@ export async function signInAction(_prevState: AuthState, formData: FormData): P
     }
   }
 
-  redirect("/")
+  redirect(normalizeInternalReturnPath(formData.get("next")))
 }
 
 export async function lookupSignInAccountAction(emailInput: string): Promise<SignInAccountState> {

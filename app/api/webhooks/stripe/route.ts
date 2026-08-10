@@ -70,25 +70,37 @@ export async function POST(request: NextRequest) {
     orgId = connection?.org_id ?? null
   }
 
-  const { data: existingWebhookEvent } = await supabase
-    .from("webhook_events")
-    .select("id, processed_at, status")
-    .eq("provider", "stripe")
-    .eq("provider_event_id", event.id)
-    .maybeSingle()
-
-  if (existingWebhookEvent?.processed_at || existingWebhookEvent?.status === "processed") {
-    return NextResponse.json({ received: true, duplicate: true })
-  }
-
-  if (!existingWebhookEvent) {
-    await supabase.from("webhook_events").insert({
-      org_id: orgId,
-      provider: "stripe",
-      provider_event_id: event.id,
-      event_type: event.type,
-      payload: event as unknown as Record<string, any>,
+  // The unique index on (provider, provider_event_id) is the arbiter, not a
+  // prior SELECT. Two concurrent deliveries of the same event both read "no
+  // row", both inserted, and the loser's 23505 surfaced as a processing failure
+  // that made Stripe retry an event already recorded. Claim the row first, then
+  // read back what is actually there to decide whether it is already handled.
+  const { error: claimError } = await supabase.from("webhook_events").insert({
+    org_id: orgId,
+    provider: "stripe",
+    provider_event_id: event.id,
+    event_type: event.type,
+    payload: event as unknown as Record<string, any>,
+  })
+  if (claimError && (claimError as { code?: string }).code !== "23505") {
+    logger.error("stripe.webhook.record_failed", {
+      domain: "stripe",
+      integration: "stripe",
+      eventId: event.id,
+      error: claimError,
     })
+    return NextResponse.json({ error: "Processing failed" }, { status: 500 })
+  }
+  if (claimError) {
+    const { data: existingWebhookEvent } = await supabase
+      .from("webhook_events")
+      .select("processed_at, status")
+      .eq("provider", "stripe")
+      .eq("provider_event_id", event.id)
+      .maybeSingle()
+    if (existingWebhookEvent?.processed_at || existingWebhookEvent?.status === "processed") {
+      return NextResponse.json({ received: true, duplicate: true })
+    }
   }
 
   const domainEvent = mapStripeEventToDomain(event)
@@ -191,9 +203,13 @@ export async function POST(request: NextRequest) {
         }
       }
 
+      // Provider payment ids are globally unique, so this was already correct in
+      // practice — but "every query scoped by org_id" is not a heuristic, and a
+      // service-role client is exactly where the habit has to hold.
       const { data: existing } = await supabase
         .from("payments")
         .select("id")
+        .eq("org_id", domainEvent.org_id)
         .eq("provider_payment_id", domainEvent.provider_payment_id)
         .maybeSingle()
 
@@ -275,38 +291,63 @@ export async function POST(request: NextRequest) {
       const connectedAccountId =
         eventConnectedAccountId ?? (typeof charge.transfer_data?.destination === "string" ? charge.transfer_data.destination : null)
 
-      await supabase
-        .from("payment_intents")
-        .update({
-          provider_charge_id: charge.id,
-          provider_transfer_id: transferId,
-          connected_account_id: connectedAccountId,
-          processor_fee_cents: processorFeeCents,
-          platform_fee_cents: applicationFeeCents,
-          application_fee_amount: applicationFeeCents,
-          status: charge.status ?? undefined,
+      // Resolve the owning org before writing anything. `charge.succeeded`
+      // frequently carries no org metadata, and an unscoped service-role UPDATE
+      // is the one shape that could ever cross a tenant boundary. If the charge
+      // cannot be attributed it is left alone rather than written blind.
+      const { data: intentRow } = paymentIntentId
+        ? await supabase.from("payment_intents").select("org_id").eq("provider_intent_id", paymentIntentId).maybeSingle()
+        : { data: null }
+      const { data: paymentRow } = paymentIntentId
+        ? await supabase.from("payments").select("org_id").eq("provider_payment_id", paymentIntentId).maybeSingle()
+        : { data: null }
+      const chargeOrgId = orgId ?? intentRow?.org_id ?? paymentRow?.org_id ?? null
+      if (!chargeOrgId) {
+        logger.warn("stripe.webhook.charge_without_org", {
+          domain: "stripe",
+          integration: "stripe",
+          eventId: event.id,
+          chargeId: charge.id,
         })
-        .eq("provider_intent_id", paymentIntentId)
+      } else {
+        await supabase
+          .from("payment_intents")
+          .update({
+            provider_charge_id: charge.id,
+            provider_transfer_id: transferId,
+            connected_account_id: connectedAccountId,
+            processor_fee_cents: processorFeeCents,
+            platform_fee_cents: applicationFeeCents,
+            application_fee_amount: applicationFeeCents,
+            status: charge.status ?? undefined,
+          })
+          .eq("org_id", chargeOrgId)
+          .eq("provider_intent_id", paymentIntentId)
 
-      await supabase
-        .from("payments")
-        .update({
-          provider_charge_id: charge.id,
-          provider_balance_transaction_id: balanceTransaction?.id ?? null,
-          provider_transfer_id: transferId,
-          connected_account_id: connectedAccountId,
-          gross_cents: grossCents,
-          fee_cents: totalFeeCents,
-          processor_fee_cents: processorFeeCents,
-          platform_fee_cents: applicationFeeCents,
-          application_fee_cents: applicationFeeCents,
-          net_cents: netCents,
-        })
-        .eq("provider_payment_id", paymentIntentId)
+        await supabase
+          .from("payments")
+          .update({
+            provider_charge_id: charge.id,
+            provider_balance_transaction_id: balanceTransaction?.id ?? null,
+            provider_transfer_id: transferId,
+            connected_account_id: connectedAccountId,
+            gross_cents: grossCents,
+            fee_cents: totalFeeCents,
+            processor_fee_cents: processorFeeCents,
+            platform_fee_cents: applicationFeeCents,
+            application_fee_cents: applicationFeeCents,
+            net_cents: netCents,
+          })
+          .eq("org_id", chargeOrgId)
+          .eq("provider_payment_id", paymentIntentId)
+      }
     }
 
     if (domainEvent.type === "payment_failed") {
-      await supabase.from("payment_intents").update({ status: "failed" }).eq("provider_intent_id", domainEvent.provider_payment_id)
+      const failedOrgId = orgId ?? (typeof domainEvent.metadata?.org_id === "string" ? domainEvent.metadata.org_id : null)
+      let failedIntents = supabase.from("payment_intents").update({ status: "failed" }).eq("provider_intent_id", domainEvent.provider_payment_id)
+      if (failedOrgId) failedIntents = failedIntents.eq("org_id", failedOrgId)
+      await failedIntents
     }
 
     await supabase

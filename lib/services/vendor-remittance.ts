@@ -1,6 +1,7 @@
 import "server-only"
 
-import { getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
+import { RemittanceAdviceEmail } from "@/lib/emails/remittance-advice-email"
+import { getOrgSenderEmail, renderEmailTemplate, sendEmail } from "@/lib/services/mailer"
 import { recordEvent } from "@/lib/services/events"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
@@ -21,16 +22,6 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 function money(cents: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100)
-}
-
-function escapeHtml(value: string) {
-  return value.replace(/[&<>"']/g, (character) =>
-    character === "&" ? "&amp;"
-      : character === "<" ? "&lt;"
-      : character === ">" ? "&gt;"
-      : character === '"' ? "&quot;"
-      : "&#39;",
-  )
 }
 
 function firstRelation<T>(value: T | T[] | null | undefined): T | null {
@@ -123,39 +114,25 @@ async function deliverRemittance(input: {
   })
   if (to.length === 0) return { sent: false as const, reason: "no_recipient_email" as const }
 
-  const methodLabel = METHOD_LABELS[input.method] ?? input.method
-  const rows: Array<[string, string]> = [
-    ["Invoice", bill.bill_number ?? "—"],
-    ["Project", project?.name ?? "—"],
-    ["Invoice total", money(Number(bill.total_cents ?? 0))],
-  ]
-  if (input.retainageHeldCents > 0) rows.push(["Retainage held", `− ${money(input.retainageHeldCents)}`])
-  rows.push(["Amount paid", money(input.amountCents)])
-  rows.push(["Sent by", methodLabel])
-  if (input.reference) rows.push(["Reference", input.reference])
-
-  const detail = rows
-    .map(([label, value]) => `<tr><td style="padding:4px 16px 4px 0;color:#666">${escapeHtml(label)}</td><td style="padding:4px 0;text-align:right;font-family:monospace">${escapeHtml(value)}</td></tr>`)
-    .join("")
-
-  // An ACH lands in an account and a check has to arrive in the post; promising
-  // "a few business days" for a posted check would be the builder's problem the
-  // moment it was not true.
-  const arrivalHtml = input.method === "check"
-    ? "has sent you a check. Allow normal mail time for it to arrive."
-    : "has sent a payment to your bank account. It should appear within a few business days."
-
+  const html = await renderEmailTemplate(
+    RemittanceAdviceEmail({
+      orgName: org?.name,
+      orgLogoUrl: org?.logo_url,
+      billNumber: bill.bill_number ?? null,
+      projectName: project?.name ?? null,
+      invoiceTotalCents: Number(bill.total_cents ?? 0),
+      retainageHeldCents: input.retainageHeldCents,
+      amountPaidCents: input.amountCents,
+      methodLabel: METHOD_LABELS[input.method] ?? input.method,
+      method: input.method,
+      reference: input.reference,
+    }),
+  )
   const sent = await sendEmail({
     from: getOrgSenderEmail(org?.slug, org?.name),
     to,
     subject: `Payment sent: ${money(input.amountCents)}${bill.bill_number ? ` for invoice ${bill.bill_number}` : ""}`,
-    html: renderStandardEmailLayout({
-      title: "Payment sent",
-      messageHtml: `<p>${escapeHtml(org?.name ?? "Your customer")} ${arrivalHtml}</p><table style="margin-top:12px;border-collapse:collapse">${detail}</table>`,
-      orgName: org?.name,
-      orgLogoUrl: org?.logo_url,
-      showManageSettings: false,
-    }),
+    html,
   })
   if (!sent) return { sent: false as const, reason: "send_failed" as const }
 

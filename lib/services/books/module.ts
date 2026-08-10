@@ -137,11 +137,16 @@ export async function setBooksWorkspaceEnabled(enabled: boolean, orgId?: string)
     if ((activeCutoverCount ?? 0) > 0) {
       throw new Error("Cancel the active authority cutover before disabling Arc Books so external sync is not left frozen.")
     }
+    // Ledger standing survives a disable. Resetting `arc_ledger_mode` here used
+    // to silently demote a `parallel` org back to `shadow` on re-enable,
+    // destroying the cutover prerequisite it had spent a quarter earning.
+    // `workspace_enabled` is the module gate on its own — every reader of
+    // `arc_ledger_mode` (projector, rebuild drills, revenue recognition, cutover
+    // prerequisites) pairs it with `workspace_enabled`.
     const { error } = await service
       .from("books_settings")
       .update({
         workspace_enabled: false,
-        arc_ledger_mode: "disabled",
         updated_by: context.userId,
       })
       .eq("org_id", context.orgId)
@@ -155,7 +160,7 @@ export async function setBooksWorkspaceEnabled(enabled: boolean, orgId?: string)
       ? beforeData?.arc_ledger_mode === "disabled" || !beforeData
         ? "shadow"
         : beforeData.arc_ledger_mode
-      : "disabled",
+      : beforeData?.arc_ledger_mode ?? "disabled",
     external_sync_posture: beforeData?.external_sync_posture ?? "normal",
   }
   await Promise.all([

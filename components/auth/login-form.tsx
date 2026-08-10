@@ -33,11 +33,13 @@ export function LoginForm({
   inactiveAccount = false,
   inviteOnlySignup = false,
   routeMessage = null,
+  returnTo = "/",
   ...props
 }: React.ComponentProps<"div"> & {
   inactiveAccount?: boolean
   inviteOnlySignup?: boolean
   routeMessage?: string | null
+  returnTo?: string
 }) {
   const [state, formAction, pending] = useActionState(signInAction, initialState)
   const [step, setStep] = useState<Step>("email")
@@ -185,7 +187,7 @@ export function LoginForm({
         return
       }
 
-      window.location.href = "/"
+      window.location.href = returnTo
     })
   }
 
@@ -283,6 +285,7 @@ export function LoginForm({
           {step === "password" && (
             <form action={formAction} className="grid gap-4">
               <input type="hidden" name="email" value={email} />
+              <input type="hidden" name="next" value={returnTo} />
 
               <WorkspaceRow email={email} onChange={goBackToEmail} />
 

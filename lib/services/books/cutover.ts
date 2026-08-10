@@ -9,6 +9,7 @@ import {
 import { createServiceSupabaseClient } from "@/lib/supabase/server";
 import { requireAuthorization } from "@/lib/services/authorization";
 import { recordAudit } from "@/lib/services/audit";
+import { hasQuarterOfSilentCorrectness } from "@/lib/services/books/cutover-rules";
 import { booksDigest } from "@/lib/services/books/hash";
 import { requireOrgContext } from "@/lib/services/context";
 import { recordEvent } from "@/lib/services/events";
@@ -51,7 +52,7 @@ export async function prepareBooksCutover(input: {
   ] = await Promise.all([
     service
       .from("books_settings")
-      .select("arc_ledger_mode, ledger_authority")
+      .select("workspace_enabled, arc_ledger_mode, ledger_authority")
       .eq("org_id", context.orgId)
       .single(),
     service
@@ -62,7 +63,7 @@ export async function prepareBooksCutover(input: {
       .single(),
     service
       .from("books_comparison_runs")
-      .select("id, period_id, status, unexplained_variance_count")
+      .select("id, period_id, status, unexplained_variance_count, period:accounting_periods(period_start, period_end)")
       .eq("org_id", context.orgId)
       .eq("connection_id", input.connectionId)
       .eq("status", "approved")
@@ -129,8 +130,24 @@ export async function prepareBooksCutover(input: {
     (account) => !reconciledIds.has(account.id),
   );
   const mirrorProviderSupported = isAccountingProviderKey(connection.data.provider) && getProvider(connection.data.provider).capabilities.supportsJournalEntryPush;
+
+  // "Silent-correct for a quarter" was prose until now: three approved runs
+  // could all land inside one week, because nothing looked at what they covered.
+  // `books_comparison_runs` is unique on (org, connection, period), so three
+  // approved runs are three distinct periods — what was missing is how much
+  // calendar those periods actually span.
+  const comparedPeriods = (comparisons.data ?? []).flatMap((row) => {
+    const period = Array.isArray(row.period) ? row.period[0] : row.period;
+    if (!period?.period_start || !period?.period_end) return [];
+    return [{ periodStart: period.period_start, periodEnd: period.period_end }];
+  });
+
   const prerequisites = {
+    // `workspace_enabled` is checked here, not just the mode: standing now
+    // survives a disable, so mode alone would let a switched-off workspace
+    // satisfy the prerequisite it stopped earning the day it was turned off.
     parallel_mode:
+      settings.data?.workspace_enabled === true &&
       settings.data?.arc_ledger_mode === "parallel" &&
       settings.data?.ledger_authority === "external",
     three_approved_comparisons:
@@ -138,6 +155,7 @@ export async function prepareBooksCutover(input: {
       (comparisons.data ?? []).every(
         (row) => row.unexplained_variance_count === 0,
       ),
+    quarter_of_silent_correctness: hasQuarterOfSilentCorrectness(comparedPeriods),
     opening_balances_posted: Boolean(opening.data?.id),
     bank_accounts_reconciled: missingReconciliations.length === 0,
     sync_queue_drained: (syncIssues.count ?? 0) === 0,

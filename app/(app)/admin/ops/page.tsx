@@ -8,17 +8,28 @@ import {
   getCronHealth,
   getOutboxHealth,
   getQboConnectionHealth,
+  listPaymentOperationsAlerts,
   listStuckOutboxJobs,
 } from "@/lib/services/ops"
+import {
+  listOpenPaymentReconciliationExceptions,
+  listPaymentReconciliations,
+} from "@/lib/services/payment-reconciliation"
 
 export const dynamic = "force-dynamic"
 
 async function OpsData() {
-  const [cronHealth, outboxHealth, stuckHealth, qboHealth] = await Promise.all([
+  // Reconciliation needs `payment.reconcile`, which an ops viewer may not hold —
+  // it settles beside cron and outbox health because it is the same kind of thing
+  // (a daily job whose silence is the alarm), not because everyone here can read it.
+  const [cronHealth, outboxHealth, stuckHealth, qboHealth, reconciliations, exceptions, paymentAlerts] = await Promise.all([
     getCronHealth(),
     getOutboxHealth(),
     listStuckOutboxJobs(),
     getQboConnectionHealth(),
+    listPaymentReconciliations().catch(() => []),
+    listOpenPaymentReconciliationExceptions().catch(() => []),
+    listPaymentOperationsAlerts(),
   ])
 
   return (
@@ -27,6 +38,9 @@ async function OpsData() {
       outboxHealth={outboxHealth}
       stuckHealth={stuckHealth}
       qboHealth={qboHealth}
+      reconciliations={reconciliations}
+      reconciliationExceptions={exceptions}
+      paymentAlerts={paymentAlerts}
     />
   )
 }

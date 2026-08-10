@@ -1,6 +1,7 @@
 import { PageLayout } from "@/components/layout/page-layout"
 import { requireAnyPermissionGuard } from "@/lib/auth/guards"
 import { CustomersClient } from "@/components/admin/customers-table"
+import { ProvisionOrgSheet } from "@/components/platform/provision-org-sheet"
 import { getCustomers } from "@/lib/services/admin"
 import {
   activateCustomerBillingAction,
@@ -76,6 +77,13 @@ export default async function CustomersPage({
       ]}
     >
       <div className="space-y-6">
+        {/* Provisioning creates the row this page manages, so it lives here. */}
+        <div className="flex items-center justify-between gap-3 border-b pb-3">
+          <p className="text-sm text-muted-foreground">
+            {totalCount.toLocaleString()} {totalCount === 1 ? "organization" : "organizations"}
+          </p>
+          <ProvisionOrgSheet />
+        </div>
         <CustomersClient
           customers={customers}
           totalCount={totalCount}

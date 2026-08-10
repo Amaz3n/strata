@@ -1,5 +1,4 @@
 import { createHash, randomBytes } from "node:crypto"
-import { generateObject } from "ai"
 import { z } from "zod"
 
 import {
@@ -9,8 +8,7 @@ import {
   type CorrespondenceClassifiedBy,
   type CorrespondenceDirection,
 } from "@/lib/correspondence"
-import { getPlatformAiFeatureDefaultConfig } from "@/lib/services/ai-config"
-import { getApiKeyForProvider, resolveLanguageModel } from "@/lib/services/ai-search/llm"
+import { runAiObject } from "@/lib/services/ai/gateway"
 import { isAiSearchEnabledForOrg } from "@/lib/services/ai-search-flags"
 import { createSystemChangeEvent } from "@/lib/services/change-events"
 import { recordAudit } from "@/lib/services/audit"
@@ -839,18 +837,21 @@ export async function classifyProjectEmail(input: { orgId: string; projectEmailI
   if (!(await isAiSearchEnabledForOrg({ supabase, orgId: input.orgId }))) {
     return { classification: "general" as CorrespondenceClassification, confidence: null }
   }
-  const config = await getPlatformAiFeatureDefaultConfig({ supabase, feature: "document_extraction" })
-  const key = getApiKeyForProvider(config.provider)
-  // No key means no classification happened — leaving the row untouched keeps
-  // `classified_by` honest instead of stamping an unclassified row as AI-rated.
-  if (!key) return { classification: "general" as CorrespondenceClassification, confidence: null }
-
-  const { object: classification } = await generateObject({
-    model: resolveLanguageModel(config.provider, key, config.model),
+  const result = await runAiObject({
+    feature: "document_extraction",
     schema: classificationSchema,
-    prompt: `${CLASSIFY_PROMPT}\n\nSubject: ${email.subject}\nFrom: ${email.from_address}\nBody: ${(input.body ?? "").slice(0, 20_000)}`,
-    abortSignal: AbortSignal.timeout(60_000),
+    system: CLASSIFY_PROMPT,
+    prompt: `Subject: ${email.subject}\nFrom: ${email.from_address}\nBody: ${(input.body ?? "").slice(0, 20_000)}`,
+    orgId: input.orgId,
+    entityType: "project_email",
+    entityId: input.projectEmailId,
+    timeoutMs: 60_000,
+    allowEscalation: false,
   })
+  // A failed classification leaves the row untouched, so `classified_by` stays
+  // honest rather than stamping an unclassified row as AI-rated.
+  if (!result.ok) return { classification: "general" as CorrespondenceClassification, confidence: null }
+  const classification = result.object
 
   const { error: updateError } = await supabase
     .from("project_emails")

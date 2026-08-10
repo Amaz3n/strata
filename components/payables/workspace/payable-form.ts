@@ -17,14 +17,17 @@ export function billStatus(bill: VendorBillSummary): VendorBillStatus {
  * drives which sections render, which fields are editable, and which one
  * primary action the workspace offers.
  */
-export type PayableStage = "credit" | "review" | "rejected" | "in_run" | "payable" | "paid"
+export type PayableStage = "credit" | "draft" | "review" | "rejected" | "in_run" | "payable" | "paid"
 
 export function payableStage(bill: VendorBillSummary, runMembership?: PayableRunMembership): PayableStage {
   if (isVendorCredit(bill)) return "credit"
+  if (bill.is_draft) return "draft"
   const status = billStatus(bill)
   if (status === "rejected") return "rejected"
   if (status === "pending") return "review"
-  if (runMembership) return "in_run"
+  // A draft run is a shopping cart someone may abandon; it must not freeze the
+  // bill. Only a run that has entered approval (or beyond) owns the payable.
+  if (runMembership && runMembership.runStatus !== "draft") return "in_run"
   if (status === "paid" && payableOutstandingCents(bill) <= 0) return "paid"
   return "payable"
 }
@@ -38,6 +41,7 @@ export type SplitLine = {
   amountDollars: string
   qboExpenseAccountId: string
   qboApAccountId: string
+  accountingDimensions: Record<string, { id: string; name: string }>
   billableToCustomer: boolean
 }
 
@@ -46,9 +50,6 @@ export interface PayableFormState {
   billDate: string
   dueDate: string
   retainage: string
-  /** "2/10 net 30" split in two: the percent, and the days it holds for. */
-  discountPercent: string
-  discountDays: string
   lienWaiver: string
   qboExpenseAccountId: string
   qboApAccountId: string
@@ -85,6 +86,7 @@ export function toFormState(bill: VendorBillSummary, { costCodesEnabled, qboDefa
           amountDollars: ((line.amount_cents ?? 0) / 100).toFixed(2),
           qboExpenseAccountId: line.qbo_expense_account_id ?? bill.qbo_expense_account_id ?? qboDefaults.expenseAccountId ?? "",
           qboApAccountId: line.qbo_ap_account_id ?? bill.qbo_ap_account_id ?? qboDefaults.apAccountId ?? "",
+          accountingDimensions: line.accounting_dimensions ?? {},
           billableToCustomer: line.billable_to_customer === true,
         }))
       : [
@@ -98,6 +100,7 @@ export function toFormState(bill: VendorBillSummary, { costCodesEnabled, qboDefa
             amountDollars: ((bill.total_cents ?? 0) / 100).toFixed(2),
             qboExpenseAccountId: bill.qbo_expense_account_id ?? qboDefaults.expenseAccountId ?? "",
             qboApAccountId: bill.qbo_ap_account_id ?? qboDefaults.apAccountId ?? "",
+            accountingDimensions: {},
             billableToCustomer: defaultBillable(bill.project_id),
           },
         ]
@@ -106,8 +109,6 @@ export function toFormState(bill: VendorBillSummary, { costCodesEnabled, qboDefa
     billDate: bill.bill_date ?? "",
     dueDate: bill.due_date ?? "",
     retainage: bill.retainage_percent != null ? String(bill.retainage_percent) : "",
-    discountPercent: bill.early_pay_discount_percent != null ? String(bill.early_pay_discount_percent) : "",
-    discountDays: bill.early_pay_discount_days != null ? String(bill.early_pay_discount_days) : "",
     lienWaiver: normalizeLienWaiverStatus(bill.lien_waiver_status),
     qboExpenseAccountId: bill.qbo_expense_account_id ?? qboDefaults.expenseAccountId ?? "",
     qboApAccountId: bill.qbo_ap_account_id ?? qboDefaults.apAccountId ?? "",
@@ -121,8 +122,6 @@ export function formIsDirty(state: PayableFormState, baseline: PayableFormState)
     state.billDate !== baseline.billDate ||
     state.dueDate !== baseline.dueDate ||
     state.retainage !== baseline.retainage ||
-    state.discountPercent !== baseline.discountPercent ||
-    state.discountDays !== baseline.discountDays ||
     state.lienWaiver !== baseline.lienWaiver ||
     state.qboExpenseAccountId !== baseline.qboExpenseAccountId ||
     state.qboApAccountId !== baseline.qboApAccountId ||
@@ -140,6 +139,7 @@ export function formIsDirty(state: PayableFormState, baseline: PayableFormState)
       line.amountDollars !== base.amountDollars ||
       line.qboExpenseAccountId !== base.qboExpenseAccountId ||
       line.qboApAccountId !== base.qboApAccountId ||
+      JSON.stringify(line.accountingDimensions) !== JSON.stringify(base.accountingDimensions) ||
       line.billableToCustomer !== base.billableToCustomer
     )
   })

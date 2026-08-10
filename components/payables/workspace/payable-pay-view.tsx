@@ -11,13 +11,14 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 
-import { preparePayableApprovalAction } from "@/app/(app)/payables/actions"
 import {
-  cancelPaymentRunAction,
-  getPaymentRunSetupAction,
-  submitPaymentRunAction,
-} from "@/app/(app)/payables/payment-runs/actions"
+  discardPayableBatchAction,
+  getPayableBatchSetupAction,
+  preparePayableApprovalAction,
+  submitPayableBatchAction,
+} from "@/app/(app)/payables/actions"
 import { Button } from "@/components/ui/button"
+import { DateField } from "@/components/ui/date-field"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -53,7 +54,11 @@ function approvalSentence(
   requiredApprovals: number,
   eligible: Array<{ name: string }>,
   routing: PaymentApprovalRouting | null,
+  requesterMayApprove: boolean,
 ) {
+  if (requesterMayApprove) {
+    return "You may provide the required owner approval after submitting."
+  }
   const count =
     requiredApprovals === 1 ? "One approver" : `${requiredApprovals} approvers`
   if (!routing?.rosterConfigured || eligible.length === 0) {
@@ -112,6 +117,7 @@ export function PayablePayView({
   const [setupError, setSetupError] = useState<string | null>(null)
   const [billEligible, setBillEligible] = useState(true)
   const [routing, setRouting] = useState<PaymentApprovalRouting | null>(null)
+  const [requesterMayApprove, setRequesterMayApprove] = useState(false)
   const [fundingSourceId, setFundingSourceId] = useState("")
   const [amount, setAmount] = useState("")
   const [draft, setDraft] = useState<DraftRun | null>(null)
@@ -125,8 +131,9 @@ export function PayablePayView({
     setStep("setup")
     setDraft(null)
     setAmount((balanceCents / 100).toFixed(2))
-    setScheduleMode("asap")
-    setScheduleDate("")
+    setFundingSourceId(bill.preferred_funding_source_id ?? "")
+    setScheduleMode(bill.payment_schedule === "scheduled" ? "date" : "asap")
+    setScheduleDate(bill.scheduled_payment_date ?? "")
   }, [open, bill.id, balanceCents])
 
   // Closing the pane by any route (back, Escape, switching bills) discards an
@@ -136,7 +143,7 @@ export function PayablePayView({
     const draftId = draft.id
     setDraft(null)
     setStep("setup")
-    cancelPaymentRunAction(draftId).then((result) => {
+    discardPayableBatchAction(draftId).then((result) => {
       if (!result.success) toast.error(result.error)
     })
   }, [open, draft, step])
@@ -145,7 +152,7 @@ export function PayablePayView({
   useEffect(() => {
     if (!open || fundingSources !== null) return
     let cancelled = false
-    getPaymentRunSetupAction().then((result) => {
+    getPayableBatchSetupAction().then((result) => {
       if (cancelled) return
       if (!result.success) {
         setSetupError(result.error)
@@ -154,15 +161,15 @@ export function PayablePayView({
       setSetupError(null)
       setFundingSources(result.data.fundingSources)
       setRouting(result.data.routing)
+      setRequesterMayApprove(result.data.requesterMayApprove)
       setSettlementWindow(result.data.settlementWindow)
       // Eligibility is advisory here — the destination account is resolved
       // server-side when the run is prepared, never named by the client.
-      setBillEligible(
-        result.data.eligibleBills.some((candidate) => candidate.id === bill.id),
-      )
+      setBillEligible(result.data.eligibleBills.some((eligible) => eligible.id === bill.id))
       setFundingSourceId(
         (current) =>
           current ||
+          result.data.fundingSources.find((source) => source.id === bill.preferred_funding_source_id)?.id ||
           (
             result.data.fundingSources.find((source) => source.isDefault) ??
             result.data.fundingSources[0]
@@ -173,7 +180,7 @@ export function PayablePayView({
     return () => {
       cancelled = true
     }
-  }, [open, fundingSources, bill.id])
+  }, [open, fundingSources, bill.id, bill.preferred_funding_source_id])
 
   const amountCents = parseDollarsToCents(amount)
   const amountValid =
@@ -183,8 +190,7 @@ export function PayablePayView({
     if (!amountValid || !fundingSourceId || amountCents == null) return
     startTransition(async () => {
       const result = await preparePayableApprovalAction({
-        bill_id: bill.id,
-        amount_cents: amountCents,
+        bills: [{ bill_id: bill.id, amount_cents: amountCents }],
         funding_source_id: fundingSourceId,
         idempotency_key: crypto.randomUUID(),
       })
@@ -210,7 +216,7 @@ export function PayablePayView({
     setStep("setup")
     if (!current) return
     startTransition(async () => {
-      const result = await cancelPaymentRunAction(current.id)
+      const result = await discardPayableBatchAction(current.id)
       if (!result.success) toast.error(result.error)
     })
   }
@@ -218,7 +224,7 @@ export function PayablePayView({
   const submitRun = () => {
     if (!draft) return
     startTransition(async () => {
-      const result = await submitPaymentRunAction({
+      const result = await submitPayableBatchAction({
         run_id: draft.id,
         scheduled_for: scheduledFor,
       })
@@ -246,13 +252,12 @@ export function PayablePayView({
     settlement && bill.due_date && bill.due_date < settlement.vendorReceivesLatest,
   )
 
-  // Designated approvers who could actually decide *this* run: still permitted,
-  // not the preparer (a preparer never approves their own run), and with a
-  // personal ceiling that covers the debit.
+  // Designated approvers who could actually decide this run. Owner-operated
+  // policy may include the preparer; independent modes still exclude them.
   const eligibleApprovers = (routing?.approvers ?? []).filter(
     (approver) =>
       approver.permitted &&
-      approver.userId !== routing?.viewerUserId &&
+      (requesterMayApprove || approver.userId !== routing?.viewerUserId) &&
       (approver.approvalLimitCents == null ||
         !draft ||
         draft.totalDebitCents <= approver.approvalLimitCents),
@@ -260,7 +265,11 @@ export function PayablePayView({
   const shortHandedApprovers = Boolean(
     draft &&
     routing?.rosterConfigured &&
-    eligibleApprovers.length < draft.requiredApprovals,
+    (eligibleApprovers.length < draft.requiredApprovals ||
+      (requesterMayApprove &&
+        !eligibleApprovers.some(
+          (approver) => approver.userId === routing.viewerUserId,
+        ))),
   )
 
   return (
@@ -412,7 +421,9 @@ export function PayablePayView({
                 <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                 Continuing approves this bill&apos;s coding, runs every release
                 check, and freezes these exact amounts. Nothing moves until
-                {eligibleApprovers.length > 0
+                {requesterMayApprove
+                  ? " you provide owner approval"
+                  : eligibleApprovers.length > 0
                   ? ` ${nameList(eligibleApprovers.map((approver) => approver.name))} approves`
                   : " an approver signs off"}
                 .
@@ -499,13 +510,13 @@ export function PayablePayView({
                   ))}
                 </div>
                 {scheduleMode === "date" ? (
-                  <Input
-                    type="date"
-                    aria-label="Release date"
+                  <DateField
+                    id="payable-release-date"
                     min={todayIso()}
                     value={scheduleDate}
-                    onChange={(event) => setScheduleDate(event.target.value)}
-                    className="h-8 w-48 text-xs"
+                    onChange={setScheduleDate}
+                    placeholder="Choose release date"
+                    className="w-56"
                   />
                 ) : null}
                 {settlement && (scheduleMode === "asap" || scheduleDate) ? (
@@ -544,14 +555,15 @@ export function PayablePayView({
                     draft.requiredApprovals,
                     eligibleApprovers,
                     routing,
+                    requesterMayApprove,
                   )}
                 </p>
                 {shortHandedApprovers ? (
                   <p className="flex items-start gap-2 text-warning">
                     <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                    Not enough designated approvers can decide this run. Ask an
-                    administrator to designate another approver in Settings →
-                    Vendor payments.
+                    {requesterMayApprove
+                      ? "Your owner-approval policy uses a restricted list, but you are not an eligible approver for this debit. Ask an administrator to add you or adjust your approval limit in Settings → Vendor payments."
+                      : "Not enough designated approvers can decide this run. Ask an administrator to designate another approver in Settings → Vendor payments."}
                   </p>
                 ) : null}
               </div>
@@ -570,7 +582,7 @@ export function PayablePayView({
                   disabled={isPending || scheduleInvalid}
                   onClick={submitRun}
                 >
-                  {isPending ? "Submitting…" : "Send for approval"}
+                  {isPending ? "Submitting…" : requesterMayApprove ? "Submit for my approval" : "Send for approval"}
                 </Button>
               </div>
             </>
@@ -580,7 +592,9 @@ export function PayablePayView({
             <div className="space-y-6 pt-6 text-center">
               <CheckCircle2 className="mx-auto h-10 w-10 text-success" />
               <div className="space-y-1">
-                <h3 className="text-lg font-semibold">Sent for approval</h3>
+                <h3 className="text-lg font-semibold">
+                  {requesterMayApprove ? "Ready for your approval" : "Sent for approval"}
+                </h3>
                 <p className="text-sm text-muted-foreground">
                   {formatMoneyFromCents(draft.vendorAmountCents)} to{" "}
                   {vendorLabel(bill)} is awaiting{" "}
@@ -597,16 +611,6 @@ export function PayablePayView({
               <div className="flex flex-col items-center gap-2">
                 <Button className="h-10 w-full sm:w-64" onClick={onClose}>
                   Done
-                </Button>
-                <Button
-                  asChild
-                  variant="ghost"
-                  size="sm"
-                  className="text-xs text-muted-foreground"
-                >
-                  <Link href="/payables/payment-runs">
-                    Track in payment runs
-                  </Link>
                 </Button>
               </div>
             </div>

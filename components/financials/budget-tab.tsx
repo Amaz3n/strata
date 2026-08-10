@@ -23,6 +23,7 @@ import type { CommitmentSummary, CommitmentLine } from "@/lib/services/commitmen
 import type { CommitmentChangeOrderSummary } from "@/lib/services/commitment-change-orders"
 import type { ProjectBuyoutStatus } from "@/lib/services/bids"
 import type { ProjectFeeBillingSummary } from "@/lib/services/fee-billing"
+import type { ProjectPocResult } from "@/lib/financials/poc-rules"
 import type { ProjectGmpControlSummary } from "@/lib/services/gmp-control"
 import { cn } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
@@ -147,6 +148,8 @@ interface BudgetTabProps {
   projectId: string
   project: any // Project
   contractValueCents?: number
+  /** Authoritative WIP position from the server. Null when unavailable. */
+  poc?: ProjectPocResult | null
   budgetData: any | null
   costCodes: CostCode[]
   costCodesEnabled?: boolean
@@ -399,6 +402,7 @@ export function BudgetTab({
   projectId,
   project,
   contractValueCents,
+  poc,
   budgetData,
   costCodes,
   costCodesEnabled = true,
@@ -1031,15 +1035,20 @@ export function BudgetTab({
   // ---------- Render ----------
   // The real contract total comes from the project's contract record (passed in
   // as contractValueCents). Fall back to legacy project fields, then 0.
+  // The WIP numbers come from the server's percentage-of-completion resolver —
+  // the same one behind the snapshot and the WIP over/under report. Computing
+  // them here was a third definition: it read billed revenue from cost-coded
+  // invoice *lines* and the contract without the revised-total snapshot, so this
+  // band could contradict the WIP report for the same project on the same day.
   const contractValue =
+    poc?.revisedContractCents ??
     contractValueCents ??
     project?.billing_contract?.total_cents ??
     project?.total_contract_value_cents ??
     0
-  const contractBilled = summary?.total_invoiced_cents ?? 0
-  const percentComplete = summary?.total_eac_cents > 0 ? (summary?.total_actual_cents ?? 0) / summary.total_eac_cents : 0
-  const earnedRevenue = Math.round(contractValue * percentComplete)
-  const overUnderBilling = contractBilled - earnedRevenue
+  const contractBilled = poc?.billedCents ?? null
+  const earnedRevenue = poc?.earnedRevenueCents ?? null
+  const overUnderBilling = poc?.overUnderCents ?? null
   const showFeeSummary = feeSummary?.enabled || feeSummary?.billing_model === "cost_plus_fixed_fee"
 
   const isDetailed = viewMode === "detailed"
@@ -1104,18 +1113,22 @@ export function BudgetTab({
         <KpiCell
           label="Earned Rev"
           hint="Earned revenue — contract value times percent complete. What you've actually earned so far."
-          value={formatCurrency(earnedRevenue)}
+          value={earnedRevenue === null ? "—" : formatCurrency(earnedRevenue)}
           position={1}
         />
-        <KpiCell label="Billed Rev" value={formatCurrency(contractBilled)} position={2} />
+        <KpiCell
+          label="Billed Rev"
+          value={contractBilled === null ? "—" : formatCurrency(contractBilled)}
+          position={2}
+        />
         <KpiCell
           label="Over/(Under)"
           hint="Over/under billing — billed revenue minus earned revenue. Positive means you've billed ahead of work completed."
-          value={formatCurrency(overUnderBilling)}
+          value={overUnderBilling === null ? "—" : formatCurrency(overUnderBilling)}
           valueClass={cn(
-            overUnderBilling > 0
+            overUnderBilling !== null && overUnderBilling > 0
               ? "text-emerald-600 dark:text-emerald-400"
-              : overUnderBilling < 0
+              : overUnderBilling !== null && overUnderBilling < 0
                 ? "text-destructive"
                 : "",
           )}
@@ -1845,7 +1858,7 @@ export function BudgetTab({
         endDate={project?.end_date ?? null}
         remainingCostCents={summary?.total_ctc_cents ?? 0}
         contractValueCents={contractValue}
-        contractBilledCents={contractBilled}
+        contractBilledCents={contractBilled ?? 0}
       />
     </div>
   )

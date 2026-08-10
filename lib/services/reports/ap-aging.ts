@@ -1,3 +1,4 @@
+import { PAYABLE_VENDOR_BILL_STATUSES } from "@/lib/financials/ledger-status"
 import { requireOrgContext } from "@/lib/services/context"
 import { requirePermission } from "@/lib/services/permissions"
 import { applyReportingExclusion, getReportingExcludedProjectIds } from "@/lib/services/reporting-scope"
@@ -48,6 +49,9 @@ export async function getApAgingReport({
       "id, org_id, project_id, bill_number, status, bill_date, due_date, total_cents, paid_cents, currency, metadata, project:projects(name), commitment:commitments(id, title)",
     )
     .eq("org_id", resolvedOrgId)
+    // Previously unfiltered, so `rejected` bills — which will never be paid — and
+    // unapproved `pending` ones were aged as though they were money owed.
+    .in("status", [...PAYABLE_VENDOR_BILL_STATUSES])
     .order("due_date", { ascending: true, nullsFirst: true })
     .order("created_at", { ascending: false })
 

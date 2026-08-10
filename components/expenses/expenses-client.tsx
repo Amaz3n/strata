@@ -46,7 +46,7 @@ import { CodingCombobox } from "@/components/financials/workspace/coding-combobo
 import { useWorkspaceParam } from "@/components/financials/workspace/use-workspace-param"
 import { FileViewer } from "@/components/files/file-viewer"
 import type { FileWithDetails } from "@/components/files/types"
-import { QboSyncSheet } from "@/components/integrations/qbo-sync-sheet"
+import { AccountingSyncSheet } from "@/components/integrations/accounting-sync-sheet"
 import { ExpenseWorkspace } from "@/components/expenses/expense-workspace"
 import {
   AUTO_QBO_VENDOR,
@@ -853,7 +853,7 @@ export function ExpensesClient({ projectId, initialPage, allowCreate = true }: E
         </AlertDialogContent>
       </AlertDialog>
 
-      <QboSyncSheet open={syncSheetOpen} onOpenChange={setSyncSheetOpen} projectId={projectId} />
+      <AccountingSyncSheet open={syncSheetOpen} onOpenChange={setSyncSheetOpen} projectId={projectId} />
 
       <ExpenseWorkspace
         projectId={projectId}

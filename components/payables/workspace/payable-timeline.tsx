@@ -67,7 +67,7 @@ export function PayableTimeline({
       key: "run",
       label: RUN_STATUS_LABELS[runMembership.status] ?? "In a payment run",
       current: true,
-      href: "/payables/payment-runs",
+      href: "/payables",
     })
   }
 
@@ -90,46 +90,49 @@ export function PayableTimeline({
   }
 
   return (
-    <section>
-      <h3 className="microlabel">Activity</h3>
-      <ol className="mt-3 space-y-0">
-        {events.map((event, index) => {
-          const date = formatDate(event.date)
-          const last = index === events.length - 1
-          return (
-            <li key={event.key} className="relative flex gap-3 pb-4 last:pb-0">
-              {!last ? <span aria-hidden className="absolute left-[3px] top-3 h-full w-px bg-border" /> : null}
+    <ol>
+      {events.map((event, index) => {
+        const date = formatDate(event.date)
+        const last = index === events.length - 1
+        return (
+          <li key={event.key} className="flex gap-4 text-sm">
+            {/* Dates in their own gutter so every entry aligns on one axis. */}
+            <span className="w-[100px] shrink-0 pt-[3px] text-[13px] tabular-nums text-muted-foreground">
+              {date ?? ""}
+            </span>
+            <span aria-hidden className="relative flex w-2 shrink-0 justify-center">
               <span
-                aria-hidden
                 className={cn(
-                  "relative mt-1.5 size-[7px] shrink-0 rounded-full",
+                  "absolute top-[7px] size-[7px] rounded-full",
                   event.current ? "bg-primary ring-4 ring-primary/15" : "bg-muted-foreground/40",
                 )}
               />
-              <div className="flex min-w-0 flex-1 items-baseline justify-between gap-3">
-                <div className="min-w-0">
-                  <span className={cn("text-sm", event.current ? "font-medium" : "text-foreground")}>
-                    {event.href ? (
-                      <Link href={event.href} className="hover:underline">
-                        {event.label}
-                      </Link>
-                    ) : (
-                      event.label
-                    )}
-                  </span>
-                  {event.detail ? <span className="ml-2 truncate text-xs text-muted-foreground">{event.detail}</span> : null}
-                </div>
-                <div className="flex shrink-0 items-baseline gap-3">
-                  {event.amountCents != null ? (
-                    <span className="font-mono text-xs font-medium tabular-nums text-success">{formatMoneyFromCents(event.amountCents)}</span>
-                  ) : null}
-                  {date ? <span className="text-xs tabular-nums text-muted-foreground">{date}</span> : null}
-                </div>
+              {!last ? <span className="mt-[14px] w-px flex-1 bg-border" /> : null}
+            </span>
+            <div className="flex min-w-0 flex-1 items-baseline justify-between gap-3 pb-5 last:pb-0">
+              <div className="min-w-0">
+                <span className={event.current ? "font-medium" : undefined}>
+                  {event.href ? (
+                    <Link href={event.href} className="hover:underline">
+                      {event.label}
+                    </Link>
+                  ) : (
+                    event.label
+                  )}
+                </span>
+                {event.detail ? (
+                  <span className="ml-2 truncate text-xs text-muted-foreground">{event.detail}</span>
+                ) : null}
               </div>
-            </li>
-          )
-        })}
-      </ol>
-    </section>
+              {event.amountCents != null ? (
+                <span className="shrink-0 font-mono text-xs font-medium tabular-nums text-success">
+                  {formatMoneyFromCents(event.amountCents)}
+                </span>
+              ) : null}
+            </div>
+          </li>
+        )
+      })}
+    </ol>
   )
 }

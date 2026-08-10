@@ -8,9 +8,11 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { getProjectFinancialSetupStatusForProject } from "@/lib/services/project-financial-setup"
 import { loadFinancialsOverviewData } from "../page-data"
 import { evaluateHolds } from "@/lib/services/payment-holds"
+import { isVendorPayoutSetupOpen } from "@/lib/services/payment-rail-setup"
+import { getPaymentApprovalRouting } from "@/lib/services/payment-approvers"
+import { requireOrgContext } from "@/lib/services/context"
 
 import { unwrapAction } from "@/lib/action-result"
-import { listSavedPayableViews } from "@/lib/services/payable-views"
 
 export const dynamic = "force-dynamic"
 
@@ -30,12 +32,19 @@ export default async function FinancialsPayablesPage({ params, searchParams }: P
 }
 
 async function FinancialsPayablesData({ id, query }: { id: string; query: { queue?: string; q?: string; page?: string; pageSize?: string; bill?: string } }) {
-  const [{ project }, data, setupStatus, savedViews] = await Promise.all([
+  const [{ project }, data, setupStatus, paymentContext] = await Promise.all([
     loadFinancialsOverviewData(id),
     fetchPayablesTabDataAction(id, { queue: query.queue, search: query.q, page: Number(query.page) || 1, pageSize: Number(query.pageSize) || 50 }),
     getProjectFinancialSetupStatusForProject(id),
-    listSavedPayableViews(id).catch(() => []),
+    requireOrgContext().then(async ({ orgId, userId }) => ({
+      railOpen: await isVendorPayoutSetupOpen(orgId),
+      viewerUserId: userId,
+    })),
   ])
+  const { railOpen, viewerUserId } = paymentContext
+  const paymentRouting = railOpen
+    ? await getPaymentApprovalRouting().catch(() => null)
+    : null
   // Only the open payable's holds. `holdEvaluations` feeds the detail pane and
   // nothing in the list, so evaluating every row cost roughly seven queries per
   // bill plus a compliance lookup on every render — 350+ round trips for a page
@@ -61,7 +70,6 @@ async function FinancialsPayablesData({ id, query }: { id: string; query: { queu
         pagination={data.vendorBillsPage}
         initialQueue={query.queue ?? "needs_review"}
         initialSearch={query.q ?? ""}
-        savedViews={savedViews}
         costCodes={data.costCodes}
         budgetLines={data.budgetLines}
         costCodesEnabled={setupStatus.costCodesEnabled}
@@ -70,6 +78,11 @@ async function FinancialsPayablesData({ id, query }: { id: string; query: { queu
         complianceStatusByCompanyId={data.complianceStatusByCompanyId}
         loadErrors={data.errors}
         holdEvaluations={holdEvaluations}
+        railOpen={railOpen}
+        paymentReadinessByCompanyId={data.paymentReadinessByCompanyId}
+        runMembershipByBillId={data.runMembershipByBillId}
+        viewerMayApproveRuns={Boolean(paymentRouting?.viewerMayApprove)}
+        approvalViewer={{ userId: viewerUserId, approvers: paymentRouting?.approvers ?? [] }}
       />
     </PageLayout>
   )

@@ -6,12 +6,12 @@ const path = require("node:path")
 const test = require("node:test")
 
 const {
-  assertApprovalQuorum,
   assertBalancedLedgerEntries,
   assertDisbursementTransition,
   assertPaymentRunTransition,
   createPaymentRunContentHash,
   planDisbursementAdvance,
+  requesterMayApprovePaymentRun,
   resolveRunItemStatus,
   resolveRunStatus,
 } = require("../lib/payments/payment-domain")
@@ -42,32 +42,28 @@ test("payment runs cannot skip approval or reopen terminal states", () => {
   assert.doesNotThrow(() => assertPaymentRunTransition("pending_approval", "approved"))
   assert.throws(() => assertPaymentRunTransition("draft", "processing"), /Invalid payment run transition/)
   assert.throws(() => assertPaymentRunTransition("paid", "draft"), /Invalid payment run transition/)
+  // Runs are immutable after creation: there is no return to draft. A material
+  // change means cancel + rebuild, and the content hash rejects stale copies.
+  assert.throws(() => assertPaymentRunTransition("pending_approval", "draft"), /Invalid payment run transition/)
 })
 
-test("sole and dual modes preserve maker-checker separation", () => {
-  assert.doesNotThrow(() => assertApprovalQuorum({
-    mode: "sole",
-    requesterId: "maker",
-    approvals: [{ approverId: "checker-a", decision: "approved" }],
-  }))
-  assert.doesNotThrow(() => assertApprovalQuorum({
-    mode: "dual",
-    requesterId: "maker",
-    approvals: [
-      { approverId: "checker-a", decision: "approved" },
-      { approverId: "checker-b", decision: "approved" },
-    ],
-  }))
-  assert.throws(() => assertApprovalQuorum({
-    mode: "sole",
-    requesterId: "maker",
-    approvals: [{ approverId: "maker", decision: "approved" }],
-  }), /cannot approve their own run/)
-  assert.throws(() => assertApprovalQuorum({
-    mode: "dual",
-    requesterId: "maker",
-    approvals: [{ approverId: "checker-a", decision: "approved" }],
-  }), /requires 2 distinct approvals/)
+test("owner self-approval is explicit and frozen into the payment run", () => {
+  assert.equal(requesterMayApprovePaymentRun(null), false)
+  assert.equal(requesterMayApprovePaymentRun({ policy: {} }), false)
+  assert.equal(
+    requesterMayApprovePaymentRun({ policy: { requester_may_approve: true } }),
+    true,
+  )
+
+  const migration = fs.readFileSync(
+    path.resolve(__dirname, "../supabase/migrations/20260810170000_owner_operated_payment_approval.sql"),
+    "utf8",
+  )
+  assert.match(migration, /control_snapshot -> 'policy' ->> 'requester_may_approve'/)
+  assert.match(migration, /requester_allowed = false/)
+  assert.match(migration, /v_run\.required_approvals = 1/)
+  assert.match(migration, /requester_may_approve = false or approval_mode = 'sole'/)
+  assert.match(migration, /p_step_up_verified_at/)
 })
 
 test("ledger postings must balance in one currency using integer cents", () => {
@@ -188,7 +184,10 @@ test("vendor claims require portal authorization and do not merge by name or ema
   const identityMigration = fs.readFileSync(path.resolve(__dirname, "../supabase/migrations/20260801133239_align_vendor_claim_external_identity.sql"), "utf8")
   assert.match(identityService, /hasExternalPortalGrantForToken/)
   assert.match(identityService, /externalIdentityHasOrgAccess/)
-  assert.match(identityService, /const invitationEmailMatches = !input\.invitationEmail/)
+  // The bound invitation email is compared unconditionally. This used to read
+  // `!input.invitationEmail || …`, which skipped the check entirely for a
+  // company-wide link and made the URL a payout-destination bearer credential.
+  assert.match(identityService, /input\.invitationEmail\.trim\(\)\.toLowerCase\(\) !== normalizedEmail/)
   assert.match(identityService, /external_identity_id: session\.identity\.id/)
   assert.doesNotMatch(identityService, /external_portal_account_id:/)
   assert.match(identityService, /You are not an active administrator of that vendor entity/)
@@ -215,8 +214,11 @@ test("a vendor verified with one builder is adopted by the next, not re-onboarde
   assert.match(railSetup, /async function adoptVerifiedRecipient/)
   assert.match(
     railSetup,
-    /startVendorPayoutSetup[\s\S]{0,600}?await adoptVerifiedRecipient\([\s\S]{0,400}?await createVendorRecipientOnboarding\(/,
+    /startVendorPayoutSetup[\s\S]{0,1200}?await adoptVerifiedRecipient\([\s\S]{0,400}?await createVendorRecipientOnboarding\(/,
   )
+  // The same action re-checks the builder's own gate, because the page hiding
+  // this flow is not what stops a direct server-action call.
+  assert.match(railSetup, /startVendorPayoutSetup[\s\S]{0,600}?isVendorPayoutSetupOpen\(access\.orgId\)/)
   assert.match(railSetup, /\.update\(\{ recipient_account_id: recipient\.id, status: "active" \}\)/)
 
   // The gate is a *bank change* gate. An account that exists but cannot yet pay
@@ -418,9 +420,10 @@ test("a risk block is a decision waiting for someone, not a wall", () => {
   const runs = fs.readFileSync(path.resolve(__dirname, "../lib/services/payment-runs.ts"), "utf8")
   const risk = fs.readFileSync(path.resolve(__dirname, "../lib/services/payment-risk.ts"), "utf8")
 
-  // The automated check honours a standing manual allow.
+  // The automated check honours a manual allow — but only over the signal codes
+  // that allow was granted against, never as a standing waiver for the run.
   assert.match(runs, /findManualRiskOverride\(/)
-  assert.match(runs, /const decision = blocked && !override \? "block" : "allow"/)
+  assert.match(runs, /const decision = uncleared\.length > 0 \? "block" : "allow"/)
   // The error names the signals and says where to go, rather than being terminal.
   assert.match(runs, /risk queue/)
 
@@ -451,6 +454,7 @@ test("vendor-level and in-flight exposure are bounded, not just per-run", () => 
 test("a designated approver roster narrows who can decide a run, and never widens it", () => {
   const runs = fs.readFileSync(path.resolve(__dirname, "../lib/services/payment-runs.ts"), "utf8")
   const approvers = fs.readFileSync(path.resolve(__dirname, "../lib/services/payment-approvers.ts"), "utf8")
+  const settings = fs.readFileSync(path.resolve(__dirname, "../components/settings/payment-approvers-group.tsx"), "utf8")
   const decide = runs.slice(runs.indexOf("export async function decidePaymentRun"), runs.indexOf("async function assertRunRiskAllowed"))
 
   // The roster is a second gate AFTER the permission, never a replacement for it.
@@ -467,6 +471,15 @@ test("a designated approver roster narrows who can decide a run, and never widen
   const setRoster = approvers.slice(approvers.indexOf("export async function setPaymentRunApprovers"))
   assert.match(setRoster, /payments\.manage_rail/)
   assert.match(setRoster, /needs a role that grants payment-run approval/)
+
+  // The preparer is not part of the designated approval roster. One required
+  // signature needs one designated approver; the runtime skips the preparer.
+  const rosterSizeCheck = settings.slice(
+    settings.indexOf("const tooFewForMode"),
+    settings.indexOf("const modeDirty"),
+  )
+  assert.match(rosterSizeCheck, /chain\.length < requiredSignatures/)
+  assert.doesNotMatch(rosterSizeCheck, /requiredSignatures \+/)
 })
 
 test("the approver roster migration is org-scoped, RLS-protected, and separates read from write", () => {
@@ -485,9 +498,11 @@ test("preparing a payable for approval resolves the destination server-side and 
   const prepare = service.slice(service.indexOf("export async function preparePayableApproval"), service.indexOf("export interface PayableApprovalDetail"))
 
   // A client may name the amount and the funding account it comes from; it may
-  // never name the bank account the money lands in.
+  // never name the bank account the money lands in. The destination is looked up
+  // from the vendor's active relationship, keyed off the bill's own company.
   assert.match(prepare, /from\("vendor_payment_relationships"\)[\s\S]*?recipient_account_id/)
-  assert.match(prepare, /recipient_account_id: relationship\.recipient_account_id/)
+  assert.match(prepare, /recipient_account_id: recipientAccountId/)
+  assert.match(prepare, /recipientByCompany\.get\(bill\.company_id\)/)
   assert.doesNotMatch(prepare, /input\.recipient_account_id|parsed\.recipient_account_id/)
 
   // Preparing drafts a run; submission and approval stay separate acts.
@@ -496,6 +511,11 @@ test("preparing a payable for approval resolves the destination server-side and 
 
   // Overpaying a bill is caught before a run exists.
   assert.match(prepare, /amount_cents > outstandingCents/)
+
+  // A batch is the normal case; the same code path serves one bill or two hundred,
+  // and fees stay quoted per payable because each is its own ACH transfer.
+  assert.match(prepare, /parsed\.bills\.map/)
+  assert.match(prepare, /The same payable was selected twice/)
 })
 
 test("a fully approved payable releases immediately, and says so honestly when it cannot", () => {
@@ -512,7 +532,7 @@ test("a fully approved payable releases immediately, and says so honestly when i
 
 test("approval notifications reach the designated approvers and name the bill", () => {
   const events = fs.readFileSync(path.resolve(__dirname, "../lib/services/events.ts"), "utf8")
-  const outbox = fs.readFileSync(path.resolve(__dirname, "../app/api/jobs/process-outbox/route.ts"), "utf8")
+  const delivery = fs.readFileSync(path.resolve(__dirname, "../lib/services/notification-email-delivery.ts"), "utf8")
 
   // A configured roster owns the decision, so it owns the email.
   assert.match(events, /from\("payment_run_approvers"\)[\s\S]{0,400}?if \(\(designated \?\? \[\]\)\.length > 0\)/)
@@ -521,7 +541,35 @@ test("approval notifications reach the designated approvers and name the bill", 
   assert.match(events, /Payment needs your approval/)
   assert.match(events, /vendor_name/)
   // And it links to the payable, where the decision is actually made.
-  assert.match(outbox, /entityType === "payment_run"[\s\S]{0,200}?\/payables\?bill=/)
+  assert.match(delivery, /entityType === "payment_run"[\s\S]{0,200}?\/payables\?bill=/)
+})
+
+test("a submitted payable emails its selected approver immediately with durable retry", () => {
+  const events = fs.readFileSync(path.resolve(__dirname, "../lib/services/events.ts"), "utf8")
+  const bills = fs.readFileSync(path.resolve(__dirname, "../lib/services/vendor-bills.ts"), "utf8")
+  const notifications = fs.readFileSync(path.resolve(__dirname, "../lib/services/notifications.ts"), "utf8")
+  const delivery = fs.readFileSync(path.resolve(__dirname, "../lib/services/notification-email-delivery.ts"), "utf8")
+  const mailer = fs.readFileSync(path.resolve(__dirname, "../lib/services/mailer.ts"), "utf8")
+
+  // The requested route is carried on the event and only narrows the audience
+  // that already passed project membership + bill.approve checks.
+  assert.match(bills, /approver_ids: parsed\.preferred_approver_ids \?\? \[\]/)
+  assert.match(events, /const routedApproverIds = Array\.isArray\(event\.payload\?\.approver_ids\)/)
+  assert.match(events, /eligibleRecipients\.filter\(\(userId\) => routedSet\.has\(userId\)\)/)
+
+  // Reserve a processing lease before the provider call. Success completes it;
+  // failure returns it to pending for the normal outbox retry worker.
+  assert.match(notifications, /input\.type === "vendor_bill_submitted"/)
+  assert.match(notifications, /input\.type === "vendor_bill_approved"/)
+  assert.match(notifications, /input\.type === "vendor_bill_rejected"/)
+  assert.match(notifications, /status: "processing"/)
+  assert.match(notifications, /await deliverNotificationEmail\(notificationId, supabase\)/)
+  assert.match(notifications, /status: "completed", last_error: null/)
+  assert.match(notifications, /status: "pending"/)
+
+  // Immediate and fallback attempts share a stable provider idempotency key.
+  assert.match(delivery, /idempotencyKey: `notification-\$\{notification\.id\}`/)
+  assert.match(mailer, /"Idempotency-Key": payload\.idempotencyKey/)
 })
 
 test("settlement estimates skip weekends across both ACH legs", () => {
@@ -692,17 +740,46 @@ test("bulk payable approval is all-or-nothing and its projections are durable", 
   assert.match(worker, /enqueueVendorBillSync\(billId, job\.org_id\)/)
 })
 
-test("org and project payables use bounded server pagination with durable saved views", () => {
+test("approval learns coding from the canonical bill-line amount fields", () => {
+  const service = fs.readFileSync(path.resolve(__dirname, "../lib/services/vendor-bills.ts"), "utf8")
+  assert.match(service, /select\("cost_code_id, budget_line_id, unit_cost_cents, quantity, description"\)/)
+  assert.match(service, /Math\.round\(Number\(line\.quantity \?\? 1\) \* Number\(line\.unit_cost_cents \?\? 0\)\)/)
+  assert.doesNotMatch(service, /select\("cost_code_id, budget_line_id, amount_cents, description"\)/)
+})
+
+test("org and project payables use bounded server pagination", () => {
   const orgService = fs.readFileSync(path.resolve(__dirname, "../lib/services/org-payables.ts"), "utf8")
   const projectService = fs.readFileSync(path.resolve(__dirname, "../lib/services/vendor-bills.ts"), "utf8")
-  const views = fs.readFileSync(path.resolve(__dirname, "../lib/services/payable-views.ts"), "utf8")
-  const migration = fs.readFileSync(path.resolve(__dirname, "../supabase/migrations/20260804010200_payables_saved_views_and_atomic_approval.sql"), "utf8")
   assert.match(orgService, /\.range\(from, from \+ pageSize - 1\)/)
   assert.match(projectService, /listVendorBillsPageForProject/)
   assert.match(projectService, /\.range\(\(page - 1\) \* pageSize, page \* pageSize - 1\)/)
-  assert.match(views, /user_id", userId/)
-  assert.match(migration, /saved_payable_views_owner_access/)
-  assert.match(migration, /user_id = \(select auth\.uid\(\)\)/)
+})
+
+test("the payables desk tabs partition the pipeline and total real outstanding balances", () => {
+  // Overlapping tabs make the figure beside each one unaddable: a pending bill
+  // that counted under both "due" and "needs approval" is money reported twice.
+  // Each working tab is one bucket, chosen once per payable.
+  const orgService = fs.readFileSync(path.resolve(__dirname, "../lib/services/org-payables.ts"), "utf8")
+  assert.match(orgService, /PAYABLE_TABS = \[\s*"drafts",\s*"approval",\s*"ready",\s*"inflight",\s*"paid",\s*"all",\s*\]/)
+  // Sums are outstanding balances, so retainage and partial payments come off.
+  assert.match(orgService, /payableOutstandingCents\(\{/)
+  // "Ready to pay" excludes anything the rail already claims, and "in flight" is
+  // exactly that set — otherwise a bill offers itself for a second payment.
+  assert.match(orgService, /ready\.not\("id", "in", `\(\$\{inRunList\.join\(","\)\}\)`\)/)
+  assert.match(orgService, /if \(key === "inflight"\)/)
+  // A bounded scan must say so rather than quietly understating the totals.
+  assert.match(orgService, /summaryTruncated: \(summaryResult\.count \?\? 0\) > SUMMARY_SCAN_LIMIT/)
+})
+
+test("a payable that money has touched cannot be deleted", () => {
+  // The desk hides Delete on these rows, but UI visibility is not authorization:
+  // deleting a bill an approved run is about to pay would strand the run's
+  // frozen item, and deleting a paid one erases the record its payment answers to.
+  const service = fs.readFileSync(path.resolve(__dirname, "../lib/services/vendor-bills.ts"), "utf8")
+  const deleteBody = service.slice(service.indexOf("export async function deleteVendorBill"))
+  assert.match(deleteBody, /has recorded payments and cannot be deleted/)
+  assert.match(deleteBody, /belongs to an active payment run/)
+  assert.match(deleteBody, /from\("payment_run_items"\)/)
 })
 
 // ---------------------------------------------------------------------------
@@ -1267,7 +1344,8 @@ test("a payable can be rejected with a reason, and the vendor is told", () => {
   assert.match(service, /cannot be returned to pending\. Reverse the payment first/)
 
   const notices = fs.readFileSync(path.join(root, "lib/services/vendor-bill-notices.ts"), "utf8")
-  assert.match(notices, /submitted_via_portal/)
+  assert.doesNotMatch(notices, /metadata\.submitted_via_portal !== true/)
+  assert.match(notices, /idempotencyKey: `vendor-bill-\$\{input\.kind\}-\$\{input\.eventId \?\? bill\.id\}`/)
 })
 
 test("auto-approval runs the same gates a person does", () => {
@@ -1325,4 +1403,504 @@ test("AP notifications are on the email allowlist, not just wired", () => {
   assert.match(events, /vendor_bill_submitted: \["bill\.approve"\]/)
   assert.match(events, /event\.event_type === "vendor_payment_paid"/)
   assert.match(events, /"vpo\.request"/)
+})
+
+// ---------------------------------------------------------------------------
+// Payment runs have no desk: composition and release happen on the payables page.
+// ---------------------------------------------------------------------------
+
+test("the payment-runs route redirects instead of rendering a desk", () => {
+  const root = path.resolve(__dirname, "..")
+  const dir = path.join(root, "app/(app)/payables/payment-runs")
+  // The composition table there was a second payables desk, and the approval
+  // queue went unvisited because approvals arrive by email. Only the redirect
+  // survives, because approval emails already sent point at the old URL.
+  assert.deepEqual(fs.readdirSync(dir), ["page.tsx"])
+  const page = fs.readFileSync(path.join(dir, "page.tsx"), "utf8")
+  assert.match(page, /redirect\(run \? `\/payables\?run=\$\{run\}` : "\/payables"\)/)
+
+  // Nothing else may point at a surface that no longer renders.
+  for (const file of [
+    "app/(app)/payables/payables-desk.tsx",
+    "components/payables/payables-workspace.tsx",
+    "lib/services/search-config.ts",
+    "lib/services/ai-search/config.ts",
+  ]) {
+    assert.doesNotMatch(
+      fs.readFileSync(path.join(root, file), "utf8"),
+      /payables\/payment-runs/,
+      `${file} still links to the deleted payment-runs desk`,
+    )
+  }
+})
+
+test("an approver sees the whole frozen set, not just the payable they opened", () => {
+  const service = fs.readFileSync(path.resolve(__dirname, "../lib/services/payable-approvals.ts"), "utf8")
+  const detail = service.slice(service.indexOf("export async function getPayableApprovalDetail"))
+  // The signature binds to the run's content hash, so showing one line beside
+  // the run's total asked someone to sign for money they could not see.
+  assert.match(detail, /\.eq\("run_id", item\.run_id\)/)
+  assert.match(detail, /items: \(runItems \?\? \[\]\)\.map/)
+
+  const review = fs.readFileSync(
+    path.resolve(__dirname, "../components/payables/workspace/payable-review-view.tsx"),
+    "utf8",
+  )
+  assert.match(review, /payments in this run/)
+  // Fees are per payment because each payable is its own ACH transfer.
+  assert.match(review, /Priced per payment/)
+})
+
+test("reconciliation lives in ops, where a job whose silence is the alarm belongs", () => {
+  const root = path.resolve(__dirname, "..")
+  const ops = fs.readFileSync(path.join(root, "components/admin/ops-client.tsx"), "utf8")
+  assert.match(ops, /Payment reconciliation/)
+  assert.match(ops, /Reconcile last 24 hours/)
+  // Closing an exception is audit evidence, so the note stays mandatory.
+  assert.match(ops, /resolveReconciliationExceptionAction/)
+  const actions = fs.readFileSync(path.join(root, "app/(app)/admin/ops/actions.ts"), "utf8")
+  assert.match(actions, /resolvePaymentReconciliationItem/)
+})
+
+test("the second factor is asked for at the decision, not in front of it", () => {
+  const root = path.resolve(__dirname, "..")
+  // The old gate rendered a code box before the approver could read the run.
+  assert.equal(fs.existsSync(path.join(root, "components/payments/payment-step-up-gate.tsx")), false)
+
+  const hook = fs.readFileSync(path.join(root, "components/payments/payment-step-up.tsx"), "utf8")
+  // Satisfied sessions never see a prompt; stale ones verify and the action runs.
+  assert.match(hook, /if \(await isSatisfied\(\)\) \{\s*\n\s*action\(\)/)
+  assert.match(hook, /challengeAndVerify/)
+  assert.match(hook, /InputOTP/)
+  // Shared pure policy, so client and server cannot disagree about freshness.
+  assert.match(hook, /evaluatePaymentStepUp/)
+
+  for (const file of [
+    "components/payables/workspace/payable-review-view.tsx",
+  ]) {
+    const source = fs.readFileSync(path.join(root, file), "utf8")
+    assert.match(source, /requireStepUp\(\(\) =>/, `${file} must ask on the press`)
+    assert.match(source, /\{stepUpPrompt\}/, `${file} must mount the prompt`)
+  }
+
+  // The server rule is untouched — this is convenience, never the control.
+  const service = fs.readFileSync(path.join(root, "lib/services/payment-runs.ts"), "utf8")
+  assert.match(service, /requireRecentPaymentStepUp/)
+})
+
+// ---------------------------------------------------------------------------
+// Certificate-of-insurance reading
+//
+// The insurance hold blocks payment, so these tests are mostly about the
+// degrade paths: every way a reading can be absent, stale or untrustworthy has
+// to land back on the status-and-expiry rule that shipped before any model was
+// involved. A model failure may not release a payment, and it may not stop one.
+// ---------------------------------------------------------------------------
+
+const {
+  buildCoiExtractionInputKey,
+  evaluateInsuranceCurrency,
+  isCoiPolicyCurrent,
+  isInsuranceDocumentTypeName,
+} = require("../lib/payments/ap-verification")
+
+const TODAY = "2026-08-08"
+
+function reading(overrides = {}) {
+  return {
+    carrier_name: "Ironshore",
+    policy_number: "GL-4417",
+    policy_type: "general_liability",
+    each_occurrence_cents: 100_000_000,
+    aggregate_cents: 200_000_000,
+    effective_date: "2026-01-01",
+    expiry_date: "2026-12-31",
+    additional_insured: true,
+    certificate_holder: "Arc Builders",
+    confidence: "high",
+    notes: [],
+    file_id: "file-1",
+    model: "gemini-flash",
+    extracted_at: "2026-08-01T00:00:00.000Z",
+    ...overrides,
+  }
+}
+
+function document(overrides = {}) {
+  return { status: "approved", storedExpiry: null, fileId: "file-1", extraction: null, ...overrides }
+}
+
+test("a vendor with no insurance document falls through to overall compliance", () => {
+  assert.deepEqual(evaluateInsuranceCurrency({ documents: [], todayIso: TODAY, fallbackCompliant: true }), {
+    current: true,
+    contradiction: null,
+    basis: "no_documents",
+  })
+  assert.equal(
+    evaluateInsuranceCurrency({ documents: [], todayIso: TODAY, fallbackCompliant: false }).current,
+    false,
+  )
+})
+
+test("without a reading the insurance fact is exactly the pre-extraction rule", () => {
+  const cases = [
+    [document(), true, "approved with no recorded expiry passes, as it always has"],
+    [document({ storedExpiry: "2026-12-31" }), true, "approved and unexpired passes"],
+    [document({ storedExpiry: "2026-01-01" }), false, "approved but expired fails"],
+    [document({ status: "pending_review" }), false, "an unapproved certificate is not coverage"],
+    [document({ status: "rejected", storedExpiry: "2027-01-01" }), false, "a rejected certificate is not coverage"],
+  ]
+  for (const [doc, expected, message] of cases) {
+    const verdict = evaluateInsuranceCurrency({ documents: [doc], todayIso: TODAY, fallbackCompliant: true })
+    assert.equal(verdict.current, expected, message)
+    assert.equal(verdict.basis, "stored")
+  }
+})
+
+test("one current certificate is still enough", () => {
+  const verdict = evaluateInsuranceCurrency({
+    documents: [document({ storedExpiry: "2026-01-01" }), document({ storedExpiry: "2027-01-01" })],
+    todayIso: TODAY,
+    fallbackCompliant: false,
+  })
+  assert.equal(verdict.current, true)
+})
+
+test("a lapsed certificate is reported loudly but never blocks on the reading alone", () => {
+  // The record says current because nobody typed a date in; the certificate
+  // says otherwise. That disagreement is worth a human's attention, but a
+  // model must not be able to stop a subcontractor being paid by itself.
+  const verdict = evaluateInsuranceCurrency({
+    documents: [document({ extraction: reading({ expiry_date: "2026-03-01" }) })],
+    todayIso: TODAY,
+    fallbackCompliant: true,
+  })
+  assert.equal(verdict.current, true, "the blocking fact still comes from the compliance record")
+  assert.equal(verdict.basis, "extracted")
+  assert.match(verdict.contradiction, /expired 2026-03-01/)
+})
+
+test("a certificate that has not taken effect yet is reported, not enforced", () => {
+  const verdict = evaluateInsuranceCurrency({
+    documents: [document({ extraction: reading({ effective_date: "2026-10-01", expiry_date: "2027-10-01" }) })],
+    todayIso: TODAY,
+    fallbackCompliant: true,
+  })
+  assert.equal(verdict.current, true)
+  assert.match(verdict.contradiction, /not effective until 2026-10-01/)
+})
+
+test("the compliance record decides blocking and the reading is surfaced beside it", () => {
+  // A person looked at the page and committed to a date. The model's date is
+  // evidence for them to re-check, never an override in either direction.
+  const stillCurrent = evaluateInsuranceCurrency({
+    documents: [document({ storedExpiry: "2027-01-01", extraction: reading({ expiry_date: "2026-03-01" }) })],
+    todayIso: TODAY,
+    fallbackCompliant: true,
+  })
+  assert.equal(stillCurrent.current, true, "the stored expiry keeps the payment releasable")
+  assert.match(stillCurrent.contradiction, /expires 2026-03-01, the recorded expiry is 2027-01-01/)
+
+  const blocked = evaluateInsuranceCurrency({
+    documents: [document({ storedExpiry: "2026-03-01", extraction: reading({ expiry_date: "2027-01-01" }) })],
+    todayIso: TODAY,
+    fallbackCompliant: true,
+  })
+  assert.equal(blocked.current, false, "the stored expiry blocks even when the model reads a later one")
+  assert.match(blocked.contradiction, /expires 2027-01-01, the recorded expiry is 2026-03-01/)
+})
+
+test("a reading that cannot be trusted degrades to the stored rule and never blocks", () => {
+  const degraded = [
+    // The file was replaced; the reading describes a page nobody is looking at.
+    document({ extraction: reading({ file_id: "file-2", expiry_date: "2026-03-01" }) }),
+    // The model said it was guessing.
+    document({ extraction: reading({ confidence: "low", expiry_date: "2026-03-01" }) }),
+    // The certificate has no date on it that the model could find.
+    document({ extraction: reading({ expiry_date: null }) }),
+  ]
+  for (const doc of degraded) {
+    const verdict = evaluateInsuranceCurrency({ documents: [doc], todayIso: TODAY, fallbackCompliant: true })
+    assert.equal(verdict.current, true, "an untrustworthy reading must not turn a passing bill into a blocked one")
+  }
+})
+
+test("isCoiPolicyCurrent needs a date on both ends of the window", () => {
+  assert.equal(isCoiPolicyCurrent({ effective_date: "2026-01-01", expiry_date: "2026-12-31" }, TODAY), true)
+  assert.equal(isCoiPolicyCurrent({ effective_date: null, expiry_date: "2026-12-31" }, TODAY), true)
+  assert.equal(isCoiPolicyCurrent({ effective_date: null, expiry_date: null }, TODAY), false)
+  assert.equal(isCoiPolicyCurrent({ effective_date: null, expiry_date: TODAY }, TODAY), true, "expiring today is still today")
+})
+
+test("the extraction cache key moves only when the file does", () => {
+  const base = buildCoiExtractionInputKey({ fileId: "file-1", fileUpdatedAt: "2026-08-01T00:00:00.000Z" })
+  assert.equal(base, buildCoiExtractionInputKey({ fileId: "file-1", fileUpdatedAt: "2026-08-01T00:00:00.000Z" }))
+  assert.notEqual(base, buildCoiExtractionInputKey({ fileId: "file-1", fileUpdatedAt: "2026-08-02T00:00:00.000Z" }))
+  assert.notEqual(base, buildCoiExtractionInputKey({ fileId: "file-2", fileUpdatedAt: "2026-08-01T00:00:00.000Z" }))
+})
+
+test("the insurance document filter is the same one the hold always used", () => {
+  for (const name of ["General Liability Insurance", "Certificate of Insurance", "COI", "workers comp certificate"]) {
+    assert.equal(isInsuranceDocumentTypeName(name), true, name)
+  }
+  for (const name of ["W-9", "Business License", null, undefined, ""]) {
+    assert.equal(isInsuranceDocumentTypeName(name), false, String(name))
+  }
+})
+
+test("the insurance hold reads stored certificate claims and never writes them", () => {
+  const holds = fs.readFileSync(path.resolve(__dirname, "../lib/services/payment-holds.ts"), "utf8")
+  // The fact changed; the policy did not. insurance_current keeps its level.
+  assert.match(holds, /insuranceCurrent: insurance\.current/)
+  assert.match(holds, /insuranceContradiction: insurance\.contradiction/)
+  assert.match(holds, /evaluateInsuranceCurrency\(\{/)
+  // evaluateHolds is a read path: it must not extract, only read what a job wrote.
+  assert.doesNotMatch(holds, /extractCoiFacts/)
+  // Every failure of the metadata read returns an empty map, i.e. today's rule.
+  assert.match(holds, /if \(error \|\| !data\) return readings/)
+})
+
+test("certificate extraction is a background job that only ever writes metadata", () => {
+  const service = fs.readFileSync(path.resolve(__dirname, "../lib/services/ap-document-verification.ts"), "utf8")
+  const worker = fs.readFileSync(path.resolve(__dirname, "../app/api/jobs/process-outbox/route.ts"), "utf8")
+  const compliance = fs.readFileSync(path.resolve(__dirname, "../lib/services/compliance-documents.ts"), "utf8")
+
+  // The job type is registered on both sides of the worker, or it never runs.
+  assert.match(worker, /"extract_coi_facts",/)
+  assert.match(worker, /job\.job_type === "extract_coi_facts"/)
+  assert.match(worker, /await extractCoiFacts\(fileId, job\.org_id\)/)
+
+  // Extraction touches metadata and nothing else — never status, never a date
+  // column, never a lifecycle field on the compliance document.
+  assert.match(service, /\.from\("compliance_documents"\)\s*\n\s*\.update\(\{ metadata \}\)/)
+  assert.doesNotMatch(service, /update\(\{[^}]*status:/)
+  assert.doesNotMatch(service, /update\(\{[^}]*expiry_date:/)
+  // Failures are recorded and returned as data, so a bad scan is not a retry storm.
+  assert.match(service, /compliance_document_coi_extraction_failed/)
+  assert.match(service, /compliance_document_coi_extracted/)
+  assert.match(service, /reason: "model_failed"/)
+
+  // Enqueued opportunistically on upload and on approval, deduped by file.
+  assert.match(compliance, /jobType: "extract_coi_facts"/)
+  assert.match(compliance, /dedupeByPayloadKeys: \["file_id"\]/)
+  assert.match(compliance, /if \(parsed\.decision === "approved"\) \{/)
+})
+
+test("a document-derived claim can raise its hand but never stop a payment", () => {
+  // Both AI-backed hold kinds are clamped to warn regardless of policy. This is
+  // the invariant that keeps a misread certificate or waiver from stranding a
+  // subcontractor: the model reports, a human decides.
+  const facts = {
+    projectId: "p1",
+    companyId: "c1",
+    complianceCurrent: true,
+    insuranceCurrent: true,
+    insuranceContradiction: "The scanned certificate expired 2026-03-01 but the record shows insurance as current",
+    waiverRequired: true,
+    waiverSigned: true,
+    waiverVerification: { matches: false, mismatchSummary: "Amount: expected $1,000, found $900", documentHref: null },
+    retainageRulesMet: true,
+    fundingRequired: false,
+    fundingReceived: true,
+    overrides: {},
+    // Even asked directly to block, these two may not.
+    policy: { insurance_verified: "block", waiver_verified: "block" },
+  }
+
+  const evaluation = evaluatePaymentHoldFacts(facts)
+  const kinds = evaluation.holds.map((hold) => hold.kind)
+  assert.ok(kinds.includes("insurance_verified"), "the certificate disagreement is visible")
+  assert.ok(kinds.includes("waiver_verified"), "the waiver mismatch is visible")
+  for (const kind of ["insurance_verified", "waiver_verified"]) {
+    assert.equal(evaluation.holds.find((hold) => hold.kind === kind).level, "warn", `${kind} must never block`)
+  }
+  assert.equal(evaluation.blockingCount, 0)
+  assert.equal(evaluation.releasable, true, "a payment with only document-derived claims still releases")
+})
+
+test("a genuinely lapsed compliance record still blocks, model or no model", () => {
+  const evaluation = evaluatePaymentHoldFacts({
+    projectId: "p1",
+    companyId: "c1",
+    complianceCurrent: true,
+    insuranceCurrent: false,
+    insuranceContradiction: null,
+    waiverRequired: false,
+    waiverSigned: false,
+    retainageRulesMet: true,
+    fundingRequired: false,
+    fundingReceived: true,
+    overrides: {},
+    policy: {},
+  })
+  const insurance = evaluation.holds.find((hold) => hold.kind === "insurance_current")
+  assert.equal(insurance.level, "block")
+  assert.equal(evaluation.releasable, false)
+})
+
+// ---------------------------------------------------------------------------
+// Controls that have to hold between approval and the money leaving
+// ---------------------------------------------------------------------------
+
+/** Source with comments stripped: a comment quoting a defect is not the defect. */
+function paymentSource(relativePath) {
+  const source = fs.readFileSync(path.resolve(__dirname, "..", relativePath), "utf8")
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
+}
+
+test("execution pays the destination that was approved, not wherever the vendor now points", () => {
+  const runs = paymentSource("lib/services/payment-runs.ts")
+
+  // The content hash covers `recipient_account_id`, and execution now honours
+  // it. It used to discard the frozen value for primary vendors and re-read the
+  // live relationship — and a portal re-claim rewrites relationship and
+  // recipient together, so an approved run could execute to a bank no approver
+  // ever saw.
+  assert.match(runs, /const trustedRecipientId = payee\.recipient_account_id/)
+  assert.doesNotMatch(
+    runs,
+    /trustedRecipientId = payee\.payee_kind === "primary_vendor" \? relationship\?\.recipient_account_id/,
+    "execution must not re-read the live destination",
+  )
+  // Changed since approval means fail closed with a re-approve instruction —
+  // never a silent payment to the new destination.
+  assert.match(runs, /relationship\?\.recipient_account_id !== trustedRecipientId/)
+  assert.match(runs, /changed after this run was approved/)
+  // And a client-supplied destination is still ignored at composition time.
+  assert.match(runs, /recipient_account_id: payee\.payee_kind === "primary_vendor" \? prepared\.recipient\.id : payee\.recipient_account_id/)
+})
+
+test("a changed payout destination is frozen and everyone affected is told", () => {
+  const setup = paymentSource("lib/services/payment-rail-setup.ts")
+
+  // Both columns were read in four places and written in none, so the fintech
+  // plan's signature control did not exist. A provider-side bank swap — the
+  // compromised-Stripe-login case — arrives through syncVendorRecipient.
+  assert.match(setup, /destination_locked_until: lockedUntil, destination_version: input\.previousVersion \+ 1/)
+  assert.match(setup, /const destinationChanged = Boolean\(previousBankLast4\)/)
+  assert.match(setup, /applyDestinationChangeHold\(\{/)
+  // Compare-and-swap on the version just read, so two racing webhooks cannot
+  // both believe they applied the first change.
+  assert.match(setup, /\.eq\("destination_version", input\.previousVersion\)/)
+  // Out-of-band, to the builders and to the vendor.
+  assert.match(setup, /eventType: "vendor_payout_destination_changed"/)
+  assert.match(setup, /notifyVendorOfDestinationChange/)
+  // Masked only — no full account or routing number in a notification.
+  assert.doesNotMatch(setup, /routing_number|account_number/)
+
+  // Wiring the notification service is not enough; only allowlisted types send.
+  const notifications = fs.readFileSync(path.resolve(__dirname, "../lib/types/notifications.ts"), "utf8")
+  assert.match(notifications, /key: "vendor_payout_destination_changed"/)
+  const events = fs.readFileSync(path.resolve(__dirname, "../lib/services/events.ts"), "utf8")
+  assert.match(events, /case "vendor_payout_destination_changed"/)
+})
+
+test("the destination cooling period is configurable, with the documented default and bounds", () => {
+  const setup = paymentSource("lib/services/payment-rail-setup.ts")
+  assert.match(setup, /DEFAULT_DESTINATION_COOLING_HOURS = 72/)
+  assert.match(setup, /MIN_DESTINATION_COOLING_HOURS = 24/)
+  assert.match(setup, /MAX_DESTINATION_COOLING_HOURS = 168/)
+  // The policy column the builder already sets is what drives it.
+  assert.match(setup, /control_change_cooling_hours/)
+
+  // And the lock is enforced everywhere it is read — these were live checks
+  // guarding a column nothing ever wrote.
+  const runs = paymentSource("lib/services/payment-runs.ts")
+  const payouts = paymentSource("lib/services/payment-payouts.ts")
+  assert.equal((runs.match(/destination_locked_until/g) ?? []).length >= 3, true)
+  assert.match(payouts, /destination_locked_until/)
+  assert.match(payouts, /security cooling period/)
+})
+
+test("a manual risk override clears the signals it reviewed and nothing else", () => {
+  const runs = paymentSource("lib/services/payment-runs.ts")
+  const risk = paymentSource("lib/services/payment-risk.ts")
+
+  // It was a standing per-run "allow": clearing repeated_payment_failures at
+  // submit also waived recently_claimed_vendor_relationship,
+  // inflight_exposure_exceeded and daily_limit_exceeded at execution.
+  assert.match(risk, /latestBlockingSignalCodes/)
+  assert.match(risk, /cleared_codes: clearedCodes/)
+  assert.match(runs, /blockingCodes\.filter\(\(code\) => !override\.clearedCodes\.includes\(code\)\)/)
+  assert.match(runs, /const decision = uncleared\.length > 0 \? "block" : "allow"/)
+  // A reviewer cannot pre-clear a run that is not currently blocked.
+  assert.match(risk, /not currently blocked by any risk signal/)
+})
+
+test("the two spend limits bind live, so tightening one reaches runs already built", () => {
+  const runs = paymentSource("lib/services/payment-runs.ts")
+
+  // per_run and daily were read from the frozen control snapshot while
+  // new_vendor_hold_hours and max_inflight_cents were deliberately read live —
+  // the justification for live reads applies identically to all four.
+  assert.match(runs, /select\("new_vendor_hold_hours,max_inflight_cents,per_run_limit_cents,daily_limit_cents"\)/)
+  assert.match(runs, /const tighterLimit =/)
+  assert.match(runs, /tighterLimit\(policy \? Reflect\.get\(policy, "per_run_limit_cents"\) : null, livePolicy\?\.per_run_limit_cents\)/)
+  assert.match(runs, /tighterLimit\(policy \? Reflect\.get\(policy, "daily_limit_cents"\) : null, livePolicy\?\.daily_limit_cents\)/)
+  // The frozen snapshot stays on the run as evidence of what the approver saw.
+  assert.match(runs, /p_control_snapshot: \{ policy/)
+})
+
+test("disabling the rail stops payments that were already approved", () => {
+  const runs = paymentSource("lib/services/payment-runs.ts")
+  const payouts = paymentSource("lib/services/payment-payouts.ts")
+
+  // The policy row was checked only in createPaymentRun, so an admin disabling
+  // the rail did not stop approved runs — including scheduled releases that
+  // fire days later with nobody present.
+  const execution = runs.slice(runs.indexOf("export async function executePaymentRun"))
+  assert.match(execution, /const executionPolicy = await loadPaymentPolicy\(context\.orgId\)/)
+  assert.match(execution, /if \(!executionPolicy\.enabled\) throw new Error/)
+
+  // The transfer sweep checked only the env switch. It now reads each org's
+  // policy and holds — recoverably — rather than completing the irreversible leg.
+  assert.match(payouts, /railEnabledByOrg/)
+  assert.match(payouts, /if \(!railEnabledByOrg\.get\(row\.org_id\)\)/)
+})
+
+test("a payment that stops moving becomes a reconciliation exception, not silence", () => {
+  const reconciliation = paymentSource("lib/services/payment-reconciliation.ts")
+
+  // Production had a run `processing` and its disbursement `transfer_pending`
+  // for six days with no sweep, alert or exception.
+  assert.match(reconciliation, /STALE_PAYMENT_STATE_HOURS = 96/)
+  assert.match(reconciliation, /flagStalePaymentStates/)
+  assert.match(reconciliation, /NON_TERMINAL_DISBURSEMENT_STATUSES/)
+  assert.match(reconciliation, /NON_TERMINAL_RUN_STATUSES/)
+  // Reuses the existing exception machinery rather than a parallel one.
+  assert.match(reconciliation, /from\("payment_reconciliation_items"\)\.insert\(/)
+  // And it is reported loudly, not logged.
+  assert.match(reconciliation, /eventType: "payment_operations_alert"/)
+  assert.match(reconciliation, /reason: "stale_payment_state"/)
+  assert.match(reconciliation, /exceptionCount \+= await flagStalePaymentStates/)
+})
+
+test("provider accounts are not created against live keys before live mode is approved", () => {
+  const stripeAp = paymentSource("lib/integrations/payments/stripe-ap.ts")
+
+  // The gate gets you nothing if the calls that mint vendor-facing Express
+  // accounts and attach real bank details sit outside it.
+  for (const call of ["createRecipient", "createRecipientOnboardingLink", "createFundingCustomer", "createFundingSetup"]) {
+    const body = stripeAp.slice(stripeAp.indexOf(`async ${call}(`))
+    assert.match(body.slice(0, 400), /assertStripeExecutionMode\(\)/, `${call} must assert execution mode`)
+  }
+  // Stripe idempotency keys expire after 24 hours, so the retry the next day
+  // used to mint a second Express account for the same vendor.
+  assert.match(stripeAp, /findRecipientByVendorEntity/)
+  assert.match(stripeAp, /MAX_RECIPIENT_LOOKUP_ACCOUNTS/)
+})
+
+test("duplicate provider webhooks are settled by the unique index, not by a prior read", () => {
+  const events = paymentSource("lib/services/payment-provider-events.ts")
+  const route = paymentSource("app/api/webhooks/stripe/route.ts")
+
+  // Two deliveries of one event both read "no row" and both inserted; the
+  // loser's 23505 read as a processing failure and Stripe retried an event that
+  // had in fact been stored.
+  assert.match(events, /code !== "23505"/)
+  assert.match(route, /code !== "23505"/)
+  // And the service-role writes are org-scoped, unique provider id or not.
+  assert.match(route, /\.eq\("org_id", domainEvent\.org_id\)\n\s*\.eq\("provider_payment_id"/)
+  assert.match(route, /const chargeOrgId = orgId \?\?/)
+  assert.match(route, /\.eq\("org_id", chargeOrgId\)/)
 })

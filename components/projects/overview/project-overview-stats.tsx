@@ -23,7 +23,6 @@ interface ProjectOverviewStatsProps {
   endDate?: string
   totalActualCents?: number
   adjustedBudgetCents?: number
-  totalInvoicedCents?: number
   totalExpensesCents?: number
 }
 
@@ -69,7 +68,6 @@ export function ProjectOverviewStats({
   endDate,
   totalActualCents,
   adjustedBudgetCents,
-  totalInvoicedCents,
   totalExpensesCents,
 }: ProjectOverviewStatsProps) {
   // contracts.total_cents is the revised value after approved change orders.
@@ -105,7 +103,9 @@ export function ProjectOverviewStats({
       ? { tone: "destructive", label: `${Math.abs(varianceDays)}d behind`, trend: "down" }
       : { tone: "neutral", label: "On pace" }
 
-  const realizedInvoiced = totalInvoicedCents ?? invoicedCents
+  // `invoicedCents` is the project's one billed number, resolved from the shared
+  // POC position — the same value the budget tab's "Billed" shows.
+  const realizedInvoiced = invoicedCents
   const hasBudget = (adjustedBudgetCents ?? 0) > 0
   const hasActuals = (totalActualCents ?? 0) > 0
   const realizedMarginPercent =

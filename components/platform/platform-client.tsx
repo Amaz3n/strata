@@ -14,12 +14,8 @@ import {
   Eye,
   DollarSign,
   ArrowUpRight,
+  Sparkles,
 } from "@/components/icons"
-import { ProvisionOrgSheet } from "@/components/platform/provision-org-sheet"
-import { PlatformAiSheet, type AiFeatureConfig, type OrgAiSearchAccess } from "@/components/platform/platform-ai-sheet"
-import { DemoUsageSheet } from "@/components/platform/demo-usage-sheet"
-import { ImpersonationSheet } from "@/components/platform/impersonation-sheet"
-import type { DemoUsageSummary } from "@/lib/services/platform-demo-usage"
 
 interface PlatformStats {
   totalOrgs: number
@@ -31,17 +27,11 @@ interface PlatformStats {
 interface PlatformClientProps {
   roles: string[]
   stats: PlatformStats
-  plans: React.ComponentProps<typeof ProvisionOrgSheet>["plans"]
-  orgs: { id: string; name: string }[]
-  aiConfigs: AiFeatureConfig[]
-  aiSearchAccess: OrgAiSearchAccess[]
-  canManagePlatformAi: boolean
-  demoUsage: DemoUsageSummary
-  impersonation: { active: boolean; target?: string | null; expiresAt?: string | null }
 }
 
 const OPERATIONS = [
   { title: "Ops", description: "Cron heartbeats, outbox, QBO health", href: "/admin/ops", icon: Activity },
+  { title: "AI", description: "Model routing, spend, rates, org access", href: "/admin/ops/ai", icon: Sparkles },
   { title: "Issue tracker", description: "Bugs, requests, owner progress", href: "/platform/bugs", icon: Bug },
   { title: "Customers", description: "Orgs, subscriptions, status", href: "/admin/customers", icon: Users },
   { title: "User activity", description: "Who's using Arc, last active", href: "/admin/users", icon: User },
@@ -53,17 +43,7 @@ const OPERATIONS = [
   { title: "Audit logs", description: "System activity trail", href: "/admin/audit", icon: Eye },
 ]
 
-export function PlatformClient({
-  roles,
-  stats,
-  plans,
-  orgs,
-  aiConfigs,
-  aiSearchAccess,
-  canManagePlatformAi,
-  demoUsage,
-  impersonation,
-}: PlatformClientProps) {
+export function PlatformClient({ roles, stats }: PlatformClientProps) {
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-background">
       {/* Toolbar */}
@@ -78,16 +58,6 @@ export function PlatformClient({
             ))}
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <ImpersonationSheet orgs={orgs} session={impersonation} />
-            <DemoUsageSheet summary={demoUsage} />
-            <PlatformAiSheet
-              initialConfigs={aiConfigs}
-              aiSearchAccess={aiSearchAccess}
-              canManage={canManagePlatformAi}
-            />
-            <ProvisionOrgSheet plans={plans} />
-          </div>
         </div>
       </div>
 

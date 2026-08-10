@@ -676,7 +676,7 @@ async function generateVisionResponseText(input: {
     'https://generativelanguage.googleapis.com/v1beta';
 
   const response = await fetch(
-    `${endpoint}/${normalizedModel}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    `${endpoint}/${normalizedModel}:generateContent`,
     {
       method: 'POST',
       headers: {

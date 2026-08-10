@@ -91,6 +91,13 @@ export function AutoApprovalRulesGroup({ canManage }: { canManage: boolean }) {
   }
 
   const toggle = (rule: AutoApprovalRule, next: boolean) => {
+    // Legacy rules could be saved without an amount cap. Unlimited rules are no
+    // longer honored or savable — the only way forward is a new, bounded rule.
+    if (rule.maxAmountCents == null) {
+      toast.error("This rule has no amount cap and is no longer honored. Delete it and add a new rule with a cap.")
+      return
+    }
+    const maxAmountCents = rule.maxAmountCents
     startTransition(async () => {
       try {
         unwrapAction(
@@ -99,7 +106,7 @@ export function AutoApprovalRulesGroup({ canManage }: { canManage: boolean }) {
             name: rule.name,
             project_id: rule.projectId,
             company_id: rule.companyId,
-            max_amount_cents: rule.maxAmountCents,
+            max_amount_cents: maxAmountCents,
             vendor_trust_tiers: rule.vendorTrustTiers,
             require_no_duplicates: rule.requireNoDuplicates,
             is_active: next,
@@ -150,7 +157,7 @@ export function AutoApprovalRulesGroup({ canManage }: { canManage: boolean }) {
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium">{rule.name}</p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  {rule.maxAmountCents ? `Up to ${money(rule.maxAmountCents)}` : "Any amount"}
+                  {rule.maxAmountCents ? `Up to ${money(rule.maxAmountCents)}` : "No amount cap — not honored"}
                   {rule.companyName ? ` · ${rule.companyName}` : ""}
                   {rule.projectName ? ` · ${rule.projectName}` : " · All projects"}
                   {rule.requireNoDuplicates ? " · Skips suspected duplicates" : ""}

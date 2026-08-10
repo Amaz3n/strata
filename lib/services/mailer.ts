@@ -20,6 +20,8 @@ export interface EmailPayload {
   text?: string
   replyTo?: string | null
   from?: string
+  /** Stable provider key used to suppress duplicate transactional sends. */
+  idempotencyKey?: string
   attachments?: Array<{
     filename: string
     content: string
@@ -169,6 +171,9 @@ export async function sendEmail(payload: EmailPayload): Promise<boolean> {
       headers: {
         Authorization: `Bearer ${RESEND_API_KEY}`,
         "Content-Type": "application/json",
+        ...(payload.idempotencyKey
+          ? { "Idempotency-Key": payload.idempotencyKey }
+          : {}),
       },
       body: JSON.stringify({
         from: payload.from ?? RESEND_FROM_EMAIL,
@@ -669,6 +674,44 @@ export async function sendBidDateUpdateEmail(payload: BidDateUpdateEmailPayload)
   })
 }
 
+export interface VendorPayoutDestinationChangedEmailPayload {
+  to: string[]
+  vendorName: string
+  /** Masked only. A full account or routing number never leaves the database. */
+  bankLast4: string | null
+  holdUntil: string
+}
+
+/**
+ * The out-of-band warning that a payout bank changed.
+ *
+ * Sent to the vendor's own administrators, not to whoever made the change, and
+ * deliberately alarming: if this was not them, the cooling period named here is
+ * the window in which it can still be stopped. There is no action button — an
+ * email that offers a one-click "confirm" to a phished recipient is worse than
+ * no email at all.
+ */
+export async function sendVendorPayoutDestinationChangedEmail(
+  payload: VendorPayoutDestinationChangedEmailPayload,
+): Promise<boolean> {
+  if (payload.to.length === 0) return false
+  const holdUntil = new Date(payload.holdUntil).toLocaleString("en-US", { dateStyle: "long", timeStyle: "short", timeZone: "UTC" })
+  const account = payload.bankLast4 ? ` ending ${escapeMessage(payload.bankLast4)}` : ""
+  const html = renderStandardEmailLayout({
+    title: "Your Arc payout bank was changed",
+    messageHtml: `
+      <p style="margin:0 0 14px 0;">The payout bank account on file for ${escapeMessage(payload.vendorName)} was changed to an account${account}.</p>
+      <p style="margin:0 0 14px 0;">Payments to this account are on hold until ${escapeMessage(holdUntil)} UTC while the change settles. Every builder who pays you through Arc has been told as well.</p>
+      <p style="margin:0;"><strong>If you did not make this change, contact Arc support immediately and secure your Stripe account.</strong> Do not reply to this email with any bank details.</p>
+    `,
+  })
+  return sendEmail({
+    to: payload.to,
+    subject: "Action may be required: your Arc payout bank changed",
+    html,
+  })
+}
+
 export interface VendorPaymentInviteEmailPayload {
   to: string[]
   recipientName?: string | null
@@ -708,6 +751,41 @@ export async function sendVendorPaymentInviteEmail(payload: VendorPaymentInviteE
   return sendEmail({
     to: payload.to,
     subject: `${payload.orgName} would like to pay you by direct deposit`,
+    html,
+    from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
+  })
+}
+
+export interface VendorArcPayReadyEmailPayload {
+  to: string
+  recipientName?: string | null
+  companyName: string
+  orgName: string
+  orgSlug?: string | null
+  orgLogoUrl?: string | null
+}
+
+/** Confirms to the teammate who sent the invite that the vendor is payable. */
+export async function sendVendorArcPayReadyEmail(payload: VendorArcPayReadyEmailPayload): Promise<boolean> {
+  const greeting = payload.recipientName
+    ? `<p style="margin:0 0 14px 0;">Hi ${escapeMessage(payload.recipientName)},</p>`
+    : ""
+  const payablesUrl = `${(process.env.NEXT_PUBLIC_APP_URL ?? "https://arcnaples.com").replace(/\/$/, "")}/payables`
+  const html = renderStandardEmailLayout({
+    title: `${payload.companyName} is ready for Arc Pay`,
+    messageHtml: `
+      ${greeting}
+      <p style="margin:0 0 14px 0;">${escapeMessage(payload.companyName)} completed business and payout setup. Bills for this vendor can now be paid through Arc Pay.</p>
+      <p style="margin:0;">Arc only shows masked destination details to your team; the vendor&apos;s full bank information remains with the payment provider.</p>
+    `,
+    buttonText: "Review payables",
+    buttonUrl: payablesUrl,
+    orgName: payload.orgName,
+    orgLogoUrl: payload.orgLogoUrl,
+  })
+  return sendEmail({
+    to: [payload.to],
+    subject: `${payload.companyName} is ready for Arc Pay`,
     html,
     from: getOrgSenderEmail(payload.orgSlug, payload.orgName),
   })

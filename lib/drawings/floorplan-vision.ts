@@ -16,7 +16,7 @@
  * UI's attention threshold, because an unproven wall must look unproven.
  *
  * Pure and client-safe: the network call lives in the service layer; this
- * module only parses and reconciles. Unit-tested in
+ * module only sanitises and reconciles. Unit-tested in
  * tests/floorplan-vision.test.js.
  */
 
@@ -79,53 +79,38 @@ export function buildFloorplanVisionPrompt(levelName: string): string {
     "Coordinates: normalized to the image, x 0..1 left→right, y 0..1 top→bottom.",
     "Walls: one straight centerline per wall run (exterior and interior). Follow the drawn walls only — never dimension lines, roof overhangs, property lines, cabinets, or the title block.",
     "Rooms: one entry per named room, positioned at the room name's printed location, label copied exactly as printed (e.g. \"BEDROOM 2\", \"GREAT ROOM\").",
-    "Return ONLY JSON: {\"walls\":[{\"x0\":0.1,\"y0\":0.2,\"x1\":0.4,\"y1\":0.2}],\"rooms\":[{\"x\":0.3,\"y\":0.4,\"label\":\"KITCHEN\"}]}",
     "Omit anything you cannot see clearly. An omitted wall is recoverable; an invented one is not.",
   ].join("\n")
 }
 
-/** Parse the model's reply, tolerating code fences and leading prose. */
-export function parseFloorplanVisionProposal(raw: string): FloorplanVisionProposal | null {
-  const start = raw.indexOf("{")
-  const end = raw.lastIndexOf("}")
-  if (start === -1 || end <= start) return null
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw.slice(start, end + 1))
-  } catch {
-    return null
-  }
-  if (!parsed || typeof parsed !== "object") return null
-  const record = parsed as Record<string, unknown>
-
+/**
+ * Domain-clean a proposal that structured output already made well-shaped.
+ *
+ * The schema guarantees the fields exist and are numbers; it cannot guarantee
+ * they are SENSIBLE. Coordinates outside the image clamp rather than reject —
+ * a model that overshoots an edge still knows where the wall is — and the caps
+ * exist so a model that starts hallucinating floods nothing. An empty proposal
+ * comes back as null, because "the model saw nothing" and "the model answered
+ * nothing" lead to the same decision upstream: leave the vector level alone.
+ */
+export function sanitizeFloorplanVisionProposal(value: {
+  walls: Array<{ x0: number; y0: number; x1: number; y1: number }>
+  rooms: Array<{ x: number; y: number; label: string }>
+}): FloorplanVisionProposal | null {
   const walls: VisionWallProposal[] = []
-  if (Array.isArray(record.walls)) {
-    for (const entry of record.walls.slice(0, MAX_PROPOSAL_WALLS)) {
-      if (!entry || typeof entry !== "object") continue
-      const wall = entry as Record<string, unknown>
-      const values = [wall.x0, wall.y0, wall.x1, wall.y1]
-      if (!values.every((value) => typeof value === "number" && Number.isFinite(value))) continue
-      const [x0, y0, x1, y1] = (values as number[]).map((value) => Math.min(1, Math.max(0, value)))
-      walls.push({ x0, y0, x1, y1 })
-    }
+  for (const wall of value.walls.slice(0, MAX_PROPOSAL_WALLS)) {
+    const values = [wall.x0, wall.y0, wall.x1, wall.y1]
+    if (!values.every((entry) => Number.isFinite(entry))) continue
+    const [x0, y0, x1, y1] = values.map((entry) => Math.min(1, Math.max(0, entry)))
+    walls.push({ x0, y0, x1, y1 })
   }
 
   const rooms: VisionRoomProposal[] = []
-  if (Array.isArray(record.rooms)) {
-    for (const entry of record.rooms.slice(0, MAX_PROPOSAL_ROOMS)) {
-      if (!entry || typeof entry !== "object") continue
-      const room = entry as Record<string, unknown>
-      if (typeof room.x !== "number" || typeof room.y !== "number") continue
-      if (!Number.isFinite(room.x) || !Number.isFinite(room.y)) continue
-      if (typeof room.label !== "string") continue
-      const label = room.label.replace(/\s+/g, " ").trim().slice(0, 40)
-      if (!label) continue
-      rooms.push({
-        x: Math.min(1, Math.max(0, room.x)),
-        y: Math.min(1, Math.max(0, room.y)),
-        label,
-      })
-    }
+  for (const room of value.rooms.slice(0, MAX_PROPOSAL_ROOMS)) {
+    if (!Number.isFinite(room.x) || !Number.isFinite(room.y)) continue
+    const label = room.label.replace(/\s+/g, " ").trim().slice(0, 40)
+    if (!label) continue
+    rooms.push({ x: Math.min(1, Math.max(0, room.x)), y: Math.min(1, Math.max(0, room.y)), label })
   }
 
   if (walls.length === 0 && rooms.length === 0) return null

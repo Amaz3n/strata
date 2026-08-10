@@ -242,10 +242,12 @@ export async function getProjectAccountingLink(input: { projectId: string; orgId
   return {
     mapId: projectMap?.id ?? null,
     connectionId: target?.connection.id ?? null,
+    // One neutral name for the customer dimension. The `qboCustomerId` /
+    // `qboCustomerName` aliases that used to sit beside these were the same two
+    // values under a provider's name, which is how a "neutral" DTO teaches every
+    // consumer to think in QuickBooks.
     accountingCustomerId: target?.dimensions.customer?.id ?? null,
     accountingCustomerName: target?.dimensions.customer?.name ?? null,
-    qboCustomerId: target?.dimensions.customer?.id ?? null,
-    qboCustomerName: target?.dimensions.customer?.name ?? null,
     target,
   }
 }

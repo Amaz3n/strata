@@ -1,4 +1,5 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { ACCOUNTING_JOB_TYPES } from "@/lib/services/accounting-job-types"
 import { recordAudit } from "@/lib/services/audit"
 import { CRON_JOBS } from "@/lib/services/job-runs"
 import { DRAWING_PIPELINE_JOB_TYPES } from "@/lib/services/drawings-pipeline"
@@ -205,9 +206,10 @@ export async function getOutboxHealth(): Promise<OutboxHealth> {
   }
 }
 
-// A job that hasn't moved in this long isn't "in flight", it's wedged — the
-// outbox drain runs every 5 minutes, so 10 covers a missed tick plus slack.
-const STUCK_THRESHOLD_MINUTES = 10
+// A job that hasn't moved in this long isn't "in flight", it's wedged — both
+// outbox drains (/api/jobs/process-outbox and /api/accounting/process-outbox)
+// run every 10 minutes, so 2× the cadence covers a missed tick plus slack.
+const STUCK_THRESHOLD_MINUTES = 20
 // Groups shown in the detail table. Exact totals are counted separately so a
 // truncated list still reports honest numbers.
 const STUCK_GROUP_LIMIT = 50
@@ -587,6 +589,85 @@ function summarizeDrawingsJobPayload(
   return parts.join(" · ") || "—"
 }
 
+// ============================================================================
+// Payment operational alerts
+// ============================================================================
+
+/** Event types that mean a human needs to look at a payment. */
+const PAYMENT_ALERT_EVENT_TYPES = [
+  "payment_submission_needs_recovery",
+  "vendor_transfer_needs_attention",
+  "payment_operations_alert",
+  "vendor_payout_destination_changed",
+] as const
+
+const PAYMENT_ALERT_LIMIT = 50
+const PAYMENT_ALERT_WINDOW_DAYS = 14
+
+export interface PaymentOperationsAlert {
+  id: string
+  eventType: string
+  orgId: string
+  orgName: string | null
+  entityType: string | null
+  entityId: string | null
+  /** Ids pulled out of the payload so the row can say what it is about. */
+  runId: string | null
+  disbursementId: string | null
+  billId: string | null
+  /** First human-readable detail line found in the payload. */
+  detail: string | null
+  createdAt: string
+}
+
+/**
+ * Recent payment events that were emitted for a human and, until now, had no
+ * surface reading them: recovery-needed submissions, vendor transfers stuck at
+ * the provider, and platform alerts like a tripped return-loss ceiling.
+ * Read-only — every one deep-links to the payable it concerns where it can.
+ */
+export async function listPaymentOperationsAlerts(): Promise<PaymentOperationsAlert[]> {
+  const supabase = createServiceSupabaseClient()
+  const windowStart = new Date(Date.now() - PAYMENT_ALERT_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString()
+  const { data, error } = await supabase
+    .from("events")
+    .select("id, org_id, event_type, entity_type, entity_id, payload, created_at, org:orgs(name)")
+    .in("event_type", [...PAYMENT_ALERT_EVENT_TYPES])
+    .gte("created_at", windowStart)
+    .order("created_at", { ascending: false })
+    .limit(PAYMENT_ALERT_LIMIT)
+  if (error) throw error
+
+  return (data ?? []).map((row) => {
+    const org = Array.isArray(row.org) ? row.org[0] : row.org
+    const payload = (row.payload ?? {}) as Record<string, unknown>
+    const findings = Array.isArray(payload.findings) ? payload.findings : []
+    const firstFinding = findings[0] && typeof findings[0] === "object" && !Array.isArray(findings[0])
+      ? (findings[0] as Record<string, unknown>)
+      : null
+    const detail = typeof firstFinding?.detail === "string"
+      ? firstFinding.detail
+      : typeof payload.error === "string"
+        ? payload.error
+        : typeof payload.reason === "string"
+          ? payload.reason
+          : null
+    return {
+      id: row.id,
+      eventType: row.event_type,
+      orgId: row.org_id,
+      orgName: org?.name ?? null,
+      entityType: row.entity_type ?? null,
+      entityId: row.entity_id ?? null,
+      runId: asId(payload.payment_run_id) ?? (row.entity_type === "payment_run" ? asId(row.entity_id) : null),
+      disbursementId: row.entity_type === "disbursement" ? asId(row.entity_id) : asId(payload.disbursement_id),
+      billId: asId(payload.bill_id),
+      detail,
+      createdAt: row.created_at,
+    }
+  })
+}
+
 export async function retryOutboxItem(id: number, actorId?: string): Promise<void> {
   const supabase = createServiceSupabaseClient()
 
@@ -621,10 +702,17 @@ export async function retryOutboxItem(id: number, actorId?: string): Promise<voi
 export async function retryAllFailedOutbox(actorId?: string): Promise<number> {
   const supabase = createServiceSupabaseClient()
 
+  // Accounting pushes are excluded: their sync records sit in `error` and have
+  // their own retry surface that resets them alongside the job. Blind-flipping
+  // an exhausted accounting job re-runs it against a sync record that still
+  // says `error`, so the retry succeeds and the record lies. Retry those from
+  // the accounting sync surface instead.
+  const accountingJobTypes = [...ACCOUNTING_JOB_TYPES]
   const { data: items, error: itemsError } = await supabase
     .from("outbox")
     .select("id, org_id")
     .eq("status", "failed")
+    .not("job_type", "in", `(${accountingJobTypes.join(",")})`)
   if (itemsError) throw itemsError
   if (!items || items.length === 0) return 0
 
@@ -632,6 +720,7 @@ export async function retryAllFailedOutbox(actorId?: string): Promise<number> {
     .from("outbox")
     .update({ status: "pending", run_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("status", "failed")
+    .not("job_type", "in", `(${accountingJobTypes.join(",")})`)
   if (error) throw error
 
   const countByOrg = new Map<string, number>()

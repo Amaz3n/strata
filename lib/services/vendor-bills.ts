@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { findDuplicatePayable } from "@/lib/services/payable-duplicate-check"
 import { z } from "zod"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -12,14 +13,18 @@ import { getComplianceRules } from "@/lib/services/compliance"
 import { propagateApprovalToLedger, voidBillableCostsForVendorBill } from "@/lib/services/cost-plus"
 import { voidJobCostEntriesForVendorBill } from "@/lib/services/job-cost-actuals"
 import { enqueueBillPaymentSync, enqueueVendorBillSync } from "@/lib/services/accounting-sync"
+import { isSyncableVendorBillStatus } from "@/lib/financials/ledger-status"
 import { APPROVAL_GATE_REASONS, loadApprovalGateSettings } from "@/lib/financials/approval-gates"
 import { isCostDrivenBillingModel } from "@/lib/financials/billing-model"
 import { payableOutstandingCents } from "@/lib/financials/payables-rules"
-import { accountingReference, buildAccountingCoding } from "@/lib/services/accounting-coding"
+import { accountingReference, buildAccountingCoding, readCodingSource, type CodingSource } from "@/lib/services/accounting-coding"
 import { assertBillReleasable, type PaymentReleaseEvidence } from "@/lib/services/payment-holds"
 import { requireRecentPaymentStepUp } from "@/lib/services/payment-step-up"
 import { evaluateAndAutoApproveVendorBill } from "@/lib/services/invoice-auto-approval"
-import { learnCodingRule, recordCodingTouch, suggestCoding } from "@/lib/services/books/coding-rules"
+import { learnCodingRule, recordCodingTouch, suggestCoding, type CodingLineSplit } from "@/lib/services/books/coding-rules"
+import { readLineMatchAssessment, type PayableLineMatchAssessment } from "@/lib/financials/payable-line-match"
+import { readEvenFlowAssessment, type EvenFlowPriceAssessment } from "@/lib/financials/even-flow-price-anomaly"
+import { readBillScheduleAssessment, type BillScheduleAssessment } from "@/lib/financials/bill-schedule-crosscheck"
 import { sendManualPaymentRemittanceAdvice } from "@/lib/services/vendor-remittance"
 import { sendVendorBillDecisionNotice } from "@/lib/services/vendor-bill-notices"
 
@@ -66,6 +71,14 @@ export interface VendorBillSummary {
   updated_at?: string
   payment_reference?: string
   payment_method?: string
+  preferred_payment_method?: "ach" | "check" | "wire" | "card" | "other"
+  payment_memo?: string
+  /** Who moves the money: Arc's rail, or the builder paying it themselves. */
+  payment_channel?: "arc" | "external"
+  preferred_funding_source_id?: string
+  payment_schedule?: "on_approval" | "scheduled"
+  scheduled_payment_date?: string
+  preferred_approver_ids?: string[]
   paid_at?: string
   approved_at?: string
   approved_by?: string
@@ -93,6 +106,7 @@ export interface VendorBillSummary {
   qbo_ap_account_name?: string
   qbo_vendor_id?: string
   qbo_vendor_name?: string
+  accounting_dimensions?: Record<string, { id: string; name: string }>
   company_qbo_vendor_id?: string | null
   company_qbo_vendor_name?: string | null
   actual_lines?: VendorBillActualLine[]
@@ -107,6 +121,20 @@ export interface VendorBillSummary {
   /** True when this payable originated from a QuickBooks import (QBO owns the record). */
   imported_from_qbo: boolean
   payments: VendorBillPaymentSummary[]
+  /** Creation workspace state. Drafts are captured but intentionally not approvable. */
+  is_draft: boolean
+  coding_source?: CodingSource
+  coding_confidence?: number
+  /** The learned rule that coded this payable, when one did. */
+  coding_rule_id?: string
+  /** Vision-extraction confidence from the scan that created this payable. */
+  extraction_confidence?: "high" | "medium" | "low"
+  /** Advisory line-level match against the commitment, when one has been run. */
+  line_match?: PayableLineMatchAssessment
+  /** Advisory price comparison against sibling lots of the same house plan. */
+  even_flow_price?: EvenFlowPriceAssessment
+  /** Advisory crosscheck of the bill's date against the project schedule. */
+  bill_schedule?: BillScheduleAssessment
 }
 
 export interface BulkVendorBillApprovalItem {
@@ -132,12 +160,22 @@ export async function approveVendorBillsAtomic(
 
   const context = await requireOrgContext(orgId)
   const service = createServiceSupabaseClient()
-  const { data: bills, error } = await service.from("vendor_bills").select("id,project_id").eq("org_id", context.orgId).in("id", parsed.map((item) => item.id))
+  const { data: bills, error } = await service.from("vendor_bills").select("id,project_id,metadata").eq("org_id", context.orgId).in("id", parsed.map((item) => item.id))
   if (error || (bills?.length ?? 0) !== parsed.length) throw new Error("One or more payables could not be found")
   const projectIds = Array.from(new Set((bills ?? []).map((bill) => bill.project_id)))
   if (projectIds.some((projectId) => !projectId)) throw new Error("Every payable in a bulk approval must belong to a project")
   for (const projectId of projectIds as string[]) {
     await requireAuthorization({ permission: "bill.approve", userId: context.userId, orgId: context.orgId, projectId, supabase: context.supabase, logDecision: true, resourceType: "project", resourceId: projectId })
+  }
+  const outsideDesignatedRoute = (bills ?? []).some((bill) => {
+    const metadata = (bill.metadata as Record<string, unknown> | null) ?? {}
+    const ids = Array.isArray(metadata.preferred_approver_ids)
+      ? metadata.preferred_approver_ids.filter((value): value is string => typeof value === "string")
+      : []
+    return ids.length > 0 && !ids.includes(context.userId)
+  })
+  if (outsideDesignatedRoute) {
+    throw new Error("One or more payables are waiting for their designated approver")
   }
 
   const { data, error: rpcError } = await service.rpc("approve_vendor_bills_atomic", {
@@ -186,6 +224,7 @@ export interface VendorBillActualLine {
   qbo_ap_account_name?: string
   qbo_vendor_id?: string
   qbo_vendor_name?: string
+  accounting_dimensions?: Record<string, { id: string; name: string }>
 }
 
 function linesHaveQboExpenseCoding(lines: Array<{ qbo_expense_account_id?: string | null }>) {
@@ -197,6 +236,116 @@ function linesHaveQboExpenseCoding(lines: Array<{ qbo_expense_account_id?: strin
 function pickSharedLineValue(values: Array<string | null | undefined>): string | undefined {
   const distinct = new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0))
   return distinct.size === 1 ? [...distinct][0] : undefined
+}
+
+interface CodingLesson {
+  costCodeId: string | null
+  budgetLineId: string | null
+  /** Set only when the bill genuinely splits across more than one code. */
+  lineSplits: CodingLineSplit[] | null
+}
+
+/**
+ * What a saved bill teaches about how this vendor should be coded.
+ *
+ * Lines that agree on a code teach that code, however many of them there are.
+ * Lines that disagree teach the split — weighted by share of the bill, in basis
+ * points, so the pattern reapplies to a different total next month. A split is
+ * only worth remembering when every line is coded and the amounts are positive;
+ * a half-coded bill is a bill someone abandoned, not a pattern.
+ */
+function buildCodingLesson(
+  lines: Array<{ cost_code_id?: string | null; budget_line_id?: string | null; amount_cents: number; description?: string | null }>,
+): CodingLesson {
+  if (lines.length === 0) return { costCodeId: null, budgetLineId: null, lineSplits: null }
+
+  const codeOf = (line: { cost_code_id?: string | null; budget_line_id?: string | null }) =>
+    line.cost_code_id ?? line.budget_line_id ?? null
+  const distinct = new Set(lines.map(codeOf))
+  if (distinct.size === 1) {
+    const [only] = [...distinct]
+    return {
+      costCodeId: only === null ? null : lines[0].cost_code_id ?? null,
+      budgetLineId: only === null ? null : lines[0].budget_line_id ?? null,
+      lineSplits: null,
+    }
+  }
+
+  if (lines.some((line) => codeOf(line) === null || line.amount_cents <= 0)) {
+    return { costCodeId: null, budgetLineId: null, lineSplits: null }
+  }
+
+  // Merge lines sharing a code before weighting: two rows on the same code are
+  // one leg of the split, not two.
+  const byCode = new Map<
+    string,
+    { costCodeId: string | null; budgetLineId: string | null; amountCents: number; description: string | null }
+  >()
+  for (const line of lines) {
+    const key = `${line.cost_code_id ?? ""}:${line.budget_line_id ?? ""}`
+    const entry = byCode.get(key)
+    if (entry) {
+      entry.amountCents += line.amount_cents
+      entry.description = entry.description ?? line.description?.trim() ?? null
+    } else {
+      byCode.set(key, {
+        costCodeId: line.cost_code_id ?? null,
+        budgetLineId: line.budget_line_id ?? null,
+        amountCents: line.amount_cents,
+        description: line.description?.trim() || null,
+      })
+    }
+  }
+  if (byCode.size < 2) return { costCodeId: null, budgetLineId: null, lineSplits: null }
+
+  const total = [...byCode.values()].reduce((sum, entry) => sum + entry.amountCents, 0)
+  if (total <= 0) return { costCodeId: null, budgetLineId: null, lineSplits: null }
+
+  const entries = [...byCode.values()]
+  const splits: CodingLineSplit[] = entries.map((entry) => ({
+    costCodeId: entry.costCodeId,
+    budgetLineId: entry.budgetLineId,
+    weightBp: Math.round((entry.amountCents / total) * 10_000),
+    description: entry.description,
+  }))
+  // Weights must sum to exactly 10000 or the rule is discarded on read; the
+  // rounding remainder lands on the largest leg, where it is least visible.
+  const drift = 10_000 - splits.reduce((sum, split) => sum + split.weightBp, 0)
+  if (drift !== 0) {
+    let largestIndex = 0
+    for (let index = 1; index < entries.length; index += 1) {
+      if (entries[index].amountCents > entries[largestIndex].amountCents) largestIndex = index
+    }
+    splits[largestIndex].weightBp += drift
+  }
+
+  return { costCodeId: null, budgetLineId: null, lineSplits: splits }
+}
+
+/**
+ * Apply a learned split to a real amount. Basis-point weights never divide a
+ * total cleanly, so the remainder lands on the largest leg and the legs sum to
+ * the total exactly — a coded bill that misses its own total cannot be approved.
+ */
+function splitAmountByWeights(
+  totalCents: number,
+  splits: CodingLineSplit[],
+): Array<{ costCodeId: string | null; budgetLineId: string | null; amountCents: number; description: string | null }> {
+  const allocated = splits.map((split) => ({
+    costCodeId: split.costCodeId,
+    budgetLineId: split.budgetLineId,
+    amountCents: Math.round((totalCents * split.weightBp) / 10_000),
+    description: split.description,
+  }))
+  const drift = totalCents - allocated.reduce((sum, entry) => sum + entry.amountCents, 0)
+  if (drift !== 0 && allocated.length > 0) {
+    let largestIndex = 0
+    for (let index = 1; index < allocated.length; index += 1) {
+      if (Math.abs(allocated[index].amountCents) > Math.abs(allocated[largestIndex].amountCents)) largestIndex = index
+    }
+    allocated[largestIndex].amountCents += drift
+  }
+  return allocated
 }
 
 async function buildBillLinesFromCommitment({
@@ -253,6 +402,8 @@ async function buildBillLinesFromCommitment({
       qbo_ap_account_name: undefined,
       qbo_vendor_id: undefined,
       qbo_vendor_name: undefined,
+      // Inherited from the commitment's scope, which carries no accounting dimensions.
+      accounting_dimensions: undefined,
     }
   })
 }
@@ -282,6 +433,11 @@ export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: strin
     qbo_ap_account_name: line.metadata?.qbo_ap_account_name ?? undefined,
     qbo_vendor_id: line.metadata?.qbo_vendor_id ?? undefined,
     qbo_vendor_name: line.metadata?.qbo_vendor_name ?? undefined,
+    accounting_dimensions: line.metadata?.accounting_dimensions && typeof line.metadata.accounting_dimensions === "object"
+      ? line.metadata.accounting_dimensions
+      : line.metadata?.qbo_class_id
+        ? { class: { id: line.metadata.qbo_class_id, name: line.metadata.qbo_class_name ?? "Class" } }
+        : undefined,
   }))
   const firstActualLine = actualLines[0]
 
@@ -348,6 +504,18 @@ export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: strin
     updated_at: row.updated_at ?? undefined,
     payment_reference: row.payment_reference ?? metadata.payment_reference ?? undefined,
     payment_method: row.payment_method ?? metadata.payment_method ?? undefined,
+    preferred_payment_method:
+      metadata.preferred_payment_method === "ach" || metadata.preferred_payment_method === "check" || metadata.preferred_payment_method === "wire" || metadata.preferred_payment_method === "card" || metadata.preferred_payment_method === "other"
+        ? metadata.preferred_payment_method
+        : undefined,
+    payment_memo: typeof metadata.payment_memo === "string" ? metadata.payment_memo : undefined,
+    payment_channel: metadata.payment_channel === "external" ? "external" : metadata.payment_channel === "arc" ? "arc" : undefined,
+    preferred_funding_source_id: typeof metadata.preferred_funding_source_id === "string" ? metadata.preferred_funding_source_id : undefined,
+    payment_schedule: metadata.payment_schedule === "scheduled" ? "scheduled" : metadata.payment_schedule === "on_approval" ? "on_approval" : undefined,
+    scheduled_payment_date: typeof metadata.scheduled_payment_date === "string" ? metadata.scheduled_payment_date : undefined,
+    preferred_approver_ids: Array.isArray(metadata.preferred_approver_ids)
+      ? metadata.preferred_approver_ids.filter((value: unknown): value is string => typeof value === "string")
+      : undefined,
     paid_at: row.paid_at ?? metadata.paid_at ?? undefined,
     approved_at: row.approved_at ?? metadata.approved_at ?? undefined,
     approved_by: row.approved_by ?? metadata.approved_by ?? undefined,
@@ -384,6 +552,17 @@ export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: strin
     payable_type: payableType,
     qbo_pushable: payableType === "bill",
     imported_from_qbo: metadata.imported_from_qbo === true,
+    is_draft: metadata.creation_state === "draft",
+    coding_source: readCodingSource(metadata.coding_source) ?? undefined,
+    coding_confidence: typeof metadata.coding_confidence === "number" ? metadata.coding_confidence : undefined,
+    coding_rule_id: typeof metadata.coding_rule_id === "string" ? metadata.coding_rule_id : undefined,
+    extraction_confidence:
+      metadata.extraction_confidence === "high" || metadata.extraction_confidence === "medium" || metadata.extraction_confidence === "low"
+        ? metadata.extraction_confidence
+        : undefined,
+    line_match: readLineMatchAssessment(metadata) ?? undefined,
+    even_flow_price: readEvenFlowAssessment(metadata) ?? undefined,
+    bill_schedule: readBillScheduleAssessment(metadata) ?? undefined,
     payments: (paymentRows ?? []).map((payment) => {
       const paymentMetadata = (payment.metadata as Record<string, any> | null) ?? {}
       return {
@@ -423,6 +602,7 @@ async function replaceBillLineCoding(
       qbo_ap_account_name?: string
       qbo_vendor_id?: string
       qbo_vendor_name?: string
+      accounting_dimensions?: Record<string, { id: string; name: string }>
     }>
   },
 ) {
@@ -478,6 +658,9 @@ async function replaceBillLineCoding(
         qbo_ap_account_name: line.qbo_ap_account_name,
         qbo_vendor_id: line.qbo_vendor_id,
         qbo_vendor_name: line.qbo_vendor_name,
+        accounting_dimensions: line.accounting_dimensions,
+        qbo_class_id: line.accounting_dimensions?.class?.id,
+        qbo_class_name: line.accounting_dimensions?.class?.name,
       },
     }
   })
@@ -687,11 +870,15 @@ export async function listVendorBillsPageForProject(
   query = allocatedBillIds.length > 0 ? query.or(`project_id.eq.${projectId},id.in.(${allocatedBillIds.join(",")})`) : query.eq("project_id", projectId)
   const today = new Date().toISOString().slice(0, 10)
   const soon = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10)
-  if (queue === "paid") query = query.eq("status", "paid")
-  else if (queue === "payable") query = query.in("status", ["approved", "partial"])
-  else if (queue === "needs_review") query = query.eq("status", "pending")
-  else if (queue === "overdue") query = query.neq("status", "paid").lt("due_date", today)
-  else if (queue === "due_soon") query = query.neq("status", "paid").gte("due_date", today).lte("due_date", soon)
+  if (queue === "drafts") query = query.eq("metadata->>creation_state", "draft")
+  else {
+    if (queue !== "all") query = query.or("metadata->>creation_state.is.null,metadata->>creation_state.neq.draft")
+    if (queue === "paid") query = query.eq("status", "paid")
+    else if (queue === "payable") query = query.in("status", ["approved", "partial"])
+    else if (queue === "needs_review") query = query.eq("status", "pending")
+    else if (queue === "overdue") query = query.neq("status", "paid").lt("due_date", today)
+    else if (queue === "due_soon") query = query.neq("status", "paid").gte("due_date", today).lte("due_date", soon)
+  }
   if (search) query = query.or(`bill_number.ilike.%${search}%,qbo_vendor_name.ilike.%${search}%`)
   const { data, error, count } = await query.order("due_date", { ascending: true, nullsFirst: false }).order("created_at", { ascending: false }).range((page - 1) * pageSize, page * pageSize - 1)
   if (error) throw new Error(`Failed to list vendor bills: ${error.message}`)
@@ -728,7 +915,7 @@ async function assertExternalPaymentControls(input: {
   supabase: Awaited<ReturnType<typeof requireOrgContext>>["supabase"]
   orgId: string
   userId: string
-  bill: { approved_by?: string | null; total_cents?: number | null }
+  bill: { id: string; approved_by?: string | null; total_cents?: number | null; metadata?: Record<string, unknown> | null }
   amountCents: number
   checkNumber: string | null
 }) {
@@ -752,6 +939,44 @@ async function assertExternalPaymentControls(input: {
       .maybeSingle()
     if (existingCheck) {
       throw new Error(`Check number ${input.checkNumber.trim()} is already recorded against another payment. Void that one first if this is a correction.`)
+    }
+  }
+
+  // CONTROL INTENT — dual control for auto-approved payables. Auto-approval
+  // leaves `approved_by` null (the approver was a rule, not a person), which
+  // would let the `approved_by === userId` equality checks below pass
+  // trivially: one person could configure a rule, let it approve their bill,
+  // and record the payment alone. When the bill carries the auto-approval
+  // markers and the org actually has another payment releaser, the person
+  // recording the payment must be independent of the bill — not the person who
+  // created or edited it, and not the person who manages the rule that
+  // approved it.
+  const billMetadata = input.bill.metadata ?? {}
+  const autoApprovedRuleId = typeof billMetadata.auto_approved_rule_id === "string" ? billMetadata.auto_approved_rule_id : null
+  const wasAutoApproved = billMetadata.auto_approved === true || autoApprovedRuleId !== null
+  if (wasAutoApproved && (await orgHasAnotherPaymentReleaser(input.orgId, input.userId))) {
+    const { data: auditRows } = await service
+      .from("audit_log")
+      .select("actor_user_id")
+      .eq("org_id", input.orgId)
+      .eq("entity_type", "vendor_bill")
+      .eq("entity_id", input.bill.id)
+      .in("action", ["insert", "update"])
+    const touchedBy = new Set((auditRows ?? []).map((row) => row.actor_user_id).filter(Boolean))
+    let ruleManagerId: string | null = null
+    if (autoApprovedRuleId) {
+      const { data: rule } = await service
+        .from("invoice_auto_approval_rules")
+        .select("created_by")
+        .eq("org_id", input.orgId)
+        .eq("id", autoApprovedRuleId)
+        .maybeSingle()
+      ruleManagerId = rule?.created_by ?? null
+    }
+    if (touchedBy.has(input.userId) || ruleManagerId === input.userId) {
+      throw new Error(
+        "This payable was approved automatically, so someone who did not create or edit it — and does not manage its auto-approval rule — has to record the payment.",
+      )
     }
   }
 
@@ -839,6 +1064,21 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
     resourceId: billId,
   })
 
+  // A submitted payable's route is narrower than the role permission. The role
+  // says who may ever approve bills; this frozen list says who was selected to
+  // decide this one. Bills created before explicit routing have no list and keep
+  // the legacy permission-only behavior.
+  if (parsed.status === "approved" || parsed.status === "rejected") {
+    const designatedApproverIds = Array.isArray(existingMetadata.preferred_approver_ids)
+      ? existingMetadata.preferred_approver_ids.filter(
+          (value: unknown): value is string => typeof value === "string",
+        )
+      : []
+    if (designatedApproverIds.length > 0 && !designatedApproverIds.includes(userId)) {
+      throw new Error("This payable is waiting for its designated approver.")
+    }
+  }
+
   if ((parsed.status === "paid" || parsed.status === "partial") && existing.status !== "approved" && existing.status !== "partial" && existing.status !== "paid") {
     throw new Error("Bill must be approved before it can be marked paid")
   }
@@ -904,6 +1144,9 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
 
   // Build update object with column values.
   const updateData: any = { status: parsed.status }
+  if (existingMetadata.creation_state === "draft" && (parsed.actual_lines?.length || parsed.status === "approved")) {
+    updateData.metadata = { ...existingMetadata, creation_state: "ready" }
+  }
   if (parsed.bill_number !== undefined) {
     updateData.bill_number = parsed.bill_number
   }
@@ -1047,11 +1290,36 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
         qbo_ap_account_name: line.qbo_ap_account_name ?? parsed.qbo_ap_account_name ?? existing.qbo_ap_account_name ?? undefined,
         qbo_vendor_id: line.qbo_vendor_id ?? parsed.qbo_vendor_id ?? existing.qbo_vendor_id ?? undefined,
         qbo_vendor_name: line.qbo_vendor_name ?? parsed.qbo_vendor_name ?? existing.qbo_vendor_name ?? undefined,
+        accounting_dimensions: line.accounting_dimensions,
       }))
     : []
 
   const targetStatus = parsed.status ?? existing.status
   const isApprovedOrReleased = ["approved", "partial", "paid"].includes(targetStatus)
+
+  // The coding as it stands *before* this edit, read while `bill_lines` still
+  // holds it. Without it a touch cannot tell "the person recoded this bill"
+  // from "the person saved this bill", and the rule engine cannot tell whether
+  // it was confirmed or contradicted — the two defects that made the zero-touch
+  // metric unreadable and retired rules on sight.
+  const codingMayChange = Boolean(explicitLines) || Boolean(parsed.cost_code_id) || isApprovedOrReleased || qboCodingChanged
+  let priorCoding: CodingLesson = { costCodeId: null, budgetLineId: null, lineSplits: null }
+  if (codingMayChange) {
+    const { data: priorLines, error: priorLinesError } = await supabase
+      .from("bill_lines")
+      .select("cost_code_id, budget_line_id, unit_cost_cents, quantity, description")
+      .eq("org_id", resolvedOrgId)
+      .eq("bill_id", billId)
+    if (priorLinesError) throw new Error(`Failed to load current bill coding: ${priorLinesError.message}`)
+    priorCoding = buildCodingLesson(
+      (priorLines ?? []).map((line) => ({
+        cost_code_id: line.cost_code_id,
+        budget_line_id: line.budget_line_id,
+        description: line.description,
+        amount_cents: Math.round(Number(line.quantity ?? 1) * Number(line.unit_cost_cents ?? 0)),
+      })),
+    )
+  }
 
   // When no explicit per-line coding is supplied we may still need to synthesize a single
   // full-total line — e.g. a quick approve from the list, or assigning one cost code to an
@@ -1096,6 +1364,9 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
                 qbo_ap_account_name: parsed.qbo_ap_account_name ?? existing.qbo_ap_account_name ?? undefined,
                 qbo_vendor_id: parsed.qbo_vendor_id ?? existing.qbo_vendor_id ?? undefined,
                 qbo_vendor_name: parsed.qbo_vendor_name ?? existing.qbo_vendor_name ?? undefined,
+                // Dimensions live on the line, not the bill header, so a line Arc
+                // synthesizes for an uncoded bill has none to inherit.
+                accounting_dimensions: undefined,
               },
             ]
     }
@@ -1237,6 +1508,21 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
     updateData.lien_waiver_received_at = parsed.lien_waiver_status === "received" ? new Date().toISOString() : null
   }
 
+  // `over_budget` was frozen at creation, which let a payable keep warning (or
+  // keep quiet) long after sibling bills or line recoding changed the answer.
+  // Recompute on every edit; the helper stays warning-tier metadata as before.
+  if (existing.commitment_id && !isVendorCredit) {
+    const overBudget = await computeCommitmentOverBudget(supabase, {
+      orgId: resolvedOrgId,
+      commitmentId: existing.commitment_id,
+      totalCents,
+      excludeBillId: billId,
+    })
+    if (overBudget !== (existingMetadata.over_budget === true)) {
+      updateData.metadata = { ...existingMetadata, ...(updateData.metadata ?? {}), over_budget: overBudget }
+    }
+  }
+
   let updateQuery = supabase.from("vendor_bills").update(updateData).eq("org_id", resolvedOrgId).eq("id", billId)
   if (parsed.expected_updated_at) {
     updateQuery = updateQuery.eq("updated_at", parsed.expected_updated_at)
@@ -1290,13 +1576,15 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
     throw new Error(`Vendor bill status was not saved because the project cost ledger could not be updated: ${message}`)
   }
 
-  // Push to QuickBooks when either (a) the bill enters an approved/paid state, or (b) its QBO
-  // coding (expense/AP account, vendor) changed and the bill is already linked to a QBO record
-  // — so recoding a still-pending or imported bill flows the new account back to QuickBooks.
+  // Push to the accounting system when either (a) the bill enters a syncable state, or (b) its
+  // accounting coding (expense/AP account, vendor) changed and the bill is already linked to an
+  // external record — so recoding a still-pending or imported bill flows the new account back.
+  // The syncable set is declared once in `lib/financials/ledger-status.ts`; it is deliberately a
+  // different question from `PAYABLE_VENDOR_BILL_STATUSES`, so read the note there before editing.
   // enqueueVendorBillSync is the durable, deduped path: it respects auto-sync, skips inbound-only
   // imports (isSyncPushBlocked), and is drained with retries by the process-outbox cron.
   const billLinkedToQbo = Boolean(data.qbo_id)
-  const shouldEnqueueForStatus = ["approved", "partial", "paid"].includes(String(finalStatus))
+  const shouldEnqueueForStatus = isSyncableVendorBillStatus(finalStatus)
   const shouldEnqueueForRecode = billLinkedToQbo && qboCodingChanged
   if (shouldEnqueueForStatus || shouldEnqueueForRecode) {
     await enqueueVendorBillSync(billId, resolvedOrgId)
@@ -1333,7 +1621,7 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
           ? "vendor_bill_approved"
           : "vendor_bill_updated"
 
-  await recordEvent({
+  const lifecycleEvent = await recordEvent({
     orgId: resolvedOrgId,
     actorId: userId,
     eventType: lifecycleEventType,
@@ -1345,6 +1633,9 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
       company_id: existing.company_id,
       bill_number: existing.bill_number,
       amount_cents: existing.total_cents,
+      submitted_by_user_id: typeof existingMetadata.submitted_by_user_id === "string"
+        ? existingMetadata.submitted_by_user_id
+        : undefined,
       rejection_reason: finalStatus === "rejected" ? parsed.rejection_reason : undefined,
       cost_code_id: parsed.cost_code_id,
       actual_lines: parsed.actual_lines,
@@ -1360,26 +1651,42 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
     },
   })
 
-  // The vendor who sent the invoice hears the outcome directly. Best effort: the
-  // decision is already recorded and is not undone by a mail failure.
+  // The vendor on the payable hears the outcome directly, whether they uploaded
+  // the invoice or the builder entered it. Best effort: the decision is already
+  // recorded and is not undone by a mail failure.
   if (lifecycleEventType === "vendor_bill_approved" || lifecycleEventType === "vendor_bill_rejected") {
     await sendVendorBillDecisionNotice({
       orgId: resolvedOrgId,
       billId,
       kind: lifecycleEventType === "vendor_bill_approved" ? "approved" : "rejected",
       reason: parsed.rejection_reason ?? null,
+      eventId: lifecycleEvent.id,
     }).catch((error) => console.warn("Vendor bill decision notice was not sent", error))
   }
 
+  // What this bill teaches the rule engine. A single line teaches its code; a
+  // bill whose lines all carry the same code teaches that code just as well.
+  // Bills that genuinely split across codes used to teach nothing at all, which
+  // is backwards — a vendor who always splits the same way is the most
+  // predictable vendor there is, so the split itself is the lesson.
   const learnedLine = actualLines.length === 1 ? actualLines[0] : null
-  const codingWasTouched = Boolean(learnedLine?.cost_code_id || parsed.cost_code_id || qboCodingChanged)
+  const codingLesson = buildCodingLesson(actualLines)
+  const codingWasTouched = Boolean(
+    learnedLine?.cost_code_id || codingLesson.costCodeId || codingLesson.lineSplits || parsed.cost_code_id || qboCodingChanged,
+  )
   if (codingWasTouched) {
-    const nextCostCodeId = learnedLine?.cost_code_id ?? parsed.cost_code_id ?? null
+    const nextCostCodeId = learnedLine?.cost_code_id ?? codingLesson.costCodeId ?? parsed.cost_code_id ?? null
+    const nextBudgetLineId = learnedLine?.budget_line_id ?? codingLesson.budgetLineId ?? null
+    const appliedRuleId = typeof existingMetadata.coding_rule_id === "string" ? existingMetadata.coding_rule_id : null
     await recordCodingTouch({
       entityType: "vendor_bill",
       entityId: billId,
-      field: "cost_code",
-      nextValue: nextCostCodeId,
+      changes: [
+        { field: "cost_code", previousValue: priorCoding.costCodeId, nextValue: nextCostCodeId },
+        { field: "budget_line", previousValue: priorCoding.budgetLineId, nextValue: nextBudgetLineId },
+      ],
+      codingSource: readCodingSource(existingMetadata.coding_source),
+      codingRuleId: appliedRuleId,
       projectId: existing.project_id,
       orgId: resolvedOrgId,
     })
@@ -1387,9 +1694,10 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
       companyId: parsed.company_id ?? existing.company_id,
       vendorName: parsed.qbo_vendor_name ?? existing.qbo_vendor_name,
       costCodeId: nextCostCodeId,
-      budgetLineId: learnedLine?.budget_line_id ?? null,
+      budgetLineId: nextBudgetLineId,
+      lineSplits: codingLesson.lineSplits,
       accountingCoding: updateData.accounting_coding,
-      corrected: typeof existingMetadata.coding_rule_id === "string",
+      appliedRuleId,
       projectId: existing.project_id,
       orgId: resolvedOrgId,
     })
@@ -1457,46 +1765,52 @@ export async function createProjectVendorBill({ projectId, input, orgId }: { pro
   }
 
   const vendorName = parsed.vendor_name?.trim() || parsed.qbo_vendor_name?.trim() || null
-  const codingSuggestion = await suggestCoding({
-    companyId,
-    vendorName,
-    memo: parsed.description,
-    projectId,
-    orgId: resolvedOrgId,
-  })
-
-  const { data: possibleDuplicates, error: duplicateError } = await supabase
-    .from("vendor_bills")
-    .select("id, company_id, qbo_vendor_id, qbo_vendor_name, metadata")
-    .eq("org_id", resolvedOrgId)
-    .ilike("bill_number", parsed.bill_number.trim())
-    .limit(25)
-
-  if (duplicateError) {
-    throw new Error(`Failed to check duplicate payables: ${duplicateError.message}`)
+  const explicitLines = parsed.actual_lines ?? []
+  if (explicitLines.some((line) => line.project_id && line.project_id !== projectId)) {
+    throw new Error("Create the payable first before splitting it across projects")
   }
+  if (explicitLines.length > 0 && explicitLines.reduce((sum, line) => sum + line.amount_cents, 0) !== parsed.total_cents) {
+    throw new Error("Payable coding lines must add up to the invoice total")
+  }
+  const firstExplicitLine = explicitLines[0]
+  const explicitAccountingCoding = firstExplicitLine
+    ? buildAccountingCoding({
+        expenseAccountId: firstExplicitLine.qbo_expense_account_id,
+        expenseAccountName: firstExplicitLine.qbo_expense_account_name,
+        apAccountId: firstExplicitLine.qbo_ap_account_id,
+        apAccountName: firstExplicitLine.qbo_ap_account_name,
+        classId: firstExplicitLine.accounting_dimensions?.class?.id,
+        className: firstExplicitLine.accounting_dimensions?.class?.name,
+        counterpartyId: parsed.qbo_vendor_id,
+        counterpartyName: parsed.qbo_vendor_name || parsed.vendor_name,
+      })
+    : null
+  const codingSuggestion = explicitLines.length === 0
+    ? await suggestCoding({
+        companyId,
+        vendorName,
+        memo: parsed.description,
+        projectId,
+        orgId: resolvedOrgId,
+      })
+    : null
 
-  const normalizedVendorName = normalizeVendorName(vendorName)
-  const duplicate = (possibleDuplicates ?? []).find((bill: any) => {
-    const metadata = (bill.metadata as Record<string, any> | null) ?? {}
-    return (
-      (companyId && bill.company_id === companyId) ||
-      (parsed.qbo_vendor_id && bill.qbo_vendor_id === parsed.qbo_vendor_id) ||
-      (normalizedVendorName && normalizeVendorName(String(metadata.vendor_name ?? bill.qbo_vendor_name ?? "")) === normalizedVendorName)
-    )
+  const duplicate = await findDuplicatePayable({
+    supabase,
+    orgId: resolvedOrgId,
+    billNumber: parsed.bill_number,
+    companyId,
+    totalCents: parsed.total_cents,
+    billDate: parsed.bill_date ?? null,
+    vendorAliases: { accountingVendorId: parsed.qbo_vendor_id ?? null, vendorName },
   })
   if (duplicate) {
-    throw new Error("A payable with this vendor and invoice number already exists.")
+    throw new Error(duplicate.reason)
   }
 
-  let isOverBudget = false
-  if (parsed.commitment_id && commitment) {
-    const { data: existingBills } = await supabase.from("vendor_bills").select("total_cents").eq("commitment_id", parsed.commitment_id).eq("org_id", resolvedOrgId)
-
-    const totalBilled = (existingBills ?? []).reduce((sum: number, bill: any) => sum + (bill.total_cents ?? 0), 0)
-    const approvedChangeOrdersCents = await getApprovedCommitmentChangeOrderTotalCents(supabase, resolvedOrgId, parsed.commitment_id)
-    isOverBudget = totalBilled + parsed.total_cents > (commitment.total_cents ?? 0) + approvedChangeOrdersCents
-  }
+  const isOverBudget = parsed.commitment_id && commitment
+    ? await computeCommitmentOverBudget(supabase, { orgId: resolvedOrgId, commitmentId: parsed.commitment_id, totalCents: parsed.total_cents })
+    : false
 
   const { data, error } = await supabase
     .from("vendor_bills")
@@ -1515,21 +1829,35 @@ export async function createProjectVendorBill({ projectId, input, orgId }: { pro
       submitted_by_contact_id: null,
       metadata: {
         description: parsed.description,
+        submitted_by_user_id: userId,
         vendor_name: vendorName ?? undefined,
         period_start: parsed.period_start,
         period_end: parsed.period_end,
         internal_upload: true,
         over_budget: isOverBudget,
-        coding_source: codingSuggestion?.autoApply ? "rule" : undefined,
+        creation_state: parsed.creation_state,
+        preferred_payment_method: parsed.preferred_payment_method ?? undefined,
+        payment_memo: parsed.payment_memo ?? undefined,
+        payment_channel: parsed.payment_channel ?? undefined,
+        preferred_funding_source_id: parsed.preferred_funding_source_id ?? undefined,
+        payment_schedule: parsed.payment_schedule ?? undefined,
+        scheduled_payment_date: parsed.payment_schedule === "scheduled" ? parsed.scheduled_payment_date ?? undefined : undefined,
+        preferred_approver_ids: parsed.preferred_approver_ids?.length ? parsed.preferred_approver_ids : undefined,
+        coding_source: parsed.coding_source ?? (codingSuggestion?.autoApply ? "rule" : undefined),
         coding_rule_id: codingSuggestion?.ruleId,
-        coding_confidence: codingSuggestion?.confidence,
+        coding_confidence: parsed.coding_confidence ?? codingSuggestion?.confidence,
       },
-      accounting_coding: codingSuggestion?.autoApply
+      accounting_coding: explicitAccountingCoding ?? (codingSuggestion?.autoApply
         ? codingSuggestion.accountingCoding
         : buildAccountingCoding({
             counterpartyId: parsed.qbo_vendor_id,
             counterpartyName: parsed.qbo_vendor_name || parsed.vendor_name,
-          }),
+          })),
+      retainage_percent: parsed.retainage_percent ?? null,
+      retainage_cents: parsed.retainage_percent ? Math.round(parsed.total_cents * parsed.retainage_percent / 100) : 0,
+      early_pay_discount_percent: parsed.early_pay_discount_percent ?? null,
+      early_pay_discount_days: parsed.early_pay_discount_days ?? null,
+      lien_waiver_status: parsed.lien_waiver_status ?? "not_required",
       qbo_vendor_id: parsed.qbo_vendor_id || null,
       qbo_vendor_name: parsed.qbo_vendor_name || parsed.vendor_name || null,
     })
@@ -1540,20 +1868,61 @@ export async function createProjectVendorBill({ projectId, input, orgId }: { pro
     throw new Error(`Failed to create vendor bill: ${error?.message}`)
   }
 
-  if (codingSuggestion?.autoApply && codingSuggestion.costCodeId) {
+  if (explicitLines.length > 0) {
     await replaceBillLineCoding(supabase, {
       orgId: resolvedOrgId,
       billId: data.id as string,
-      lines: [
-        {
-          cost_code_id: codingSuggestion.costCodeId,
-          budget_line_id: codingSuggestion.budgetLineId,
-          description: parsed.description?.trim() || `Bill ${parsed.bill_number.trim()}`,
-          amount_cents: parsed.total_cents,
-          project_id: projectId,
-        },
-      ],
+      lines: explicitLines.map((line) => ({
+        cost_code_id: line.cost_code_id ?? null,
+        budget_line_id: line.budget_line_id ?? null,
+        description: line.description?.trim() || parsed.description?.trim() || `Bill ${parsed.bill_number.trim()}`,
+        amount_cents: line.amount_cents,
+        project_id: projectId,
+        billable_to_customer: line.billable_to_customer,
+        qbo_expense_account_id: line.qbo_expense_account_id,
+        qbo_expense_account_name: line.qbo_expense_account_name,
+        qbo_ap_account_id: line.qbo_ap_account_id,
+        qbo_ap_account_name: line.qbo_ap_account_name,
+      })),
     })
+    if (parsed.creation_state === "ready") {
+      // Split bills teach their split; single-code bills teach their code.
+      const lesson = buildCodingLesson(explicitLines)
+      if (explicitLines.length === 1 || lesson.costCodeId || lesson.budgetLineId || lesson.lineSplits) {
+        await learnCodingRule({
+          companyId,
+          vendorName,
+          costCodeId: explicitLines.length === 1 ? firstExplicitLine.cost_code_id ?? null : lesson.costCodeId,
+          budgetLineId: explicitLines.length === 1 ? firstExplicitLine.budget_line_id ?? null : lesson.budgetLineId,
+          lineSplits: lesson.lineSplits,
+          accountingCoding: explicitAccountingCoding ?? undefined,
+          projectId,
+          orgId: resolvedOrgId,
+        })
+      }
+    }
+  } else if (codingSuggestion?.autoApply && (codingSuggestion.costCodeId || codingSuggestion.lineSplits)) {
+    const description = parsed.description?.trim() || `Bill ${parsed.bill_number.trim()}`
+    // A remembered split reapplies by weight, not by last month's dollars, so
+    // the legs always add back to this bill's exact total.
+    const lines = codingSuggestion.lineSplits
+      ? splitAmountByWeights(parsed.total_cents, codingSuggestion.lineSplits).map((split) => ({
+          cost_code_id: split.costCodeId,
+          budget_line_id: split.budgetLineId,
+          description: split.description ?? description,
+          amount_cents: split.amountCents,
+          project_id: projectId,
+        }))
+      : [
+          {
+            cost_code_id: codingSuggestion.costCodeId,
+            budget_line_id: codingSuggestion.budgetLineId,
+            description,
+            amount_cents: parsed.total_cents,
+            project_id: projectId,
+          },
+        ]
+    await replaceBillLineCoding(supabase, { orgId: resolvedOrgId, billId: data.id as string, lines })
   }
 
   if (parsed.file_id) {
@@ -1592,17 +1961,22 @@ export async function createProjectVendorBill({ projectId, input, orgId }: { pro
       commitment_id: parsed.commitment_id ?? null,
       total_cents: parsed.total_cents,
       bill_number: parsed.bill_number,
+      approver_ids: parsed.preferred_approver_ids ?? [],
       internal_upload: true,
+      creation_state: parsed.creation_state,
       over_budget: isOverBudget,
       coding_rule_id: codingSuggestion?.ruleId,
       coding_auto_applied: codingSuggestion?.autoApply ?? false,
+      coding_source: parsed.coding_source ?? (codingSuggestion?.autoApply ? "rule" : null),
     },
   })
 
-  await evaluateAndAutoApproveVendorBill({
-    orgId: resolvedOrgId,
-    billId: data.id as string,
-  }).catch((error) => console.warn("Invoice auto-approval evaluation failed", error))
+  if (parsed.creation_state === "ready") {
+    await evaluateAndAutoApproveVendorBill({
+      orgId: resolvedOrgId,
+      billId: data.id as string,
+    }).catch((error) => console.warn("Invoice auto-approval evaluation failed", error))
+  }
 
   return mapVendorBill(data)
 }
@@ -1643,16 +2017,16 @@ export async function createProjectVendorCredit(input: ProjectVendorCreditInput,
     throw new Error("Vendor credit lines must be negative")
   }
   const totalCents = input.lines.reduce((sum, line) => sum + line.amount_cents, 0)
-  const [{ data: company }, { data: commitment }, { data: duplicate }] = await Promise.all([
+  const [{ data: company }, { data: commitment }, duplicate] = await Promise.all([
     supabase.from("companies").select("id").eq("org_id", resolvedOrgId).eq("id", input.companyId).maybeSingle(),
     input.commitmentId
       ? supabase.from("commitments").select("id,project_id,company_id").eq("org_id", resolvedOrgId).eq("id", input.commitmentId).maybeSingle()
       : Promise.resolve({ data: null }),
-    supabase.from("vendor_bills").select("id").eq("org_id", resolvedOrgId).eq("company_id", input.companyId).ilike("bill_number", input.billNumber).limit(1).maybeSingle(),
+    findDuplicatePayable({ supabase, orgId: resolvedOrgId, billNumber: input.billNumber, companyId: input.companyId, totalCents }),
   ])
   if (!company) throw new Error("Arc vendor not found")
   if (input.commitmentId && (!commitment || commitment.project_id !== input.projectId)) throw new Error("Commitment not found")
-  if (duplicate) throw new Error("A payable with this vendor and number already exists")
+  if (duplicate) throw new Error(duplicate.reason)
   const { data, error } = await supabase
     .from("vendor_bills")
     .insert({
@@ -1852,6 +2226,29 @@ async function getApprovedCommitmentChangeOrderTotalCents(supabase: SupabaseClie
 }
 
 /**
+ * Whether billing `totalCents` against this commitment exceeds the approved
+ * commitment plus its approved change orders. Warning-tier metadata only — it
+ * informs review, it never blocks. Recomputed on every payable edit (not just
+ * at creation) because sibling bills arriving later change the answer; a stale
+ * `over_budget: false` frozen at creation is worse than no flag at all.
+ * Rejected bills are not obligations and do not count against the commitment.
+ */
+export async function computeCommitmentOverBudget(
+  supabase: SupabaseClient,
+  { orgId, commitmentId, totalCents, excludeBillId }: { orgId: string; commitmentId: string; totalCents: number; excludeBillId?: string },
+): Promise<boolean> {
+  const [{ data: commitment }, { data: existingBills }, approvedChangeOrdersCents] = await Promise.all([
+    supabase.from("commitments").select("total_cents").eq("org_id", orgId).eq("id", commitmentId).maybeSingle(),
+    supabase.from("vendor_bills").select("id, total_cents, status").eq("org_id", orgId).eq("commitment_id", commitmentId),
+    getApprovedCommitmentChangeOrderTotalCents(supabase, orgId, commitmentId),
+  ])
+  const billedCents = (existingBills ?? [])
+    .filter((row: any) => row.id !== excludeBillId && String(row.status) !== "rejected")
+    .reduce((sum: number, row: any) => sum + Number(row.total_cents ?? 0), 0)
+  return billedCents + totalCents > Number(commitment?.total_cents ?? 0) + approvedChangeOrdersCents
+}
+
+/**
  * Create a vendor bill from the sub portal.
  * This function bypasses normal org context since it's called from a portal token.
  */
@@ -1893,15 +2290,8 @@ export async function createVendorBillFromPortal({
     throw new Error("Can only submit invoices against approved contracts")
   }
 
-  // Get existing billed amount for this commitment
-  const { data: existingBills } = await supabase.from("vendor_bills").select("total_cents").eq("commitment_id", commitmentId).eq("org_id", orgId)
-
-  const totalBilled = (existingBills ?? []).reduce((sum, b) => sum + (b.total_cents ?? 0), 0)
-  const approvedChangeOrdersCents = await getApprovedCommitmentChangeOrderTotalCents(supabase, orgId, commitmentId)
-  const remaining = (commitment.total_cents ?? 0) + approvedChangeOrdersCents - totalBilled
-
   // Warn if over budget (but still allow submission)
-  const isOverBudget = parsed.total_cents > remaining
+  const isOverBudget = await computeCommitmentOverBudget(supabase, { orgId, commitmentId, totalCents: parsed.total_cents })
 
   // Create the vendor bill
   const { data, error } = await supabase
@@ -1991,7 +2381,7 @@ export async function deleteVendorBill({ billId, orgId }: { billId: string; orgI
   // 1. Fetch the existing bill
   const { data: existing, error: existingError } = await supabase
     .from("vendor_bills")
-    .select("id, org_id, project_id, bill_number, status, qbo_id, metadata")
+    .select("id, org_id, project_id, bill_number, status, paid_cents, qbo_id, metadata")
     .eq("org_id", resolvedOrgId)
     .eq("id", billId)
     .maybeSingle()
@@ -2023,6 +2413,25 @@ export async function deleteVendorBill({ billId, orgId }: { billId: string; orgI
       throw new Error('This bill was imported from QuickBooks. To move it to the correct project, use "Reassign" instead of deleting it here.')
     }
     throw new Error("Bills synced to QuickBooks cannot be deleted. Disconnect or delete them in QuickBooks first.")
+  }
+
+  // A payable that money has touched is evidence, not a draft. Deleting one that
+  // an active run is about to pay would strand that run's frozen item against a
+  // bill that no longer exists, and deleting one already paid would erase the
+  // record the payment answers to.
+  if (existing.status === "paid" || existing.status === "partial" || Number(existing.paid_cents ?? 0) > 0) {
+    throw new Error("This payable has recorded payments and cannot be deleted.")
+  }
+  const { data: activeRunItems, error: activeRunError } = await supabase
+    .from("payment_run_items")
+    .select("id")
+    .eq("org_id", resolvedOrgId)
+    .eq("bill_id", billId)
+    .in("status", ["draft", "pending_approval", "approved", "processing", "partially_paid"])
+    .limit(1)
+  if (activeRunError) throw new Error(`Unable to validate in-flight payments: ${activeRunError.message}`)
+  if ((activeRunItems ?? []).length > 0) {
+    throw new Error("This payable belongs to an active payment run. Cancel that run before deleting it.")
   }
 
   // Fetch related billable costs
@@ -2059,19 +2468,12 @@ export async function deleteVendorBill({ billId, orgId }: { billId: string; orgI
     if (deleteCostsError) {
       throw new Error(`Failed to delete billable costs: ${deleteCostsError.message}`)
     }
-
-    // Delete job cost entries
-    const { error: deleteJobCostsError } = await supabase
-      .from("job_cost_entries")
-      .delete()
-      .eq("org_id", resolvedOrgId)
-      .eq("source_type", "vendor_bill_line")
-      .in("source_id", lineIds)
-
-    if (deleteJobCostsError) {
-      throw new Error(`Failed to delete job cost entries: ${deleteJobCostsError.message}`)
-    }
   }
+
+  // The subledger is not a cache to be swept: `job_cost_entries` is voided, never
+  // deleted, and only `lib/services/job-cost-actuals.ts` knows that. Deleting the
+  // rows here erased the trace that cost was ever posted against this project.
+  await voidJobCostEntriesForVendorBill({ billId, orgId: resolvedOrgId, supabase })
 
   // Delete file links
   await supabase.from("file_links").delete().eq("org_id", resolvedOrgId).eq("entity_type", "vendor_bill").eq("entity_id", billId)
@@ -2220,22 +2622,27 @@ export async function reassignImportedPayable({
     throw new Error(`Failed to reassign ${payableLabel}: ${billUpdateError.message}`)
   }
 
-  try {
-    await propagateApprovalToLedger({
-      source: "vendor_bill",
-      sourceId: billId,
-      orgId: resolvedOrgId,
-    })
-  } catch (error) {
-    await supabase.from("vendor_bills").update({ project_id: previousProjectId, metadata }).eq("org_id", resolvedOrgId).eq("id", billId)
-    await supabase.from("bill_lines").update({ project_id: previousProjectId }).eq("org_id", resolvedOrgId).eq("bill_id", billId)
-    await propagateApprovalToLedger({
-      source: "vendor_bill",
-      sourceId: billId,
-      orgId: resolvedOrgId,
-    }).catch(() => {})
-    const message = error instanceof Error ? error.message : String(error)
-    throw new Error(`This ${payableLabel} was not reassigned because job costs could not be updated: ${message}`)
+  // Imported bills now land `pending` until approved in Arc; a pending payable
+  // has no ledger presence, so reassigning it must not post job costs early.
+  const hasLedgerPresence = ["approved", "partial", "paid"].includes(String(existing.status))
+  if (hasLedgerPresence) {
+    try {
+      await propagateApprovalToLedger({
+        source: "vendor_bill",
+        sourceId: billId,
+        orgId: resolvedOrgId,
+      })
+    } catch (error) {
+      await supabase.from("vendor_bills").update({ project_id: previousProjectId, metadata }).eq("org_id", resolvedOrgId).eq("id", billId)
+      await supabase.from("bill_lines").update({ project_id: previousProjectId }).eq("org_id", resolvedOrgId).eq("bill_id", billId)
+      await propagateApprovalToLedger({
+        source: "vendor_bill",
+        sourceId: billId,
+        orgId: resolvedOrgId,
+      }).catch(() => {})
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(`This ${payableLabel} was not reassigned because job costs could not be updated: ${message}`)
+    }
   }
 
   // A regular bill's payment(s) belong to the bill and should follow it to the

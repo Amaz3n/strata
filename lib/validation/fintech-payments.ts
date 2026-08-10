@@ -5,11 +5,20 @@ export const paymentApprovalModeSchema = z.enum(["sole", "dual"])
 export const updatePaymentRailPolicySchema = z.object({
   enabled: z.boolean().optional(),
   approval_mode: paymentApprovalModeSchema.optional(),
+  /** Explicit owner-operated exception; false preserves maker-checker separation. */
+  requester_may_approve: z.boolean().optional(),
   control_change_cooling_hours: z.number().int().min(24).max(168).optional(),
   per_payment_limit_cents: z.number().int().positive().nullable().optional(),
   per_run_limit_cents: z.number().int().positive().nullable().optional(),
   daily_limit_cents: z.number().int().positive().nullable().optional(),
 }).superRefine((value, context) => {
+  if (value.requester_may_approve && value.approval_mode === "dual") {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["requester_may_approve"],
+      message: "Self-approval is only available when one approval is required",
+    })
+  }
   if (value.per_payment_limit_cents && value.per_run_limit_cents && value.per_run_limit_cents < value.per_payment_limit_cents) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["per_run_limit_cents"], message: "Run limit must be at least the per-payment limit" })
   }
@@ -117,9 +126,24 @@ const requireEntityOrLegalName = (
 
 export const vendorClaimSchema = z.object(vendorClaimFields).superRefine(requireEntityOrLegalName)
 
+/**
+ * A same-origin path, and nothing else.
+ *
+ * `startsWith("/")` accepted `//evil.com`, which `new URL("//evil.com", base)`
+ * resolves as protocol-relative — off-origin — and which was then handed to
+ * Stripe as the onboarding `return_url`/`refresh_url`. A payout-verification
+ * flow must not be able to exit onto an attacker's domain. Backslashes are
+ * rejected for the same reason: browsers normalise `/\evil.com` to `//evil.com`.
+ */
+export const portalReturnPathSchema = z
+  .string()
+  .trim()
+  .max(500)
+  .regex(/^\/(?!\/)[^\\\s]*$/, "Return path must be a same-origin path beginning with a single /")
+
 export const startVendorPayoutSetupSchema = z.object({
   ...vendorClaimFields,
-  return_path: z.string().startsWith("/").max(500).default("/access"),
+  return_path: portalReturnPathSchema.default("/access"),
 }).superRefine(requireEntityOrLegalName)
 
 export type UpdatePaymentRailPolicyInput = z.infer<typeof updatePaymentRailPolicySchema>

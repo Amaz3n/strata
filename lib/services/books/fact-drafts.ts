@@ -1,0 +1,277 @@
+import { SYSTEM_ACCOUNT_CODES } from "@/lib/services/books/chart-of-accounts"
+import {
+  postBillPayment,
+  postClosingInvoice,
+  postCustomerInvoice,
+  postExpense,
+  postInvoicePayment,
+  postLaborCost,
+  postPaymentReversal,
+  postRetainageRelease,
+  postVendorBillFromCostLines,
+} from "@/lib/services/books/posting-rules"
+import type { JournalEntryDraft } from "@/lib/services/books/types"
+
+/**
+ * The one place a stored accounting fact becomes a journal draft.
+ *
+ * Both the projector and the nightly rebuild drill call this. If the projector
+ * built drafts inline the drill would be comparing one implementation against a
+ * copy of itself, and the two would drift the first time a posting rule changed.
+ */
+
+/** Descriptive fields that must not make a fact look economically revised. */
+const NON_ECONOMIC_KEYS = ["memo"] as const
+
+export function hashableFactPayload(payload: Record<string, unknown>) {
+  const economic: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(payload)) {
+    if ((NON_ECONOMIC_KEYS as readonly string[]).includes(key)) continue
+    economic[key] = value
+  }
+  return economic
+}
+
+export type FactCostLine = {
+  amount_cents: number
+  project_id: string | null
+  description?: string
+  /** Arc Books chart code selected on the payable line, when one was chosen. */
+  account_code?: string
+}
+
+function compareText(left: string, right: string) {
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
+/**
+ * Cost lines in a stable order, independent of how the subledger paged out of
+ * Postgres.
+ *
+ * `booksDigest` preserves array order, so the same bill read back in a different
+ * row order hashes to a different payload — which the projector reads as an
+ * economic revision and "repairs" by reversing a correct entry and reposting an
+ * identical one, every night, forever. Sorting on the values themselves rather
+ * than on a row id (which never reaches the payload) makes the hash a function
+ * of the multiset of cost lines and of nothing else.
+ *
+ * `localeCompare` is deliberately avoided: it is locale-dependent, and a hash
+ * that depends on the server's locale is not a hash.
+ */
+export function sortFactCostLines(lines: FactCostLine[]): FactCostLine[] {
+  return [...lines].sort(
+    (left, right) =>
+      compareText(left.project_id ?? "", right.project_id ?? "")
+      || compareText(left.account_code ?? "", right.account_code ?? "")
+      || compareText(left.description ?? "", right.description ?? "")
+      || left.amount_cents - right.amount_cents,
+  )
+}
+
+/**
+ * Retirement: what the projector records when a posted source leaves the
+ * projectable set — an invoice voided, a bill rejected, a row deleted upstream.
+ *
+ * The fact table is append-only, so retirement is a new fact that supersedes the
+ * last live one and produces no journal draft; the entry it retires is reversed
+ * through the ordinary reversal machinery. Marking it in `fact_kind` is what
+ * makes the sweep idempotent — a source already retired is skipped on every
+ * later pass instead of being reversed again — and what tells the rebuild drill
+ * that "no draft" is the correct answer rather than an unsupported fact kind.
+ */
+export const RETIRED_FACT_KIND_SUFFIX = ".retired"
+
+export function retiredFactKind(sourceType: string) {
+  return `${sourceType}${RETIRED_FACT_KIND_SUFFIX}`
+}
+
+export function isRetiredFactKind(factKind: string) {
+  return factKind.endsWith(RETIRED_FACT_KIND_SUFFIX)
+}
+
+/**
+ * The payload of a retirement fact. It must never collide with a live payload,
+ * because the projector derives the fact's idempotency key from the payload hash
+ * — and it must differ from every other version so a restored source supersedes
+ * the retirement rather than matching it and staying un-posted.
+ */
+export function retirementFactPayload(retiredSourceVersion: number): Record<string, unknown> {
+  return { retired: true, retired_source_version: retiredSourceVersion }
+}
+
+export function factSourceKey(sourceType: string, sourceId: string) {
+  return `${sourceType}:${sourceId}`
+}
+
+export type RetirableFact = {
+  sourceType: string
+  sourceId: string
+  sourceVersion: number
+  factKind: string
+}
+
+/**
+ * Which of the latest facts no longer have a qualifying source.
+ *
+ * Safe only against a COMPLETE candidate set — on an incremental pass the live
+ * keys are a watermarked subset and this would retire the whole ledger.
+ */
+export function selectFactsToRetire<T extends RetirableFact>(
+  latestFactPerSource: readonly T[],
+  liveSourceKeys: ReadonlySet<string>,
+): T[] {
+  return latestFactPerSource.filter(
+    (fact) => !isRetiredFactKind(fact.factKind) && !liveSourceKeys.has(factSourceKey(fact.sourceType, fact.sourceId)),
+  )
+}
+
+function textValue(value: unknown, fallback = "") {
+  return typeof value === "string" && value.length > 0 ? value : fallback
+}
+
+function centsValue(value: unknown) {
+  return typeof value === "number" && Number.isSafeInteger(value) ? value : 0
+}
+
+function optionalId(value: unknown) {
+  return typeof value === "string" && value.length > 0 ? value : undefined
+}
+
+function costLinesValue(value: unknown, fallbackCents: number, fallbackProjectId?: string) {
+  if (!Array.isArray(value) || value.length === 0) {
+    return [{ amountCents: fallbackCents, projectId: fallbackProjectId }]
+  }
+  return value.map((entry) => {
+    const row = entry && typeof entry === "object" ? (entry as Record<string, unknown>) : {}
+    return {
+      amountCents: centsValue(row.amount_cents),
+      accountCode: typeof row.account_code === "string" ? row.account_code : undefined,
+      projectId: optionalId(row.project_id) ?? fallbackProjectId,
+      description: typeof row.description === "string" ? row.description : undefined,
+    }
+  })
+}
+
+export type FactDraftInput = {
+  sourceType: string
+  sourceId: string
+  accountingDate: string
+  payload: Record<string, unknown>
+  sourceVersion: number
+  projectionVersion: number
+  policyVersion: number
+}
+
+export function draftFromFact(input: FactDraftInput): JournalEntryDraft | null {
+  const row = input.payload
+  const projectId = optionalId(row.project_id)
+  const common = {
+    id: input.sourceId,
+    date: input.accountingDate,
+    sourceVersion: input.sourceVersion,
+    projectionVersion: input.projectionVersion,
+    policyVersion: input.policyVersion,
+    projectId,
+  }
+
+  if (input.sourceType === "vendor_bill") {
+    const grossCents = centsValue(row.total_cents)
+    return postVendorBillFromCostLines({
+      ...common,
+      companyId: optionalId(row.company_id),
+      memo: textValue(row.memo, "Vendor bill"),
+      grossCents,
+      retainageCents: centsValue(row.retainage_cents),
+      costLines: costLinesValue(row.cost_lines, grossCents, projectId),
+    })
+  }
+
+  if (input.sourceType === "retainage_release") {
+    // Releasing retainage moves an existing balance; it is not new cost or new billing.
+    // Left to the ordinary bill and invoice rules, an AP release would debit job costs
+    // a second time for money already expensed on the original bill, and an AR release
+    // would credit contract liabilities as though it were a fresh billing.
+    return postRetainageRelease({
+      ...common,
+      memo: textValue(row.memo, "Retainage release"),
+      amountCents: centsValue(row.amount_cents),
+      side: row.side === "receivable" ? "receivable" : "payable",
+    })
+  }
+
+  if (input.sourceType === "invoice") {
+    const netCents = centsValue(row.total_cents)
+    const retainageCents = centsValue(row.retainage_cents)
+    const memo = textValue(row.memo, "Invoice")
+    if (row.revenue_basis === "closing") {
+      // Closing-basis sales debit AR for the whole amount with no retainage split, so
+      // they post the net — the amount actually receivable.
+      return postClosingInvoice({ ...common, memo, grossCents: netCents })
+    }
+    // Unlike a vendor bill, an invoice's stored total is already NET of retainage (the
+    // hold is a negative invoice line). `postCustomerInvoice` splits gross into
+    // AR + retainage receivable, so the gross has to be rebuilt here — passing the net
+    // would subtract retainage twice and under-credit contract liability.
+    return postCustomerInvoice({
+      ...common,
+      memo,
+      grossCents: netCents + retainageCents,
+      retainageCents,
+    })
+  }
+
+  if (input.sourceType === "invoice_payment") {
+    return postInvoicePayment({
+      ...common,
+      memo: textValue(row.memo, "Customer payment"),
+      amountCents: centsValue(row.amount_cents),
+      // Processor and platform fees come out of the deposit before it lands, so
+      // cash is debited net and the fee expensed — the same split the vendor
+      // payment already makes. The projector has always carried `fee_cents` in
+      // the hashed payload; ignoring it here debited cash for the gross.
+      feeCents: centsValue(row.fee_cents),
+    })
+  }
+
+  if (input.sourceType === "bill_payment") {
+    return postBillPayment({
+      ...common,
+      memo: textValue(row.memo, "Vendor bill payment"),
+      amountCents: centsValue(row.amount_cents),
+      feeCents: centsValue(row.fee_cents),
+      discountCents: centsValue(row.discount_cents),
+    })
+  }
+
+  if (input.sourceType === "expense") {
+    return postExpense({
+      ...common,
+      companyId: optionalId(row.vendor_company_id),
+      memo: textValue(row.memo, "Expense"),
+      amountCents: centsValue(row.amount_cents),
+      // A project-scoped expense is job cost and belongs in the same account the
+      // subledger reports it under; only overhead lands in other expense.
+      expenseAccountCode: projectId ? SYSTEM_ACCOUNT_CODES.jobCosts : SYSTEM_ACCOUNT_CODES.otherExpense,
+    })
+  }
+
+  if (input.sourceType === "payment_reversal") {
+    const side = row.side === "bill_payment" ? "bill_payment" : "invoice_payment"
+    return postPaymentReversal({
+      ...common,
+      memo: textValue(row.memo, "Payment reversal"),
+      amountCents: centsValue(row.amount_cents),
+      side,
+    })
+  }
+
+  if (input.sourceType === "labor_cost") {
+    return postLaborCost({
+      ...common,
+      memo: textValue(row.memo, "Field labor"),
+      amountCents: centsValue(row.amount_cents),
+    })
+  }
+
+  return null
+}

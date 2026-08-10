@@ -1,32 +1,12 @@
 import { NextRequest, NextResponse } from "next/server"
+
+import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
 import { createHash } from "node:crypto"
 
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { withCronRun } from "@/lib/services/job-runs"
 
 export const runtime = "nodejs"
-
-const CRON_SECRET = process.env.CRON_SECRET
-
-function isAuthorizedCronRequest(request: NextRequest) {
-  const isDev = process.env.NODE_ENV !== "production"
-  if (isDev) return true
-
-  const isVercelCron = request.headers.get("x-vercel-cron") === "1"
-  const authHeader = request.headers.get("authorization") ?? request.headers.get("Authorization")
-  const bearer = typeof authHeader === "string" ? authHeader.trim() : ""
-  const legacyHeader = request.headers.get("x-cron-secret")
-
-  const secretOk =
-    (!!CRON_SECRET && bearer === `Bearer ${CRON_SECRET}`) ||
-    (!!CRON_SECRET && legacyHeader === CRON_SECRET)
-
-  if (CRON_SECRET) {
-    return secretOk
-  }
-
-  return isVercelCron
-}
 
 async function handler(request: NextRequest) {
   if (!isAuthorizedCronRequest(request)) {

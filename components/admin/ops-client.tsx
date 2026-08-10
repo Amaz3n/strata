@@ -11,10 +11,20 @@ import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { RotateCw } from "@/components/icons"
 import { cn } from "@/lib/utils"
-import { retryAllFailedOutboxAction, retryOutboxItemAction } from "@/app/(app)/admin/ops/actions"
+import {
+  reconcilePaymentsNowAction,
+  resolveReconciliationExceptionAction,
+  retryAllFailedOutboxAction,
+  retryOutboxItemAction,
+} from "@/app/(app)/admin/ops/actions"
+import type {
+  PaymentReconciliationException,
+  PaymentReconciliationSummary,
+} from "@/lib/services/payment-reconciliation"
 import type {
   CronJobHealth,
   OutboxHealth,
+  PaymentOperationsAlert,
   QboConnectionHealth,
   StuckOutboxHealth,
 } from "@/lib/services/ops"
@@ -24,6 +34,16 @@ interface OpsClientProps {
   outboxHealth: OutboxHealth
   stuckHealth: StuckOutboxHealth
   qboHealth: QboConnectionHealth[]
+  reconciliations: PaymentReconciliationSummary[]
+  reconciliationExceptions: PaymentReconciliationException[]
+  paymentAlerts: PaymentOperationsAlert[]
+}
+
+const PAYMENT_ALERT_LABELS: Record<string, string> = {
+  payment_submission_needs_recovery: "Submission needs recovery",
+  vendor_transfer_needs_attention: "Vendor transfer stuck",
+  payment_operations_alert: "Operations alert",
+  vendor_payout_destination_changed: "Payout bank changed",
 }
 
 const CRON_STATE_LABEL: Record<CronJobHealth["state"], string> = {
@@ -41,7 +61,15 @@ function exact(value: string | null) {
   return value ? format(new Date(value), "MMM d, HH:mm:ss") : undefined
 }
 
-export function OpsClient({ cronHealth, outboxHealth, stuckHealth, qboHealth }: OpsClientProps) {
+export function OpsClient({
+  cronHealth,
+  outboxHealth,
+  stuckHealth,
+  qboHealth,
+  reconciliations,
+  reconciliationExceptions,
+  paymentAlerts,
+}: OpsClientProps) {
   const router = useRouter()
   const [refreshing, startRefreshing] = useTransition()
   const [retryingId, setRetryingId] = useState<number | null>(null)
@@ -52,6 +80,46 @@ export function OpsClient({ cronHealth, outboxHealth, stuckHealth, qboHealth }: 
   const qboErrorCount = qboHealth.filter(
     (conn) => conn.lastError || conn.status !== "connected" || conn.refreshFailureCount > 0,
   ).length
+
+  const [resolvingId, setResolvingId] = useState<string | null>(null)
+  const [resolveNote, setResolveNote] = useState("")
+
+  const money = (cents: number) =>
+    new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100)
+
+  const reconcileNow = () => {
+    startRefreshing(async () => {
+      const result = await reconcilePaymentsNowAction()
+      if (result.success) {
+        toast.success(
+          result.data.exceptionCount > 0
+            ? `Reconciled with ${result.data.exceptionCount} exception${result.data.exceptionCount === 1 ? "" : "s"}`
+            : "Reconciled — everything balanced",
+        )
+        router.refresh()
+      } else {
+        toast.error(result.error)
+      }
+    })
+  }
+
+  const resolveException = (itemId: string) => {
+    if (resolveNote.trim().length < 8) {
+      toast.error("Say what you found in at least a few words")
+      return
+    }
+    startRefreshing(async () => {
+      const result = await resolveReconciliationExceptionAction({ itemId, note: resolveNote.trim() })
+      if (result.success) {
+        setResolvingId(null)
+        setResolveNote("")
+        toast.success("Exception resolved")
+        router.refresh()
+      } else {
+        toast.error(result.error)
+      }
+    })
+  }
 
   const handleRetry = (id: number) => {
     setRetryingId(id)
@@ -84,16 +152,18 @@ export function OpsClient({ cronHealth, outboxHealth, stuckHealth, qboHealth }: 
       <div className="relative z-20 shrink-0 border-b bg-background/95 px-4 py-3 backdrop-blur-sm">
         <div className="flex items-center justify-between gap-3">
           <span className="text-sm font-semibold">Ops</span>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8 gap-1.5 text-xs"
-            disabled={refreshing}
-            onClick={() => startRefreshing(() => router.refresh())}
-          >
-            <RotateCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5 text-xs"
+              disabled={refreshing}
+              onClick={() => startRefreshing(() => router.refresh())}
+            >
+              <RotateCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
+              Refresh
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -326,6 +396,182 @@ export function OpsClient({ cronHealth, outboxHealth, stuckHealth, qboHealth }: 
               counts are a floor, not the total.
             </p>
           ) : null}
+        </div>
+
+        {/*
+          Payment operations. These events were emitted for a human — a
+          submission that needs recovery, a vendor transfer stuck at the
+          provider, a tripped loss ceiling — and had no surface reading them.
+          Read-only: each row deep-links to the payable it concerns where it can.
+        */}
+        <SectionHeading>Payment operations</SectionHeading>
+        <div className="border-y">
+          {paymentAlerts.length === 0 ? (
+            <p className="px-4 py-6 text-center text-sm text-muted-foreground">
+              No payment alerts in the last two weeks.
+            </p>
+          ) : (
+            <Table>
+              <TableHeader className="bg-muted/40">
+                <TableRow>
+                  <TableHead className="pl-4">Alert</TableHead>
+                  <TableHead>Organization</TableHead>
+                  <TableHead>Reference</TableHead>
+                  <TableHead>Detail</TableHead>
+                  <TableHead className="pr-4">Age</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {paymentAlerts.map((alert) => (
+                  <TableRow key={alert.id}>
+                    <TableCell className="pl-4 py-2.5 text-xs font-medium">
+                      {PAYMENT_ALERT_LABELS[alert.eventType] ?? alert.eventType}
+                    </TableCell>
+                    <TableCell className="py-2.5 text-xs">{alert.orgName ?? "—"}</TableCell>
+                    <TableCell className="py-2.5 font-mono text-[11px] text-muted-foreground">
+                      {alert.billId ? (
+                        <Link href={`/payables?bill=${alert.billId}`} className="underline underline-offset-2 hover:text-foreground">
+                          bill {alert.billId.slice(0, 8)}
+                        </Link>
+                      ) : alert.runId ? (
+                        <Link href={`/payables?run=${alert.runId}`} className="underline underline-offset-2 hover:text-foreground">
+                          run {alert.runId.slice(0, 8)}
+                        </Link>
+                      ) : alert.disbursementId ? (
+                        <span>disb {alert.disbursementId.slice(0, 8)}</span>
+                      ) : (
+                        "—"
+                      )}
+                      {alert.disbursementId && (alert.billId || alert.runId) ? (
+                        <span className="ml-2">disb {alert.disbursementId.slice(0, 8)}</span>
+                      ) : null}
+                    </TableCell>
+                    <TableCell className="py-2.5">
+                      <div className="max-w-md truncate text-xs text-muted-foreground" title={alert.detail ?? undefined}>
+                        {alert.detail ?? "—"}
+                      </div>
+                    </TableCell>
+                    <TableCell className="py-2.5 pr-4 text-xs" title={exact(alert.createdAt)}>
+                      {relative(alert.createdAt)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </div>
+
+        {/*
+          Payment reconciliation. It lives here rather than on the payables desk
+          because its success condition is showing nothing: the cron runs daily,
+          most days produce no exception, and a surface you have to remember to
+          visit is the wrong home for something that already emails you. What it
+          catches is the case webhooks cannot — a payment that settled without an
+          event, or one Arc believes settled that never did.
+        */}
+        <SectionHeading>Payment reconciliation</SectionHeading>
+        <div className="mb-8 border-y">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+            <p className="text-sm text-muted-foreground">
+              {reconciliationExceptions.length === 0
+                ? "No open exceptions. Provider records agree with Arc — vendor debits and Arc fee charges both."
+                : `${reconciliationExceptions.length} open exception${reconciliationExceptions.length === 1 ? "" : "s"} — provider records disagree with Arc.`}
+              {(() => {
+                const feeCount = reconciliationExceptions.filter((exception) =>
+                  exception.providerReference?.includes("fee_charge"),
+                ).length
+                return feeCount > 0
+                  ? ` ${feeCount} ${feeCount === 1 ? "is an" : "are"} uncollected Arc fee charge${feeCount === 1 ? "" : "s"}.`
+                  : null
+              })()}
+            </p>
+            <Button size="sm" variant="outline" disabled={refreshing} onClick={reconcileNow}>
+              Reconcile last 24 hours
+            </Button>
+          </div>
+          {reconciliationExceptions.length > 0 ? (
+            <Table>
+              <TableHeader className="bg-muted/40">
+                <TableRow>
+                  <TableHead className="pl-4">Kind</TableHead>
+                  <TableHead>Reference</TableHead>
+                  <TableHead className="text-right">Arc expected</TableHead>
+                  <TableHead className="text-right">Provider</TableHead>
+                  <TableHead className="text-right">Difference</TableHead>
+                  <TableHead className="text-right pr-4">Resolve</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {reconciliationExceptions.map((exception) => (
+                  <TableRow key={exception.id}>
+                    <TableCell className="pl-4 capitalize">{exception.status.replaceAll("_", " ")}</TableCell>
+                    <TableCell className="max-w-[220px] truncate font-mono text-xs">
+                      {exception.providerReference ?? "—"}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">{money(exception.expectedCents)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{money(exception.providerCents)}</TableCell>
+                    <TableCell
+                      className={cn(
+                        "text-right tabular-nums",
+                        exception.differenceCents !== 0 && "text-destructive",
+                      )}
+                    >
+                      {money(exception.differenceCents)}
+                    </TableCell>
+                    <TableCell className="pr-4 text-right">
+                      {resolvingId === exception.id ? (
+                        <div className="flex items-center justify-end gap-2">
+                          <input
+                            autoFocus
+                            value={resolveNote}
+                            onChange={(event) => setResolveNote(event.target.value)}
+                            placeholder="What did you find?"
+                            aria-label="Resolution note"
+                            className="h-8 w-52 border bg-background px-2 text-xs"
+                          />
+                          <Button size="sm" disabled={refreshing} onClick={() => resolveException(exception.id)}>
+                            Save
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              setResolvingId(null)
+                              setResolveNote("")
+                            }}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setResolvingId(exception.id)
+                            setResolveNote("")
+                          }}
+                        >
+                          Resolve
+                        </Button>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          ) : null}
+          {reconciliations.length > 0 ? (
+            <div className="border-t px-4 py-2 text-xs text-muted-foreground">
+              Last run {relative(reconciliations[0].createdAt)} ·{" "}
+              <span className="capitalize">{reconciliations[0].status}</span> · difference{" "}
+              <span className="tabular-nums">{money(reconciliations[0].differenceCents)}</span>
+            </div>
+          ) : (
+            <p className="border-t px-4 py-6 text-center text-sm text-muted-foreground">
+              Reconciliation has not run yet.
+            </p>
+          )}
         </div>
 
         {/* QBO connections */}

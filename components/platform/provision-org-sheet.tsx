@@ -14,19 +14,6 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Switch } from "@/components/ui/switch"
 import type { ProductTier } from "@/lib/product-tier"
 
-interface PlanOption {
-  code: string
-  name: string
-  publicName?: string | null
-  packageType?: string | null
-  featureKeys?: string[]
-  pricingModel: string
-  amountCents?: number | null
-  interval?: string | null
-  stripePriceId?: string | null
-  isActive: boolean
-}
-
 type OnboardingState = {
   error?: string
   message?: string
@@ -34,11 +21,6 @@ type OnboardingState = {
   orgId?: string
   orgName?: string
   invitedCount?: number
-}
-
-interface ProvisionOrgSheetProps {
-  plans: PlanOption[]
-  action?: (prevState: OnboardingState, formData: FormData) => Promise<OnboardingState>
 }
 
 type TeamMemberDraft = {
@@ -60,11 +42,10 @@ function slugify(value: string) {
     .replace(/^-+|-+$/g, "")
 }
 
-export function ProvisionOrgSheet({ plans, action = provisionPlatformOrgAction }: ProvisionOrgSheetProps) {
-  void plans
+export function ProvisionOrgSheet() {
   const router = useRouter()
   const [open, setOpen] = useState(false)
-  const [state, formAction, pending] = useActionState(action, initialState)
+  const [state, formAction, pending] = useActionState(provisionPlatformOrgAction, initialState)
   const [orgName, setOrgName] = useState("")
   const [slug, setSlug] = useState("")
   const [billingModel, setBillingModel] = useState<"subscription" | "license">("subscription")

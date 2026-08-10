@@ -2,8 +2,12 @@ import "server-only"
 
 import { stepCountIs, streamText } from "ai"
 
-import { askAiSearch, type AiSearchTraceEvent, type AskAiSearchResponse } from "@/lib/services/ai-search"
+import type { AiSearchTraceEvent, AskAiSearchResponse } from "@/lib/services/ai-search/types"
 import { getOrgAiSearchConfigFromContext, type AiConfigSource, type AiProvider } from "@/lib/services/ai-config"
+import { auditNumericClaims, describeUnsupportedFigures } from "@/lib/ai/numeric-audit"
+import { describeBlockedTypes } from "@/lib/ai/search-visibility"
+import { lookupCachedAnswer, storeCachedAnswer } from "@/lib/services/ai-assistant/answer-cache"
+import { assessGrounding } from "@/lib/services/ai-assistant/grounding"
 import { createAiAssistantTools } from "@/lib/services/ai-assistant/tools"
 import {
   buildToolContext,
@@ -96,7 +100,9 @@ function buildSystemPrompt(assistantMode: "org" | "general") {
   return `You are Arc's org data assistant for construction teams.
 - Use tools for organization records, financial metrics, analytics, and action drafts.
 - Financial numbers must come from finance_metric or run_analytics tool output. Do not compute or invent business figures.
-- Tables, charts, reports, citations, and proposed actions are assembled by the server. Do not emit JSON, markdown tables, chart payloads, or fake source ids.
+- Do no arithmetic of your own. Never divide a total to get an average, never subtract two figures to state a change, never work out a percentage. If the number you want was not returned by a tool, call another tool or say it is not available. Every figure you state is checked against what the tools returned, and one that was not returned is shown to the user as unverified.
+- Tables, charts, reports, and proposed actions are assembled by the server. Do not emit JSON, markdown tables, or chart payloads.
+- Cite retrieval context inline as [S1] or [S2, S3] on the sentence it supports, using only ids you were actually shown. Cite the record you used, not every record you saw. Figures that came from a tool need no marker.
 - If an answer is not grounded in a tool result or provided retrieval context, say what is missing.
 - Mutations must stay as approval-required action drafts. Never claim an action was executed unless a tool result says it was.
 - If required input is missing, ask one clear follow-up question.
@@ -163,6 +169,7 @@ function buildFinalResponse({
   model,
   configSource,
   sessionId,
+  blockedTypes,
 }: {
   answer: string
   state: ReturnType<typeof createAssistantToolState>
@@ -171,20 +178,54 @@ function buildFinalResponse({
   model: string
   configSource: AiConfigSource
   sessionId: string
+  /** Entity types the asker's role cannot read. */
+  blockedTypes: string[]
 }): AskAiSearchResponse {
   const relatedResults = state.relatedResults.slice(0, Math.max(8, MAX_CONTEXT_SOURCES))
-  const citations = assistantMode === "org" ? relatedResults.slice(0, MAX_CONTEXT_SOURCES).map(mapCitation) : []
+  const citableSources = relatedResults.slice(0, MAX_CONTEXT_SOURCES)
+
+  // Cite what the model marked, not what retrieval happened to return. An
+  // uncited source is a source the answer did not rely on, and presenting it as
+  // provenance is what made the old citation list untrustworthy.
+  const grounding = assessGrounding({
+    answer,
+    sourceCount: citableSources.length,
+    hasToolEvidence: state.toolSummaries.length > 0 || Boolean(state.artifact),
+  })
+  const citations =
+    assistantMode === "org"
+      ? grounding.citedIndexes
+          .map((index) => citableSources[index - 1])
+          .filter((source): source is (typeof citableSources)[number] => Boolean(source))
+          .map(mapCitation)
+      : []
+
+  const displayAnswer = grounding.displayAnswer
   const fallbackActionAnswer =
     state.actions.length > 0
       ? "I drafted an action for you. Review it below and execute it only when you are ready."
       : ""
   const fallbackAnswer =
-    answer.trim() ||
+    displayAnswer.trim() ||
     fallbackActionAnswer ||
     (state.toolSummaries.length > 0
       ? state.toolSummaries[state.toolSummaries.length - 1] ?? ""
       : "I could not produce a grounded answer for that request.")
   const hasGrounding = citations.length > 0 || Boolean(state.artifact) || state.actions.length > 0
+
+  // Arithmetic is the tools' job. Any figure in the answer that no tool produced
+  // is called out rather than left looking like a queried number — a per-invoice
+  // average or a month-on-month percentage the model worked out itself is the
+  // exact thing this catches.
+  const numericAudit = auditNumericClaims(fallbackAnswer, state.figures)
+  const unverifiedFigures = describeUnsupportedFigures(numericAudit)
+  const clearanceNote = describeBlockedTypes(blockedTypes)
+  const missingData =
+    assistantMode === "general"
+      ? ["This response is not grounded in company-record citations."]
+      : [...state.missingData, unverifiedFigures, clearanceNote].filter(
+          (entry): entry is string => Boolean(entry),
+        )
 
   return {
     answer: fallbackAnswer,
@@ -192,26 +233,29 @@ function buildFinalResponse({
     relatedResults: relatedResults.slice(0, 8).map(mapRelatedResult),
     generatedAt: nowIso(),
     assistantMode,
-    mode: answer.trim() ? "llm" : "fallback",
+    mode: displayAnswer.trim() ? "llm" : "fallback",
     provider,
     model,
     configSource,
     confidence:
-      state.missingData.length > 0
+      // An answer built on a view the asker's role narrowed is low confidence by
+      // construction, however well-grounded the part they can see is.
+      state.missingData.length > 0 || numericAudit.unsupported.length > 0 || Boolean(clearanceNote)
         ? "low"
         : hasGrounding
           ? "high"
           : assistantMode === "general"
             ? "medium"
             : "low",
-    missingData:
-      assistantMode === "general"
-        ? ["This response is not grounded in company-record citations."]
-        : state.missingData,
+    missingData,
     artifact: state.artifact,
     exports: state.exports,
     actions: state.actions,
     sessionId,
+    diagnostics: {
+      unsupportedFigures: numericAudit.unsupported.length,
+      blockedTypes,
+    },
   }
 }
 
@@ -293,21 +337,30 @@ export async function streamAiAssistant({
     return
   }
 
-  if (!runtimeFlags.agentHarness) {
-    const legacyResponse = await askAiSearch(query, {
-      limit: payload.limit,
-      sessionId: payload.sessionId,
-      mode: payload.mode,
-      currentProjectId: payload.currentProjectId,
-      onTrace: (event) => emit("trace", event),
-    })
-    await emit("result", legacyResponse)
-    return
-  }
-
   const assistantMode = payload.mode ?? "org"
   const limit = clampLimit(payload.limit)
   const sessionId = await ensureAiSearchSession(context, assistantMode, payload.sessionId)
+
+  // A repeat question whose underlying data has not moved is answered from the
+  // last run rather than re-driving the whole tool loop. The key carries the
+  // asker's permission fingerprint, so this can never replay an answer computed
+  // under someone else's clearance.
+  const cache = await lookupCachedAnswer({
+    context,
+    question: query,
+    projectId: payload.currentProjectId ?? null,
+    assistantMode,
+  })
+  if (cache.hit) {
+    await emitTrace(emit, {
+      id: "cache",
+      status: "completed",
+      label: "Answered from cache",
+      detail: "The records behind this answer have not changed since it was last asked.",
+    })
+    await emit("result", { ...cache.hit, sessionId })
+    return
+  }
   const sessionContext = runtimeFlags.conversationMemory
     ? await loadAiSearchSessionContext({
         context,
@@ -333,6 +386,7 @@ export async function streamAiAssistant({
 
   const state = createAssistantToolState()
   let speculativeResults: SearchResult[] = []
+  const blockedTypes = new Set<string>()
   if (assistantMode === "org") {
     await emitTrace(emit, {
       id: "speculative-retrieval",
@@ -340,7 +394,7 @@ export async function streamAiAssistant({
       label: "Checking likely records",
       detail: "Starting a fast retrieval pass before the model chooses tools.",
     })
-    speculativeResults = await retrieveHybridResults({
+    const speculative = await retrieveHybridResults({
       context,
       query,
       entityTypes: [],
@@ -348,6 +402,11 @@ export async function streamAiAssistant({
       limit: Math.min(limit, 8),
       enableHybrid: runtimeFlags.hybridRetrieval,
     })
+    speculativeResults = speculative.results
+    // Records the asker's role cannot see never reach the model. Saying so is
+    // the difference between "you have no overdue invoices" and "you cannot see
+    // invoices" — the first is a lie to someone without clearance.
+    for (const type of speculative.blockedTypes) blockedTypes.add(type)
     if (speculativeResults.length > 0) {
       state.relatedResults.push(...speculativeResults)
     }
@@ -505,6 +564,9 @@ export async function streamAiAssistant({
   }
 
   const response = buildFinalResponse({
+    // The speculative pass and every tool call contribute; a type blocked
+    // anywhere is disclosed once.
+    blockedTypes: [...new Set([...blockedTypes, ...state.blockedTypes])].sort(),
     answer: text,
     state,
     assistantMode,
@@ -513,6 +575,21 @@ export async function streamAiAssistant({
     configSource: aiConfig.source,
     sessionId,
   })
+
+  // Only a clean answer is stored — one that ran the model, reported no missing
+  // data, drafted no action, and stated no figure a tool did not produce.
+  // `storeCachedAnswer` enforces all of that; caching a bad answer would just
+  // serve it faster to more people.
+  if (cache.write && !streamFailed) {
+    void storeCachedAnswer({
+      context,
+      question: query,
+      projectId: payload.currentProjectId ?? null,
+      assistantMode,
+      response,
+      write: cache.write,
+    })
+  }
 
   await appendAiSearchMessage(context, sessionId, "assistant", response.answer, {
     assistantMode,

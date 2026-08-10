@@ -41,6 +41,7 @@ type Chain = {
 }
 
 type Candidate = { userId: string; name: string; email: string | null }
+type AuthorizationMode = "owner" | "independent" | "dual"
 
 function centsToDollars(value: number | null) {
   return value == null ? "" : (value / 100).toFixed(2)
@@ -142,16 +143,25 @@ function AddApprover({
 export function PaymentApproversGroup({
   approvers,
   candidates,
+  viewerUserId,
   approvalMode,
+  requesterMayApprove,
   canManage,
 }: {
   approvers: PaymentRunApprover[]
   candidates: Candidate[]
+  viewerUserId: string
   approvalMode: "sole" | "dual"
+  requesterMayApprove: boolean
   canManage: boolean
 }) {
   const router = useRouter()
-  const [mode, setMode] = useState<"sole" | "dual">(approvalMode)
+  const initialMode: AuthorizationMode = requesterMayApprove
+    ? "owner"
+    : approvalMode === "dual"
+      ? "dual"
+      : "independent"
+  const [mode, setMode] = useState<AuthorizationMode>(initialMode)
   const [chain, setChain] = useState<Chain[]>(() =>
     approvers.map((approver) => ({
       userId: approver.userId,
@@ -169,10 +179,14 @@ export function PaymentApproversGroup({
   )
 
   const requiredSignatures = mode === "dual" ? 2 : 1
+  const preparerMayApprove = mode === "owner"
   const tooFewForMode =
-    chain.length > 0 && chain.length < requiredSignatures + 1
+    chain.length > 0 && (
+      chain.length < requiredSignatures ||
+      (preparerMayApprove && !chainIds.has(viewerUserId))
+    )
 
-  const modeDirty = mode !== approvalMode
+  const modeDirty = mode !== initialMode
   const chainDirty =
     chain.length !== approvers.length ||
     chain.some((row, index) => {
@@ -201,11 +215,20 @@ export function PaymentApproversGroup({
       )
       return
     }
+    if (tooFewForMode) {
+      setError(
+        preparerMayApprove
+          ? "Include yourself in the restricted approval list before enabling owner approval."
+          : `Designate at least ${requiredSignatures} authorized approver${requiredSignatures === 1 ? "" : "s"}.`,
+      )
+      return
+    }
     setError(null)
     startTransition(async () => {
       if (modeDirty) {
         const result = await updatePaymentRailPolicyAction({
-          approval_mode: mode,
+          approval_mode: mode === "dual" ? "dual" : "sole",
+          requester_may_approve: mode === "owner",
         })
         if (!result.success) {
           setError(result.error)
@@ -235,28 +258,31 @@ export function PaymentApproversGroup({
   return (
     <SettingsGroup
       title="Approval authority"
-      description="A payment run is only released once it has been signed off by someone other than whoever prepared it. Set how many signatures a run needs, then who is asked for them."
+      description="Choose whether an owner can approve their own prepared payment or whether Arc requires independent sign-off. Every approval still requires step-up verification and passes payment limits and risk controls."
     >
       <SettingsField
-        label="Signatures required per run"
-        hint="The person who prepares a run never counts toward this, whatever their role allows."
+        label="Payment authorization"
+        hint={preparerMayApprove ? "One authorized owner may prepare and approve the same run." : "The person who prepares a run does not count toward the required approvals."}
       >
         <ToggleGroup
           type="single"
           variant="outline"
           value={mode}
           onValueChange={(value) => {
-            if (value) setMode(value === "sole" ? "sole" : "dual")
+            if (value === "owner" || value === "independent" || value === "dual") setMode(value)
           }}
           disabled={!canManage}
-          className="grid w-full grid-cols-2"
-          aria-label="Signatures required per run"
+          className="grid w-full grid-cols-3"
+          aria-label="Payment authorization"
         >
-          <ToggleGroupItem value="sole" className="h-9 px-2 text-sm">
-            One
+          <ToggleGroupItem value="owner" className="h-9 px-2 text-sm">
+            Owner approval
+          </ToggleGroupItem>
+          <ToggleGroupItem value="independent" className="h-9 px-2 text-sm">
+            One approver
           </ToggleGroupItem>
           <ToggleGroupItem value="dual" className="h-9 px-2 text-sm">
-            Two
+            Two approvers
           </ToggleGroupItem>
         </ToggleGroup>
       </SettingsField>
@@ -276,7 +302,9 @@ export function PaymentApproversGroup({
           <p className="max-w-md text-xs leading-5 text-muted-foreground">
             {candidates.length === 0
               ? "No role grants payment approval yet, so no run can be released. Grant the permission to a role in Team settings first."
-              : "Nobody is designated, so any teammate whose role grants payment approval can approve a run they did not prepare. Name people here to route runs to them instead."}
+              : preparerMayApprove
+                ? "Nobody is designated, so an owner whose role grants payment approval may approve the run they prepared. Name people here to restrict who can approve."
+                : "Nobody is designated, so any teammate whose role grants payment approval can approve a run they did not prepare. Name people here to route runs to them instead."}
           </p>
         </div>
       ) : (
@@ -396,10 +424,9 @@ export function PaymentApproversGroup({
 
           <div className="flex items-start gap-2 pt-2 text-xs leading-5 text-muted-foreground">
             <ShieldCheck className="mt-0.5 size-3.5 shrink-0" />
-            A run is offered to the{" "}
-            {requiredSignatures === 1 ? "first person" : `first ${requiredSignatures} people`}{" "}
-            in this order who did not prepare it and whose limit covers the
-            debit. Anyone further down can still approve if they cannot.
+            {preparerMayApprove
+              ? "You can submit and then approve your own run when your limit covers the debit."
+              : `Arc requests ${requiredSignatures === 1 ? "one signature" : "two signatures"} from the first eligible ${requiredSignatures === 1 ? "person" : "people"} in this order whose limits cover the debit. The person who submitted the run is skipped.`}
           </div>
         </div>
       )}
@@ -407,10 +434,11 @@ export function PaymentApproversGroup({
       {tooFewForMode ? (
         <div className="flex items-start gap-2 py-3 text-xs leading-5 text-warning">
           <ShieldCheck className="mt-0.5 size-3.5 shrink-0" />
-          {requiredSignatures === 2 ? "Two signatures" : "One signature"} per run
-          and a preparer who can never sign their own leaves this chain too short
-          to release a run someone on it prepared. Designate at least{" "}
-          {requiredSignatures + 1} people.
+          {preparerMayApprove ? (
+            "Include yourself in the restricted approval list before enabling owner approval."
+          ) : (
+            `This mode requires at least ${requiredSignatures} designated approver${requiredSignatures === 1 ? "" : "s"}.`
+          )}
         </div>
       ) : null}
 
@@ -423,7 +451,10 @@ export function PaymentApproversGroup({
               Unsaved changes
             </span>
           ) : null}
-          <Button onClick={save} disabled={pending || !dirty || badLimit}>
+          <Button
+            onClick={save}
+            disabled={pending || !dirty || badLimit || tooFewForMode}
+          >
             {pending ? "Saving…" : "Save approval authority"}
           </Button>
         </div>

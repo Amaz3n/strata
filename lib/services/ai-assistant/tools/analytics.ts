@@ -9,13 +9,17 @@ import {
 } from "@/lib/services/ai-search/analytics"
 import { buildArtifactForAnalyticsIntent } from "@/lib/services/ai-search/artifacts"
 import {
+  addMissingData,
   addRelatedResults,
+  recordFigure,
   recordToolSummary,
   resultRef,
   setArtifact,
   type AssistantToolState,
 } from "@/lib/services/ai-assistant/state"
+import { canReadSearchType } from "@/lib/ai/search-visibility"
 import type { OrgServiceContext } from "@/lib/services/context"
+import { getUserPermissions } from "@/lib/services/permissions"
 import type { SearchEntityType } from "@/lib/services/search"
 import {
   aiAssistantToolOutputSchema,
@@ -48,6 +52,17 @@ export function createAnalyticsTools({
       outputSchema: zodSchema(aiAssistantToolOutputSchema),
       strict: true,
       execute: async (input) => {
+        // Analytics aggregates a table directly, so the retrieval-layer clearance
+        // check never sees it. An aggregate is not less sensitive than the rows
+        // it came from — often more so, since it is the whole picture at once.
+        const granted = new Set(await getUserPermissions(context.userId, context.orgId))
+        if (!canReadSearchType(input.entityType as SearchEntityType, granted)) {
+          const summary = `Your role cannot view ${formatEntityLabel(input.entityType)} records.`
+          addMissingData(state, [summary])
+          recordToolSummary(state, "run_analytics", summary)
+          return { narrative_summary: summary, rows: 0, result_refs: [], missing_data: [summary] }
+        }
+
         const execution = await executeAnalyticsToolLayer(
           {
             kind: "analytics",
@@ -75,6 +90,14 @@ export function createAnalyticsTools({
 
         addRelatedResults(state, execution.relatedResults)
         setArtifact(state, artifactData)
+        // Every bucket the query produced, so a breakdown the model quotes back
+        // is traceable to a row rather than to its own addition.
+        recordFigure(state, "Rows analyzed", execution.rowCount)
+        for (const bucket of execution.buckets) {
+          recordFigure(state, bucket.label, bucket.metricValue)
+          recordFigure(state, `${bucket.label} count`, bucket.count)
+          recordFigure(state, `${bucket.label} amount`, bucket.amountCents / 100)
+        }
         recordToolSummary(state, "run_analytics", execution.answer)
 
         return {
@@ -95,4 +118,9 @@ export function createAnalyticsTools({
       },
     }),
   }
+}
+
+/** "change_event" -> "change event", for a sentence rather than a slug. */
+function formatEntityLabel(entityType: string) {
+  return entityType.replace(/_/g, " ")
 }

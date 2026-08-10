@@ -6,6 +6,10 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
 
+import { BankReviewTray } from "@/components/books/bank-review-tray";
+import { BooksJournals } from "@/components/books/books-journals";
+import { OpeningBalancesWizard } from "@/components/books/opening-balances-wizard";
+import { BooksStatements } from "@/components/books/books-statements";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,7 +27,6 @@ import {
   closeFiscalYearAction,
   completeCutoverAction,
   createAccountingPeriodAction,
-  createAdjustingJournalAction,
   createAccountantPackageAction,
   createBankReconciliationAction,
   createBooksComparisonAction,
@@ -35,13 +38,13 @@ import {
   excludeBankTransactionAction,
   explainBooksVarianceAction,
   getBooksExportDownloadAction,
-  importOpeningBalancesAction,
-  matchBestBankTransactionAction,
   postOpeningBalancesAction,
   prepareCutoverAction,
   reopenAccountingPeriodAction,
+  resolveReconciliationItemAction,
   rollbackCutoverAction,
   runCloseChecklistAction,
+  runReconciliationNowAction,
   runLedgerRebuildAction,
   setGlAccountActiveAction,
 } from "./actions";
@@ -51,6 +54,7 @@ type Workspace = Awaited<
 >;
 export type BooksSection =
   | "overview"
+  | "statements"
   | "transactions"
   | "banking"
   | "chart"
@@ -133,6 +137,139 @@ function ResultButton({
     >
       {pending ? pendingLabel : label}
     </Button>
+  );
+}
+
+type ReconciliationItemRow = {
+  id: string;
+  category: string;
+  entity_type: string | null;
+  entity_id: string | null;
+  difference_cents: number | null;
+  details: unknown;
+  created_at: string;
+};
+
+/**
+ * The unresolved findings behind the blocking `accounting_drift` close check.
+ *
+ * The nightly sweep resolves anything it can no longer reproduce, so everything
+ * here is live. What it cannot judge is a difference somebody has decided to
+ * accept — that needs a person and a reason, and it is recorded against them.
+ */
+function ReconciliationFindings({
+  items,
+  total,
+  cap,
+}: {
+  items: ReconciliationItemRow[];
+  total: number;
+  cap: number;
+}) {
+  const [explanations, setExplanations] = useState<Record<string, string>>({});
+  return (
+    <section className="border bg-background">
+      <div className="border-b px-5 py-4">
+        <p className="text-sm font-semibold">Reconciliation findings</p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+          Open findings block the close. Cure one and re-run reconciliation, or
+          accept it as a known difference with a reason.
+        </p>
+      </div>
+      <div className="divide-y">
+        {items.map((item) => {
+          const details =
+            item.details && typeof item.details === "object"
+              ? (item.details as {
+                  href?: unknown;
+                  description?: unknown;
+                  cure?: unknown;
+                })
+              : null;
+          const href = typeof details?.href === "string" ? details.href : null;
+          const description =
+            typeof details?.description === "string"
+              ? details.description
+              : typeof details?.cure === "string"
+                ? details.cure
+                : null;
+          const explanation = explanations[item.id] ?? "";
+          return (
+            <div key={item.id} className="px-5 py-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="font-mono text-xs font-medium">
+                    {item.category}
+                  </p>
+                  {description ? (
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      {description}
+                    </p>
+                  ) : null}
+                  <p className="mt-1 font-mono text-[10px] text-muted-foreground">
+                    {item.entity_type ?? "org"} ·{" "}
+                    {item.created_at.slice(0, 10)}
+                  </p>
+                </div>
+                {item.difference_cents !== null ? (
+                  <span className="shrink-0 font-mono text-xs tabular-nums text-destructive">
+                    {formatMoney(item.difference_cents)}
+                  </span>
+                ) : null}
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                {href ? (
+                  <Button asChild size="sm" variant="ghost">
+                    <Link href={href}>Open</Link>
+                  </Button>
+                ) : null}
+                <ResultButton
+                  label="Mark cured"
+                  run={() =>
+                    resolveReconciliationItemAction({
+                      itemId: item.id,
+                      disposition: "resolved",
+                    })
+                  }
+                />
+                <ResultButton
+                  label="Accept difference"
+                  run={() =>
+                    resolveReconciliationItemAction({
+                      itemId: item.id,
+                      disposition: "explained",
+                      explanation,
+                    })
+                  }
+                />
+              </div>
+              <Textarea
+                className="mt-2 text-xs"
+                rows={2}
+                value={explanation}
+                placeholder="Why this difference is accepted (required to accept)"
+                onChange={(event) =>
+                  setExplanations((current) => ({
+                    ...current,
+                    [item.id]: event.target.value,
+                  }))
+                }
+              />
+            </div>
+          );
+        })}
+        {items.length === 0 && (
+          <p className="px-5 py-12 text-center text-sm text-muted-foreground">
+            No open reconciliation findings.
+          </p>
+        )}
+      </div>
+      {total > cap && (
+        <p className="border-t px-5 py-3 text-xs text-muted-foreground">
+          Showing the {cap} most recent of {total} open findings.
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -420,6 +557,7 @@ export function BooksClient({ workspace, section }: { workspace: Workspace; sect
   const { settings, statements } = workspace;
   const tabs: Array<{ key: BooksSection; label: string; href: string; count?: number }> = [
     { key: "overview", label: "Overview", href: "/books" },
+    { key: "statements", label: "Statements", href: "/books/statements" },
     { key: "transactions", label: "Transactions", href: "/books/transactions", count: workspace.unmatchedTransactions.length },
     { key: "banking", label: "Banking", href: "/books/banking" },
     { key: "chart", label: "Chart", href: "/books/chart" },
@@ -706,6 +844,12 @@ export function BooksClient({ workspace, section }: { workspace: Workspace; sect
           </div>
         )}
 
+        {section === "statements" && (
+          <div className="py-5">
+            <BooksStatements />
+          </div>
+        )}
+
         {(section === "banking" || section === "transactions") && (
           <div className="space-y-5 py-5">
             {section === "banking" ? (
@@ -772,6 +916,8 @@ export function BooksClient({ workspace, section }: { workspace: Workspace; sect
               </>
             ) : null}
             {section === "transactions" ? (
+            <>
+            <BankReviewTray accounts={workspace.accounts} />
             <section className="border bg-background">
               <div className="flex items-center justify-between border-b px-5 py-4">
                 <div>
@@ -779,7 +925,8 @@ export function BooksClient({ workspace, section }: { workspace: Workspace; sect
                     Bank transaction register
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    Match state, source description, direction, and amount from the normalized Plaid feed.
+                    The full normalized Plaid feed. Anything still needing a decision is in the
+                    review tray above.
                   </p>
                 </div>
                 <Badge>{workspace.bankTransactions.length}</Badge>
@@ -790,7 +937,7 @@ export function BooksClient({ workspace, section }: { workspace: Workspace; sect
                   .map((transaction) => (
                     <div
                       key={transaction.id}
-                      className="grid grid-cols-[100px_1fr_auto] items-center gap-4 px-5 py-3 text-sm xl:grid-cols-[100px_1fr_auto_auto]"
+                      className="grid grid-cols-[100px_1fr_auto_auto] items-center gap-4 px-5 py-3 text-sm"
                     >
                       <span className="font-mono text-xs text-muted-foreground">
                         {transaction.transaction_date}
@@ -800,35 +947,18 @@ export function BooksClient({ workspace, section }: { workspace: Workspace; sect
                           {transaction.merchant_name || transaction.description}
                         </p>
                         <p className="text-xs text-muted-foreground">
-                          {transaction.direction} · {workspace.unmatchedTransactions.some((item) => item.id === transaction.id) ? "needs match" : "matched"}
+                          {transaction.direction}
                         </p>
                       </div>
                       <span className="font-mono tabular-nums">
                         {transaction.direction === "outflow" ? "−" : "+"}
                         {formatMoney(transaction.amount_cents)}
                       </span>
-                      {workspace.unmatchedTransactions.some((item) => item.id === transaction.id) ? (
-                      <div className="col-start-2 flex gap-2 xl:col-start-auto">
-                        <ResultButton
-                          label="Best match"
-                          run={() =>
-                            matchBestBankTransactionAction(
-                              transaction.id,
-                              Number(transaction.amount_cents),
-                            )
-                          }
-                        />
-                        <ResultButton
-                          label="Exclude"
-                          run={() =>
-                            excludeBankTransactionAction(
-                              transaction.id,
-                              Number(transaction.amount_cents),
-                            )
-                          }
-                        />
-                      </div>
-                      ) : <Badge variant="outline" className="col-start-2 xl:col-start-auto">Matched</Badge>}
+                      <Badge variant="outline">
+                        {workspace.unmatchedTransactions.some((item) => item.id === transaction.id)
+                          ? "Needs match"
+                          : "Matched"}
+                      </Badge>
                     </div>
                   ))}
                 {workspace.bankTransactions.length === 0 && (
@@ -838,48 +968,20 @@ export function BooksClient({ workspace, section }: { workspace: Workspace; sect
                 )}
               </div>
             </section>
+            </>
             ) : null}
           </div>
         )}
 
-        {(section === "ledger" || section === "chart") && (
-          <div className={cn("grid gap-5 py-5", section === "ledger" && "xl:grid-cols-[1.35fr_.65fr]")}>
+        {section === "ledger" && (
+          <div className="py-5">
+            <BooksJournals accounts={workspace.accounts} asOf={workspace.asOf} />
+          </div>
+        )}
+
+        {section === "chart" && (
+          <div className="grid gap-5 py-5">
             <div className="space-y-5">
-              {section === "ledger" ? (
-              <section className="border bg-background">
-                <div className="border-b px-5 py-4">
-                  <p className="text-sm font-semibold">Recent journal</p>
-                  <p className="text-xs text-muted-foreground">
-                    Posted entries are immutable; corrections reverse and
-                    repost.
-                  </p>
-                </div>
-                <div className="divide-y">
-                  {workspace.journals.map((entry) => (
-                    <div
-                      key={entry.id}
-                      className="grid grid-cols-[95px_1fr_auto] gap-3 px-5 py-3 text-sm"
-                    >
-                      <span className="font-mono text-xs text-muted-foreground">
-                        {entry.entry_date}
-                      </span>
-                      <div>
-                        <p>{entry.memo}</p>
-                        <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">
-                          {entry.posting_key}
-                        </p>
-                      </div>
-                      <Badge
-                        variant="outline"
-                        className={statusTone(entry.status)}
-                      >
-                        {entry.entry_kind}
-                      </Badge>
-                    </div>
-                  ))}
-                </div>
-              </section>
-              ) : null}
               {section === "chart" ? (
               <>
               <section className="border bg-background">
@@ -957,51 +1059,6 @@ export function BooksClient({ workspace, section }: { workspace: Workspace; sect
               </>
               ) : null}
             </div>
-            {section === "ledger" ? (
-            <section className="h-fit border bg-background p-5">
-              <p className="text-sm font-semibold">Post adjustment</p>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                Paste balanced line JSON using account codes and integer cents.
-                A reversing date is optional.
-              </p>
-              <form
-                className="mt-5 space-y-3"
-                action={async (formData) => {
-                  const result = await createAdjustingJournalAction(formData);
-                  if (!result.success) toast.error(result.error);
-                  else {
-                    toast.success("Adjustment posted");
-                    router.refresh();
-                  }
-                }}
-              >
-                <Input
-                  name="entryDate"
-                  type="date"
-                  required
-                  defaultValue={workspace.asOf}
-                />
-                <Input name="memo" required placeholder="Adjustment memo" />
-                <Input
-                  name="reversingOn"
-                  type="date"
-                  aria-label="Optional reversing date"
-                />
-                <Textarea
-                  name="lines"
-                  rows={9}
-                  required
-                  defaultValue={
-                    '[\n  {"accountCode":"6900","debitCents":10000,"creditCents":0,"description":"Adjustment"},\n  {"accountCode":"2000","debitCents":0,"creditCents":10000,"description":"Offset"}\n]'
-                  }
-                  className="font-mono text-xs"
-                />
-                <Button type="submit" className="w-full">
-                  Post balanced journal
-                </Button>
-              </form>
-            </section>
-            ) : null}
           </div>
         )}
 
@@ -1045,31 +1102,54 @@ export function BooksClient({ workspace, section }: { workspace: Workspace; sect
                       </div>
                       {checks.length > 0 && (
                         <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                          {checks.map((check) => (
-                            <div
-                              key={check.id}
-                              className="flex items-center justify-between border px-3 py-2 text-xs"
-                            >
-                              <span className="truncate pr-2">
-                                {check.label}
-                              </span>
-                              <span
-                                className={cn(
-                                  "font-mono",
-                                  check.status === "failed"
-                                    ? "text-destructive"
-                                    : check.status === "warning"
-                                      ? "text-warning"
-                                      : "text-success",
-                                )}
+                          {checks.map((check) => {
+                            // A failing row is only useful if it says where to
+                            // cure it; the evidence ids were already collected
+                            // and then rendered as plain text.
+                            const href =
+                              check.status !== "passed" &&
+                              typeof (check.evidence as { href?: unknown } | null)?.href === "string"
+                                ? ((check.evidence as { href: string }).href)
+                                : null
+                            const body = (
+                              <>
+                                <span className="truncate pr-2">
+                                  {check.label}
+                                </span>
+                                <span
+                                  className={cn(
+                                    "shrink-0 font-mono",
+                                    check.status === "failed"
+                                      ? "text-destructive"
+                                      : check.status === "warning"
+                                        ? "text-warning"
+                                        : "text-success",
+                                  )}
+                                >
+                                  {check.status}
+                                  {check.issue_count
+                                    ? ` · ${check.issue_count}`
+                                    : ""}
+                                </span>
+                              </>
+                            )
+                            return href ? (
+                              <Link
+                                key={check.id}
+                                href={href}
+                                className="flex items-center justify-between border px-3 py-2 text-xs transition-colors hover:bg-accent"
                               >
-                                {check.status}
-                                {check.issue_count
-                                  ? ` · ${check.issue_count}`
-                                  : ""}
-                              </span>
-                            </div>
-                          ))}
+                                {body}
+                              </Link>
+                            ) : (
+                              <div
+                                key={check.id}
+                                className="flex items-center justify-between border px-3 py-2 text-xs"
+                              >
+                                {body}
+                              </div>
+                            )
+                          })}
                         </div>
                       )}
                       <div className="mt-4 flex flex-wrap gap-2">
@@ -1080,6 +1160,14 @@ export function BooksClient({ workspace, section }: { workspace: Workspace; sect
                           <ResultButton
                             label="Run checklist"
                             run={() => runCloseChecklistAction(period.id)}
+                          />
+                        )}
+                        {period.status !== "closed" && (
+                          // Curing a discrepancy should not mean waiting for the
+                          // 04:45 UTC sweep to see the checklist go green.
+                          <ResultButton
+                            label="Re-run reconciliation"
+                            run={() => runReconciliationNowAction()}
                           />
                         )}
                         {period.status === "closed" && (
@@ -1158,36 +1246,15 @@ export function BooksClient({ workspace, section }: { workspace: Workspace; sect
                 </form>
               </section>
               ) : null}
+              {section === "close" ? (
+                <ReconciliationFindings
+                  items={workspace.reconciliationItems}
+                  total={workspace.reconciliationItemTotal}
+                  cap={workspace.reconciliationItemCap}
+                />
+              ) : null}
               {section === "opening-balances" ? (
-              <section className="border bg-background p-5">
-                <p className="text-sm font-semibold">Opening balance batch</p>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  Dry-run JSON import. The immutable batch must balance and
-                  requires owner plus accountant approval before posting.
-                </p>
-                <form
-                  className="mt-4 space-y-3"
-                  action={async (formData) => {
-                    const result = await importOpeningBalancesAction(formData);
-                    if (!result.success) toast.error(result.error);
-                    else {
-                      toast.success("Opening batch validated");
-                      router.refresh();
-                    }
-                  }}
-                >
-                  <Input name="cutoverDate" type="date" required />
-                  <Input name="sourceFilename" placeholder="Source file name" />
-                  <Textarea
-                    name="sourceContent"
-                    rows={8}
-                    required
-                    className="font-mono text-xs"
-                    placeholder='[{"accountCode":"1000","subledgerType":"bank","sourceEntityType":"bank_account","sourceEntityId":"checking","description":"Cash","debitCents":100000,"creditCents":0},{"accountCode":"3000","description":"Equity","debitCents":0,"creditCents":100000}]'
-                  />
-                  <Button className="w-full">Validate batch</Button>
-                </form>
-              </section>
+                <OpeningBalancesWizard accounts={workspace.accounts} asOf={workspace.asOf} />
               ) : null}
               {section === "opening-balances" ? (
                 <section className="border bg-background">

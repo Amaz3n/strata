@@ -1,5 +1,6 @@
 import { compare, hash } from "bcryptjs"
 
+import { BILLED_INVOICE_STATUSES } from "@/lib/financials/ledger-status"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import type {
   ChangeOrder,
@@ -2066,7 +2067,7 @@ async function fetchInvoices(
     .eq("org_id", orgId)
     .eq("project_id", projectId)
     .eq("client_visible", true)
-    .in("status", ["sent", "partial", "paid", "overdue"])
+    .in("status", [...BILLED_INVOICE_STATUSES])
     .order("issue_date", { ascending: false })
 
   const { data, error } = await query

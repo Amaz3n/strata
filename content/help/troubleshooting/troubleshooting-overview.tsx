@@ -25,13 +25,13 @@ export default function TroubleshootingOverviewArticle() {
         .
       </p>
 
-      <h3>2. Document &amp; OCR Upload Issues</h3>
+      <h3>2. Drawing &amp; Document Processing Issues</h3>
       <p>
-        Fix stuck drawing uploads, learn how to flatten CAD layers to resolve timeouts, and calibrate drawing title block 
-        selection zones to correct sheet numbers.
+        Fix stuck drawing uploads, learn how to flatten CAD layers to resolve timeouts, correct sheet numbers
+        Arc read from the wrong part of the title block, and understand why a scanned bill did not reconcile.
         {" "}
-        <Link href="/help/troubleshooting/common-issues/document-ocr-issues">
-          Read the Document &amp; OCR Upload Guide
+        <Link href="/help/troubleshooting/common-issues/drawing-processing-issues">
+          Read the Drawing &amp; Document Processing Guide
         </Link>
         .
       </p>

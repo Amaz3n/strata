@@ -44,6 +44,9 @@ export const CRON_JOBS: CronJobDefinition[] = [
   { name: "warranty-sla-sweep", path: "/api/jobs/warranty-sla-sweep", schedule: "5 * * * *", scheduleLabel: "Hourly", expectedIntervalMinutes: 60 },
   { name: "invoice-schedules", path: "/api/jobs/invoice-schedules", schedule: "40 13 * * *", scheduleLabel: "Daily 13:40 UTC", expectedIntervalMinutes: 1440 },
   { name: "forecast-snapshots", path: "/api/jobs/forecast-snapshots", schedule: "15 4 * * *", scheduleLabel: "Daily 04:15 UTC", expectedIntervalMinutes: 1440 },
+  // Standing assistant questions. Hourly so an "hourly" cadence is actually
+  // hourly; a daily question simply is not due on most ticks.
+  { name: "ai-standing-questions", path: "/api/jobs/ai-standing-questions", schedule: "40 * * * *", scheduleLabel: "Hourly", expectedIntervalMinutes: 60 },
   { name: "books-projection", path: "/api/jobs/books-projection", schedule: "*/10 * * * *", scheduleLabel: "Every 10 min", expectedIntervalMinutes: 10 },
   { name: "books-maintenance", path: "/api/jobs/books-maintenance", schedule: "15 5 * * *", scheduleLabel: "Daily 05:15 UTC", expectedIntervalMinutes: 1440 },
   { name: "accounting-reconciliation", path: "/api/jobs/accounting-reconciliation", schedule: "45 4 * * *", scheduleLabel: "Daily 04:45 UTC", expectedIntervalMinutes: 1440 },
@@ -121,12 +124,19 @@ export function withCronRun(
 
     if (response.status === 401) return response
 
+    // A 207 means the handler ran but some units inside it failed — the convention
+    // every fan-out job here uses. `Response.ok` is true for 207, so recording by
+    // `ok` alone filed a partial failure as green telemetry, which is the exact
+    // shape of every silent-failure defect this system has had: a job reporting
+    // success over work that did not happen. `http_status` still tells a partial
+    // failure apart from a total one.
+    const succeeded = response.ok && response.status !== 207
     await recordRun({
       jobName,
-      status: response.ok ? "success" : "failed",
+      status: succeeded ? "success" : "failed",
       startedAt,
       httpStatus: response.status,
-      error: response.ok ? null : await readErrorSnippet(response),
+      error: succeeded ? null : await readErrorSnippet(response),
     })
     return response
   }

@@ -1,8 +1,17 @@
 import { cache } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import {
+  EMPTY_INVOICE_ROLLUP,
+  subtractPreIssuanceInvoices,
+  type InvoiceRollupPayload,
+  type PreIssuanceInvoiceRow,
+} from "@/lib/financials/invoice-rollup";
+import { BILLED_INVOICE_STATUSES, PAYABLE_VENDOR_BILL_STATUSES } from "@/lib/financials/ledger-status";
+import { payableOutstandingCents } from "@/lib/financials/payables-rules";
 import { requireOrgContext } from "@/lib/services/context";
 import { applyProjectReportingScope, applyReportingExclusion, getReportingExcludedProjectIds } from "@/lib/services/reporting-scope";
+import { orderPocSnapshotsLatestFirst } from "@/lib/services/poc";
 import { listProjectsWithClient } from "@/lib/services/projects";
 import { listTasksWithClient } from "@/lib/services/tasks";
 import type { DashboardStats, Project, Task } from "@/lib/types";
@@ -92,9 +101,12 @@ function isDueThisWeek(dueDate?: string) {
 export interface PortfolioHealth {
   activeProjects: number;
   projectsAtRisk: number;
-  cashRiskCents: number;
+  /** Overdue AR plus unpaid approved bills. `null` when the payables side could
+   *  not be read — an incomplete cash-risk total is worse than none. */
+  cashRiskCents: number | null;
   overdueARCents: number;
-  unpaidApprovedBillsCents: number;
+  /** `null` when the payables query failed; never a stand-in zero. */
+  unpaidApprovedBillsCents: number | null;
   totalBlockers: number;
   itemsDueNext7Days: number;
 }
@@ -296,23 +308,6 @@ function humanizeToken(value: string | null | undefined): string {
   return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
-// Shape returned by the dashboard_invoice_rollup DB function; keys mirror the
-// jsonb the SQL builds.
-type InvoiceRollupPayload = {
-  total_invoiced: number;
-  total_collected: number;
-  total_overdue: number;
-  revenue_series: Array<{ key: string; revenue_cents: number }> | null;
-  ar_aging: {
-    current: number;
-    no_due_date: number;
-    one_to_thirty: number;
-    thirty_one_to_sixty: number;
-    sixty_one_to_ninety: number;
-    over_ninety: number;
-  };
-};
-
 type BudgetRollupRow = {
   project_id: string;
   budget_cents: number;
@@ -477,10 +472,125 @@ const getScheduleSlice = cache(async (orgId?: string) => {
   };
 });
 
+export interface ControlTowerWipProject {
+  projectId: string;
+  projectName: string;
+  overUnderCents: number;
+  percentComplete: number;
+}
+
+export interface ControlTowerWipBand {
+  /** Snapshot date the position was measured on, or null when none exist. */
+  asOf: string | null;
+  projectCount: number;
+  netOverUnderCents: number;
+  overBilledCents: number;
+  underBilledCents: number;
+  /** Deepest under-billings first: earned work nobody has invoiced yet. */
+  mostUnderBilled: ControlTowerWipProject[];
+}
+
+const WIP_SNAPSHOT_PAGE_SIZE = 1000;
+
+/**
+ * The portfolio's over/under billing position.
+ *
+ * Read from `poc_snapshots`, not from the WIP over/under report: the report
+ * loads a budget per project, which is a per-project round trip the home page
+ * cannot afford on a 200-project org. Snapshots are captured nightly by the
+ * forecast cron and are exactly this — one indexed query, and an honest `asOf`
+ * instead of a number that pretends to be live.
+ *
+ * Under-billing leads because it is the actionable half: work earned that
+ * nobody has invoiced is cash sitting on a jobsite.
+ */
+export const getControlTowerWipBand = cache(async (orgId?: string): Promise<ControlTowerWipBand> => {
+  const ctx = await getControlTowerContext(orgId);
+  const projectsSlice = await getProjectsSlice(orgId);
+  const activeIds = projectsSlice.activeProjectIds;
+  const empty: ControlTowerWipBand = {
+    asOf: null,
+    projectCount: 0,
+    netOverUnderCents: 0,
+    overBilledCents: 0,
+    underBilledCents: 0,
+    mostUnderBilled: [],
+  };
+  if (activeIds.length === 0) return empty;
+
+  const nameById = new Map(projectsSlice.projects.map((project) => [project.id, project.name]));
+  const latest = new Map<string, { asOf: string; overUnderCents: number; percentComplete: number }>();
+
+  // `poc_snapshots` is unique on (org, project, as_of, inputs_hash), so one day
+  // can hold several rows for a project when the inputs changed between runs.
+  // Ordering comes from `orderPocSnapshotsLatestFirst`, the one rule that decides
+  // which snapshot IS a project's position — the WIP report and revenue recognition
+  // read it through the same helper, so the control tower cannot disagree with them.
+  //
+  // Paged rather than capped at a fixed row count: a fixed cap silently drops
+  // whole projects once one project accumulates enough history to fill it. The
+  // loop stops as soon as every active project has its current position.
+  for (let from = 0; ; from += WIP_SNAPSHOT_PAGE_SIZE) {
+    const { data, error } = await orderPocSnapshotsLatestFirst(
+      ctx.supabase
+        .from("poc_snapshots")
+        .select("project_id, as_of, over_under_cents, percent_complete")
+        .eq("org_id", ctx.orgId)
+        .in("project_id", activeIds),
+    ).range(from, from + WIP_SNAPSHOT_PAGE_SIZE - 1);
+    if (error) throw new Error(`Failed to load POC snapshots: ${error.message}`);
+
+    const page = data ?? [];
+    for (const row of page) {
+      const projectId = row.project_id as string;
+      if (latest.has(projectId)) continue;
+      latest.set(projectId, {
+        asOf: String(row.as_of),
+        overUnderCents: Number(row.over_under_cents ?? 0),
+        percentComplete: Number(row.percent_complete ?? 0),
+      });
+    }
+    if (page.length < WIP_SNAPSHOT_PAGE_SIZE || latest.size === activeIds.length) break;
+  }
+  if (latest.size === 0) return empty;
+
+  let netOverUnderCents = 0;
+  let overBilledCents = 0;
+  let underBilledCents = 0;
+  let asOf: string | null = null;
+  const projects: ControlTowerWipProject[] = [];
+  for (const [projectId, snapshot] of latest) {
+    netOverUnderCents += snapshot.overUnderCents;
+    if (snapshot.overUnderCents > 0) overBilledCents += snapshot.overUnderCents;
+    if (snapshot.overUnderCents < 0) underBilledCents += -snapshot.overUnderCents;
+    if (!asOf || snapshot.asOf > asOf) asOf = snapshot.asOf;
+    projects.push({
+      projectId,
+      projectName: nameById.get(projectId) ?? "Project",
+      overUnderCents: snapshot.overUnderCents,
+      percentComplete: snapshot.percentComplete,
+    });
+  }
+
+  return {
+    asOf,
+    projectCount: projects.length,
+    netOverUnderCents,
+    overBilledCents,
+    underBilledCents,
+    mostUnderBilled: projects
+      .filter((project) => project.overUnderCents < 0)
+      .sort((a, b) => a.overUnderCents - b.overUnderCents)
+      .slice(0, 5),
+  };
+});
+
 export interface ControlTowerMoneyBand {
   financials: ControlTowerData["financials"];
   budgetHealth: BudgetHealth;
-  unpaidApprovedBillsCents: number;
+  /** `null` when the payables query failed. A money tile must never render a
+   *  failed read as $0 — the owner reads that as "nothing is owed". */
+  unpaidApprovedBillsCents: number | null;
 }
 
 /**
@@ -495,6 +605,7 @@ export const getControlTowerMoneyBand = cache(async (orgId?: string): Promise<Co
   const [
     projectsSlice,
     invoiceRollupResult,
+    preIssuanceInvoicesResult,
     overdueInvoiceCandidatesResult,
     vendorBillsResult,
     billableCostsResult,
@@ -504,22 +615,31 @@ export const getControlTowerMoneyBand = cache(async (orgId?: string): Promise<Co
       p_org_id: ctx.orgId,
       p_excluded_project_ids: ctx.excludedProjectIds,
     }),
+    // Correction input for the pre-`billed_only` rollup. `draft` and `saved` are
+    // the still-editable pair, so this set stays small; it is discarded outright
+    // once the deployed function filters to the billed set itself.
+    ctx.supabase
+      .from("invoices")
+      .select("project_id, total_cents, balance_due_cents, due_date, issue_date, created_at")
+      .eq("org_id", ctx.orgId)
+      .in("status", ["draft", "saved"]),
     ctx.supabase
       .from("invoices")
       .select(
         "id, status, total_cents, balance_due_cents, due_date, invoice_number, project_id, project:projects(name)",
       )
       .eq("org_id", ctx.orgId)
-      .neq("status", "void")
+      // An unsent invoice cannot be overdue — nobody has been asked to pay it.
+      .in("status", [...BILLED_INVOICE_STATUSES])
       .gt("balance_due_cents", 0)
       .or(`status.eq.overdue,due_date.lte.${todayKeyUtc}`)
       .order("due_date", { ascending: true, nullsFirst: false })
       .limit(24),
     ctx.supabase
       .from("vendor_bills")
-      .select("id, project_id, status, amount_cents, balance_due_cents")
+      .select("id, project_id, status, total_cents, paid_cents, retainage_cents")
       .eq("org_id", ctx.orgId)
-      .in("status", ["approved", "partial"]),
+      .in("status", [...PAYABLE_VENDOR_BILL_STATUSES]),
     ctx.supabase
       .from("billable_costs")
       .select("id, project_id, billable_cents")
@@ -542,26 +662,32 @@ export const getControlTowerMoneyBand = cache(async (orgId?: string): Promise<Co
           })
         ).data ?? [];
 
-  const emptyInvoiceRollup: InvoiceRollupPayload = {
-    total_invoiced: 0,
-    total_collected: 0,
-    total_overdue: 0,
-    revenue_series: [],
-    ar_aging: {
-      current: 0,
-      no_due_date: 0,
-      one_to_thirty: 0,
-      thirty_one_to_sixty: 0,
-      sixty_one_to_ninety: 0,
-      over_ninety: 0,
-    },
-  };
-  const invoiceRollup: InvoiceRollupPayload = invoiceRollupResult.data ?? emptyInvoiceRollup;
+  // A failed read on an aggregate the whole band is about is not "zero". These
+  // throw into the route's error boundary rather than painting a confident $0
+  // over a query that never ran.
+  if (invoiceRollupResult.error) {
+    throw new Error(`Failed to load invoice rollup: ${invoiceRollupResult.error.message}`);
+  }
+  if (preIssuanceInvoicesResult.error) {
+    throw new Error(`Failed to load unsent invoices: ${preIssuanceInvoicesResult.error.message}`);
+  }
+  if (overdueInvoiceCandidatesResult.error) {
+    throw new Error(`Failed to load overdue invoices: ${overdueInvoiceCandidatesResult.error.message}`);
+  }
+  if (billableCostsResult.error) {
+    throw new Error(`Failed to load billable costs: ${billableCostsResult.error.message}`);
+  }
+
+  const rawInvoiceRollup = invoiceRollupResult.data as InvoiceRollupPayload | null;
+  const invoiceRollup: InvoiceRollupPayload = subtractPreIssuanceInvoices(
+    rawInvoiceRollup ?? EMPTY_INVOICE_ROLLUP,
+    ((preIssuanceInvoicesResult.data ?? []) as Array<PreIssuanceInvoiceRow & { project_id: string | null }>).filter(
+      (row) => ctx.keep(row.project_id),
+    ),
+    ctx.now,
+  );
   const overdueInvoiceCandidates = (overdueInvoiceCandidatesResult.data ?? []).filter((i) =>
     ctx.keep((i as { project_id?: string | null }).project_id),
-  );
-  const vendorBills = (vendorBillsResult.data ?? []).filter((b) =>
-    ctx.keep((b as { project_id?: string | null }).project_id),
   );
   const billableCosts = (billableCostsResult.data ?? []).filter((c) =>
     ctx.keep((c as { project_id?: string | null }).project_id),
@@ -637,11 +763,28 @@ export const getControlTowerMoneyBand = cache(async (orgId?: string): Promise<Co
     revenueCents: point.revenue_cents,
   }));
 
-  // Vendor bills — unpaid approved
-  let unpaidApprovedBillsCents = 0;
-  for (const bill of vendorBills) {
-    unpaidApprovedBillsCents += bill.balance_due_cents ?? bill.amount_cents ?? 0;
-  }
+  // Vendor bills — what the payables desk calls outstanding, through the one
+  // rule that defines it (`total − held retainage − paid`). A failed read stays
+  // null so the tile can say "unavailable" instead of "$0".
+  const unpaidApprovedBillsCents = vendorBillsResult.error
+    ? null
+    : ((vendorBillsResult.data ?? []) as Array<{
+        project_id: string | null;
+        total_cents: number | null;
+        paid_cents: number | null;
+        retainage_cents: number | null;
+      }>)
+        .filter((bill) => ctx.keep(bill.project_id))
+        .reduce(
+          (sum, bill) =>
+            sum +
+            payableOutstandingCents({
+              total_cents: bill.total_cents ?? 0,
+              paid_cents: bill.paid_cents ?? 0,
+              retainage_cents: bill.retainage_cents ?? 0,
+            }),
+          0,
+        );
 
   // Approved costs earned but not yet invoiced (ready to bill)
   let readyToInvoiceCents = 0;
@@ -1087,7 +1230,10 @@ export const getControlTowerPortfolioHealth = cache(async (orgId?: string): Prom
   return {
     activeProjects: projectsSlice.activeProjects.length,
     projectsAtRisk,
-    cashRiskCents: money.financials.totalOverdue + money.unpaidApprovedBillsCents,
+    cashRiskCents:
+      money.unpaidApprovedBillsCents === null
+        ? null
+        : money.financials.totalOverdue + money.unpaidApprovedBillsCents,
     overdueARCents: money.financials.totalOverdue,
     unpaidApprovedBillsCents: money.unpaidApprovedBillsCents,
     totalBlockers,
@@ -1230,13 +1376,12 @@ export async function getLifecycleBoard(
         "id, project_id, status, total_cents, balance_due_cents, due_date, invoice_number",
       )
       .eq("org_id", resolvedOrgId)
-      .in("status", ["sent", "partial", "overdue"]),
-    // Commercials: bills awaiting approval
+      .in("status", [...BILLED_INVOICE_STATUSES]),
+    // Commercials: bills awaiting approval. `pending` is a workflow queue —
+    // "who still has to approve this" — not the AP money set.
     supabase
       .from("vendor_bills")
-      .select(
-        "id, project_id, status, amount_cents, balance_due_cents, bill_number",
-      )
+      .select("id, project_id, status, total_cents, paid_cents, retainage_cents, bill_number")
       .eq("org_id", resolvedOrgId)
       .eq("status", "pending"),
     // Closeout: open punch items
@@ -1445,7 +1590,7 @@ export async function getLifecycleBoard(
     commercialItems.push({
       id: `bill-${bill.id}`,
       label: `Bill #${bill.bill_number ?? "—"}`,
-      detail: `${formatCentsCurrency(bill.amount_cents ?? 0)} awaiting approval`,
+      detail: `${formatCentsCurrency(bill.total_cents ?? 0)} awaiting approval`,
       entity: "vendor_bill",
       entityId: bill.id,
       projectName: pName(bill.project_id),
@@ -1577,9 +1722,10 @@ export async function getDecisionQueue(
       )
       .eq("org_id", resolvedOrgId)
       .in("status", ["pending", "submitted"]),
+    // `pending` is the approval queue, not the AP money set — a different question.
     supabase
       .from("vendor_bills")
-      .select("id, project_id, bill_number, status, amount_cents, created_at")
+      .select("id, project_id, bill_number, status, total_cents, created_at")
       .eq("org_id", resolvedOrgId)
       .eq("status", "pending"),
     supabase
@@ -1707,9 +1853,9 @@ export async function getDecisionQueue(
       projectId: bill.project_id,
       createdAt: bill.created_at,
       ageDays: age,
-      impactCents: bill.amount_cents ?? undefined,
-      impactLabel: bill.amount_cents
-        ? formatCentsCurrency(bill.amount_cents)
+      impactCents: bill.total_cents ?? undefined,
+      impactLabel: bill.total_cents
+        ? formatCentsCurrency(bill.total_cents)
         : "Pending",
       severity: age > 14 ? "high" : age > 7 ? "medium" : "low",
       href: bill.project_id ? `/projects/${bill.project_id}/payables` : "/",
@@ -1974,44 +2120,57 @@ export const getWatchlist = cache(async (
     supabase
       .from("schedule_items")
       .select("id, project_id, status, is_critical_path")
+      .eq("org_id", resolvedOrgId)
       .in("project_id", projectIds)
       .neq("status", "cancelled"),
     supabase
       .from("tasks")
       .select("id, project_id, status, due_date")
+      .eq("org_id", resolvedOrgId)
       .in("project_id", projectIds)
       .neq("status", "done"),
     supabase
       .from("invoices")
       .select("id, project_id, status, balance_due_cents, due_date")
+      .eq("org_id", resolvedOrgId)
       .in("project_id", projectIds)
-      .in("status", ["sent", "partial", "overdue"]),
+      .in("status", [...BILLED_INVOICE_STATUSES]),
     supabase
       .from("vendor_bills")
-      .select("id, project_id, status, amount_cents")
+      .select("id, project_id, status, total_cents, paid_cents, retainage_cents")
+      .eq("org_id", resolvedOrgId)
       .in("project_id", projectIds)
-      .in("status", ["pending", "approved"]),
+      .in("status", [...PAYABLE_VENDOR_BILL_STATUSES]),
     supabase
       .from("change_orders")
       .select("id, project_id, status, total_cents")
+      .eq("org_id", resolvedOrgId)
       .in("project_id", projectIds)
       .eq("status", "pending"),
     supabase
       .from("rfis")
       .select("id, project_id, status, due_date")
+      .eq("org_id", resolvedOrgId)
       .in("project_id", projectIds)
       .in("status", ["open", "pending"]),
     supabase
       .from("submittals")
       .select("id, project_id, status, due_date")
+      .eq("org_id", resolvedOrgId)
       .in("project_id", projectIds)
       .in("status", ["pending", "submitted", "revise_resubmit"]),
     supabase
       .from("closeout_items")
       .select("id, project_id, status")
+      .eq("org_id", resolvedOrgId)
       .in("project_id", projectIds)
       .eq("status", "missing"),
   ]);
+
+  // A dropped read would silently lower every project's risk score, which reads
+  // as "nothing to worry about". Fail loudly instead.
+  if (invoicesRes.error) throw new Error(`Failed to load watchlist invoices: ${invoicesRes.error.message}`);
+  if (vendorBillsRes.error) throw new Error(`Failed to load watchlist payables: ${vendorBillsRes.error.message}`);
 
   const scored: WatchlistProject[] = projects.map((project) => {
     const pid = project.id;
@@ -2082,13 +2241,18 @@ export const getWatchlist = cache(async (
       (sum, inv) => sum + (inv.balance_due_cents ?? 0),
       0,
     );
-    const pendingBills = (vendorBillsRes.data ?? []).filter(
-      (b) => b.project_id === pid && b.status === "pending",
-    );
-    const pendingBillCents = pendingBills.reduce(
-      (sum, b) => sum + (b.amount_cents ?? 0),
-      0,
-    );
+    // AP owed on this job, on the payables desk's definition.
+    const openBills = (vendorBillsRes.data ?? [])
+      .filter((b) => b.project_id === pid)
+      .map((b) =>
+        payableOutstandingCents({
+          total_cents: b.total_cents ?? 0,
+          paid_cents: b.paid_cents ?? 0,
+          retainage_cents: b.retainage_cents ?? 0,
+        }),
+      )
+      .filter((outstanding) => outstanding > 0);
+    const unpaidBillCents = openBills.reduce((sum, outstanding) => sum + outstanding, 0);
     const pendingCOs = (changeOrdersRes.data ?? []).filter(
       (co) => co.project_id === pid,
     );
@@ -2096,12 +2260,12 @@ export const getWatchlist = cache(async (
       (sum, co) => sum + Math.abs(co.total_cents ?? 0),
       0,
     );
-    const cashExposure = overdueARCents + pendingBillCents;
+    const cashExposure = overdueARCents + unpaidBillCents;
 
     const costRisk =
       (overdueARCents > 0 ? 3 : 0) +
       (pendingCOCents > 500_000 ? 2 : pendingCOCents > 0 ? 1 : 0) +
-      (pendingBills.length > 3 ? 2 : pendingBills.length > 0 ? 1 : 0);
+      (openBills.length > 3 ? 2 : openBills.length > 0 ? 1 : 0);
     riskScore += costRisk;
 
     if (overdueARCents > 0 && pendingCOs.length > 0) {
@@ -2111,7 +2275,7 @@ export const getWatchlist = cache(async (
         status: "critical",
         detail: `${formatCentsCurrency(overdueARCents)} AR overdue · ${pendingCOs.length} CO pending`,
       });
-    } else if (overdueARCents > 0 || pendingBillCents > 0) {
+    } else if (overdueARCents > 0 || unpaidBillCents > 0) {
       signals.push({
         key: "cost",
         label: "Cost",
@@ -2119,7 +2283,7 @@ export const getWatchlist = cache(async (
         detail:
           cashExposure > 0
             ? `${formatCentsCurrency(cashExposure)} exposure`
-            : "Bills pending",
+            : "Bills outstanding",
       });
     } else {
       signals.push({

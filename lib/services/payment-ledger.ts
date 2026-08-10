@@ -3,6 +3,31 @@ import "server-only"
 import { assertBalancedLedgerEntries, type LedgerEntryInput } from "@/lib/payments/payment-domain"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
+/**
+ * The payment rails subledger — **not** a general ledger.
+ *
+ * This records what the money rails did: the builder's bank debit, funds clearing,
+ * the vendor payout, fee accrual and collection, returns. It is balanced double entry
+ * because provider events demand that rigour, but it is deliberately **outside** Arc
+ * Books and must never feed the projector.
+ *
+ * The general ledger derives from `payments` and `payment_reversals`. Those already
+ * carry every economic fact a rail payment produces: `record_ap_payment_atomic` writes
+ * a `payments` row with the vendor amount, `processor_fee_cents`, `platform_fee_cents`,
+ * and the bill link, and the projector posts AP, cash, and fee expense from it.
+ * Consuming this subledger as well would post every rail payment **twice** — the
+ * submitted and paid transactions below net to exactly the entry `postBillPayment`
+ * already makes.
+ *
+ * What this subledger uniquely holds is rails-grain *timing* (money in transit between
+ * debit and payout) and Arc's own platform economics. Neither belongs in a builder's
+ * general ledger. The reconciliation spine ties the two together instead: every paid
+ * disbursement here must have a matching `payments` row, which is what keeps the GL
+ * honest without a second posting path.
+ *
+ * See `docs/plans/arc-books-gameplan.md` C2.1.2.
+ */
+
 export async function postPaymentLedgerTransaction(input: {
   orgId: string
   disbursementId?: string | null
@@ -255,6 +280,11 @@ export function postDisbursementReturnLedger(input: { orgId: string; disbursemen
  * costs nothing because no transfer was ever created. What survives the hold is
  * a real loss, and it is booked to a named loss account so the number is
  * knowable — an org's cumulative total is what trips its rail off.
+ *
+ * The loss is Arc's but the row carries the builder's `org_id`, which is deliberate:
+ * `enforceReturnLossCeiling` needs the per-org total to decide whose rail to disable.
+ * It never reaches the builder's own books, because this subledger does not feed the
+ * projector — see the module header. That is the whole reason the boundary matters.
  */
 export function postApReturnLossLedger(input: {
   orgId: string

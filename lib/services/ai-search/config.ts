@@ -197,7 +197,7 @@ export const ENTITY_HREF_FALLBACKS: Record<SearchEntityType, string> = {
   company: "/companies/{id}",
   invoice: "/projects/{project_id}/financials/receivables?invoice={id}",
   payment: "/payments/{id}",
-  payment_run: "/payables/payment-runs?run={id}",
+  payment_run: "/payables?run={id}",
   budget: "/budgets/{id}",
   estimate: "/estimates/{id}",
   commitment: "/commitments/{id}",

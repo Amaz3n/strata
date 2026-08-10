@@ -20,7 +20,7 @@ import {
   formatDate,
   formatMoneyFromCents,
 } from "@/components/companies/company-detail-ui";
-import { payableStatusMeta } from "@/components/companies/payable-status";
+import { payableStatusMeta } from "@/components/payables/payables-ui";
 
 export function CompanyPayables({
   vendorBills,

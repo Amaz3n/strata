@@ -2,6 +2,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { enqueueOutboxJob } from "@/lib/services/outbox"
 import { isApnsConfigured } from "@/lib/services/apns"
 import { requireOrgMembership } from "@/lib/auth/context"
+import { deliverNotificationEmail } from "@/lib/services/notification-email-delivery"
 import {
   EMAIL_NOTIFICATION_TYPES,
   type EmailNotificationTypeSettings,
@@ -62,7 +63,15 @@ export class NotificationService {
     // Only queue email delivery for email-eligible types. Everything else stays
     // in-app only — email notifications are reserved for important events.
     if (isEmailEligibleNotificationType(input.type)) {
-      await this.queueDelivery(notification.id, input.orgId)
+      if (
+        input.type === "vendor_bill_submitted" ||
+        input.type === "vendor_bill_approved" ||
+        input.type === "vendor_bill_rejected"
+      ) {
+        await this.deliverImmediatelyWithFallback(notification.id, input.orgId)
+      } else {
+        await this.queueDelivery(notification.id, input.orgId)
+      }
     }
 
     // Mobile push is delivered for every in-app notification, but only when APNs
@@ -87,6 +96,55 @@ export class NotificationService {
       payload: { notificationId },
       runAt: new Date().toISOString() // Immediate delivery
     })
+  }
+
+  /**
+   * Approval requests are time-sensitive. Reserve the durable job before the
+   * provider call, then complete it inline. A crash leaves a processing lease
+   * for the outbox reaper; a provider failure returns it to pending.
+   */
+  private async deliverImmediatelyWithFallback(
+    notificationId: string,
+    orgId: string,
+  ): Promise<void> {
+    const supabase = createServiceSupabaseClient()
+    const { data: job, error } = await supabase
+      .from("outbox")
+      .insert({
+        org_id: orgId,
+        job_type: "deliver_notification",
+        status: "processing",
+        payload: { notificationId },
+        run_at: new Date().toISOString(),
+      })
+      .select("id")
+      .single()
+
+    if (error || !job) {
+      await this.queueDelivery(notificationId, orgId)
+      return
+    }
+
+    try {
+      await deliverNotificationEmail(notificationId, supabase)
+      await supabase
+        .from("outbox")
+        .update({ status: "completed", last_error: null })
+        .eq("id", job.id)
+    } catch (deliveryError) {
+      const message =
+        deliveryError instanceof Error
+          ? deliveryError.message
+          : String(deliveryError)
+      await supabase
+        .from("outbox")
+        .update({
+          status: "pending",
+          last_error: `Immediate delivery failed: ${message}`.slice(0, 2000),
+          run_at: new Date().toISOString(),
+        })
+        .eq("id", job.id)
+    }
   }
 
   // Mark as read

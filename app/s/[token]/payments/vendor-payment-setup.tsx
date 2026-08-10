@@ -250,6 +250,22 @@ export function VendorPaymentSetup({
         )}
       </section>
 
+      {!context.builder.w9OnFile ? (
+        <section className="border border-border bg-card p-5">
+          <h2 className="text-base font-semibold">Add your W-9</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {context.builder.orgName} needs a W-9 on file to report what they pay you. Adding it
+            now saves a scramble in January — it takes a minute and you only do it once.
+          </p>
+          <a
+            href={`/s/${token}/compliance`}
+            className="mt-4 inline-flex items-center border border-border px-3 py-2 text-sm font-medium hover:bg-muted"
+          >
+            Upload your W-9
+          </a>
+        </section>
+      ) : null}
+
       {otherBuilders.length > 0 ? (
         <section className="border border-border bg-card p-5">
           <h2 className="text-base font-semibold">Your other Arc builders</h2>
@@ -268,6 +284,44 @@ export function VendorPaymentSetup({
                 </span>
               </div>
             ))}
+          </div>
+        </section>
+      ) : null}
+
+      {context.inFlightPayments.length > 0 ? (
+        <section className="border border-border bg-card p-5">
+          <h2 className="text-base font-semibold">On the way</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Payments a builder has already released. Arrival dates are estimates from the
+            bank&apos;s normal processing window, not guarantees.
+          </p>
+          <div className="mt-4 overflow-x-auto border border-border">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/40 text-left text-xs text-muted-foreground">
+                  <th className="px-3 py-2 font-medium">Sent</th>
+                  <th className="px-3 py-2 font-medium">Builder</th>
+                  <th className="px-3 py-2 font-medium">Invoice</th>
+                  <th className="px-3 py-2 font-medium">Expected</th>
+                  <th className="px-3 py-2 text-right font-medium">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {context.inFlightPayments.map((payment) => (
+                  <tr key={payment.id} className="border-b border-border last:border-0">
+                    <td className="whitespace-nowrap px-3 py-3 tabular-nums">{paymentDate(payment.initiatedOn)}</td>
+                    <td className="px-3 py-3">{payment.orgName}</td>
+                    <td className="px-3 py-3">{payment.billNumber}</td>
+                    <td className="whitespace-nowrap px-3 py-3 tabular-nums text-muted-foreground">
+                      {payment.expectedEarliest === payment.expectedLatest
+                        ? paymentDate(payment.expectedEarliest)
+                        : `${paymentDate(payment.expectedEarliest)} – ${paymentDate(payment.expectedLatest)}`}
+                    </td>
+                    <td className="px-3 py-3 text-right tabular-nums">{money(payment.amountCents, payment.currency)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </section>
       ) : null}

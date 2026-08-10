@@ -34,6 +34,16 @@ const COPY: Record<
       "Invite them to set up direct deposit. If they already did this for another Arc builder, it takes them one click.",
     action: "Invite to direct deposit",
   },
+  suspended: {
+    label: "Direct deposit suspended",
+    detail: "Electronic payment to this vendor is paused. Restore their payment access before re-inviting them.",
+    action: null,
+  },
+  revoked: {
+    label: "Direct deposit revoked",
+    detail: "Electronic payment to this vendor was withdrawn. Restore their payment access before re-inviting them.",
+    action: null,
+  },
 };
 
 export function VendorPaymentCard({

@@ -45,6 +45,35 @@ function assertStripeExecutionMode() {
   }
 }
 
+/**
+ * The Express account Arc already created for this vendor entity, if one exists.
+ *
+ * Stripe has no metadata query for accounts — the Search API does not cover
+ * them — so this is a bounded walk of the platform's connected accounts. The cap
+ * is what keeps a pathological account list from turning vendor onboarding into
+ * an unbounded crawl; past it we accept the (rare, recoverable) duplicate rather
+ * than hang. Onboarding a vendor happens once, so the cost lands in the right
+ * place. If the connected-account count ever approaches the cap, the durable
+ * answer is to persist the provider account id before the local row is written,
+ * not to raise this number.
+ */
+const MAX_RECIPIENT_LOOKUP_ACCOUNTS = 1_000
+
+async function findRecipientByVendorEntity(vendorEntityId: string): Promise<Stripe.Account | null> {
+  let match: Stripe.Account | null = null
+  let scanned = 0
+  await stripeClient().accounts.list({ limit: 100 }).autoPagingEach((account) => {
+    scanned += 1
+    if (account.metadata?.vendor_entity_id === vendorEntityId) {
+      match = account
+      return false
+    }
+    if (scanned >= MAX_RECIPIENT_LOOKUP_ACCOUNTS) return false
+    return undefined
+  })
+  return match
+}
+
 function mapRecipientStatus(account: Stripe.Account): RecipientSnapshot["status"] {
   if (account.requirements?.disabled_reason) return "restricted"
   if (account.payouts_enabled && account.details_submitted) return "ready"
@@ -98,6 +127,18 @@ export const stripeApProvider: PaymentRailProvider = {
   settlementWindow: STRIPE_SETTLEMENT_WINDOW,
 
   async createRecipient(input: RecipientCreateInput) {
+    // Creating a vendor-facing Express account against live credentials is money
+    // infrastructure even though no money moves in this call: it is the thing a
+    // payout is later sent to. It was the one provider-account call outside the
+    // execution-mode gate, so accounts could be minted on live keys before
+    // FINTECH_PAYMENTS_LIVE_MODE_APPROVED was ever set.
+    assertStripeExecutionMode()
+    // Stripe's idempotency keys expire after 24 hours, so a local insert that
+    // failed after the account was created stops protecting us the next day and
+    // the retry mints a SECOND Express account for the same vendor. Look for the
+    // one we already made before creating another.
+    const existing = await findRecipientByVendorEntity(input.vendorEntityId)
+    if (existing) return mapRecipient(existing)
     const account = await stripeClient().accounts.create({
       type: "express",
       country: input.country,
@@ -110,6 +151,7 @@ export const stripeApProvider: PaymentRailProvider = {
   },
 
   async createRecipientOnboardingLink(input) {
+    assertStripeExecutionMode()
     const link = await stripeClient().accountLinks.create({
       account: input.providerAccountId,
       refresh_url: input.refreshUrl,
@@ -126,6 +168,7 @@ export const stripeApProvider: PaymentRailProvider = {
   },
 
   async createFundingCustomer(input) {
+    assertStripeExecutionMode()
     const customer = await stripeClient().customers.create({
       name: input.name,
       email: input.email ?? undefined,
@@ -135,6 +178,9 @@ export const stripeApProvider: PaymentRailProvider = {
   },
 
   async createFundingSetup(input): Promise<FundingSetupSession> {
+    // Collects a real bank account against the platform's credentials, so it
+    // belongs behind the same gate as the customer it attaches to.
+    assertStripeExecutionMode()
     const setupIntent = await stripeClient().setupIntents.create({
       customer: input.providerCustomerId,
       payment_method_types: ["us_bank_account"],
@@ -224,6 +270,7 @@ export const stripeApProvider: PaymentRailProvider = {
       // balance — and so a reconciliation can trace vendor money to its debit.
       ...(input.providerChargeId ? { source_transaction: input.providerChargeId } : {}),
       transfer_group: input.transferGroup,
+      description: input.memo,
       metadata: { ...input.metadata, arc_product: "vendor_payments" },
     }, { idempotencyKey: input.idempotencyKey })
     return { provider: "stripe", providerTransferId: transfer.id }

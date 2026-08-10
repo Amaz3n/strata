@@ -14,6 +14,7 @@ import {
   MoreHorizontal,
   Plus,
   ReceiptText,
+  Sparkles,
   Timer,
   X,
 } from "lucide-react"
@@ -122,6 +123,12 @@ interface QueueItem {
     status?: string | null
   } | null
   canChooseCostCode: boolean
+  /**
+   * Set when a learned rule coded this row without anyone touching it. The
+   * whole point of B1 is that these should be approvable at a glance, so the
+   * queue has to say which rows they are.
+   */
+  autoCoded?: { confidence: number | null } | null
   sourceRecord: any
 }
 
@@ -280,6 +287,10 @@ export function ReviewQueueTable({
         lateToBillingPeriodName: (bill as any).late_to_billing_period_name ?? null,
         recentInvoice: null,
         canChooseCostCode: costCodesEnabled && !hasMultipleLines,
+        autoCoded:
+          bill.coding_source === "rule" && bill.coding_rule_id
+            ? { confidence: bill.coding_confidence ?? null }
+            : null,
         sourceRecord: bill,
       })
     }
@@ -363,6 +374,10 @@ export function ReviewQueueTable({
   const selectedInvoiceItems = selectedItems.filter(
     (item) => item.tabState === "ready-to-invoice" && item.kind === "billable_cost",
   )
+  // Rows a learned rule already coded and that nothing is blocking. Selecting
+  // them in one action is what makes zero-touch coding pay off: the reviewer
+  // sweeps the settled rows and spends their attention on the rest.
+  const autoCodedReadyItems = visibleItems.filter((item) => item.autoCoded && isReady(item))
   const summary = {
     needsReviewCount: needsReviewItems.length,
     blockedCount: blockedItems.length,
@@ -696,6 +711,9 @@ export function ReviewQueueTable({
       <BulkActionBar
         selectedCount={selectedItems.length}
         readyCount={selectedReadyItems.length}
+        autoCodedReadyCount={autoCodedReadyItems.length}
+        selectedAutoCodedCount={selectedReadyItems.filter((item) => item.autoCoded).length}
+        onSelectAutoCoded={() => setSelectedIds(new Set(autoCodedReadyItems.map((item) => item.id)))}
         rejectableCount={selectedRejectableItems.length}
         assignableCount={selectedAssignableItems.length}
         invoiceCount={selectedInvoiceItems.length}
@@ -1197,6 +1215,9 @@ function ReviewHeader({
 function BulkActionBar({
   selectedCount,
   readyCount,
+  autoCodedReadyCount,
+  selectedAutoCodedCount,
+  onSelectAutoCoded,
   rejectableCount,
   assignableCount,
   invoiceCount,
@@ -1216,6 +1237,9 @@ function BulkActionBar({
 }: {
   selectedCount: number
   readyCount: number
+  autoCodedReadyCount: number
+  selectedAutoCodedCount: number
+  onSelectAutoCoded: () => void
   rejectableCount: number
   assignableCount: number
   invoiceCount: number
@@ -1233,14 +1257,36 @@ function BulkActionBar({
   onCreateInvoice: () => void
   onClearSelection: () => void
 }) {
-  if (selectedCount === 0) return null
+  if (selectedCount === 0 && autoCodedReadyCount === 0) return null
+
+  // With nothing selected the bar exists only to offer the rule-coded sweep —
+  // the whole value of auto-coding is that the reviewer never has to go hunting
+  // for those rows. A row of disabled bulk actions would say the opposite.
+  if (selectedCount === 0) {
+    return (
+      <div className="flex items-center justify-between gap-3 border-b bg-muted/30 px-4 py-2 sm:px-6 lg:px-8">
+        <span className="text-sm text-muted-foreground">
+          <span className="font-medium text-foreground">{autoCodedReadyCount}</span> auto-coded and ready to approve
+        </span>
+        <Button variant="outline" size="sm" disabled={isPending} onClick={onSelectAutoCoded}>
+          <Sparkles aria-hidden className="h-3.5 w-3.5" />
+          Select all
+        </Button>
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-col gap-3 border-b bg-muted/30 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
-      <div className="text-sm">
-        <span className="font-medium">{selectedCount}</span> selected
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+        <span>
+          <span className="font-medium">{selectedCount}</span> selected
+          {selectedAutoCodedCount > 0 ? (
+            <span className="ml-1 text-muted-foreground">({selectedAutoCodedCount} auto-coded)</span>
+          ) : null}
+        </span>
         {invoiceCount > 0 ? (
-          <span className="ml-2 text-muted-foreground">{formatCurrency(invoiceTotalCents)} ready</span>
+          <span className="text-muted-foreground">{formatCurrency(invoiceTotalCents)} ready</span>
         ) : null}
       </div>
       <div className="flex flex-wrap items-center gap-2">
@@ -1287,6 +1333,12 @@ function BulkActionBar({
               ))}
             </SelectContent>
           </Select>
+        ) : null}
+        {autoCodedReadyCount > 0 && selectedAutoCodedCount < autoCodedReadyCount ? (
+          <Button variant="outline" size="sm" disabled={isPending} onClick={onSelectAutoCoded}>
+            <Sparkles aria-hidden className="h-3.5 w-3.5" />
+            Select {autoCodedReadyCount} auto-coded
+          </Button>
         ) : null}
         <Button variant="outline" size="sm" disabled={isPending || readyCount === 0} onClick={onApproveSelected}>
           Approve selected
@@ -1469,6 +1521,7 @@ function QueueTable({
                         <span className="text-foreground/70">{item.typeLabel}</span>
                         <span aria-hidden className="text-border">·</span>
                         <span className="truncate">{item.source}</span>
+                        {item.autoCoded ? <AutoCodedChip confidence={item.autoCoded.confidence} /> : null}
                         {item.billingPeriodName ? (
                           <>
                             <span aria-hidden className="text-border">·</span>
@@ -1665,6 +1718,31 @@ function openLabel(item: QueueItem): string {
     default:
       return "Open source"
   }
+}
+
+/**
+ * Says a learned rule coded this row, so a reviewer can spend their attention
+ * on the rows nobody has seen. Confidence is shown when the rule carries one —
+ * "coded automatically" without a number invites the same scrutiny as no chip
+ * at all, which defeats the purpose.
+ */
+function AutoCodedChip({ confidence }: { confidence: number | null }) {
+  const percent = confidence == null ? null : Math.round(confidence * 100)
+  return (
+    <Badge
+      variant="outline"
+      className="gap-1 rounded-sm border-chart-2/30 bg-chart-2/10 px-1.5 py-0 text-[10px] font-medium text-chart-2"
+      title={
+        percent == null
+          ? "A learned coding rule set this cost code."
+          : `A learned coding rule set this cost code (${percent}% confidence).`
+      }
+    >
+      <Sparkles aria-hidden className="h-2.5 w-2.5" />
+      Auto-coded
+      {percent == null ? null : <span className="tabular-nums opacity-80">{percent}%</span>}
+    </Badge>
+  )
 }
 
 function AgeBadge({ days, muted }: { days: number; muted?: boolean }) {

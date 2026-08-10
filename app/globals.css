@@ -18,6 +18,23 @@
   initial-value: 0;
 }
 
+/* The clock behind .doc-scan. Inherited, because every layer of the matrix
+   derives its geometry from it and they must not drift apart. */
+@property --scan-phase {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+/* How far the matrix has drained off the page: 0 covers it, 1 has cleared every
+   edge, 1.5 has cleared the corners. Inherited so one animation on the
+   container drains both layers together. */
+@property --scan-wash {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
 /* =====================================================================
    ARC DESIGN STANDARD — operational software for construction.
 
@@ -507,6 +524,224 @@ html[data-ui-size="comfortable"] {
     }
   }
 
+  /* Document scan matrix — laid over a rendered document while the AI is
+     reading it, and stopped the moment it returns. Rendered by
+     components/animation/document-scan-overlay.tsx.
+
+     The page is dimmed to a ghost of itself and a lattice of dots is laid over
+     it; a second, brighter copy of the same lattice shows through a few soft
+     blobs that wander the page, so dots light up where the read is looking.
+     The dimming is the point, not a side effect — light dots cannot be seen
+     moving over white paper, which is why this reads as being scanned and a
+     dark-dots-on-white version did not.
+
+     Three layers:
+       .doc-scan-veil      the dim  — knocks the invoice back to a ghost. Kept
+                                      translucent so the layout stays legible as
+                                      a shape; the reader should still recognise
+                                      the document they dropped.
+       .doc-scan-grid      the matrix — every dot, faint and still.
+       .doc-scan-glow-lit  the light — the same lattice, bright, masked down to
+                                      the wandering blobs.
+
+     Nothing here uses mix-blend-mode: the veil already establishes a dark
+     backdrop, so the dots composite normally on top of it. That is what lets
+     the drain mask sit on the container and clear all three layers at once —
+     the invoice is developed back out from the middle as the scan finishes.
+
+     Colours are fixed here rather than taken from the theme on purpose. A PDF
+     renders white paper in both light and dark mode, so a veil or dot colour
+     that followed the app theme would invert and stop working against the page
+     it is supposed to be covering. */
+  .doc-scan {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+
+    --scan-gap: 13px;
+    --scan-veil: oklch(0.15 0.025 264);
+    --scan-dot: oklch(1 0 0 / 0.16);
+    --scan-lit: oklch(0.97 0.03 264);
+
+    /* Blob centres. The x and y of each run at different rates, so a centre
+       traces a Lissajous figure rather than a circle — a circle visibly orbits,
+       this wanders. Every rate is a whole number of turns per cycle (360, 720,
+       1080) so the loop closes with no seam; anything else would jump when the
+       phase wraps. */
+    --scan-x1: calc(50% + sin(var(--scan-phase) * 360deg) * 82%);
+    --scan-y1: calc(50% + cos(var(--scan-phase) * 720deg) * 76%);
+    --scan-x2: calc(50% + sin(var(--scan-phase) * 720deg + 130deg) * 78%);
+    --scan-y2: calc(50% + cos(var(--scan-phase) * 360deg + 40deg) * 84%);
+    --scan-x3: calc(50% - sin(var(--scan-phase) * 1080deg + 200deg) * 74%);
+    --scan-y3: calc(50% - cos(var(--scan-phase) * 360deg + 260deg) * 80%);
+
+    /* The drain front. On the container, so the veil and both dot layers clear
+       as one sheet and the invoice comes back from the middle outward. An
+       ellipse sized to the page means the front reaches all four edges at once
+       (--scan-wash: 1) and the corners last. The first stop starts negative so
+       that at rest the mask is solid — the overlay is whole until the wash
+       actually runs. */
+    -webkit-mask-image: var(--scan-wash-mask);
+    mask-image: var(--scan-wash-mask);
+    --scan-wash-mask: radial-gradient(
+      ellipse farthest-side at 50% 50%,
+      transparent calc((var(--scan-wash) - 0.12) * 100%),
+      oklch(0 0 0) calc(var(--scan-wash) * 100%)
+    );
+
+    /* Two clocks on one element: the drift runs for the whole read, the wash is
+       parked on its first frame until the scan returns. Toggling play-state
+       rather than swapping the animation list is what stops the drift jumping
+       back to zero at the moment the wash starts. */
+    animation:
+      doc-scan-drift 7s linear infinite,
+      doc-scan-wash 900ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+    animation-play-state: running, paused;
+
+    /* The fade rides behind the drain rather than with it: the delay lets the
+       front get well clear of the middle at full strength first, so the exit
+       reads as the matrix leaving and then dissolving, not as it dimming in
+       place. Both are finished inside the overlay's own unmount timer. */
+    transition: opacity 560ms ease 300ms;
+  }
+
+  @keyframes doc-scan-drift {
+    from {
+      --scan-phase: 0;
+    }
+    to {
+      --scan-phase: 1;
+    }
+  }
+
+  /* The scan returned: the overlay drains off the page instead of being
+     switched off it. Runs past 1 so the corners clear too. */
+  .doc-scan[data-state="settling"] {
+    animation-play-state: running, running;
+    opacity: 0;
+  }
+
+  /* Laid over app chrome rather than over a rendered page — the drop targets
+     that say "I will read this". The host already supplies its own scrim, so
+     there is no veil, and the dots come from theme tokens because here there
+     IS a theme underneath: this variant sits on the app surface, not on the
+     white paper of a PDF. */
+  .doc-scan[data-variant="surface"] {
+    --scan-dot: color-mix(in oklab, var(--foreground) 20%, transparent);
+    --scan-lit: var(--primary);
+  }
+
+  @keyframes doc-scan-wash {
+    from {
+      --scan-wash: 0;
+    }
+    to {
+      --scan-wash: 1.5;
+    }
+  }
+
+  .doc-scan-veil {
+    position: absolute;
+    inset: 0;
+    background: var(--scan-veil);
+    opacity: 0.76;
+  }
+
+  /* `space` rather than `repeat` so the lattice ends on whole dots instead of
+     slicing one in half at the page edge. Both layers share a box and a tile
+     size, so they land on the same lattice and a lit dot sits exactly on top of
+     the faint one it replaces. */
+  .doc-scan-grid,
+  .doc-scan-glow-lit {
+    position: absolute;
+    inset: 0;
+    background-repeat: space;
+    background-size: var(--scan-gap) var(--scan-gap);
+  }
+
+  .doc-scan-grid {
+    background-image: radial-gradient(circle, var(--scan-dot) 1px, transparent 1.6px);
+  }
+
+  .doc-scan-glow-lit {
+    background-image: radial-gradient(circle, var(--scan-lit) 1.35px, transparent 2px);
+
+    /* Four breaths per drift cycle, off the same clock, so the lattice pulses
+       without a second animation that could fall out of step. */
+    opacity: calc(0.55 + 0.45 * (0.5 - 0.5 * cos(var(--scan-phase) * 1440deg)));
+
+    /* Three blobs, unioned (mask layers composite `add` by default). Soft all
+       the way to their edge so a dot fades up rather than switching on. */
+    -webkit-mask-image:
+      radial-gradient(ellipse at center, oklch(0 0 0), transparent 68%),
+      radial-gradient(ellipse at center, oklch(0 0 0), transparent 66%),
+      radial-gradient(ellipse at center, oklch(0 0 0), transparent 70%);
+    mask-image:
+      radial-gradient(ellipse at center, oklch(0 0 0), transparent 68%),
+      radial-gradient(ellipse at center, oklch(0 0 0), transparent 66%),
+      radial-gradient(ellipse at center, oklch(0 0 0), transparent 70%);
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-size: 58% 50%, 44% 48%, 50% 42%;
+    mask-size: 58% 50%, 44% 48%, 50% 42%;
+    -webkit-mask-position:
+      var(--scan-x1) var(--scan-y1),
+      var(--scan-x2) var(--scan-y2),
+      var(--scan-x3) var(--scan-y3);
+    mask-position:
+      var(--scan-x1) var(--scan-y1),
+      var(--scan-x2) var(--scan-y2),
+      var(--scan-x3) var(--scan-y3);
+  }
+
+  /* A single, centered work label sits above the live matrix. The highlight is
+     reserved for the real scan and stops when the scan stops. */
+  .doc-scan-status {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .doc-scan-status > span {
+    position: relative;
+    border: 1px solid color-mix(in oklab, var(--background) 28%, transparent);
+    background: color-mix(in oklab, var(--foreground) 82%, transparent);
+    box-shadow: 0 8px 24px color-mix(in oklab, var(--foreground) 24%, transparent);
+    color: transparent;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+
+  .doc-scan-status > span::after {
+    content: attr(data-label);
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(
+      100deg,
+      color-mix(in oklab, var(--background) 58%, transparent) 28%,
+      var(--background) 46%,
+      color-mix(in oklab, var(--background) 58%, transparent) 64%
+    );
+    background-size: 220% 100%;
+    background-clip: text;
+    color: transparent;
+    animation: doc-scan-text 1.35s linear infinite;
+  }
+
+  @keyframes doc-scan-text {
+    from { background-position: 130% 0; }
+    to { background-position: -90% 0; }
+  }
+
   /* Project identity square. At rest a flat gradient chip; on hover one clock
      (--avatar-phase) drives everything: a drift of coloured light crosses the
      chip top-left → bottom-right, the border lights up wherever that light is
@@ -643,7 +878,8 @@ html[data-ui-size="comfortable"] {
     .desk-rise,
     .spectrum-wipe,
     .skeleton-shimmer::after,
-    .receipt-scan-sweep::before {
+    .receipt-scan-sweep::before,
+    .doc-scan-status > span::after {
       animation: none;
     }
 
@@ -651,6 +887,15 @@ html[data-ui-size="comfortable"] {
     .project-avatar {
       animation: none;
       --avatar-phase: 0.5;
+    }
+
+    /* The drift stops and the blobs hold where they are. The wash is
+       deliberately kept: it is how the matrix leaves the page, not decoration,
+       and dropping it would strand the dots on the invoice forever. Naming only
+       the first slot none leaves the second (doc-scan-wash, 900ms) intact. */
+    .doc-scan {
+      --scan-phase: 0.25;
+      animation-name: none, doc-scan-wash;
     }
   }
 

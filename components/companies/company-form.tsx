@@ -65,11 +65,16 @@ const TRADES = [
 
 interface CompanyFormProps {
   company?: Company
-  onSubmitted?: () => void
+  initialName?: string
+  onSubmitted?: (company: Company) => void
   onCancel?: () => void
+  /** Payables uses a concise, sectioned vendor profile instead of directory-only notes and ratings. */
+  payablesMode?: boolean
 }
 
-export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps) {
+const PAYMENT_TERMS = ["Due on receipt", "Net 7", "Net 15", "Net 30", "Net 45", "Net 60", "Net 90"] as const
+
+export function CompanyForm({ company, initialName, onSubmitted, onCancel, payablesMode = false }: CompanyFormProps) {
   const [isPending, startTransition] = useTransition()
   const [isAccountingPending, startAccountingTransition] = useTransition()
   const { toast } = useToast()
@@ -78,7 +83,7 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
   const fallbackTrade = company?.trade ?? (company && !allowedTypes.has(company.company_type) ? company.company_type : undefined)
 
   const [formState, setFormState] = useState({
-    name: company?.name ?? "",
+    name: company?.name ?? initialName ?? "",
     company_type: (company?.company_type && allowedTypes.has(company.company_type)) ? company.company_type : "subcontractor",
     trade: fallbackTrade ?? "none",
     phone: company?.phone ?? "",
@@ -88,6 +93,7 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
     prequalified: company?.prequalified ?? false,
     rating: company?.rating ? String(company.rating) : "none",
     default_payment_terms: company?.default_payment_terms ?? "",
+    default_payment_method: company?.default_payment_method ?? "arc_pay",
     internal_notes: company?.internal_notes ?? "",
     notes: company?.notes ?? "",
     qbo_vendor_id: company?.qbo_vendor_id ?? "",
@@ -141,6 +147,7 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
       prequalified: formState.prequalified,
       rating: formState.rating === "none" ? undefined : Number(formState.rating),
       default_payment_terms: formState.default_payment_terms || undefined,
+      default_payment_method: formState.default_payment_method,
       internal_notes: formState.internal_notes || undefined,
       notes: formState.notes || undefined,
       qbo_vendor_id: formState.qbo_vendor_id || undefined,
@@ -165,14 +172,12 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
 
     startTransition(async () => {
       try {
-        if (company) {
-          unwrapAction(await updateCompanyAction(company.id, payload))
-        } else {
-          unwrapAction(await createCompanyAction(payload))
-        }
+        const saved = company
+          ? unwrapAction(await updateCompanyAction(company.id, payload))
+          : unwrapAction(await createCompanyAction(payload))
         router.refresh()
         toast({ title: company ? "Company updated" : "Company created" })
-        onSubmitted?.()
+        onSubmitted?.(saved)
       } catch (error) {
         console.error(error)
         toast({ title: "Unable to save company", description: (error as Error).message })
@@ -241,8 +246,14 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
   }
 
   return (
-    <form className="flex h-full flex-col" onSubmit={handleSubmit}>
-      <div className="flex-1 space-y-5 overflow-y-auto pr-1">
+    <form className={cn("flex flex-col", payablesMode ? "h-auto" : "h-full")} onSubmit={handleSubmit}>
+      <div className={cn("flex-1 space-y-5 pr-1", !payablesMode && "overflow-y-auto")}>
+        {payablesMode ? (
+          <div className="border-b pb-3">
+            <h3 className="text-sm font-semibold">Profile</h3>
+            <p className="mt-1 text-xs text-muted-foreground">Identity, contact information, and the defaults used on new payables.</p>
+          </div>
+        ) : null}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-2">
             <Label htmlFor="name">Name</Label>
@@ -309,30 +320,47 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="space-y-2">
-          <Label>Performance rating</Label>
-          <Select value={formState.rating} onValueChange={(value) => setField("rating", value)}>
-            <SelectTrigger>
-              <SelectValue placeholder="Select rating" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">No rating</SelectItem>
-              <SelectItem value="1">1</SelectItem>
-              <SelectItem value="2">2</SelectItem>
-              <SelectItem value="3">3</SelectItem>
-              <SelectItem value="4">4</SelectItem>
-              <SelectItem value="5">5</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        {!payablesMode ? (
+          <div className="space-y-2">
+            <Label>Performance rating</Label>
+            <Select value={formState.rating} onValueChange={(value) => setField("rating", value)}>
+              <SelectTrigger><SelectValue placeholder="Select rating" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">No rating</SelectItem>
+                <SelectItem value="1">1</SelectItem><SelectItem value="2">2</SelectItem>
+                <SelectItem value="3">3</SelectItem><SelectItem value="4">4</SelectItem><SelectItem value="5">5</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <Label>Default payment method</Label>
+            <Select value={formState.default_payment_method} onValueChange={(value) => setField("default_payment_method", value)}>
+              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="arc_pay">Arc Pay</SelectItem>
+                <SelectItem value="check">Check</SelectItem>
+                <SelectItem value="wire">Wire</SelectItem>
+                <SelectItem value="card">Credit card</SelectItem>
+                <SelectItem value="other">Other</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        )}
         <div className="space-y-2">
           <Label>Default payment terms</Label>
-          <Input
-            value={formState.default_payment_terms}
-            onChange={(e) => setField("default_payment_terms", e.target.value)}
-            placeholder="Net 30, 2/10 Net 30..."
-          />
+          {payablesMode ? (
+            <Select value={formState.default_payment_terms || "none"} onValueChange={(value) => setField("default_payment_terms", value === "none" ? "" : value)}>
+              <SelectTrigger className="w-full"><SelectValue placeholder="Choose payment terms" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">No default</SelectItem>
+                {PAYMENT_TERMS.map((term) => <SelectItem key={term} value={term}>{term}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          ) : (
+            <Input value={formState.default_payment_terms} onChange={(e) => setField("default_payment_terms", e.target.value)} placeholder="Net 30, 2/10 Net 30..." />
+          )}
         </div>
       </div>
 
@@ -483,19 +511,19 @@ export function CompanyForm({ company, onSubmitted, onCancel }: CompanyFormProps
         </div>
       </div>
 
-      <div className="space-y-2">
+      {!payablesMode ? <div className="space-y-2">
         <Label>Internal notes</Label>
         <Textarea
           value={formState.internal_notes}
           onChange={(e) => setField("internal_notes", e.target.value)}
           placeholder="Performance notes, preferred contacts, safety incidents, pricing notes..."
         />
-      </div>
+      </div> : null}
 
-        <div className="space-y-2">
+        {!payablesMode ? <div className="space-y-2">
           <Label>Notes</Label>
           <Textarea value={formState.notes} onChange={(e) => setField("notes", e.target.value)} placeholder="Insurance carrier, crew size, specialties..." />
-        </div>
+        </div> : null}
       </div>
 
       <div className="grid grid-cols-2 gap-3 border-t pt-4">

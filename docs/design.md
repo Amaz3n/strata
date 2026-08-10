@@ -16,6 +16,16 @@ bookkeepers. They scan hundreds of rows and money numbers a day, on a second
 monitor, for eight hours. Every decoration you add is something they have to
 look past.
 
+**Restraint is not absence.** Both failure modes are real: a decorated desk is
+a bug, and so is a flat gray wall where nothing has hierarchy. Within the
+system, spend your effort where these users feel it — a clear typographic
+hierarchy built from weight and size, a consistent spacing rhythm, tight
+column alignment, visible states on everything interactive (hover, focus,
+selected, disabled), skeletons that hold the layout, and confident state color
+wherever there is state to report. The best Arc screens look inevitable:
+dense, calm, instantly scannable. When a screen feels bad, the fix is almost
+never adding decoration — it is sharpening hierarchy, rhythm, and alignment.
+
 ---
 
 ## 1. Two zones
@@ -116,6 +126,11 @@ Green = success.
 Color is **never decoration and never section identity**. A payments section is
 not green — a *paid amount* is. A safety module is not orange — an *open
 incident* is. When a reviewer can't say what state a color is reporting, remove it.
+
+The inverse failure is just as real: a screen that renders status, aging, or
+money movement in plain gray is hiding information these users scan for. Where
+state exists, color it — decisively, with the ramps below. "Color is state" is
+a targeting rule, not a rationing rule.
 
 Available ramps: `--chart-1..5` (categorical, blue leads), `--age-0..2`
 (fresh → aging → stale, used by AR/AP aging bands and anywhere time pressure is

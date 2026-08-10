@@ -2,7 +2,7 @@ import { PDFDocument, StandardFonts } from "pdf-lib"
 import { NextRequest, NextResponse } from "next/server"
 import { Buffer } from "node:buffer"
 
-import { getAiSearchArtifactDataset } from "@/lib/services/ai-search"
+import { getAiSearchArtifactDataset } from "@/lib/services/ai-search/artifacts"
 import { requireOrgContext } from "@/lib/services/context"
 
 export const runtime = "nodejs"

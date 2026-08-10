@@ -76,7 +76,11 @@ test("accounting identities and imports are atomically scoped to one connection"
 test("QBO reconnects preserve identity and outbound lookups stay connection-scoped", () => {
   const fs = require("node:fs")
   const path = require("node:path")
-  const connections = fs.readFileSync(path.join(__dirname, "../lib/services/accounting-connections.ts"), "utf8")
+  // QBO connection + token machinery lives under the adapter: it is
+  // provider-specific by nature, and keeping it in the neutral service both
+  // forced eight hardcoded `provider = "qbo"` lookups and closed an import cycle
+  // once that service started dispatching through the registry.
+  const connections = fs.readFileSync(path.join(__dirname, "../lib/integrations/accounting/qbo/connections.ts"), "utf8")
   const adapter = fs.readFileSync(path.join(__dirname, "../lib/integrations/accounting/qbo/adapter.ts"), "utf8")
   const pushFunctions = [
     "syncInvoiceToQBO",
@@ -287,5 +291,359 @@ test("the integrations panel renders a fallback for providers with no logo", () 
   ]) {
     const source = fs.readFileSync(path.resolve(__dirname, file), "utf8")
     assert.match(source, /logoUrl \?/, `${file} must branch on a null logo rather than rendering it`)
+  }
+})
+
+
+/** Source with comments stripped, so a guard cannot be satisfied or broken by prose. */
+function codeOnly(relative) {
+  const source = fs.readFileSync(path.join(__dirname, relative), "utf8")
+  return source
+    .split("\n")
+    .filter((line) => {
+      const trimmed = line.trim()
+      return !trimmed.startsWith("//") && !trimmed.startsWith("*") && !trimmed.startsWith("/*")
+    })
+    .join("\n")
+}
+
+test("the both-sides conflict predicate is false immediately after a sync write", () => {
+  const {
+    arcChangedSinceSync,
+    computeLocalFingerprint,
+    storedLocalFingerprint,
+    LOCAL_FINGERPRINT_KEY,
+  } = require("../lib/integrations/accounting/local-change")
+
+  // The old predicate was `updated_at > qbo_synced_at`: a database-trigger
+  // timestamp compared against a JS wall clock captured before the write, so it
+  // was true by the request latency after EVERY sync. Every genuine
+  // QuickBooks-side edit therefore routed to needs_review instead of
+  // reconciling. The replacement compares content the sync write never touches.
+  const invoice = { subtotal_cents: 1_000_00, tax_cents: 82_50, total_cents: 1_082_50, balance_due_cents: 1_082_50 }
+  const stamped = computeLocalFingerprint("invoice", invoice)
+  assert.ok(stamped)
+
+  // Sync, then immediately reconcile: no Arc-side change. The sync write only
+  // moves `qbo_*` bookkeeping columns and `updated_at`, neither of which is
+  // hashed.
+  assert.equal(
+    arcChangedSinceSync({ storedFingerprint: stamped, currentFingerprint: computeLocalFingerprint("invoice", { ...invoice }) }),
+    false,
+  )
+
+  // A person repricing the invoice afterwards is the only thing that flips it.
+  assert.equal(
+    arcChangedSinceSync({
+      storedFingerprint: stamped,
+      currentFingerprint: computeLocalFingerprint("invoice", { ...invoice, total_cents: 1_200_00 }),
+    }),
+    true,
+  )
+
+  // Never fabricated from missing evidence — a row that predates fingerprinting
+  // reports "no proven Arc change" rather than a permanent conflict.
+  assert.equal(arcChangedSinceSync({ storedFingerprint: null, currentFingerprint: stamped }), false)
+  assert.equal(arcChangedSinceSync({ storedFingerprint: stamped, currentFingerprint: null }), false)
+
+  // Every compared field is covered, for each fingerprinted entity type.
+  const bill = { total_cents: 500_00, bill_date: "2026-01-05", due_date: "2026-02-05", qbo_vendor_id: "42", qbo_expense_account_id: "7" }
+  for (const [field, next] of [
+    ["total_cents", 600_00],
+    ["bill_date", "2026-01-06"],
+    ["due_date", "2026-02-06"],
+    ["qbo_vendor_id", "43"],
+    ["qbo_expense_account_id", "8"],
+  ]) {
+    assert.notEqual(
+      computeLocalFingerprint("bill", bill),
+      computeLocalFingerprint("bill", { ...bill, [field]: next }),
+      `${field} is compared by the conflict check but not covered by the fingerprint`,
+    )
+  }
+  const expense = { amount_cents: 100_00, tax_cents: 0, expense_date: "2026-03-01", qbo_vendor_id: "9", qbo_expense_account_id: "3" }
+  assert.notEqual(
+    computeLocalFingerprint("project_expense", expense),
+    computeLocalFingerprint("project_expense", { ...expense, amount_cents: 101_00 }),
+  )
+
+  assert.equal(storedLocalFingerprint({ [LOCAL_FINGERPRINT_KEY]: stamped }), stamped)
+  assert.equal(storedLocalFingerprint({}), null)
+  assert.equal(storedLocalFingerprint(null), null)
+
+  // And the two-clock comparison is gone from the reconciler entirely.
+  const reconcile = fs.readFileSync(path.join(__dirname, "../lib/integrations/accounting/qbo/reconcile.ts"), "utf8")
+  assert.doesNotMatch(reconcile, /localUpdatedAt > localSyncedAt/)
+  assert.doesNotMatch(reconcile, /qbo_synced_at.*getTime\(\)/)
+  assert.equal((reconcile.match(/arcChangedSinceSync\(/g) ?? []).length, 3, "all three conflict checks must use the shared predicate")
+})
+
+test("a failed or held sync never overwrites a recorded external id", () => {
+  // These functions record STATUS. They used to `upsert` with `external_id: ""`,
+  // so retry exhaustion, an enqueue failure, or the cutover freeze — which fires
+  // on every enqueue while frozen, including entities already linked in
+  // QuickBooks — erased the link. With the legacy column gone, a wiped link
+  // means the next push takes the create branch and posts a duplicate invoice or
+  // bill into a real customer's books.
+  const source = codeOnly("../lib/services/accounting-sync.ts")
+
+  assert.doesNotMatch(source, /upsert\([^)]*external_id: ""/s, "status writes must not upsert an empty external id")
+  // The only empty external id left is on the insert branch, which by definition
+  // has no existing row to displace.
+  const emptyExternalIdWrites = source.match(/external_id: ""/g) ?? []
+  assert.equal(emptyExternalIdWrites.length, 1)
+  assert.match(source, /\.insert\(\{[^}]*external_id: ""/s)
+  assert.match(source, /markAccountingSyncStatus/)
+
+  // The update branch touches status/error/timestamp only.
+  const updateBranch = source.match(/\.update\(\{ status: input\.status[^}]*\}\)/s)
+  assert.ok(updateBranch, "the existing-row branch must be an update, not an upsert")
+  assert.doesNotMatch(updateBranch[0], /external_id/)
+
+  // Both public entry points, and the freeze path that calls one of them.
+  assert.match(source, /export async function markAccountingSyncNeedsReview[\s\S]{0,400}markAccountingSyncStatus/)
+  assert.match(source, /export async function markAccountingSyncError[\s\S]{0,400}markAccountingSyncStatus/)
+  assert.match(source, /cutover_freeze_run_id[\s\S]{0,400}markAccountingSyncNeedsReview/)
+
+  // The adapter's own status writers were already existence-checked; keep them so.
+  assert.doesNotMatch(codeOnly("../lib/integrations/accounting/qbo/adapter.ts"), /upsert\([^)]*external_id: ""/s)
+})
+
+test("the outbound sync sets are declared once, and never re-typed on the seam", () => {
+  const {
+    SYNCABLE_INVOICE_STATUSES,
+    SYNCABLE_VENDOR_BILL_STATUSES,
+    BILLED_INVOICE_STATUSES,
+    PAYABLE_VENDOR_BILL_STATUSES,
+    isSyncableInvoiceStatus,
+    isSyncableVendorBillStatus,
+  } = require("../lib/financials/ledger-status")
+
+  // The sync sets are wider than the GL sets on purpose: a `saved` invoice is AR
+  // in QuickBooks and is not AR in Arc's ledger. That divergence is accepted and
+  // documented; what is not acceptable is each push site deciding it privately.
+  assert.deepEqual([...SYNCABLE_INVOICE_STATUSES], ["saved", "sent", "partial", "paid", "overdue"])
+  assert.deepEqual([...SYNCABLE_VENDOR_BILL_STATUSES], ["approved", "partial", "paid"])
+  assert.ok(SYNCABLE_INVOICE_STATUSES.includes("saved"))
+  assert.ok(!BILLED_INVOICE_STATUSES.includes("saved"))
+  for (const status of PAYABLE_VENDOR_BILL_STATUSES) assert.ok(SYNCABLE_VENDOR_BILL_STATUSES.includes(status))
+
+  assert.equal(isSyncableInvoiceStatus("SAVED"), true)
+  assert.equal(isSyncableInvoiceStatus("draft"), false)
+  assert.equal(isSyncableInvoiceStatus(null), false)
+  assert.equal(isSyncableVendorBillStatus("partial"), true)
+  assert.equal(isSyncableVendorBillStatus("pending"), false)
+
+  // The declaration must state why it differs and what the consequence is, so
+  // the next reader does not "fix" the asymmetry by narrowing one list.
+  const ledgerStatus = fs.readFileSync(path.join(__dirname, "../lib/financials/ledger-status.ts"), "utf8")
+  assert.match(ledgerStatus, /THE CONSEQUENCE, STATED PLAINLY/)
+
+  // No module on the accounting-sync seam re-declares either set inline.
+  const seam = [
+    "../lib/services/accounting-sync.ts",
+    "../lib/services/accounting-export.ts",
+    "../lib/integrations/accounting/qbo/adapter.ts",
+    "../lib/integrations/accounting/qbo/reconcile.ts",
+    "../lib/integrations/accounting/qbo/import.ts",
+  ]
+  for (const relative of seam) {
+    const source = fs.readFileSync(path.join(__dirname, relative), "utf8")
+    assert.doesNotMatch(source, /\["approved",\s*"partial",\s*"paid"\]/, `${relative} re-declares the payable/sync AP set`)
+    assert.doesNotMatch(source, /"sent",\s*"partial",\s*"paid",\s*"overdue"/, `${relative} re-declares the AR set`)
+    assert.doesNotMatch(source, /"saved",\s*"sent",\s*"partial"/, `${relative} re-declares the invoice sync set`)
+  }
+
+  // The two push predicates read through the import rather than a literal.
+  const invoices = fs.readFileSync(path.join(__dirname, "../lib/services/invoices.ts"), "utf8")
+  assert.match(invoices, /isSyncableInvoiceStatus/)
+  assert.doesNotMatch(invoices, /normalized === "saved" \|\|/)
+  const vendorBills = fs.readFileSync(path.join(__dirname, "../lib/services/vendor-bills.ts"), "utf8")
+  assert.match(vendorBills, /shouldEnqueueForStatus = isSyncableVendorBillStatus\(finalStatus\)/)
+})
+
+test("a payment create that lost its response is adopted, not posted twice", () => {
+  const {
+    arcTransactionMarker,
+    withArcTransactionMarker,
+    findAlreadyCreatedQBOTransaction,
+  } = require("../lib/integrations/accounting/qbo/sync-safety")
+
+  // QuickBooks accepts no idempotency key, so a create whose response is lost
+  // near the function cap is indistinguishable from one that never ran. The
+  // marker is what lets the +15m retry recognise its own work.
+  assert.equal(arcTransactionMarker("payment", "abc"), "[arc:payment:abc]")
+  assert.equal(withArcTransactionMarker(null, "payment", "abc"), "[arc:payment:abc]")
+  assert.equal(withArcTransactionMarker("Check 1042", "bill_payment", "xyz"), "Check 1042 [arc:bill_payment:xyz]")
+  assert.equal(withArcTransactionMarker("   ", "payment", "abc"), "[arc:payment:abc]")
+
+  return (async () => {
+    const calls = []
+    const client = {
+      async findTransactionByPrivateNote(entity, marker, opts) {
+        calls.push({ entity, marker, opts })
+        return { Id: "9001", PrivateNote: `Whatever ${marker}` }
+      },
+    }
+    const adopted = await findAlreadyCreatedQBOTransaction({
+      client,
+      entity: "Payment",
+      entityType: "payment",
+      entityId: "pay-1",
+    })
+    assert.equal(adopted, "9001")
+    assert.equal(calls[0].entity, "Payment")
+    assert.equal(calls[0].marker, "[arc:payment:pay-1]")
+    assert.match(calls[0].opts.sinceDate, /^\d{4}-\d{2}-\d{2}$/)
+
+    // Nothing there means nothing to adopt; the create proceeds.
+    assert.equal(
+      await findAlreadyCreatedQBOTransaction({
+        client: { async findTransactionByPrivateNote() { return null } },
+        entity: "BillPayment",
+        entityType: "bill_payment",
+        entityId: "pay-2",
+      }),
+      null,
+    )
+
+    // A failed lookup degrades to the old behaviour; it never invents an id.
+    assert.equal(
+      await findAlreadyCreatedQBOTransaction({
+        client: { async findTransactionByPrivateNote() { throw new Error("timeout") } },
+        entity: "Payment",
+        entityType: "payment",
+        entityId: "pay-3",
+      }),
+      null,
+    )
+  })()
+})
+
+test("both money-moving creates stamp the marker and look before they create", () => {
+  const adapter = fs.readFileSync(path.join(__dirname, "../lib/integrations/accounting/qbo/adapter.ts"), "utf8")
+
+  // Suppression used to be the sync record alone — which is exactly the write a
+  // lost response fails to make.
+  assert.match(adapter, /createPayment\(\{[\s\S]{0,400}withArcTransactionMarker\(null, "payment", paymentId\)/)
+  assert.match(adapter, /createBillPayment\(\{[\s\S]{0,400}withArcTransactionMarker\(payment\.reference, "bill_payment", paymentId\)/)
+  assert.equal((adapter.match(/findAlreadyCreatedQBOTransaction\(\{/g) ?? []).length, 2)
+  // The lookup is only paid for on a retry: a sync record with no external id.
+  assert.match(adapter, /paymentRetryAfterUnknownOutcome = existingPaymentSync != null/)
+  assert.match(adapter, /billPaymentRetryAfterUnknownOutcome = existingSync != null/)
+})
+
+test("permanent QuickBooks failures become reviewable work instead of retries", () => {
+  const { classifyQboPermanentFailure } = require("../lib/integrations/accounting/qbo/error-rules")
+
+  // Patagonia has had an invoice push failing on this exact fault since June:
+  // three retries, then a `failed` outbox row nobody sees, forever.
+  const inactive = classifyQboPermanentFailure({
+    status: 400,
+    faultCode: "610",
+    faultDetail: 'Object Not Found : Something you are trying to use has been made inactive. The account "Job Materials" was made inactive.',
+  })
+  assert.ok(inactive)
+  assert.match(inactive.message, /Job Materials/)
+  assert.match(inactive.message, /Retrying cannot fix it/)
+  assert.match(inactive.message, /active again/)
+
+  const missing = classifyQboPermanentFailure({ status: 400, faultCode: "610", faultDetail: "Object Not Found" })
+  assert.ok(missing)
+  assert.match(missing.message, /no longer exists/)
+
+  // Transient failures keep their retries.
+  assert.equal(classifyQboPermanentFailure({ status: 429, faultCode: null, faultDetail: "Throttled" }), null)
+  assert.equal(classifyQboPermanentFailure({ status: 500, faultCode: null, message: "upstream" }), null)
+
+  // The outbox stops retrying and routes to needs_review with the cure attached.
+  const route = fs.readFileSync(path.join(__dirname, "../app/api/accounting/process-outbox/route.ts"), "utf8")
+  assert.match(route, /const shouldRetry = !permanent && newRetry < MAX_RETRIES/)
+  assert.match(route, /markAccountingPushPermanentlyFailed\(\{ orgId: job\.org_id, entityType, entityId, message: permanent\.message \}\)/)
+
+  // A deleted QuickBooks bill payment cannot be re-synced either, so its
+  // conflict says what the person is choosing between.
+  const reconcile = fs.readFileSync(path.join(__dirname, "../lib/integrations/accounting/qbo/reconcile.ts"), "utf8")
+  assert.match(reconcile, /Syncing cannot resolve this/)
+})
+
+test("nothing on the neutral seam pins itself to one provider", () => {
+  // Sage Intacct is the next adapter, and it should be adapter-only work.
+  const syncActions = fs.readFileSync(path.join(__dirname, "../app/(app)/integrations/accounting-sync-actions.ts"), "utf8")
+  assert.doesNotMatch(syncActions, /row\.provider === "qbo"/)
+  assert.match(syncActions, /capabilities\.supportsImport/)
+
+  const syncState = fs.readFileSync(path.join(__dirname, "../lib/services/accounting-sync-state.ts"), "utf8")
+  assert.doesNotMatch(syncState, /source_type === "qbo"/)
+  assert.match(syncState, /ACCOUNTING_PROVIDER_KEYS/)
+
+  const target = fs.readFileSync(path.join(__dirname, "../lib/services/accounting-target.ts"), "utf8")
+  assert.doesNotMatch(target, /qboCustomerId:/)
+  assert.doesNotMatch(target, /qboCustomerName:/)
+
+  // Justified provider pinning stays: the Intuit-registered webhook route is a
+  // QBO endpoint by definition.
+  const registry = fs.readFileSync(path.join(__dirname, "../lib/integrations/accounting/registry.ts"), "utf8")
+  assert.match(registry, /qbo/)
+})
+
+test("an imported multi-invoice payment is consumable by the fact spine", () => {
+  const { qboImportProviderPaymentId } = require("../lib/integrations/accounting/qbo/import-rules")
+
+  // One `payments` row per allocated invoice, keyed so a re-import adopts the
+  // rows it made last time instead of duplicating the cash.
+  assert.equal(qboImportProviderPaymentId({ kind: "payment", qboId: "1258", split: false, lineId: "payment" }), "qbo_payment_1258")
+  assert.equal(qboImportProviderPaymentId({ kind: "payment", qboId: "1258", split: true, lineId: "201" }), "qbo_payment_1258_201")
+
+  const source = codeOnly("../lib/integrations/accounting/qbo/import.ts")
+
+  // The consolidated shape (one row, `invoice_id: null`, split in
+  // `payment_allocations`) can never be classified by the projector's XOR, so
+  // the cash never posted while the invoices went to partial/paid.
+  assert.doesNotMatch(source, /invoice_id: null/, "an imported payment must always name its invoice")
+  assert.doesNotMatch(source, /upsertPaymentAllocation/, "allocations would double-count against invoice_paid_cents")
+  assert.match(source, /split: shouldSplit,\s*lineId: application\.qboId/)
+  assert.match(source, /adoptConsolidatedQboPayment/)
+
+  // Idempotent: only the unclassified shape is converted, and its allocations go
+  // with it so `invoice_paid_cents` cannot count the same money twice.
+  assert.match(source, /if \(!consolidated\?\.id \|\| consolidated\.invoice_id \|\| consolidated\.bill_id\) return/)
+  assert.match(source, /from\("payment_allocations"\)\s*\.delete\(\)/)
+})
+
+test("an imported bill and its imported payments reach the ledger together", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../lib/integrations/accounting/qbo/import.ts"), "utf8")
+
+  // `pending` is outside PAYABLE_VENDOR_BILL_STATUSES, so a partly-paid bill
+  // landing there posted no AP credit while its BillPayment posted the debit —
+  // accounts payable went negative by the amount paid. The approval gate still
+  // owns every bill QuickBooks has taken no money against.
+  assert.match(source, /const partiallyPaid = !fullyPaid && paidCents > 0/)
+  assert.match(source, /const settledInQbo = fullyPaid \|\| partiallyPaid/)
+  assert.match(source, /const status = fullyPaid \? "paid" : partiallyPaid \? "partial" : "pending"/)
+  assert.match(source, /approved_at: settledInQbo \? nowIso : null/)
+  assert.match(source, /if \(settledInQbo\) \{/)
+
+  // The same asymmetry closed from the payment side: a part payment promotes a
+  // bill Arc still holds outside the ledger.
+  assert.match(source, /const partiallySettles = !fullyPaid && nextPaid > 0 && !isPayableVendorBillStatus\(bill\.status\)/)
+  assert.match(source, /if \(fullyPaid \|\| partiallySettles\) \{/)
+})
+
+test("the job-cost subledger has one writer, and it voids rather than deletes", () => {
+  // Voiding is the subledger's only removal semantics, and it lives in one
+  // service. A second writer deleting rows erased the trace that cost was ever
+  // posted against the project.
+  for (const relative of [
+    "../lib/integrations/accounting/qbo/import.ts",
+    "../lib/services/vendor-bills.ts",
+  ]) {
+    const source = fs.readFileSync(path.join(__dirname, relative), "utf8")
+    assert.doesNotMatch(
+      source,
+      /from\("job_cost_entries"\)[\s\S]{0,80}\.delete\(\)/,
+      `${relative} deletes job_cost_entries directly`,
+    )
+    assert.match(source, /voidJobCostEntriesForVendorBill/, `${relative} must route through the subledger service`)
   }
 })

@@ -4,9 +4,11 @@ import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 import { getProvider } from "@/lib/integrations/accounting/registry"
 import type { PushResult } from "@/lib/integrations/accounting/provider"
 import { accountingPushBlockReason } from "@/lib/services/accounting-rules"
+import { isExternalLedgerAuthoritative } from "@/lib/services/books/authority"
 
 export type AccountingPushEntityType = "invoice" | "payment" | "project_expense" | "vendor_bill" | "bill_payment"
 
+import { ACCOUNTING_JOB_TYPES } from "@/lib/services/accounting-job-types"
 export { ACCOUNTING_JOB_TYPES, LEGACY_ACCOUNTING_JOB_TYPES } from "@/lib/services/accounting-job-types"
 
 const ENTITY_CONFIG: Record<AccountingPushEntityType, { payloadKey: string; jobType: string; paymentSetting: boolean }> = {
@@ -17,13 +19,39 @@ const ENTITY_CONFIG: Record<AccountingPushEntityType, { payloadKey: string; jobT
   bill_payment: { payloadKey: "payment_id", jobType: "accounting_push_bill_payment", paymentSetting: true },
 }
 
-async function operationalPushAllowed(orgId: string) {
+/**
+ * Whether this org's ledger authority still permits writing to the external
+ * accounting system. Fails CLOSED: `isExternalLedgerAuthoritative` throws on an
+ * unreadable authority row rather than assuming "external", so a transient blip
+ * can never hand an Arc-authoritative org's data to its external system.
+ *
+ * Enqueueing is deliberately more forgiving than pushing. Queueing writes
+ * nothing externally and `processAccountingPush` re-checks the gate before it
+ * does, so a read failure here queues the job rather than failing the user
+ * mutation that triggered it — the durable gate is the one at push time.
+ */
+async function pushAllowedForEnqueue(orgId: string) {
+  try {
+    return await isExternalLedgerAuthoritative(orgId)
+  } catch {
+    return true
+  }
+}
+
+/**
+ * A vendor_bills row is either a bill or a vendor credit (metadata.source), and
+ * the sync ledger keys them under different entity types ("bill" vs
+ * "vendor_credit"). Every write against the ledger for a vendor_bill must use
+ * this resolved type, or an imported credit's inbound-only record is invisible
+ * and a second record gets created under "bill".
+ */
+async function resolveVendorBillLedgerContext(orgId: string, billId: string): Promise<{ projectId: string | null; ledgerType: "bill" | "vendor_credit" }> {
   const supabase = createServiceSupabaseClient()
-  const { data, error } = await supabase.from("books_settings").select("ledger_authority, external_sync_posture").eq("org_id", orgId).maybeSingle()
-  // Additive-rollout compatibility: before the Books migration exists, preserve
-  // the existing provider integration behavior.
-  if (error) return true
-  return !data || data.ledger_authority === "external"
+  const { data } = await supabase.from("vendor_bills").select("project_id, metadata").eq("org_id", orgId).eq("id", billId).maybeSingle()
+  return {
+    projectId: data?.project_id ?? null,
+    ledgerType: (data?.metadata as { source?: string } | null)?.source === "vendor_credit" ? "vendor_credit" : "bill",
+  }
 }
 
 async function resolveProjectId(orgId: string, entityType: AccountingPushEntityType, entityId: string): Promise<string | null> {
@@ -45,13 +73,14 @@ async function resolveProjectId(orgId: string, entityType: AccountingPushEntityT
 }
 
 export async function enqueueAccountingPush(input: { orgId: string; entityType: AccountingPushEntityType; entityId: string }) {
-  if (!await operationalPushAllowed(input.orgId)) return { queued: false as const, reason: "books_authoritative" as const }
+  if (!await pushAllowedForEnqueue(input.orgId)) return { queued: false as const, reason: "books_authoritative" as const }
   const supabase = createServiceSupabaseClient()
-  const projectId = await resolveProjectId(input.orgId, input.entityType, input.entityId)
+  const billContext = input.entityType === "vendor_bill" ? await resolveVendorBillLedgerContext(input.orgId, input.entityId) : null
+  const projectId = billContext ? billContext.projectId : await resolveProjectId(input.orgId, input.entityType, input.entityId)
   const target = await resolveAccountingTarget({ orgId: input.orgId, projectId })
   if (!target) return { queued: false as const, reason: "unconnected" as const }
 
-  const ledgerType = input.entityType === "vendor_bill" ? "bill" : input.entityType
+  const ledgerType = billContext ? billContext.ledgerType : input.entityType
 
   // A freeze strands transactions that were meant to post, and the freeze is
   // lifted long after the person who approved them has moved on. Recording it
@@ -107,28 +136,93 @@ export async function enqueueAccountingPush(input: { orgId: string; entityType: 
   return { queued: true as const, reason: queued.reason }
 }
 
+/**
+ * Record a status against a transaction's sync ledger row **without touching the
+ * external id it already carries.**
+ *
+ * These two functions used to `upsert` with `external_id: ""`, which on conflict
+ * overwrote a recorded QuickBooks id with the empty string. Every path that
+ * reaches them — retry exhaustion, an enqueue failure, and the cutover freeze,
+ * which fires on *every* enqueue while frozen including entities already linked
+ * in QuickBooks — therefore erased the only durable record that the transaction
+ * exists over there. Nothing broke yet because the push paths still fall back to
+ * the legacy `qbo_id` column; the moment that column is dropped, a wiped link
+ * means the next push takes the create branch and posts a **second** invoice or
+ * bill into the customer's books. Status is status; identity is identity.
+ */
+async function markAccountingSyncStatus(input: {
+  orgId: string
+  entityType: string
+  entityId: string
+  connectionId: string
+  provider: string
+  status: "error" | "needs_review"
+  message: string
+}) {
+  const supabase = createServiceSupabaseClient()
+  const errorMessage = input.message.slice(0, 4000)
+  const { data: existing } = await supabase
+    .from("accounting_sync_records")
+    .select("id")
+    .eq("org_id", input.orgId)
+    .eq("connection_id", input.connectionId)
+    .eq("entity_type", input.entityType)
+    .eq("entity_id", input.entityId)
+    .maybeSingle()
+
+  if (existing?.id) {
+    const { error } = await supabase
+      .from("accounting_sync_records")
+      .update({ status: input.status, error_message: errorMessage, last_synced_at: new Date().toISOString() })
+      .eq("id", existing.id)
+    return error
+  }
+
+  const { error: insertError } = await supabase.from("accounting_sync_records").insert({
+    org_id: input.orgId,
+    connection_id: input.connectionId,
+    provider: input.provider,
+    entity_type: input.entityType,
+    entity_id: input.entityId,
+    // Only ever written on a row that did not exist, so it can never displace a
+    // real external id.
+    external_id: "",
+    status: input.status,
+    error_message: errorMessage,
+    last_synced_at: new Date().toISOString(),
+  })
+  if (!insertError) return null
+
+  // Lost the race to create the row — a concurrent push recorded it, possibly
+  // with a real external id. Fall back to the status-only update rather than
+  // failing, which is what the old upsert did except that it also wiped the id.
+  const { error: updateError } = await supabase
+    .from("accounting_sync_records")
+    .update({ status: input.status, error_message: errorMessage, last_synced_at: new Date().toISOString() })
+    .eq("org_id", input.orgId)
+    .eq("connection_id", input.connectionId)
+    .eq("entity_type", input.entityType)
+    .eq("entity_id", input.entityId)
+  return updateError ?? insertError
+}
+
 /** A transaction that cannot post right now, and that a human has to come back to. */
 export async function markAccountingSyncNeedsReview(orgId: string, entityType: string, entityId: string, connectionId: string, provider: string, message: string) {
-  const supabase = createServiceSupabaseClient()
-  await supabase.from("accounting_sync_records").upsert({
-    org_id: orgId, connection_id: connectionId, provider, entity_type: entityType,
-    entity_id: entityId, external_id: "", status: "needs_review", error_message: message.slice(0, 4000),
-  }, { onConflict: "org_id,connection_id,entity_type,entity_id" })
+  await markAccountingSyncStatus({ orgId, entityType, entityId, connectionId, provider, status: "needs_review", message })
 }
 
 export async function markAccountingSyncError(orgId: string, entityType: string, entityId: string, connectionId: string, provider: string, message: string) {
-  const supabase = createServiceSupabaseClient()
-  const { error } = await supabase.from("accounting_sync_records").upsert({
-    org_id: orgId, connection_id: connectionId, provider, entity_type: entityType,
-    entity_id: entityId, external_id: "", status: "error", error_message: message.slice(0, 4000),
-    last_synced_at: new Date().toISOString(),
-  }, { onConflict: "org_id,connection_id,entity_type,entity_id" })
+  const error = await markAccountingSyncStatus({ orgId, entityType, entityId, connectionId, provider, status: "error", message })
   if (error) throw new Error(`Unable to record accounting sync failure: ${error.message}`)
 }
 
-export async function processAccountingPush(input: { orgId: string; entityType: AccountingPushEntityType; entityId: string }): Promise<PushResult> {
-  if (!await operationalPushAllowed(input.orgId)) return { externalId: null, skipped: true }
-  const projectId = await resolveProjectId(input.orgId, input.entityType, input.entityId)
+/** PushResult, plus why nothing was pushed when the skip is an org-wide policy rather than a per-entity condition. */
+export type AccountingPushOutcome = PushResult & { skippedReason?: "books_authoritative" }
+
+export async function processAccountingPush(input: { orgId: string; entityType: AccountingPushEntityType; entityId: string }): Promise<AccountingPushOutcome> {
+  if (!await isExternalLedgerAuthoritative(input.orgId)) return { externalId: null, skipped: true, skippedReason: "books_authoritative" }
+  const billContext = input.entityType === "vendor_bill" ? await resolveVendorBillLedgerContext(input.orgId, input.entityId) : null
+  const projectId = billContext ? billContext.projectId : await resolveProjectId(input.orgId, input.entityType, input.entityId)
   const target = await resolveAccountingTarget({ orgId: input.orgId, projectId })
   if (!target) throw new Error("No accounting connection is mapped to this transaction")
   if (!target.healthy) throw new Error(`Accounting connection ${target.connection.label} is ${target.connection.status}`)
@@ -138,10 +232,7 @@ export async function processAccountingPush(input: { orgId: string; entityType: 
   if (input.entityType === "payment") return provider.pushPayment({ orgId: input.orgId, connectionId, paymentId: input.entityId })
   if (input.entityType === "project_expense") return provider.pushExpense({ orgId: input.orgId, connectionId, expenseId: input.entityId })
   if (input.entityType === "vendor_bill") {
-    const supabase = createServiceSupabaseClient()
-    const { data: payable } = await supabase.from("vendor_bills").select("metadata").eq("org_id", input.orgId).eq("id", input.entityId).maybeSingle()
-    const isVendorCredit = (payable?.metadata as { source?: string } | null)?.source === "vendor_credit"
-    if (isVendorCredit) {
+    if (billContext?.ledgerType === "vendor_credit") {
       if (!provider.capabilities.supportsVendorCredits || !provider.pushVendorCredit) {
         throw new Error(`${target.connection.label} does not support vendor credits`)
       }
@@ -166,10 +257,11 @@ export async function markAccountingPushExhausted(input: {
   entityId: string
   message: string
 }) {
-  const projectId = await resolveProjectId(input.orgId, input.entityType, input.entityId)
+  const billContext = input.entityType === "vendor_bill" ? await resolveVendorBillLedgerContext(input.orgId, input.entityId) : null
+  const projectId = billContext ? billContext.projectId : await resolveProjectId(input.orgId, input.entityType, input.entityId)
   const target = await resolveAccountingTarget({ orgId: input.orgId, projectId })
   if (!target) return
-  const ledgerType = input.entityType === "vendor_bill" ? "bill" : input.entityType
+  const ledgerType = billContext ? billContext.ledgerType : input.entityType
   await markAccountingSyncError(
     input.orgId,
     ledgerType,
@@ -180,11 +272,42 @@ export async function markAccountingPushExhausted(input: {
   )
 }
 
+/**
+ * A push that failed for a reason retrying cannot cure.
+ *
+ * Distinct from `markAccountingPushExhausted`, which is "we tried three times
+ * and gave up": this one is known on the first failure, so the transaction stops
+ * burning retries and immediately becomes `needs_review` carrying the sentence
+ * that names the fix. A 610 for an inactive QuickBooks object is the archetype —
+ * the only cure is a person reactivating it over there.
+ */
+export async function markAccountingPushPermanentlyFailed(input: {
+  orgId: string
+  entityType: AccountingPushEntityType
+  entityId: string
+  message: string
+}) {
+  const billContext = input.entityType === "vendor_bill" ? await resolveVendorBillLedgerContext(input.orgId, input.entityId) : null
+  const projectId = billContext ? billContext.projectId : await resolveProjectId(input.orgId, input.entityType, input.entityId)
+  const target = await resolveAccountingTarget({ orgId: input.orgId, projectId })
+  if (!target) return
+  await markAccountingSyncNeedsReview(
+    input.orgId,
+    billContext ? billContext.ledgerType : input.entityType,
+    input.entityId,
+    target.connection.id,
+    target.connection.provider,
+    input.message,
+  )
+}
+
 export interface AccountingSyncPosture {
   /** Transactions waiting to post, or that failed and need a person. */
   pendingCount: number
   errorCount: number
   needsReviewCount: number
+  /** Arc and the accounting system disagree (e.g. the provider deleted a posted payment). */
+  conflictCount: number
   /** Outbox jobs that exhausted their retries and will never run again. */
   failedJobCount: number
   /** Set when pushes are suppressed org-wide rather than per transaction. */
@@ -202,13 +325,15 @@ export interface AccountingSyncPosture {
 export async function getAccountingSyncPosture(orgId: string): Promise<AccountingSyncPosture> {
   const supabase = createServiceSupabaseClient()
   const [{ data: records }, { count: failedJobCount }, booksAuthoritative, target] = await Promise.all([
-    supabase.from("accounting_sync_records").select("status").eq("org_id", orgId).in("status", ["pending", "error", "needs_review"]).limit(1000),
+    supabase.from("accounting_sync_records").select("status").eq("org_id", orgId).in("status", ["pending", "error", "needs_review", "conflict"]).limit(1000),
     supabase.from("outbox").select("id", { count: "exact", head: true })
       .eq("org_id", orgId)
       .eq("status", "failed")
-      .in("job_type", Object.values(ENTITY_CONFIG).map((config) => config.jobType))
+      // Includes the legacy qbo_sync_* names: jobs enqueued before the rename
+      // can still fail, and counting only the new names hid them.
+      .in("job_type", [...ACCOUNTING_JOB_TYPES])
       .then((result) => ({ count: result.count ?? 0 })),
-    operationalPushAllowed(orgId).then((allowed) => !allowed),
+    isExternalLedgerAuthoritative(orgId).then((external) => !external),
     resolveAccountingTarget({ orgId, projectId: null }),
   ])
 
@@ -217,6 +342,7 @@ export async function getAccountingSyncPosture(orgId: string): Promise<Accountin
     pendingCount: rows.filter((row) => row.status === "pending").length,
     errorCount: rows.filter((row) => row.status === "error").length,
     needsReviewCount: rows.filter((row) => row.status === "needs_review").length,
+    conflictCount: rows.filter((row) => row.status === "conflict").length,
     failedJobCount,
     suppressedReason: booksAuthoritative
       ? "books_authoritative"
@@ -244,7 +370,7 @@ export const enqueueBillPaymentSync = (paymentId: string, orgId: string) => enqu
  * outcome this exists to prevent.
  */
 export async function voidBillPaymentInAccounting(input: { orgId: string; paymentId: string; reason: string }) {
-  if (!await operationalPushAllowed(input.orgId)) return { voided: false as const, reason: "books_authoritative" as const }
+  if (!await isExternalLedgerAuthoritative(input.orgId)) return { voided: false as const, reason: "books_authoritative" as const }
   const projectId = await resolveProjectId(input.orgId, "bill_payment", input.paymentId)
   const target = await resolveAccountingTarget({ orgId: input.orgId, projectId })
   if (!target) return { voided: false as const, reason: "unconnected" as const }

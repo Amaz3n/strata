@@ -6,6 +6,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { requireBooksWorkspaceEnabled } from "@/lib/services/books/module"
+import { GL_ACCOUNT_SUBTYPES } from "@/lib/services/books/types"
 import { requireOrgContext } from "@/lib/services/context"
 
 const accountTypeSchema = z.enum(["asset", "liability", "equity", "income", "cogs", "expense"])
@@ -40,7 +41,10 @@ export async function createGlAccount(input: {
     code: z.string().trim().min(1).max(32),
     name: z.string().trim().min(2).max(160),
     accountType: accountTypeSchema,
-    subtype: z.string().trim().min(1).max(80).regex(/^[a-z0-9_]+$/),
+    // The statements and close checks branch on subtype, so it is a closed
+    // vocabulary rather than free text — a custom account with an invented
+    // subtype would be silently orphaned from the balance sheet.
+    subtype: z.enum(GL_ACCOUNT_SUBTYPES),
     normalBalance: normalBalanceSchema,
     cashFlowCategory: cashFlowSchema.nullish(),
   }).parse(input)

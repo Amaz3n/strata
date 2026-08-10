@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 
+import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
+
 import { EstimateExpiryEmail } from "@/lib/emails/estimate-expiry-email"
 import { FollowUpReminderEmail } from "@/lib/emails/follow-up-reminder-email"
 import { escapeHtml, renderEmailTemplate, renderStandardEmailLayout, sendEmail, getOrgSenderEmail } from "@/lib/services/mailer"
@@ -10,23 +12,10 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 export const runtime = "nodejs"
 
-const CRON_SECRET = process.env.CRON_SECRET
 const APP_URL = (process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com").replace(/\/$/, "")
 // The app serves a single locale (Naples, FL); show the builder's local time in reminders.
 const DISPLAY_TIME_ZONE = "America/New_York"
 const BATCH_LIMIT = 200
-
-function isAuthorizedCronRequest(request: NextRequest) {
-  if (process.env.NODE_ENV !== "production") return true
-  const isVercelCron = request.headers.get("x-vercel-cron") === "1"
-  const authHeader = request.headers.get("authorization") ?? request.headers.get("Authorization")
-  const bearer = typeof authHeader === "string" ? authHeader.trim() : ""
-  const legacyHeader = request.headers.get("x-cron-secret")
-  const secretOk =
-    (!!CRON_SECRET && bearer === `Bearer ${CRON_SECRET}`) || (!!CRON_SECRET && legacyHeader === CRON_SECRET)
-  if (CRON_SECRET) return secretOk
-  return isVercelCron
-}
 
 function jobsiteLabel(location: any): string | null {
   if (!location || typeof location !== "object") return null

@@ -5,7 +5,8 @@ import type { VendorBillSummary } from "@/lib/services/vendor-bills"
 import { ProjectPayablesClient } from "@/components/payables/project-payables-client"
 import { AlertTriangle } from "lucide-react"
 import type { PaymentHoldEvaluation } from "@/lib/services/payment-holds"
-import type { SavedPayableView } from "@/lib/services/payable-views"
+import type { PayableRunMembership } from "@/lib/services/org-payables"
+import type { CompanyPaymentReadinessStatus } from "@/lib/services/vendor-payment-invitations"
 
 type ProjectBillingModel = "fixed_price" | "cost_plus_percent" | "cost_plus_fixed_fee" | "cost_plus_gmp" | "time_and_materials"
 
@@ -20,10 +21,17 @@ interface PayablesTabProps {
   complianceStatusByCompanyId: Record<string, ComplianceStatusSummary>
   loadErrors?: string[]
   holdEvaluations?: Record<string, PaymentHoldEvaluation>
+  railOpen?: boolean
+  paymentReadinessByCompanyId?: Record<string, CompanyPaymentReadinessStatus>
+  runMembershipByBillId?: Record<string, PayableRunMembership>
+  viewerMayApproveRuns?: boolean
+  approvalViewer?: {
+    userId: string
+    approvers: Array<{ userId: string; name: string }>
+  } | null
   pagination: { page: number; pageSize: number; total: number; pageCount: number }
   initialQueue: string
   initialSearch: string
-  savedViews: SavedPayableView[]
 }
 
 export function PayablesTab({
@@ -37,10 +45,14 @@ export function PayablesTab({
   complianceStatusByCompanyId,
   loadErrors = [],
   holdEvaluations = {},
+  railOpen = false,
+  paymentReadinessByCompanyId = {},
+  runMembershipByBillId = {},
+  viewerMayApproveRuns = false,
+  approvalViewer = null,
   pagination,
   initialQueue,
   initialSearch,
-  savedViews,
 }: PayablesTabProps) {
   return (
     <div className="w-full">
@@ -67,10 +79,14 @@ export function PayablesTab({
         complianceStatusByCompanyId={complianceStatusByCompanyId}
         fullBleed
         holdEvaluations={holdEvaluations}
+        railOpen={railOpen}
+        paymentReadinessByCompanyId={paymentReadinessByCompanyId}
+        runMembershipByBillId={runMembershipByBillId}
+        viewerMayApproveRuns={viewerMayApproveRuns}
+        approvalViewer={approvalViewer}
         pagination={pagination}
         initialQueue={initialQueue}
         initialSearch={initialSearch}
-        savedViews={savedViews}
       />
     </div>
   )

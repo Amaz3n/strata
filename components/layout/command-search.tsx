@@ -294,12 +294,11 @@ interface AiAnswerState {
   citations: AiCitation[]
   relatedResults: SearchResult[]
   actions: AiActionState[]
-  workflow?: AiWorkflowState
   generatedAt: string
   sessionId?: string
   assistantMode: "org" | "general"
   mode: "llm" | "fallback"
-  provider?: "openai" | "anthropic" | "google"
+  provider?: "openai" | "google" | "openrouter"
   model?: string
   configSource?: "org" | "platform" | "env" | "default"
   confidence?: "low" | "medium" | "high"
@@ -336,46 +335,6 @@ interface AiAnswerState {
     href: string
     label: string
   }>
-}
-
-interface AiWorkflowOptionState {
-  label: string
-  value: string
-  description?: string
-}
-
-interface AiWorkflowQuestionState {
-  slot: string
-  label: string
-  input: "choice" | "text" | "date" | "number"
-  required: boolean
-  placeholder?: string
-  options?: AiWorkflowOptionState[]
-  progress?: { step: number; total: number }
-}
-
-interface AiWorkflowPreviewState {
-  title: string
-  summary: string
-  rows: Array<{ label: string; value: string }>
-  warnings: string[]
-}
-
-interface AiWorkflowState {
-  id: string
-  workflowKey: string
-  title: string
-  summary: string
-  status: "collecting" | "preview_ready" | "executing" | "executed" | "failed" | "cancelled"
-  slots: Record<string, unknown>
-  missingSlots: string[]
-  questions: AiWorkflowQuestionState[]
-  preview?: AiWorkflowPreviewState
-  result: Record<string, unknown>
-  error?: string
-  createdAt: string
-  updatedAt: string
-  executedAt?: string
 }
 
 interface AiActionState {
@@ -738,114 +697,6 @@ function toAiActionState(raw: unknown): AiActionState | null {
   }
 }
 
-function toAiWorkflowState(raw: unknown): AiWorkflowState | undefined {
-  if (!raw || typeof raw !== "object") return undefined
-  const value = raw as Record<string, unknown>
-  if (
-    typeof value.id !== "string" ||
-    typeof value.workflowKey !== "string" ||
-    typeof value.title !== "string" ||
-    typeof value.summary !== "string" ||
-    (value.status !== "collecting" &&
-      value.status !== "preview_ready" &&
-      value.status !== "executing" &&
-      value.status !== "executed" &&
-      value.status !== "failed" &&
-      value.status !== "cancelled")
-  ) {
-    return undefined
-  }
-
-  const questions = Array.isArray(value.questions)
-    ? value.questions
-        .map((rawQuestion): AiWorkflowQuestionState | null => {
-          if (!rawQuestion || typeof rawQuestion !== "object") return null
-          const question = rawQuestion as Record<string, unknown>
-          if (
-            typeof question.slot !== "string" ||
-            typeof question.label !== "string" ||
-            (question.input !== "choice" && question.input !== "text" && question.input !== "date" && question.input !== "number")
-          ) {
-            return null
-          }
-          const options = Array.isArray(question.options)
-            ? question.options
-                .map((rawOption): AiWorkflowOptionState | null => {
-                  if (!rawOption || typeof rawOption !== "object") return null
-                  const option = rawOption as Record<string, unknown>
-                  if (typeof option.label !== "string" || typeof option.value !== "string") return null
-                  return {
-                    label: option.label,
-                    value: option.value,
-                    description: typeof option.description === "string" ? option.description : undefined,
-                  }
-                })
-                .filter((option): option is AiWorkflowOptionState => Boolean(option))
-            : undefined
-          const progressRaw = question.progress
-          const progress =
-            progressRaw &&
-            typeof progressRaw === "object" &&
-            typeof (progressRaw as Record<string, unknown>).step === "number" &&
-            typeof (progressRaw as Record<string, unknown>).total === "number"
-              ? {
-                  step: (progressRaw as Record<string, number>).step,
-                  total: (progressRaw as Record<string, number>).total,
-                }
-              : undefined
-          return {
-            slot: question.slot,
-            label: question.label,
-            input: question.input,
-            required: question.required === false ? false : true,
-            placeholder: typeof question.placeholder === "string" ? question.placeholder : undefined,
-            options,
-            progress,
-          }
-        })
-        .filter((question): question is AiWorkflowQuestionState => Boolean(question))
-    : []
-
-  const previewRecord = value.preview && typeof value.preview === "object" ? (value.preview as Record<string, unknown>) : null
-  const preview =
-    previewRecord && typeof previewRecord.title === "string" && typeof previewRecord.summary === "string"
-      ? {
-          title: previewRecord.title,
-          summary: previewRecord.summary,
-          rows: Array.isArray(previewRecord.rows)
-            ? previewRecord.rows
-                .map((rawRow): { label: string; value: string } | null => {
-                  if (!rawRow || typeof rawRow !== "object") return null
-                  const row = rawRow as Record<string, unknown>
-                  if (typeof row.label !== "string" || typeof row.value !== "string") return null
-                  return { label: row.label, value: row.value }
-                })
-                .filter((row): row is { label: string; value: string } => Boolean(row))
-            : [],
-          warnings: Array.isArray(previewRecord.warnings)
-            ? previewRecord.warnings.filter((warning): warning is string => typeof warning === "string" && warning.trim().length > 0)
-            : [],
-        }
-      : undefined
-
-  return {
-    id: value.id,
-    workflowKey: value.workflowKey,
-    title: value.title,
-    summary: value.summary,
-    status: value.status,
-    slots: value.slots && typeof value.slots === "object" && !Array.isArray(value.slots) ? (value.slots as Record<string, unknown>) : {},
-    missingSlots: Array.isArray(value.missingSlots) ? value.missingSlots.filter((item): item is string => typeof item === "string") : [],
-    questions,
-    preview,
-    result: value.result && typeof value.result === "object" && !Array.isArray(value.result) ? (value.result as Record<string, unknown>) : {},
-    error: typeof value.error === "string" ? value.error : undefined,
-    createdAt: typeof value.createdAt === "string" ? value.createdAt : new Date().toISOString(),
-    updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : new Date().toISOString(),
-    executedAt: typeof value.executedAt === "string" ? value.executedAt : undefined,
-  }
-}
-
 function toAiTraceState(raw: unknown): AiTraceState | null {
   if (!raw || typeof raw !== "object") return null
   const value = raw as Record<string, unknown>
@@ -894,7 +745,7 @@ function toAiAnswerState(raw: unknown) {
     assistantMode: value.assistantMode === "general" ? "general" : "org",
     mode: value.mode === "llm" ? "llm" : "fallback",
     provider:
-      value.provider === "openai" || value.provider === "anthropic" || value.provider === "google"
+      value.provider === "openai" || value.provider === "google" || value.provider === "openrouter"
         ? value.provider
         : undefined,
     model: typeof value.model === "string" ? value.model : undefined,
@@ -911,7 +762,6 @@ function toAiAnswerState(raw: unknown) {
       : undefined,
     artifact: toAiArtifact(value.artifact),
     exports: toAiExportLinks(value.exports),
-    workflow: toAiWorkflowState(value.workflow),
   }
 
   return state
@@ -1422,431 +1272,6 @@ function AiLoadingIndicator({ trace }: { trace: AiTraceState[] }) {
 // Cyan accent that matches the command bar's "AI" treatment (input border + shockwave).
 const WF_ACCENT = "oklch(0.62 0.16 215)"
 const WF_HIGHLIGHT_BG = "oklch(0.62 0.16 215 / 0.1)"
-const WF_BORDER = "oklch(0.62 0.16 215 / 0.6)"
-
-// Full-bleed guided-workflow experience: the assistant asks one question at a
-// time and the user picks an answer from a numbered list (1–9 / arrows / enter)
-// or types a custom value via the "/" row. Designed to feel like a sharp,
-// keyboard-first command surface rather than a chat transcript.
-function AiWorkflowExperience({
-  workflow,
-  onRespond,
-  onExecute,
-  onCancel,
-  onNavigate,
-  isExecuting,
-}: {
-  workflow: AiWorkflowState
-  onRespond: (workflowId: string, value: string) => void
-  onExecute: (workflowId: string) => void
-  onCancel: () => void
-  onNavigate: (href: string) => void
-  isExecuting: boolean
-}) {
-  const question = workflow.questions[0]
-  const options = useMemo(() => question?.options ?? [], [question])
-  const [highlighted, setHighlighted] = useState(0)
-  const [customMode, setCustomMode] = useState(false)
-  const [textValue, setTextValue] = useState("")
-  const [isAdvancing, setIsAdvancing] = useState(false)
-  const containerRef = useRef<HTMLDivElement>(null)
-  const textInputRef = useRef<HTMLInputElement>(null)
-
-  const filteredOptions = useMemo(() => {
-    const query = customMode ? textValue.trim().toLowerCase() : ""
-    if (!query) return options
-    return options.filter((option) => {
-      const haystack = `${option.label} ${option.description ?? ""}`.toLowerCase()
-      return haystack.includes(query)
-    })
-  }, [customMode, options, textValue])
-  const hasOptions = question?.input === "choice" && options.length > 0
-  const freeTextIndex = filteredOptions.length
-
-  const resultHref = typeof workflow.result.href === "string" ? workflow.result.href : undefined
-  const resultSummary = typeof workflow.result.summary === "string" ? workflow.result.summary : undefined
-
-  // Reset interaction state whenever the active question (or stage) changes.
-  const stageKey = question?.slot ?? workflow.status
-  useEffect(() => {
-    setHighlighted(0)
-    setCustomMode(false)
-    setTextValue("")
-    setIsAdvancing(false)
-  }, [stageKey])
-
-  // Keep the keyboard focused on the answer surface so 1–9 / arrows work without
-  // a click. Choice questions focus the list; free-text questions focus the input.
-  useEffect(() => {
-    if (workflow.status !== "collecting" || !question) return
-    if (!hasOptions) {
-      textInputRef.current?.focus()
-      return
-    }
-    if (!customMode) containerRef.current?.focus()
-  }, [stageKey, hasOptions, customMode, workflow.status, question])
-
-  const submitText = (raw?: string) => {
-    const value = (raw ?? textValue).trim()
-    if (!value) return
-    setIsAdvancing(true)
-    onRespond(workflow.id, value)
-    setTextValue("")
-    setCustomMode(false)
-  }
-
-  const submitChoice = (value: string) => {
-    if (isAdvancing) return
-    setIsAdvancing(true)
-    onRespond(workflow.id, value)
-  }
-
-  const enterCustomMode = () => {
-    setCustomMode(true)
-    setHighlighted(freeTextIndex)
-    requestAnimationFrame(() => textInputRef.current?.focus())
-  }
-
-  const handleSubmitButton = () => {
-    if (isAdvancing) return
-    if (!hasOptions) {
-      submitText()
-      return
-    }
-    if (customMode || highlighted >= filteredOptions.length) {
-      if (textValue.trim()) submitText()
-      else enterCustomMode()
-      return
-    }
-    submitChoice(filteredOptions[highlighted].value)
-  }
-
-  const handleListKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    // Keystrokes inside the free-text / single inputs bubble up here too; let
-    // those inputs own their own handling rather than treating "1" as a pick.
-    if (event.target instanceof HTMLInputElement) return
-    if (event.key === "ArrowDown") {
-      event.preventDefault()
-      setHighlighted((prev) => Math.min(prev + 1, freeTextIndex))
-      return
-    }
-    if (event.key === "ArrowUp") {
-      event.preventDefault()
-      setHighlighted((prev) => Math.max(prev - 1, 0))
-      return
-    }
-    if (event.key === "/" && !customMode) {
-      event.preventDefault()
-      enterCustomMode()
-      return
-    }
-    if (/^[1-9]$/.test(event.key)) {
-      const index = Number(event.key) - 1
-      if (index < filteredOptions.length) {
-        event.preventDefault()
-        submitChoice(filteredOptions[index].value)
-      }
-      return
-    }
-    if (event.key === "Enter") {
-      event.preventDefault()
-      if (highlighted >= filteredOptions.length) enterCustomMode()
-      else submitChoice(filteredOptions[highlighted].value)
-      return
-    }
-    if (event.key === "Escape") {
-      event.preventDefault()
-      onCancel()
-    }
-  }
-
-  const renderNumberBadge = (content: ReactNode, active: boolean) => (
-    <span
-      className="flex size-5 shrink-0 items-center justify-center border font-mono text-[11px]"
-      style={
-        active
-          ? { borderColor: WF_BORDER, color: WF_ACCENT }
-          : { borderColor: "var(--border)", color: "var(--muted-foreground)" }
-      }
-    >
-      {content}
-    </span>
-  )
-
-  // --- Header ---------------------------------------------------------------
-  const header = (
-    <div className="flex items-center justify-between gap-3 px-5 pt-4 pb-3">
-      <div className="flex min-w-0 items-center gap-2">
-        <Sparkles className="size-3.5 shrink-0" style={{ color: WF_ACCENT }} />
-        <span className="truncate text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-          {workflow.title}
-        </span>
-      </div>
-      {workflow.status === "collecting" && question?.progress && (
-        <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/70">
-          {question.progress.step} of {question.progress.total}
-        </span>
-      )}
-      {workflow.status === "preview_ready" && (
-        <span className="shrink-0 text-[11px] uppercase tracking-wide text-muted-foreground/60">Review</span>
-      )}
-    </div>
-  )
-
-  // --- Collecting -----------------------------------------------------------
-  if (workflow.status === "collecting" && question) {
-    return (
-      <div className="flex flex-col">
-        {header}
-        <div ref={containerRef} tabIndex={-1} onKeyDown={handleListKeyDown} className="outline-none">
-          <motion.div
-            key={stageKey}
-            initial={{ opacity: 0, y: 6 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.18 }}
-            className="px-5 pb-3 text-[15px] font-medium leading-snug text-foreground"
-          >
-            {question.label}
-          </motion.div>
-
-          {hasOptions ? (
-            <div>
-              {filteredOptions.map((option, index) => {
-                const active = index === highlighted && !customMode
-                const showDescription = option.description && option.description !== option.label
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    onMouseEnter={() => {
-                      setHighlighted(index)
-                      setCustomMode(false)
-                    }}
-                    disabled={isAdvancing}
-                    onClick={() => submitChoice(option.value)}
-                    className="flex w-full items-center gap-3 px-5 py-2.5 text-left transition-colors"
-                    style={active ? { backgroundColor: WF_HIGHLIGHT_BG } : undefined}
-                  >
-                    {renderNumberBadge(index + 1, active)}
-                    <span className="min-w-0 flex-1 truncate text-sm text-foreground">{option.label}</span>
-                    {showDescription && (
-                      <span className="hidden shrink-0 truncate text-xs text-muted-foreground/60 sm:block">
-                        {option.description}
-                      </span>
-                    )}
-                  </button>
-                )
-              })}
-              {customMode && textValue.trim() && filteredOptions.length === 0 && (
-                <div className="px-5 py-2 text-xs text-muted-foreground">
-                  No matching options. Press Enter to use “{textValue.trim()}”.
-                </div>
-              )}
-
-              {/* Free-text "/" escape hatch — type a value the options don't cover. */}
-              <div
-                className="flex items-center gap-3 px-5 py-2.5 transition-colors"
-                style={highlighted === freeTextIndex && !customMode ? { backgroundColor: WF_HIGHLIGHT_BG } : undefined}
-              >
-                {renderNumberBadge("/", customMode || highlighted === freeTextIndex)}
-                <input
-                  ref={textInputRef}
-                  value={textValue}
-                  onChange={(event) => setTextValue(event.target.value)}
-                  onFocus={() => {
-                    setCustomMode(true)
-                    setHighlighted(freeTextIndex)
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault()
-                      submitText()
-                    } else if (event.key === "Escape") {
-                      event.preventDefault()
-                      setCustomMode(false)
-                      setTextValue("")
-                      containerRef.current?.focus()
-                    }
-                  }}
-                  placeholder={question.placeholder ?? "Type a different answer"}
-                  inputMode={question.input === "number" ? "decimal" : undefined}
-                  className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground/40"
-                  disabled={isAdvancing}
-                />
-              </div>
-            </div>
-          ) : (
-            <div className="px-5 pb-1">
-              <input
-                ref={textInputRef}
-                value={textValue}
-                onChange={(event) => setTextValue(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault()
-                    submitText()
-                  } else if (event.key === "Escape") {
-                    event.preventDefault()
-                    onCancel()
-                  }
-                }}
-                placeholder={question.placeholder ?? "Type your answer"}
-                inputMode={question.input === "number" ? "decimal" : undefined}
-                className="h-10 w-full border border-border/60 bg-background px-3 text-sm text-foreground outline-none focus:border-[oklch(0.62_0.16_215_/_0.6)]"
-                disabled={isAdvancing}
-                autoFocus
-              />
-            </div>
-          )}
-          {isAdvancing && (
-            <div className="flex items-center gap-1.5 px-5 pt-2 pb-1 text-xs text-muted-foreground">
-              <span>Arc is writing the next question</span>
-              <span className="flex gap-0.5">
-                <span className="size-1 animate-bounce rounded-full bg-current [animation-delay:-0.2s]" />
-                <span className="size-1 animate-bounce rounded-full bg-current [animation-delay:-0.1s]" />
-                <span className="size-1 animate-bounce rounded-full bg-current" />
-              </span>
-            </div>
-          )}
-        </div>
-
-        <WorkflowFooter onCancel={onCancel} onSubmit={handleSubmitButton} disabled={isAdvancing} />
-      </div>
-    )
-  }
-
-  // --- Preview ready --------------------------------------------------------
-  if (workflow.status === "preview_ready" || workflow.status === "executing") {
-    return (
-      <div className="flex flex-col">
-        {header}
-        {workflow.preview && (
-          <>
-            <div className="px-5 pb-1 text-[15px] font-medium leading-snug text-foreground">
-              {workflow.preview.summary}
-            </div>
-            <dl className="mt-3 divide-y divide-border/40 border-t border-border/40">
-              {workflow.preview.rows.map((row) => (
-                <div key={row.label} className="grid grid-cols-[130px_1fr] gap-4 px-5 py-2.5">
-                  <dt className="text-[11px] uppercase tracking-wide text-muted-foreground/60">{row.label}</dt>
-                  <dd className="min-w-0 break-words text-sm text-foreground">{row.value}</dd>
-                </div>
-              ))}
-            </dl>
-            {workflow.preview.warnings.length > 0 && (
-              <div className="space-y-1 border-t border-border/40 px-5 py-3">
-                {workflow.preview.warnings.map((warning) => (
-                  <div key={warning} className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-300">
-                    <AlertTriangle className="mt-0.5 size-3 shrink-0" />
-                    <span>{warning}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </>
-        )}
-        <div className="flex items-center justify-between border-t border-border/40 px-5 py-2.5">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="text-xs text-muted-foreground transition-colors hover:text-foreground"
-          >
-            Cancel
-          </button>
-          <Button
-            type="button"
-            size="sm"
-            className="h-8 gap-1.5 rounded-none text-xs"
-            disabled={isExecuting || workflow.status === "executing"}
-            onClick={() => onExecute(workflow.id)}
-          >
-            {isExecuting || workflow.status === "executing" ? (
-              <Loader2 className="size-3 animate-spin" />
-            ) : (
-              <CheckCircle className="size-3" />
-            )}
-            {isExecuting || workflow.status === "executing" ? "Creating…" : "Create invoice"}
-          </Button>
-        </div>
-      </div>
-    )
-  }
-
-  // --- Executed -------------------------------------------------------------
-  if (workflow.status === "executed") {
-    return (
-      <div className="flex flex-col">
-        {header}
-        <div className="flex items-start gap-3 px-5 pb-4">
-          <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-            <CheckCircle className="size-3.5" />
-          </span>
-          <div className="min-w-0 flex-1 space-y-2">
-            <p className="text-sm text-foreground">{resultSummary ?? "Done."}</p>
-            {resultHref && (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                className="h-8 gap-1.5 rounded-none text-xs"
-                onClick={() => onNavigate(resultHref)}
-              >
-                Open invoice
-                <ArrowRight className="size-3" />
-              </Button>
-            )}
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  // --- Failed / cancelled ---------------------------------------------------
-  return (
-    <div className="flex flex-col">
-      {header}
-      <div className="flex items-start gap-3 px-5 pb-4">
-        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" />
-        <div className="min-w-0 flex-1 space-y-2">
-          <p className="text-sm text-foreground">{workflow.error ?? "This workflow was cancelled."}</p>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="text-xs text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
-          >
-            Start over
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// Shared footer for the collecting stage: Cancel on the left, a circular submit
-// affordance on the right (mirrors the reference's send button).
-function WorkflowFooter({ onCancel, onSubmit, disabled = false }: { onCancel: () => void; onSubmit: () => void; disabled?: boolean }) {
-  return (
-    <div className="flex items-center justify-between border-t border-border/40 px-5 py-2.5">
-      <button
-        type="button"
-        onClick={onCancel}
-        className="text-xs text-muted-foreground transition-colors hover:text-foreground"
-      >
-        Cancel
-      </button>
-      <button
-        type="button"
-        onClick={onSubmit}
-        disabled={disabled}
-        aria-label="Submit answer"
-        className="flex size-7 items-center justify-center border border-border/60 text-muted-foreground transition-colors hover:border-foreground/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        <ArrowUp className="size-3.5" />
-      </button>
-    </div>
-  )
-}
-
 function AiResponsePanel({
   aiAnswer,
   aiError,
@@ -1854,11 +1279,8 @@ function AiResponsePanel({
   onRetry,
   onNavigate,
   onExecuteAction,
-  onRespondToWorkflow,
-  onExecuteWorkflow,
   onCancel,
   executingActionId,
-  executingWorkflowId,
 }: {
   aiAnswer: AiAnswerState | null
   aiError: string | null
@@ -1866,11 +1288,8 @@ function AiResponsePanel({
   onRetry: () => void
   onNavigate: (href: string) => void
   onExecuteAction: (actionId: string) => void
-  onRespondToWorkflow: (workflowId: string, value: string) => void
-  onExecuteWorkflow: (workflowId: string) => void
   onCancel: () => void
   executingActionId: string | null
-  executingWorkflowId: string | null
 }) {
   const [sourcesExpanded, setSourcesExpanded] = useState(false)
   const citations = useMemo(() => aiAnswer?.citations ?? [], [aiAnswer])
@@ -1900,21 +1319,6 @@ function AiResponsePanel({
   }
 
   if (!aiAnswer) return null
-
-  // Guided workflows get a dedicated, full-bleed, keyboard-first surface instead
-  // of the chat-style answer layout (no avatars, confidence chips, or citations).
-  if (aiAnswer.workflow) {
-    return (
-      <AiWorkflowExperience
-        workflow={aiAnswer.workflow}
-        onRespond={onRespondToWorkflow}
-        onExecute={onExecuteWorkflow}
-        onCancel={onCancel}
-        onNavigate={onNavigate}
-        isExecuting={executingWorkflowId === aiAnswer.workflow.id}
-      />
-    )
-  }
 
   // Analytics/report artifacts render in a dedicated full-bleed surface instead
   // of the chat-style answer (no user echo, avatar, confidence chip, or summary).
@@ -2395,7 +1799,6 @@ export function CommandSearch({ className, defaultOpen = false }: CommandSearchP
   const [aiError, setAiError] = useState<string | null>(null)
   const [aiTrace, setAiTrace] = useState<AiTraceState[]>([])
   const [executingActionId, setExecutingActionId] = useState<string | null>(null)
-  const [executingWorkflowId, setExecutingWorkflowId] = useState<string | null>(null)
   const [submittedQuery, setSubmittedQuery] = useState("")
   const [assistantMode, setAssistantMode] = useState<AiAssistantMode>("org")
   const [selectedIndex, setSelectedIndex] = useState(-1)
@@ -2767,7 +2170,6 @@ export function CommandSearch({ className, defaultOpen = false }: CommandSearchP
       setAiError(null)
       setAiTrace([])
       setExecutingActionId(null)
-      setExecutingWorkflowId(null)
       setSubmittedQuery("")
       setSelectedIndex(-1)
       setShowGlow(false)
@@ -2816,7 +2218,6 @@ export function CommandSearch({ className, defaultOpen = false }: CommandSearchP
     setAiError(null)
     setAiTrace([])
     setExecutingActionId(null)
-    setExecutingWorkflowId(null)
     setSelectedIndex(-1)
     previewAbortRef.current?.abort()
     setPreviewResult(null)
@@ -2983,116 +2384,6 @@ export function CommandSearch({ className, defaultOpen = false }: CommandSearchP
     }
   }, [])
 
-  const respondToWorkflow = useCallback(async (workflowId: string, value: string) => {
-    const trimmedWorkflowId = workflowId.trim()
-    const trimmedValue = value.trim()
-    if (!trimmedWorkflowId || !trimmedValue) return
-
-    try {
-      const response = await fetch("/api/ai-search/workflows/respond", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          workflowId: trimmedWorkflowId,
-          value: trimmedValue,
-        }),
-      })
-      const payload = (await response.json().catch(() => ({}))) as { workflow?: unknown; error?: unknown }
-      if (!response.ok) {
-        throw new Error(typeof payload.error === "string" ? payload.error : "Unable to update workflow.")
-      }
-      const workflow = toAiWorkflowState(payload.workflow)
-      if (!workflow) throw new Error("Workflow response was invalid.")
-      setAiAnswer((prev) => {
-        if (!prev) return prev
-        return {
-          ...prev,
-          workflow,
-          answer: workflow.status === "preview_ready"
-            ? "I have enough to prepare this invoice. Review the preview, then confirm when you want me to create it."
-            : workflow.questions[0]?.label ?? prev.answer,
-          missingData: workflow.missingSlots,
-        }
-      })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to update workflow."
-      setAiTrace((prev) =>
-        [
-          ...prev,
-          {
-            id: `workflow-update-failed-${trimmedWorkflowId}-${Date.now()}`,
-            status: "warning",
-            label: "Workflow update failed",
-            detail: message,
-            thought: "The workflow response could not be saved.",
-            timestamp: new Date().toISOString(),
-          } satisfies AiTraceState,
-        ].slice(-24),
-      )
-    }
-  }, [])
-
-  const executeWorkflow = useCallback(async (workflowId: string) => {
-    const trimmedWorkflowId = workflowId.trim()
-    if (!trimmedWorkflowId) return
-
-    setExecutingWorkflowId(trimmedWorkflowId)
-    try {
-      const response = await fetch("/api/ai-search/workflows/execute", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ workflowId: trimmedWorkflowId }),
-      })
-      const payload = (await response.json().catch(() => ({}))) as { workflow?: unknown; error?: unknown }
-      if (!response.ok) {
-        throw new Error(typeof payload.error === "string" ? payload.error : "Unable to execute workflow.")
-      }
-      const workflow = toAiWorkflowState(payload.workflow)
-      if (!workflow) throw new Error("Workflow response was invalid.")
-      setAiAnswer((prev) => {
-        if (!prev) return prev
-        return {
-          ...prev,
-          workflow,
-          answer: typeof workflow.result.summary === "string" ? workflow.result.summary : "Workflow completed.",
-          missingData: workflow.missingSlots,
-        }
-      })
-      setAiTrace((prev) =>
-        [
-          ...prev,
-          {
-            id: `workflow-executed-${workflow.id}-${Date.now()}`,
-            status: workflow.status === "executed" ? "completed" : "warning",
-            label: workflow.status === "executed" ? "Workflow executed" : "Workflow update",
-            detail: typeof workflow.result.summary === "string" ? workflow.result.summary : workflow.error,
-            thought: workflow.status === "executed" ? "Invoice workflow completed." : "Workflow did not complete cleanly.",
-            timestamp: new Date().toISOString(),
-          } satisfies AiTraceState,
-        ].slice(-24),
-      )
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to execute workflow."
-      setAiAnswer((prev) => {
-        if (!prev?.workflow || prev.workflow.id !== trimmedWorkflowId) return prev
-        return {
-          ...prev,
-          workflow: {
-            ...prev.workflow,
-            status: "failed",
-            error: message,
-          },
-        }
-      })
-    } finally {
-      setExecutingWorkflowId((current) => (current === trimmedWorkflowId ? null : current))
-    }
-  }, [])
-
   const handleInputKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Escape") {
       if (viewMode === "preview") {
@@ -3107,7 +2398,6 @@ export function CommandSearch({ className, defaultOpen = false }: CommandSearchP
         setIsAskingAi(false)
         setAiTrace([])
         setExecutingActionId(null)
-        setExecutingWorkflowId(null)
         setShowGlow(false)
         closeAiStream()
         askRequestIdRef.current += 1
@@ -3183,7 +2473,6 @@ export function CommandSearch({ className, defaultOpen = false }: CommandSearchP
     closeAiStream()
     setIsAskingAi(false)
     setExecutingActionId(null)
-    setExecutingWorkflowId(null)
     setQuery(nextQuery)
   }
 
@@ -3195,7 +2484,6 @@ export function CommandSearch({ className, defaultOpen = false }: CommandSearchP
     setIsAskingAi(false)
     setAiTrace([])
     setExecutingActionId(null)
-    setExecutingWorkflowId(null)
     setShowGlow(false)
     askRequestIdRef.current += 1
     setQuery("")
@@ -3695,11 +2983,8 @@ export function CommandSearch({ className, defaultOpen = false }: CommandSearchP
                       onRetry={() => void askAi(submittedQuery)}
                       onNavigate={handleNavigate}
                       onExecuteAction={(actionId) => void executeProposedAction(actionId)}
-                      onRespondToWorkflow={(workflowId, value) => void respondToWorkflow(workflowId, value)}
-                      onExecuteWorkflow={(workflowId) => void executeWorkflow(workflowId)}
                       onCancel={clearAiAndReset}
                       executingActionId={executingActionId}
-                      executingWorkflowId={executingWorkflowId}
                     />
                   )}
                 </>

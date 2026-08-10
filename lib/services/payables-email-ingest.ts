@@ -1,10 +1,13 @@
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { findDuplicatePayable } from "@/lib/services/payable-duplicate-check"
 import { uploadFilesObject } from "@/lib/storage/files-storage"
 import { attachFileWithServiceRole } from "@/lib/services/file-links"
 import { recordEvent } from "@/lib/services/events"
 import { NotificationService } from "@/lib/services/notifications"
-import { extractPayableInvoiceFromFile } from "@/lib/services/receipt-extraction"
+import { extractPayableInvoiceFromFile } from "@/lib/services/document-extraction"
 import { suggestCodingForService } from "@/lib/services/books/coding-rules"
+import { computeCommitmentOverBudget } from "@/lib/services/vendor-bills"
+import { emailIngestBillCoreSchema } from "@/lib/validation/vendor-bills"
 
 /**
  * Inbound bill ingest: subs email their invoice to the org's bills address.
@@ -120,6 +123,40 @@ function normalizeName(value?: string | null) {
   return value?.trim().replace(/\s+/g, " ").toLowerCase() ?? ""
 }
 
+function emailDomain(address: string) {
+  const at = address.lastIndexOf("@")
+  return at === -1 ? "" : address.slice(at + 1).toLowerCase()
+}
+
+function editDistance(a: string, b: string) {
+  const previous = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    let diagonal = previous[0]
+    previous[0] = i
+    for (let j = 1; j <= b.length; j++) {
+      const next = Math.min(previous[j] + 1, previous[j - 1] + 1, diagonal + (a[i - 1] === b[j - 1] ? 0 : 1))
+      diagonal = previous[j]
+      previous[j] = next
+    }
+  }
+  return previous[b.length]
+}
+
+/**
+ * Deterministic look-alike detection for a sender domain against a vendor's
+ * known domain: identical after stripping punctuation ("acme-inc.com" vs
+ * "acmeinc.com"), or within two character edits of a reasonably long domain
+ * ("acrne.com" vs "acme.com"). No AI, no fuzzy scoring — a flag for a human.
+ */
+function isLookalikeDomain(candidate: string, known: string) {
+  if (!candidate || !known || candidate === known) return false
+  const a = candidate.replace(/[^a-z0-9]/g, "")
+  const b = known.replace(/[^a-z0-9]/g, "")
+  if (a === b) return true
+  if (Math.min(a.length, b.length) < 6) return false
+  return editDistance(a, b) <= 2
+}
+
 async function notifyOrgMembers(args: { orgId: string; title: string; message: string; projectId?: string | null; entityType?: string; entityId?: string }) {
   const supabase = createServiceSupabaseClient()
   const { data: members } = await supabase.from("memberships").select("user_id").eq("org_id", args.orgId).eq("status", "active")
@@ -146,7 +183,9 @@ async function notifyOrgMembers(args: { orgId: string; title: string; message: s
 }
 
 export interface InboundBillResult {
-  status: "created" | "unrouted" | "duplicate" | "no_attachment" | "ignored"
+  status: "created" | "unrouted" | "duplicate" | "no_attachment" | "ignored" | "not_a_bill"
+  /** Set when status is "not_a_bill", so the caller can say what arrived instead. */
+  documentType?: string
   billId?: string
   projectId?: string
 }
@@ -188,9 +227,25 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
     return null
   })
 
+  // ── Refuse documents that are not bills ────────────────────────────────
+  // A vendor statement lists invoices that were each sent separately, and a
+  // lien waiver is a signed release. Turning either into a payable creates a
+  // duplicate liability that only shows up at reconciliation, so the router's
+  // verdict stops the pipeline here rather than downstream.
+  if (extraction && !extraction.billable) {
+    console.warn("payables-email-ingest: non-billable document", {
+      emailId,
+      documentType: extraction.documentType,
+    })
+    return { status: "not_a_bill", documentType: extraction.documentType }
+  }
+
   // ── Match sender → Arc vendor ──────────────────────────────────────────
-  let companyId: string | null = null
+  // The scan may already have matched the vendor against the org's list, which
+  // beats the exact-string name comparison the fallback below relies on.
+  let companyId: string | null = extraction?.vendorId ?? null
   let companyName: string | null = null
+  let matchedViaSenderContact = false
 
   if (fromAddress) {
     const { data: contact } = await supabase
@@ -205,6 +260,7 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
     if (contactCompany?.id) {
       companyId = contactCompany.id as string
       companyName = (contactCompany.name as string) ?? null
+      matchedViaSenderContact = true
     }
   }
 
@@ -218,27 +274,69 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
     }
   }
 
-  // ── Duplicate guard (same vendor + bill number anywhere in the org) ────
-  if (companyId && extraction?.billNumber) {
-    const { data: duplicate } = await supabase
-      .from("vendor_bills")
-      .select("id, project_id")
-      .eq("org_id", orgId)
-      .eq("company_id", companyId)
-      .eq("bill_number", extraction.billNumber)
-      .limit(1)
-      .maybeSingle()
-    if (duplicate) {
-      await notifyOrgMembers({
-        orgId,
-        title: "Emailed bill skipped as a duplicate",
-        message: `${companyName ?? fromAddress} emailed bill #${extraction.billNumber}, which already exists in Arc.`,
-        projectId: duplicate.project_id as string,
-        entityType: "vendor_bill",
-        entityId: duplicate.id as string,
-      })
-      return { status: "duplicate", billId: duplicate.id as string }
+  // ── Screen the sender against the vendor's known contacts ─────────────
+  // Deterministic string comparison only. A bill "from" a known vendor whose
+  // sender address is not one of that vendor's contacts — or whose domain
+  // merely looks like a known one — is exactly the shape of invoice fraud, so
+  // it gets flagged for a human. The flag never blocks intake, but it does
+  // block auto-approval (see evaluateAndAutoApproveVendorBill).
+  let senderUnverified = false
+  let senderLookalikeOf: string | null = null
+  if (companyId && fromAddress && !matchedViaSenderContact) {
+    const [{ data: vendorContacts }, { data: vendorCompany }] = await Promise.all([
+      supabase.from("contacts").select("email").eq("org_id", orgId).eq("company_id", companyId),
+      supabase.from("companies").select("email").eq("org_id", orgId).eq("id", companyId).maybeSingle(),
+    ])
+    const knownEmails = new Set(
+      [...(vendorContacts ?? []).map((row) => row.email as string | null), (vendorCompany?.email as string | null) ?? null]
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        .map((value) => value.trim().toLowerCase()),
+    )
+    if (!knownEmails.has(fromAddress)) {
+      const senderDomain = emailDomain(fromAddress)
+      const knownDomains = new Set(Array.from(knownEmails).map(emailDomain).filter(Boolean))
+      // A new person at a vendor's known domain is routine; anything else is not.
+      if (!senderDomain || !knownDomains.has(senderDomain)) {
+        senderUnverified = true
+        for (const domain of knownDomains) {
+          if (isLookalikeDomain(senderDomain, domain)) {
+            senderLookalikeOf = domain
+            break
+          }
+        }
+      }
     }
+  }
+
+  // ── Duplicate guard ────────────────────────────────────────────────────
+  // One matcher for every path. This used to be two blocks here — a
+  // case-SENSITIVE check when the vendor matched and a looser name-based one
+  // when it did not — neither of which agreed with the interactive create path.
+  const duplicate = await findDuplicatePayable({
+    supabase,
+    orgId,
+    billNumber: extraction?.billNumber ?? null,
+    companyId,
+    totalCents: extraction?.totalDollars != null ? Math.round(extraction.totalDollars * 100) : null,
+    billDate: extraction?.billDate ?? null,
+    vendorAliases: companyId ? undefined : { vendorName: extraction?.vendorName ?? null },
+  })
+  if (duplicate) {
+    const { data: existing } = await supabase
+      .from("vendor_bills")
+      .select("project_id")
+      .eq("org_id", orgId)
+      .eq("id", duplicate.billId)
+      .maybeSingle()
+    await notifyOrgMembers({
+      orgId,
+      title: "Emailed bill skipped as a duplicate",
+      message: `${companyName ?? fromAddress} emailed a bill that already exists in Arc. ${duplicate.reason}`,
+      projectId: (existing?.project_id as string | null) ?? null,
+      entityType: "vendor_bill",
+      entityId: duplicate.billId,
+    })
+    return { status: "duplicate", billId: duplicate.billId }
   }
 
   // ── Route to a project via the vendor's commitments ────────────────────
@@ -325,19 +423,23 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
   }
 
   // ── Create the pending payable ─────────────────────────────────────────
-  let overBudget = false
-  if (commitmentId) {
-    const [{ data: commitment }, { data: existingBills }, { data: approvedCcos }] = await Promise.all([
-      supabase.from("commitments").select("total_cents").eq("org_id", orgId).eq("id", commitmentId).maybeSingle(),
-      supabase.from("vendor_bills").select("total_cents").eq("org_id", orgId).eq("commitment_id", commitmentId),
-      supabase.from("commitment_change_orders").select("total_cents").eq("org_id", orgId).eq("commitment_id", commitmentId).eq("status", "approved"),
-    ])
-    const billedCents = (existingBills ?? []).reduce((sum, row) => sum + (row.total_cents ?? 0), 0)
-    const ccoCents = (approvedCcos ?? []).reduce((sum, row) => sum + (row.total_cents ?? 0), 0)
-    const remaining = (commitment?.total_cents ?? 0) + ccoCents - billedCents
-    const amountCents = Math.round((extraction?.totalDollars ?? 0) * 100)
-    overBudget = amountCents > 0 && amountCents > remaining
-  }
+  const totalCents = Math.round((extraction?.totalDollars ?? 0) * 100)
+
+  // The same rules a manually created payable passes: a real invoice number,
+  // a positive amount, a valid date. Extraction that cannot produce them still
+  // creates the record — losing the document helps nobody — but always as a
+  // draft flagged for a human, which the desk keeps out of the approval queue
+  // and the auto-approval evaluator refuses outright.
+  const coreValidation = emailIngestBillCoreSchema.safeParse({
+    bill_number: extraction?.billNumber ?? "",
+    total_cents: totalCents,
+    bill_date: extraction?.billDate ?? new Date().toISOString().slice(0, 10),
+  })
+  const extractionIncomplete = !coreValidation.success
+
+  const overBudget = commitmentId && totalCents > 0
+    ? await computeCommitmentOverBudget(supabase, { orgId, commitmentId, totalCents })
+    : false
 
   const { data: company } = companyId ? await supabase.from("companies").select("qbo_vendor_id, qbo_vendor_name, name").eq("id", companyId).maybeSingle() : { data: null }
   const codingSuggestion = await suggestCodingForService({
@@ -355,7 +457,7 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
       commitment_id: commitmentId,
       company_id: companyId,
       bill_number: extraction?.billNumber ?? null,
-      total_cents: Math.round((extraction?.totalDollars ?? 0) * 100),
+      total_cents: totalCents,
       currency: "usd",
       status: "pending",
       bill_date: extraction?.billDate ?? new Date().toISOString().slice(0, 10),
@@ -372,6 +474,10 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
         extraction_confidence: extraction?.confidence ?? null,
         routing_note: routingNote,
         over_budget: overBudget,
+        creation_state: extractionIncomplete ? "draft" : "ready",
+        ...(extractionIncomplete ? { needs_review_reason: "extraction_incomplete" } : {}),
+        ...(senderUnverified ? { sender_unverified: true } : {}),
+        ...(senderLookalikeOf ? { sender_domain_lookalike_of: senderLookalikeOf } : {}),
         vendor_name: companyName ?? extraction?.vendorName ?? null,
         coding_source: codingSuggestion?.autoApply ? "rule" : null,
         coding_rule_id: codingSuggestion?.ruleId ?? null,
@@ -384,24 +490,54 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
   if (billError || !bill) throw new Error(`Failed to create emailed payable: ${billError?.message}`)
   const billId = bill.id as string
 
-  if (codingSuggestion?.autoApply && codingSuggestion.costCodeId) {
-    const amountCents = Math.round((extraction?.totalDollars ?? 0) * 100)
-    const { error: codingError } = await supabase.from("bill_lines").insert({
-      org_id: orgId,
-      bill_id: billId,
-      project_id: projectId,
-      cost_code_id: codingSuggestion.costCodeId,
-      budget_line_id: codingSuggestion.budgetLineId,
-      description: extraction?.description ?? subject ?? "Emailed vendor bill",
-      quantity: 1,
-      unit: "LS",
-      unit_cost_cents: amountCents,
-      sort_order: 0,
-      metadata: {
-        source: "email_ingest",
-        coding_rule_id: codingSuggestion.ruleId,
-      },
-    })
+  // No auto-coding for an incomplete extraction: a zero-amount line would only
+  // masquerade as real coding on a draft a human still has to complete.
+  if (!extractionIncomplete && codingSuggestion?.autoApply && codingSuggestion.costCodeId) {
+    // Preserve the invoice's own line structure when the scan reconciled. The
+    // learned coding applies to every line, because it was learned from this
+    // vendor rather than from any one line; a human re-codes individual lines
+    // during review. A scan whose lines did not reconcile falls back to the
+    // single lump line rather than persisting a split we already distrust.
+    const useScannedLines = Boolean(extraction && extraction.lines.length > 1 && !extraction.sumMismatch)
+    const rows = useScannedLines
+      ? extraction!.lines.map((line, index) => ({
+          org_id: orgId,
+          bill_id: billId,
+          project_id: projectId,
+          cost_code_id: codingSuggestion.costCodeId,
+          budget_line_id: codingSuggestion.budgetLineId,
+          description: line.description || "Emailed vendor bill",
+          quantity: line.quantity ?? 1,
+          unit: line.unit ?? "LS",
+          unit_cost_cents:
+            line.quantity && line.quantity !== 0
+              ? Math.round(line.amountCents / line.quantity)
+              : line.amountCents,
+          sort_order: index,
+          metadata: {
+            source: "email_ingest",
+            coding_rule_id: codingSuggestion.ruleId,
+            extracted_amount_cents: line.amountCents,
+          },
+        }))
+      : [{
+          org_id: orgId,
+          bill_id: billId,
+          project_id: projectId,
+          cost_code_id: codingSuggestion.costCodeId,
+          budget_line_id: codingSuggestion.budgetLineId,
+          description: extraction?.description ?? subject ?? "Emailed vendor bill",
+          quantity: 1,
+          unit: "LS",
+          unit_cost_cents: totalCents,
+          sort_order: 0,
+          metadata: {
+            source: "email_ingest",
+            coding_rule_id: codingSuggestion.ruleId,
+          },
+        }]
+
+    const { error: codingError } = await supabase.from("bill_lines").insert(rows)
     if (codingError) throw new Error(`Failed to apply learned coding: ${codingError.message}`)
   }
 
@@ -425,11 +561,39 @@ export async function processInboundBillEmail(args: { orgId: string; emailId: st
       project_id: projectId,
       company_id: companyId,
       bill_number: extraction?.billNumber ?? null,
-      total_cents: Math.round((extraction?.totalDollars ?? 0) * 100),
+      total_cents: totalCents,
       source: "email_ingest",
       from_email: fromAddress,
+      creation_state: extractionIncomplete ? "draft" : "ready",
+      sender_unverified: senderUnverified,
     },
   })
+
+  // Flagged intake gets a direct human notification on top of the submitted
+  // event, naming exactly what to verify before anyone approves it.
+  if (extractionIncomplete || senderUnverified) {
+    const concerns: string[] = []
+    if (senderUnverified) {
+      concerns.push(
+        senderLookalikeOf
+          ? `The sender ${fromAddress} is not a known contact for ${companyName ?? "this vendor"}, and its domain looks like ${senderLookalikeOf} without matching it — verify it is really them.`
+          : `The sender ${fromAddress} is not a known contact for ${companyName ?? "this vendor"} — verify it is really them.`,
+      )
+    }
+    if (extractionIncomplete) {
+      concerns.push("The invoice amount or number could not be read, so it was saved as a draft to complete by hand.")
+    }
+    await notifyOrgMembers({
+      orgId,
+      title: extractionIncomplete ? "Emailed bill needs review before approval" : "Emailed bill from an unverified sender",
+      message: `${companyName ?? extraction?.vendorName ?? fromAddress ?? "A vendor"} emailed ${
+        extraction?.billNumber ? `bill #${extraction.billNumber}` : subject ? `“${subject}”` : "an invoice"
+      }. ${concerns.join(" ")}`,
+      projectId,
+      entityType: "vendor_bill",
+      entityId: billId,
+    })
+  }
 
   return { status: "created", billId, projectId }
 }

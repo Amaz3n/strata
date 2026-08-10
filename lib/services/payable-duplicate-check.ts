@@ -1,0 +1,141 @@
+import "server-only"
+
+import type { SupabaseClient } from "@supabase/supabase-js"
+
+import {
+  detectDuplicateSuspicion,
+  normalizeBillNumber,
+  type RecentBillForDuplicateCheck,
+} from "@/lib/financials/payable-duplicates"
+
+/**
+ * One way to ask "have we already got this bill?".
+ *
+ * There were four, and they disagreed in ways that showed up as real defects:
+ * the interactive create path matched bill numbers case-insensitively while
+ * email ingest used a case-sensitive `eq`, so `INV-1024` and `inv-1024` were the
+ * same payable on one path and two payables on the other. None of them handled
+ * separator drift (`INV-1024` vs `INV 1024`), and none had an answer when the
+ * vendor printed no number at all.
+ *
+ * Matching lives here; the REACTION stays with the caller, because it genuinely
+ * differs — creation blocks, auto-approval declines to fire, ingest reports.
+ */
+
+/** Candidate window. Wide enough to catch separator drift, bounded for cost. */
+const CANDIDATE_LIMIT = 50
+const RECENT_WINDOW_DAYS = 400
+
+export interface DuplicateMatch {
+  billId: string
+  reason: string
+}
+
+/**
+ * Look for an existing payable that this one duplicates.
+ *
+ * Deliberately fetches a candidate set and matches in code rather than pushing
+ * the comparison into SQL: normalization has to be identical everywhere, and a
+ * shared pure function is the only way to guarantee that.
+ */
+export async function findDuplicatePayable({
+  supabase,
+  orgId,
+  billNumber,
+  companyId,
+  totalCents,
+  billDate,
+  excludeBillId,
+  vendorAliases,
+}: {
+  supabase: SupabaseClient
+  orgId: string
+  billNumber: string | null
+  companyId: string | null
+  totalCents?: number | null
+  billDate?: string | null
+  excludeBillId?: string
+  /**
+   * Extra ways the same vendor can be recognised when `companyId` is unset —
+   * an accounting-system vendor id, or the name printed on the bill. The
+   * interactive create path has always matched on these; keeping them here is
+   * what lets every caller share one matcher instead of forking again.
+   */
+  vendorAliases?: { accountingVendorId?: string | null; vendorName?: string | null }
+}): Promise<DuplicateMatch | null> {
+  const since = new Date(Date.now() - RECENT_WINDOW_DAYS * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10)
+
+  let query = supabase
+    .from("vendor_bills")
+    .select("id,bill_number,company_id,total_cents,bill_date,qbo_vendor_id,qbo_vendor_name,metadata")
+    .eq("org_id", orgId)
+    .neq("status", "rejected")
+    .limit(CANDIDATE_LIMIT)
+
+  if (excludeBillId) query = query.neq("id", excludeBillId)
+
+  // With a number, scope by vendor when we know it. Without one, the amount+date
+  // fallback needs the vendor, so scope by it regardless.
+  if (companyId && !vendorAliases) query = query.eq("company_id", companyId)
+  if (billNumber?.trim()) {
+    // A loose prefix match catches separator and case drift; the pure matcher
+    // makes the final call.
+    const stem = normalizeBillNumber(billNumber).slice(0, 6)
+    if (stem) query = query.ilike("bill_number", `%${stem}%`)
+  } else {
+    query = query.gte("bill_date", since)
+  }
+
+  const { data, error } = await query
+  if (error) {
+    console.warn("[payable-duplicates] Candidate lookup failed", error.message)
+    return null
+  }
+
+  // When aliases are supplied, a candidate counts as the same vendor if any
+  // identity lines up; company_id alone would miss QBO-imported bills.
+  const sameVendor = (row: Record<string, unknown>) => {
+    if (!vendorAliases) return true
+    if (companyId && row.company_id === companyId) return true
+    if (vendorAliases.accountingVendorId && row.qbo_vendor_id === vendorAliases.accountingVendorId) return true
+    const alias = vendorAliases.vendorName?.trim().toLowerCase()
+    if (!alias) return false
+    const metadata = (row.metadata as Record<string, unknown> | null) ?? {}
+    const rowName = String(metadata.vendor_name ?? row.qbo_vendor_name ?? "").trim().toLowerCase()
+    return Boolean(rowName) && rowName === alias
+  }
+
+  const rows = (data ?? []).filter((row) => sameVendor(row))
+  const candidates: Array<RecentBillForDuplicateCheck & { id: string }> = rows.map((row) => ({
+    id: row.id as string,
+    billNumber: (row.bill_number as string | null) ?? "",
+    companyId: (row.company_id as string | null) ?? null,
+    totalCents: row.total_cents === null ? null : Number(row.total_cents),
+    billDate: (row.bill_date as string | null) ?? null,
+  }))
+
+  const verdict = detectDuplicateSuspicion({
+    billNumber,
+    companyId,
+    totalCents: totalCents ?? null,
+    billDate: billDate ?? null,
+    recentBills: candidates,
+  })
+  if (!verdict.isSuspected) return null
+
+  // Re-run per candidate to identify which one matched.
+  const hit = candidates.find(
+    (candidate) =>
+      detectDuplicateSuspicion({
+        billNumber,
+        companyId,
+        totalCents: totalCents ?? null,
+        billDate: billDate ?? null,
+        recentBills: [candidate],
+      }).isSuspected,
+  )
+
+  return hit ? { billId: hit.id, reason: verdict.reason ?? "A similar payable already exists." } : null
+}

@@ -1,5 +1,6 @@
 import { requireOrgContext } from "@/lib/services/context"
 import { getOrgCostCodesEnabled, resolveCostCodesEnabled } from "@/lib/financials/cost-codes-enabled"
+import { isPayableVendorBillStatus } from "@/lib/financials/ledger-status"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { QBOClient } from "@/lib/integrations/accounting/qbo/client"
@@ -8,7 +9,6 @@ import {
   extractLinkedQboAmounts,
   extractLinkedQboIds,
   isUsableQboPaymentMapping,
-  qboImportedExpenseCostCents,
   qboImportProviderPaymentId,
   qboJournalEntryLineAmounts,
   qboPurchaseCreditCents,
@@ -20,6 +20,7 @@ import { recalcInvoiceBalanceAndStatus } from "@/lib/services/invoice-balance"
 import { logQBO } from "@/lib/services/accounting-logger"
 import { requireAccountingConnectionForOrg } from "@/lib/services/accounting-connections"
 import { suggestCodingForService } from "@/lib/services/books/coding-rules"
+import { postJobCostActualsForVendorBill, postJobCostEntriesForProjectExpense, voidJobCostEntriesForVendorBill } from "@/lib/services/job-cost-actuals"
 
 /**
  * QBO → Arc historical / drift import.
@@ -1244,123 +1245,29 @@ async function resolveLineCostCode(params: { ctx: CostCodeResolutionContext; lin
   return mapped
 }
 
-// Imported bills/expenses are inserted directly with status='approved', bypassing the
-// in-app approval flow (propagateApprovalToLedger) that normally posts job-cost actuals.
-// Without these entries the Margin KPI, budget pages, and reports treat the project as
-// having zero cost. Post the actuals here, mirroring lib/services/job-cost-actuals.ts and
-// the backfill migration. is_billable is left false (the actuals total is what matters for
-// margin); we deliberately do NOT create billable_costs for historical imports. Idempotent
-// via the job_cost_entries_source_unique index.
+// Imported bills/expenses are inserted already approved (or paid), bypassing the in-app
+// approval flow (propagateApprovalToLedger) that normally posts job-cost actuals. Without
+// these entries the Margin KPI, budget pages, and reports treat the project as having zero
+// cost. Both post through the subledger service, so an imported cost carries the same GMP
+// classification, budget-line bucketing, and billable linkage as one entered in Arc.
+// Historical imports create no `billable_costs`, so the service resolves them non-billable
+// on its own — the actuals total is what matters for margin.
 async function postJobCostActualsForImportedExpense(ctx: ResolvedContext, expenseId: string) {
-  const { supabase, orgId } = ctx
-  const { data: e } = await supabase
-    .from("project_expenses")
-    .select("id, project_id, cost_code_id, expense_date, amount_cents, tax_cents, created_at, metadata")
-    .eq("org_id", orgId)
-    .eq("id", expenseId)
-    .maybeSingle()
-  if (!e?.project_id) return
-  const metadata =
-    (e.metadata as {
-      source?: string
-      qbo_signed_amount_cents?: number
-    } | null) ?? {}
-  const isExpenseCredit = String(metadata.source ?? "").startsWith("expense_credit")
-  const { data: lines } = await supabase.from("project_expense_lines").select("id, project_id, cost_code_id, amount_cents").eq("org_id", orgId).eq("expense_id", expenseId)
-
-  if ((lines ?? []).length > 0) {
-    const incurredOn = e.expense_date ?? String(e.created_at).slice(0, 10)
-    const rows = (lines ?? [])
-      .map((line: any) => ({
-        org_id: orgId,
-        project_id: line.project_id ?? e.project_id,
-        cost_code_id: line.cost_code_id ?? null,
-        source_type: "project_expense_line" as const,
-        source_id: line.id,
-        incurred_on: incurredOn,
-        cost_cents: Math.round(Number(line.amount_cents ?? 0)) * (isExpenseCredit ? -1 : 1),
-        status: "posted" as const,
-        is_billable: false,
-        metadata: {
-          source_label: isExpenseCredit ? "project_expense_credit_line" : "project_expense_line",
-          expense_id: e.id,
-          imported_from_qbo: true,
-          ...(isExpenseCredit ? { source: "expense_credit" } : {}),
-        },
-      }))
-      .filter((row) => row.project_id)
-    if (rows.length > 0) {
-      await supabase.from("job_cost_entries").delete().eq("org_id", orgId).eq("source_type", "project_expense").eq("source_id", e.id)
-      await supabase.from("job_cost_entries").upsert(rows, { onConflict: "org_id,source_type,source_id" })
-    }
-    return
-  }
-
-  const costCents = qboImportedExpenseCostCents({
-    amountCents: e.amount_cents,
-    taxCents: e.tax_cents,
-    metadata,
-  })
-
-  await supabase.from("job_cost_entries").upsert(
-    {
-      org_id: orgId,
-      project_id: e.project_id,
-      cost_code_id: e.cost_code_id ?? null,
-      source_type: "project_expense",
-      source_id: e.id,
-      incurred_on: e.expense_date ?? String(e.created_at).slice(0, 10),
-      cost_cents: costCents,
-      status: "posted",
-      is_billable: false,
-      metadata: {
-        source_label: isExpenseCredit ? "project_expense_credit" : "project_expense",
-        imported_from_qbo: true,
-        ...(isExpenseCredit ? { source: "expense_credit" } : {}),
-      },
-    },
-    { onConflict: "org_id,source_type,source_id" },
-  )
+  await postJobCostEntriesForProjectExpense({ expenseId, orgId: ctx.orgId, supabase: ctx.supabase })
 }
 
 async function postJobCostActualsForImportedBill(ctx: ResolvedContext, billId: string) {
-  const { supabase, orgId } = ctx
-  const { data: bill } = await supabase.from("vendor_bills").select("id, project_id, bill_date, created_at").eq("org_id", orgId).eq("id", billId).maybeSingle()
-  if (!bill) return
-
-  const { data: lines } = await supabase.from("bill_lines").select("id, project_id, cost_code_id, unit_cost_cents, quantity").eq("org_id", orgId).eq("bill_id", billId)
-
-  const incurredOn = bill.bill_date ?? String(bill.created_at).slice(0, 10)
-  const rows = (lines ?? [])
-    .map((l: any) => ({
-      org_id: orgId,
-      project_id: l.project_id ?? bill.project_id,
-      cost_code_id: l.cost_code_id ?? null,
-      source_type: "vendor_bill_line" as const,
-      source_id: l.id,
-      incurred_on: incurredOn,
-      cost_cents: Math.round(Number(l.unit_cost_cents ?? 0) * Number(l.quantity ?? 1)),
-      status: "posted" as const,
-      is_billable: false,
-      metadata: {
-        source_label: "vendor_bill_line",
-        bill_id: bill.id,
-        imported_from_qbo: true,
-      },
-    }))
-    .filter((r) => r.project_id)
-  if (rows.length === 0) return
-
-  await supabase.from("job_cost_entries").upsert(rows, { onConflict: "org_id,source_type,source_id" })
+  await postJobCostActualsForVendorBill({ billId, orgId: ctx.orgId, supabase: ctx.supabase })
 }
 
 async function deletePartialImportedBill(ctx: ResolvedContext, billId: string) {
   const { supabase, orgId } = ctx
-  const { data: lines } = await supabase.from("bill_lines").select("id").eq("org_id", orgId).eq("bill_id", billId)
-  const lineIds = (lines ?? []).map((line) => line.id)
-  if (lineIds.length > 0) {
-    await supabase.from("job_cost_entries").delete().eq("org_id", orgId).eq("source_type", "vendor_bill_line").in("source_id", lineIds)
-  }
+  // Void through the subledger service rather than deleting `job_cost_entries`
+  // here. The subledger's one rule is that a posted entry is voided, never
+  // removed, and the rule lives in `lib/services/job-cost-actuals.ts`; a second
+  // writer reaching past it loses the trace of what a half-finished import had
+  // already posted against the project.
+  await voidJobCostEntriesForVendorBill({ billId, orgId, supabase })
   await supabase.from("vendor_bills").delete().eq("org_id", orgId).eq("id", billId)
 }
 
@@ -2184,7 +2091,22 @@ async function importBill(
   const accountRef = accountDetail?.AccountRef ?? accountDetail?.ItemRef
   const classRef = accountDetail?.ClassRef
   const nowIso = new Date().toISOString()
-  const status = balanceCents <= 0 && totalCents > 0 ? "paid" : "approved"
+  // A bill QuickBooks has already taken money against is historical fact, not
+  // something awaiting an Arc approval, and it imports at the status that says
+  // so: `paid` when settled, `partial` when some of it has been paid. A bill
+  // with nothing paid against it is a live obligation and lands `pending` — the
+  // same approval queue every other intake path feeds. (Importing straight to
+  // `approved` bypassed every approval gate Arc has; landing a partly-paid bill
+  // at `pending` instead broke the ledger the other way. `pending` is outside
+  // `PAYABLE_VENDOR_BILL_STATUSES`, so no AP credit posted, while the bill's
+  // imported BillPayment posted its AP debit — accounts payable went negative by
+  // the amount paid, and nothing in Arc could reconcile it. The bill and its
+  // payments now become visible to the ledger together or not at all, and the
+  // approval gate still owns every bill that has not been paid.)
+  const fullyPaid = balanceCents <= 0 && totalCents > 0
+  const partiallyPaid = !fullyPaid && paidCents > 0
+  const settledInQbo = fullyPaid || partiallyPaid
+  const status = fullyPaid ? "paid" : partiallyPaid ? "partial" : "pending"
   const costCodeCtx: CostCodeResolutionContext = {
     ...ctx,
     costCodesByLine: costCodes,
@@ -2210,9 +2132,12 @@ async function importBill(
       total_cents: totalCents,
       paid_cents: paidCents,
       currency: "usd",
-      approved_at: nowIso,
-      approved_by: ctx.userId,
-      paid_at: status === "paid" ? nowIso : null,
+      // Money already moved against these in QuickBooks, so the approval they
+      // are recorded with is that fact. A `pending` import gets its approval
+      // facts from a real approval in Arc.
+      approved_at: settledInQbo ? nowIso : null,
+      approved_by: settledInQbo ? ctx.userId : null,
+      paid_at: fullyPaid ? nowIso : null,
       metadata: {
         imported_from_qbo: true,
         qbo_imported_at: nowIso,
@@ -2295,7 +2220,14 @@ async function importBill(
     }
   }
 
-  await postJobCostActualsForImportedBill(ctx, billRow.id)
+  // Job-cost actuals follow the same rule as manually created bills: they post
+  // at approval time. The imports QuickBooks has already paid against post
+  // immediately, in step with the AP credit their status now carries; a pending
+  // import reaches the ledger through the normal approval path
+  // (`propagateApprovalToLedger` in updateVendorBillStatus / auto-approval).
+  if (settledInQbo) {
+    await postJobCostActualsForImportedBill(ctx, billRow.id)
+  }
   await linkSyncRecord({
     supabase,
     orgId,
@@ -2514,64 +2446,68 @@ async function importVendorCredit(
   return { skipped: false as const, entityId: creditRow.id }
 }
 
-async function upsertPaymentAllocation({
-  supabase,
-  orgId,
-  paymentId,
-  invoiceId,
-  projectId,
-  amountCents,
-  metadata,
-}: {
+/**
+ * Convert a previously imported *consolidated* multi-invoice payment into the
+ * first of its per-invoice rows, in place.
+ *
+ * An earlier version of `importPayment` wrote one `payments` row with
+ * `invoice_id: null` and the split in `payment_allocations`. Those rows can
+ * never be classified by the Books projector (see the note in `importPayment`),
+ * and re-importing alongside them would count the same cash twice, because
+ * `invoice_paid_cents` adds direct payments to allocations.
+ *
+ * So the consolidated row is re-keyed to the split id of the first application
+ * and given that invoice and amount, and its allocations are dropped — the
+ * remaining applications are then inserted by the normal loop. Re-running finds
+ * no consolidated row and does nothing, which is what makes the import
+ * idempotent across the shape change. The payment's identity, provider linkage,
+ * and received date are preserved; only its shape moves.
+ */
+async function adoptConsolidatedQboPayment(params: {
   supabase: ReturnType<typeof createServiceSupabaseClient>
   orgId: string
-  paymentId: string
-  invoiceId: string
-  projectId?: string | null
-  amountCents: number
-  metadata: Record<string, any>
+  qboId: string
+  firstApplication: { qboId: string; amountCents: number } | undefined
+  invoiceByQboId: Map<string | null, { id: string; project_id: string | null }>
 }) {
-  const { data: existing, error: existingError } = await supabase
-    .from("payment_allocations")
-    .select("id")
+  const { supabase, orgId, qboId, firstApplication } = params
+  if (!firstApplication) return
+  const invoice = params.invoiceByQboId.get(firstApplication.qboId)
+  if (!invoice) return
+
+  const consolidatedId = qboImportProviderPaymentId({ kind: "payment", qboId, split: false, lineId: "payment" })
+  const { data: consolidated } = await supabase
+    .from("payments")
+    .select("id, invoice_id, bill_id")
     .eq("org_id", orgId)
-    .eq("payment_id", paymentId)
-    .eq("invoice_id", invoiceId)
+    .eq("provider", "qbo")
+    .eq("provider_payment_id", consolidatedId)
     .maybeSingle()
 
-  if (existingError) {
-    throw new Error(`Failed to check payment allocation: ${existingError.message}`)
-  }
+  // Only the unclassified shape is converted. A row that already points at an
+  // invoice or a bill is somebody's real single-target payment and is left alone.
+  if (!consolidated?.id || consolidated.invoice_id || consolidated.bill_id) return
 
-  if (existing?.id) {
-    const { error } = await supabase
-      .from("payment_allocations")
-      .update({
-        project_id: projectId ?? null,
-        amount_cents: amountCents,
-        metadata,
-      })
-      .eq("org_id", orgId)
-      .eq("id", existing.id)
-    if (error) throw new Error(`Failed to update payment allocation: ${error.message}`)
-    return existing.id as string
-  }
-
-  const { data, error } = await supabase
+  const { error: allocationError } = await supabase
     .from("payment_allocations")
-    .insert({
-      org_id: orgId,
-      project_id: projectId ?? null,
-      payment_id: paymentId,
-      invoice_id: invoiceId,
-      amount_cents: amountCents,
-      metadata,
-    })
-    .select("id")
-    .single()
+    .delete()
+    .eq("org_id", orgId)
+    .eq("payment_id", consolidated.id)
+  if (allocationError) throw new Error(`Failed to clear consolidated payment allocations: ${allocationError.message}`)
 
-  if (error || !data) throw new Error(error?.message ?? "Failed to create payment allocation")
-  return data.id as string
+  const { error } = await supabase
+    .from("payments")
+    .update({
+      provider_payment_id: qboImportProviderPaymentId({ kind: "payment", qboId, split: true, lineId: firstApplication.qboId }),
+      invoice_id: invoice.id,
+      project_id: invoice.project_id,
+      amount_cents: firstApplication.amountCents,
+      gross_cents: firstApplication.amountCents,
+      net_cents: firstApplication.amountCents,
+    })
+    .eq("org_id", orgId)
+    .eq("id", consolidated.id)
+  if (error) throw new Error(`Failed to convert consolidated payment: ${error.message}`)
 }
 
 async function importPayment(ctx: ResolvedContext, client: QBOClient, connectionId: string, qboId: string) {
@@ -2600,152 +2536,38 @@ async function importPayment(ctx: ResolvedContext, client: QBOClient, connection
   let firstEntityId: string | null = null
 
   const paymentApplications = extractLinkedDocAmounts(qbo, "invoice").filter((application) => application.amountCents > 0)
-  const isAllocatedPayment = paymentApplications.length > 1
 
-  if (isAllocatedPayment) {
-    const { data: legacySplitRows } = await supabase
-      .from("payments")
-      .select("id, invoice_id")
-      .eq("org_id", orgId)
-      .eq("provider", "qbo")
-      .like("provider_payment_id", `qbo_payment_${qboId}_%`)
+  /**
+   * One QuickBooks Payment applied across several invoices lands as one Arc
+   * `payments` row per invoice, carrying that invoice's applied amount.
+   *
+   * It used to land as a single row with `invoice_id: null` and the split
+   * recorded in `payment_allocations`. That table is not part of the fact spine
+   * the Books projector reads, and the projector classifies a cash receipt by an
+   * XOR over `invoice_id` / `bill_id`; a row linked to neither is "unclassified"
+   * permanently. So the invoices went to partial/paid while the cash they were
+   * paid with never reached the ledger, and no retry could ever fix it.
+   *
+   * The per-invoice shape is also what the bill-payment importer below already
+   * does, and what this importer did before the consolidation — the three
+   * `qbo_payment_<id>_<invoiceId>` rows in production are from that era and are
+   * adopted, not duplicated, by the id scheme here.
+   *
+   * Cash is never double counted: `invoice_paid_cents` sums direct payments
+   * *plus* allocations, so a row may have `invoice_id` or an allocation, never
+   * both. These rows carry `invoice_id`, and any allocation left over from the
+   * consolidated shape is removed as the row is converted.
+   */
+  const shouldSplit = paymentApplications.length > 1
 
-    if ((legacySplitRows ?? []).length > 0) {
-      firstEntityId = legacySplitRows?.[0]?.id ?? null
-      for (const row of legacySplitRows ?? []) {
-        await linkSyncRecord({
-          supabase,
-          orgId,
-          connectionId,
-          entityType: "payment",
-          entityId: row.id,
-          qboId,
-          pushable: false,
-          metadata: { source: "legacy_payment_split" },
-        })
-        if (row.invoice_id) {
-          await recalcInvoiceBalanceAndStatus({
-            supabase,
-            orgId,
-            invoiceId: row.invoice_id,
-          })
-        }
-      }
-      await markEventsResolved(supabase, qboId, ctx.externalAccountId)
-      return { skipped: true as const, entityId: firstEntityId ?? undefined }
-    }
-  }
-
-  if (isAllocatedPayment) {
-    const totalCents = paymentApplications.reduce((sum, application) => sum + application.amountCents, 0)
-    const firstInvoice = invoiceByQboId.get(paymentApplications[0]?.qboId)
-    const providerPaymentId = qboImportProviderPaymentId({
-      kind: "payment",
-      qboId,
-      split: false,
-      lineId: "payment",
-    })
-
-    const { data: existingPayment } = await supabase
-      .from("payments")
-      .select("id")
-      .eq("org_id", orgId)
-      .eq("provider", "qbo")
-      .eq("provider_payment_id", providerPaymentId)
-      .maybeSingle()
-
-    let paymentId = existingPayment?.id as string | undefined
-    if (!paymentId) {
-      const { data: paymentRow, error: paymentError } = await supabase
-        .from("payments")
-        .insert({
-          org_id: orgId,
-          project_id: firstInvoice?.project_id ?? null,
-          invoice_id: null,
-          amount_cents: totalCents,
-          gross_cents: totalCents,
-          net_cents: totalCents,
-          currency: "usd",
-          method: "other",
-          provider: "qbo",
-          provider_payment_id: providerPaymentId,
-          status: "succeeded",
-          received_at: receivedAt ? new Date(receivedAt).toISOString() : nowIso,
-          metadata: {
-            imported_from_qbo: true,
-            qbo_id: qboId,
-            qbo_imported_at: nowIso,
-            source: "payment_allocation",
-            allocation_count: paymentApplications.length,
-          },
-        })
-        .select("id")
-        .single()
-
-      if (paymentError || !paymentRow) throw new Error(paymentError?.message ?? "Failed to record payment")
-      paymentId = paymentRow.id
-      created += 1
-    }
-    if (!paymentId) throw new Error("Failed to resolve imported payment")
-
-    firstEntityId = paymentId
-
-    await linkSyncRecord({
+  if (shouldSplit) {
+    await adoptConsolidatedQboPayment({
       supabase,
       orgId,
-      connectionId,
-      entityType: "payment",
-      entityId: paymentId,
       qboId,
-      pushable: false,
-      metadata: {
-        source: "payment_allocation",
-        allocation_count: paymentApplications.length,
-      },
+      firstApplication: paymentApplications[0],
+      invoiceByQboId,
     })
-
-    for (const application of paymentApplications) {
-      const invoice = invoiceByQboId.get(application.qboId)
-      if (!invoice) {
-        throw new Error(`Linked invoice ${application.qboId} not found in Arc. Import all linked invoices first.`)
-      }
-      await upsertPaymentAllocation({
-        supabase,
-        orgId,
-        paymentId,
-        invoiceId: invoice.id,
-        projectId: invoice.project_id,
-        amountCents: application.amountCents,
-        metadata: {
-          imported_from_qbo: true,
-          qbo_id: qboId,
-          qbo_invoice_id: application.qboId,
-          qbo_imported_at: nowIso,
-        },
-      })
-      await recalcInvoiceBalanceAndStatus({
-        supabase,
-        orgId,
-        invoiceId: invoice.id,
-      })
-    }
-
-    await recordEvent({
-      orgId,
-      actorId: ctx.userId,
-      eventType: "payment_imported_from_qbo",
-      entityType: "payment",
-      entityId: paymentId,
-      payload: {
-        qbo_id: qboId,
-        amount_cents: totalCents,
-        source: "payment_allocation",
-        allocation_count: paymentApplications.length,
-      },
-    })
-
-    await markEventsResolved(supabase, qboId, ctx.externalAccountId)
-    return { skipped: created === 0, entityId: firstEntityId ?? undefined }
   }
 
   for (const application of paymentApplications) {
@@ -2759,8 +2581,8 @@ async function importPayment(ctx: ResolvedContext, client: QBOClient, connection
     const providerPaymentId = qboImportProviderPaymentId({
       kind: "payment",
       qboId,
-      split: false,
-      lineId: "payment",
+      split: shouldSplit,
+      lineId: application.qboId,
     })
 
     const { data: existingPayment } = await supabase
@@ -2863,7 +2685,7 @@ async function importBillPayment(ctx: ResolvedContext, client: QBOClient, connec
     throw new Error("This bill payment isn't linked to a bill in QuickBooks.")
   }
 
-  const { data: bills } = await supabase.from("vendor_bills").select("id, project_id, total_cents, paid_cents, qbo_id").eq("org_id", orgId).in("qbo_id", linkedBillQboIds)
+  const { data: bills } = await supabase.from("vendor_bills").select("id, project_id, total_cents, paid_cents, qbo_id, status, approved_at, approved_by").eq("org_id", orgId).in("qbo_id", linkedBillQboIds)
 
   if (!bills || bills.length === 0) {
     throw new Error("Import all linked bills first, then import this bill payment.")
@@ -3035,14 +2857,42 @@ async function importBillPayment(ctx: ResolvedContext, client: QBOClient, connec
     const ledgerPaid = (ledgerRows ?? []).reduce((sum, row) => sum + Number(row.amount_cents ?? 0), 0)
     const nextPaid = bill.total_cents != null ? Math.min(ledgerPaid, Number(bill.total_cents)) : ledgerPaid
     const fullyPaid = bill.total_cents != null && nextPaid >= Number(bill.total_cents)
+    // A payment landing on a bill Arc still holds outside the ledger is the same
+    // asymmetry the import itself had to fix: the payment posts its AP debit
+    // while the bill it settles never posted the matching credit, so AP goes
+    // negative. Money having moved is the fact that makes the bill real, so a
+    // part payment promotes a `pending` bill to `partial` exactly as a full one
+    // promotes it to `paid`. A bill Arc already treats as payable keeps whatever
+    // status its own lifecycle gave it.
+    const partiallySettles = !fullyPaid && nextPaid > 0 && !isPayableVendorBillStatus(bill.status)
     await supabase
       .from("vendor_bills")
       .update({
         paid_cents: nextPaid,
-        ...(fullyPaid ? { status: "paid", paid_at: nowIso } : {}),
+        // A QBO payment fully covering the bill is a settled fact: the bill
+        // becomes `paid` even if it was imported `pending`, and it carries the
+        // approval facts the settlement implies.
+        ...(fullyPaid
+          ? {
+              status: "paid",
+              paid_at: nowIso,
+              ...(bill.approved_at ? {} : { approved_at: nowIso, approved_by: ctx.userId }),
+            }
+          : {}),
+        ...(partiallySettles
+          ? {
+              status: "partial",
+              ...(bill.approved_at ? {} : { approved_at: nowIso, approved_by: ctx.userId }),
+            }
+          : {}),
       })
       .eq("org_id", orgId)
       .eq("id", bill.id)
+    if (fullyPaid || partiallySettles) {
+      // Idempotent upsert — a bill imported as `pending` never posted its
+      // job-cost actuals; the payment is the moment they become facts.
+      await postJobCostActualsForImportedBill(ctx, bill.id)
+    }
   }
 
   await markEventsResolved(supabase, qboId, ctx.externalAccountId)

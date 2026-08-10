@@ -6,6 +6,7 @@ import { getPaymentRailProvider } from "@/lib/integrations/payments/payment-rail
 import { retrieveStripeChargeWithBalanceTransaction } from "@/lib/integrations/payments/stripe"
 import {
   assertDisbursementTransition,
+  assertPaymentRunTransition,
   planDisbursementAdvance,
   resolveRunItemStatus,
   resolveRunStatus,
@@ -37,8 +38,11 @@ async function recordProviderEvent(input: {
   payload: Record<string, unknown>
 }) {
   const supabase = createServiceSupabaseClient()
-  const { data: existing } = await supabase.from("payment_provider_events").select("id").eq("provider", input.provider).eq("provider_event_id", input.providerEventId).maybeSingle()
-  if (existing) return { id: existing.id, duplicate: true }
+  // The unique index on (provider, provider_event_id) decides, not a prior
+  // SELECT. Two deliveries of the same Stripe event arriving together both saw
+  // "no row" and both inserted; one won and the other threw a 23505 that read as
+  // a processing failure, so Stripe retried an event that had in fact been
+  // stored. Insert first, and treat the conflict as what it is — a duplicate.
   const { data, error } = await supabase.from("payment_provider_events").insert({
     provider: input.provider,
     provider_event_id: input.providerEventId,
@@ -48,9 +52,19 @@ async function recordProviderEvent(input: {
     event_type: input.eventType,
     event_created_at: input.eventCreatedAt ?? null,
     payload: input.payload,
-  }).select("id").single()
-  if (error || !data) throw new Error(`Unable to store provider event: ${error?.message}`)
-  return { id: data.id, duplicate: false }
+  }).select("id").maybeSingle()
+  if (!error && data) return { id: data.id, duplicate: false }
+  if (error && (error as { code?: string }).code !== "23505") {
+    throw new Error(`Unable to store provider event: ${error.message}`)
+  }
+  const { data: existing, error: existingError } = await supabase
+    .from("payment_provider_events")
+    .select("id")
+    .eq("provider", input.provider)
+    .eq("provider_event_id", input.providerEventId)
+    .maybeSingle()
+  if (existingError || !existing) throw new Error(`Unable to store provider event: ${existingError?.message ?? "conflicting event vanished"}`)
+  return { id: existing.id, duplicate: true }
 }
 
 async function recordProcessingAttempt(input: { providerEventId: string; outcome: "processed" | "ignored" | "failed"; error?: string | null; startedAt: string }) {
@@ -76,6 +90,30 @@ async function providerEventCompleted(providerEventId: string) {
   return (count ?? 0) > 0
 }
 
+/**
+ * Move a run to the status its item rollup produced, with the same discipline
+ * disbursements get: the transition is asserted against the legal table and the
+ * write is a compare-and-swap on the status just read, so a concurrent rollup
+ * cannot interleave into an illegal hop. A rollup that recomputes the status the
+ * run already has is a no-op, not a transition.
+ */
+export async function transitionPaymentRunStatus(input: {
+  supabase: ReturnType<typeof createServiceSupabaseClient>
+  orgId: string
+  runId: string
+  toStatus: string
+  extraPatch?: Record<string, unknown>
+}) {
+  const { data: run, error } = await input.supabase.from("payment_runs").select("status").eq("org_id", input.orgId).eq("id", input.runId).maybeSingle()
+  if (error || !run) throw new Error(`Payment run was not found for status rollup: ${error?.message ?? input.runId}`)
+  if (run.status === input.toStatus) return
+  assertPaymentRunTransition(run.status, input.toStatus)
+  const { error: updateError } = await input.supabase.from("payment_runs")
+    .update({ status: input.toStatus, ...(input.extraPatch ?? {}) })
+    .eq("org_id", input.orgId).eq("id", input.runId).eq("status", run.status)
+  if (updateError) throw new Error(`Unable to update payment run status: ${updateError.message}`)
+}
+
 async function rollUpTerminalDisbursement(disbursement: Record<string, unknown>, target: UnpaidTerminalStatus, reason?: string) {
   const supabase = createServiceSupabaseClient()
   const orgId = String(disbursement.org_id)
@@ -88,10 +126,13 @@ async function rollUpTerminalDisbursement(disbursement: Record<string, unknown>,
   await supabase.from("payment_run_items").update({ status: itemStatus, ...(reason ? { failure_reason: reason } : {}) }).eq("org_id", orgId).eq("id", runItemId)
   const { data: items } = await supabase.from("payment_run_items").select("status").eq("org_id", orgId).eq("run_id", runId)
   const runStatus = resolveRunStatus((items ?? []).map((item) => item.status))
-  await supabase.from("payment_runs").update({
-    status: runStatus,
-    ...(["paid", "partially_failed", "failed"].includes(runStatus) ? { completed_at: new Date().toISOString() } : {}),
-  }).eq("org_id", orgId).eq("id", runId)
+  await transitionPaymentRunStatus({
+    supabase,
+    orgId,
+    runId,
+    toStatus: runStatus,
+    extraPatch: ["paid", "partially_failed", "failed"].includes(runStatus) ? { completed_at: new Date().toISOString() } : undefined,
+  })
 }
 
 async function advanceDisbursement(disbursementId: string, orgId: string, target: DisbursementStatus, patch: Record<string, unknown> = {}) {
@@ -230,7 +271,27 @@ async function enforceReturnLossCeiling(orgId: string) {
     .eq("account_code", "ach_return_loss")
     .eq("payment_ledger_transactions.org_id", orgId)
     .limit(5_000)
-  if (error) return
+  if (error) {
+    // The ceiling fails closed. A ledger read that cannot be trusted must not
+    // silently disable the loss control — alert, then rethrow so the webhook
+    // records a failed attempt and the provider redelivers. Every mutation on
+    // this path is idempotent, so the retry is safe.
+    await recordEvent({
+      orgId,
+      eventType: "payment_operations_alert",
+      entityType: "payment_rail_policy",
+      entityId: orgId,
+      payload: {
+        findings: [{
+          code: "return_loss_ceiling_check_failed",
+          detail: "The ACH return-loss ledger could not be read, so the loss ceiling could not be enforced for this return. The webhook will retry.",
+        }],
+        error: error.message,
+        ceiling_cents: ceilingCents,
+      },
+    })
+    throw new Error(`Unable to read return-loss ledger for ceiling enforcement: ${error.message}`)
+  }
   const lossCents = (entries ?? []).reduce(
     (sum, entry) => sum + (entry.direction === "debit" ? Number(entry.amount_cents) : -Number(entry.amount_cents)),
     0,

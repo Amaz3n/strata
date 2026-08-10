@@ -1,6 +1,8 @@
 import * as React from "react"
 import * as TooltipPrimitive from "@radix-ui/react-tooltip"
 
+import { cn } from "@/lib/utils"
+
 const TooltipProvider = TooltipPrimitive.Provider
 
 function Tooltip({ children, ...props }: TooltipPrimitive.TooltipProps) {
@@ -16,7 +18,16 @@ const TooltipContent = React.forwardRef<
     <TooltipPrimitive.Content
       ref={ref}
       sideOffset={sideOffset}
-      className={`z-50 overflow-hidden rounded-md bg-popover px-3 py-1.5 text-sm text-popover-foreground shadow-md ${className ?? ""}`}
+      // `cn` rather than concatenation: with a plain template string a caller's
+      // `text-xs` and the base `text-sm` both survive and the stylesheet order
+      // decides, so overrides appeared to do nothing.
+      className={cn(
+        "z-50 max-w-xs overflow-hidden border border-border bg-popover px-3 py-1.5 text-sm text-popover-foreground shadow-md",
+        "data-[state=delayed-open]:animate-in data-[state=delayed-open]:fade-in-0 data-[state=delayed-open]:zoom-in-95",
+        "data-[side=bottom]:slide-in-from-top-1 data-[side=top]:slide-in-from-bottom-1",
+        "data-[state=closed]:animate-out data-[state=closed]:fade-out-0",
+        className,
+      )}
       {...props}
     />
   </TooltipPrimitive.Portal>

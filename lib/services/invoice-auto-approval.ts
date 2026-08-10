@@ -1,5 +1,7 @@
 import "server-only"
 
+import { findDuplicatePayable } from "@/lib/services/payable-duplicate-check"
+
 import { z } from "zod"
 
 import { APPROVAL_GATE_REASONS, loadApprovalGateSettings } from "@/lib/financials/approval-gates"
@@ -10,6 +12,7 @@ import { getComplianceRulesWithClient } from "@/lib/services/compliance"
 import { propagateApprovalToLedger } from "@/lib/services/cost-plus"
 import { enqueueVendorBillSync } from "@/lib/services/accounting-sync"
 import { recordEvent } from "@/lib/services/events"
+import { sendVendorBillDecisionNotice } from "@/lib/services/vendor-bill-notices"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 /**
@@ -34,6 +37,17 @@ export async function evaluateAndAutoApproveVendorBill(input: { orgId: string; b
     .eq("id", input.billId)
     .maybeSingle()
   if (!bill || bill.status !== "pending") return { approved: false, ruleId: null }
+  const billMetadata = (bill.metadata as Record<string, unknown> | null) ?? {}
+  // Drafts and payables flagged for human review are outside any rule's
+  // authority. A rule decides who may skip review — it never decides that a
+  // half-captured or suspicious payable did not need review in the first place.
+  if (
+    billMetadata.creation_state === "draft" ||
+    billMetadata.sender_unverified === true ||
+    typeof billMetadata.needs_review_reason === "string"
+  ) {
+    return { approved: false, ruleId: null }
+  }
   const { data: rules, error } = await client
     .from("invoice_auto_approval_rules")
     .select("*")
@@ -46,17 +60,21 @@ export async function evaluateAndAutoApproveVendorBill(input: { orgId: string; b
   const trustTier = String((company?.metadata as Record<string, unknown> | null)?.vendor_trust_tier ?? "")
 
   for (const rule of rules ?? []) {
-    if (rule.max_amount_cents != null && Number(bill.total_cents) > Number(rule.max_amount_cents)) continue
+    // Auto-approval authority is always bounded. A rule without an amount cap
+    // (legacy rows only — the schema now requires one) is not honored.
+    if (rule.max_amount_cents == null || Number(bill.total_cents) > Number(rule.max_amount_cents)) continue
     if (rule.company_id && rule.company_id !== bill.company_id) continue
     if (rule.vendor_trust_tiers?.length && !rule.vendor_trust_tiers.includes(trustTier)) continue
     if (rule.require_no_duplicates) {
-      const { count } = await client
-        .from("vendor_bills")
-        .select("id", { count: "exact", head: true })
-        .eq("org_id", input.orgId)
-        .eq("company_id", bill.company_id)
-        .ilike("bill_number", bill.bill_number)
-      if ((count ?? 0) > 1) continue
+      const duplicate = await findDuplicatePayable({
+        supabase: client,
+        orgId: input.orgId,
+        billNumber: bill.bill_number,
+        companyId: bill.company_id,
+        totalCents: Number(bill.total_cents),
+        excludeBillId: bill.id,
+      })
+      if (duplicate) continue
     }
 
     // The same coding gates a human approval passes. A rule says who may skip
@@ -87,6 +105,13 @@ export async function evaluateAndAutoApproveVendorBill(input: { orgId: string; b
         : "requested"
       : bill.lien_waiver_status ?? "not_required"
 
+    // CONTROL INTENT — separation of duties. `approved_by` stays null because
+    // no human approved this bill; the approving identity is the RULE, recorded
+    // durably as `auto_approved` + `auto_approved_rule_id`. Payment-side dual
+    // control (`assertExternalPaymentControls` in vendor-bills.ts) reads these
+    // markers: a null `approved_by` must never read as "nobody to separate
+    // from", or one person could configure a rule, let it approve their bill,
+    // and pay it themselves.
     const { data: approved, error: updateError } = await client
       .from("vendor_bills")
       .update({
@@ -95,7 +120,7 @@ export async function evaluateAndAutoApproveVendorBill(input: { orgId: string; b
         approved_by: null,
         lien_waiver_status: lienWaiverStatus,
         lien_waiver_received_at: lienWaiverStatus === "received" ? undefined : null,
-        metadata: { ...((bill.metadata as object) ?? {}), auto_approved_rule_id: rule.id },
+        metadata: { ...billMetadata, auto_approved: true, auto_approved_rule_id: rule.id },
       })
       .eq("org_id", input.orgId)
       .eq("id", bill.id)
@@ -118,7 +143,7 @@ export async function evaluateAndAutoApproveVendorBill(input: { orgId: string; b
           approved_at: null,
           approved_by: null,
           lien_waiver_status: bill.lien_waiver_status ?? null,
-          metadata: (bill.metadata as object) ?? {},
+          metadata: billMetadata,
         })
         .eq("org_id", input.orgId)
         .eq("id", bill.id)
@@ -144,22 +169,31 @@ export async function evaluateAndAutoApproveVendorBill(input: { orgId: string; b
         entityId: bill.id,
         payload: { project_id: bill.project_id, rule_id: rule.id, amount_cents: bill.total_cents },
       }),
-      // The submitter is told an automatic approval the same way they are told a
-      // human one; from the vendor's side nothing about it is different.
-      recordEvent({
-        orgId: input.orgId,
-        eventType: "vendor_bill_approved",
-        entityType: "vendor_bill",
-        entityId: bill.id,
-        payload: {
-          project_id: bill.project_id,
-          company_id: bill.company_id,
-          bill_number: bill.bill_number,
-          amount_cents: bill.total_cents,
-          auto_approved: true,
-        },
-      }),
     ])
+    // The submitter is told an automatic approval the same way they are told a
+    // human one; from the vendor's side nothing about it is different.
+    const approvalEvent = await recordEvent({
+      orgId: input.orgId,
+      eventType: "vendor_bill_approved",
+      entityType: "vendor_bill",
+      entityId: bill.id,
+      payload: {
+        project_id: bill.project_id,
+        company_id: bill.company_id,
+        bill_number: bill.bill_number,
+        amount_cents: bill.total_cents,
+        submitted_by_user_id: typeof billMetadata.submitted_by_user_id === "string"
+          ? billMetadata.submitted_by_user_id
+          : undefined,
+        auto_approved: true,
+      },
+    })
+    await sendVendorBillDecisionNotice({
+      orgId: input.orgId,
+      billId: bill.id,
+      kind: "approved",
+      eventId: approvalEvent.id,
+    }).catch((error) => console.warn("Vendor auto-approval notice was not sent", error))
     return { approved: true, ruleId: rule.id }
   }
   return { approved: false, ruleId: null }
@@ -180,7 +214,9 @@ const autoApprovalRuleSchema = z.object({
   name: z.string().trim().min(1, "Give the rule a name").max(120),
   project_id: z.string().uuid().nullable().optional(),
   company_id: z.string().uuid().nullable().optional(),
-  max_amount_cents: z.number().int().positive().nullable().optional(),
+  // Required: there are no unlimited rules. Every grant of automatic approval
+  // authority is bounded by an explicit amount.
+  max_amount_cents: z.number({ required_error: "Set the most this rule may approve" }).int().positive("Set the most this rule may approve"),
   vendor_trust_tiers: z.array(z.string().trim().min(1).max(40)).max(10).default([]),
   require_no_duplicates: z.boolean().default(true),
   is_active: z.boolean().default(true),
@@ -243,7 +279,7 @@ export async function upsertAutoApprovalRule(input: AutoApprovalRuleInput, orgId
     name: parsed.name,
     project_id: parsed.project_id ?? null,
     company_id: parsed.company_id ?? null,
-    max_amount_cents: parsed.max_amount_cents ?? null,
+    max_amount_cents: parsed.max_amount_cents,
     vendor_trust_tiers: parsed.vendor_trust_tiers,
     require_no_duplicates: parsed.require_no_duplicates,
     is_active: parsed.is_active,
@@ -279,14 +315,34 @@ export async function deleteAutoApprovalRule(ruleId: string, orgId?: string) {
   const context = await requireOrgContext(orgId)
   await requirePermission("bill.approve", context)
   const supabase = createServiceSupabaseClient()
+  const { data: existing } = await supabase
+    .from("invoice_auto_approval_rules")
+    .select("id,name,max_amount_cents,project_id,is_active")
+    .eq("org_id", context.orgId)
+    .eq("id", ruleId)
+    .maybeSingle()
   const { error } = await supabase.from("invoice_auto_approval_rules").delete().eq("org_id", context.orgId).eq("id", ruleId)
   if (error) throw new Error(`Unable to delete the auto-approval rule: ${error.message}`)
-  await recordAudit({
-    orgId: context.orgId,
-    actorId: context.userId,
-    action: "delete",
-    entityType: "invoice_auto_approval_rule",
-    entityId: ruleId,
-  })
+  // Every change to who-skips-approval is evidence: audit for the trail, event
+  // for the activity feed — deleting a rule is as much a control change as
+  // creating one.
+  await Promise.all([
+    recordAudit({
+      orgId: context.orgId,
+      actorId: context.userId,
+      action: "delete",
+      entityType: "invoice_auto_approval_rule",
+      entityId: ruleId,
+      before: existing ?? undefined,
+    }),
+    recordEvent({
+      orgId: context.orgId,
+      actorId: context.userId,
+      eventType: "invoice_auto_approval_rule_changed",
+      entityType: "invoice_auto_approval_rule",
+      entityId: ruleId,
+      payload: { deleted: true, name: existing?.name ?? null, project_id: existing?.project_id ?? null },
+    }),
+  ])
   return { deleted: true as const }
 }
