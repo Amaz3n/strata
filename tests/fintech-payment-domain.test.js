@@ -29,6 +29,49 @@ const {
   estimateSettlement,
   latestReleaseDateFor,
 } = require("../lib/payments/settlement-estimate")
+const {
+  isPaymentReconciliationStale,
+  paymentOperationsAlertDetails,
+} = require("../lib/payments/operations-monitor")
+
+test("payment reconciliation monitoring waits 48 hours and alerts on incident transitions", () => {
+  const now = new Date("2026-08-10T12:00:00.000Z")
+  assert.equal(isPaymentReconciliationStale({
+    last_reconciled_at: null,
+    reconciliation_monitoring_started_at: "2026-08-09T12:00:00.000Z",
+    created_at: "2026-01-01T00:00:00.000Z",
+  }, now), false)
+  assert.equal(isPaymentReconciliationStale({
+    last_reconciled_at: null,
+    reconciliation_monitoring_started_at: "2026-08-08T11:59:59.000Z",
+    created_at: "2026-01-01T00:00:00.000Z",
+  }, now), true)
+  assert.equal(isPaymentReconciliationStale({
+    last_reconciled_at: "2026-01-02T00:00:00.000Z",
+    reconciliation_monitoring_started_at: "2026-08-10T11:00:00.000Z",
+    created_at: "2026-01-01T00:00:00.000Z",
+  }, now), false)
+
+  const watchdog = paymentSource("lib/services/ops-watchdog.ts")
+  const migration = paymentSource("supabase/migrations/20260811120000_payment_operations_incident_alerting.sql")
+  const reconciliationRoute = paymentSource("app/api/jobs/payment-reconciliation/route.ts")
+  assert.match(watchdog, /sync_payment_operations_incidents/)
+  assert.match(watchdog, /row\.should_notify/)
+  assert.match(migration, /unique \(org_id, finding_code\)/)
+  assert.match(migration, /v_status = 'resolved'/)
+  assert.match(migration, /should_notify := false/)
+  assert.match(reconciliationRoute, /Payment reconciliation is disabled while payment rails are enabled/)
+  assert.match(reconciliationRoute, /status: 503/)
+})
+
+test("stale payment-operation emails include the state counts", () => {
+  assert.deepEqual(paymentOperationsAlertDetails({
+    reason: "stale_payment_state",
+    stale_disbursements: 1,
+    stale_runs: 2,
+    threshold_hours: 96,
+  }), ["1 disbursement and 2 payment runs have remained in a non-terminal state for more than 96 hours."])
+})
 
 test("disbursement state transitions are monotonic with explicit return paths", () => {
   assert.doesNotThrow(() => assertDisbursementTransition("created", "submitted"))

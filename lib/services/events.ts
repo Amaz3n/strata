@@ -3,6 +3,7 @@ import { requireOrgMembership } from "@/lib/auth/context"
 import { requireOrgContext } from "@/lib/services/context"
 import { NotificationService } from "@/lib/services/notifications"
 import { authorize } from "@/lib/services/authorization"
+import { paymentOperationsAlertDetails } from "@/lib/payments/operations-monitor"
 import type { NotificationType } from "@/lib/services/notifications"
 
 type EventChannel = "activity" | "integration" | "notification"
@@ -1066,10 +1067,7 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
      * first question is whether money is currently not moving.
      */
     case "payment_operations_alert": {
-      const findings = Array.isArray(safePayload.findings) ? safePayload.findings : []
-      const details = findings
-        .map((finding) => (finding && typeof finding === "object" ? Reflect.get(finding, "detail") : null))
-        .filter((detail): detail is string => typeof detail === "string")
+      const details = paymentOperationsAlertDetails(safePayload)
       return {
         orgId: event.org_id,
         userId,

@@ -1,5 +1,9 @@
 import "server-only"
 
+import {
+  isPaymentReconciliationStale,
+  RECONCILIATION_STALE_HOURS,
+} from "@/lib/payments/operations-monitor"
 import { CRON_JOBS } from "@/lib/services/job-runs"
 import { recordEvent } from "@/lib/services/events"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -23,8 +27,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 /** Grace on top of the declared cadence before a job counts as overdue. */
 const LIVENESS_GRACE_MULTIPLIER = 3
-/** A rail-enabled org should never go this long without reconciling. */
-const RECONCILIATION_STALE_HOURS = 48
+const RECONCILIATION_INCIDENT_CODE = "payment_reconciliation_stale"
 
 export interface WatchdogFinding {
   code:
@@ -113,21 +116,60 @@ async function checkPaymentReleaseBacklog(): Promise<WatchdogFinding[]> {
  */
 async function checkReconciliationFreshness(): Promise<WatchdogFinding[]> {
   const supabase = createServiceSupabaseClient()
-  const cutoff = new Date(Date.now() - RECONCILIATION_STALE_HOURS * 60 * 60 * 1000).toISOString()
-  const { data, error } = await supabase
-    .from("payment_rail_policies")
-    .select("org_id,last_reconciled_at")
-    .eq("enabled", true)
-    .or(`last_reconciled_at.is.null,last_reconciled_at.lt.${cutoff}`)
-    .limit(100)
-  if (error) throw new Error(`Unable to check reconciliation freshness: ${error.message}`)
-  if ((data ?? []).length === 0) return []
+  const pageSize = 500
+  const policies: Array<{
+    org_id: string
+    last_reconciled_at: string | null
+    reconciliation_monitoring_started_at: string | null
+    created_at: string
+  }> = []
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase
+      .from("payment_rail_policies")
+      .select("org_id,last_reconciled_at,reconciliation_monitoring_started_at,created_at")
+      .eq("enabled", true)
+      .order("org_id", { ascending: true })
+      .range(from, from + pageSize - 1)
+    if (error) throw new Error(`Unable to check reconciliation freshness: ${error.message}`)
+    policies.push(...(data ?? []))
+    if ((data ?? []).length < pageSize) break
+  }
+  const stale = policies.filter((policy) => isPaymentReconciliationStale(policy))
+  if (stale.length === 0) return []
   return [{
-    code: "payment_reconciliation_stale",
+    code: RECONCILIATION_INCIDENT_CODE,
     severity: "critical",
-    detail: `${(data ?? []).length} rail-enabled org(s) have not reconciled in ${RECONCILIATION_STALE_HOURS} hours`,
-    context: { org_ids: (data ?? []).map((row) => row.org_id).slice(0, 20) },
+    detail: `${stale.length} rail-enabled org(s) have not reconciled in ${RECONCILIATION_STALE_HOURS} hours`,
+    context: { org_ids: stale.map((row) => row.org_id) },
   }]
+}
+
+async function syncReconciliationIncidents(
+  finding: WatchdogFinding | undefined,
+): Promise<Map<string, WatchdogFinding[]>> {
+  const supabase = createServiceSupabaseClient()
+  const orgIds = Array.isArray(finding?.context.org_ids)
+    ? finding.context.org_ids.filter((value): value is string => typeof value === "string")
+    : []
+  const detail = `Vendor payment reconciliation has not completed for this organization in ${RECONCILIATION_STALE_HOURS} hours.`
+  const { data, error } = await supabase.rpc("sync_payment_operations_incidents", {
+    p_finding_code: RECONCILIATION_INCIDENT_CODE,
+    p_active_org_ids: orgIds,
+    p_detail: detail,
+  })
+  if (error) throw new Error(`Unable to sync payment operations incidents: ${error.message}`)
+
+  const notifications = new Map<string, WatchdogFinding[]>()
+  for (const row of data ?? []) {
+    if (!row.should_notify || typeof row.org_id !== "string") continue
+    notifications.set(row.org_id, [{
+      code: RECONCILIATION_INCIDENT_CODE,
+      severity: "critical",
+      detail,
+      context: { org_ids: [row.org_id] },
+    }])
+  }
+  return notifications
 }
 
 /** Jobs that exhausted their retries are work a human owns, not noise. */
@@ -173,15 +215,13 @@ export async function runOpsWatchdog(): Promise<{ findings: WatchdogFinding[] }>
 
   // Platform-level conditions have no owning org, so they are recorded against
   // the orgs they name rather than invented onto an arbitrary one.
-  const criticalByOrg = new Map<string, WatchdogFinding[]>()
-  for (const finding of findings) {
-    if (finding.severity !== "critical") continue
-    const orgIds = Array.isArray(finding.context.org_ids) ? finding.context.org_ids : []
-    for (const orgId of orgIds) {
-      if (typeof orgId !== "string") continue
-      criticalByOrg.set(orgId, [...(criticalByOrg.get(orgId) ?? []), finding])
-    }
-  }
+  // Only a healthy reconciliation probe may resolve an existing incident. If
+  // the probe itself failed, leaving the incident open is safer than treating
+  // "could not check" as recovery.
+  const reconciliationFinding = findings.find((finding) => finding.code === RECONCILIATION_INCIDENT_CODE)
+  const criticalByOrg = probes[2].status === "fulfilled"
+    ? await syncReconciliationIncidents(reconciliationFinding)
+    : new Map<string, WatchdogFinding[]>()
   await Promise.all(
     [...criticalByOrg.entries()].map(([orgId, orgFindings]) =>
       recordEvent({

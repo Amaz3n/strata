@@ -235,7 +235,7 @@ export async function updatePaymentRailPolicy(input: UpdatePaymentRailPolicyInpu
   const context = await requireOrgContext(orgId)
   await requirePermission("payments.manage_rail", context)
   const supabase = createServiceSupabaseClient()
-  const { data: existing } = await supabase.from("payment_rail_policies").select("id,enabled,approval_mode,requester_may_approve").eq("org_id", context.orgId).maybeSingle()
+  const { data: existing } = await supabase.from("payment_rail_policies").select("id,enabled,approval_mode,requester_may_approve,reconciliation_monitoring_started_at").eq("org_id", context.orgId).maybeSingle()
   const nextApprovalMode = parsed.approval_mode ?? existing?.approval_mode ?? "dual"
   const nextRequesterMayApprove = parsed.requester_may_approve ?? existing?.requester_may_approve ?? false
   if (nextRequesterMayApprove && nextApprovalMode !== "sole") {
@@ -254,6 +254,11 @@ export async function updatePaymentRailPolicy(input: UpdatePaymentRailPolicyInpu
     waiver_jurisdiction: "FL",
     updated_by: context.userId,
     ...(!existing ? { created_by: context.userId } : {}),
+    ...(parsed.enabled === true && existing?.enabled !== true
+      ? { reconciliation_monitoring_started_at: new Date().toISOString() }
+      : parsed.enabled === false && existing?.enabled === true
+        ? { reconciliation_monitoring_started_at: null }
+        : {}),
   }
   const { data, error } = await supabase.from("payment_rail_policies").upsert(payload, { onConflict: "org_id" }).select("id,enabled,approval_mode,requester_may_approve").single()
   if (error || !data) throw new Error(`Unable to save payment policy: ${error?.message}`)
