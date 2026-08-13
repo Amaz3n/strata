@@ -13,7 +13,6 @@ import { getCostCodingSettingsAction } from "./actions"
 import { BillingRatesSection } from "./billing-rates-section"
 import { MarkupRulesSection } from "./markup-rules-section"
 
-export const dynamic = "force-dynamic"
 
 const SECTIONS = [
   { key: "codes", label: "Cost codes", icon: Tag },

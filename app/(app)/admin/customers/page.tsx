@@ -13,7 +13,6 @@ import { enterOrgContextAction, setOrganizationStatusAction } from "@/app/(app)/
 import { listActiveSubscriptionPlans } from "@/lib/services/billing"
 import { unwrapAction } from "@/lib/action-result"
 
-export const dynamic = 'force-dynamic'
 
 async function activateCustomerBilling(formData: FormData) {
   "use server"
@@ -48,14 +47,15 @@ async function setOrganizationStatus(formData: FormData) {
 export default async function CustomersPage({
   searchParams,
 }: {
-  searchParams: { [key: string]: string | string[] | undefined }
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>
 }) {
   await requireAnyPermissionGuard(["billing.manage", "platform.billing.manage"])
+  const params = await searchParams
 
-  const search = typeof searchParams.search === 'string' ? searchParams.search : ''
-  const status = typeof searchParams.status === 'string' ? searchParams.status : 'all'
-  const plan = typeof searchParams.plan === 'string' ? searchParams.plan : 'all'
-  const page = typeof searchParams.page === 'string' ? parseInt(searchParams.page) : 1
+  const search = typeof params.search === 'string' ? params.search : ''
+  const status = typeof params.status === 'string' ? params.status : 'all'
+  const plan = typeof params.plan === 'string' ? params.plan : 'all'
+  const page = typeof params.page === 'string' ? parseInt(params.page) : 1
 
   const [{ customers, totalCount, hasNextPage, hasPrevPage }, subscriptionPlans] = await Promise.all([
     getCustomers({

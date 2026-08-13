@@ -3,7 +3,6 @@ import { NextResponse } from "next/server"
 import { isAiSearchEnabledForOrg } from "@/lib/services/ai-search-flags"
 import { requireOrgContext } from "@/lib/services/context"
 
-export const runtime = "nodejs"
 
 // Lets the command bar know whether to surface the "Ask AI" affordances for this org.
 export async function GET() {

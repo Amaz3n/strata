@@ -100,13 +100,18 @@ async function checkPaymentReleaseBacklog(): Promise<WatchdogFinding[]> {
     .lt("scheduled_for", today)
     .limit(100)
   if (error) throw new Error(`Unable to check payment release backlog: ${error.message}`)
-  if ((data ?? []).length === 0) return []
-  return [{
-    code: "payment_release_past_due",
-    severity: "critical",
-    detail: `${(data ?? []).length} approved payment run(s) are past their scheduled release date and still unreleased`,
-    context: { run_ids: (data ?? []).map((row) => row.id).slice(0, 20) },
-  }]
+  const byOrg = new Map<string, string[]>()
+  for (const row of data ?? []) {
+    const ids = byOrg.get(row.org_id) ?? []
+    ids.push(row.id)
+    byOrg.set(row.org_id, ids)
+  }
+  return [...byOrg.entries()].map(([orgId, runIds]) => ({
+    code: "payment_release_past_due" as const,
+    severity: "critical" as const,
+    detail: `${runIds.length} approved payment run(s) are past their scheduled release date and still unreleased`,
+    context: { org_id: orgId, run_ids: runIds.slice(0, 20) },
+  }))
 }
 
 /**
@@ -135,6 +140,14 @@ async function checkReconciliationFreshness(): Promise<WatchdogFinding[]> {
     if ((data ?? []).length < pageSize) break
   }
   const stale = policies.filter((policy) => isPaymentReconciliationStale(policy))
+  if (process.env.FINTECH_PAYMENTS_RECONCILIATION_ENABLED !== "true" && policies.length > 0) {
+    return [{
+      code: RECONCILIATION_INCIDENT_CODE,
+      severity: "critical",
+      detail: "Payment rails are enabled but FINTECH_PAYMENTS_RECONCILIATION_ENABLED is not true; reconciliation is not running.",
+      context: { org_ids: policies.map((policy) => policy.org_id), configuration_missing: true },
+    }]
+  }
   if (stale.length === 0) return []
   return [{
     code: RECONCILIATION_INCIDENT_CODE,
@@ -151,7 +164,9 @@ async function syncReconciliationIncidents(
   const orgIds = Array.isArray(finding?.context.org_ids)
     ? finding.context.org_ids.filter((value): value is string => typeof value === "string")
     : []
-  const detail = `Vendor payment reconciliation has not completed for this organization in ${RECONCILIATION_STALE_HOURS} hours.`
+  const detail = finding?.context.configuration_missing === true
+    ? finding.detail
+    : `Vendor payment reconciliation has not completed for this organization in ${RECONCILIATION_STALE_HOURS} hours.`
   const { data, error } = await supabase.rpc("sync_payment_operations_incidents", {
     p_finding_code: RECONCILIATION_INCIDENT_CODE,
     p_active_org_ids: orgIds,
@@ -168,6 +183,27 @@ async function syncReconciliationIncidents(
       detail,
       context: { org_ids: [row.org_id] },
     }])
+  }
+  return notifications
+}
+
+async function syncTargetedPaymentIncidents(findings: WatchdogFinding[]) {
+  const supabase = createServiceSupabaseClient()
+  const notifications = new Map<string, WatchdogFinding[]>()
+  const active = findings.filter(
+    (finding) => finding.code === "payment_release_past_due" && typeof finding.context.org_id === "string",
+  )
+  const byOrg = new Map(active.map((finding) => [String(finding.context.org_id), finding]))
+  const { data, error } = await supabase.rpc("sync_payment_operations_incidents", {
+    p_finding_code: "payment_release_past_due",
+    p_active_org_ids: [...byOrg.keys()],
+    p_detail: "One or more approved payment runs are past their scheduled release date and remain unreleased.",
+  })
+  if (error) throw new Error(`Unable to sync payment release incidents: ${error.message}`)
+  for (const row of data ?? []) {
+    if (!row.should_notify || typeof row.org_id !== "string") continue
+    const finding = byOrg.get(row.org_id)
+    if (finding) notifications.set(row.org_id, [finding])
   }
   return notifications
 }
@@ -222,7 +258,15 @@ export async function runOpsWatchdog(): Promise<{ findings: WatchdogFinding[] }>
   const criticalByOrg = probes[2].status === "fulfilled"
     ? await syncReconciliationIncidents(reconciliationFinding)
     : new Map<string, WatchdogFinding[]>()
-  await Promise.all(
+  // As with reconciliation, an unavailable backlog probe is not evidence that
+  // yesterday's release incident recovered.
+  const targetedByOrg = probes[1].status === "fulfilled"
+    ? await syncTargetedPaymentIncidents(findings)
+    : new Map<string, WatchdogFinding[]>()
+  for (const [orgId, orgFindings] of targetedByOrg) {
+    criticalByOrg.set(orgId, [...(criticalByOrg.get(orgId) ?? []), ...orgFindings])
+  }
+  const alertWrites = await Promise.allSettled(
     [...criticalByOrg.entries()].map(([orgId, orgFindings]) =>
       recordEvent({
         orgId,
@@ -230,9 +274,13 @@ export async function runOpsWatchdog(): Promise<{ findings: WatchdogFinding[] }>
         entityType: "payment_rail_policy",
         entityId: orgId,
         payload: { findings: orgFindings.map((finding) => ({ code: finding.code, detail: finding.detail })) },
-      }).catch(() => undefined),
+      }),
     ),
   )
+  const failedAlertWrites = alertWrites.filter((result) => result.status === "rejected")
+  if (failedAlertWrites.length > 0) {
+    throw new Error(`Unable to persist ${failedAlertWrites.length} critical payment watchdog alert(s)`)
+  }
 
   return { findings }
 }

@@ -4,7 +4,6 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { SelectionSheetClient } from "@/components/design-studio/selection-sheet"
 import { getSelectionSheet } from "@/lib/services/design-studio"
 
-export const dynamic = "force-dynamic"
 
 interface PageProps {
   params: Promise<{ projectId: string }>

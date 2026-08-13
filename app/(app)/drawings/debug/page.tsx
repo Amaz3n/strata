@@ -10,7 +10,6 @@ import { queueTileGenerationForExistingSheetsAction } from "@/app/(app)/drawings
 
 import { unwrapAction } from "@/lib/action-result"
 
-export const dynamic = 'force-dynamic'
 
 export default async function DrawingsDebugPage() {
   const { supabase, orgId } = await requireOrgContext()

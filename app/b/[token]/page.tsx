@@ -19,7 +19,6 @@ interface BidPortalPageProps {
   params: Promise<{ token: string }>
 }
 
-export const revalidate = 0
 export const metadata = {
   robots: {
     index: false,

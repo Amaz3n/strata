@@ -1,4 +1,5 @@
 import { notFound, redirect } from "next/navigation"
+export const instant = false
 import { getDrawingSheetAction } from "../../actions"
 
 import { unwrapAction } from "@/lib/action-result"

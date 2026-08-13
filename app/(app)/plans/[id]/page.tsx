@@ -20,7 +20,6 @@ import { listChecklistTemplates } from "@/lib/services/inspections"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { listTemplates } from "@/lib/services/schedule"
 
-export const dynamic = "force-dynamic"
 
 export default async function PlanDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params

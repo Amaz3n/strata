@@ -19,7 +19,6 @@ import { cn } from "@/lib/utils"
 import { DeskScopeFilters } from "@/components/production/desk-scope-filters"
 import { resolveProductionDeskScope } from "@/lib/services/production-desk-scope"
 
-export const dynamic = "force-dynamic"
 
 const MODEL_LABELS: Record<string, string> = {
   fixed_price: "Fixed price",

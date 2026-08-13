@@ -68,5 +68,3 @@ async function processAccountingCdc(request: NextRequest) {
 
 export const GET = withCronRun("accounting-process-changes", processAccountingCdc)
 export const POST = GET
-
-export const runtime = "nodejs"

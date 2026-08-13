@@ -114,6 +114,7 @@ const settingsSections: SidebarNavSection[] = [
       { title: "Cost coding", url: "/settings/cost-coding", icon: Tag },
       { title: "Vendor compliance", url: "/settings?tab=compliance", icon: ShieldCheck },
       { title: "Vendor payments", url: "/settings?tab=payments", icon: Wallet, requiredAny: ["payment.release"] },
+      { title: "Payment reconciliation", url: "/payables/reconciliation", icon: FileSpreadsheet, requiredAny: ["payment.reconcile"] },
       { title: "Integrations", url: "/settings?tab=integrations", icon: Link2 },
     ],
   },

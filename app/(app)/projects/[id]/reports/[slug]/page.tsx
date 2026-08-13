@@ -8,7 +8,6 @@ import { ReportView } from "@/components/reports/report-view"
 import { canRunReport, resolveProjectReportScope } from "@/lib/services/report-catalog"
 import { getReportRun, listReportRuns } from "@/lib/services/report-runs"
 
-export const dynamic = "force-dynamic"
 
 interface PageProps {
   params: Promise<{ id: string; slug: string }>

@@ -2,7 +2,6 @@ import { mobileDataResponse, mobileErrorResponse, mobilePageResponse, mobileRequ
 import { requireMobileOrg } from "@/lib/mobile/auth"
 import { createMobileDailyLog, listMobileDailyLogs } from "@/lib/mobile/daily-logs"
 
-export const runtime = "nodejs"
 
 export async function GET(request: Request, { params }: { params: Promise<{ projectId: string }> }) {
   const requestId = mobileRequestId(request)

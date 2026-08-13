@@ -1,4 +1,6 @@
 import { redirect } from "next/navigation"
+import { connection } from "next/server"
+export const instant = false
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>
 
@@ -9,6 +11,7 @@ function firstValue(value: string | string[] | undefined): string | undefined {
 }
 
 export default async function LegacyRfiEmailPreviewPage({ searchParams }: { searchParams: SearchParams }) {
+  await connection()
   const resolvedSearchParams = await searchParams
   const params = new URLSearchParams()
 

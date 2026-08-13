@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation"
+export const instant = false
 
 /**
  * Permalink for a start package — notifications and search link here. The

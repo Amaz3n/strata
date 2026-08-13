@@ -260,7 +260,7 @@ async function resolveTokenContext(
       .from("portal_access_tokens")
       .select(
         `
-        id, org_id, revoked_at,
+        id, org_id, paused_at, revoked_at, expires_at, max_access_count, access_count,
         contact:contacts(full_name, email),
         project:projects(name),
         org:orgs(name)
@@ -268,7 +268,11 @@ async function resolveTokenContext(
       )
       .eq("token_hash", hashPortalToken(token))
       .maybeSingle()
-    if (!data || data.revoked_at) return null
+    if (
+      !data || data.paused_at || data.revoked_at ||
+      (data.expires_at && new Date(data.expires_at) <= new Date()) ||
+      (data.max_access_count != null && Number(data.access_count ?? 0) >= Number(data.max_access_count))
+    ) return null
     const contact = firstRelation(data.contact as any)
     const project = firstRelation(data.project as any)
     const org = firstRelation(data.org as any)
@@ -286,7 +290,7 @@ async function resolveTokenContext(
     .from("bid_access_tokens")
     .select(
       `
-      id, org_id, revoked_at,
+      id, org_id, paused_at, revoked_at, expires_at, max_access_count, access_count,
       bid_invite:bid_invites!bid_access_tokens_org_invite_fk(
         invite_email,
         contact:contacts!bid_invites_org_contact_fk(full_name, email),
@@ -297,7 +301,11 @@ async function resolveTokenContext(
     )
     .eq("token_hash", hashBidToken(token))
     .maybeSingle()
-  if (!data || data.revoked_at) return null
+  if (
+    !data || data.paused_at || data.revoked_at ||
+    (data.expires_at && new Date(data.expires_at) <= new Date()) ||
+    (data.max_access_count != null && Number(data.access_count ?? 0) >= Number(data.max_access_count))
+  ) return null
   const invite = firstRelation(data.bid_invite as any)
   const contact = firstRelation(invite?.contact)
   const bidPackage = firstRelation(invite?.bid_package)

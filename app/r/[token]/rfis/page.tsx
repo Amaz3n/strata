@@ -6,7 +6,6 @@ interface Props {
   params: Promise<{ token: string }>
 }
 
-export const revalidate = 0
 
 export default async function ReviewerRfisPage({ params }: Props) {
   const { token } = await params

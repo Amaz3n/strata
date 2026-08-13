@@ -10,7 +10,6 @@ import { TasksPageClient } from "./tasks-page-client"
 
 import { unwrapAction } from "@/lib/action-result"
 
-export const dynamic = "force-dynamic"
 
 interface TasksPageProps {
   searchParams: Promise<{ project?: string }>

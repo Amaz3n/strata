@@ -2,7 +2,6 @@ import { mobileDataResponse, mobileErrorResponse, mobileRequestId } from "@/lib/
 import { requireMobileOrg } from "@/lib/mobile/auth"
 import { listMobilePaymentRuns } from "@/lib/mobile/payment-runs"
 
-export const runtime = "nodejs"
 
 /**
  * Payment runs waiting on this person.

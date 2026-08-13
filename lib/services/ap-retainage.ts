@@ -61,6 +61,17 @@ export async function listRetainageHoldings(projectId?: string, orgId?: string):
   if (error) throw new Error(`Unable to load retainage holdings: ${error.message}`)
 
   const rows = data ?? []
+  for (const scopedProjectId of new Set(rows.map((row) => row.project_id))) {
+    await requireAuthorization({
+      permission: "bill.read",
+      userId: context.userId,
+      orgId: context.orgId,
+      projectId: scopedProjectId,
+      supabase: context.supabase,
+      resourceType: "project",
+      resourceId: scopedProjectId,
+    })
+  }
   const billIds = rows.map((row) => row.id)
   const { data: waivers } = billIds.length > 0
     ? await supabase.from("lien_waivers").select("bill_id").eq("org_id", context.orgId).eq("waiver_type", "final").eq("status", "signed").in("bill_id", billIds)

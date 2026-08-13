@@ -3,7 +3,6 @@ import { NextResponse } from "next/server"
 import { getAiToolCatalog } from "@/lib/services/ai-search/tool-catalog"
 import { requireOrgContext } from "@/lib/services/context"
 
-export const runtime = "nodejs"
 
 export async function GET() {
   try {

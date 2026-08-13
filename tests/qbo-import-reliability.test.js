@@ -266,7 +266,7 @@ test("QBO purchase credits import as inbound-only expense credits with negative 
     require("node:path").join(__dirname, "../lib/services/job-cost-actuals.ts"),
     "utf8",
   )
-  assert.match(jobCostSource, /source_label: expenseCreditSign\(expense\.metadata\) === -1 \? "project_expense_credit" : "project_expense"/)
+  assert.match(jobCostSource, /source_label:\s*expenseCreditSign\(expense\.metadata\) === -1\s*\? "project_expense_credit"\s*: "project_expense"/)
 })
 
 test("outbound vendor bills preserve job costing without creating billable customer charges", () => {

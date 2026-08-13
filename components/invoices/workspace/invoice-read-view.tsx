@@ -5,7 +5,7 @@ import { format } from "date-fns"
 import { ArrowLeft, Copy, Download, Loader2, MoreHorizontal, Send } from "lucide-react"
 import { toast } from "sonner"
 
-import type { Invoice, InvoiceLienWaiver, InvoiceLienWaiverType, Payment } from "@/lib/types"
+import type { Invoice, InvoiceLienWaiver, InvoiceLienWaiverType, Payment, PaymentReversal } from "@/lib/types"
 import { INVOICE_WAIVER_TYPES, INVOICE_WAIVER_TYPE_LABELS } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import {
@@ -60,6 +60,7 @@ interface InvoiceReadViewProps {
   invoice: Invoice
   link?: string
   payments?: Payment[]
+  reversals?: PaymentReversal[]
   lienWaivers?: InvoiceLienWaiver[]
   builderInfo?: { name?: string | null; email?: string | null; address?: string | null }
   projectName?: string | null
@@ -77,6 +78,7 @@ export function InvoiceReadView({
   invoice,
   link,
   payments,
+  reversals,
   lienWaivers,
   builderInfo,
   projectName,
@@ -245,8 +247,17 @@ export function InvoiceReadView({
     }
   }
 
+  const reversedByPayment = new Map<string, number>()
+  for (const reversal of reversals ?? []) {
+    if (reversal.status === "failed") continue
+    reversedByPayment.set(reversal.payment_id, (reversedByPayment.get(reversal.payment_id) ?? 0) + reversal.amount_cents)
+  }
   const appliedPayments = (payments ?? []).filter((p) => p.status === "succeeded")
-  const totalAppliedCents = appliedPayments.reduce((sum, p) => sum + p.amount_cents, 0)
+  const processingPayments = (payments ?? []).filter((p) => p.status === "processing")
+  const totalAppliedCents = appliedPayments.reduce(
+    (sum, payment) => sum + Math.max(0, payment.amount_cents - (reversedByPayment.get(payment.id) ?? 0)),
+    0,
+  )
   const waivers = lienWaivers ?? []
 
   return (
@@ -331,7 +342,7 @@ export function InvoiceReadView({
           <ArcInvoiceDocument data={documentData} lines={documentLines} width={docWidth} height={docWidth * 1.294} />
         </div>
 
-        {appliedPayments.length > 0 ? (
+        {appliedPayments.length > 0 || processingPayments.length > 0 ? (
           <section className="mx-auto max-w-[820px] space-y-3 border bg-card p-4">
             <div className="flex items-center justify-between">
               <h3 className="microlabel">Payments applied</h3>
@@ -346,7 +357,18 @@ export function InvoiceReadView({
                     {payment.received_at ? format(new Date(payment.received_at), "MMM d, yyyy") : "No date"}
                     {payment.reference ? ` • ${payment.reference}` : ""}
                   </span>
-                  <span className="shrink-0 font-mono font-medium tabular-nums text-success">{formatMoneyFromCents(payment.amount_cents)}</span>
+                  <span className="shrink-0 text-right">
+                    <span className="block font-mono font-medium tabular-nums text-success">
+                      {formatMoneyFromCents(Math.max(0, payment.amount_cents - (reversedByPayment.get(payment.id) ?? 0)))}
+                    </span>
+                    {(reversedByPayment.get(payment.id) ?? 0) > 0 ? <span className="block text-[10px] text-destructive">Reversed {formatMoneyFromCents(reversedByPayment.get(payment.id) ?? 0)}</span> : null}
+                  </span>
+                </div>
+              ))}
+              {processingPayments.map((payment) => (
+                <div key={payment.id} className="flex items-center justify-between gap-4 px-3 py-2.5 text-sm">
+                  <span className="truncate text-xs text-muted-foreground">ACH submitted · waiting for settlement</span>
+                  <span className="shrink-0 font-mono tabular-nums text-warning">{formatMoneyFromCents(payment.amount_cents)}</span>
                 </div>
               ))}
             </div>

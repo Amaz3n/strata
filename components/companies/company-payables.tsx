@@ -48,7 +48,7 @@ export function CompanyPayables({
   const totals = useMemo(() => {
     const billed = rows.reduce((sum, b) => sum + (b.total_cents ?? 0), 0);
     const paid = rows.reduce(
-      (sum, b) => sum + (b.paid_cents ?? (b.status === "paid" ? (b.total_cents ?? 0) : 0)),
+      (sum, b) => sum + (b.paid_cents ?? 0),
       0,
     );
     return { billed, paid };

@@ -2,7 +2,6 @@ import { mobileErrorResponse, mobilePageResponse, mobileRequestId } from "@/lib/
 import { requireMobileOrg } from "@/lib/mobile/auth"
 import { listMobileMyHouses } from "@/lib/mobile/my-houses"
 
-export const runtime = "nodejs"
 
 export async function GET(request: Request) {
   const requestId = mobileRequestId(request)

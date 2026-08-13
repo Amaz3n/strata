@@ -10,7 +10,6 @@ import {
   listTemplateGroupsAction,
 } from "@/app/(app)/drawings/takeoff-actions"
 
-export const dynamic = "force-dynamic"
 
 export default async function TakeoffSettingsPage() {
   const [templatesResult, groupsResult, costCodes, permissionResult] = await Promise.all([

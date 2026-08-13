@@ -3,7 +3,6 @@ import { GateSettingsClient } from "@/components/starts/gate-settings-client"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { listGateDefinitions } from "@/lib/services/starts"
 
-export const dynamic = "force-dynamic"
 
 export default async function StartSettingsPage() {
   const [definitions, permissions] = await Promise.all([listGateDefinitions(), getCurrentUserPermissions()])

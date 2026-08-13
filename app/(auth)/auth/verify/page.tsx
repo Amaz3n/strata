@@ -1,6 +1,8 @@
+import { Suspense } from "react"
 import Link from "next/link"
 
 import { Button } from "@/components/ui/button"
+import { Skeleton } from "@/components/ui/skeleton"
 import { confirmExternalIdentityVerification } from "@/lib/services/external-portal-auth"
 
 export const metadata = {
@@ -15,7 +17,15 @@ interface VerifyPageProps {
  * Confirms an external identity's email. Confirmation is informational — it is
  * not a gate on portal access — so an expired link is a mild message, not an error.
  */
-export default async function ExternalVerifyPage({ searchParams }: VerifyPageProps) {
+export default function ExternalVerifyPage({ searchParams }: VerifyPageProps) {
+  return (
+    <Suspense fallback={<ExternalVerifyShell />}>
+      <ExternalVerifyContent searchParams={searchParams} />
+    </Suspense>
+  )
+}
+
+async function ExternalVerifyContent({ searchParams }: VerifyPageProps) {
   const { token } = await searchParams
   const confirmed = token ? await confirmExternalIdentityVerification(token) : false
 
@@ -35,6 +45,19 @@ export default async function ExternalVerifyPage({ searchParams }: VerifyPagePro
       <Button asChild className="w-full">
         <Link href="/access">Open my workspace</Link>
       </Button>
+    </div>
+  )
+}
+
+function ExternalVerifyShell() {
+  return (
+    <div className="flex flex-col gap-6" aria-busy="true">
+      <div className="flex flex-col items-center gap-2 text-center">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-4 w-72 max-w-full" />
+        <Skeleton className="h-4 w-56 max-w-full" />
+      </div>
+      <Skeleton className="h-10 w-full" />
     </div>
   )
 }

@@ -4,7 +4,6 @@ import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { downloadDrawingPdfObject } from "@/lib/storage/drawings-pdfs-storage"
 
-export const runtime = "nodejs"
 export const maxDuration = 60
 
 /**

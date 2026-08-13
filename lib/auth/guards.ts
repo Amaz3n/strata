@@ -1,4 +1,4 @@
-import { redirect } from "next/navigation"
+import { redirect, unstable_rethrow } from "next/navigation"
 
 import { requireAuth } from "@/lib/auth/context"
 import { requireAnyPermission, requirePermission } from "@/lib/services/permissions"
@@ -18,6 +18,7 @@ export async function requirePermissionGuard(permission: string, orgId?: string)
       userId: user.id,
     })
   } catch (error) {
+    unstable_rethrow(error)
     console.error("Permission guard failed", error)
     redirect("/unauthorized")
   }
@@ -40,11 +41,11 @@ export async function requireAnyPermissionGuard(permissions: string[], orgId?: s
       userId: user.id,
     })
   } catch (error) {
+    unstable_rethrow(error)
     console.error("Permission guard failed", error)
     redirect("/unauthorized")
   }
 }
-
 
 
 

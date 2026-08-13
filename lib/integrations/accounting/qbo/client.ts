@@ -668,6 +668,19 @@ export class QBOClient {
       }))
   }
 
+  async listAllAccounts(): Promise<QBOAccountRef[]> {
+    const query = `SELECT Id, Name, FullyQualifiedName, AccountType FROM Account WHERE Active = true ORDERBY FullyQualifiedName MAXRESULTS 1000`
+    const result = await this.request<QueryAccountResponse>("GET", `query?query=${encodeURIComponent(query)}`)
+    return (result.QueryResponse.Account ?? [])
+      .filter((account) => account.Id && account.Name)
+      .map((account) => ({
+        id: String(account.Id),
+        name: String(account.Name),
+        fullyQualifiedName: account.FullyQualifiedName ? String(account.FullyQualifiedName) : undefined,
+        accountType: account.AccountType ? String(account.AccountType) : undefined,
+      }))
+  }
+
   async listAccountsPayableAccounts(): Promise<QBOAccountRef[]> {
     const query = `SELECT Id, Name, FullyQualifiedName, AccountType FROM Account WHERE AccountType = 'Accounts Payable' AND Active = true ORDERBY Name MAXRESULTS 1000`
     const result = await this.request<QueryAccountResponse>("GET", `query?query=${encodeURIComponent(query)}`)

@@ -6,7 +6,6 @@ import { ReportCatalog } from "@/components/reports/report-catalog"
 import { catalogFor, resolveProjectReportScope } from "@/lib/services/report-catalog"
 import { listReportRuns } from "@/lib/services/report-runs"
 
-export const dynamic = "force-dynamic"
 
 interface PageProps {
   params: Promise<{ id: string }>

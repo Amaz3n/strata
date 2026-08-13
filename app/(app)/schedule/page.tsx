@@ -33,7 +33,6 @@ import "./schedule-gantt.css"
 
 import { unwrapAction } from "@/lib/action-result"
 
-export const dynamic = "force-dynamic"
 
 /* ── Desk doctrine ────────────────────────────────────────────────────────
    The org /schedule desk is a portfolio Gantt. Rows are PROJECTS on one shared

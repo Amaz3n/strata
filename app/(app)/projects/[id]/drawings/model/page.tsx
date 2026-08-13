@@ -8,7 +8,6 @@ import { getOrgProductTier } from "@/lib/services/context"
 import { hasPermission } from "@/lib/services/permissions"
 import { getProjectAction } from "../../actions"
 
-export const dynamic = "force-dynamic"
 
 /**
  * The walkable model of a custom home.

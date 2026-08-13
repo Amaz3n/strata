@@ -6,7 +6,6 @@ import { getWarrantyCostSummary, getWarrantyDefectAnalysis, listWarrantyBackchar
 import { WarrantyDeskClient } from "./warranty-desk-client"
 import { getAmbientDeskContext } from "@/lib/services/desk-context"
 
-export const dynamic = "force-dynamic"
 
 export default function WarrantyDeskPage() {
   return <PageLayout title="Warranty & service" breadcrumbs={[{ label: "Warranty" }]}><Suspense fallback={<div className="space-y-3">{Array.from({ length: 8 }, (_, index) => <Skeleton key={index} className="h-12 w-full" />)}</div>}><WarrantyDeskData /></Suspense></PageLayout>

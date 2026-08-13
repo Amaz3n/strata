@@ -11,6 +11,10 @@ export const updatePaymentRailPolicySchema = z.object({
   per_payment_limit_cents: z.number().int().positive().nullable().optional(),
   per_run_limit_cents: z.number().int().positive().nullable().optional(),
   daily_limit_cents: z.number().int().positive().nullable().optional(),
+  max_inflight_cents: z.number().int().positive().nullable().optional(),
+  return_loss_ceiling_cents: z.number().int().positive().nullable().optional(),
+  payout_hold_hours: z.number().int().min(48).max(720).optional(),
+  new_vendor_hold_hours: z.number().int().min(24).max(720).optional(),
 }).superRefine((value, context) => {
   if (value.requester_may_approve && value.approval_mode === "dual") {
     context.addIssue({
@@ -21,6 +25,12 @@ export const updatePaymentRailPolicySchema = z.object({
   }
   if (value.per_payment_limit_cents && value.per_run_limit_cents && value.per_run_limit_cents < value.per_payment_limit_cents) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["per_run_limit_cents"], message: "Run limit must be at least the per-payment limit" })
+  }
+  if (value.per_run_limit_cents && value.daily_limit_cents && value.daily_limit_cents < value.per_run_limit_cents) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["daily_limit_cents"], message: "Daily limit must be at least the run limit" })
+  }
+  if (value.daily_limit_cents && value.max_inflight_cents && value.max_inflight_cents < value.daily_limit_cents) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["max_inflight_cents"], message: "In-flight exposure limit must be at least the daily limit" })
   }
 })
 
@@ -50,11 +60,12 @@ export type SetPaymentRunApproversInput = z.infer<typeof setPaymentRunApproversS
 export const paymentRunItemSchema = z.object({
   bill_id: z.string().uuid(),
   amount_cents: z.number().int().positive(),
-  retainage_held_cents: z.number().int().min(0).default(0),
   payees: z.array(z.object({
-    payee_kind: z.enum(["primary_vendor", "joint_payee"]),
-    method: z.enum(["ach", "external_check"]),
-    recipient_account_id: z.string().uuid().nullable().optional(),
+    // Arc Pay supports one verified ACH destination today. Joint/external
+    // checks belong to the manual-payment workflow and are not advertised here
+    // until they have their own verification and execution path.
+    payee_kind: z.literal("primary_vendor"),
+    method: z.literal("ach"),
     payee_name: z.string().trim().min(1).max(200),
     amount_cents: z.number().int().positive(),
   })).min(1),
@@ -63,15 +74,6 @@ export const paymentRunItemSchema = z.object({
   if (payeeTotal !== item.amount_cents) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["payees"], message: "Payee amounts must equal the vendor payment amount" })
   }
-  item.payees.forEach((payee, index) => {
-    // Primary-vendor destinations are always resolved from the trusted vendor
-    // relationship on the server. A client-supplied UUID must never be the
-    // authority for where money is sent. Joint payees remain explicit because
-    // they have a separately verified destination.
-    if (payee.method === "ach" && payee.payee_kind === "joint_payee" && !payee.recipient_account_id) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["payees", index, "recipient_account_id"], message: "Joint ACH payees require a verified recipient account" })
-    }
-  })
 })
 
 export const createPaymentRunSchema = z.object({

@@ -34,6 +34,71 @@ export interface CompanyPaymentReadiness {
   invitedAt: string | null
 }
 
+const paymentAccessStatusSchema = z.enum(["active", "suspended", "revoked"])
+
+/** Builder-owned control over whether this vendor may receive this org's money. */
+export async function setCompanyPaymentAccessStatus(
+  input: { companyId: string; status: z.infer<typeof paymentAccessStatusSchema> },
+  orgId?: string,
+) {
+  const parsed = z.object({ companyId: z.string().uuid(), status: paymentAccessStatusSchema }).parse(input)
+  const context = await requireOrgContext(orgId)
+  await requireAnyPermission(["payment.release", "payment.manage_rail"], context)
+  const supabase = createServiceSupabaseClient()
+  const { data: relationship, error } = await supabase
+    .from("vendor_payment_relationships")
+    .select("id,status,recipient_account_id,recipient:payment_recipient_accounts(status,payouts_enabled)")
+    .eq("org_id", context.orgId)
+    .eq("company_id", parsed.companyId)
+    .maybeSingle()
+  if (error || !relationship) throw new Error("Vendor payment relationship was not found")
+  const beforeStatus = relationship.status
+  let nextStatus: string = parsed.status
+  if (parsed.status === "active") {
+    const recipient = Array.isArray(relationship.recipient) ? relationship.recipient[0] : relationship.recipient
+    nextStatus = recipient?.status === "ready" && recipient.payouts_enabled ? "active" : "onboarding"
+  }
+  if (beforeStatus === nextStatus) return { status: nextStatus }
+
+  const now = new Date().toISOString()
+  const { data: updatedRelationship, error: updateError } = await supabase
+    .from("vendor_payment_relationships")
+    .update({
+      status: nextStatus,
+      suspended_at: nextStatus === "suspended" ? now : null,
+      revoked_at: nextStatus === "revoked" ? now : null,
+    })
+    .eq("org_id", context.orgId)
+    .eq("id", relationship.id)
+    .eq("status", beforeStatus)
+    .select("id")
+    .maybeSingle()
+  if (updateError) throw new Error(`Unable to update vendor payment access: ${updateError.message}`)
+  if (!updatedRelationship) {
+    throw new Error("Vendor payment access changed while you were reviewing it. Refresh and try again.")
+  }
+  await Promise.all([
+    recordEvent({
+      orgId: context.orgId,
+      actorId: context.userId,
+      eventType: `vendor_payment_relationship_${nextStatus}`,
+      entityType: "vendor_payment_relationship",
+      entityId: relationship.id,
+      payload: { company_id: parsed.companyId, before_status: beforeStatus, status: nextStatus },
+    }),
+    recordAudit({
+      orgId: context.orgId,
+      actorId: context.userId,
+      action: "update",
+      entityType: "vendor_payment_relationship",
+      entityId: relationship.id,
+      before: { status: beforeStatus },
+      after: { status: nextStatus },
+    }),
+  ])
+  return { status: nextStatus }
+}
+
 const RELATIONSHIP_STATUS_TO_READINESS: Record<string, CompanyPaymentReadinessStatus> = {
   active: "ready",
   onboarding: "verifying",
@@ -149,7 +214,7 @@ async function resolveContactPayoutLink(input: {
 export async function inviteCompanyToPaymentSetup(input: { companyId: string }, orgId?: string) {
   const parsed = z.object({ companyId: z.string().uuid() }).parse(input)
   const context = await requireOrgContext(orgId)
-  await requireAnyPermission(["payment.release", "payments.manage_rail"], context)
+  await requireAnyPermission(["payment.release", "payment.manage_rail"], context)
   if (!(await isVendorPayoutSetupOpen(context.orgId))) {
     throw new Error("Set up vendor payments in Settings before inviting vendors")
   }

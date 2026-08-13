@@ -2,7 +2,6 @@ import { mobileDataResponse, mobileErrorResponse, mobileRequestId } from "@/lib/
 import { requireMobileOrg } from "@/lib/mobile/auth"
 import { listMobileVarianceReasonCodes } from "@/lib/mobile/purchasing"
 
-export const runtime = "nodejs"
 
 export async function GET(request: Request, { params }: { params: Promise<{ organizationId: string }> }) {
   const requestId = mobileRequestId(request)

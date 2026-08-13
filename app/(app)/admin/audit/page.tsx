@@ -6,7 +6,6 @@ import { listPlatformOrganizations } from "@/lib/services/platform-access"
 import { AuditLogClient } from "@/components/admin/audit-log-client"
 import { Skeleton } from "@/components/ui/skeleton"
 
-export const dynamic = "force-dynamic"
 
 interface AuditLogContainerProps {
   search: string
@@ -97,24 +96,25 @@ function AuditLogSkeleton() {
 export default async function AuditPage({
   searchParams,
 }: {
-  searchParams: { [key: string]: string | string[] | undefined }
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>
 }) {
   await requireAnyPermissionGuard(["audit.read", "platform.support.read"])
+  const params = await searchParams
 
-  const search = typeof searchParams.search === "string" ? searchParams.search : ""
-  const action = typeof searchParams.action === "string" ? searchParams.action : "all"
-  const entityType = typeof searchParams.entityType === "string" ? searchParams.entityType : "all"
-  const user = typeof searchParams.user === "string" ? searchParams.user : "all"
-  const orgId = typeof searchParams.orgId === "string" ? searchParams.orgId : "all"
-  const page = typeof searchParams.page === "string" ? parseInt(searchParams.page) : 1
+  const search = typeof params.search === "string" ? params.search : ""
+  const action = typeof params.action === "string" ? params.action : "all"
+  const entityType = typeof params.entityType === "string" ? params.entityType : "all"
+  const user = typeof params.user === "string" ? params.user : "all"
+  const orgId = typeof params.orgId === "string" ? params.orgId : "all"
+  const page = typeof params.page === "string" ? parseInt(params.page) : 1
 
   // Default timePeriod to "7d" if not specified (and no custom start date exists)
-  const timePeriod = typeof searchParams.timePeriod === "string" 
-    ? searchParams.timePeriod 
-    : (searchParams.startDate ? "custom" : "7d")
+  const timePeriod = typeof params.timePeriod === "string"
+    ? params.timePeriod
+    : (params.startDate ? "custom" : "7d")
 
-  let startDate = typeof searchParams.startDate === "string" ? searchParams.startDate : ""
-  let endDate = typeof searchParams.endDate === "string" ? searchParams.endDate : ""
+  let startDate = typeof params.startDate === "string" ? params.startDate : ""
+  let endDate = typeof params.endDate === "string" ? params.endDate : ""
 
   if (timePeriod && timePeriod !== "all" && timePeriod !== "custom" && !startDate) {
     if (timePeriod === "today") {
@@ -165,5 +165,3 @@ export default async function AuditPage({
     </PageLayout>
   )
 }
-
-

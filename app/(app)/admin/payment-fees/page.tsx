@@ -6,7 +6,6 @@ import {
   listPaymentFeePolicyOrganizations,
 } from "@/lib/services/payment-fee-policies"
 
-export const dynamic = "force-dynamic"
 
 export default async function PaymentFeesPage() {
   await requirePermissionGuard("platform.billing.manage")

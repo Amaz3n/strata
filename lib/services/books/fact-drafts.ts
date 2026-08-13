@@ -1,16 +1,21 @@
-import { SYSTEM_ACCOUNT_CODES } from "@/lib/services/books/chart-of-accounts"
+import { SYSTEM_ACCOUNT_CODES } from "@/lib/services/books/chart-of-accounts";
 import {
   postBillPayment,
   postClosingInvoice,
+  postCustomerDepositApplication,
+  postCustomerDepositReceipt,
+  postCustomerDepositReversal,
   postCustomerInvoice,
   postExpense,
+  postExpenseFromCostLines,
   postInvoicePayment,
   postLaborCost,
   postPaymentReversal,
+  postReceivableAdjustment,
   postRetainageRelease,
   postVendorBillFromCostLines,
-} from "@/lib/services/books/posting-rules"
-import type { JournalEntryDraft } from "@/lib/services/books/types"
+} from "@/lib/services/books/posting-rules";
+import type { JournalEntryDraft } from "@/lib/services/books/types";
 
 /**
  * The one place a stored accounting fact becomes a journal draft.
@@ -20,28 +25,58 @@ import type { JournalEntryDraft } from "@/lib/services/books/types"
  * copy of itself, and the two would drift the first time a posting rule changed.
  */
 
-/** Descriptive fields that must not make a fact look economically revised. */
-const NON_ECONOMIC_KEYS = ["memo"] as const
+/**
+ * Economic fields are allowlisted per source.
+ *
+ * A denylist makes every future payload field economic by accident. That turns
+ * harmless integration metadata into a reversal/repost, which is especially
+ * dangerous in parallel mode where the external adapter adds fields over time.
+ */
+const ECONOMIC_KEYS_BY_SOURCE: Record<string, readonly string[]> = {
+  vendor_bill: [
+    "total_cents",
+    "use_tax_accrued_cents",
+    "retainage_cents",
+    "project_id",
+    "company_id",
+    "cost_lines",
+  ],
+  retainage_release: ["amount_cents", "side", "project_id", "company_id"],
+  invoice: ["total_cents", "tax_cents", "retainage_cents", "project_id", "revenue_basis"],
+  invoice_payment: ["amount_cents", "gross_cents", "fee_cents", "project_id"],
+  customer_deposit_receipt: ["amount_cents", "gross_cents", "fee_cents", "project_id"],
+  customer_deposit_application: ["amount_cents", "project_id", "deposit_payment_id"],
+  customer_deposit_reversal: ["amount_cents", "project_id"],
+  bill_payment: ["amount_cents", "fee_cents", "discount_cents", "project_id"],
+  expense: ["amount_cents", "project_id", "vendor_company_id", "cost_lines"],
+  payment_reversal: ["amount_cents", "side", "project_id"],
+  receivable_adjustment: ["amount_cents", "tax_cents", "adjustment_type", "project_id", "revenue_basis"],
+  labor_cost: ["amount_cents", "project_id"],
+  retirement: ["retired", "retired_source_version"],
+};
 
-export function hashableFactPayload(payload: Record<string, unknown>) {
-  const economic: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(payload)) {
-    if ((NON_ECONOMIC_KEYS as readonly string[]).includes(key)) continue
-    economic[key] = value
-  }
-  return economic
+export function hashableFactPayload(
+  sourceType: string,
+  payload: Record<string, unknown>,
+) {
+  const keys = ECONOMIC_KEYS_BY_SOURCE[sourceType];
+  if (!keys)
+    throw new Error(`No economic fact allowlist exists for ${sourceType}`);
+  const economic: Record<string, unknown> = {};
+  for (const key of keys) if (key in payload) economic[key] = payload[key];
+  return economic;
 }
 
 export type FactCostLine = {
-  amount_cents: number
-  project_id: string | null
-  description?: string
+  amount_cents: number;
+  project_id: string | null;
+  description?: string;
   /** Arc Books chart code selected on the payable line, when one was chosen. */
-  account_code?: string
-}
+  account_code?: string;
+};
 
 function compareText(left: string, right: string) {
-  return left < right ? -1 : left > right ? 1 : 0
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 /**
@@ -61,11 +96,11 @@ function compareText(left: string, right: string) {
 export function sortFactCostLines(lines: FactCostLine[]): FactCostLine[] {
   return [...lines].sort(
     (left, right) =>
-      compareText(left.project_id ?? "", right.project_id ?? "")
-      || compareText(left.account_code ?? "", right.account_code ?? "")
-      || compareText(left.description ?? "", right.description ?? "")
-      || left.amount_cents - right.amount_cents,
-  )
+      compareText(left.project_id ?? "", right.project_id ?? "") ||
+      compareText(left.account_code ?? "", right.account_code ?? "") ||
+      compareText(left.description ?? "", right.description ?? "") ||
+      left.amount_cents - right.amount_cents,
+  );
 }
 
 /**
@@ -79,14 +114,14 @@ export function sortFactCostLines(lines: FactCostLine[]): FactCostLine[] {
  * later pass instead of being reversed again — and what tells the rebuild drill
  * that "no draft" is the correct answer rather than an unsupported fact kind.
  */
-export const RETIRED_FACT_KIND_SUFFIX = ".retired"
+export const RETIRED_FACT_KIND_SUFFIX = ".retired";
 
 export function retiredFactKind(sourceType: string) {
-  return `${sourceType}${RETIRED_FACT_KIND_SUFFIX}`
+  return `${sourceType}${RETIRED_FACT_KIND_SUFFIX}`;
 }
 
 export function isRetiredFactKind(factKind: string) {
-  return factKind.endsWith(RETIRED_FACT_KIND_SUFFIX)
+  return factKind.endsWith(RETIRED_FACT_KIND_SUFFIX);
 }
 
 /**
@@ -95,20 +130,22 @@ export function isRetiredFactKind(factKind: string) {
  * — and it must differ from every other version so a restored source supersedes
  * the retirement rather than matching it and staying un-posted.
  */
-export function retirementFactPayload(retiredSourceVersion: number): Record<string, unknown> {
-  return { retired: true, retired_source_version: retiredSourceVersion }
+export function retirementFactPayload(
+  retiredSourceVersion: number,
+): Record<string, unknown> {
+  return { retired: true, retired_source_version: retiredSourceVersion };
 }
 
 export function factSourceKey(sourceType: string, sourceId: string) {
-  return `${sourceType}:${sourceId}`
+  return `${sourceType}:${sourceId}`;
 }
 
 export type RetirableFact = {
-  sourceType: string
-  sourceId: string
-  sourceVersion: number
-  factKind: string
-}
+  sourceType: string;
+  sourceId: string;
+  sourceVersion: number;
+  factKind: string;
+};
 
 /**
  * Which of the latest facts no longer have a qualifying source.
@@ -121,50 +158,61 @@ export function selectFactsToRetire<T extends RetirableFact>(
   liveSourceKeys: ReadonlySet<string>,
 ): T[] {
   return latestFactPerSource.filter(
-    (fact) => !isRetiredFactKind(fact.factKind) && !liveSourceKeys.has(factSourceKey(fact.sourceType, fact.sourceId)),
-  )
+    (fact) =>
+      !isRetiredFactKind(fact.factKind) &&
+      !liveSourceKeys.has(factSourceKey(fact.sourceType, fact.sourceId)),
+  );
 }
 
 function textValue(value: unknown, fallback = "") {
-  return typeof value === "string" && value.length > 0 ? value : fallback
+  return typeof value === "string" && value.length > 0 ? value : fallback;
 }
 
 function centsValue(value: unknown) {
-  return typeof value === "number" && Number.isSafeInteger(value) ? value : 0
+  return typeof value === "number" && Number.isSafeInteger(value) ? value : 0;
 }
 
 function optionalId(value: unknown) {
-  return typeof value === "string" && value.length > 0 ? value : undefined
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function costLinesValue(value: unknown, fallbackCents: number, fallbackProjectId?: string) {
+function costLinesValue(
+  value: unknown,
+  fallbackCents: number,
+  fallbackProjectId?: string,
+) {
   if (!Array.isArray(value) || value.length === 0) {
-    return [{ amountCents: fallbackCents, projectId: fallbackProjectId }]
+    return [{ amountCents: fallbackCents, projectId: fallbackProjectId }];
   }
   return value.map((entry) => {
-    const row = entry && typeof entry === "object" ? (entry as Record<string, unknown>) : {}
+    const row =
+      entry && typeof entry === "object"
+        ? (entry as Record<string, unknown>)
+        : {};
     return {
       amountCents: centsValue(row.amount_cents),
-      accountCode: typeof row.account_code === "string" ? row.account_code : undefined,
+      accountCode:
+        typeof row.account_code === "string" ? row.account_code : undefined,
       projectId: optionalId(row.project_id) ?? fallbackProjectId,
-      description: typeof row.description === "string" ? row.description : undefined,
-    }
-  })
+      description:
+        typeof row.description === "string" ? row.description : undefined,
+    };
+  });
 }
 
 export type FactDraftInput = {
-  sourceType: string
-  sourceId: string
-  accountingDate: string
-  payload: Record<string, unknown>
-  sourceVersion: number
-  projectionVersion: number
-  policyVersion: number
-}
+  sourceType: string;
+  sourceId: string;
+  accountingDate: string;
+  payload: Record<string, unknown>;
+  sourceVersion: number;
+  projectionVersion: number;
+  policyVersion: number;
+};
 
 export function draftFromFact(input: FactDraftInput): JournalEntryDraft | null {
-  const row = input.payload
-  const projectId = optionalId(row.project_id)
+  const row = input.payload;
+  const projectId = optionalId(row.project_id);
   const common = {
     id: input.sourceId,
     date: input.accountingDate,
@@ -172,18 +220,19 @@ export function draftFromFact(input: FactDraftInput): JournalEntryDraft | null {
     projectionVersion: input.projectionVersion,
     policyVersion: input.policyVersion,
     projectId,
-  }
+  };
 
   if (input.sourceType === "vendor_bill") {
-    const grossCents = centsValue(row.total_cents)
+    const grossCents = centsValue(row.total_cents);
     return postVendorBillFromCostLines({
       ...common,
       companyId: optionalId(row.company_id),
       memo: textValue(row.memo, "Vendor bill"),
       grossCents,
+      useTaxCents: centsValue(row.use_tax_accrued_cents),
       retainageCents: centsValue(row.retainage_cents),
       costLines: costLinesValue(row.cost_lines, grossCents, projectId),
-    })
+    });
   }
 
   if (input.sourceType === "retainage_release") {
@@ -196,17 +245,17 @@ export function draftFromFact(input: FactDraftInput): JournalEntryDraft | null {
       memo: textValue(row.memo, "Retainage release"),
       amountCents: centsValue(row.amount_cents),
       side: row.side === "receivable" ? "receivable" : "payable",
-    })
+    });
   }
 
   if (input.sourceType === "invoice") {
-    const netCents = centsValue(row.total_cents)
-    const retainageCents = centsValue(row.retainage_cents)
-    const memo = textValue(row.memo, "Invoice")
+    const netCents = centsValue(row.total_cents);
+    const retainageCents = centsValue(row.retainage_cents);
+    const memo = textValue(row.memo, "Invoice");
     if (row.revenue_basis === "closing") {
       // Closing-basis sales debit AR for the whole amount with no retainage split, so
       // they post the net — the amount actually receivable.
-      return postClosingInvoice({ ...common, memo, grossCents: netCents })
+      return postClosingInvoice({ ...common, memo, grossCents: netCents, taxCents: centsValue(row.tax_cents) });
     }
     // Unlike a vendor bill, an invoice's stored total is already NET of retainage (the
     // hold is a negative invoice line). `postCustomerInvoice` splits gross into
@@ -216,8 +265,9 @@ export function draftFromFact(input: FactDraftInput): JournalEntryDraft | null {
       ...common,
       memo,
       grossCents: netCents + retainageCents,
+      taxCents: centsValue(row.tax_cents),
       retainageCents,
-    })
+    });
   }
 
   if (input.sourceType === "invoice_payment") {
@@ -225,12 +275,50 @@ export function draftFromFact(input: FactDraftInput): JournalEntryDraft | null {
       ...common,
       memo: textValue(row.memo, "Customer payment"),
       amountCents: centsValue(row.amount_cents),
+      grossCents: centsValue(row.gross_cents) || centsValue(row.amount_cents),
       // Processor and platform fees come out of the deposit before it lands, so
       // cash is debited net and the fee expensed — the same split the vendor
       // payment already makes. The projector has always carried `fee_cents` in
       // the hashed payload; ignoring it here debited cash for the gross.
       feeCents: centsValue(row.fee_cents),
-    })
+    });
+  }
+
+  if (input.sourceType === "receivable_adjustment") {
+    return postReceivableAdjustment({
+      ...common,
+      memo: textValue(row.memo, "Receivable adjustment"),
+      amountCents: centsValue(row.amount_cents),
+      taxCents: centsValue(row.tax_cents),
+      adjustmentType: row.adjustment_type === "write_off" ? "write_off" : "credit_memo",
+      revenueBasis: row.revenue_basis === "closing" ? "closing" : "percentage_of_completion",
+    });
+  }
+
+  if (input.sourceType === "customer_deposit_receipt") {
+    return postCustomerDepositReceipt({
+      ...common,
+      memo: textValue(row.memo, "Customer deposit received"),
+      amountCents: centsValue(row.amount_cents),
+      grossCents: centsValue(row.gross_cents) || centsValue(row.amount_cents),
+      feeCents: centsValue(row.fee_cents),
+    });
+  }
+
+  if (input.sourceType === "customer_deposit_application") {
+    return postCustomerDepositApplication({
+      ...common,
+      memo: textValue(row.memo, "Customer deposit applied"),
+      amountCents: centsValue(row.amount_cents),
+    });
+  }
+
+  if (input.sourceType === "customer_deposit_reversal") {
+    return postCustomerDepositReversal({
+      ...common,
+      memo: textValue(row.memo, "Customer deposit refunded"),
+      amountCents: centsValue(row.amount_cents),
+    });
   }
 
   if (input.sourceType === "bill_payment") {
@@ -240,29 +328,38 @@ export function draftFromFact(input: FactDraftInput): JournalEntryDraft | null {
       amountCents: centsValue(row.amount_cents),
       feeCents: centsValue(row.fee_cents),
       discountCents: centsValue(row.discount_cents),
-    })
+    });
   }
 
   if (input.sourceType === "expense") {
-    return postExpense({
-      ...common,
-      companyId: optionalId(row.vendor_company_id),
-      memo: textValue(row.memo, "Expense"),
-      amountCents: centsValue(row.amount_cents),
-      // A project-scoped expense is job cost and belongs in the same account the
-      // subledger reports it under; only overhead lands in other expense.
-      expenseAccountCode: projectId ? SYSTEM_ACCOUNT_CODES.jobCosts : SYSTEM_ACCOUNT_CODES.otherExpense,
-    })
+    const amountCents = centsValue(row.amount_cents);
+    const costLines = costLinesValue(row.cost_lines, amountCents, projectId);
+    return projectId || costLines.some((line) => line.projectId)
+      ? postExpenseFromCostLines({
+          ...common,
+          companyId: optionalId(row.vendor_company_id),
+          memo: textValue(row.memo, "Expense"),
+          amountCents,
+          costLines,
+        })
+      : postExpense({
+          ...common,
+          companyId: optionalId(row.vendor_company_id),
+          memo: textValue(row.memo, "Expense"),
+          amountCents,
+          expenseAccountCode: SYSTEM_ACCOUNT_CODES.otherExpense,
+        });
   }
 
   if (input.sourceType === "payment_reversal") {
-    const side = row.side === "bill_payment" ? "bill_payment" : "invoice_payment"
+    const side =
+      row.side === "bill_payment" ? "bill_payment" : "invoice_payment";
     return postPaymentReversal({
       ...common,
       memo: textValue(row.memo, "Payment reversal"),
       amountCents: centsValue(row.amount_cents),
       side,
-    })
+    });
   }
 
   if (input.sourceType === "labor_cost") {
@@ -270,8 +367,8 @@ export function draftFromFact(input: FactDraftInput): JournalEntryDraft | null {
       ...common,
       memo: textValue(row.memo, "Field labor"),
       amountCents: centsValue(row.amount_cents),
-    })
+    });
   }
 
-  return null
+  return null;
 }

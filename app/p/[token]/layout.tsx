@@ -1,7 +1,8 @@
-import type { ReactNode } from "react"
+import { Suspense, type ReactNode } from "react"
 import { notFound } from "next/navigation"
 
 import { PortalShell } from "@/components/portal/shell/portal-shell"
+import { PortalShellSkeleton } from "@/components/portal/shell/portal-skeleton"
 import { buildClientPortalNav } from "@/components/portal/shell/portal-nav-items"
 import { resolvePortalGate } from "@/lib/portal/gate"
 import { getPortalFloorplanModel } from "@/lib/services/floorplan-models"
@@ -19,10 +20,23 @@ export const metadata = {
   },
 }
 
-export const revalidate = 0
+// A fabricated build token cannot pass the portal gate. Validate this Instant
+// shell in development when a real shared link supplies its access context.
+export const instant = {
+  unstable_disableBuildValidation: true,
+}
+
 
 /** Gates once and renders the chrome once for every page under `/p/[token]`. */
-export default async function ClientPortalLayout({ children, params }: ClientPortalLayoutProps) {
+export default function ClientPortalLayout(props: ClientPortalLayoutProps) {
+  return (
+    <Suspense fallback={<PortalShellSkeleton />}>
+      <ClientPortalLayoutContent {...props} />
+    </Suspense>
+  )
+}
+
+async function ClientPortalLayoutContent({ children, params }: ClientPortalLayoutProps) {
   const { token } = await params
 
   const gate = await resolvePortalGate({

@@ -3,7 +3,6 @@ import { NextRequest, NextResponse } from "next/server"
 import { createTilesCookieResponse, isTilesCookieConfigured } from "@/lib/drawings-tiles-cookie"
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
 
-export const runtime = "nodejs"
 
 /**
  * Mints the same signed `arc_tiles` cookie the authed app route mints, but for

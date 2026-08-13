@@ -35,6 +35,23 @@ export function calendarDaysBetween(start: string, end: string) {
   return Math.max(0, Math.round((Date.parse(`${end}T00:00:00.000Z`) - Date.parse(`${start}T00:00:00.000Z`)) / DAY_MS))
 }
 
+export function releaseSlotVariance({
+  weekStart,
+  today,
+  target,
+  released,
+  targeted,
+}: {
+  weekStart: string
+  today: string
+  target: number
+  released: number
+  targeted: number
+}) {
+  const currentWeek = mondayOfIsoWeek(today)
+  return (weekStart <= currentWeek ? released : targeted) - target
+}
+
 export function scheduleDigestKey(companyId: string, projectId: string) {
   return `${companyId}:${projectId}`
 }

@@ -3,7 +3,6 @@ import { requireMobileOrg } from "@/lib/mobile/auth"
 import { runWithServiceOrgContext } from "@/lib/services/context"
 import { listWarrantyTechVisits } from "@/lib/services/warranty"
 
-export const runtime = "nodejs"
 
 export async function GET(request: Request) {
   const requestId = mobileRequestId(request)

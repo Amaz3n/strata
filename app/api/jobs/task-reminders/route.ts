@@ -5,7 +5,6 @@ import { withCronRun } from "@/lib/services/job-runs"
 import { getOrgSenderEmail, renderStandardEmailLayout, sendEmail } from "@/lib/services/mailer"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
-export const runtime = "nodejs"
 
 const APP_URL = (process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com").replace(/\/$/, "")
 const BATCH_LIMIT = 200

@@ -20,9 +20,82 @@ the human. Each phase gate is a human decision.
 `payments`/`disbursements` data), `docs/plans/platform-foundations-gameplan.md` WS-T2
 (temporal tables — Books' as-of queries ride it).
 
-> **Reading order:** Part I is the audited status of the shipped phases and their
-> remediation backlog. Part II (C1–C4) is the new work, and **C1 is a hard
-> prerequisite for everything else in this document.**
+## 2026-08-12 release-hardening implementation record
+
+The architectural review was validated against the live code rather than accepted
+as a checklist. Its core diagnosis was correct. The following defects are now
+implemented in application code and covered by the financial regression suite:
+
+- reversals are one atomic, idempotent database operation and set the original to
+  `reversed`; posted entries cannot acquire lines after posting;
+- close and operational posting serialize on the accounting-period row;
+- projection uses a watermark per source family, detects lifecycle exits on
+  incremental passes, lets full passes detect deletions, and re-reads after a fact
+  insertion race;
+- fact hashes use economic-field allowlists, child cost/release edits touch their
+  parent cursor, and only Arc Books GL mappings can override a posting account;
+- direct-paid project expenses post from job-cost lines, preserving project and
+  account grain, and project overrides are restricted to COGS accounts;
+- payment creation and provider/fee detail persistence share one transaction;
+- shadow-to-parallel promotion is governed and attested; the closed-period external
+  summary mirror now has an operator-facing caller;
+- Books pages use section-scoped loaders, exact cents, dollar inputs, permission-
+  gated controls, searchable account selectors, validated trial-balance paste,
+  explicit audit reasons, visible tax limitations, statement export/print paths,
+  construction-report links, a capped/disclosed job-cost detail report, and visible
+  truncation for bank queues/registers;
+- Books-off payables use the ledger-authority resolver; disconnecting an accounting
+  connection removes its orphan entity routes; caller-less policy/mirror/fact code
+  was removed.
+
+Database invariants were staged in
+`20260812120755_books_release_hardening.sql` and applied to production through
+Supabase MCP with explicit authorization on 2026-08-12 ET. Atomic reversal,
+serialized close, child cursor triggers, and atomic payment-detail writes are now
+present in the production schema; organization activation still requires the
+release runbook gates.
+
+### 2026-08-12 sole-ledger completion record
+
+The implementation has now moved beyond release hardening into the operational
+surface required to replace a generic accounting GL for the supported customer
+profile. See
+[`arc-books-sole-ledger-release.md`](./arc-books-sole-ledger-release.md) for the
+release boundary, operator flow, verification evidence, migration order, and
+production activation gates.
+
+Implemented after the architectural review:
+
+- manual bank-account creation and CSV/TSV/OFX statement ingestion, GL mapping,
+  deduplication, revision history, and a settlement-aware 1010 clearing flow;
+- a governed external-chart mapping screen, parser-driven trial-balance
+  comparisons, shadow-to-parallel promotion, closed-period mirrors, and a
+  least-privilege independent reviewer role;
+- customer-deposit receipt, application, refund, availability validation, and a
+  blocking liability-control tie-out;
+- debt and fixed-asset registers with atomic journal/event posting, depreciation,
+  disposal, and blocking GL control tie-outs;
+- tax jurisdictions on receivables/payables, purchase use-tax accrual allocated
+  deterministically through job cost, filing evidence, and 1099 readiness;
+- complete taxpayer IDs stored and rotated only in Supabase Vault, with ordinary
+  tables, UI, reports, exports, events, and audit records limited to last-four and
+  verification state;
+- maker-checker adjusting journals, pending-proposal close blocking, greenfield
+  sole-ledger launch, close checks for missing depreciation/tax jurisdiction, and
+  complete operational export manifests;
+- exact-cents daily-driver surfaces for WIP, aging, job cost, statements,
+  registers, deposits, tax, bank review, and period close.
+
+The original paragraph above names only the first staged migration and is retained
+as the historical release-hardening record. The complete applied migration train,
+including the post-apply advisor and privilege hardening migrations, is listed in
+the sole-ledger release document. Application was performed only after the user
+provided the required explicit production authorization.
+
+> **Reading order:** Part I and the detailed C-sections preserve the chronological
+> audit record, so some inline status labels describe what was true on 2026-08-08.
+> The 2026-08-12 completion record above and the sole-ledger release document are
+> authoritative for current release status and remaining activation gates.
 
 ---
 
@@ -1096,7 +1169,7 @@ no financial data. See the C1 Acceptance section.
 
 ---
 
-## Phase C3 — Finish the provider-neutral system — **1, 2, 3, 5 DONE 2026-08-08; 4 open**
+## Phase C3 — Finish the provider-neutral system — **historical status; C3.4 remains second-provider scope**
 
 ### What this is
 The interface is genuinely neutral; everything outward from it is not. Adding a second
@@ -1178,7 +1251,7 @@ What stands between "a correct ledger exists" and "a builder can run their compa
 it." Sequenced *after* C1 — drill-down into a P&L showing zero revenue only makes a
 wrong number more inspectable.
 
-### C4.1 — Statements as a workspace surface — **BUILT 2026-08-08; not yet seen in a browser**
+### C4.1 — Statements as a workspace surface — **BUILT; authenticated production QA remains an activation gate**
 
 `/books/statements` is a real section: `components/books/books-statements.tsx` plus the
 drill-down in `components/books/account-activity-sheet.tsx`, fed by
@@ -1415,7 +1488,13 @@ re-introduce it by moving that loader back.
    returns `[]` when `gl_account_id` is null, so a misconfigured account looks identical
    to one with no matches.
 
-### C4.5 — The compliance tail — **3 DONE 2026-08-08; 1 and 2 are decision-blocked, not engineering-blocked**
+### C4.5 — The compliance tail — **historical analysis; all three implemented by 2026-08-12**
+
+The original analysis below is retained to document why full TIN storage and typed
+tax inputs were initially deferred. The current implementation resolves both:
+service-only Vault functions store/rotate complete TINs while the product retains
+only last-four, and typed jurisdictions plus payable use-tax inputs feed the tax
+register, job-cost ledger, customer billing, and close gates.
 
 3. ~~**Guided "Start Books on `<date>`".**~~ **DONE.**
    `components/books/opening-balances-wizard.tsx` replaces a textarea that wanted
@@ -1470,7 +1549,7 @@ convincing machinery with no inputs.**
    "history stays in your old system" explainer at that surface. Never attempt full
    historical migration.
 
-### C4.6 — Definition-of-done sweep
+### C4.6 — Definition-of-done sweep — **code-complete; real-data browser QA is an activation gate**
 Empty states are sparse (five in a 1,500-line client; the journal list, chart of
 accounts, and bank transaction register have none). CLAUDE.md requires empty, loading,
 error, and dark on every view — Books does not currently clear its own bar.

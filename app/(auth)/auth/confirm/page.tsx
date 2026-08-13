@@ -10,6 +10,12 @@ interface ConfirmPageProps {
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>
 }
 
+// A build sample cannot contain a live one-time auth code. Keep the route
+// Instant Navigation-enabled and validate it in dev when a real link is used.
+export const instant = {
+  unstable_disableBuildValidation: true,
+}
+
 export default async function ConfirmPage({ searchParams }: ConfirmPageProps) {
   const resolvedSearchParams = await searchParams
   const code = typeof resolvedSearchParams?.code === "string" ? resolvedSearchParams.code : null

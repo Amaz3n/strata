@@ -169,7 +169,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ received: true })
     }
 
-    if (domainEvent.type === "payment_succeeded") {
+    if (domainEvent.type === "payment_succeeded" || domainEvent.type === "payment_processing") {
       const actorUserId = resolveActorUserId(domainEvent.metadata)
       if (actorUserId && domainEvent.org_id) {
         const decision = await authorize({
@@ -203,18 +203,7 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // Provider payment ids are globally unique, so this was already correct in
-      // practice — but "every query scoped by org_id" is not a heuristic, and a
-      // service-role client is exactly where the habit has to hold.
-      const { data: existing } = await supabase
-        .from("payments")
-        .select("id")
-        .eq("org_id", domainEvent.org_id)
-        .eq("provider_payment_id", domainEvent.provider_payment_id)
-        .maybeSingle()
-
-      if (!existing) {
-        await recordPayment(
+      await recordPayment(
           {
             invoice_id: domainEvent.invoice_id,
             amount_cents: domainEvent.amount_cents,
@@ -222,7 +211,7 @@ export async function POST(request: NextRequest) {
             method: domainEvent.method as "ach" | "card" | "wire" | "check" | undefined,
             provider: "stripe",
             provider_payment_id: domainEvent.provider_payment_id,
-            status: "succeeded",
+            status: domainEvent.type === "payment_processing" ? "processing" : "succeeded",
             fee_cents: domainEvent.fee_cents,
             idempotency_key: domainEvent.provider_payment_id,
             metadata: domainEvent.metadata,
@@ -230,12 +219,6 @@ export async function POST(request: NextRequest) {
           domainEvent.org_id,
         )
 
-        await supabase.from("outbox").insert({
-          org_id: domainEvent.org_id,
-          job_type: "payment_succeeded",
-          payload: domainEvent,
-        })
-      }
     }
 
     if (domainEvent.type === "payment_reversed") {
@@ -348,6 +331,23 @@ export async function POST(request: NextRequest) {
       let failedIntents = supabase.from("payment_intents").update({ status: "failed" }).eq("provider_intent_id", domainEvent.provider_payment_id)
       if (failedOrgId) failedIntents = failedIntents.eq("org_id", failedOrgId)
       await failedIntents
+      await supabase
+        .from("invoice_payment_reservations")
+        .update({ status: "canceled", updated_at: new Date().toISOString() })
+        .eq("provider_intent_id", domainEvent.provider_payment_id)
+        .eq("status", "active")
+      const { data: failedPayment } = await supabase
+        .from("payments")
+        .update({ status: "failed", updated_at: new Date().toISOString() })
+        .eq("provider_payment_id", domainEvent.provider_payment_id)
+        .select("org_id,invoice_id")
+        .maybeSingle()
+      if (failedPayment?.org_id && failedPayment.invoice_id) {
+        await supabase.rpc("recalc_invoice_balance_atomic", {
+          p_org_id: failedPayment.org_id,
+          p_invoice_id: failedPayment.invoice_id,
+        })
+      }
     }
 
     await supabase

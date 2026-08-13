@@ -821,6 +821,74 @@ function extractLinkedInvoiceQboIds(payment: QBOPaymentSnapshot | null) {
   return Array.from(invoiceQboIds)
 }
 
+async function reverseDeletedQboPayment(params: {
+  supabase: ServiceClient
+  orgId: string
+  connectionId: string
+  qboPaymentId: string
+}) {
+  const { data: mappings, error: mappingError } = await params.supabase
+    .from("accounting_sync_records")
+    .select("entity_id")
+    .eq("org_id", params.orgId)
+    .eq("connection_id", params.connectionId)
+    .eq("entity_type", "payment")
+    .eq("external_id", params.qboPaymentId)
+  if (mappingError) throw new Error(mappingError.message)
+
+  const paymentIds = Array.from(new Set((mappings ?? []).map((row) => String(row.entity_id)).filter(Boolean)))
+  if (paymentIds.length === 0) return { reversed: 0, invoiceIds: [] as string[] }
+  const { data: payments, error: paymentError } = await params.supabase
+    .from("payments")
+    .select("id, project_id, invoice_id, amount_cents, status")
+    .eq("org_id", params.orgId)
+    .in("id", paymentIds)
+  if (paymentError) throw new Error(paymentError.message)
+
+  const invoiceIds = new Set<string>()
+  let reversed = 0
+  for (const payment of payments ?? []) {
+    if (!payment.invoice_id || !["succeeded", "completed", "paid"].includes(String(payment.status))) continue
+    const providerReversalId = `qbo-delete:${params.qboPaymentId}:${payment.id}`
+    const { error: reversalError } = await params.supabase.from("payment_reversals").upsert(
+      {
+        org_id: params.orgId,
+        project_id: payment.project_id ?? null,
+        invoice_id: payment.invoice_id,
+        payment_id: payment.id,
+        amount_cents: Number(payment.amount_cents),
+        reversal_type: "correction",
+        status: "succeeded",
+        provider_reversal_id: providerReversalId,
+        reason: "Payment deleted in QuickBooks",
+        metadata: { source: "qbo_webhook", qbo_payment_id: params.qboPaymentId },
+        occurred_at: new Date().toISOString(),
+      },
+      { onConflict: "org_id,provider_reversal_id" },
+    )
+    if (reversalError) throw new Error(reversalError.message)
+    const { error: recalcError } = await params.supabase.rpc("recalc_invoice_balance_atomic", {
+      p_org_id: params.orgId,
+      p_invoice_id: payment.invoice_id,
+    })
+    if (recalcError) throw new Error(recalcError.message)
+    invoiceIds.add(String(payment.invoice_id))
+    reversed += 1
+    await recordEvent({
+      orgId: params.orgId,
+      eventType: "payment_reversed_from_qbo",
+      entityType: "payment",
+      entityId: String(payment.id),
+      payload: {
+        invoice_id: payment.invoice_id,
+        amount_cents: Number(payment.amount_cents),
+        qbo_payment_id: params.qboPaymentId,
+      },
+    })
+  }
+  return { reversed, invoiceIds: Array.from(invoiceIds) }
+}
+
 async function markEventProcessed(
   supabase: ServiceClient,
   eventId: string,
@@ -1122,6 +1190,44 @@ export async function drainQboInboundEvents(input: { limit: number }): Promise<{
         }
       } else if (entityName === "payment") {
         const normalizedOperation = String(row.operation ?? "").toLowerCase()
+        if (normalizedOperation === "delete") {
+          try {
+            const reversal = await reverseDeletedQboPayment({
+              supabase,
+              orgId,
+              connectionId,
+              qboPaymentId: row.entity_qbo_id,
+            })
+            await supabase
+              .from("accounting_sync_records")
+              .update({
+                status: "synced",
+                error_message: null,
+                last_synced_at: new Date().toISOString(),
+              })
+              .eq("org_id", orgId)
+              .eq("connection_id", connectionId)
+              .eq("entity_type", "payment")
+              .eq("external_id", row.entity_qbo_id)
+            await markEventProcessed(
+              supabase,
+              row.id,
+              reversal.reversed > 0 ? "reconciled" : "ignored",
+              reversal.reversed > 0 ? undefined : "Deleted QBO payment had no settled Arc payment mapping",
+            )
+            if (reversal.reversed > 0) reconciled += 1
+          } catch (error) {
+            await markEventProcessed(
+              supabase,
+              row.id,
+              "error",
+              error instanceof Error ? error.message : String(error),
+              row.attempts ?? 0,
+            )
+          }
+          processed += 1
+          continue
+        }
         const payment = normalizedOperation === "delete" ? null : await client.getPaymentById(row.entity_qbo_id)
         let linkedInvoiceQboIds = extractLinkedInvoiceQboIds(payment)
 

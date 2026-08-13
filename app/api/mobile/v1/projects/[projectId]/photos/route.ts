@@ -3,7 +3,6 @@ import { requireMobileOrg } from "@/lib/mobile/auth"
 import { runWithServiceOrgContext } from "@/lib/services/context"
 import { listPhotoAlbums, listProjectPhotos, updatePhotoMetadata } from "@/lib/services/photos"
 
-export const runtime = "nodejs"
 
 export async function GET(request: Request, { params }: { params: Promise<{ projectId: string }> }) {
   const requestId = mobileRequestId(request)

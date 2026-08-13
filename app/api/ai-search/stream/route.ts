@@ -4,7 +4,6 @@ import { logger } from "@/lib/logging/logger"
 import { streamAiAssistant } from "@/lib/services/ai-assistant/harness"
 import { aiAssistantSseEventSchema } from "@/lib/validation/ai-assistant"
 
-export const runtime = "nodejs"
 const MAX_QUERY_CHARS = 1_200
 
 type StreamPayload = {

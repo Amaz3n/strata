@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { randomUUID } from "node:crypto"
 import { findDuplicatePayable } from "@/lib/services/payable-duplicate-check"
 import { z } from "zod"
 
@@ -148,24 +149,41 @@ export interface BulkVendorBillApprovalItem {
  * commit or none do. Ledger/accounting projections are idempotent and are also
  * attempted immediately so the normal UI does not wait for the worker.
  */
-export async function approveVendorBillsAtomic(
-  items: BulkVendorBillApprovalItem[],
-  orgId?: string,
-): Promise<{ approvedCount: number }> {
-  const parsed = z.array(z.object({
-    id: z.string().uuid(),
-    expected_updated_at: z.string().datetime({ offset: true }).optional(),
-  })).min(1).max(BULK_APPROVAL_LIMIT).parse(items)
+export async function approveVendorBillsAtomic(items: BulkVendorBillApprovalItem[], orgId?: string): Promise<{ approvedCount: number }> {
+  const parsed = z
+    .array(z.object({ id: z.string().uuid(), expected_updated_at: z.string().datetime({ offset: true }).optional() }))
+    .min(1)
+    .max(BULK_APPROVAL_LIMIT)
+    .parse(items)
   if (new Set(parsed.map((item) => item.id)).size !== parsed.length) throw new Error("Bulk approval contains duplicate payables")
 
   const context = await requireOrgContext(orgId)
   const service = createServiceSupabaseClient()
-  const { data: bills, error } = await service.from("vendor_bills").select("id,project_id,metadata").eq("org_id", context.orgId).in("id", parsed.map((item) => item.id))
+  const { data: bills, error } = await service
+    .from("vendor_bills")
+    .select("id,project_id,metadata")
+    .eq("org_id", context.orgId)
+    .in(
+      "id",
+      parsed.map((item) => item.id),
+    )
   if (error || (bills?.length ?? 0) !== parsed.length) throw new Error("One or more payables could not be found")
+  if ((bills ?? []).some((bill) => (bill.metadata as Record<string, unknown> | null)?.creation_state === "draft")) {
+    throw new Error("Complete every payable draft before bulk approval")
+  }
   const projectIds = Array.from(new Set((bills ?? []).map((bill) => bill.project_id)))
   if (projectIds.some((projectId) => !projectId)) throw new Error("Every payable in a bulk approval must belong to a project")
   for (const projectId of projectIds as string[]) {
-    await requireAuthorization({ permission: "bill.approve", userId: context.userId, orgId: context.orgId, projectId, supabase: context.supabase, logDecision: true, resourceType: "project", resourceId: projectId })
+    await requireAuthorization({
+      permission: "bill.approve",
+      userId: context.userId,
+      orgId: context.orgId,
+      projectId,
+      supabase: context.supabase,
+      logDecision: true,
+      resourceType: "project",
+      resourceId: projectId,
+    })
   }
   const outsideDesignatedRoute = (bills ?? []).some((bill) => {
     const metadata = (bill.metadata as Record<string, unknown> | null) ?? {}
@@ -178,19 +196,17 @@ export async function approveVendorBillsAtomic(
     throw new Error("One or more payables are waiting for their designated approver")
   }
 
-  const { data, error: rpcError } = await service.rpc("approve_vendor_bills_atomic", {
-    p_org_id: context.orgId,
-    p_actor_id: context.userId,
-    p_items: parsed,
-  })
+  const { data, error: rpcError } = await service.rpc("approve_vendor_bills_atomic", { p_org_id: context.orgId, p_actor_id: context.userId, p_items: parsed })
   if (rpcError) throw new Error(rpcError.message)
 
   // Fast path. The transaction inserted one durable outbox job per bill, so a
   // temporary projection failure here is retried without weakening approval.
-  await Promise.allSettled(parsed.map(async (item) => {
-    await propagateApprovalToLedger({ source: "vendor_bill", sourceId: item.id, orgId: context.orgId })
-    await enqueueVendorBillSync(item.id, context.orgId)
-  }))
+  await Promise.allSettled(
+    parsed.map(async (item) => {
+      await propagateApprovalToLedger({ source: "vendor_bill", sourceId: item.id, orgId: context.orgId })
+      await enqueueVendorBillSync(item.id, context.orgId)
+    }),
+  )
   return { approvedCount: Number((data as any)?.approved_count ?? parsed.length) }
 }
 
@@ -259,14 +275,13 @@ function buildCodingLesson(
 ): CodingLesson {
   if (lines.length === 0) return { costCodeId: null, budgetLineId: null, lineSplits: null }
 
-  const codeOf = (line: { cost_code_id?: string | null; budget_line_id?: string | null }) =>
-    line.cost_code_id ?? line.budget_line_id ?? null
+  const codeOf = (line: { cost_code_id?: string | null; budget_line_id?: string | null }) => line.cost_code_id ?? line.budget_line_id ?? null
   const distinct = new Set(lines.map(codeOf))
   if (distinct.size === 1) {
     const [only] = [...distinct]
     return {
-      costCodeId: only === null ? null : lines[0].cost_code_id ?? null,
-      budgetLineId: only === null ? null : lines[0].budget_line_id ?? null,
+      costCodeId: only === null ? null : (lines[0].cost_code_id ?? null),
+      budgetLineId: only === null ? null : (lines[0].budget_line_id ?? null),
       lineSplits: null,
     }
   }
@@ -277,10 +292,7 @@ function buildCodingLesson(
 
   // Merge lines sharing a code before weighting: two rows on the same code are
   // one leg of the split, not two.
-  const byCode = new Map<
-    string,
-    { costCodeId: string | null; budgetLineId: string | null; amountCents: number; description: string | null }
-  >()
+  const byCode = new Map<string, { costCodeId: string | null; budgetLineId: string | null; amountCents: number; description: string | null }>()
   for (const line of lines) {
     const key = `${line.cost_code_id ?? ""}:${line.budget_line_id ?? ""}`
     const entry = byCode.get(key)
@@ -433,11 +445,12 @@ export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: strin
     qbo_ap_account_name: line.metadata?.qbo_ap_account_name ?? undefined,
     qbo_vendor_id: line.metadata?.qbo_vendor_id ?? undefined,
     qbo_vendor_name: line.metadata?.qbo_vendor_name ?? undefined,
-    accounting_dimensions: line.metadata?.accounting_dimensions && typeof line.metadata.accounting_dimensions === "object"
-      ? line.metadata.accounting_dimensions
-      : line.metadata?.qbo_class_id
-        ? { class: { id: line.metadata.qbo_class_id, name: line.metadata.qbo_class_name ?? "Class" } }
-        : undefined,
+    accounting_dimensions:
+      line.metadata?.accounting_dimensions && typeof line.metadata.accounting_dimensions === "object"
+        ? line.metadata.accounting_dimensions
+        : line.metadata?.qbo_class_id
+          ? { class: { id: line.metadata.qbo_class_id, name: line.metadata.qbo_class_name ?? "Class" } }
+          : undefined,
   }))
   const firstActualLine = actualLines[0]
 
@@ -459,19 +472,13 @@ export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: strin
     for (const line of actualLines) {
       const pid = line.project_id ?? row.project_id
       if (!pid) continue
-      const existing = shareByProject.get(pid) ?? {
-        amount_cents: 0,
-        name: undefined,
-      }
+      const existing = shareByProject.get(pid) ?? { amount_cents: 0, name: undefined }
       existing.amount_cents += line.amount_cents
       if (!existing.name) existing.name = line.project_id ? line.project_name : (row.project?.name ?? undefined)
       shareByProject.set(pid, existing)
     }
   } else if (row.project_id) {
-    shareByProject.set(row.project_id, {
-      amount_cents: row.total_cents ?? 0,
-      name: row.project?.name ?? undefined,
-    })
+    shareByProject.set(row.project_id, { amount_cents: row.total_cents ?? 0, name: row.project?.name ?? undefined })
   }
   const sharedProjects: VendorBillProjectShare[] = Array.from(shareByProject.entries()).map(([id, share]) => ({
     id,
@@ -481,7 +488,7 @@ export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: strin
   const isShared = sharedProjects.length > 1
   const viewProjectShare = viewProjectId ? shareByProject.get(viewProjectId)?.amount_cents : undefined
   const projectAmountCents = viewProjectShare ?? row.total_cents ?? undefined
-  const paidCents = typeof row.paid_cents === "number" ? row.paid_cents : row.status === "paid" ? (row.total_cents ?? 0) : 0
+  const paidCents = typeof row.paid_cents === "number" ? row.paid_cents : 0
   return {
     id: row.id,
     org_id: row.org_id,
@@ -505,7 +512,11 @@ export function mapVendorBill(row: any, billLines?: any[], viewProjectId?: strin
     payment_reference: row.payment_reference ?? metadata.payment_reference ?? undefined,
     payment_method: row.payment_method ?? metadata.payment_method ?? undefined,
     preferred_payment_method:
-      metadata.preferred_payment_method === "ach" || metadata.preferred_payment_method === "check" || metadata.preferred_payment_method === "wire" || metadata.preferred_payment_method === "card" || metadata.preferred_payment_method === "other"
+      metadata.preferred_payment_method === "ach" ||
+      metadata.preferred_payment_method === "check" ||
+      metadata.preferred_payment_method === "wire" ||
+      metadata.preferred_payment_method === "card" ||
+      metadata.preferred_payment_method === "other"
         ? metadata.preferred_payment_method
         : undefined,
     payment_memo: typeof metadata.payment_memo === "string" ? metadata.payment_memo : undefined,
@@ -715,12 +726,7 @@ export async function listVendorBillsForCompany(companyId: string, orgId?: strin
  * `viewProjectId` is the project the bills are being read *for* (drives each bill's
  * share of a multi-project split). Omit it org-wide, where no single project is the lens.
  */
-export async function hydrateVendorBills(
-  supabase: SupabaseClient,
-  orgId: string,
-  rows: any[],
-  viewProjectId?: string,
-): Promise<VendorBillSummary[]> {
+export async function hydrateVendorBills(supabase: SupabaseClient, orgId: string, rows: any[], viewProjectId?: string): Promise<VendorBillSummary[]> {
   const billIds = rows.map((bill) => bill.id).filter(Boolean)
   if (billIds.length === 0) return []
 
@@ -820,9 +826,13 @@ export async function listVendorBillsForProject(projectId: string, orgId?: strin
 
   const baseSelect = supabase.from("vendor_bills").select(vendorBillSelect).eq("org_id", resolvedOrgId)
 
-  const scoped = allocatedBillIds.length > 0 ? baseSelect.or(`project_id.eq.${projectId},id.in.(${allocatedBillIds.join(",")})`) : baseSelect.eq("project_id", projectId)
+  const scoped =
+    allocatedBillIds.length > 0 ? baseSelect.or(`project_id.eq.${projectId},id.in.(${allocatedBillIds.join(",")})`) : baseSelect.eq("project_id", projectId)
 
-  const { data, error } = await scoped.order("due_date", { ascending: true, nullsFirst: true }).order("created_at", { ascending: false }).limit(PROJECT_PAYABLES_FETCH_LIMIT)
+  const { data, error } = await scoped
+    .order("due_date", { ascending: true, nullsFirst: true })
+    .order("created_at", { ascending: false })
+    .limit(PROJECT_PAYABLES_FETCH_LIMIT)
 
   if (error) {
     throw new Error(`Failed to list vendor bills: ${error.message}`)
@@ -845,11 +855,24 @@ export async function listVendorBillsPageForProject(
   orgId?: string,
 ): Promise<VendorBillsPage> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
-  await requireAuthorization({ permission: "bill.read", userId, orgId: resolvedOrgId, projectId, supabase, logDecision: true, resourceType: "project", resourceId: projectId })
+  await requireAuthorization({
+    permission: "bill.read",
+    userId,
+    orgId: resolvedOrgId,
+    projectId,
+    supabase,
+    logDecision: true,
+    resourceType: "project",
+    resourceId: projectId,
+  })
   const page = Math.max(1, Math.floor(input.page ?? 1))
   const pageSize = Math.min(100, Math.max(10, Math.floor(input.pageSize ?? 50)))
   const queue = String(input.queue ?? "needs_review")
-  const search = String(input.search ?? "").trim().slice(0, 120).replace(/[,%()]/g, " ").trim()
+  const search = String(input.search ?? "")
+    .trim()
+    .slice(0, 120)
+    .replace(/[,%()]/g, " ")
+    .trim()
 
   // Only bills that live on ANOTHER project but have a line coded to this one.
   // The old query pulled every bill line on the project, which meant the id list
@@ -880,9 +903,18 @@ export async function listVendorBillsPageForProject(
     else if (queue === "due_soon") query = query.neq("status", "paid").gte("due_date", today).lte("due_date", soon)
   }
   if (search) query = query.or(`bill_number.ilike.%${search}%,qbo_vendor_name.ilike.%${search}%`)
-  const { data, error, count } = await query.order("due_date", { ascending: true, nullsFirst: false }).order("created_at", { ascending: false }).range((page - 1) * pageSize, page * pageSize - 1)
+  const { data, error, count } = await query
+    .order("due_date", { ascending: true, nullsFirst: false })
+    .order("created_at", { ascending: false })
+    .range((page - 1) * pageSize, page * pageSize - 1)
   if (error) throw new Error(`Failed to list vendor bills: ${error.message}`)
-  return { items: await hydrateVendorBills(supabase, resolvedOrgId, data ?? [], projectId), page, pageSize, total: count ?? 0, pageCount: Math.max(1, Math.ceil((count ?? 0) / pageSize)) }
+  return {
+    items: await hydrateVendorBills(supabase, resolvedOrgId, data ?? [], projectId),
+    page,
+    pageSize,
+    total: count ?? 0,
+    pageCount: Math.max(1, Math.ceil((count ?? 0) / pageSize)),
+  }
 }
 
 /**
@@ -918,6 +950,8 @@ async function assertExternalPaymentControls(input: {
   bill: { id: string; approved_by?: string | null; total_cents?: number | null; metadata?: Record<string, unknown> | null }
   amountCents: number
   checkNumber: string | null
+  /** Other obligation decisions that must be independent of the releaser. */
+  separationActorIds?: Array<string | null | undefined>
 }) {
   const service = createServiceSupabaseClient()
   const { data: policy } = await service
@@ -989,17 +1023,22 @@ async function assertExternalPaymentControls(input: {
   // release the payment. A two-person rule in a one-person AP department is not
   // a control, it is a wall — and small residential builders where the owner
   // both approves and pays are a real, supported way to run.
+  const approvalActors = new Set(
+    [input.bill.approved_by, ...(input.separationActorIds ?? [])].filter(
+      (actorId): actorId is string => typeof actorId === "string",
+    ),
+  )
   if (!policy) {
-    if (input.bill.approved_by && input.bill.approved_by === input.userId) {
+    if (approvalActors.has(input.userId)) {
       if (await orgHasAnotherPaymentReleaser(input.orgId, input.userId)) {
-        throw new Error("You approved this payable, so someone else has to record its payment.")
+        throw new Error("You approved this payable or credit, so someone else has to record its payment.")
       }
     }
     return
   }
 
-  if (policy.approval_mode === "dual" && input.bill.approved_by && input.bill.approved_by === input.userId) {
-    throw new Error("You approved this payable, so someone else has to record its payment. Your organization requires two people to release money.")
+  if (policy.approval_mode === "dual" && approvalActors.has(input.userId)) {
+    throw new Error("You approved this payable or credit, so someone else has to record its payment. Your organization requires two people to release money.")
   }
 
   // Step-up on the same amounts that would trigger it electronically. A check is
@@ -1010,7 +1049,15 @@ async function assertExternalPaymentControls(input: {
   }
 }
 
-export async function updateVendorBillStatus({ billId, input, orgId }: { billId: string; input: VendorBillStatusUpdate; orgId?: string }): Promise<VendorBillSummary> {
+export async function updateVendorBillStatus({
+  billId,
+  input,
+  orgId,
+}: {
+  billId: string
+  input: VendorBillStatusUpdate
+  orgId?: string
+}): Promise<VendorBillSummary> {
   const parsed = vendorBillStatusUpdateSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
 
@@ -1026,11 +1073,31 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
   if (existingError || !existing) {
     throw new Error("Vendor bill not found")
   }
-  if (parsed.expected_updated_at && existing.updated_at && parsed.expected_updated_at !== existing.updated_at) {
+  let replayedPayment: { bill_id: string | null; amount_cents: number | null } | null = null
+  if (parsed.payment_idempotency_key) {
+    const service = createServiceSupabaseClient()
+    const { data: replay } = await service
+      .from("payments")
+      .select("bill_id,amount_cents")
+      .eq("org_id", resolvedOrgId)
+      .eq("idempotency_key", `manual-ap:${billId}:${parsed.payment_idempotency_key}`)
+      .maybeSingle()
+    if (replay) {
+      if (replay.bill_id !== billId || (parsed.payment_amount_cents != null && Number(replay.amount_cents) !== parsed.payment_amount_cents)) {
+        throw new Error("Payment idempotency key was already used for different contents")
+      }
+      replayedPayment = replay
+    }
+  }
+  if (!replayedPayment && parsed.expected_updated_at && existing.updated_at && parsed.expected_updated_at !== existing.updated_at) {
     throw new Error("This payable changed since you opened it. Refresh and review the latest values before saving.")
   }
   const existingMetadata = (existing.metadata as Record<string, any> | null) ?? {}
   const isVendorCredit = existingMetadata.source === "vendor_credit"
+
+  if (parsed.status === "approved" && existingMetadata.creation_state === "draft") {
+    throw new Error("Complete the payable draft before approval")
+  }
 
   if (isVendorCredit && parsed.status !== existing.status) {
     throw new Error("Vendor credits do not have a payment status lifecycle")
@@ -1042,8 +1109,7 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
   // Reversing an approval is an approval decision, not an edit. Routing it to
   // `bill.write` let anyone who could correct a bill number also undo the
   // control that released money against it.
-  const isUnapproval =
-    !isVendorCredit && parsed.status === "pending" && ["approved", "partial", "paid"].includes(String(existing.status))
+  const isUnapproval = !isVendorCredit && parsed.status === "pending" && ["approved", "partial", "paid"].includes(String(existing.status))
 
   const requiredPermission = isVendorCredit
     ? "bill.write"
@@ -1064,22 +1130,50 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
     resourceId: billId,
   })
 
+  // A replay is still an invocation of the money-moving endpoint. Authorize it
+  // exactly like the original attempt before returning the already-committed
+  // result; idempotency must not become a read-side permission bypass.
+  if (replayedPayment) {
+    const service = createServiceSupabaseClient()
+    const { data: current } = await service.from("vendor_bills").select(vendorBillSelect).eq("org_id", resolvedOrgId).eq("id", billId).maybeSingle()
+    if (!current) throw new Error("Payment was recorded but the payable could not be reloaded")
+    return mapVendorBill(current)
+  }
+
+  // A waiver status can unblock money. It is therefore a hold override, not a
+  // general bill edit, even when no payment is recorded in the same request.
+  if (parsed.lien_waiver_status !== undefined && parsed.lien_waiver_status !== existing.lien_waiver_status) {
+    await requireAuthorization({
+      permission: "payment.override_hold",
+      userId,
+      orgId: resolvedOrgId,
+      projectId: existing.project_id,
+      supabase,
+      logDecision: true,
+      resourceType: "vendor_bill",
+      resourceId: billId,
+    })
+  }
+
   // A submitted payable's route is narrower than the role permission. The role
   // says who may ever approve bills; this frozen list says who was selected to
   // decide this one. Bills created before explicit routing have no list and keep
   // the legacy permission-only behavior.
   if (parsed.status === "approved" || parsed.status === "rejected") {
     const designatedApproverIds = Array.isArray(existingMetadata.preferred_approver_ids)
-      ? existingMetadata.preferred_approver_ids.filter(
-          (value: unknown): value is string => typeof value === "string",
-        )
+      ? existingMetadata.preferred_approver_ids.filter((value: unknown): value is string => typeof value === "string")
       : []
     if (designatedApproverIds.length > 0 && !designatedApproverIds.includes(userId)) {
       throw new Error("This payable is waiting for its designated approver.")
     }
   }
 
-  if ((parsed.status === "paid" || parsed.status === "partial") && existing.status !== "approved" && existing.status !== "partial" && existing.status !== "paid") {
+  if (
+    (parsed.status === "paid" || parsed.status === "partial") &&
+    existing.status !== "approved" &&
+    existing.status !== "partial" &&
+    existing.status !== "paid"
+  ) {
     throw new Error("Bill must be approved before it can be marked paid")
   }
 
@@ -1129,11 +1223,13 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
       bill: existing,
       // `remainingCents` is computed further down; the outstanding balance is
       // derivable here from the row already in hand.
-      amountCents: parsed.payment_amount_cents ?? payableOutstandingCents({
-        total_cents: existing.total_cents ?? 0,
-        paid_cents: typeof existing.paid_cents === "number" ? existing.paid_cents : 0,
-        retainage_cents: existing.retainage_cents ?? 0,
-      }),
+      amountCents:
+        parsed.payment_amount_cents ??
+        payableOutstandingCents({
+          total_cents: existing.total_cents ?? 0,
+          paid_cents: typeof existing.paid_cents === "number" ? existing.paid_cents : 0,
+          retainage_cents: existing.retainage_cents ?? 0,
+        }),
       checkNumber: parsed.check_number ?? null,
     })
   }
@@ -1144,7 +1240,7 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
 
   // Build update object with column values.
   const updateData: any = { status: parsed.status }
-  if (existingMetadata.creation_state === "draft" && (parsed.actual_lines?.length || parsed.status === "approved")) {
+  if (existingMetadata.creation_state === "draft" && parsed.actual_lines?.length) {
     updateData.metadata = { ...existingMetadata, creation_state: "ready" }
   }
   if (parsed.bill_number !== undefined) {
@@ -1158,11 +1254,7 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
   }
   const totalCents = existing.total_cents ?? 0
   const existingPaid = typeof existing.paid_cents === "number" ? existing.paid_cents : 0
-  const remainingCents = payableOutstandingCents({
-    total_cents: totalCents,
-    paid_cents: existingPaid,
-    retainage_cents: existing.retainage_cents ?? 0,
-  })
+  const remainingCents = payableOutstandingCents({ total_cents: totalCents, paid_cents: existingPaid, retainage_cents: existing.retainage_cents ?? 0 })
 
   if (parsed.payment_reference) {
     updateData.payment_reference = parsed.payment_reference
@@ -1392,24 +1484,20 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
       await voidJobCostEntriesForVendorBill({ billId, orgId: resolvedOrgId })
     }
 
-    await replaceBillLineCoding(supabase, {
-      orgId: resolvedOrgId,
-      billId,
-      lines: actualLines,
-    })
+    await replaceBillLineCoding(supabase, { orgId: resolvedOrgId, billId, lines: actualLines })
   }
 
   if (!isVendorCredit && isApprovedOrReleased && existing.project_id) {
-    const approvalSettings = await loadApprovalGateSettings({
-      supabase,
-      orgId: resolvedOrgId,
-      projectId: existing.project_id,
-    })
+    const approvalSettings = await loadApprovalGateSettings({ supabase, orgId: resolvedOrgId, projectId: existing.project_id })
 
     if (approvalSettings.cost_codes_enabled) {
       let linesForApproval: Array<{ cost_code_id?: string | null }> = actualLines
       if (linesForApproval.length === 0) {
-        const { data: currentLines, error: currentLinesError } = await supabase.from("bill_lines").select("cost_code_id").eq("org_id", resolvedOrgId).eq("bill_id", billId)
+        const { data: currentLines, error: currentLinesError } = await supabase
+          .from("bill_lines")
+          .select("cost_code_id")
+          .eq("org_id", resolvedOrgId)
+          .eq("bill_id", billId)
         if (currentLinesError) throw new Error(`Failed to validate vendor bill cost codes: ${currentLinesError.message}`)
         linesForApproval = currentLines ?? []
       }
@@ -1422,6 +1510,7 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
 
   const shouldProcessPayment = parsed.status === "paid" || (parsed.status === "partial" && parsed.payment_amount_cents != null)
   let recordedPaymentId: string | null = null
+  let paymentAmountCents: number | null = null
 
   if (shouldProcessPayment) {
     let paymentAmount = parsed.payment_amount_cents
@@ -1441,54 +1530,11 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
       throw new Error("Payment amount exceeds remaining balance")
     }
 
-    if (paymentAmount > 0) {
-      const { data: paymentRow, error: paymentInsertError } = await supabase
-        .from("payments")
-        .insert({
-          org_id: resolvedOrgId,
-          project_id: existing.project_id,
-          bill_id: billId,
-          amount_cents: paymentAmount,
-          currency: existing.currency ?? "usd",
-          method: parsed.payment_method ?? "check",
-          reference: parsed.payment_reference ?? null,
-          check_number: parsed.check_number ?? null,
-          // Frozen, not recomputed. This is what an auditor is shown when they
-          // ask what was true about holds and waivers at the moment this
-          // payment was recorded.
-          release_evidence: externalReleaseEvidence
-            ? {
-                holds: externalReleaseEvidence.holdEvaluation,
-                waiver: externalReleaseEvidence.waiverEvidence,
-                construction: externalReleaseEvidence.constructionEvidence,
-                subtier_waivers_required: externalReleaseEvidence.subtierWaiversRequired,
-                captured_at: externalReleaseEvidence.capturedAt,
-                recorded_by: userId,
-              }
-            : null,
-          received_at: parsed.payment_date ? `${parsed.payment_date}T12:00:00.000Z` : new Date().toISOString(),
-          status: "succeeded",
-          provider: "manual",
-          net_cents: paymentAmount,
-          metadata: {},
-        })
-        .select("id")
-        .single()
-
-      if (paymentInsertError) {
-        throw new Error(`Failed to record bill payment: ${paymentInsertError.message}`)
-      }
-      recordedPaymentId = paymentRow?.id ?? null
-    }
-
-    const nextPaid = existingPaid + (paymentAmount ?? 0)
-    const payableDueCents = totalCents - Math.max(0, existing.retainage_cents ?? 0)
-    const isPaid = payableDueCents > 0 ? nextPaid >= payableDueCents : parsed.status === "paid"
-    updateData.status = isPaid ? "paid" : "partial"
-    updateData.paid_cents = nextPaid
-    if (isPaid && !existing.paid_at) {
-      updateData.paid_at = new Date().toISOString()
-    }
+    paymentAmountCents = paymentAmount
+    // Header/coding edits are saved before the money transaction. The RPC below
+    // owns the status projection so this update can never clobber a concurrent
+    // payment roll-up with a stale read.
+    updateData.status = existing.status
   }
 
   if (parsed.early_pay_discount_percent !== undefined) {
@@ -1527,27 +1573,22 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
   if (parsed.expected_updated_at) {
     updateQuery = updateQuery.eq("updated_at", parsed.expected_updated_at)
   }
-  const { data, error } = await updateQuery.select(vendorBillSelect).maybeSingle()
+  const updateResult = await updateQuery.select(vendorBillSelect).maybeSingle()
+  let data = updateResult.data
+  const error = updateResult.error
 
   if (error || !data) {
-    if (recordedPaymentId) {
-      await supabase.from("payments").delete().eq("org_id", resolvedOrgId).eq("id", recordedPaymentId)
-    }
     if (!error && parsed.expected_updated_at) {
       throw new Error("This payable changed while you were saving. Refresh and try again.")
     }
     throw new Error(`Failed to update vendor bill: ${error?.message}`)
   }
 
-  const finalStatus = updateData.status ?? parsed.status
+  let finalStatus = updateData.status ?? parsed.status
 
   try {
     if (["approved", "partial", "paid"].includes(String(finalStatus))) {
-      await propagateApprovalToLedger({
-        source: "vendor_bill",
-        sourceId: billId,
-        orgId: resolvedOrgId,
-      })
+      await propagateApprovalToLedger({ source: "vendor_bill", sourceId: billId, orgId: resolvedOrgId })
     }
 
     if (["approved", "partial", "paid"].includes(String(existing.status)) && finalStatus === "pending") {
@@ -1555,9 +1596,6 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
       await voidJobCostEntriesForVendorBill({ billId, orgId: resolvedOrgId })
     }
   } catch (error) {
-    if (recordedPaymentId) {
-      await supabase.from("payments").delete().eq("org_id", resolvedOrgId).eq("id", recordedPaymentId)
-    }
     await supabase
       .from("vendor_bills")
       .update({
@@ -1574,6 +1612,42 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
 
     const message = error instanceof Error ? error.message : String(error ?? "Unknown error")
     throw new Error(`Vendor bill status was not saved because the project cost ledger could not be updated: ${message}`)
+  }
+
+  if (shouldProcessPayment && paymentAmountCents != null && paymentAmountCents > 0) {
+    const service = createServiceSupabaseClient()
+    const releaseEvidence = externalReleaseEvidence
+      ? {
+          holds: externalReleaseEvidence.holdEvaluation,
+          waiver: externalReleaseEvidence.waiverEvidence,
+          construction: externalReleaseEvidence.constructionEvidence,
+          subtier_waivers_required: externalReleaseEvidence.subtierWaiversRequired,
+          captured_at: externalReleaseEvidence.capturedAt,
+          recorded_by: userId,
+        }
+      : null
+    const paymentIdempotencyKey = `manual-ap:${billId}:${parsed.payment_idempotency_key ?? randomUUID()}`
+    const { data: paymentResult, error: paymentError } = await service.rpc("record_manual_ap_payment_atomic", {
+      p_org_id: resolvedOrgId,
+      p_bill_id: billId,
+      p_actor_id: userId,
+      p_amount_cents: paymentAmountCents,
+      p_currency: existing.currency ?? "usd",
+      p_method: parsed.payment_method ?? "check",
+      p_reference: parsed.payment_reference ?? null,
+      p_check_number: parsed.check_number ?? null,
+      p_received_at: parsed.payment_date ? `${parsed.payment_date}T12:00:00.000Z` : new Date().toISOString(),
+      p_release_evidence: releaseEvidence,
+      p_idempotency_key: paymentIdempotencyKey,
+    })
+    if (paymentError || !paymentResult || typeof paymentResult !== "object") {
+      throw new Error(`Failed to record bill payment: ${paymentError?.message ?? "No payment result was returned"}`)
+    }
+    recordedPaymentId = String(Reflect.get(paymentResult, "payment_id"))
+    const refreshed = await service.from("vendor_bills").select(vendorBillSelect).eq("org_id", resolvedOrgId).eq("id", billId).maybeSingle()
+    if (refreshed.error || !refreshed.data) throw new Error(`Payment was recorded but the payable could not be reloaded: ${refreshed.error?.message}`)
+    data = refreshed.data
+    finalStatus = String(data.status)
   }
 
   // Push to the accounting system when either (a) the bill enters a syncable state, or (b) its
@@ -1598,15 +1672,7 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
     )
   }
 
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "update",
-    entityType: "vendor_bill",
-    entityId: billId,
-    before: existing,
-    after: data,
-  })
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "update", entityType: "vendor_bill", entityId: billId, before: existing, after: data })
 
   // Approval and rejection are their own events. Collapsing them into
   // `vendor_bill_updated` — which has no recipient set and is not a notification
@@ -1633,9 +1699,7 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
       company_id: existing.company_id,
       bill_number: existing.bill_number,
       amount_cents: existing.total_cents,
-      submitted_by_user_id: typeof existingMetadata.submitted_by_user_id === "string"
-        ? existingMetadata.submitted_by_user_id
-        : undefined,
+      submitted_by_user_id: typeof existingMetadata.submitted_by_user_id === "string" ? existingMetadata.submitted_by_user_id : undefined,
       rejection_reason: finalStatus === "rejected" ? parsed.rejection_reason : undefined,
       cost_code_id: parsed.cost_code_id,
       actual_lines: parsed.actual_lines,
@@ -1671,9 +1735,7 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
   // predictable vendor there is, so the split itself is the lesson.
   const learnedLine = actualLines.length === 1 ? actualLines[0] : null
   const codingLesson = buildCodingLesson(actualLines)
-  const codingWasTouched = Boolean(
-    learnedLine?.cost_code_id || codingLesson.costCodeId || codingLesson.lineSplits || parsed.cost_code_id || qboCodingChanged,
-  )
+  const codingWasTouched = Boolean(learnedLine?.cost_code_id || codingLesson.costCodeId || codingLesson.lineSplits || parsed.cost_code_id || qboCodingChanged)
   if (codingWasTouched) {
     const nextCostCodeId = learnedLine?.cost_code_id ?? codingLesson.costCodeId ?? parsed.cost_code_id ?? null
     const nextBudgetLineId = learnedLine?.budget_line_id ?? codingLesson.budgetLineId ?? null
@@ -1703,15 +1765,22 @@ export async function updateVendorBillStatus({ billId, input, orgId }: { billId:
     })
   }
 
-  await evaluateAndAutoApproveVendorBill({
-    orgId: resolvedOrgId,
-    billId: data.id as string,
-  }).catch((error) => console.warn("Invoice auto-approval evaluation failed", error))
+  await evaluateAndAutoApproveVendorBill({ orgId: resolvedOrgId, billId: data.id as string }).catch((error) =>
+    console.warn("Invoice auto-approval evaluation failed", error),
+  )
 
   return mapVendorBill(data)
 }
 
-export async function createProjectVendorBill({ projectId, input, orgId }: { projectId: string; input: VendorBillCreate; orgId?: string }): Promise<VendorBillSummary> {
+export async function createProjectVendorBill({
+  projectId,
+  input,
+  orgId,
+}: {
+  projectId: string
+  input: VendorBillCreate
+  orgId?: string
+}): Promise<VendorBillSummary> {
   const parsed = vendorBillCreateSchema.parse(input)
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
 
@@ -1726,11 +1795,7 @@ export async function createProjectVendorBill({ projectId, input, orgId }: { pro
     resourceId: projectId,
   })
 
-  let commitment: {
-    id: string
-    total_cents: number | null
-    company_id?: string | null
-  } | null = null
+  let commitment: { id: string; total_cents: number | null; company_id?: string | null } | null = null
   if (parsed.commitment_id) {
     const { data, error: commitmentError } = await supabase
       .from("commitments")
@@ -1785,15 +1850,8 @@ export async function createProjectVendorBill({ projectId, input, orgId }: { pro
         counterpartyName: parsed.qbo_vendor_name || parsed.vendor_name,
       })
     : null
-  const codingSuggestion = explicitLines.length === 0
-    ? await suggestCoding({
-        companyId,
-        vendorName,
-        memo: parsed.description,
-        projectId,
-        orgId: resolvedOrgId,
-      })
-    : null
+  const codingSuggestion =
+    explicitLines.length === 0 ? await suggestCoding({ companyId, vendorName, memo: parsed.description, projectId, orgId: resolvedOrgId }) : null
 
   const duplicate = await findDuplicatePayable({
     supabase,
@@ -1808,9 +1866,10 @@ export async function createProjectVendorBill({ projectId, input, orgId }: { pro
     throw new Error(duplicate.reason)
   }
 
-  const isOverBudget = parsed.commitment_id && commitment
-    ? await computeCommitmentOverBudget(supabase, { orgId: resolvedOrgId, commitmentId: parsed.commitment_id, totalCents: parsed.total_cents })
-    : false
+  const isOverBudget =
+    parsed.commitment_id && commitment
+      ? await computeCommitmentOverBudget(supabase, { orgId: resolvedOrgId, commitmentId: parsed.commitment_id, totalCents: parsed.total_cents })
+      : false
 
   const { data, error } = await supabase
     .from("vendor_bills")
@@ -1824,6 +1883,9 @@ export async function createProjectVendorBill({ projectId, input, orgId }: { pro
       currency: "usd",
       status: "pending",
       bill_date: parsed.bill_date,
+      tax_jurisdiction_id: parsed.tax_jurisdiction_id ?? null,
+      tax_included_cents: parsed.tax_included_cents ?? 0,
+      use_tax_accrued_cents: parsed.use_tax_accrued_cents ?? 0,
       due_date: parsed.due_date ?? null,
       file_id: parsed.file_id ?? null,
       submitted_by_contact_id: null,
@@ -1841,20 +1903,19 @@ export async function createProjectVendorBill({ projectId, input, orgId }: { pro
         payment_channel: parsed.payment_channel ?? undefined,
         preferred_funding_source_id: parsed.preferred_funding_source_id ?? undefined,
         payment_schedule: parsed.payment_schedule ?? undefined,
-        scheduled_payment_date: parsed.payment_schedule === "scheduled" ? parsed.scheduled_payment_date ?? undefined : undefined,
+        scheduled_payment_date: parsed.payment_schedule === "scheduled" ? (parsed.scheduled_payment_date ?? undefined) : undefined,
         preferred_approver_ids: parsed.preferred_approver_ids?.length ? parsed.preferred_approver_ids : undefined,
         coding_source: parsed.coding_source ?? (codingSuggestion?.autoApply ? "rule" : undefined),
         coding_rule_id: codingSuggestion?.ruleId,
         coding_confidence: parsed.coding_confidence ?? codingSuggestion?.confidence,
       },
-      accounting_coding: explicitAccountingCoding ?? (codingSuggestion?.autoApply
-        ? codingSuggestion.accountingCoding
-        : buildAccountingCoding({
-            counterpartyId: parsed.qbo_vendor_id,
-            counterpartyName: parsed.qbo_vendor_name || parsed.vendor_name,
-          })),
+      accounting_coding:
+        explicitAccountingCoding ??
+        (codingSuggestion?.autoApply
+          ? codingSuggestion.accountingCoding
+          : buildAccountingCoding({ counterpartyId: parsed.qbo_vendor_id, counterpartyName: parsed.qbo_vendor_name || parsed.vendor_name })),
       retainage_percent: parsed.retainage_percent ?? null,
-      retainage_cents: parsed.retainage_percent ? Math.round(parsed.total_cents * parsed.retainage_percent / 100) : 0,
+      retainage_cents: parsed.retainage_percent ? Math.round((parsed.total_cents * parsed.retainage_percent) / 100) : 0,
       early_pay_discount_percent: parsed.early_pay_discount_percent ?? null,
       early_pay_discount_days: parsed.early_pay_discount_days ?? null,
       lien_waiver_status: parsed.lien_waiver_status ?? "not_required",
@@ -1892,8 +1953,8 @@ export async function createProjectVendorBill({ projectId, input, orgId }: { pro
         await learnCodingRule({
           companyId,
           vendorName,
-          costCodeId: explicitLines.length === 1 ? firstExplicitLine.cost_code_id ?? null : lesson.costCodeId,
-          budgetLineId: explicitLines.length === 1 ? firstExplicitLine.budget_line_id ?? null : lesson.budgetLineId,
+          costCodeId: explicitLines.length === 1 ? (firstExplicitLine.cost_code_id ?? null) : lesson.costCodeId,
+          budgetLineId: explicitLines.length === 1 ? (firstExplicitLine.budget_line_id ?? null) : lesson.budgetLineId,
           lineSplits: lesson.lineSplits,
           accountingCoding: explicitAccountingCoding ?? undefined,
           projectId,
@@ -1972,10 +2033,9 @@ export async function createProjectVendorBill({ projectId, input, orgId }: { pro
   })
 
   if (parsed.creation_state === "ready") {
-    await evaluateAndAutoApproveVendorBill({
-      orgId: resolvedOrgId,
-      billId: data.id as string,
-    }).catch((error) => console.warn("Invoice auto-approval evaluation failed", error))
+    await evaluateAndAutoApproveVendorBill({ orgId: resolvedOrgId, billId: data.id as string }).catch((error) =>
+      console.warn("Invoice auto-approval evaluation failed", error),
+    )
   }
 
   return mapVendorBill(data)
@@ -1988,11 +2048,7 @@ export interface ProjectVendorCreditInput {
   billNumber: string
   billDate: string
   description: string
-  lines: Array<{
-    description: string
-    amount_cents: number
-    cost_code_id?: string | null
-  }>
+  lines: Array<{ description: string; amount_cents: number; cost_code_id?: string | null }>
   metadata?: Record<string, unknown>
 }
 
@@ -2005,6 +2061,19 @@ export async function createProjectVendorCredit(input: ProjectVendorCreditInput,
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requireAuthorization({
     permission: "bill.write",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: input.projectId,
+    supabase,
+    logDecision: true,
+    resourceType: "project",
+    resourceId: input.projectId,
+  })
+  // A credit extinguishes a real vendor obligation just like cash. Until there
+  // is a separate routed credit-approval UI, creating an immediately usable
+  // credit is an approval decision and requires the corresponding permission.
+  await requireAuthorization({
+    permission: "bill.approve",
     userId,
     orgId: resolvedOrgId,
     projectId: input.projectId,
@@ -2039,53 +2108,40 @@ export async function createProjectVendorCredit(input: ProjectVendorCreditInput,
       currency: "usd",
       status: "approved",
       bill_date: input.billDate,
-      metadata: {
-        source: "vendor_credit",
-        description: input.description,
-        ...input.metadata,
-      },
+      metadata: { source: "vendor_credit", description: input.description, ...input.metadata },
       approved_at: new Date().toISOString(),
       approved_by: userId,
     })
     .select(vendorBillSelect)
     .single()
   if (error || !data) throw new Error(`Failed to create vendor credit: ${error?.message}`)
-  const { error: lineError } = await supabase.from("bill_lines").insert(
-    input.lines.map((line, index) => ({
-      org_id: resolvedOrgId,
-      bill_id: data.id,
-      project_id: input.projectId,
-      cost_code_id: line.cost_code_id ?? null,
-      description: line.description,
-      quantity: 1,
-      unit: "LS",
-      unit_cost_cents: line.amount_cents,
-      sort_order: index,
-      metadata: { source: "vendor_credit", ...input.metadata },
-    })),
-  )
+  const { error: lineError } = await supabase
+    .from("bill_lines")
+    .insert(
+      input.lines.map((line, index) => ({
+        org_id: resolvedOrgId,
+        bill_id: data.id,
+        project_id: input.projectId,
+        cost_code_id: line.cost_code_id ?? null,
+        description: line.description,
+        quantity: 1,
+        unit: "LS",
+        unit_cost_cents: line.amount_cents,
+        sort_order: index,
+        metadata: { source: "vendor_credit", ...input.metadata },
+      })),
+    )
   if (lineError) {
     await supabase.from("vendor_bills").delete().eq("org_id", resolvedOrgId).eq("id", data.id)
     throw new Error(`Failed to create vendor credit lines: ${lineError.message}`)
   }
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "insert",
-    entityType: "vendor_bill",
-    entityId: data.id,
-    after: data,
-  })
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "insert", entityType: "vendor_bill", entityId: data.id, after: data })
   await recordEvent({
     orgId: resolvedOrgId,
     eventType: "vendor_credit_created",
     entityType: "vendor_bill",
     entityId: data.id,
-    payload: {
-      project_id: input.projectId,
-      commitment_id: input.commitmentId ?? null,
-      total_cents: totalCents,
-    },
+    payload: { project_id: input.projectId, commitment_id: input.commitmentId ?? null, total_cents: totalCents },
   })
   await enqueueVendorBillSync(data.id, resolvedOrgId)
   return mapVendorBill(data)
@@ -2107,15 +2163,22 @@ export async function applyVendorCreditToBill({
 }): Promise<{ paymentId: string; appliedCents: number }> {
   if (!Number.isInteger(amountCents) || amountCents <= 0) throw new Error("Credit amount must be positive")
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const service = createServiceSupabaseClient()
   const [{ data: credit }, { data: bill }] = await Promise.all([
-    supabase.from("vendor_bills").select("id,project_id,company_id,total_cents,metadata").eq("org_id", resolvedOrgId).eq("id", creditBillId).maybeSingle(),
-    supabase.from("vendor_bills").select("id,project_id,company_id,total_cents,paid_cents,status,metadata").eq("org_id", resolvedOrgId).eq("id", billId).maybeSingle(),
+    supabase.from("vendor_bills").select("id,project_id,company_id,total_cents,status,approved_by,metadata").eq("org_id", resolvedOrgId).eq("id", creditBillId).maybeSingle(),
+    supabase
+      .from("vendor_bills")
+      .select("id,project_id,company_id,total_cents,paid_cents,status,currency,retainage_cents,approved_by,metadata")
+      .eq("org_id", resolvedOrgId)
+      .eq("id", billId)
+      .maybeSingle(),
   ])
   if (!credit || (credit.metadata as Record<string, unknown> | null)?.source !== "vendor_credit") throw new Error("Vendor credit not found")
+  if (credit.status !== "approved" || !credit.approved_by) throw new Error("Vendor credit must be approved before it can be applied")
   if (!bill || (bill.metadata as Record<string, unknown> | null)?.source === "vendor_credit") throw new Error("Target bill not found")
   if (credit.company_id !== bill.company_id) throw new Error("A vendor credit can only be applied to the same vendor")
   await requireAuthorization({
-    permission: "bill.write",
+    permission: "payment.release",
     userId,
     orgId: resolvedOrgId,
     projectId: bill.project_id,
@@ -2124,91 +2187,61 @@ export async function applyVendorCreditToBill({
     resourceType: "vendor_bill",
     resourceId: billId,
   })
-  const warrantyBackchargeId = (credit.metadata as Record<string, unknown> | null)?.warranty_backcharge_id
-  if (typeof warrantyBackchargeId === "string") {
-    const { data: backcharge } = await supabase
-      .from("warranty_backcharges")
-      .select("status,amount_cents,recovered_cents")
-      .eq("org_id", resolvedOrgId)
-      .eq("id", warrantyBackchargeId)
-      .maybeSingle()
-    if (backcharge?.status === "disputed") throw new Error("Disputed warranty backcharges cannot be applied")
-    if (!backcharge || !["issued", "recovered"].includes(backcharge.status)) throw new Error("Warranty backcharge is not recoverable")
-  }
-  const { data: replay } = await supabase
+  const creditIdempotencyKey = `vendor-credit:${creditBillId}:${idempotencyKey}`
+  const { data: replay } = await service
     .from("payments")
-    .select("id,amount_cents")
+    .select("id,bill_id,amount_cents")
     .eq("org_id", resolvedOrgId)
-    .eq("metadata->>vendor_credit_id", creditBillId)
-    .eq("metadata->>idempotency_key", idempotencyKey)
+    .eq("idempotency_key", creditIdempotencyKey)
     .maybeSingle()
-  if (replay) return { paymentId: replay.id, appliedCents: Number(replay.amount_cents) }
-  const { data: applications } = await supabase
-    .from("payments")
-    .select("amount_cents")
-    .eq("org_id", resolvedOrgId)
-    .eq("metadata->>vendor_credit_id", creditBillId)
-    .eq("metadata->>vendor_credit_applied", "true")
-  const alreadyApplied = (applications ?? []).reduce((sum, payment) => sum + Number(payment.amount_cents ?? 0), 0)
-  const creditCapacity = Math.abs(Number(credit.total_cents ?? 0))
-  if (alreadyApplied + amountCents > creditCapacity) throw new Error("Credit application exceeds the remaining vendor credit")
-  const billRemaining = Math.max(0, Number(bill.total_cents ?? 0) - Number(bill.paid_cents ?? 0))
-  if (amountCents > billRemaining) throw new Error("Credit application exceeds the bill balance")
-  const { data: payment, error } = await supabase
-    .from("payments")
-    .insert({
-      org_id: resolvedOrgId,
-      project_id: bill.project_id,
-      bill_id: billId,
-      amount_cents: amountCents,
-      currency: "usd",
-      method: "credit",
-      provider: "manual",
-      status: "succeeded",
-      net_cents: amountCents,
-      received_at: new Date().toISOString(),
-      reference: `Vendor credit ${creditBillId}`,
-      metadata: {
-        vendor_credit_applied: true,
-        vendor_credit_id: creditBillId,
-        idempotency_key: idempotencyKey,
-      },
-    })
-    .select("id")
-    .single()
-  if (error || !payment) throw new Error(`Failed to apply vendor credit: ${error?.message}`)
-  const nextPaid = Number(bill.paid_cents ?? 0) + amountCents
-  await supabase
-    .from("vendor_bills")
-    .update({
-      paid_cents: nextPaid,
-      status: nextPaid >= Number(bill.total_cents ?? 0) ? "paid" : "partial",
-      paid_at: nextPaid >= Number(bill.total_cents ?? 0) ? new Date().toISOString() : null,
-    })
-    .eq("org_id", resolvedOrgId)
-    .eq("id", billId)
-  if (typeof warrantyBackchargeId === "string") {
-    const recoveredCents = alreadyApplied + amountCents
-    const { data: backcharge } = await supabase.from("warranty_backcharges").select("amount_cents").eq("org_id", resolvedOrgId).eq("id", warrantyBackchargeId).maybeSingle()
-    if (backcharge)
-      await supabase
-        .from("warranty_backcharges")
-        .update({
-          recovered_cents: recoveredCents,
-          status: recoveredCents >= Number(backcharge.amount_cents) ? "recovered" : "issued",
-          resolved_at: recoveredCents >= Number(backcharge.amount_cents) ? new Date().toISOString() : null,
-        })
-        .eq("org_id", resolvedOrgId)
-        .eq("id", warrantyBackchargeId)
+  if (replay) {
+    if (replay.bill_id !== billId || Number(replay.amount_cents) !== amountCents) {
+      throw new Error("Credit idempotency key was already used for different contents")
+    }
+    return { paymentId: replay.id, appliedCents: Number(replay.amount_cents) }
   }
+  const releaseEvidence = await assertBillReleasable(billId, resolvedOrgId)
+  await assertExternalPaymentControls({
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+    bill,
+    amountCents,
+    checkNumber: null,
+    separationActorIds: [credit.approved_by],
+  })
+  const frozenEvidence = {
+    holds: releaseEvidence.holdEvaluation,
+    waiver: releaseEvidence.waiverEvidence,
+    construction: releaseEvidence.constructionEvidence,
+    subtier_waivers_required: releaseEvidence.subtierWaiversRequired,
+    captured_at: releaseEvidence.capturedAt,
+    recorded_by: userId,
+  }
+  const { data: result, error } = await service.rpc("apply_vendor_credit_atomic", {
+    p_org_id: resolvedOrgId,
+    p_credit_bill_id: creditBillId,
+    p_bill_id: billId,
+    p_actor_id: userId,
+    p_amount_cents: amountCents,
+    p_idempotency_key: creditIdempotencyKey,
+    p_release_evidence: frozenEvidence,
+  })
+  if (error || !result || typeof result !== "object") throw new Error(`Failed to apply vendor credit: ${error?.message ?? "No result was returned"}`)
+  const paymentId = String(Reflect.get(result, "payment_id"))
+  const appliedCents = Number(Reflect.get(result, "applied_cents"))
   await recordEvent({
     orgId: resolvedOrgId,
     eventType: "vendor_credit_applied",
     entityType: "vendor_bill",
     entityId: creditBillId,
-    payload: { bill_id: billId, amount_cents: amountCents },
+    payload: { project_id: bill.project_id, bill_id: billId, amount_cents: amountCents },
   })
-  return { paymentId: payment.id, appliedCents: amountCents }
+  await enqueueBillPaymentSync(paymentId, resolvedOrgId)
+  await sendManualPaymentRemittanceAdvice({ orgId: resolvedOrgId, paymentId }).catch((notificationError) =>
+    console.warn("Vendor credit remittance advice was not sent", notificationError),
+  )
+  return { paymentId, appliedCents }
 }
 
 function normalizeVendorName(value?: string | null) {
@@ -2216,7 +2249,12 @@ function normalizeVendorName(value?: string | null) {
 }
 
 async function getApprovedCommitmentChangeOrderTotalCents(supabase: SupabaseClient, orgId: string, commitmentId: string) {
-  const { data, error } = await supabase.from("commitment_change_orders").select("total_cents").eq("org_id", orgId).eq("commitment_id", commitmentId).eq("status", "approved")
+  const { data, error } = await supabase
+    .from("commitment_change_orders")
+    .select("total_cents")
+    .eq("org_id", orgId)
+    .eq("commitment_id", commitmentId)
+    .eq("status", "approved")
 
   if (error) {
     throw new Error(`Failed to load commitment change orders: ${error.message}`)
@@ -2367,10 +2405,7 @@ export async function createVendorBillFromPortal({
     },
   })
 
-  await evaluateAndAutoApproveVendorBill({
-    orgId,
-    billId: data.id as string,
-  }).catch((error) => console.warn("Invoice auto-approval evaluation failed", error))
+  await evaluateAndAutoApproveVendorBill({ orgId, billId: data.id as string }).catch((error) => console.warn("Invoice auto-approval evaluation failed", error))
 
   return mapVendorBill(data)
 }
@@ -2463,7 +2498,12 @@ export async function deleteVendorBill({ billId, orgId }: { billId: string; orgI
 
   if (lineIds.length > 0) {
     // Delete open/voided billable costs
-    const { error: deleteCostsError } = await supabase.from("billable_costs").delete().eq("org_id", resolvedOrgId).eq("source_type", "vendor_bill_line").in("source_id", lineIds)
+    const { error: deleteCostsError } = await supabase
+      .from("billable_costs")
+      .delete()
+      .eq("org_id", resolvedOrgId)
+      .eq("source_type", "vendor_bill_line")
+      .in("source_id", lineIds)
 
     if (deleteCostsError) {
       throw new Error(`Failed to delete billable costs: ${deleteCostsError.message}`)
@@ -2491,20 +2531,10 @@ export async function deleteVendorBill({ billId, orgId }: { billId: string; orgI
     eventType: "vendor_bill_deleted",
     entityType: "vendor_bill",
     entityId: billId,
-    payload: {
-      bill_number: existing.bill_number,
-      project_id: existing.project_id,
-    },
+    payload: { bill_number: existing.bill_number, project_id: existing.project_id },
   })
 
-  await recordAudit({
-    orgId: resolvedOrgId,
-    actorId: userId,
-    action: "delete",
-    entityType: "vendor_bill",
-    entityId: billId,
-    before: existing,
-  })
+  await recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "delete", entityType: "vendor_bill", entityId: billId, before: existing })
 
   return { projectId: existing.project_id }
 }
@@ -2544,10 +2574,7 @@ export async function reassignImportedPayable({
   }
   if (!existing.project_id) throw new Error(`This ${payableLabel} is missing its current project`)
   if (existing.project_id === targetProjectId) {
-    return {
-      previousProjectId: existing.project_id,
-      projectId: targetProjectId,
-    }
+    return { previousProjectId: existing.project_id, projectId: targetProjectId }
   }
 
   await requireAuthorization({
@@ -2571,7 +2598,12 @@ export async function reassignImportedPayable({
     resourceId: targetProjectId,
   })
 
-  const { data: targetProject, error: targetProjectError } = await supabase.from("projects").select("id").eq("org_id", resolvedOrgId).eq("id", targetProjectId).maybeSingle()
+  const { data: targetProject, error: targetProjectError } = await supabase
+    .from("projects")
+    .select("id")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", targetProjectId)
+    .maybeSingle()
   if (targetProjectError || !targetProject) throw new Error("Target project not found")
 
   const { count: paymentCount, error: paymentsError } = await supabase
@@ -2589,11 +2621,7 @@ export async function reassignImportedPayable({
 
   const { error: lineUpdateError } = await supabase.from("bill_lines").update({ project_id: targetProjectId }).eq("org_id", resolvedOrgId).eq("bill_id", billId)
   if (lineUpdateError) {
-    await propagateApprovalToLedger({
-      source: "vendor_bill",
-      sourceId: billId,
-      orgId: resolvedOrgId,
-    })
+    await propagateApprovalToLedger({ source: "vendor_bill", sourceId: billId, orgId: resolvedOrgId })
     throw new Error(`Failed to reassign ${payableLabel} lines: ${lineUpdateError.message}`)
   }
 
@@ -2602,23 +2630,14 @@ export async function reassignImportedPayable({
     .update({
       project_id: targetProjectId,
       commitment_id: null,
-      metadata: {
-        ...metadata,
-        reassigned_from_project_id: previousProjectId,
-        reassigned_at: new Date().toISOString(),
-        reassigned_by: userId,
-      },
+      metadata: { ...metadata, reassigned_from_project_id: previousProjectId, reassigned_at: new Date().toISOString(), reassigned_by: userId },
     })
     .eq("org_id", resolvedOrgId)
     .eq("id", billId)
 
   if (billUpdateError) {
     await supabase.from("bill_lines").update({ project_id: previousProjectId }).eq("org_id", resolvedOrgId).eq("bill_id", billId)
-    await propagateApprovalToLedger({
-      source: "vendor_bill",
-      sourceId: billId,
-      orgId: resolvedOrgId,
-    })
+    await propagateApprovalToLedger({ source: "vendor_bill", sourceId: billId, orgId: resolvedOrgId })
     throw new Error(`Failed to reassign ${payableLabel}: ${billUpdateError.message}`)
   }
 
@@ -2627,19 +2646,11 @@ export async function reassignImportedPayable({
   const hasLedgerPresence = ["approved", "partial", "paid"].includes(String(existing.status))
   if (hasLedgerPresence) {
     try {
-      await propagateApprovalToLedger({
-        source: "vendor_bill",
-        sourceId: billId,
-        orgId: resolvedOrgId,
-      })
+      await propagateApprovalToLedger({ source: "vendor_bill", sourceId: billId, orgId: resolvedOrgId })
     } catch (error) {
       await supabase.from("vendor_bills").update({ project_id: previousProjectId, metadata }).eq("org_id", resolvedOrgId).eq("id", billId)
       await supabase.from("bill_lines").update({ project_id: previousProjectId }).eq("org_id", resolvedOrgId).eq("bill_id", billId)
-      await propagateApprovalToLedger({
-        source: "vendor_bill",
-        sourceId: billId,
-        orgId: resolvedOrgId,
-      }).catch(() => {})
+      await propagateApprovalToLedger({ source: "vendor_bill", sourceId: billId, orgId: resolvedOrgId }).catch(() => {})
       const message = error instanceof Error ? error.message : String(error)
       throw new Error(`This ${payableLabel} was not reassigned because job costs could not be updated: ${message}`)
     }
@@ -2649,7 +2660,11 @@ export async function reassignImportedPayable({
   // new project. (Applied vendor credits are blocked above, so this only runs
   // for ordinary bills.)
   if (!isVendorCredit && (paymentCount ?? 0) > 0) {
-    const { error: paymentMoveError } = await supabase.from("payments").update({ project_id: targetProjectId }).eq("org_id", resolvedOrgId).eq("bill_id", billId)
+    const { error: paymentMoveError } = await supabase
+      .from("payments")
+      .update({ project_id: targetProjectId })
+      .eq("org_id", resolvedOrgId)
+      .eq("bill_id", billId)
     if (paymentMoveError) {
       console.warn("Payable reassigned but its payment project could not be moved", paymentMoveError)
     }
@@ -2680,12 +2695,7 @@ export async function reassignImportedPayable({
     eventType: isVendorCredit ? "vendor_credit_reassigned" : "vendor_bill_reassigned",
     entityType: "vendor_bill",
     entityId: billId,
-    payload: {
-      qbo_id: existing.qbo_id,
-      previous_project_id: previousProjectId,
-      project_id: targetProjectId,
-      total_cents: existing.total_cents,
-    },
+    payload: { qbo_id: existing.qbo_id, previous_project_id: previousProjectId, project_id: targetProjectId, total_cents: existing.total_cents },
   })
 
   return { previousProjectId, projectId: targetProjectId }

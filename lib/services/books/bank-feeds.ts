@@ -1,11 +1,14 @@
 import "server-only"
 
+import { randomUUID } from "node:crypto"
 import { z } from "zod"
 
+import { parseBankStatement } from "@/lib/financials/bank-statement-import"
 import { getBankFeedProvider } from "@/lib/integrations/banking/registry"
 import type { BankFeedTransaction } from "@/lib/integrations/banking/provider"
 import { decryptIntegrationSecret, encryptIntegrationSecret } from "@/lib/integrations/secrets"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
+import { recordAudit } from "@/lib/services/audit"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { booksDigest } from "@/lib/services/books/hash"
 import { requireOrgContext } from "@/lib/services/context"
@@ -104,6 +107,230 @@ export async function connectPlaidItem(input: {
   })
   await syncBankFeedConnection(connectionId)
   return { connectionId, accountCount: accounts.length }
+}
+
+/** Bind a normalized feed account to the GL control account it represents. */
+export async function mapBankAccountToGl(input: {
+  bankAccountId: string
+  glAccountId: string
+  orgId?: string
+}) {
+  const context = await requireBankContext(input.orgId)
+  const service = createServiceSupabaseClient()
+  const [bankResult, glResult] = await Promise.all([
+    service.from("bank_accounts").select("id, name, account_type, gl_account_id")
+      .eq("org_id", context.orgId).eq("id", input.bankAccountId).single(),
+    service.from("gl_accounts").select("id, code, name, account_type, subtype, active")
+      .eq("org_id", context.orgId).eq("id", input.glAccountId).single(),
+  ])
+  if (bankResult.error || !bankResult.data) throw new Error("Bank account not found")
+  if (glResult.error || !glResult.data) throw new Error("Ledger account not found")
+  if (!glResult.data.active) throw new Error("Choose an active ledger account")
+
+  const allowed = bankResult.data.account_type === "credit"
+    ? glResult.data.account_type === "liability" && glResult.data.subtype === "credit_card"
+    : bankResult.data.account_type === "loan"
+      ? glResult.data.account_type === "liability" && new Set(["current_debt", "long_term_debt"]).has(glResult.data.subtype)
+      : glResult.data.account_type === "asset" && new Set(["cash", "undeposited_funds", "other_asset"]).has(glResult.data.subtype)
+  if (!allowed) {
+    throw new Error(
+      bankResult.data.account_type === "credit"
+        ? "Credit-card feeds must map to a credit-card liability account"
+        : bankResult.data.account_type === "loan"
+          ? "Loan feeds must map to a current- or long-term debt account"
+          : "Bank feeds must map to a cash or other-asset account",
+    )
+  }
+
+  const { error } = await service.from("bank_accounts")
+    .update({ gl_account_id: glResult.data.id })
+    .eq("org_id", context.orgId).eq("id", bankResult.data.id)
+  if (error) throw new Error(`Failed to map bank account: ${error.message}`)
+
+  await Promise.all([
+    recordEvent({
+      orgId: context.orgId,
+      actorId: context.userId,
+      eventType: "books.bank_account_mapped",
+      entityType: "bank_account",
+      entityId: bankResult.data.id,
+      payload: { gl_account_id: glResult.data.id, gl_account_code: glResult.data.code },
+    }),
+    recordAudit({
+      orgId: context.orgId,
+      actorId: context.userId,
+      action: "update",
+      entityType: "bank_account",
+      entityId: bankResult.data.id,
+      before: { gl_account_id: bankResult.data.gl_account_id },
+      after: { gl_account_id: glResult.data.id, gl_account_code: glResult.data.code, gl_account_name: glResult.data.name },
+      source: "books.banking",
+    }),
+  ])
+  return { bankAccountId: bankResult.data.id, glAccountId: glResult.data.id }
+}
+
+export async function createManualBankAccount(input: {
+  name: string
+  accountType: "depository" | "credit" | "loan" | "investment" | "other"
+  glAccountId: string
+  lastFour?: string | null
+  orgId?: string
+}) {
+  const context = await requireBankContext(input.orgId)
+  const parsed = z.object({
+    name: z.string().trim().min(2).max(120),
+    accountType: z.enum(["depository", "credit", "loan", "investment", "other"]),
+    glAccountId: z.string().uuid(),
+    lastFour: z.string().regex(/^\d{4}$/).nullable().optional(),
+  }).parse(input)
+  const service = createServiceSupabaseClient()
+  const externalItemId = `manual:${context.orgId}:${randomUUID()}`
+  const { data: connection, error: connectionError } = await service.from("bank_feed_connections").insert({
+    org_id: context.orgId,
+    provider: "file",
+    external_item_id: externalItemId,
+    secret_ref: "manual:no-credential",
+    institution_name: "Statement import",
+    status: "active",
+    connected_by: context.userId,
+  }).select("id").single()
+  if (connectionError || !connection) throw new Error(`Failed to create manual bank connection: ${connectionError?.message}`)
+  let accountId: string | null = null
+  try {
+    const externalAccountId = `manual:${randomUUID()}`
+    const { data: account, error: accountError } = await service.from("bank_accounts").insert({
+      org_id: context.orgId,
+      connection_id: connection.id,
+      provider: "file",
+      external_account_id: externalAccountId,
+      name: parsed.name,
+      mask: parsed.lastFour ?? null,
+      account_type: parsed.accountType,
+      currency: "usd",
+      active: true,
+    }).select("id").single()
+    if (accountError || !account) throw new Error(`Failed to create manual bank account: ${accountError?.message}`)
+    accountId = account.id
+    await mapBankAccountToGl({ bankAccountId: account.id, glAccountId: parsed.glAccountId, orgId: context.orgId })
+  } catch (error) {
+    if (accountId) await service.from("bank_accounts").delete().eq("org_id", context.orgId).eq("id", accountId)
+    await service.from("bank_feed_connections").delete().eq("org_id", context.orgId).eq("id", connection.id)
+    throw error
+  }
+  await recordEvent({
+    orgId: context.orgId,
+    actorId: context.userId,
+    eventType: "books.manual_bank_account_created",
+    entityType: "bank_account",
+    entityId: accountId!,
+    payload: { name: parsed.name, account_type: parsed.accountType },
+  })
+  return { bankAccountId: accountId! }
+}
+
+export async function importBankStatement(input: {
+  bankAccountId: string
+  contents: string
+  positiveDirection?: "inflow" | "outflow"
+  fileName?: string | null
+  orgId?: string
+}) {
+  const context = await requireBankContext(input.orgId)
+  const parsed = z.object({
+    bankAccountId: z.string().uuid(),
+    contents: z.string().min(1).max(5_000_000),
+    positiveDirection: z.enum(["inflow", "outflow"]).default("inflow"),
+    fileName: z.string().trim().max(255).nullable().optional(),
+  }).parse(input)
+  const rows = parseBankStatement(parsed.contents, parsed.positiveDirection)
+  const service = createServiceSupabaseClient()
+  const { data: account, error: accountError } = await service.from("bank_accounts")
+    .select("id, gl_account_id, name")
+    .eq("org_id", context.orgId).eq("id", parsed.bankAccountId).eq("active", true).single()
+  if (accountError || !account) throw new Error("Bank account not found")
+  if (!account.gl_account_id) throw new Error("Map the bank account to its ledger control account before importing")
+
+  let imported = 0
+  let duplicates = 0
+  for (let offset = 0; offset < rows.length; offset += 500) {
+    const batch = rows.slice(offset, offset + 500).map((row, index) => {
+      const externalId = `statement:${booksDigest({
+        orgId: context.orgId,
+        bankAccountId: account.id,
+        sourceId: row.sourceId,
+        date: row.date,
+        description: row.description,
+        amountCents: row.amountCents,
+        ordinal: row.sourceId ? null : offset + index,
+      })}`
+      return { row, externalId }
+    })
+    const { data: existing, error: existingError } = await service.from("bank_transactions")
+      .select("external_transaction_id")
+      .eq("org_id", context.orgId).eq("provider", "file")
+      .in("external_transaction_id", batch.map((item) => item.externalId))
+    if (existingError) throw new Error(`Failed to check statement duplicates: ${existingError.message}`)
+    const existingIds = new Set((existing ?? []).map((item) => item.external_transaction_id))
+    const pending = batch.filter((item) => !existingIds.has(item.externalId))
+    duplicates += batch.length - pending.length
+    if (pending.length === 0) continue
+    const { data: inserted, error: insertError } = await service.from("bank_transactions").insert(
+      pending.map(({ row, externalId }) => ({
+        org_id: context.orgId,
+        bank_account_id: account.id,
+        provider: "file",
+        external_transaction_id: externalId,
+        lifecycle_status: "posted",
+        transaction_date: row.date,
+        amount_cents: Math.abs(row.amountCents),
+        direction: row.amountCents > 0 ? "inflow" : "outflow",
+        currency: "usd",
+        merchant_name: row.merchantName,
+        description: row.description,
+        category: [],
+      })),
+    ).select("id, external_transaction_id")
+    if (insertError) throw new Error(`Failed to import bank statement: ${insertError.message}`)
+    const sourceByExternalId = new Map(pending.map((item) => [item.externalId, item.row]))
+    const revisions = (inserted ?? []).map((transaction) => {
+      const source = sourceByExternalId.get(transaction.external_transaction_id)
+      if (!source) throw new Error("Imported transaction lost its source row")
+      return {
+        org_id: context.orgId,
+        bank_transaction_id: transaction.id,
+        revision: 1,
+        change_kind: "added",
+        payload_hash: booksDigest(source),
+        normalized_payload: source,
+      }
+    })
+    if (revisions.length > 0) {
+      const revisionResult = await service.from("bank_transaction_revisions").insert(revisions)
+      if (revisionResult.error) throw new Error(`Failed to record statement audit rows: ${revisionResult.error.message}`)
+    }
+    imported += inserted?.length ?? 0
+  }
+  await Promise.all([
+    recordEvent({
+      orgId: context.orgId,
+      actorId: context.userId,
+      eventType: "books.bank_statement_imported",
+      entityType: "bank_account",
+      entityId: account.id,
+      payload: { file_name: parsed.fileName ?? null, rows: rows.length, imported, duplicates },
+    }),
+    recordAudit({
+      orgId: context.orgId,
+      actorId: context.userId,
+      action: "insert",
+      entityType: "bank_statement_import",
+      entityId: account.id,
+      after: { file_name: parsed.fileName ?? null, rows: rows.length, imported, duplicates },
+      source: "books.banking",
+    }),
+  ])
+  return { rows: rows.length, imported, duplicates }
 }
 
 async function accountMap(orgId: string, connectionId: string) {

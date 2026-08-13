@@ -1,5 +1,6 @@
 import type React from "react"
 import { notFound } from "next/navigation"
+import { Suspense } from "react"
 
 import { ProjectContextSetter } from "@/components/layout/project-context-setter"
 import { getProjectAction } from "./actions"
@@ -14,7 +15,13 @@ interface ProjectLayoutProps {
   params: Promise<{ id: string }>
 }
 
-export default async function ProjectLayout({ children, params }: ProjectLayoutProps) {
+// A fabricated project ID cannot pass authorization or data existence checks.
+// Build the generic shell and validate project navigations in dev with real IDs.
+export const instant = {
+  unstable_disableBuildValidation: true,
+}
+
+async function ProjectContext({ params }: Pick<ProjectLayoutProps, "params">) {
   const { id } = await params
   const [project, { productTier }] = await Promise.all([
     getProjectAction(id),
@@ -28,14 +35,22 @@ export default async function ProjectLayout({ children, params }: ProjectLayoutP
     : undefined
 
   return (
+    <ProjectContextSetter
+      id={project.id}
+      name={project.name}
+      posture={posture}
+      contextLabel={lotLabel}
+      contextHref={lotContext ? `/communities/${lotContext.communityId}` : undefined}
+    />
+  )
+}
+
+export default function ProjectLayout({ children, params }: ProjectLayoutProps) {
+  return (
     <>
-      <ProjectContextSetter
-        id={project.id}
-        name={project.name}
-        posture={posture}
-        contextLabel={lotLabel}
-        contextHref={lotContext ? `/communities/${lotContext.communityId}` : undefined}
-      />
+      <Suspense fallback={null}>
+        <ProjectContext params={params} />
+      </Suspense>
       {children}
     </>
   )

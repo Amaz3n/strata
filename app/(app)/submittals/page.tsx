@@ -9,7 +9,6 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { unwrapAction } from "@/lib/action-result"
 
 // desk-rule: reachable via dashboard/search/feature flows only, not workspace nav.
-export const dynamic = 'force-dynamic'
 
 async function SubmittalsData() {
   const [submittals, projects, companies] = await Promise.all([

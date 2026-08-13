@@ -11,7 +11,6 @@ import { getOrgBranding } from "@/lib/services/estimate-portal"
 import { unwrapAction } from "@/lib/action-result"
 
 // desk-rule: reachable via dashboard/search/feature flows only, not workspace nav.
-export const dynamic = "force-dynamic"
 
 interface EstimatesPageProps {
   searchParams: Promise<Record<string, string | string[]>>

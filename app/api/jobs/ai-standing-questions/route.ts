@@ -4,7 +4,6 @@ import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
 import { withCronRun } from "@/lib/services/job-runs"
 import { sweepStandingQuestions } from "@/lib/services/ai-assistant/standing-questions"
 
-export const runtime = "nodejs"
 // Ten questions through the full tool loop, sequentially.
 export const maxDuration = 300
 

@@ -4,7 +4,6 @@ import { assertPortalActionAccess, recordPortalAccess } from "@/lib/services/por
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { buildDrawingsImageUrl, buildDrawingsTilesBaseUrl } from "@/lib/storage/drawings-urls"
 
-export const runtime = "nodejs"
 
 interface PortalDrawingMarkup {
   id: string

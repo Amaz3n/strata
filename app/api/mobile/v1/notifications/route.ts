@@ -2,7 +2,6 @@ import { mobileDataResponse, mobileErrorResponse, mobileRequestId } from "@/lib/
 import { requireMobileOrg } from "@/lib/mobile/auth"
 import { listMobileNotifications } from "@/lib/mobile/notifications"
 
-export const runtime = "nodejs"
 
 export async function GET(request: Request) {
   const requestId = mobileRequestId(request)

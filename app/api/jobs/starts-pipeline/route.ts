@@ -5,7 +5,6 @@ import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
 import { withCronRun } from "@/lib/services/job-runs"
 import { runStartsPipeline } from "@/lib/services/starts-pipeline"
 
-export const runtime = "nodejs"
 export const maxDuration = 300
 
 async function handler(request: NextRequest) {

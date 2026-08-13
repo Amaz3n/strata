@@ -2,7 +2,6 @@ import { mobileDataResponse, mobileErrorResponse, mobileRequestId } from "@/lib/
 import { requireMobileOrg } from "@/lib/mobile/auth"
 import { getMobilePayable } from "@/lib/mobile/payables"
 
-export const runtime = "nodejs"
 
 /**
  * One payable, in enough detail to decide it.

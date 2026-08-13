@@ -13,7 +13,6 @@ interface Params {
   params: Promise<{ token: string; id: string }>
 }
 
-export const revalidate = 0
 
 export default async function InvoicePortalPage({ params }: Params) {
   const { token, id } = await params

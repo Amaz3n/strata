@@ -11,6 +11,8 @@ import {
   listInvoiceViews,
   listInvoices,
   moveInvoiceToProject,
+  requestInvoiceApproval,
+  decideInvoiceApproval,
   reviseInvoice,
   updateInvoice,
   voidInvoice,
@@ -34,6 +36,12 @@ import { resolveAccountingTarget } from "@/lib/services/accounting-target"
 import { getProvider } from "@/lib/integrations/accounting/registry"
 import { recordEvent } from "@/lib/services/events"
 import { getInvoicePaymentActivity } from "@/lib/services/payments"
+import {
+  createReceivableAdjustment,
+  listInvoiceReceivableAdjustments,
+  voidReceivableAdjustment,
+  type CreateReceivableAdjustmentInput,
+} from "@/lib/services/receivable-adjustments"
 import {
   createInvoiceLienWaiver,
   listInvoiceLienWaivers,
@@ -140,6 +148,28 @@ export async function updateInvoiceAction(invoiceId: string, input: unknown) {
   })
 }
 
+export async function requestInvoiceApprovalAction(invoiceId: string, note?: string) {
+  return run(async () => {
+    if (!invoiceId) throw new Error("Invoice id is required")
+    const invoice = await requestInvoiceApproval({ invoiceId, note })
+    revalidatePath("/invoices")
+    return invoice
+  })
+}
+
+export async function decideInvoiceApprovalAction(
+  invoiceId: string,
+  decision: "approved" | "rejected",
+  note?: string,
+) {
+  return run(async () => {
+    if (!invoiceId) throw new Error("Invoice id is required")
+    const invoice = await decideInvoiceApproval({ invoiceId, decision, note })
+    revalidatePath("/invoices")
+    return invoice
+  })
+}
+
 export async function voidInvoiceAction(invoiceId: string) {
   return run(async () => {
     if (!invoiceId) throw new Error("Invoice id is required")
@@ -161,6 +191,22 @@ export async function reviseInvoiceAction(invoiceId: string) {
       revalidatePath(`/projects/${invoice.project_id}/financials/receivables`)
     }
     return invoice
+  })
+}
+
+export async function createReceivableAdjustmentAction(input: CreateReceivableAdjustmentInput) {
+  return run(async () => {
+    const adjustment = await createReceivableAdjustment(input)
+    revalidatePath("/invoices")
+    return adjustment
+  })
+}
+
+export async function voidReceivableAdjustmentAction(adjustmentId: string) {
+  return run(async () => {
+    const adjustment = await voidReceivableAdjustment(adjustmentId)
+    revalidatePath("/invoices")
+    return adjustment
   })
 }
 
@@ -239,11 +285,34 @@ async function loadInvoiceDetail(invoiceId: string) {
     .eq("entity_id", invoiceId)
     .order("last_synced_at", { ascending: false })
 
+  const adjustments = await listInvoiceReceivableAdjustments(invoiceId, invoice.org_id).catch((error) => {
+    console.error("Failed to load invoice receivable adjustments", error)
+    return []
+  })
+  const booksSourceIds = [invoiceId, ...adjustments.map((adjustment) => adjustment.id)]
+
+  const [{ data: deliveries }, { data: booksEntries }] = await Promise.all([
+    supabase
+      .from("invoice_deliveries")
+      .select("id, channel, recipient, status, provider_message_id, error_message, attempt_count, queued_at, sent_at, delivered_at, opened_at, clicked_at, failed_at, metadata, created_at")
+      .eq("org_id", invoice.org_id)
+      .eq("invoice_id", invoiceId)
+      .order("created_at", { ascending: false })
+      .limit(50),
+    supabase
+      .from("journal_entries")
+      .select("id, entry_date, status, posting_key, posted_at, reversal_of_entry_id")
+      .eq("org_id", invoice.org_id)
+      .in("source_type", ["invoice", "receivable_adjustment"])
+      .in("source_id", booksSourceIds)
+      .order("created_at", { ascending: false })
+      .limit(10),
+  ])
+
   const paymentActivity = await getInvoicePaymentActivity(invoiceId, invoice.org_id).catch((error) => {
     console.error("Failed to load invoice payment activity", error)
     return { payments: [], reversals: [] }
   })
-
   const lienWaivers = await listInvoiceLienWaivers(invoiceId, invoice.org_id).catch((error) => {
     console.error("Failed to load invoice lien waivers", error)
     return []
@@ -253,9 +322,12 @@ async function loadInvoiceDetail(invoiceId: string) {
     invoice: { ...invoice, token },
     link: token ? `${appUrl}/i/${token}` : undefined,
     views,
+    deliveries: deliveries ?? [],
+    booksEntries: booksEntries ?? [],
     syncHistory: (syncHistory ?? []).map((record) => ({ ...record, qbo_id: record.external_id })),
     payments: paymentActivity.payments,
     reversals: paymentActivity.reversals,
+    adjustments,
     lienWaivers,
   }
 }
@@ -359,10 +431,20 @@ export async function deleteInvoiceScheduleAction(scheduleId: string) {
 async function sendInvoiceReminder(invoiceId: string) {
   if (!invoiceId) throw new Error("Invoice id is required")
 
-  const { orgId, supabase } = await requireOrgContext()
+  const { orgId, supabase, userId } = await requireOrgContext()
   const invoice = await getInvoiceWithLines(invoiceId, orgId)
 
   if (!invoice) throw new Error("Invoice not found")
+  await requireAuthorization({
+    permission: "invoice.send",
+    userId,
+    orgId,
+    projectId: invoice.project_id ?? undefined,
+    supabase,
+    logDecision: true,
+    resourceType: "invoice",
+    resourceId: invoiceId,
+  })
   if (invoice.status === "paid" || invoice.status === "void") {
     throw new Error("Cannot send reminder for paid or void invoices")
   }
@@ -391,18 +473,60 @@ async function sendInvoiceReminder(invoiceId: string) {
 
   const { data: org } = await supabase.from("orgs").select("name, logo_url, slug").eq("id", orgId).maybeSingle()
 
-  await sendReminderEmail({
-    to: recipientEmail,
-    recipientName: (invoice.metadata as any)?.customer_name ?? null,
-    invoiceNumber: invoice.invoice_number,
-    amountDue: invoice.balance_due_cents ?? invoice.total_cents ?? 0,
-    dueDate: invoice.due_date ?? new Date().toISOString(),
-    daysOverdue,
-    payLink,
-    orgName: org?.name ?? null,
-    orgLogoUrl: org?.logo_url ?? null,
-    orgSlug: org?.slug ?? null,
-  })
+  const service = createServiceSupabaseClient()
+  const { data: delivery, error: deliveryError } = await service
+    .from("invoice_deliveries")
+    .insert({
+      org_id: orgId,
+      invoice_id: invoiceId,
+      channel: "email",
+      recipient: recipientEmail,
+      status: "sending",
+      attempt_count: 1,
+      metadata: { kind: "payment_reminder", days_overdue: daysOverdue ?? 0 },
+    })
+    .select("id")
+    .single()
+  if (deliveryError) throw new Error(`Failed to track invoice reminder: ${deliveryError.message}`)
+
+  try {
+    const providerMessageId = await sendReminderEmail({
+      to: recipientEmail,
+      recipientName: (invoice.metadata as any)?.customer_name ?? null,
+      invoiceNumber: invoice.invoice_number,
+      amountDue: invoice.balance_due_cents ?? invoice.total_cents ?? 0,
+      dueDate: invoice.due_date ?? new Date().toISOString(),
+      daysOverdue,
+      payLink,
+      orgName: org?.name ?? null,
+      orgLogoUrl: org?.logo_url ?? null,
+      orgSlug: org?.slug ?? null,
+    })
+    const sentAt = new Date().toISOString()
+    await service
+      .from("invoice_deliveries")
+      .update({ status: "sent", sent_at: sentAt, provider_message_id: providerMessageId ?? null })
+      .eq("org_id", orgId)
+      .eq("id", delivery.id)
+    await recordEvent({
+      orgId,
+      eventType: "invoice_reminder_sent",
+      entityType: "invoice",
+      entityId: invoiceId,
+      payload: { recipient: recipientEmail, days_overdue: daysOverdue ?? 0 },
+    })
+  } catch (error) {
+    await service
+      .from("invoice_deliveries")
+      .update({
+        status: "failed",
+        failed_at: new Date().toISOString(),
+        error_message: error instanceof Error ? error.message : String(error),
+      })
+      .eq("org_id", orgId)
+      .eq("id", delivery.id)
+    throw error
+  }
 }
 
 export async function getInvoiceComposerContextAction(projectId?: string | null) {
@@ -476,6 +600,12 @@ async function loadInvoiceComposerContext(projectId?: string | null) {
 
   const { data: orgSettingsRow } = await supabase.from("org_settings").select("settings").eq("org_id", orgId).maybeSingle()
   const settings = (orgSettingsRow?.settings as Record<string, any> | null) ?? {}
+  const { data: taxJurisdictions } = await createServiceSupabaseClient()
+    .from("books_tax_jurisdictions")
+    .select("id,name,sales_tax_rate_micros,effective_from,effective_through")
+    .eq("org_id", orgId)
+    .eq("active", true)
+    .order("name")
 
   const { data: qboConnection } = accountingTarget ? await supabase
     .from("accounting_connections")
@@ -533,6 +663,7 @@ async function loadInvoiceComposerContext(projectId?: string | null) {
       defaultPaymentTermsDays: Number(settings.invoice_default_payment_terms_days ?? 15),
       defaultInvoiceNote: String(settings.invoice_default_payment_details ?? settings.invoice_default_note ?? ""),
     },
+    taxJurisdictions: taxJurisdictions ?? [],
   }
 }
 

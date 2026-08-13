@@ -3,7 +3,6 @@ import { parsePageSize } from "@/lib/mobile/contracts"
 import { requireMobileUser } from "@/lib/mobile/auth"
 import { createMobilePlatformIssue, listMobilePlatformIssues } from "@/lib/mobile/platform"
 
-export const runtime = "nodejs"
 
 export async function GET(request: Request) {
   const requestId = mobileRequestId(request)

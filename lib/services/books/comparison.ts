@@ -223,18 +223,31 @@ export async function approveBooksComparisonRun(input: {
   if (input.note.trim().length < 10)
     throw new Error("A substantive comparison approval note is required");
   const service = createServiceSupabaseClient();
-  const { count, error: openError } = await service
-    .from("books_comparison_items")
-    .select("id", { count: "exact", head: true })
-    .eq("org_id", context.orgId)
-    .eq("run_id", input.runId)
-    .eq("status", "unexplained");
+  const [openResult, runResult] = await Promise.all([
+    service
+      .from("books_comparison_items")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", context.orgId)
+      .eq("run_id", input.runId)
+      .eq("status", "unexplained"),
+    service
+      .from("books_comparison_runs")
+      .select("created_by")
+      .eq("org_id", context.orgId)
+      .eq("id", input.runId)
+      .single(),
+  ]);
+  const { count, error: openError } = openResult;
   if (openError)
     throw new Error(
       `Failed to verify comparison variances: ${openError.message}`,
     );
   if ((count ?? 0) > 0)
     throw new Error("Resolve or document every variance before approval");
+  if (runResult.error || !runResult.data)
+    throw new Error("Comparison run not found");
+  if (runResult.data.created_by === context.userId)
+    throw new Error("A different reviewer must approve the comparison");
   const { error } = await service
     .from("books_comparison_runs")
     .update({

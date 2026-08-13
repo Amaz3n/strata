@@ -14,7 +14,6 @@ import { requireOrgContext } from "@/lib/services/context"
 
 import { unwrapAction } from "@/lib/action-result"
 
-export const dynamic = "force-dynamic"
 
 interface PageProps {
   params: Promise<{ id: string }>

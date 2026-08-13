@@ -380,12 +380,7 @@ export async function loadOrgPayablesDesk(
     const outstanding = payableOutstandingCents({
       payable_type: isCredit ? "vendor_credit" : "bill",
       total_cents: row.total_cents,
-      paid_cents:
-        typeof row.paid_cents === "number"
-          ? row.paid_cents
-          : row.status === "paid"
-            ? row.total_cents
-            : 0,
+      paid_cents: Number(row.paid_cents ?? 0),
       retainage_cents: row.retainage_cents,
     })
 

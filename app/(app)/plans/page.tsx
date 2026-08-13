@@ -10,7 +10,6 @@ import { listCommunities } from "@/lib/services/communities"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { getAmbientDeskContext } from "@/lib/services/desk-context"
 
-export const dynamic = "force-dynamic"
 
 async function PlanLibraryData() {
   const ambient = await getAmbientDeskContext()

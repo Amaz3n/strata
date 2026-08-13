@@ -5,7 +5,6 @@ import { getAmbientDeskContext } from "@/lib/services/desk-context"
 import { requireOrgContext } from "@/lib/services/context"
 import { hasPermission } from "@/lib/services/permissions"
 
-export const dynamic = "force-dynamic"
 
 interface PageProps {
   searchParams: Promise<{ community?: string }>

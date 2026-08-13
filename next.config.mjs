@@ -34,19 +34,17 @@ const securityHeaders = [
 ]
 
 const nextConfig = {
+  // Cache Components turns every route into a static shell with dynamic work
+  // streamed through Suspense. Partial prefetching makes those shells the unit
+  // the client router fetches, so visible destinations are ready on click.
+  cacheComponents: true,
+  partialPrefetching: true,
   turbopack: {
     root: projectRoot,
   },
   allowedDevOrigins: ['unreproachably-preparoxysmal-talon.ngrok-free.dev', '*.ngrok-free.dev'],
-  typescript: {
-    ignoreBuildErrors: true,
-  },
   images: {
     unoptimized: true,
-  },
-  devIndicators: {
-    appIsrStatus: false,
-    buildActivity: false,
   },
   // Native Node addons (prevent bundling so bindings resolve correctly).
   //
@@ -74,6 +72,13 @@ const nextConfig = {
   },
   // Server Actions configuration
   experimental: {
+    cachedNavigations: true,
+    // Treat every Page and Default segment as an Instant Navigation contract.
+    // This validates both initial loads and client navigations at each shared
+    // layout boundary, and makes a blocking page fail the production build.
+    instantInsights: {
+      validationLevel: "experimental-error",
+    },
     proxyClientMaxBodySize: '250mb',
     serverActions: {
       bodySizeLimit: '100mb',

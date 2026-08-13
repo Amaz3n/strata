@@ -1,7 +1,8 @@
-import type { ReactNode } from "react"
+import { Suspense, type ReactNode } from "react"
 import { notFound } from "next/navigation"
 
 import { PortalShell } from "@/components/portal/shell/portal-shell"
+import { PortalShellSkeleton } from "@/components/portal/shell/portal-skeleton"
 import { buildReviewerPortalNav } from "@/components/portal/shell/portal-nav-items"
 import { resolvePortalGate } from "@/lib/portal/gate"
 import { loadReviewerPortalData } from "@/lib/services/portal-access"
@@ -19,9 +20,22 @@ export const metadata = {
   },
 }
 
-export const revalidate = 0
+// A fabricated build token cannot pass the portal gate. Validate this Instant
+// shell in development when a real reviewer link supplies its access context.
+export const instant = {
+  unstable_disableBuildValidation: true,
+}
 
-export default async function ReviewerPortalLayout({ children, params }: ReviewerPortalLayoutProps) {
+
+export default function ReviewerPortalLayout(props: ReviewerPortalLayoutProps) {
+  return (
+    <Suspense fallback={<PortalShellSkeleton />}>
+      <ReviewerPortalLayoutContent {...props} />
+    </Suspense>
+  )
+}
+
+async function ReviewerPortalLayoutContent({ children, params }: ReviewerPortalLayoutProps) {
   const { token } = await params
 
   const gate = await resolvePortalGate({

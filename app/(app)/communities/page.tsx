@@ -9,7 +9,6 @@ import { getAmbientDeskContext } from "@/lib/services/desk-context"
 
 import CommunitiesLoading from "./loading"
 
-export const dynamic = "force-dynamic"
 
 interface CommunitiesPageProps {
   searchParams: Promise<{ status?: string }>

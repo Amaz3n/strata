@@ -186,7 +186,7 @@ async function resolveOrCreateIdentity(input: {
   const supabase = createServiceSupabaseClient()
   const { data: account, error: accountError } = await supabase
     .from("external_identities")
-    .select("id,email,full_name,password_hash,vendor_identity_id")
+    .select("id,email,full_name,vendor_identity_id")
     .eq("id", input.accountId)
     .maybeSingle()
   if (accountError || !account) throw new Error("Vendor portal account was not found")
@@ -239,10 +239,8 @@ async function resolveOrCreateIdentity(input: {
       .insert({
         email: normalizedEmail,
         full_name: input.accountFullName,
-        password_hash: account.password_hash,
         status: "active",
         email_verified_at: now,
-        last_authenticated_at: now,
       })
       .select("id,email,full_name,status,email_verified_at")
       .single()
@@ -423,7 +421,7 @@ export async function getVendorPaymentPortalContext(): Promise<VendorPaymentPort
     .maybeSingle()
   if (!account?.vendor_identity_id) return { identity: null, entities: [], relationships: [], recentPayments: [], inFlightPayments: [] }
 
-  const [{ data: identity }, { data: membershipRows }, { data: relationshipRows }] = await Promise.all([
+  const [{ data: identity }, { data: membershipRows }] = await Promise.all([
     supabase
       .from("vendor_portal_identities")
       .select("id,email,full_name,status")
@@ -434,14 +432,16 @@ export async function getVendorPaymentPortalContext(): Promise<VendorPaymentPort
       .select("vendor_entity_id,role,status")
       .eq("identity_id", account.vendor_identity_id)
       .eq("status", "active"),
-    supabase
-      .from("vendor_payment_relationships")
-      .select("id,org_id,company_id,vendor_entity_id,status")
-      .eq("accepted_by_identity_id", account.vendor_identity_id)
-      .order("created_at", { ascending: false }),
   ])
 
   const entityIds = [...new Set((membershipRows ?? []).map((row) => row.vendor_entity_id))]
+  const { data: relationshipRows } = entityIds.length > 0
+    ? await supabase
+      .from("vendor_payment_relationships")
+      .select("id,org_id,company_id,vendor_entity_id,status")
+      .in("vendor_entity_id", entityIds)
+      .order("created_at", { ascending: false })
+    : { data: [] }
   const orgIds = [...new Set((relationshipRows ?? []).map((row) => row.org_id))]
   const companyIds = [...new Set((relationshipRows ?? []).map((row) => row.company_id))]
   const [{ data: entityRows }, { data: recipientRows }, { data: orgRows }, { data: companyRows }] = await Promise.all([

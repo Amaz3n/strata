@@ -3,7 +3,6 @@ import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
 import { withCronRun } from "@/lib/services/job-runs"
 import { purgeExpiredExternalSessions } from "@/lib/services/external-portal-auth"
 
-export const runtime = "nodejs"
 export const maxDuration = 60
 
 async function handler(request: NextRequest) {

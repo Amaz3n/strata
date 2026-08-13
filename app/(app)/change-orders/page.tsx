@@ -5,7 +5,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { requireOrgContext } from "@/lib/services/context"
 import { getChangeExposure } from "@/lib/services/change-orders"
 
-export const dynamic = "force-dynamic"
 const money = (cents: number) => (cents / 100).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })
 
 export default async function ChangeOrdersPage() {

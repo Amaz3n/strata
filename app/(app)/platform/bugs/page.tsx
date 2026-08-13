@@ -12,7 +12,6 @@ import {
   requirePlatformBugOwner,
 } from "@/lib/services/platform-bugs"
 
-export const dynamic = "force-dynamic"
 
 export default async function PlatformBugsPage() {
   try {

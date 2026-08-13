@@ -6,7 +6,6 @@ import { createHash } from "node:crypto"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { withCronRun } from "@/lib/services/job-runs"
 
-export const runtime = "nodejs"
 
 async function handler(request: NextRequest) {
   if (!isAuthorizedCronRequest(request)) {

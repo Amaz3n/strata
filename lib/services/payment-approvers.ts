@@ -5,6 +5,7 @@ import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
 import {
   getUserPermissions,
+  requireAnyPermission,
   requirePermission,
 } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
@@ -27,7 +28,7 @@ export interface PaymentRunApprover {
   divisionId: string | null
   /**
    * False when the person is still on the roster but no longer holds
-   * `payments.approve_run` — the roster names people, roles grant the power, and
+   * `payment.approve_run` — the roster names people, roles grant the power, and
    * the UI has to be able to say when the two have drifted apart.
    */
   permitted: boolean
@@ -108,7 +109,7 @@ async function hydrateRoster(
       divisionId: row.division_id ?? null,
       permitted:
         permissions.includes("*") ||
-        permissions.includes("payments.approve_run"),
+        permissions.includes("payment.approve_run"),
     }
   })
 }
@@ -116,20 +117,20 @@ async function hydrateRoster(
 /**
  * Who this org has designated to approve payment runs, and whether the viewer is
  * one of them. An empty roster means the org never narrowed approval beyond the
- * `payments.approve_run` permission, which stays the fallback.
+ * `payment.approve_run` permission, which stays the fallback.
  */
 export async function getPaymentApprovalRouting(
   orgId?: string,
 ): Promise<PaymentApprovalRouting> {
   const context = await requireOrgContext(orgId)
-  await requirePermission("payment.release", context)
+  await requireAnyPermission(["payment.release", "payment.approve_run", "payment.manage_rail"], context)
   const [rows, viewerPermissions] = await Promise.all([
     loadRoster(context.orgId),
     getUserPermissions(context.userId, context.orgId),
   ])
   const viewerHasPermission =
     viewerPermissions.includes("*") ||
-    viewerPermissions.includes("payments.approve_run")
+    viewerPermissions.includes("payment.approve_run")
   const approvers = await hydrateRoster(context.orgId, rows)
   return {
     rosterConfigured: approvers.length > 0,
@@ -147,7 +148,7 @@ export async function listPaymentApproverCandidates(
   orgId?: string,
 ): Promise<Array<{ userId: string; name: string; email: string | null }>> {
   const context = await requireOrgContext(orgId)
-  await requirePermission("payments.manage_rail", context)
+  await requirePermission("payment.manage_rail", context)
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase
     .from("memberships")
@@ -171,7 +172,7 @@ export async function listPaymentApproverCandidates(
       const permissions = permissionSets[index] ?? []
       return (
         permissions.includes("*") ||
-        permissions.includes("payments.approve_run")
+        permissions.includes("payment.approve_run")
       )
     })
     .map((userId) => ({
@@ -192,7 +193,7 @@ export async function setPaymentRunApprovers(
 ) {
   const parsed = setPaymentRunApproversSchema.parse(input)
   const context = await requireOrgContext(orgId)
-  await requirePermission("payments.manage_rail", context)
+  await requirePermission("payment.manage_rail", context)
   const supabase = createServiceSupabaseClient()
 
   const userIds = parsed.approvers.map((approver) => approver.user_id)
@@ -204,7 +205,7 @@ export async function setPaymentRunApprovers(
       const permissions = permissionSets[index] ?? []
       return !(
         permissions.includes("*") ||
-        permissions.includes("payments.approve_run")
+        permissions.includes("payment.approve_run")
       )
     })
     if (unpermitted.length > 0) {

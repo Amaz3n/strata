@@ -7,7 +7,6 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { Skeleton } from "@/components/ui/skeleton"
 import { loadFinancialsReceivablesData } from "../page-data"
 
-export const dynamic = "force-dynamic"
 
 interface PageProps {
   params: Promise<{ id: string }>

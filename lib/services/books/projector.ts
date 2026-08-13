@@ -1,9 +1,12 @@
-import "server-only"
+import "server-only";
 
-import { z } from "zod"
+import { z } from "zod";
 
-import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { BILLED_INVOICE_STATUSES, PAYABLE_VENDOR_BILL_STATUSES } from "@/lib/financials/ledger-status"
+import { createServiceSupabaseClient } from "@/lib/supabase/server";
+import {
+  BILLED_INVOICE_STATUSES,
+  PAYABLE_VENDOR_BILL_STATUSES,
+} from "@/lib/financials/ledger-status";
 import {
   draftFromFact,
   factSourceKey,
@@ -13,14 +16,20 @@ import {
   selectFactsToRetire,
   sortFactCostLines,
   type FactCostLine,
-} from "@/lib/services/books/fact-drafts"
-import { booksDigest } from "@/lib/services/books/hash"
-import { postBooksJournalEntryForService, reverseBooksJournalEntryForService } from "@/lib/services/books/ledger"
-import { classifyPaymentPosting } from "@/lib/services/books/posting-rules"
-import { loadRevenueBasisByProject } from "@/lib/services/books/revenue-basis"
-import { recordEvent } from "@/lib/services/events"
-import { isoDateOnlyFromUtcMs } from "@/lib/services/reports/dates"
-import { loadInvoiceRetainageCents, loadRetainageReleaseInvoiceCents } from "@/lib/services/retainage"
+} from "@/lib/services/books/fact-drafts";
+import { booksDigest } from "@/lib/services/books/hash";
+import {
+  projectBooksFactAndJournalForService,
+  reverseBooksJournalEntryForService,
+} from "@/lib/services/books/ledger";
+import { classifyPaymentPosting } from "@/lib/services/books/posting-rules";
+import { loadRevenueBasisByProject } from "@/lib/services/books/revenue-basis";
+import { recordEvent } from "@/lib/services/events";
+import { isoDateOnlyFromUtcMs } from "@/lib/services/reports/dates";
+import {
+  loadInvoiceRetainageCents,
+  loadRetainageReleaseInvoiceCents,
+} from "@/lib/services/retainage";
 
 /**
  * The projector reads Arc's own records and emits balanced journal entries. It
@@ -43,7 +52,7 @@ import { loadInvoiceRetainageCents, loadRetainageReleaseInvoiceCents } from "@/l
  *    a reconciliation run after the fact.
  */
 
-const PROJECTION_PAGE_SIZE = 500
+const PROJECTION_PAGE_SIZE = 500;
 
 /**
  * A hard bound on any one paged read. `collectPages` runs until it sees a short
@@ -51,7 +60,7 @@ const PROJECTION_PAGE_SIZE = 500
  * the whole job's memory and die without saying why. Reaching this is a loud
  * failure, never a silent truncation.
  */
-const PROJECTION_MAX_ROWS = 250_000
+const PROJECTION_MAX_ROWS = 250_000;
 
 /** Source types the projector owns end to end, and may therefore retire. */
 const PROJECTED_SOURCE_TYPES = [
@@ -60,22 +69,30 @@ const PROJECTED_SOURCE_TYPES = [
   "retainage_release",
   "bill_payment",
   "invoice_payment",
+  "customer_deposit_receipt",
+  "customer_deposit_application",
+  "customer_deposit_reversal",
   "expense",
   "payment_reversal",
+  "receivable_adjustment",
   "labor_cost",
-] as const
+] as const;
 
-const RETIREMENT_REASON = "source no longer qualifies for projection"
+const RETIREMENT_REASON = "source no longer qualifies for projection";
 
 type ProjectionCandidate = {
-  sourceType: string
-  sourceId: string
-  accountingDate: string
-  occurredAt: string
-  payload: Record<string, unknown>
-}
+  sourceType: string;
+  sourceId: string;
+  accountingDate: string;
+  occurredAt: string;
+  payload: Record<string, unknown>;
+};
 
-type ProjectionFailure = { sourceType: string; sourceId: string; error: string }
+type ProjectionFailure = {
+  sourceType: string;
+  sourceId: string;
+  error: string;
+};
 
 /**
  * Reads every page of a query.
@@ -86,19 +103,27 @@ type ProjectionFailure = { sourceType: string; sourceId: string; error: string }
  * ledger means a bill posted twice and a bill never posted at all.
  */
 async function collectPages<T>(
-  loadPage: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+  loadPage: (
+    from: number,
+    to: number,
+  ) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
   label: string,
 ): Promise<T[]> {
-  const rows: T[] = []
+  const rows: T[] = [];
   for (let page = 0; ; page += 1) {
-    const from = page * PROJECTION_PAGE_SIZE
-    const { data, error } = await loadPage(from, from + PROJECTION_PAGE_SIZE - 1)
-    if (error) throw new Error(`Failed to load ${label}: ${error.message}`)
-    const batch = data ?? []
-    rows.push(...batch)
-    if (batch.length < PROJECTION_PAGE_SIZE) return rows
+    const from = page * PROJECTION_PAGE_SIZE;
+    const { data, error } = await loadPage(
+      from,
+      from + PROJECTION_PAGE_SIZE - 1,
+    );
+    if (error) throw new Error(`Failed to load ${label}: ${error.message}`);
+    const batch = data ?? [];
+    rows.push(...batch);
+    if (batch.length < PROJECTION_PAGE_SIZE) return rows;
     if (rows.length >= PROJECTION_MAX_ROWS) {
-      throw new Error(`Refusing to project a truncated read: ${label} exceeded ${PROJECTION_MAX_ROWS} rows`)
+      throw new Error(
+        `Refusing to project a truncated read: ${label} exceeded ${PROJECTION_MAX_ROWS} rows`,
+      );
     }
   }
 }
@@ -114,28 +139,94 @@ async function collectPages<T>(
  * convention rather than inventing a second one.
  */
 function accountingDateFromTimestamp(value: unknown): string | null {
-  if (typeof value !== "string" && typeof value !== "number") return null
-  const ms = Date.parse(String(value))
-  return Number.isFinite(ms) ? isoDateOnlyFromUtcMs(ms) : null
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const ms = Date.parse(String(value));
+  return Number.isFinite(ms) ? isoDateOnlyFromUtcMs(ms) : null;
 }
 
-/**
- * Incremental watermark. Facts store the source row's `updated_at` as
- * `occurred_at`, so the newest fact is a true high-water mark and no extra
- * column is needed. A full pass ignores it and rescans everything, which is how
- * a backfill from zero and the nightly repair sweep both run.
- */
-async function resolveWatermark(orgId: string) {
-  const service = createServiceSupabaseClient()
+type ProjectionWatermarks = {
+  bills: string | null;
+  invoices: string | null;
+  payments: string | null;
+  expenses: string | null;
+  reversals: string | null;
+  adjustments: string | null;
+  labor: string | null;
+};
+
+async function latestFactTimestamp(orgId: string, sourceType: string) {
+  const service = createServiceSupabaseClient();
   const { data, error } = await service
     .from("accounting_facts")
     .select("occurred_at")
     .eq("org_id", orgId)
+    .eq("source_type", sourceType)
     .order("occurred_at", { ascending: false })
     .limit(1)
-    .maybeSingle()
-  if (error) throw new Error(`Failed to resolve the projection watermark: ${error.message}`)
-  return data?.occurred_at ? String(data.occurred_at) : null
+    .maybeSingle();
+  if (error)
+    throw new Error(
+      `Failed to resolve the ${sourceType} projection watermark: ${error.message}`,
+    );
+  return data?.occurred_at ? String(data.occurred_at) : null;
+}
+
+function earliestTimestamp(values: Array<string | null>) {
+  const present = values
+    .filter((value): value is string => Boolean(value))
+    .sort();
+  return present[0] ?? null;
+}
+
+/**
+ * One cursor per upstream source family.
+ *
+ * A global max lets a newer bill advance beyond an older invoice forever. The
+ * family cursor keeps unrelated tables independent; `gte` still deliberately
+ * replays the boundary row so a fact inserted before its journal can heal.
+ */
+async function resolveWatermarks(orgId: string): Promise<ProjectionWatermarks> {
+  const [
+    vendorBill,
+    invoice,
+    retainage,
+    billPayment,
+    invoicePayment,
+    customerDepositReceipt,
+    customerDepositApplication,
+    expense,
+    reversal,
+    customerDepositReversal,
+    receivableAdjustment,
+    labor,
+  ] = await Promise.all([
+    latestFactTimestamp(orgId, "vendor_bill"),
+    latestFactTimestamp(orgId, "invoice"),
+    latestFactTimestamp(orgId, "retainage_release"),
+    latestFactTimestamp(orgId, "bill_payment"),
+    latestFactTimestamp(orgId, "invoice_payment"),
+    latestFactTimestamp(orgId, "customer_deposit_receipt"),
+    latestFactTimestamp(orgId, "customer_deposit_application"),
+    latestFactTimestamp(orgId, "expense"),
+    latestFactTimestamp(orgId, "payment_reversal"),
+    latestFactTimestamp(orgId, "customer_deposit_reversal"),
+    latestFactTimestamp(orgId, "receivable_adjustment"),
+    latestFactTimestamp(orgId, "labor_cost"),
+  ]);
+  return {
+    bills: earliestTimestamp([vendorBill, retainage]),
+    invoices: earliestTimestamp([invoice, retainage]),
+    payments: earliestTimestamp([
+      billPayment,
+      invoicePayment,
+      customerDepositReceipt,
+      customerDepositApplication,
+    ]),
+    expenses: expense,
+    reversals: earliestTimestamp([reversal, customerDepositReversal]),
+    adjustments: receivableAdjustment,
+    labor,
+  };
 }
 
 /**
@@ -147,69 +238,178 @@ async function resolveWatermark(orgId: string) {
  * exactly the detail the GL loses when it posts from bill headers.
  */
 async function loadBillCostLines(orgId: string) {
-  const service = createServiceSupabaseClient()
+  const service = createServiceSupabaseClient();
   const [entries, billLines, accounts] = await Promise.all([
     collectPages(
-      (from, to) => service
-        .from("job_cost_entries")
-        .select("source_id, project_id, cost_cents")
-        .eq("org_id", orgId)
-        .eq("status", "posted")
-        .eq("source_type", "vendor_bill_line")
-        .order("created_at", { ascending: true })
-        .order("id", { ascending: true })
-        .range(from, to),
+      (from, to) =>
+        service
+          .from("job_cost_entries")
+          .select("source_id, project_id, cost_cents")
+          .eq("org_id", orgId)
+          .eq("status", "posted")
+          .eq("source_type", "vendor_bill_line")
+          .order("created_at", { ascending: true })
+          .order("id", { ascending: true })
+          .range(from, to),
       "job cost entries",
     ),
     collectPages(
       // `bill_lines` has no `created_at`; its primary key is the whole total order.
-      (from, to) => service.from("bill_lines").select("id, bill_id, description, metadata").eq("org_id", orgId).order("id", { ascending: true }).range(from, to),
+      (from, to) =>
+        service
+          .from("bill_lines")
+          .select("id, bill_id, description, metadata")
+          .eq("org_id", orgId)
+          .order("id", { ascending: true })
+          .range(from, to),
       "bill lines",
     ),
     collectPages(
-      (from, to) => service
-        .from("gl_accounts")
-        .select("id,code")
-        .eq("org_id", orgId)
-        .eq("active", true)
-        .order("id", { ascending: true })
-        .range(from, to),
+      (from, to) =>
+        service
+          .from("gl_accounts")
+          .select("id,code")
+          .eq("org_id", orgId)
+          .eq("active", true)
+          .eq("account_type", "cogs")
+          .order("id", { ascending: true })
+          .range(from, to),
       "Arc Books accounts",
     ),
-  ])
+  ]);
   const accountCodeById = new Map(
     accounts.map((account) => [String(account.id), String(account.code)]),
-  )
-  const billByLine = new Map(billLines.map((row) => {
-    const metadata = row.metadata && typeof row.metadata === "object"
-      ? row.metadata as Record<string, unknown>
-      : {}
-    const selectedAccountId = typeof metadata.qbo_expense_account_id === "string"
-      ? metadata.qbo_expense_account_id
-      : null
-    return [String(row.id), {
-      billId: String(row.bill_id),
-      description: row.description ? String(row.description) : undefined,
-      accountCode: selectedAccountId ? accountCodeById.get(selectedAccountId) : undefined,
-    }]
-  }))
-  const byBill = new Map<string, FactCostLine[]>()
+  );
+  const billByLine = new Map(
+    billLines.map((row) => {
+      const metadata =
+        row.metadata && typeof row.metadata === "object"
+          ? (row.metadata as Record<string, unknown>)
+          : {};
+      // Provider ids and Arc GL ids are different namespaces. Reading the QBO id
+      // here made an inbound sync look like an economic recode and then failed the
+      // Arc account lookup. Only an explicitly namespaced Books override is valid.
+      const selectedAccountId =
+        typeof metadata.arc_books_gl_account_id === "string"
+          ? metadata.arc_books_gl_account_id
+          : null;
+      return [
+        String(row.id),
+        {
+          billId: String(row.bill_id),
+          description: row.description ? String(row.description) : undefined,
+          accountCode: selectedAccountId
+            ? accountCodeById.get(selectedAccountId)
+            : undefined,
+        },
+      ];
+    }),
+  );
+  const byBill = new Map<string, FactCostLine[]>();
   for (const row of entries) {
-    const link = billByLine.get(String(row.source_id))
-    if (!link) continue
-    const list = byBill.get(link.billId) ?? []
+    const link = billByLine.get(String(row.source_id));
+    if (!link) continue;
+    const list = byBill.get(link.billId) ?? [];
     list.push({
       amount_cents: Number(row.cost_cents ?? 0),
       project_id: row.project_id ? String(row.project_id) : null,
       description: link.description,
       account_code: link.accountCode,
-    })
-    byBill.set(link.billId, list)
+    });
+    byBill.set(link.billId, list);
   }
   // Sorted on the way out, not merely read in order: the hash must depend on the
   // set of cost lines and never on how they were paged.
-  for (const [billId, list] of byBill) byBill.set(billId, sortFactCostLines(list))
-  return byBill
+  for (const [billId, list] of byBill)
+    byBill.set(billId, sortFactCostLines(list));
+  return byBill;
+}
+
+/** Expense cost lines, including cross-project splits, from the same subledger. */
+async function loadExpenseCostLines(orgId: string) {
+  const service = createServiceSupabaseClient();
+  const [entries, expenseLines, accounts] = await Promise.all([
+    collectPages(
+      (from, to) =>
+        service
+          .from("job_cost_entries")
+          .select("source_type, source_id, project_id, cost_cents")
+          .eq("org_id", orgId)
+          .eq("status", "posted")
+          .in("source_type", ["project_expense", "project_expense_line"])
+          .order("created_at", { ascending: true })
+          .order("id", { ascending: true })
+          .range(from, to),
+      "expense job cost entries",
+    ),
+    collectPages(
+      (from, to) =>
+        service
+          .from("project_expense_lines")
+          .select("id, expense_id, description, metadata")
+          .eq("org_id", orgId)
+          .order("id", { ascending: true })
+          .range(from, to),
+      "project expense lines",
+    ),
+    collectPages(
+      (from, to) =>
+        service
+          .from("gl_accounts")
+          .select("id, code")
+          .eq("org_id", orgId)
+          .eq("active", true)
+          .eq("account_type", "cogs")
+          .order("id", { ascending: true })
+          .range(from, to),
+      "Arc Books job-cost accounts",
+    ),
+  ]);
+  const accountCodeById = new Map(
+    accounts.map((account) => [String(account.id), String(account.code)]),
+  );
+  const lineById = new Map(
+    expenseLines.map((row) => {
+      const metadata =
+        row.metadata && typeof row.metadata === "object"
+          ? (row.metadata as Record<string, unknown>)
+          : {};
+      const accountId =
+        typeof metadata.arc_books_gl_account_id === "string"
+          ? metadata.arc_books_gl_account_id
+          : null;
+      return [
+        String(row.id),
+        {
+          expenseId: String(row.expense_id),
+          description: row.description ? String(row.description) : undefined,
+          accountCode: accountId ? accountCodeById.get(accountId) : undefined,
+        },
+      ];
+    }),
+  );
+  const byExpense = new Map<string, FactCostLine[]>();
+  for (const row of entries) {
+    const line =
+      row.source_type === "project_expense_line"
+        ? lineById.get(String(row.source_id))
+        : null;
+    const expenseId =
+      line?.expenseId ??
+      (row.source_type === "project_expense" ? String(row.source_id) : null);
+    if (!expenseId) continue;
+    const list = byExpense.get(expenseId) ?? [];
+    list.push({
+      amount_cents: Number(row.cost_cents ?? 0),
+      project_id: row.project_id ? String(row.project_id) : null,
+      description: line?.description,
+      account_code: line?.accountCode,
+    });
+    byExpense.set(expenseId, list);
+  }
+  for (const [expenseId, list] of byExpense)
+    byExpense.set(expenseId, sortFactCostLines(list));
+  return byExpense;
 }
 
 /**
@@ -217,28 +417,44 @@ async function loadBillCostLines(orgId: string) {
  * GL, so without this the job-cost tie-out can never balance.
  */
 async function loadLaborCostEntries(orgId: string, since: string | null) {
-  const service = createServiceSupabaseClient()
-  return collectPages(
-    (from, to) => {
-      let query = service
-        .from("job_cost_entries")
-        .select("id, project_id, cost_cents, incurred_on, updated_at")
-        .eq("org_id", orgId)
-        .eq("status", "posted")
-        .eq("source_type", "time_entry")
-      if (since) query = query.gte("updated_at", since)
-      return query.order("created_at", { ascending: true }).order("id", { ascending: true }).range(from, to)
-    },
-    "labor job cost entries",
-  )
+  const service = createServiceSupabaseClient();
+  return collectPages((from, to) => {
+    let query = service
+      .from("job_cost_entries")
+      .select("id, project_id, cost_cents, incurred_on, updated_at, status")
+      .eq("org_id", orgId)
+      .eq("source_type", "time_entry");
+    if (since) query = query.gte("updated_at", since);
+    return query
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, to);
+  }, "labor job cost entries");
 }
 
-async function projectionCandidates(orgId: string, since: string | null) {
-  const service = createServiceSupabaseClient()
-  const [basisByProject, costLinesByBill, laborEntries, retainageByInvoice, releaseByInvoice, bills, invoices, payments, expenses, reversals] = await Promise.all([
+async function projectionCandidates(
+  orgId: string,
+  watermarks: ProjectionWatermarks,
+) {
+  const service = createServiceSupabaseClient();
+  const [
+    basisByProject,
+    costLinesByBill,
+    costLinesByExpense,
+    laborEntries,
+    retainageByInvoice,
+    releaseByInvoice,
+    bills,
+    invoices,
+    payments,
+    expenses,
+    reversals,
+    adjustments,
+  ] = await Promise.all([
     loadRevenueBasisByProject(orgId),
     loadBillCostLines(orgId),
-    loadLaborCostEntries(orgId, since),
+    loadExpenseCostLines(orgId),
+    loadLaborCostEntries(orgId, watermarks.labor),
     // AR retainage lives in the `retainage` table, never on the invoice row. Loaded
     // whole rather than watermarked: a release can attach retainage to an invoice
     // that itself has not changed since the last run.
@@ -247,46 +463,133 @@ async function projectionCandidates(orgId: string, since: string | null) {
     // Every paged read below imposes a total order for the reason given on
     // `collectPages`: `.range()` without one skips and duplicates rows.
     collectPages((from, to) => {
-      let query = service.from("vendor_bills").select("id, project_id, company_id, bill_number, bill_date, total_cents, retainage_cents, metadata, updated_at").eq("org_id", orgId).in("status", [...PAYABLE_VENDOR_BILL_STATUSES])
-      if (since) query = query.gte("updated_at", since)
-      return query.order("created_at", { ascending: true }).order("id", { ascending: true }).range(from, to)
+      let query = service
+        .from("vendor_bills")
+        .select(
+          "id, project_id, company_id, bill_number, bill_date, total_cents, retainage_cents, use_tax_accrued_cents, metadata, updated_at, status",
+        )
+        .eq("org_id", orgId);
+      if (watermarks.bills) query = query.gte("updated_at", watermarks.bills);
+      return query
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to);
     }, "vendor bills"),
     collectPages((from, to) => {
-      let query = service.from("invoices").select("id, project_id, title, invoice_number, issue_date, total_cents, updated_at").eq("org_id", orgId).in("status", [...BILLED_INVOICE_STATUSES])
-      if (since) query = query.gte("updated_at", since)
-      return query.order("created_at", { ascending: true }).order("id", { ascending: true }).range(from, to)
+      let query = service
+        .from("invoices")
+        .select(
+          "id, project_id, title, invoice_number, issue_date, total_cents, tax_cents, metadata, updated_at, status",
+        )
+        .eq("org_id", orgId);
+      if (watermarks.invoices)
+        query = query.gte("updated_at", watermarks.invoices);
+      return query
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to);
     }, "invoices"),
     collectPages((from, to) => {
-      let query = service.from("payments").select("id, project_id, invoice_id, bill_id, amount_cents, fee_cents, processor_fee_cents, platform_fee_cents, method, metadata, received_at, updated_at").eq("org_id", orgId).in("status", ["succeeded", "completed", "paid"])
-      if (since) query = query.gte("updated_at", since)
-      return query.order("created_at", { ascending: true }).order("id", { ascending: true }).range(from, to)
+      let query = service
+        .from("payments")
+        .select(
+          "id, project_id, invoice_id, bill_id, amount_cents, gross_cents, fee_cents, processor_fee_cents, platform_fee_cents, method, metadata, received_at, updated_at, status",
+        )
+        .eq("org_id", orgId);
+      if (watermarks.payments)
+        query = query.gte("updated_at", watermarks.payments);
+      return query
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to);
     }, "payments"),
     collectPages((from, to) => {
-      let query = service.from("project_expenses").select("id, project_id, vendor_company_id, expense_date, amount_cents, tax_cents, description, updated_at").eq("org_id", orgId).in("status", ["approved", "locked"])
-      if (since) query = query.gte("updated_at", since)
-      return query.order("created_at", { ascending: true }).order("id", { ascending: true }).range(from, to)
+      let query = service
+        .from("project_expenses")
+        .select(
+          "id, project_id, vendor_company_id, expense_date, amount_cents, tax_cents, description, updated_at, status",
+        )
+        .eq("org_id", orgId);
+      if (watermarks.expenses)
+        query = query.gte("updated_at", watermarks.expenses);
+      return query
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to);
     }, "project expenses"),
     collectPages((from, to) => {
-      let query = service.from("payment_reversals").select("id, project_id, invoice_id, bill_id, amount_cents, occurred_at, updated_at").eq("org_id", orgId).eq("status", "succeeded")
-      if (since) query = query.gte("updated_at", since)
-      return query.order("created_at", { ascending: true }).order("id", { ascending: true }).range(from, to)
+      let query = service
+        .from("payment_reversals")
+        .select(
+          "id, project_id, invoice_id, bill_id, amount_cents, occurred_at, updated_at, status",
+        )
+        .eq("org_id", orgId);
+      if (watermarks.reversals)
+        query = query.gte("updated_at", watermarks.reversals);
+      return query
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to);
     }, "payment reversals"),
-  ])
+    collectPages((from, to) => {
+      let query = service
+        .from("receivable_adjustments")
+        .select(
+          "id, project_id, invoice_id, adjustment_type, status, amount_cents, tax_cents, effective_date, reason, updated_at",
+        )
+        .eq("org_id", orgId);
+      if (watermarks.adjustments)
+        query = query.gte("updated_at", watermarks.adjustments);
+      return query
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to);
+    }, "receivable adjustments"),
+  ]);
 
-  const candidates: ProjectionCandidate[] = []
-  const failures: ProjectionFailure[] = []
+  const candidates: ProjectionCandidate[] = [];
+  const failures: ProjectionFailure[] = [];
+  const touchedSourceKeys = new Set<string>();
+  const liveSourceKeys = new Set<string>();
+  const depositInvoiceIds = new Set(
+    invoices
+      .filter(
+        (row) =>
+          (row.metadata as { invoice_kind?: unknown } | null)?.invoice_kind ===
+          "earnest_deposit",
+      )
+      .map((row) => String(row.id)),
+  );
 
   // Only a zero-amount source is skipped. A negative one is a credit — a vendor
   // credit, an expense credit — that the cost subledger already carries signed,
   // so dropping it drives job cost out of balance with no failure to point at.
   for (const row of bills) {
-    const totalCents = Number(row.total_cents ?? 0)
-    if (totalCents === 0) continue
+    const sourceType =
+      (row.metadata as { source?: unknown } | null)?.source ===
+      "retainage_release"
+        ? "retainage_release"
+        : "vendor_bill";
+    const sourceKey = factSourceKey(sourceType, String(row.id));
+    touchedSourceKeys.add(sourceKey);
+    if (
+      !(PAYABLE_VENDOR_BILL_STATUSES as readonly string[]).includes(
+        String(row.status),
+      )
+    )
+      continue;
+    const totalCents = Number(row.total_cents ?? 0);
+    const useTaxCents = Number(row.use_tax_accrued_cents ?? 0);
+    if (totalCents === 0) continue;
+    liveSourceKeys.add(sourceKey);
     // A retainage-release payable carries no cost: the whole gross was expensed when
     // the original bill posted, and this bill only moves the withheld portion out of
     // `2010 Retainage payable` and into AP so it can be paid. Posting it as an ordinary
     // bill would debit job costs twice and leave 2010 growing forever.
-    if ((row.metadata as { source?: unknown } | null)?.source === "retainage_release") {
+    if (
+      (row.metadata as { source?: unknown } | null)?.source ===
+      "retainage_release"
+    ) {
       candidates.push({
         sourceType: "retainage_release",
         sourceId: String(row.id),
@@ -299,18 +602,27 @@ async function projectionCandidates(orgId: string, since: string | null) {
           project_id: row.project_id ?? null,
           company_id: row.company_id ?? null,
         },
-      })
-      continue
+      });
+      continue;
     }
-    const subledgerLines = costLinesByBill.get(String(row.id)) ?? []
-    const subledgerTotal = subledgerLines.reduce((sum, item) => sum + item.amount_cents, 0)
+    const subledgerLines = costLinesByBill.get(String(row.id)) ?? [];
+    const subledgerTotal = subledgerLines.reduce(
+      (sum, item) => sum + item.amount_cents,
+      0,
+    );
     // The subledger is authoritative for job cost, but it only drives the entry
     // when it fully accounts for the bill. A partially-coded bill falls back to
     // a single header line so the GL still balances; the nightly tie-out reports
     // the gap rather than the projector inventing detail it does not have.
-    const costLines = subledgerLines.length > 0 && subledgerTotal === totalCents
-      ? subledgerLines
-      : [{ amount_cents: totalCents, project_id: row.project_id ? String(row.project_id) : null }]
+    const costLines =
+      subledgerLines.length > 0 && subledgerTotal === totalCents + useTaxCents
+        ? subledgerLines
+        : [
+            {
+              amount_cents: totalCents + useTaxCents,
+              project_id: row.project_id ? String(row.project_id) : null,
+            },
+          ];
     candidates.push({
       sourceType: "vendor_bill",
       sourceId: String(row.id),
@@ -319,17 +631,37 @@ async function projectionCandidates(orgId: string, since: string | null) {
       payload: {
         memo: `Vendor bill ${row.bill_number ?? ""}`.trim(),
         total_cents: totalCents,
+        use_tax_accrued_cents: useTaxCents,
         retainage_cents: Number(row.retainage_cents ?? 0),
         project_id: row.project_id ?? null,
         company_id: row.company_id ?? null,
         cost_lines: costLines,
       },
-    })
+    });
   }
 
   for (const row of invoices) {
-    const totalCents = Number(row.total_cents ?? 0)
-    if (totalCents === 0) continue
+    if (depositInvoiceIds.has(String(row.id))) {
+      // A deposit request is operationally an invoice so it can be collected in
+      // the customer portal, but it is not AR or revenue. The receipt below is
+      // the accounting event and credits the customer-deposit liability.
+      touchedSourceKeys.add(factSourceKey("invoice", String(row.id)));
+      continue;
+    }
+    const sourceType = releaseByInvoice.has(String(row.id))
+      ? "retainage_release"
+      : "invoice";
+    const sourceKey = factSourceKey(sourceType, String(row.id));
+    touchedSourceKeys.add(sourceKey);
+    if (
+      !(BILLED_INVOICE_STATUSES as readonly string[]).includes(
+        String(row.status),
+      )
+    )
+      continue;
+    const totalCents = Number(row.total_cents ?? 0);
+    if (totalCents === 0) continue;
+    liveSourceKeys.add(sourceKey);
     // A release invoice collects retainage billed on an earlier invoice. The amount
     // posted is the invoice's own total so AR keeps tying to invoice balances; any
     // divergence from the retainage subledger is reported by the retainage tie-out
@@ -346,11 +678,13 @@ async function projectionCandidates(orgId: string, since: string | null) {
           side: "receivable",
           project_id: row.project_id ?? null,
         },
-      })
-      continue
+      });
+      continue;
     }
-    const projectId = row.project_id ? String(row.project_id) : null
-    const basis = projectId ? basisByProject.get(projectId) ?? "percentage_of_completion" : "percentage_of_completion"
+    const projectId = row.project_id ? String(row.project_id) : null;
+    const basis = projectId
+      ? (basisByProject.get(projectId) ?? "percentage_of_completion")
+      : "percentage_of_completion";
     candidates.push({
       sourceType: "invoice",
       sourceId: String(row.id),
@@ -360,60 +694,134 @@ async function projectionCandidates(orgId: string, since: string | null) {
         memo: row.title || `Invoice ${row.invoice_number ?? ""}`.trim(),
         // Net of retainage, exactly as stored. `fact-drafts` rebuilds the gross.
         total_cents: totalCents,
+        tax_cents: Number(row.tax_cents ?? 0),
         retainage_cents: retainageByInvoice.get(String(row.id)) ?? 0,
         project_id: row.project_id ?? null,
         revenue_basis: basis,
       },
-    })
+    });
   }
 
   for (const row of payments) {
-    const amountCents = Number(row.amount_cents ?? 0)
-    if (amountCents === 0) continue
-    const metadata = row.metadata && typeof row.metadata === "object" ? (row.metadata as Record<string, unknown>) : {}
+    const metadata =
+      row.metadata && typeof row.metadata === "object"
+        ? (row.metadata as Record<string, unknown>)
+        : {};
+    const isDepositReceipt =
+      Boolean(row.invoice_id) && depositInvoiceIds.has(String(row.invoice_id));
+    const isDepositApplication = metadata.customer_deposit_application === true;
     const classification = classifyPaymentPosting({
       method: typeof row.method === "string" ? row.method : null,
       hasBill: Boolean(row.bill_id),
       hasInvoice: Boolean(row.invoice_id),
       creditApplied: metadata.vendor_credit_applied === true,
-    })
+    });
+    const paymentIsLive = new Set(["succeeded", "completed", "paid"]).has(
+      String(row.status),
+    );
     // A payment linked to neither a bill nor an invoice is not a customer
     // receipt — fee collections and standalone settlements land here. Guessing
     // would fabricate an AR credit, so it is reported instead of posted.
     if (classification.kind === "unpostable") {
-      failures.push({ sourceType: "payment", sourceId: String(row.id), error: classification.reason })
-      continue
+      if (!paymentIsLive) continue;
+      failures.push({
+        sourceType: "payment",
+        sourceId: String(row.id),
+        error: classification.reason,
+      });
+      continue;
     }
+    const paymentSourceType = isDepositApplication
+      ? "customer_deposit_application"
+      : isDepositReceipt
+        ? "customer_deposit_receipt"
+        : classification.kind === "credit_application"
+          ? row.bill_id
+            ? "bill_payment"
+            : "invoice_payment"
+          : classification.kind;
+    for (const possibleSourceType of [
+      "bill_payment",
+      "invoice_payment",
+      "customer_deposit_receipt",
+      "customer_deposit_application",
+    ])
+      touchedSourceKeys.add(factSourceKey(possibleSourceType, String(row.id)));
+    const sourceKey = factSourceKey(paymentSourceType, String(row.id));
+    touchedSourceKeys.add(sourceKey);
+    if (!paymentIsLive) continue;
     // Applying a vendor credit moves no cash. The credit note is itself a
     // negative bill that already posted Dr AP / Cr cost, so the application only
     // nets AP against AP and has no journal entry of its own.
-    if (classification.kind === "credit_application") continue
-    const accountingDate = accountingDateFromTimestamp(row.received_at)
+    if (classification.kind === "credit_application" && !isDepositApplication)
+      continue;
+    const amountCents = Number(row.amount_cents ?? 0);
+    if (amountCents === 0) continue;
+    liveSourceKeys.add(sourceKey);
+    const accountingDate = accountingDateFromTimestamp(row.received_at);
     if (!accountingDate) {
-      failures.push({ sourceType: "payment", sourceId: String(row.id), error: "Payment has no readable received_at to date the entry" })
-      continue
+      failures.push({
+        sourceType: "payment",
+        sourceId: String(row.id),
+        error: "Payment has no readable received_at to date the entry",
+      });
+      continue;
     }
     // `fee_cents` is a rollup of the processor/platform split on rows that carry
     // both, so adding all three double-counts. Prefer the split when present.
-    const splitFeeCents = Number(row.processor_fee_cents ?? 0) + Number(row.platform_fee_cents ?? 0)
-    const feeCents = splitFeeCents > 0 ? splitFeeCents : Number(row.fee_cents ?? 0)
+    const splitFeeCents =
+      Number(row.processor_fee_cents ?? 0) +
+      Number(row.platform_fee_cents ?? 0);
+    const feeCents =
+      splitFeeCents > 0 ? splitFeeCents : Number(row.fee_cents ?? 0);
     candidates.push({
-      sourceType: classification.kind,
+      sourceType: paymentSourceType,
       sourceId: String(row.id),
       accountingDate,
       occurredAt: String(row.updated_at),
       payload: {
-        memo: classification.kind === "bill_payment" ? "Vendor bill payment" : "Customer payment",
+        memo:
+          paymentSourceType === "bill_payment"
+            ? "Vendor bill payment"
+            : paymentSourceType === "customer_deposit_receipt"
+              ? "Customer deposit received"
+              : paymentSourceType === "customer_deposit_application"
+                ? "Customer deposit applied"
+                : "Customer payment",
         amount_cents: amountCents,
+        gross_cents: Math.max(
+          amountCents,
+          Number(row.gross_cents ?? amountCents),
+        ),
         fee_cents: feeCents,
         project_id: row.project_id ?? null,
+        deposit_payment_id: metadata.deposit_payment_id ?? null,
       },
-    })
+    });
   }
 
   for (const row of expenses) {
-    const amountCents = Number(row.amount_cents ?? 0) + Number(row.tax_cents ?? 0)
-    if (amountCents === 0) continue
+    const sourceKey = factSourceKey("expense", String(row.id));
+    touchedSourceKeys.add(sourceKey);
+    if (!new Set(["approved", "locked"]).has(String(row.status))) continue;
+    const amountCents =
+      Number(row.amount_cents ?? 0) + Number(row.tax_cents ?? 0);
+    if (amountCents === 0) continue;
+    liveSourceKeys.add(sourceKey);
+    const subledgerLines = costLinesByExpense.get(String(row.id)) ?? [];
+    const subledgerTotal = subledgerLines.reduce(
+      (sum, item) => sum + item.amount_cents,
+      0,
+    );
+    const costLines =
+      subledgerLines.length > 0 && subledgerTotal === amountCents
+        ? subledgerLines
+        : [
+            {
+              amount_cents: amountCents,
+              project_id: row.project_id ? String(row.project_id) : null,
+            },
+          ];
     candidates.push({
       sourceType: "expense",
       sourceId: String(row.id),
@@ -424,38 +832,91 @@ async function projectionCandidates(orgId: string, since: string | null) {
         amount_cents: amountCents,
         project_id: row.project_id ?? null,
         vendor_company_id: row.vendor_company_id ?? null,
+        cost_lines: costLines,
       },
-    })
+    });
   }
 
   for (const row of reversals) {
-    const amountCents = Number(row.amount_cents ?? 0)
-    if (amountCents === 0) continue
-    const accountingDate = accountingDateFromTimestamp(row.occurred_at)
+    const depositReversal =
+      Boolean(row.invoice_id) && depositInvoiceIds.has(String(row.invoice_id));
+    const reversalSourceType = depositReversal
+      ? "customer_deposit_reversal"
+      : "payment_reversal";
+    touchedSourceKeys.add(factSourceKey("payment_reversal", String(row.id)));
+    touchedSourceKeys.add(
+      factSourceKey("customer_deposit_reversal", String(row.id)),
+    );
+    const sourceKey = factSourceKey(reversalSourceType, String(row.id));
+    touchedSourceKeys.add(sourceKey);
+    if (row.status !== "succeeded") continue;
+    const amountCents = Number(row.amount_cents ?? 0);
+    if (amountCents === 0) continue;
+    liveSourceKeys.add(sourceKey);
+    const accountingDate = accountingDateFromTimestamp(row.occurred_at);
     if (!accountingDate) {
-      failures.push({ sourceType: "payment_reversal", sourceId: String(row.id), error: "Reversal has no readable occurred_at to date the entry" })
-      continue
+      failures.push({
+        sourceType: reversalSourceType,
+        sourceId: String(row.id),
+        error: "Reversal has no readable occurred_at to date the entry",
+      });
+      continue;
     }
     // `payment_reversals` carries a DB check that exactly one of invoice_id and
     // bill_id is set, so the side is unambiguous here.
-    const hasBill = Boolean(row.bill_id)
+    const hasBill = Boolean(row.bill_id);
     candidates.push({
-      sourceType: "payment_reversal",
+      sourceType: reversalSourceType,
       sourceId: String(row.id),
       accountingDate,
       occurredAt: String(row.updated_at),
       payload: {
-        memo: hasBill ? "Vendor payment returned" : "Customer payment reversed",
+        memo: depositReversal
+          ? "Customer deposit refunded"
+          : hasBill
+            ? "Vendor payment returned"
+            : "Customer payment reversed",
         amount_cents: amountCents,
         side: hasBill ? "bill_payment" : "invoice_payment",
         project_id: row.project_id ?? null,
       },
-    })
+    });
+  }
+
+  for (const row of adjustments) {
+    const sourceKey = factSourceKey("receivable_adjustment", String(row.id));
+    touchedSourceKeys.add(sourceKey);
+    if (row.status !== "posted") continue;
+    const amountCents = Number(row.amount_cents ?? 0);
+    if (amountCents <= 0) continue;
+    liveSourceKeys.add(sourceKey);
+    const projectId = row.project_id ? String(row.project_id) : null;
+    candidates.push({
+      sourceType: "receivable_adjustment",
+      sourceId: String(row.id),
+      accountingDate: String(row.effective_date),
+      occurredAt: String(row.updated_at),
+      payload: {
+        memo: `${row.adjustment_type === "write_off" ? "Write-off" : "Credit memo"}: ${row.reason}`,
+        amount_cents: amountCents,
+        tax_cents: Number(row.tax_cents ?? 0),
+        adjustment_type: row.adjustment_type,
+        project_id: row.project_id ?? null,
+        invoice_id: row.invoice_id,
+        revenue_basis: projectId
+          ? (basisByProject.get(projectId) ?? "percentage_of_completion")
+          : "percentage_of_completion",
+      },
+    });
   }
 
   for (const row of laborEntries) {
-    const amountCents = Number(row.cost_cents ?? 0)
-    if (amountCents === 0) continue
+    const sourceKey = factSourceKey("labor_cost", String(row.id));
+    touchedSourceKeys.add(sourceKey);
+    if (row.status !== "posted") continue;
+    const amountCents = Number(row.cost_cents ?? 0);
+    if (amountCents === 0) continue;
+    liveSourceKeys.add(sourceKey);
     candidates.push({
       sourceType: "labor_cost",
       sourceId: String(row.id),
@@ -466,114 +927,90 @@ async function projectionCandidates(orgId: string, since: string | null) {
         amount_cents: amountCents,
         project_id: row.project_id ?? null,
       },
-    })
+    });
   }
 
-  return { candidates, failures }
+  const retirementSourceKeys = new Set(
+    [...touchedSourceKeys].filter(
+      (sourceKey) => !liveSourceKeys.has(sourceKey),
+    ),
+  );
+  return { candidates, failures, retirementSourceKeys };
 }
 
 const factRowSchema = z.object({
   id: z.string().uuid(),
   payload_hash: z.string(),
   source_version: z.number().int(),
-})
-
-type FactResolution = { factId: string; sourceVersion: number; created: boolean; superseded: boolean }
+});
 
 /**
- * Records the economic fact behind a candidate. An unchanged payload is a no-op;
- * a changed payload supersedes the prior fact and reverses the journal entry it
- * produced, so the replacement can post cleanly on the same pass.
- *
- * The supersede is three writes — reverse, insert, post — and is not one
- * transaction. It does not need to be, but only because every step is keyed and
- * every pass re-runs it:
- *
- *  - Crash after the reversal: the next pass recomputes the same payload hash,
- *    finds the same prior fact, and reverses again — into the same posting key
- *    (`reversal:<entryId>:<digest of date + reason>`), which is a no-op because
- *    both the date and the reason are derived from the candidate and never from
- *    the clock. It then inserts and posts.
- *  - Crash after the insert: the next pass sees the NEW fact with a MATCHING
- *    hash and returns `created: false` — and `projectJournal` posts on every
- *    pass regardless of that flag, so the missing entry is written then.
- *
- * Both recoveries depend on the incremental watermark still reaching the row:
- * facts store the source's `updated_at` as `occurred_at` and the candidate
- * queries filter `gte`, so a row at exactly the watermark is included. Change
- * any of those four things — a clock in the reversal reason, a `gt` watermark, a
- * `created`-guarded post, or a retirement fact stamped `occurred_at: now()` —
- * and the ledger stops healing itself.
+ * Project one source transition as a single database transaction. The RPC owns
+ * concurrency, prior-entry reversal, immutable fact insertion and replacement
+ * posting; a worker crash can no longer expose a half-revised official ledger.
  */
-async function resolveProjectionFact(
+async function projectCandidateAtomically(
   orgId: string,
   candidate: ProjectionCandidate,
   policyVersion: number,
-): Promise<FactResolution> {
-  const service = createServiceSupabaseClient()
-  const payloadHash = booksDigest(hashableFactPayload(candidate.payload))
-  const { data: existingRow, error: existingError } = await service.from("accounting_facts")
+  projectionVersion: number,
+) {
+  const service = createServiceSupabaseClient();
+  const payloadHash = booksDigest(
+    hashableFactPayload(candidate.sourceType, candidate.payload),
+  );
+  const { data: existingRow, error: existingError } = await service
+    .from("accounting_facts")
     .select("id, payload_hash, source_version")
     .eq("org_id", orgId)
     .eq("source_type", candidate.sourceType)
     .eq("source_id", candidate.sourceId)
     .order("source_version", { ascending: false })
     .limit(1)
-    .maybeSingle()
-  if (existingError) throw new Error(`Failed to inspect accounting fact: ${existingError.message}`)
-  const existing = existingRow ? factRowSchema.parse(existingRow) : null
-  if (existing?.payload_hash === payloadHash) {
-    return { factId: existing.id, sourceVersion: existing.source_version, created: false, superseded: false }
-  }
-
-  const sourceVersion = existing ? existing.source_version + 1 : 1
-  if (existing) {
-    const { data: priorEntries, error: priorError } = await service
-      .from("journal_entries")
-      .select("id")
-      .eq("org_id", orgId)
-      .eq("fact_id", existing.id)
-      .eq("status", "posted")
-    if (priorError) throw new Error(`Failed to load the superseded journal entry: ${priorError.message}`)
-    for (const entry of priorEntries ?? []) {
-      await reverseBooksJournalEntryForService({
-        entryId: String(entry.id),
-        reversalDate: candidate.accountingDate,
-        reason: `${candidate.sourceType} was revised after posting`,
-        orgId,
-      })
-    }
-    await recordEvent({
-      orgId,
-      eventType: "books.projection_source_revised",
-      entityType: candidate.sourceType,
-      entityId: candidate.sourceId,
-      payload: { prior_fact_id: existing.id, prior_version: existing.source_version, new_version: sourceVersion },
-    })
-  }
-
-  const idempotencyKey = booksDigest({ orgId, sourceType: candidate.sourceType, sourceId: candidate.sourceId, payloadHash })
-  const { data, error } = await service.from("accounting_facts").insert({
-    org_id: orgId,
-    source_type: candidate.sourceType,
-    source_id: candidate.sourceId,
-    source_version: sourceVersion,
-    fact_kind: `${candidate.sourceType}.recognized`,
-    occurred_at: candidate.occurredAt,
-    accounting_date: candidate.accountingDate,
+    .maybeSingle();
+  if (existingError)
+    throw new Error(
+      `Failed to inspect accounting fact: ${existingError.message}`,
+    );
+  const existing = existingRow ? factRowSchema.parse(existingRow) : null;
+  const sourceVersion =
+    existing?.payload_hash === payloadHash
+      ? existing.source_version
+      : (existing?.source_version ?? 0) + 1;
+  const idempotencyKey = booksDigest({
+    orgId,
+    sourceType: candidate.sourceType,
+    sourceId: candidate.sourceId,
+    payloadHash,
+  });
+  const draft = draftFromFact({
+    sourceType: candidate.sourceType,
+    sourceId: candidate.sourceId,
+    accountingDate: candidate.accountingDate,
     payload: candidate.payload,
-    payload_hash: payloadHash,
-    policy_version: policyVersion,
-    supersedes_fact_id: existing?.id ?? null,
-    idempotency_key: idempotencyKey,
-  }).select("id").single()
-  if (error) throw new Error(`Failed to record accounting fact: ${error.message}`)
-  return {
-    factId: z.object({ id: z.string().uuid() }).parse(data).id,
     sourceVersion,
-    created: true,
-    superseded: Boolean(existing),
-  }
+    projectionVersion,
+    policyVersion,
+  });
+  if (!draft) throw new Error(`No posting rule covers ${candidate.sourceType}`);
+  return projectBooksFactAndJournalForService({
+    orgId,
+    expectedFactId: existing?.id ?? null,
+    fact: {
+      sourceType: candidate.sourceType,
+      sourceId: candidate.sourceId,
+      sourceVersion,
+      factKind: `${candidate.sourceType}.recognized`,
+      occurredAt: candidate.occurredAt,
+      accountingDate: candidate.accountingDate,
+      payload: candidate.payload,
+      payloadHash,
+      policyVersion,
+      idempotencyKey,
+    },
+    draft,
+    reversalReason: `${candidate.sourceType} was revised after posting`,
+  });
 }
 
 const retirableFactRowSchema = z.object({
@@ -584,9 +1021,9 @@ const retirableFactRowSchema = z.object({
   fact_kind: z.string(),
   accounting_date: z.string(),
   occurred_at: z.string(),
-})
+});
 
-type RetirableFactRow = z.infer<typeof retirableFactRowSchema>
+type RetirableFactRow = z.infer<typeof retirableFactRowSchema>;
 
 /**
  * Un-posts the sources that left.
@@ -597,8 +1034,9 @@ type RetirableFactRow = z.infer<typeof retirableFactRowSchema>
  * AP tie-out red and no cure. This is the other half: reverse the entry, then
  * append a retirement fact so the source is never posted again.
  *
- * FULL PASSES ONLY. On an incremental pass the candidate set is a watermarked
- * slice, and treating absence as departure would retire the entire ledger.
+ * A full pass compares the complete live set. An incremental pass supplies an
+ * explicit `onlySourceKeys` set made from changed rows that no longer qualify;
+ * absence outside that set is never interpreted as departure.
  *
  * Re-running is safe. The reversal's posting key is derived from the entry id,
  * the fact's own accounting date and a constant reason, so a second reversal
@@ -606,29 +1044,43 @@ type RetirableFactRow = z.infer<typeof retirableFactRowSchema>
  * source skip the scan entirely on every later pass. A source that comes back
  * supersedes the retirement fact through the ordinary path and posts again.
  */
-async function retireDepartedSources(orgId: string, liveSourceKeys: ReadonlySet<string>, policyVersion: number) {
-  const service = createServiceSupabaseClient()
+async function retireDepartedSources(
+  orgId: string,
+  liveSourceKeys: ReadonlySet<string>,
+  policyVersion: number,
+  onlySourceKeys?: ReadonlySet<string>,
+) {
+  const service = createServiceSupabaseClient();
   const rows = await collectPages(
-    (from, to) => service
-      .from("accounting_facts")
-      .select("id, source_type, source_id, source_version, fact_kind, accounting_date, occurred_at")
-      .eq("org_id", orgId)
-      .in("source_type", [...PROJECTED_SOURCE_TYPES])
-      .order("created_at", { ascending: true })
-      .order("id", { ascending: true })
-      .range(from, to),
+    (from, to) =>
+      service
+        .from("accounting_facts")
+        .select(
+          "id, source_type, source_id, source_version, fact_kind, accounting_date, occurred_at",
+        )
+        .eq("org_id", orgId)
+        .in("source_type", [...PROJECTED_SOURCE_TYPES])
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to),
     "accounting facts for retirement",
-  )
-  const latestBySource = new Map<string, RetirableFactRow>()
+  );
+  const latestBySource = new Map<string, RetirableFactRow>();
   for (const raw of rows) {
-    const row = retirableFactRowSchema.parse(raw)
-    const key = factSourceKey(row.source_type, row.source_id)
-    const current = latestBySource.get(key)
-    if (!current || row.source_version > current.source_version) latestBySource.set(key, row)
+    const row = retirableFactRowSchema.parse(raw);
+    const key = factSourceKey(row.source_type, row.source_id);
+    const current = latestBySource.get(key);
+    if (!current || row.source_version > current.source_version)
+      latestBySource.set(key, row);
   }
 
+  const latestFacts = Array.from(latestBySource.values()).filter(
+    (row) =>
+      !onlySourceKeys ||
+      onlySourceKeys.has(factSourceKey(row.source_type, row.source_id)),
+  );
   const departed = selectFactsToRetire(
-    Array.from(latestBySource.values()).map((row) => ({
+    latestFacts.map((row) => ({
       sourceType: row.source_type,
       sourceId: row.source_id,
       sourceVersion: row.source_version,
@@ -636,10 +1088,10 @@ async function retireDepartedSources(orgId: string, liveSourceKeys: ReadonlySet<
       row,
     })),
     liveSourceKeys,
-  )
+  );
 
-  const failures: ProjectionFailure[] = []
-  let retired = 0
+  const failures: ProjectionFailure[] = [];
+  let retired = 0;
   for (const fact of departed) {
     try {
       const { data: postedEntries, error: postedError } = await service
@@ -647,8 +1099,11 @@ async function retireDepartedSources(orgId: string, liveSourceKeys: ReadonlySet<
         .select("id")
         .eq("org_id", orgId)
         .eq("fact_id", fact.row.id)
-        .eq("status", "posted")
-      if (postedError) throw new Error(`Failed to load the retired journal entry: ${postedError.message}`)
+        .eq("status", "posted");
+      if (postedError)
+        throw new Error(
+          `Failed to load the retired journal entry: ${postedError.message}`,
+        );
       for (const entry of postedEntries ?? []) {
         await reverseBooksJournalEntryForService({
           entryId: String(entry.id),
@@ -657,46 +1112,65 @@ async function retireDepartedSources(orgId: string, liveSourceKeys: ReadonlySet<
           reversalDate: fact.row.accounting_date,
           reason: RETIREMENT_REASON,
           orgId,
-        })
+        });
       }
-      const payload = retirementFactPayload(fact.sourceVersion)
-      const payloadHash = booksDigest(hashableFactPayload(payload))
-      const { error: insertError } = await service.from("accounting_facts").insert({
-        org_id: orgId,
-        source_type: fact.sourceType,
-        source_id: fact.sourceId,
-        source_version: fact.sourceVersion + 1,
-        fact_kind: retiredFactKind(fact.sourceType),
-        // Carried over rather than stamped `now()`: `occurred_at` IS the
-        // incremental watermark, and advancing it here would make the next
-        // incremental pass skip every source touched since this run started.
-        occurred_at: fact.row.occurred_at,
-        accounting_date: fact.row.accounting_date,
-        payload,
-        payload_hash: payloadHash,
-        policy_version: policyVersion,
-        supersedes_fact_id: fact.row.id,
-        reversal_of_fact_id: fact.row.id,
-        idempotency_key: booksDigest({ orgId, sourceType: fact.sourceType, sourceId: fact.sourceId, payloadHash }),
-      })
-      if (insertError) throw new Error(`Failed to record the retirement fact: ${insertError.message}`)
+      const payload = retirementFactPayload(fact.sourceVersion);
+      const payloadHash = booksDigest(
+        hashableFactPayload("retirement", payload),
+      );
+      const { error: insertError } = await service
+        .from("accounting_facts")
+        .insert({
+          org_id: orgId,
+          source_type: fact.sourceType,
+          source_id: fact.sourceId,
+          source_version: fact.sourceVersion + 1,
+          fact_kind: retiredFactKind(fact.sourceType),
+          // Carried over rather than stamped `now()`: `occurred_at` IS the
+          // incremental watermark, and advancing it here would make the next
+          // incremental pass skip every source touched since this run started.
+          occurred_at: fact.row.occurred_at,
+          accounting_date: fact.row.accounting_date,
+          payload,
+          payload_hash: payloadHash,
+          policy_version: policyVersion,
+          supersedes_fact_id: fact.row.id,
+          reversal_of_fact_id: fact.row.id,
+          idempotency_key: booksDigest({
+            orgId,
+            sourceType: fact.sourceType,
+            sourceId: fact.sourceId,
+            payloadHash,
+          }),
+        });
+      if (insertError)
+        throw new Error(
+          `Failed to record the retirement fact: ${insertError.message}`,
+        );
       await recordEvent({
         orgId,
         eventType: "books.projection_source_retired",
         entityType: fact.sourceType,
         entityId: fact.sourceId,
-        payload: { retired_fact_id: fact.row.id, retired_version: fact.sourceVersion, entries_reversed: (postedEntries ?? []).length },
-      })
-      retired += 1
+        payload: {
+          retired_fact_id: fact.row.id,
+          retired_version: fact.sourceVersion,
+          entries_reversed: (postedEntries ?? []).length,
+        },
+      });
+      retired += 1;
     } catch (retirementError) {
       failures.push({
         sourceType: fact.sourceType,
         sourceId: fact.sourceId,
-        error: retirementError instanceof Error ? retirementError.message : String(retirementError),
-      })
+        error:
+          retirementError instanceof Error
+            ? retirementError.message
+            : String(retirementError),
+      });
     }
   }
-  return { retired, failures }
+  return { retired, failures };
 }
 
 /**
@@ -705,7 +1179,7 @@ async function retireDepartedSources(orgId: string, liveSourceKeys: ReadonlySet<
  * entries the verifier can compare before the old version is retired.
  */
 export async function resolveProjectionVersion(orgId: string) {
-  const service = createServiceSupabaseClient()
+  const service = createServiceSupabaseClient();
   const { data, error } = await service
     .from("accounting_policies")
     .select("version")
@@ -713,73 +1187,125 @@ export async function resolveProjectionVersion(orgId: string) {
     .eq("status", "approved")
     .order("version", { ascending: false })
     .limit(1)
-    .maybeSingle()
-  if (error) throw new Error(`Failed to resolve the projection version: ${error.message}`)
-  return data?.version ? Number(data.version) : 1
+    .maybeSingle();
+  if (error)
+    throw new Error(
+      `Failed to resolve the projection version: ${error.message}`,
+    );
+  return data?.version ? Number(data.version) : 1;
 }
 
-export async function projectJournal(orgId: string, options: { since?: string; full?: boolean } = {}) {
-  const service = createServiceSupabaseClient()
-  const { data: settings, error } = await service.from("books_settings")
+export async function projectJournal(
+  orgId: string,
+  options: { since?: string; full?: boolean } = {},
+) {
+  const service = createServiceSupabaseClient();
+  const { data: settings, error } = await service
+    .from("books_settings")
     .select("workspace_enabled, arc_ledger_mode, active_policy_version")
     .eq("org_id", orgId)
-    .single()
-  if (error) throw new Error(`Failed to load Books settings: ${error.message}`)
+    .single();
+  if (error) throw new Error(`Failed to load Books settings: ${error.message}`);
   if (!settings.workspace_enabled || settings.arc_ledger_mode === "disabled") {
-    return { projected: 0, skipped: 0, revised: 0, retired: 0, failures: [] as ProjectionFailure[] }
+    return {
+      projected: 0,
+      skipped: 0,
+      revised: 0,
+      retired: 0,
+      failures: [] as ProjectionFailure[],
+    };
   }
 
-  const policyVersion = Number(settings.active_policy_version)
-  const projectionVersion = await resolveProjectionVersion(orgId)
-  const since = options.full ? null : options.since ?? (await resolveWatermark(orgId))
-  const { candidates, failures } = await projectionCandidates(orgId, since)
+  const policyVersion = Number(settings.active_policy_version);
+  const projectionVersion = await resolveProjectionVersion(orgId);
+  const allFrom = (value: string | null): ProjectionWatermarks => ({
+    bills: value,
+    invoices: value,
+    payments: value,
+    expenses: value,
+    reversals: value,
+    adjustments: value,
+    labor: value,
+  });
+  const watermarks = options.full
+    ? allFrom(null)
+    : options.since
+      ? allFrom(options.since)
+      : await resolveWatermarks(orgId);
+  const { candidates, failures, retirementSourceKeys } =
+    await projectionCandidates(orgId, watermarks);
 
-  let projected = 0
-  let skipped = 0
-  let revised = 0
+  let projected = 0;
+  let skipped = 0;
+  let revised = 0;
   for (const candidate of candidates) {
     try {
-      const fact = await resolveProjectionFact(orgId, candidate, policyVersion)
-      if (fact.superseded) revised += 1
-      const draft = draftFromFact({
-        sourceType: candidate.sourceType,
-        sourceId: candidate.sourceId,
-        accountingDate: candidate.accountingDate,
-        payload: candidate.payload,
-        sourceVersion: fact.sourceVersion,
-        projectionVersion,
+      const projection = await projectCandidateAtomically(
+        orgId,
+        candidate,
         policyVersion,
-      })
-      if (!draft) throw new Error(`No posting rule covers ${candidate.sourceType}`)
-      const journal = await postBooksJournalEntryForService(draft, orgId, fact.factId)
-      if (fact.created || journal.created) projected += 1
-      else skipped += 1
+        projectionVersion,
+      );
+      if (projection.superseded) revised += 1;
+      if (projection.created || projection.journalCreated) projected += 1;
+      else skipped += 1;
     } catch (projectionError) {
       failures.push({
         sourceType: candidate.sourceType,
         sourceId: candidate.sourceId,
-        error: projectionError instanceof Error ? projectionError.message : String(projectionError),
-      })
+        error:
+          projectionError instanceof Error
+            ? projectionError.message
+            : String(projectionError),
+      });
     }
   }
 
-  // Only a full pass has a complete candidate set, and only a complete set can
-  // tell "this source is gone" apart from "this source is behind the watermark".
-  let retired = 0
+  let retired = 0;
   if (options.full) {
-    const liveSourceKeys = new Set(candidates.map((candidate) => factSourceKey(candidate.sourceType, candidate.sourceId)))
-    const retirement = await retireDepartedSources(orgId, liveSourceKeys, policyVersion)
-    retired = retirement.retired
-    failures.push(...retirement.failures)
+    const liveSourceKeys = new Set(
+      candidates.map((candidate) =>
+        factSourceKey(candidate.sourceType, candidate.sourceId),
+      ),
+    );
+    const retirement = await retireDepartedSources(
+      orgId,
+      liveSourceKeys,
+      policyVersion,
+    );
+    retired = retirement.retired;
+    failures.push(...retirement.failures);
+  } else if (retirementSourceKeys.size > 0) {
+    // Incremental rows include lifecycle changes even after they leave the
+    // projectable status set, so voids/rejections retire immediately. Deletions
+    // still require the nightly full pass because no row remains to watermark.
+    const retirement = await retireDepartedSources(
+      orgId,
+      new Set<string>(),
+      policyVersion,
+      retirementSourceKeys,
+    );
+    retired = retirement.retired;
+    failures.push(...retirement.failures);
   }
-  return { projected, skipped, revised, retired, failures }
+  return { projected, skipped, revised, retired, failures };
 }
 
 export async function runBooksProjection(options: { full?: boolean } = {}) {
-  const service = createServiceSupabaseClient()
-  const { data, error } = await service.from("books_settings").select("org_id").eq("workspace_enabled", true).neq("arc_ledger_mode", "disabled").order("org_id")
-  if (error) throw new Error(`Failed to load Books organizations: ${error.message}`)
-  const results = []
-  for (const row of data ?? []) results.push({ orgId: row.org_id, ...await projectJournal(row.org_id, { full: options.full }) })
-  return { organizations: results.length, results }
+  const service = createServiceSupabaseClient();
+  const { data, error } = await service
+    .from("books_settings")
+    .select("org_id")
+    .eq("workspace_enabled", true)
+    .neq("arc_ledger_mode", "disabled")
+    .order("org_id");
+  if (error)
+    throw new Error(`Failed to load Books organizations: ${error.message}`);
+  const results = [];
+  for (const row of data ?? [])
+    results.push({
+      orgId: row.org_id,
+      ...(await projectJournal(row.org_id, { full: options.full })),
+    });
+  return { organizations: results.length, results };
 }

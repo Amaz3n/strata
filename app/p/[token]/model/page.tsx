@@ -9,7 +9,6 @@ interface Props {
   params: Promise<{ token: string }>
 }
 
-export const revalidate = 0
 
 /**
  * A buyer walking their own house before it exists.

@@ -5,7 +5,6 @@ import { DivisionRoster, DivisionRosterSkeleton } from "@/components/communities
 import { listDivisions } from "@/lib/services/divisions"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 
-export const dynamic = "force-dynamic"
 
 async function DivisionsData() {
   const [divisions, permissions] = await Promise.all([listDivisions(), getCurrentUserPermissions()])

@@ -5,7 +5,6 @@ import { renderInvoicePdf } from "@/lib/pdfs/invoice"
 import { buildInvoicePdfData } from "@/lib/pdfs/invoice-data"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
-export const runtime = "nodejs"
 
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ token: string }> }) {
   const { token } = await params

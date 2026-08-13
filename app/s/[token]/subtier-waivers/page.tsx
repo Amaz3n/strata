@@ -5,7 +5,6 @@ import { listSubtierRequirementsForPortal } from "@/lib/services/lien-waivers"
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { SubtierWaiversClient } from "./subtier-waivers-client"
 
-export const dynamic = "force-dynamic"
 
 export default async function SubtierWaiversPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params

@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto"
-
 export const PAYMENT_RUN_STATUSES = [
   "draft",
   "pending_approval",
@@ -30,6 +28,75 @@ export const DISBURSEMENT_STATUSES = [
 
 export type DisbursementStatus = (typeof DISBURSEMENT_STATUSES)[number]
 export type PaymentApprovalMode = "sole" | "dual"
+
+function utcDateKey(date: Date) {
+  return date.toISOString().slice(0, 10)
+}
+
+function observedFixedHoliday(year: number, month: number, day: number) {
+  const actual = new Date(Date.UTC(year, month, day))
+  const observed = new Date(actual)
+  if (actual.getUTCDay() === 6) observed.setUTCDate(observed.getUTCDate() - 1)
+  if (actual.getUTCDay() === 0) observed.setUTCDate(observed.getUTCDate() + 1)
+  return utcDateKey(observed)
+}
+
+function nthWeekday(year: number, month: number, weekday: number, occurrence: number) {
+  const date = new Date(Date.UTC(year, month, 1))
+  date.setUTCDate(1 + ((weekday - date.getUTCDay() + 7) % 7) + (occurrence - 1) * 7)
+  return utcDateKey(date)
+}
+
+function lastWeekday(year: number, month: number, weekday: number) {
+  const date = new Date(Date.UTC(year, month + 1, 0))
+  date.setUTCDate(date.getUTCDate() - ((date.getUTCDay() - weekday + 7) % 7))
+  return utcDateKey(date)
+}
+
+const US_BANK_HOLIDAYS_BY_YEAR = new Map<number, Set<string>>()
+
+function usBankHolidayKeys(year: number) {
+  const cached = US_BANK_HOLIDAYS_BY_YEAR.get(year)
+  if (cached) return cached
+  const holidays = new Set([
+    observedFixedHoliday(year, 0, 1),
+    nthWeekday(year, 0, 1, 3), // Martin Luther King Jr. Day
+    nthWeekday(year, 1, 1, 3), // Washington's Birthday
+    lastWeekday(year, 4, 1), // Memorial Day
+    observedFixedHoliday(year, 5, 19),
+    observedFixedHoliday(year, 6, 4),
+    nthWeekday(year, 8, 1, 1), // Labor Day
+    nthWeekday(year, 9, 1, 2), // Columbus Day
+    observedFixedHoliday(year, 10, 11),
+    nthWeekday(year, 10, 4, 4), // Thanksgiving
+    observedFixedHoliday(year, 11, 25),
+  ])
+  US_BANK_HOLIDAYS_BY_YEAR.set(year, holidays)
+  return holidays
+}
+
+function isUsBankBusinessDay(date: Date) {
+  const day = date.getUTCDay()
+  if (day === 0 || day === 6) return false
+  const key = utcDateKey(date)
+  // New Year's observed day can fall in the preceding calendar year, so check
+  // adjacent holiday calendars as well as the date's own year.
+  const year = date.getUTCFullYear()
+  return ![year - 1, year, year + 1].some((candidate) => usBankHolidayKeys(candidate).has(key))
+}
+
+/** Add 24-hour US bank-business-day hours, excluding weekends and bank holidays. */
+export function addBusinessHours(start: string | Date, hours: number): Date {
+  if (!Number.isInteger(hours) || hours < 0) throw new Error("Business-hour hold must be a non-negative integer")
+  const result = new Date(start)
+  if (Number.isNaN(result.getTime())) throw new Error("Business-hour hold start is invalid")
+  let remaining = hours
+  while (remaining > 0) {
+    result.setUTCHours(result.getUTCHours() + 1)
+    if (isUsBankBusinessDay(result)) remaining -= 1
+  }
+  return result
+}
 
 /**
  * Runs are immutable after creation. There is no edit path and no return to
@@ -224,20 +291,6 @@ export function assertBalancedLedgerEntries(entries: LedgerEntryInput[]) {
     throw new Error(`Ledger is out of balance: debits=${debits}, credits=${credits}`)
   }
   return { debits, credits, currency: [...currencies][0] }
-}
-
-function stableValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stableValue)
-  if (!value || typeof value !== "object") return value
-  return Object.fromEntries(
-    Object.entries(value)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, nested]) => [key, stableValue(nested)]),
-  )
-}
-
-export function createPaymentRunContentHash(value: unknown) {
-  return createHash("sha256").update(JSON.stringify(stableValue(value))).digest("hex")
 }
 
 export function assertIntegerCents(value: number, label: string, options: { allowZero?: boolean } = {}) {

@@ -6,7 +6,6 @@ import { AiConsole } from "@/components/admin/ai/ai-console"
 import { requireAnyPermissionGuard } from "@/lib/auth/guards"
 import { getAiConsoleSnapshot } from "@/lib/services/ai-console"
 
-export const dynamic = "force-dynamic"
 
 const WINDOW_OPTIONS = [7, 30, 90]
 

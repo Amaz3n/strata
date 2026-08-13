@@ -45,6 +45,7 @@ export const GL_ACCOUNT_SUBTYPES = [
   "construction_revenue",
   "other_revenue",
   "early_pay_discount",
+  "payment_fee_recovery",
   "job_costs",
   "subcontractor_costs",
   "material_costs",
@@ -64,6 +65,61 @@ export const GL_ACCOUNT_SUBTYPES = [
 ] as const
 
 export type GlAccountSubtype = (typeof GL_ACCOUNT_SUBTYPES)[number]
+
+export const GL_ACCOUNT_SUBTYPE_TYPES: Record<GlAccountSubtype, GlAccountType> = {
+  cash: "asset",
+  undeposited_funds: "asset",
+  accounts_receivable: "asset",
+  retainage_receivable: "asset",
+  costs_in_excess: "asset",
+  work_in_progress: "asset",
+  prepaid_expenses: "asset",
+  fixed_assets: "asset",
+  accumulated_depreciation: "asset",
+  other_asset: "asset",
+  accounts_payable: "liability",
+  retainage_payable: "liability",
+  credit_card: "liability",
+  payroll_clearing: "liability",
+  sales_use_tax: "liability",
+  customer_deposits: "liability",
+  billings_in_excess: "liability",
+  current_debt: "liability",
+  long_term_debt: "liability",
+  other_liability: "liability",
+  owner_equity: "equity",
+  owner_contributions: "equity",
+  owner_distributions: "equity",
+  retained_earnings: "equity",
+  construction_revenue: "income",
+  other_revenue: "income",
+  early_pay_discount: "income",
+  payment_fee_recovery: "income",
+  job_costs: "cogs",
+  subcontractor_costs: "cogs",
+  material_costs: "cogs",
+  direct_labor: "cogs",
+  equipment_costs: "cogs",
+  warranty_costs: "cogs",
+  rent: "expense",
+  insurance: "expense",
+  software: "expense",
+  professional_fees: "expense",
+  utilities: "expense",
+  bank_fees: "expense",
+  interest: "expense",
+  payroll: "expense",
+  depreciation: "expense",
+  other_expense: "expense",
+}
+
+export function normalBalanceForSubtype(subtype: GlAccountSubtype): NormalBalance {
+  if (subtype === "accumulated_depreciation") return "credit"
+  if (subtype === "owner_distributions") return "debit"
+  return ["liability", "equity", "income"].includes(GL_ACCOUNT_SUBTYPE_TYPES[subtype])
+    ? "credit"
+    : "debit"
+}
 
 export function isGlAccountSubtype(value: string): value is GlAccountSubtype {
   return (GL_ACCOUNT_SUBTYPES as readonly string[]).includes(value)
@@ -184,4 +240,3 @@ export function assertValidOperatingPosture(posture: BooksOperatingPosture) {
     throw new Error("Ledger authority, Arc ledger mode, and external sync posture are inconsistent")
   }
 }
-

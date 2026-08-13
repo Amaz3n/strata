@@ -27,6 +27,7 @@ export interface CreateStripeIntentParams {
   application_fee_amount?: number
   payment_method_types?: string[]
   metadata?: Record<string, string>
+  idempotency_key?: string
 }
 
 export interface StripeIntentResult {
@@ -121,7 +122,16 @@ export async function createStripePaymentIntent(params: CreateStripeIntentParams
           }
         : undefined,
     },
-    params.connected_account_id ? { stripeAccount: params.connected_account_id } : undefined,
+    params.connected_account_id || params.idempotency_key
+      ? {
+          ...(params.connected_account_id
+            ? { stripeAccount: params.connected_account_id }
+            : {}),
+          ...(params.idempotency_key
+            ? { idempotencyKey: params.idempotency_key }
+            : {}),
+        }
+      : undefined,
   )
 
   return {
@@ -318,11 +328,12 @@ export function constructWebhookEvent(payload: string, signature: string) {
 
 export function mapStripeEventToDomain(event: Stripe.Event) {
   switch (event.type) {
+    case "payment_intent.processing":
     case "payment_intent.succeeded": {
       const intent = event.data.object as Stripe.PaymentIntent
       const invoiceBalanceCents = Number.parseInt(intent.metadata.invoice_balance_cents ?? "", 10)
       return {
-        type: "payment_succeeded" as const,
+        type: event.type === "payment_intent.processing" ? "payment_processing" as const : "payment_succeeded" as const,
         provider_payment_id: intent.id,
         amount_cents: Number.isFinite(invoiceBalanceCents) && invoiceBalanceCents > 0 ? invoiceBalanceCents : intent.amount,
         currency: intent.currency,

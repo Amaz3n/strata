@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation"
+import { connection } from "next/server"
 
 import { ImportWorkspace } from "@/components/admin/import-workspace"
 import { PageLayout } from "@/components/layout/page-layout"
@@ -7,9 +8,9 @@ import { getImportBatch, listImportBatches } from "@/lib/services/imports"
 import { getOnboardingRun } from "@/lib/services/onboarding"
 import { commitImportAction, discardImportAction, patchImportRowAction, previewImportAction, setImportUpdateExistingAction, stageImportAction } from "../../actions"
 
-export const dynamic = "force-dynamic"
 
 export default async function ImporterPage({ params, searchParams }: { params: Promise<{ orgId: string; importer: string }>; searchParams: Promise<{ batch?: string }> }) {
+  await connection()
   const [{ orgId, importer: rawImporter }, query] = await Promise.all([params, searchParams])
   if (!IMPORTER_KEYS.includes(rawImporter as ImporterKey)) notFound()
   const importer = rawImporter as ImporterKey

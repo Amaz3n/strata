@@ -129,7 +129,7 @@ export async function proxy(request: NextRequest) {
   requestHeaders.set("x-pathname", request.nextUrl.pathname)
   requestHeaders.set("x-search", request.nextUrl.search)
 
-  const response = NextResponse.next({
+  let response = NextResponse.next({
     request: {
       headers: requestHeaders,
     },
@@ -150,14 +150,24 @@ export async function proxy(request: NextRequest) {
       // auth.sessions — forward the browser's so the Devices list stays truthful.
       global: { headers: clientIdentityHeaders },
       cookies: {
-        get(name: string) {
-          return request.cookies.get(name)?.value
+        getAll() {
+          return request.cookies.getAll()
         },
-        set(name: string, value: string, options: any) {
-          response.cookies.set({ name, value, ...options })
-        },
-        remove(name: string, options: any) {
-          response.cookies.set({ name, value: "", ...options, maxAge: 0 })
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value))
+          requestHeaders.set("cookie", request.cookies.toString())
+
+          // Recreate the pass-through response so Server Components receive
+          // refreshed tokens during this same request, while preserving Arc's
+          // pathname/search headers used by the app shell.
+          response = NextResponse.next({
+            request: {
+              headers: requestHeaders,
+            },
+          })
+          cookiesToSet.forEach(({ name, value, options }) => {
+            response.cookies.set(name, value, options)
+          })
         },
       },
     },

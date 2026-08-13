@@ -1,10 +1,9 @@
 import "server-only"
 
-import Stripe from "stripe"
-
 import { getPaymentRailProvider } from "@/lib/integrations/payments/payment-rail-registry"
-import { retrieveStripeChargeWithBalanceTransaction } from "@/lib/integrations/payments/stripe"
+import type { NormalizedPaymentRailEvent } from "@/lib/integrations/payments/payment-rail-provider"
 import {
+  addBusinessHours,
   assertDisbursementTransition,
   assertPaymentRunTransition,
   planDisbursementAdvance,
@@ -69,14 +68,12 @@ async function recordProviderEvent(input: {
 
 async function recordProcessingAttempt(input: { providerEventId: string; outcome: "processed" | "ignored" | "failed"; error?: string | null; startedAt: string }) {
   const supabase = createServiceSupabaseClient()
-  const { count } = await supabase.from("payment_provider_event_attempts").select("id", { count: "exact", head: true }).eq("provider_event_id", input.providerEventId)
-  const { error } = await supabase.from("payment_provider_event_attempts").insert({
-    provider_event_id: input.providerEventId,
-    attempt_number: (count ?? 0) + 1,
-    outcome: input.outcome,
-    processing_error: input.error ?? null,
-    started_at: input.startedAt,
-    completed_at: new Date().toISOString(),
+  const { error } = await supabase.rpc("record_payment_provider_event_attempt", {
+    p_provider_event_id: input.providerEventId,
+    p_outcome: input.outcome,
+    p_processing_error: input.error ?? null,
+    p_started_at: input.startedAt,
+    p_completed_at: new Date().toISOString(),
   })
   if (error) throw new Error(`Unable to record provider event attempt: ${error.message}`)
 }
@@ -155,9 +152,9 @@ async function advanceDisbursement(disbursementId: string, orgId: string, target
   return { id: disbursementId, status: target }
 }
 
-async function resolveDisbursementByPaymentId(providerPaymentId: string) {
+async function resolveDisbursementByPaymentId(provider: string, providerPaymentId: string) {
   const supabase = createServiceSupabaseClient()
-  const { data } = await supabase.from("disbursements").select("*").eq("provider", "stripe").eq("provider_payment_id", providerPaymentId).maybeSingle()
+  const { data } = await supabase.from("disbursements").select("*").eq("provider", provider).eq("provider_payment_id", providerPaymentId).maybeSingle()
   return data
 }
 
@@ -194,7 +191,7 @@ async function processDisbursementPaid(input: { disbursement: Record<string, unk
   await sendVendorRemittanceAdvice({ orgId, disbursementId }).catch(() => undefined)
   await Promise.all([
     recordEvent({ orgId, eventType: "vendor_payment_paid", entityType: "disbursement", entityId: disbursementId, payload: { bill_id: input.disbursement.bill_id, amount_cents: input.disbursement.amount_cents, provider_payout_id: input.providerPayoutId } }),
-    recordAudit({ orgId, action: "update", entityType: "disbursement", entityId: disbursementId, after: { status: "paid", provider_payout_id: input.providerPayoutId }, source: "stripe_webhook" }),
+    recordAudit({ orgId, action: "update", entityType: "disbursement", entityId: disbursementId, after: { status: "paid", provider_payout_id: input.providerPayoutId }, source: `${String(input.disbursement.provider)}_webhook` }),
   ])
 }
 
@@ -232,13 +229,31 @@ async function processDisbursementReturn(input: { disbursement: Record<string, u
       returned_at: input.occurredAt,
     })
   }
+  // Stripe invalidates an ACH mandate when the account holder disputes the
+  // debit. Fail closed even for the rare post-succeeded failure: the builder
+  // must re-verify and re-authorize this bank before Arc attempts another debit.
+  const { error: fundingError } = await supabase.from("org_funding_sources").update({
+    status: "disabled",
+    mandate_status: "invalid",
+    verification_status: "failed",
+    disabled_at: input.occurredAt,
+  }).eq("org_id", orgId).eq("id", input.disbursement.funding_source_id)
+  if (fundingError) throw new Error(`Unable to disable the returned ACH funding source: ${fundingError.message}`)
+  await recordAudit({
+    orgId,
+    action: "update",
+    entityType: "org_funding_source",
+    entityId: String(input.disbursement.funding_source_id),
+    after: { status: "disabled", mandate_status: "invalid", verification_status: "failed", reason: input.reason },
+    source: `${String(input.disbursement.provider)}_webhook`,
+  })
   if (wasPaid) {
     await postDisbursementReturnLedger({ orgId, disbursementId, providerEventId: input.providerEventId, amountCents: Number(input.disbursement.amount_cents), currency: String(input.disbursement.currency), effectiveAt: input.occurredAt })
     // The vendor already has the money and the builder's bank took it back, so
     // this one survived the payout hold and is a real loss. Book it, then check
     // whether this org has now cost enough to stop paying through Arc.
     await postApReturnLossLedger({ orgId, disbursementId, providerEventId: input.providerEventId, amountCents: Number(input.disbursement.amount_cents), currency: String(input.disbursement.currency), effectiveAt: input.occurredAt })
-    await enforceReturnLossCeiling(orgId)
+    await enforceReturnLossCeiling(orgId, String(input.disbursement.provider))
   } else {
     await postDisbursementSubmissionReversalLedger({ orgId, disbursementId, providerEventId: input.providerEventId, vendorAmountCents: Number(input.disbursement.amount_cents), currency: String(input.disbursement.currency), effectiveAt: input.occurredAt })
   }
@@ -253,7 +268,7 @@ async function processDisbursementReturn(input: { disbursement: Record<string, u
  * one bad customer from stopping everyone else's payroll, and the alert names
  * the number so a human can decide whether to raise it or keep them off.
  */
-async function enforceReturnLossCeiling(orgId: string) {
+async function enforceReturnLossCeiling(orgId: string, providerKey: string) {
   const supabase = createServiceSupabaseClient()
   const { data: policy } = await supabase
     .from("payment_rail_policies")
@@ -265,32 +280,61 @@ async function enforceReturnLossCeiling(orgId: string) {
 
   // Sum the loss account itself rather than counting returns: it is the only
   // figure that already accounts for whatever was recovered.
-  const { data: entries, error } = await supabase
-    .from("payment_ledger_entries")
-    .select("amount_cents,direction,transaction:payment_ledger_transactions!inner(org_id)")
-    .eq("account_code", "ach_return_loss")
-    .eq("payment_ledger_transactions.org_id", orgId)
-    .limit(5_000)
-  if (error) {
+  const entries: Array<{ amount_cents: number; direction: string }> = []
+  let ledgerReadError: { message: string } | null = null
+  const pageSize = 1_000
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase
+      .from("payment_ledger_entries")
+      .select("amount_cents,direction,transaction:payment_ledger_transactions!inner(org_id)")
+      .eq("account_code", "ach_return_loss")
+      .eq("payment_ledger_transactions.org_id", orgId)
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, from + pageSize - 1)
+    if (error) {
+      ledgerReadError = error
+      break
+    }
+    entries.push(...((data ?? []) as Array<{ amount_cents: number; direction: string }>))
+    if ((data ?? []).length < pageSize) break
+  }
+  if (ledgerReadError) {
     // The ceiling fails closed. A ledger read that cannot be trusted must not
     // silently disable the loss control — alert, then rethrow so the webhook
     // records a failed attempt and the provider redelivers. Every mutation on
     // this path is idempotent, so the retry is safe.
-    await recordEvent({
-      orgId,
-      eventType: "payment_operations_alert",
-      entityType: "payment_rail_policy",
-      entityId: orgId,
-      payload: {
-        findings: [{
-          code: "return_loss_ceiling_check_failed",
-          detail: "The ACH return-loss ledger could not be read, so the loss ceiling could not be enforced for this return. The webhook will retry.",
-        }],
-        error: error.message,
-        ceiling_cents: ceilingCents,
-      },
+    const detail = "The ACH return-loss ledger could not be read, so the loss ceiling could not be enforced for this return. The webhook will retry."
+    const { data: shouldNotify, error: incidentError } = await supabase.rpc("open_payment_operations_incident", {
+      p_org_id: orgId,
+      p_finding_code: "return_loss_ceiling_check_failed",
+      p_detail: detail,
     })
-    throw new Error(`Unable to read return-loss ledger for ceiling enforcement: ${error.message}`)
+    if (incidentError) throw new Error(`Unable to open the return-loss control incident: ${incidentError.message}`)
+    if (shouldNotify) {
+      await recordEvent({
+        orgId,
+        eventType: "payment_operations_alert",
+        entityType: "payment_rail_policy",
+        entityId: orgId,
+        payload: {
+          findings: [{ code: "return_loss_ceiling_check_failed", detail }],
+          error: ledgerReadError.message,
+          ceiling_cents: ceilingCents,
+        },
+      })
+    }
+    throw new Error(`Unable to read return-loss ledger for ceiling enforcement: ${ledgerReadError.message}`)
+  }
+  // A successful check closes only this organization's incident. Using the
+  // batch watchdog synchronizer here would let one healthy org accidentally
+  // resolve another org's still-failing ceiling check.
+  const { error: resolveIncidentError } = await supabase.rpc("resolve_payment_operations_incident", {
+    p_org_id: orgId,
+    p_finding_code: "return_loss_ceiling_check_failed",
+  })
+  if (resolveIncidentError) {
+    throw new Error(`Unable to resolve the return-loss control incident: ${resolveIncidentError.message}`)
   }
   const lossCents = (entries ?? []).reduce(
     (sum, entry) => sum + (entry.direction === "debit" ? Number(entry.amount_cents) : -Number(entry.amount_cents)),
@@ -298,51 +342,54 @@ async function enforceReturnLossCeiling(orgId: string) {
   )
   if (lossCents < ceilingCents) return
 
-  await supabase.from("feature_flags").upsert(
+  const { error: disableError } = await supabase.from("feature_flags").upsert(
     { org_id: orgId, flag_key: "fintech_ap_payments", enabled: false, updated_at: new Date().toISOString() },
     { onConflict: "org_id,flag_key" },
   )
-  await Promise.all([
-    recordEvent({
-      orgId,
-      eventType: "payment_operations_alert",
-      entityType: "payment_rail_policy",
-      entityId: orgId,
-      payload: {
-        findings: [{
-          code: "return_loss_ceiling_reached",
-          detail: `Unrecovered ACH return losses reached the configured ceiling. Electronic payments are disabled for this organization pending review.`,
-        }],
-        loss_cents: lossCents,
-        ceiling_cents: ceilingCents,
-      },
-    }),
-    recordAudit({
-      orgId,
-      action: "update",
-      entityType: "feature_flag",
-      entityId: orgId,
-      after: { flag_key: "fintech_ap_payments", enabled: false, reason: "return_loss_ceiling_reached", loss_cents: lossCents },
-      source: "stripe_webhook",
-    }),
-  ])
+  if (disableError) throw new Error(`Unable to trip the payment return-loss circuit breaker: ${disableError.message}`)
+  const ceilingDetail = "Unrecovered ACH return losses reached the configured ceiling. Electronic payments are disabled for this organization pending review."
+  const { data: shouldNotify, error: incidentError } = await supabase.rpc("open_payment_operations_incident", {
+    p_org_id: orgId,
+    p_finding_code: "return_loss_ceiling_reached",
+    p_detail: ceilingDetail,
+  })
+  if (incidentError) throw new Error(`Unable to open the return-loss ceiling incident: ${incidentError.message}`)
+  if (shouldNotify) {
+    await Promise.all([
+      recordEvent({
+        orgId,
+        eventType: "payment_operations_alert",
+        entityType: "payment_rail_policy",
+        entityId: orgId,
+        payload: {
+          findings: [{ code: "return_loss_ceiling_reached", detail: ceilingDetail }],
+          loss_cents: lossCents,
+          ceiling_cents: ceilingCents,
+        },
+      }),
+      recordAudit({
+        orgId,
+        action: "update",
+        entityType: "feature_flag",
+        entityId: orgId,
+        after: { flag_key: "fintech_ap_payments", enabled: false, reason: "return_loss_ceiling_reached", loss_cents: lossCents },
+        source: `${providerKey}_webhook`,
+      }),
+    ])
+  }
 }
 
 /**
  * When this org's cleared funds may be transferred to the vendor.
  *
- * A zero hold is a legitimate choice — it reproduces the old destination-charge
- * timing — so it is expressible rather than clamped to a minimum Arc decided.
+ * Production policy enforces at least 48 business hours. The default here is a
+ * final fail-safe for a legacy row, not permission to bypass that minimum.
  */
 async function resolvePayoutHoldExpiry(orgId: string, clearedAt: string): Promise<string> {
   const supabase = createServiceSupabaseClient()
   const { data } = await supabase.from("payment_rail_policies").select("payout_hold_hours").eq("org_id", orgId).maybeSingle()
-  const hours = Number(data?.payout_hold_hours ?? 48)
-  return new Date(new Date(clearedAt).getTime() + hours * 60 * 60 * 1000).toISOString()
-}
-
-function stripePayload(event: Stripe.Event) {
-  return JSON.parse(JSON.stringify(event)) as Record<string, unknown>
+  const hours = Math.max(Number(data?.payout_hold_hours ?? 48), 48)
+  return addBusinessHours(clearedAt, hours).toISOString()
 }
 
 /**
@@ -353,40 +400,28 @@ function stripePayload(event: Stripe.Event) {
  * receivable someone chases, not a debt that quietly disappears.
  */
 async function processFeeChargeEvent(input: {
-  event: Stripe.Event
-  intent: Stripe.PaymentIntent
-  occurredAt: string
+  event: Extract<NormalizedPaymentRailEvent, { kind: "fee_charge.status" }>
   startedAt: string
-  providerAccountId: string | null
 }): Promise<{ handled: boolean; duplicate?: boolean }> {
   const supabase = createServiceSupabaseClient()
   const { data: charge } = await supabase
     .from("payment_run_fee_charges")
     .select("id,org_id,run_id,status,amount_cents,currency")
-    .eq("provider", "stripe")
-    .eq("provider_payment_id", input.intent.id)
+    .eq("provider", input.event.provider)
+    .eq("provider_payment_id", input.event.providerPaymentId)
     .maybeSingle()
   if (!charge) return { handled: false }
 
-  const target = input.event.type === "payment_intent.processing"
-    ? "debit_pending"
-    : input.event.type === "payment_intent.succeeded"
-      ? "succeeded"
-      : input.event.type === "payment_intent.payment_failed"
-        ? "failed"
-        : input.event.type === "payment_intent.canceled"
-          ? "canceled"
-          : null
-  if (!target) return { handled: false }
+  const target = input.event.status
 
   const providerEvent = await recordProviderEvent({
-    provider: "stripe",
-    providerEventId: input.event.id,
-    providerAccountId: input.providerAccountId,
+    provider: input.event.provider,
+    providerEventId: input.event.providerEventId,
+    providerAccountId: input.event.providerAccountId,
     orgId: String(charge.org_id),
-    eventType: input.event.type,
-    eventCreatedAt: input.occurredAt,
-    payload: stripePayload(input.event),
+    eventType: input.event.providerEventType,
+    eventCreatedAt: input.event.occurredAt,
+    payload: input.event.payload,
   })
   if (providerEvent.duplicate && await providerEventCompleted(providerEvent.id)) return { handled: true, duplicate: true }
 
@@ -399,8 +434,8 @@ async function processFeeChargeEvent(input: {
     }
     await supabase.from("payment_run_fee_charges").update({
       status: target,
-      ...(target === "succeeded" ? { settled_at: input.occurredAt } : {}),
-      ...(target === "failed" || target === "canceled" ? { failure_reason: `Provider reported ${input.event.type}` } : {}),
+      ...(target === "succeeded" ? { settled_at: input.event.occurredAt } : {}),
+      ...(target === "failed" || target === "canceled" ? { failure_reason: `Provider reported ${input.event.providerEventType}` } : {}),
     }).eq("org_id", charge.org_id).eq("id", charge.id)
 
     if (target === "failed" || target === "canceled") {
@@ -410,14 +445,14 @@ async function processFeeChargeEvent(input: {
         feeChargeId: String(charge.id),
         amountCents: Number(charge.amount_cents),
         currency: String(charge.currency),
-        effectiveAt: input.occurredAt,
+        effectiveAt: input.event.occurredAt,
       })
       await recordEvent({
         orgId: String(charge.org_id),
         eventType: "payment_run_fee_charge_failed",
         entityType: "payment_run",
         entityId: String(charge.run_id),
-        payload: { fee_charge_id: charge.id, amount_cents: charge.amount_cents, error: `Provider reported ${input.event.type}` },
+        payload: { fee_charge_id: charge.id, amount_cents: charge.amount_cents, error: `Provider reported ${input.event.providerEventType}` },
       })
     }
     await recordProcessingAttempt({ providerEventId: providerEvent.id, outcome: "processed", startedAt: input.startedAt })
@@ -428,26 +463,137 @@ async function processFeeChargeEvent(input: {
   }
 }
 
-export async function processStripeApEvent(event: Stripe.Event): Promise<{ handled: boolean; duplicate?: boolean }> {
+export async function processPaymentRailEvent(
+  providerKey: string,
+  rawEvent: unknown,
+): Promise<{ handled: boolean; duplicate?: boolean }> {
+  const provider = getPaymentRailProvider(providerKey)
+  const event = await provider.normalizeWebhookEvent(rawEvent)
+  if (!event) return { handled: false }
   const startedAt = new Date().toISOString()
-  const occurredAt = new Date(event.created * 1000).toISOString()
-  const providerAccountId = typeof event.account === "string" ? event.account : null
 
-  if (event.type === "account.updated") {
-    const account = event.data.object as Stripe.Account
-    const synced = await syncVendorRecipient(account.id)
+  if (event.kind === "recipient.updated") {
+    const synced = await syncVendorRecipient(
+      event.recipientProviderAccountId,
+      event.provider,
+      `${event.provider}_webhook`,
+    )
     if (!synced) return { handled: false }
     const providerEvent = await recordProviderEvent({
-      provider: "stripe",
-      providerEventId: event.id,
-      providerAccountId: account.id,
-      eventType: event.type,
-      eventCreatedAt: occurredAt,
-      payload: stripePayload(event),
+      provider: event.provider,
+      providerEventId: event.providerEventId,
+      providerAccountId: event.recipientProviderAccountId,
+      eventType: event.providerEventType,
+      eventCreatedAt: event.occurredAt,
+      payload: event.payload,
     })
     if (providerEvent.duplicate && await providerEventCompleted(providerEvent.id)) return { handled: true, duplicate: true }
     await recordProcessingAttempt({ providerEventId: providerEvent.id, outcome: "processed", startedAt })
     return { handled: true }
+  }
+
+  if (event.kind === "funding_source.updated") {
+    const supabase = createServiceSupabaseClient()
+    const { data: funding, error: fundingLookupError } = await supabase.from("org_funding_sources")
+      .select("id,org_id,status,mandate_status,verification_status")
+      .eq("provider", event.provider)
+      .eq("provider_payment_method_id", event.providerPaymentMethodId)
+      .maybeSingle()
+    if (fundingLookupError) throw new Error(`Unable to resolve provider funding source: ${fundingLookupError.message}`)
+    if (!funding) return { handled: false }
+    const providerEvent = await recordProviderEvent({
+      provider: event.provider,
+      providerEventId: event.providerEventId,
+      providerAccountId: event.providerAccountId,
+      orgId: funding.org_id,
+      eventType: event.providerEventType,
+      eventCreatedAt: event.occurredAt,
+      payload: event.payload,
+    })
+    if (providerEvent.duplicate && await providerEventCompleted(providerEvent.id)) return { handled: true, duplicate: true }
+    try {
+      if (event.blocked) {
+        const { error: fundingError } = await supabase.from("org_funding_sources").update({
+          status: "disabled",
+          mandate_status: "invalid",
+          verification_status: "failed",
+          disabled_at: event.occurredAt,
+        }).eq("org_id", funding.org_id).eq("id", funding.id)
+        if (fundingError) throw new Error(`Unable to disable blocked ACH funding source: ${fundingError.message}`)
+        await Promise.all([
+          recordEvent({
+            orgId: funding.org_id,
+            eventType: "payment_operations_alert",
+            entityType: "org_funding_source",
+            entityId: funding.id,
+            payload: { findings: [{ code: "funding_source_blocked", detail: event.reason ?? "Stripe blocked this ACH bank account" }] },
+          }),
+          recordAudit({
+            orgId: funding.org_id,
+            action: "update",
+            entityType: "org_funding_source",
+            entityId: funding.id,
+            before: { status: funding.status, mandate_status: funding.mandate_status, verification_status: funding.verification_status },
+            after: { status: "disabled", mandate_status: "invalid", verification_status: "failed", reason: event.reason },
+            source: `${event.provider}_webhook`,
+          }),
+        ])
+      }
+      await recordProcessingAttempt({ providerEventId: providerEvent.id, outcome: "processed", startedAt })
+      return { handled: true }
+    } catch (error) {
+      await recordProcessingAttempt({ providerEventId: providerEvent.id, outcome: "failed", error: error instanceof Error ? error.message : String(error), startedAt })
+      throw error
+    }
+  }
+
+  if (event.kind === "disbursement.authorization_inquiry") {
+    const disbursement = await resolveDisbursementByPaymentId(event.provider, event.providerPaymentId)
+    if (!disbursement) return { handled: false }
+    const orgId = String(disbursement.org_id)
+    const disbursementId = String(disbursement.id)
+    const providerEvent = await recordProviderEvent({
+      provider: event.provider,
+      providerEventId: event.providerEventId,
+      providerAccountId: event.providerAccountId,
+      orgId,
+      disbursementId,
+      eventType: event.providerEventType,
+      eventCreatedAt: event.occurredAt,
+      payload: event.payload,
+    })
+    if (providerEvent.duplicate && await providerEventCompleted(providerEvent.id)) return { handled: true, duplicate: true }
+    try {
+      const supabase = createServiceSupabaseClient()
+      const detail = `Stripe requested ACH authorization evidence (${event.status}): ${event.reason}`
+      if (event.status === "warning_closed") {
+        const { error: resolveError } = await supabase.rpc("resolve_payment_operations_incident", {
+          p_org_id: orgId,
+          p_finding_code: `ach_authorization_inquiry:${disbursementId}`,
+        })
+        if (resolveError) throw new Error(`Unable to resolve ACH authorization inquiry: ${resolveError.message}`)
+        await recordProcessingAttempt({ providerEventId: providerEvent.id, outcome: "processed", startedAt })
+        return { handled: true }
+      }
+      const { data: shouldNotify, error: incidentError } = await supabase.rpc("open_payment_operations_incident", {
+        p_org_id: orgId,
+        p_finding_code: `ach_authorization_inquiry:${disbursementId}`,
+        p_detail: detail,
+      })
+      if (incidentError) throw new Error(`Unable to open ACH authorization inquiry incident: ${incidentError.message}`)
+      if (shouldNotify) {
+        await recordEvent({ orgId, eventType: "payment_operations_alert", entityType: "disbursement", entityId: disbursementId, payload: { findings: [{ code: "ach_authorization_inquiry", detail }], provider_inquiry_id: event.providerInquiryId } })
+      }
+      await recordProcessingAttempt({ providerEventId: providerEvent.id, outcome: "processed", startedAt })
+      return { handled: true }
+    } catch (error) {
+      await recordProcessingAttempt({ providerEventId: providerEvent.id, outcome: "failed", error: error instanceof Error ? error.message : String(error), startedAt })
+      throw error
+    }
+  }
+
+  if (event.kind === "fee_charge.status") {
+    return processFeeChargeEvent({ event, startedAt })
   }
 
   let disbursements: Array<Record<string, unknown>> = []
@@ -458,74 +604,96 @@ export async function processStripeApEvent(event: Stripe.Event): Promise<{ handl
   let transferReleaseAfter: string | null = null
   let returnReason = "ACH payment returned"
 
-  if (event.type.startsWith("payment_intent.")) {
-    const intent = event.data.object as Stripe.PaymentIntent
-    if (intent.metadata.arc_product !== "vendor_payments") return { handled: false }
-    // Arc's own fee debit rides the same rail and the same event types, but has
-    // no disbursement behind it. Without this branch its terminal state would
-    // never arrive and every fee charge would sit at `submitted` forever.
-    if (intent.metadata.charge_type === "platform_fee") {
-      return processFeeChargeEvent({ event, intent, occurredAt, startedAt, providerAccountId })
-    }
-    const disbursement = intent.metadata.disbursement_id
-      ? await createServiceSupabaseClient().from("disbursements").select("*").eq("id", intent.metadata.disbursement_id).maybeSingle().then((result) => result.data)
-      : await resolveDisbursementByPaymentId(intent.id)
+  if (event.kind === "disbursement.status") {
+    const disbursement = event.disbursementId
+      ? await createServiceSupabaseClient().from("disbursements").select("*").eq("provider", event.provider).eq("id", event.disbursementId).maybeSingle().then((result) => result.data)
+      : await resolveDisbursementByPaymentId(event.provider, event.providerPaymentId)
     if (!disbursement) return { handled: false }
     disbursements = [disbursement]
-    if (event.type === "payment_intent.processing") targetStatus = "debit_pending"
-    else if (event.type === "payment_intent.succeeded") {
-      targetStatus = "funds_available"
+    targetStatus = event.status
+    providerTransferId = event.providerTransferId
+    if (event.status === "funds_available") {
       // The debit has cleared to Arc. The hold starts now, and the vendor
       // transfer is created by the release sweep once it expires — a return
       // arriving inside the window costs nothing because no transfer exists yet.
-      transferReleaseAfter = await resolvePayoutHoldExpiry(String(disbursement.org_id), occurredAt)
+      transferReleaseAfter = await resolvePayoutHoldExpiry(String(disbursement.org_id), event.occurredAt)
     }
-    else if (event.type === "payment_intent.payment_failed") targetStatus = "failed"
-    else if (event.type === "payment_intent.canceled") targetStatus = "canceled"
-    else return { handled: false }
-  } else if (event.type === "transfer.created") {
-    const transfer = event.data.object as Stripe.Transfer
-    const paymentId = await getPaymentRailProvider("stripe").resolveTransferPaymentId({ providerTransferId: transfer.id })
-    const disbursement = paymentId ? await resolveDisbursementByPaymentId(paymentId) : null
-    if (!disbursement) return { handled: false }
-    disbursements = [disbursement]
-    targetStatus = "transfer_pending"
-    providerTransferId = transfer.id
-  } else if (event.type === "payout.paid") {
-    if (!providerAccountId) return { handled: false }
+  } else if (event.kind === "disbursement.paid") {
+    if (!event.providerAccountId) return { handled: false }
     const supabase = createServiceSupabaseClient()
-    const { data: recipient } = await supabase.from("payment_recipient_accounts").select("id").eq("provider", "stripe").eq("provider_account_id", providerAccountId).maybeSingle()
+    const { data: recipient } = await supabase.from("payment_recipient_accounts").select("id").eq("provider", event.provider).eq("provider_account_id", event.providerAccountId).maybeSingle()
     if (!recipient) return { handled: false }
-    const payout = event.data.object as Stripe.Payout
-    const transferIds = await getPaymentRailProvider("stripe").resolvePayoutTransferIds({ providerAccountId, providerPayoutId: payout.id })
-    if (transferIds.length > 0) {
-      const { data } = await supabase.from("disbursements").select("*").eq("provider", "stripe").eq("recipient_account_id", recipient.id).in("provider_transfer_id", transferIds)
+    if (event.providerTransferIds.length > 0) {
+      const { data } = await supabase.from("disbursements").select("*").eq("provider", event.provider).eq("recipient_account_id", recipient.id).in("provider_transfer_id", event.providerTransferIds)
       disbursements = data ?? []
     }
-    providerPayoutId = payout.id
+    providerPayoutId = event.providerPayoutId
     targetStatus = "paid"
-  } else if (event.type === "charge.dispute.created") {
-    const dispute = event.data.object as Stripe.Dispute
-    const paymentId = typeof dispute.payment_intent === "string" ? dispute.payment_intent : dispute.payment_intent?.id
-    const disbursement = paymentId ? await resolveDisbursementByPaymentId(paymentId) : null
+  } else if (event.kind === "disbursement.payout_attention") {
+    if (!event.providerAccountId) return { handled: false }
+    const supabase = createServiceSupabaseClient()
+    const { data: recipient } = await supabase.from("payment_recipient_accounts").select("id").eq("provider", event.provider).eq("provider_account_id", event.providerAccountId).maybeSingle()
+    if (!recipient) return { handled: false }
+    if (event.providerTransferIds.length > 0) {
+      const { data } = await supabase.from("disbursements").select("*").eq("provider", event.provider).eq("recipient_account_id", recipient.id).in("provider_transfer_id", event.providerTransferIds)
+      disbursements = data ?? []
+    }
+    const first = disbursements[0]
+    const providerEvent = await recordProviderEvent({
+      provider: event.provider,
+      providerEventId: event.providerEventId,
+      providerAccountId: event.providerAccountId,
+      orgId: disbursements.length === 1 ? String(first.org_id) : null,
+      disbursementId: disbursements.length === 1 ? String(first.id) : null,
+      eventType: event.providerEventType,
+      eventCreatedAt: event.occurredAt,
+      payload: event.payload,
+    })
+    if (providerEvent.duplicate && await providerEventCompleted(providerEvent.id)) return { handled: true, duplicate: true }
+    try {
+      if (disbursements.length === 0) throw new Error("Failed provider payout could not be matched to an Arc transfer")
+      for (const disbursement of disbursements) {
+        const orgId = String(disbursement.org_id)
+        const disbursementId = String(disbursement.id)
+        if (disbursement.status === "transfer_pending") {
+          await advanceDisbursement(disbursementId, orgId, "payout_pending", { provider_payout_id: event.providerPayoutId })
+        }
+        const { error: failureError } = await supabase.from("disbursements").update({
+          provider_payout_id: event.providerPayoutId,
+          failure_reason: event.reason,
+        }).eq("org_id", orgId).eq("id", disbursementId)
+        if (failureError) throw new Error(`Unable to record provider payout failure: ${failureError.message}`)
+        const detail = `Vendor bank payout ${event.status}: ${event.reason}. Do not create a replacement payment; the transferred funds remain associated with this vendor while payout details are repaired.`
+        const { data: shouldNotify, error: incidentError } = await supabase.rpc("open_payment_operations_incident", {
+          p_org_id: orgId,
+          p_finding_code: `vendor_payout_failed:${disbursementId}`,
+          p_detail: detail,
+        })
+        if (incidentError) throw new Error(`Unable to open vendor payout incident: ${incidentError.message}`)
+        if (shouldNotify) await recordEvent({ orgId, eventType: "payment_operations_alert", entityType: "disbursement", entityId: disbursementId, payload: { findings: [{ code: "vendor_payout_failed", detail }], provider_payout_id: event.providerPayoutId } })
+      }
+      await syncVendorRecipient(event.providerAccountId, event.provider, `${event.provider}_payout_failure`)
+      await recordProcessingAttempt({ providerEventId: providerEvent.id, outcome: "processed", startedAt })
+      return { handled: true }
+    } catch (error) {
+      await recordProcessingAttempt({ providerEventId: providerEvent.id, outcome: "failed", error: error instanceof Error ? error.message : String(error), startedAt })
+      throw error
+    }
+  } else if (event.kind === "disbursement.returned") {
+    const disbursement = await resolveDisbursementByPaymentId(event.provider, event.providerPaymentId)
     if (!disbursement) return { handled: false }
     disbursements = [disbursement]
     targetStatus = "returned"
-    providerReversalId = dispute.id
-    returnReason = dispute.reason ?? returnReason
-  } else if (event.type === "charge.succeeded") {
-    const chargeEvent = event.data.object as Stripe.Charge
-    const paymentId = typeof chargeEvent.payment_intent === "string" ? chargeEvent.payment_intent : chargeEvent.payment_intent?.id
-    const disbursement = paymentId ? await resolveDisbursementByPaymentId(paymentId) : null
+    providerReversalId = event.providerReversalId
+    returnReason = event.reason
+  } else if (event.kind === "disbursement.charge_settled") {
+    const disbursement = await resolveDisbursementByPaymentId(event.provider, event.providerPaymentId)
     if (!disbursement) return { handled: false }
-    const charge = await retrieveStripeChargeWithBalanceTransaction(chargeEvent.id, providerAccountId)
-    const balance = charge.balance_transaction && typeof charge.balance_transaction !== "string" ? charge.balance_transaction : null
-    const actualProcessorFeeCents = balance?.fee ?? 0
     const platformFeeCents = Number(disbursement.platform_fee_cents ?? 0)
     // What the builder was quoted and charged, frozen on the approved run. Kept
     // apart from the actual below because they answer different questions.
     const quotedProcessorFeeCents = Number(disbursement.processor_fee_cents ?? 0)
-    const providerEvent = await recordProviderEvent({ provider: "stripe", providerEventId: event.id, providerAccountId, orgId: String(disbursement.org_id), disbursementId: String(disbursement.id), eventType: event.type, eventCreatedAt: occurredAt, payload: stripePayload(event) })
+    const providerEvent = await recordProviderEvent({ provider: event.provider, providerEventId: event.providerEventId, providerAccountId: event.providerAccountId, orgId: String(disbursement.org_id), disbursementId: String(disbursement.id), eventType: event.providerEventType, eventCreatedAt: event.occurredAt, payload: event.payload })
     if (providerEvent.duplicate && await providerEventCompleted(providerEvent.id)) return { handled: true, duplicate: true }
     try {
       const supabase = createServiceSupabaseClient()
@@ -535,9 +703,9 @@ export async function processStripeApEvent(event: Stripe.Event): Promise<{ handl
       // difference is Arc's margin. Overwriting the quote with the actual would
       // erase the evidence of what was charged.
       const { error: chargeUpdateError } = await supabase.from("disbursements").update({
-        provider_charge_id: charge.id,
-        provider_balance_transaction_id: balance?.id ?? null,
-        actual_processor_fee_cents: actualProcessorFeeCents,
+        provider_charge_id: event.providerChargeId,
+        provider_balance_transaction_id: event.providerBalanceTransactionId,
+        actual_processor_fee_cents: event.actualProcessorFeeCents,
       }).eq("id", disbursement.id).eq("org_id", disbursement.org_id)
       if (chargeUpdateError) throw new Error(`Unable to record provider charge and actual fee: ${chargeUpdateError.message}`)
       // Revenue recognition, per disbursement, at the quoted amounts that were
@@ -556,9 +724,9 @@ export async function processStripeApEvent(event: Stripe.Event): Promise<{ handl
             kind: entry.kind,
             fee_cents: entry.feeCents,
             currency: disbursement.currency,
-            provider_reference: charge.id,
+            provider_reference: event.providerChargeId,
             idempotency_key: `disbursement:${disbursement.id}:${entry.suffix}`,
-            recognized_at: occurredAt,
+            recognized_at: event.occurredAt,
           })),
           { onConflict: "org_id,idempotency_key", ignoreDuplicates: true },
         )
@@ -573,20 +741,18 @@ export async function processStripeApEvent(event: Stripe.Event): Promise<{ handl
       await recordProcessingAttempt({ providerEventId: providerEvent.id, outcome: "failed", error: error instanceof Error ? error.message : String(error), startedAt })
       throw error
     }
-  } else {
-    return { handled: false }
   }
 
   const first = disbursements[0]
   const providerEvent = await recordProviderEvent({
-    provider: "stripe",
-    providerEventId: event.id,
-    providerAccountId,
+    provider: event.provider,
+    providerEventId: event.providerEventId,
+    providerAccountId: event.providerAccountId,
     orgId: disbursements.length === 1 ? String(first.org_id) : null,
     disbursementId: disbursements.length === 1 ? String(first.id) : null,
-    eventType: event.type,
-    eventCreatedAt: occurredAt,
-    payload: stripePayload(event),
+    eventType: event.providerEventType,
+    eventCreatedAt: event.occurredAt,
+    payload: event.payload,
   })
   if (providerEvent.duplicate && await providerEventCompleted(providerEvent.id)) return { handled: true, duplicate: true }
 
@@ -602,9 +768,11 @@ export async function processStripeApEvent(event: Stripe.Event): Promise<{ handl
       if (targetStatus === "paid" && providerPayoutId) {
         if (providerTransferId) await advanceDisbursement(disbursementId, orgId, "transfer_pending", { provider_transfer_id: providerTransferId })
         await advanceDisbursement(disbursementId, orgId, "payout_pending", { provider_payout_id: providerPayoutId })
-        await processDisbursementPaid({ disbursement: { ...disbursement, provider_payout_id: providerPayoutId }, providerEventId: providerEvent.id, providerPayoutId, paidAt: occurredAt })
+        await processDisbursementPaid({ disbursement: { ...disbursement, provider_payout_id: providerPayoutId }, providerEventId: providerEvent.id, providerPayoutId, paidAt: event.occurredAt })
+        await createServiceSupabaseClient().from("disbursements").update({ failure_reason: null }).eq("org_id", orgId).eq("id", disbursementId)
+        await createServiceSupabaseClient().rpc("resolve_payment_operations_incident", { p_org_id: orgId, p_finding_code: `vendor_payout_failed:${disbursementId}` })
       } else if (targetStatus === "returned" && providerReversalId) {
-        await processDisbursementReturn({ disbursement, providerEventId: providerEvent.id, providerReversalId, reason: returnReason, occurredAt })
+        await processDisbursementReturn({ disbursement, providerEventId: providerEvent.id, providerReversalId, reason: returnReason, occurredAt: event.occurredAt })
         if (disbursement.status !== "paid") await rollUpTerminalDisbursement(disbursement, "returned", returnReason)
       } else if (targetStatus) {
         const patch: Record<string, unknown> = {}
@@ -613,7 +781,7 @@ export async function processStripeApEvent(event: Stripe.Event): Promise<{ handl
         if (targetStatus === "failed") patch.failure_reason = "Provider reported payment failure"
         await advanceDisbursement(disbursementId, orgId, targetStatus, patch)
         if (targetStatus === "failed" || targetStatus === "canceled") {
-          await postDisbursementSubmissionReversalLedger({ orgId, disbursementId, providerEventId: providerEvent.id, vendorAmountCents: Number(disbursement.amount_cents), currency: String(disbursement.currency), effectiveAt: occurredAt })
+          await postDisbursementSubmissionReversalLedger({ orgId, disbursementId, providerEventId: providerEvent.id, vendorAmountCents: Number(disbursement.amount_cents), currency: String(disbursement.currency), effectiveAt: event.occurredAt })
           await rollUpTerminalDisbursement(disbursement, targetStatus, typeof patch.failure_reason === "string" ? patch.failure_reason : undefined)
         }
       }
@@ -624,4 +792,10 @@ export async function processStripeApEvent(event: Stripe.Event): Promise<{ handl
     await recordProcessingAttempt({ providerEventId: providerEvent.id, outcome: "failed", error: error instanceof Error ? error.message : String(error), startedAt })
     throw error
   }
+}
+
+/** Compatibility entry point for the Stripe webhook route. Domain processing is
+ * provider-neutral; the adapter owns all Stripe object interpretation. */
+export async function processStripeApEvent(event: unknown) {
+  return processPaymentRailEvent("stripe", event)
 }

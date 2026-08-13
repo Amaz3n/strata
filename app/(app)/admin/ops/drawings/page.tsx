@@ -6,7 +6,6 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { DrawingsDeadLetterClient } from "@/components/admin/drawings-deadletter-client"
 import { listFailedDrawingsPipelineJobs } from "@/lib/services/ops"
 
-export const dynamic = "force-dynamic"
 
 async function DeadLetterData() {
   const health = await listFailedDrawingsPipelineJobs()

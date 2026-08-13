@@ -10,7 +10,6 @@ import {
 import { triggerDrawingsPipeline } from "@/lib/services/drawings-pipeline-trigger"
 import { withCronRun } from "@/lib/services/job-runs"
 
-export const runtime = "nodejs"
 export const maxDuration = 800
 
 async function handle(request: NextRequest) {

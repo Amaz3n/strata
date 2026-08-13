@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { addDays, format, parse } from "date-fns"
-import { CalendarIcon, Check, ChevronDown, Download, Loader2, Plus, Search, Send, UserRound, X } from "lucide-react"
+import { CalendarIcon, Check, ChevronDown, Download, Loader2, Plus, Search, Send, ShieldCheck, UserRound, X } from "lucide-react"
 import NumberFlow from "@number-flow/react"
 import { toast } from "sonner"
 
@@ -13,6 +13,8 @@ import {
   createQboCustomerAction,
   generateInvoicePdfAction,
   getInvoiceComposerContextAction,
+  requestInvoiceApprovalAction,
+  decideInvoiceApprovalAction,
   searchQboCustomersAction,
 } from "@/app/(app)/invoices/actions"
 import { generateInvoiceFromCostsAction } from "@/app/(app)/projects/[id]/financials/actions"
@@ -50,6 +52,7 @@ import { unwrapAction } from "@/lib/action-result"
 import { useProductTerminology } from "@/components/layout/use-product-terminology"
 import { usePageTitle } from "@/components/layout/page-title-context"
 import { getProjectPosture } from "@/lib/product-tier"
+import { getReceivablesPosturePolicy } from "@/lib/receivables/policy"
 import { groupCostCodesByStandard } from "@/lib/cost-code-groups"
 import { cn } from "@/lib/utils"
 
@@ -73,6 +76,7 @@ type ComposerLine = {
 }
 
 type DiscountType = "percent" | "fixed"
+type InvoiceKind = "standard" | "earnest_deposit" | "closing_invoice"
 
 type DrawOption = {
   id: string
@@ -88,6 +92,7 @@ type DrawOption = {
 type QBOIncomeAccountOption = { id: string; name: string; fullyQualifiedName?: string }
 type QBOCustomerOption = { id: string; name: string; email?: string | null; billingAddress?: string | null }
 type QboDiagnostics = { connectionLastError: string | null; refreshFailureCount: number; accountLoadWarning: string | null }
+type TaxJurisdictionOption = { id: string; name: string; sales_tax_rate_micros: number; effective_from: string; effective_through: string | null }
 
 export type AutosaveState = "idle" | "saving" | "saved" | "error"
 
@@ -434,6 +439,8 @@ export function InvoiceEditableDocument({
   const seed = initialInvoice ?? duplicateFrom ?? null
   const project = useMemo(() => projects.find((p) => p.id === projectId) ?? projects[0] ?? null, [projects, projectId])
   const projectName = project?.name ?? "Project"
+  const productPosture = getProjectPosture(project?.property_type, productTier)
+  const receivablesPolicy = getReceivablesPosturePolicy(productPosture)
 
   // ── Form state (seeded once on mount) ──────────────────────────────────────
   const [invoiceNumber, setInvoiceNumber] = useState(initialInvoice?.invoice_number ?? reservation?.number ?? "")
@@ -441,6 +448,13 @@ export function InvoiceEditableDocument({
   const [issueDate, setIssueDate] = useState(seed?.issue_date ?? format(new Date(), "yyyy-MM-dd"))
   const [dueDate, setDueDate] = useState(seed?.due_date ?? format(addDays(new Date(), 15), "yyyy-MM-dd"))
   const [paymentTermsDays, setPaymentTermsDays] = useState<number>((seed?.metadata?.payment_terms_days as number) ?? 15)
+  const [invoiceKind, setInvoiceKind] = useState<InvoiceKind>(
+    seed?.metadata?.invoice_kind === "earnest_deposit" || seed?.metadata?.invoice_kind === "closing_invoice"
+      ? seed.metadata.invoice_kind
+      : productPosture === "production"
+        ? "closing_invoice"
+        : "standard",
+  )
   const [customerId, setCustomerId] = useState<string>(
     (seed?.metadata?.customer_id as string | undefined) ?? "none",
   )
@@ -469,6 +483,7 @@ export function InvoiceEditableDocument({
   )
   const [notes, setNotes] = useState(typeof seed?.notes === "string" ? seed.notes : "")
   const [taxRate, setTaxRate] = useState<number>(seed?.totals?.tax_rate ?? ((seed?.metadata?.tax_rate as number) ?? 0))
+  const [taxJurisdictionId, setTaxJurisdictionId] = useState<string>(String(seed?.metadata?.tax_jurisdiction_id ?? "none"))
   const [discountType, setDiscountType] = useState<DiscountType | null>(seed?.totals?.discount_type ?? null)
   const [discountValue, setDiscountValue] = useState<string>(
     seed?.totals?.discount_value != null ? String(seed.totals.discount_value) : "",
@@ -494,6 +509,10 @@ export function InvoiceEditableDocument({
   const [sendConfirmOpen, setSendConfirmOpen] = useState(false)
   const [sendRecipient, setSendRecipient] = useState("")
   const [sending, setSending] = useState(false)
+  const [approvalBusy, setApprovalBusy] = useState(false)
+  const [approvalStatus, setApprovalStatus] = useState<NonNullable<Invoice["approval_status"]>>(
+    initialInvoice?.approval_status ?? (receivablesPolicy.approvalMode === "required_review" ? "draft" : "not_required"),
+  )
   const [generatingPdf, setGeneratingPdf] = useState(false)
   const [submitAttempted, setSubmitAttempted] = useState(false)
 
@@ -503,6 +522,7 @@ export function InvoiceEditableDocument({
   const [qboConnected, setQboConnected] = useState(false)
   const [qboIncomeAccounts, setQboIncomeAccounts] = useState<QBOIncomeAccountOption[]>([])
   const [qboDiagnostics, setQboDiagnostics] = useState<QboDiagnostics | null>(null)
+  const [taxJurisdictions, setTaxJurisdictions] = useState<TaxJurisdictionOption[]>([])
   const [contextLoading, setContextLoading] = useState(false)
 
   // Live QBO customer typeahead.
@@ -519,7 +539,7 @@ export function InvoiceEditableDocument({
   const reservationIdRef = useRef<string | null>(reservation?.reservationId ?? null)
   const savedSnapshotRef = useRef<string>("")
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const inFlightRef = useRef(false)
+  const inFlightSaveRef = useRef<Promise<void> | null>(null)
   const dirtyRef = useRef(false)
   // Once the invoice is sent it becomes immutable — block any further autosave (incl. the
   // unmount flush) so we don't push a draft payload over an issued invoice.
@@ -651,6 +671,8 @@ export function InvoiceEditableDocument({
         notes: notes.trim() || undefined,
         client_visible: sendToClient,
         tax_rate: taxRate,
+        tax_jurisdiction_id: taxJurisdictionId === "none" ? null : taxJurisdictionId,
+        tax_jurisdiction_name: taxJurisdictions.find((item) => item.id === taxJurisdictionId)?.name ?? null,
         discount_type: discountType && Number(discountValue) > 0 ? discountType : undefined,
         discount_value: discountType && Number(discountValue) > 0 ? Number(discountValue) : undefined,
         lines: parsedLines,
@@ -661,6 +683,9 @@ export function InvoiceEditableDocument({
         source_change_order_id: sourceChangeOrderId !== "none" ? sourceChangeOrderId : undefined,
         qbo_income_account_id: null,
         qbo_income_account_name: null,
+        metadata: {
+          invoice_kind: productPosture === "production" ? invoiceKind : "standard",
+        },
       }
     },
     [
@@ -671,16 +696,20 @@ export function InvoiceEditableDocument({
       dueDate,
       fromDetails,
       invoiceNumber,
+      invoiceKind,
       issueDate,
       lines,
       notes,
       paymentTermsDays,
       projectId,
+      productPosture,
       qboIncomeAccounts,
       selectedQboCustomer,
       sourceChangeOrderId,
       sourceDrawId,
       taxRate,
+      taxJurisdictionId,
+      taxJurisdictions,
       title,
     ],
   )
@@ -692,7 +721,11 @@ export function InvoiceEditableDocument({
 
   // Persist the current form if it's savable and something changed since the last save.
   const flushSave = useCallback(async () => {
-    if (inFlightRef.current || committedRef.current) return
+    if (committedRef.current) return
+    if (inFlightSaveRef.current) {
+      await inFlightSaveRef.current
+      return
+    }
     const payload = latestPayloadRef.current ?? buildPayload()
     if (!payload) return
     const snapshot = JSON.stringify(payload)
@@ -700,23 +733,28 @@ export function InvoiceEditableDocument({
       dirtyRef.current = false
       return
     }
-    inFlightRef.current = true
     setAutosave("saving")
+    const save = (async () => {
+      try {
+        const saved = invoiceIdRef.current
+          ? await onAutosave(invoiceIdRef.current, payload)
+          : await onCreateDraft(payload)
+        invoiceIdRef.current = saved.id
+        // The reservation is consumed once the draft exists.
+        reservationIdRef.current = null
+        savedSnapshotRef.current = snapshot
+        dirtyRef.current = false
+        setAutosave("saved")
+      } catch (error) {
+        setAutosave("error")
+        toast.error("Autosave failed", { description: error instanceof Error ? error.message : "Changes are kept locally." })
+      }
+    })()
+    inFlightSaveRef.current = save
     try {
-      const saved = invoiceIdRef.current
-        ? await onAutosave(invoiceIdRef.current, payload)
-        : await onCreateDraft(payload)
-      invoiceIdRef.current = saved.id
-      // The reservation is consumed once the draft exists.
-      reservationIdRef.current = null
-      savedSnapshotRef.current = snapshot
-      dirtyRef.current = false
-      setAutosave("saved")
-    } catch (error) {
-      setAutosave("error")
-      toast.error("Autosave failed", { description: error instanceof Error ? error.message : "Changes are kept locally." })
+      await save
     } finally {
-      inFlightRef.current = false
+      inFlightSaveRef.current = null
       // A change landed while we were saving — reschedule.
       if (dirtyRef.current) scheduleSave()
     }
@@ -732,8 +770,11 @@ export function InvoiceEditableDocument({
   }, [flushSave])
 
   const markDirty = useCallback(() => {
+    if (receivablesPolicy.approvalMode === "required_review" && approvalStatus !== "draft") {
+      setApprovalStatus("draft")
+    }
     scheduleSave()
-  }, [scheduleSave])
+  }, [approvalStatus, receivablesPolicy.approvalMode, scheduleSave])
 
   // Flush pending edits on unmount so nothing is lost when the user navigates away.
   useEffect(() => {
@@ -757,6 +798,7 @@ export function InvoiceEditableDocument({
         setQboConnected(Boolean(result.qboConnected))
         setQboIncomeAccounts(result.qboIncomeAccounts ?? [])
         setQboDiagnostics((result.qboDiagnostics as QboDiagnostics | undefined) ?? null)
+        setTaxJurisdictions((result.taxJurisdictions as TaxJurisdictionOption[] | undefined) ?? [])
         if (initialSourceChangeOrderId && !initialSourceAppliedRef.current) {
           const co = (result.changeOrders ?? []).find((c) => c.id === initialSourceChangeOrderId)
           if (co) {
@@ -1028,6 +1070,10 @@ export function InvoiceEditableDocument({
       toast.error("Fix the highlighted fields before sending")
       return false
     }
+    if (!sendRecipient.trim()) {
+      toast.error(`Add the ${receivablesPolicy.customerLabel.toLowerCase()}'s email before sending`)
+      return false
+    }
     if (qboConnected && qboIncomeAccounts.length > 0 && lines.some((line) => !line.qbo_income_account_id)) {
       toast.error("Pick a QuickBooks account for every line item")
       return false
@@ -1046,6 +1092,54 @@ export function InvoiceEditableDocument({
     setSendConfirmOpen(true)
   }
 
+  const ensurePersistedDraft = async () => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    await flushSave()
+    let invoiceId = invoiceIdRef.current
+    if (!invoiceId) {
+      const payload = buildPayload()
+      if (!payload) throw new Error("Complete the invoice before requesting approval")
+      const created = await onCreateDraft(payload)
+      invoiceId = created.id
+      invoiceIdRef.current = created.id
+      reservationIdRef.current = null
+    }
+    return invoiceId
+  }
+
+  const handleRequestApproval = async () => {
+    setApprovalBusy(true)
+    try {
+      const invoiceId = await ensurePersistedDraft()
+      const invoice = unwrapAction(await requestInvoiceApprovalAction(invoiceId))
+      setApprovalStatus(invoice?.approval_status ?? "pending")
+      dirtyRef.current = false
+      toast.success("Owner billing sent for approval")
+    } catch (error) {
+      toast.error("Could not request approval", {
+        description: error instanceof Error ? error.message : "Please try again.",
+      })
+    } finally {
+      setApprovalBusy(false)
+    }
+  }
+
+  const handleApprove = async () => {
+    setApprovalBusy(true)
+    try {
+      const invoiceId = await ensurePersistedDraft()
+      const invoice = unwrapAction(await decideInvoiceApprovalAction(invoiceId, "approved"))
+      setApprovalStatus(invoice?.approval_status ?? "approved")
+      toast.success("Owner billing approved", { description: "It is ready to issue." })
+    } catch (error) {
+      toast.error("Could not approve invoice", {
+        description: error instanceof Error ? error.message : "A different approver may be required.",
+      })
+    } finally {
+      setApprovalBusy(false)
+    }
+  }
+
   const handleConfirmSend = async () => {
     if (!validateForSend()) return
     const payload = buildPayload("sent", sendRecipient)
@@ -1062,6 +1156,7 @@ export function InvoiceEditableDocument({
         reservationIdRef.current = null
       }
       await onSend(invoiceId, payload, sendRecipient)
+      setApprovalStatus("approved")
       committedRef.current = true
       dirtyRef.current = false
       setSendConfirmOpen(false)
@@ -1175,7 +1270,13 @@ export function InvoiceEditableDocument({
       <DocumentScroller>
         <div className="flex items-start justify-between gap-8">
           <div className="min-w-0 flex-1">
-            <h1 className="text-2xl font-bold tracking-tight text-foreground">Invoice</h1>
+            <h1 className="text-2xl font-bold tracking-tight text-foreground">
+              {productPosture === "commercial"
+                ? "Pay application"
+                : productPosture === "production"
+                  ? invoiceKind === "earnest_deposit" ? "Deposit request" : "Closing statement"
+                  : "Invoice"}
+            </h1>
             <GhostInput
               value={title}
               onChange={(e) => { markDirty(); setTitle(e.target.value) }}
@@ -1208,6 +1309,27 @@ export function InvoiceEditableDocument({
                 onChange={(e) => handleTermsChange(Number(e.target.value || 0))}
                 className={cn("h-7 w-full px-2 text-right text-sm tabular-nums", noSpinner)}
               />
+              {productPosture === "production" ? (
+                <>
+                  <span className="text-right text-muted-foreground">Type</span>
+                  <Select
+                    value={invoiceKind}
+                    onValueChange={(value) => {
+                      markDirty()
+                      setInvoiceKind(value as InvoiceKind)
+                    }}
+                  >
+                    <SelectTrigger className="h-7 rounded-none px-2 text-xs shadow-none">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="earnest_deposit">Buyer deposit</SelectItem>
+                      <SelectItem value="closing_invoice">Closing invoice</SelectItem>
+                      <SelectItem value="standard">Other invoice</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </>
+              ) : null}
             </div>
           </div>
         </div>
@@ -1622,6 +1744,29 @@ export function InvoiceEditableDocument({
                 )}
                 <span className="tabular-nums">{formatMoney(lineTotals.tax / 100)}</span>
               </div>
+              {taxRate > 0 ? (
+                <Select
+                  value={taxJurisdictionId}
+                  onValueChange={(value) => {
+                    markDirty()
+                    setTaxJurisdictionId(value)
+                    const jurisdiction = taxJurisdictions.find((item) => item.id === value)
+                    if (jurisdiction) setTaxRate(jurisdiction.sales_tax_rate_micros / 10000)
+                  }}
+                >
+                  <SelectTrigger className="h-8 w-full text-xs">
+                    <SelectValue placeholder="Tax jurisdiction required" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Unassigned jurisdiction</SelectItem>
+                    {taxJurisdictions.map((item) => (
+                      <SelectItem key={item.id} value={item.id}>
+                        {item.name} · {(item.sales_tax_rate_micros / 10000).toFixed(3)}%
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : null}
               {retainageCents > 0 ? (
                 <div className="flex items-center justify-between text-warning">
                   <span>Retainage held ({retainagePercent}%)</span>
@@ -1639,12 +1784,19 @@ export function InvoiceEditableDocument({
 
       {/* Footer — the composer's action row. */}
       <div className="flex shrink-0 items-center justify-between gap-3 border-t px-4 py-3">
-        <span
-          aria-live="polite"
-          className={cn("text-[11px]", autosaveState === "error" ? "font-medium text-destructive" : "text-muted-foreground")}
-        >
-          {autosaveLabel}
-        </span>
+        <div className="flex items-center gap-2">
+          <span
+            aria-live="polite"
+            className={cn("text-[11px]", autosaveState === "error" ? "font-medium text-destructive" : "text-muted-foreground")}
+          >
+            {autosaveLabel}
+          </span>
+          {receivablesPolicy.approvalMode === "required_review" ? (
+            <Badge variant="outline" className="h-6 rounded-sm text-[10px] uppercase tracking-wide">
+              {approvalStatus === "approved" ? "Approved" : approvalStatus === "pending" ? "Approval pending" : "Review required"}
+            </Badge>
+          ) : null}
+        </div>
         <div className="flex items-center gap-2">
           <div className="flex items-center">
             <Button variant="outline" size="sm" className="h-9 rounded-r-none text-xs" disabled={autosaveState === "saving"} onClick={handleSaveDraft}>
@@ -1657,17 +1809,31 @@ export function InvoiceEditableDocument({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => { handleSaveDraft(); void handleDownloadPdf() }} disabled={generatingPdf}>
+                <DropdownMenuItem onClick={() => void handleDownloadPdf()} disabled={generatingPdf}>
                   {generatingPdf ? <Spinner className="mr-2 size-4" /> : <Download className="mr-2 h-4 w-4" />}
                   {generatingPdf ? "Preparing PDF…" : "Save and download PDF"}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
-          <Button size="sm" className="h-9 text-xs" disabled={sending} onClick={handleSendClick}>
-            <Send className="mr-1.5 h-3.5 w-3.5" />
-            {sending ? "Sending…" : "Send invoice"}
-          </Button>
+          {receivablesPolicy.approvalMode === "required_review" && approvalStatus !== "approved" ? (
+            approvalStatus === "pending" ? (
+              <Button size="sm" className="h-9 text-xs" disabled={approvalBusy} onClick={handleApprove}>
+                <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
+                {approvalBusy ? "Approving…" : "Approve as reviewer"}
+              </Button>
+            ) : (
+              <Button size="sm" className="h-9 text-xs" disabled={approvalBusy} onClick={handleRequestApproval}>
+                <Send className="mr-1.5 h-3.5 w-3.5" />
+                {approvalBusy ? "Submitting…" : "Request approval"}
+              </Button>
+            )
+          ) : (
+            <Button size="sm" className="h-9 text-xs" disabled={sending} onClick={handleSendClick}>
+              <Send className="mr-1.5 h-3.5 w-3.5" />
+              {sending ? "Sending…" : productPosture === "production" ? "Send buyer invoice" : productPosture === "commercial" ? "Send owner billing" : "Send invoice"}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -1678,9 +1844,7 @@ export function InvoiceEditableDocument({
           <DialogHeader>
             <DialogTitle>Send invoice {invoiceNumber.trim() || ""}</DialogTitle>
             <DialogDescription>
-              {sendRecipient.trim()
-                ? `The ${terms.owner.toLowerCase()} receives an email with a secure link to view and pay this invoice.`
-                : `No recipient email — the invoice will be marked sent and visible in the ${terms.ownerPortal.toLowerCase()}, but no email will be delivered.`}
+              {`The ${terms.owner.toLowerCase()} receives an email with a secure link to view and pay this invoice.`}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">

@@ -123,6 +123,15 @@ export type NotificationType =
   | "vendor_payment_returned"
   | "payment_reconciliation_completed"
   | "vendor_payment_relationship_claimed"
+  | "vendor_payment_relationship_active"
+  | "vendor_payment_relationship_onboarding"
+  | "vendor_payment_relationship_suspended"
+  | "vendor_payment_relationship_revoked"
+  | "payment_rail_policy_updated"
+  | "payment_run_approvers_updated"
+  | "payment_hold_overridden"
+  | "payment_reversed"
+  | "vendor_credit_applied"
   | "vendor_payout_destination_changed"
   | "accounting_reconciliation_drift"
 
@@ -246,6 +255,41 @@ export const EMAIL_NOTIFICATION_TYPES = [
     key: "payment_reconciliation_completed",
     label: "Payment reconciliation complete",
     description: "Email me when daily vendor-payment reconciliation finishes, including with exceptions.",
+  },
+  {
+    key: "payment_reversed",
+    label: "Customer payment reversed",
+    description: "Email me when a return or correction reopens a customer invoice balance.",
+  },
+  {
+    key: "vendor_credit_applied",
+    label: "Vendor credit applied",
+    description: "Email me when an approved vendor credit reduces an open payable.",
+  },
+  {
+    key: "payment_rail_policy_updated",
+    label: "Vendor payment policy changed",
+    description: "Email me when payment limits, holds, or rail controls change.",
+  },
+  {
+    key: "payment_run_approvers_updated",
+    label: "Payment approvers changed",
+    description: "Email me when the electronic-payment approver roster changes.",
+  },
+  {
+    key: "payment_hold_overridden",
+    label: "Payment hold overridden",
+    description: "Email me when someone overrides a payable release hold.",
+  },
+  {
+    key: "vendor_payment_relationship_suspended",
+    label: "Vendor payment access suspended",
+    description: "Email me when a builder suspends a vendor's electronic-payment access.",
+  },
+  {
+    key: "vendor_payment_relationship_revoked",
+    label: "Vendor payment access revoked",
+    description: "Email me when a builder revokes a vendor's electronic-payment access.",
   },
   {
     key: "change_event_rfq_invite",

@@ -6,15 +6,16 @@ const path = require("node:path")
 const test = require("node:test")
 
 const {
+  addBusinessHours,
   assertBalancedLedgerEntries,
   assertDisbursementTransition,
   assertPaymentRunTransition,
-  createPaymentRunContentHash,
   planDisbursementAdvance,
   requesterMayApprovePaymentRun,
   resolveRunItemStatus,
   resolveRunStatus,
 } = require("../lib/payments/payment-domain")
+const { createPaymentRunContentHash } = require("../lib/payments/payment-run-content-hash")
 const {
   DEFAULT_PAYMENT_FEE_POLICY,
   calculatePaymentFeeQuote,
@@ -33,6 +34,89 @@ const {
   isPaymentReconciliationStale,
   paymentOperationsAlertDetails,
 } = require("../lib/payments/operations-monitor")
+const { stripeApProvider } = require("../lib/integrations/payments/stripe-ap")
+
+function stripeWebhook(type, object, overrides = {}) {
+  return {
+    id: overrides.id ?? `evt_${type.replaceAll(".", "_")}`,
+    type,
+    created: 1_786_534_400,
+    account: overrides.account,
+    data: { object },
+  }
+}
+
+test("Stripe adapter normalizes vendor debit events before domain processing", async () => {
+  const normalized = await stripeApProvider.normalizeWebhookEvent(stripeWebhook(
+    "payment_intent.succeeded",
+    { id: "pi_vendor_1", metadata: { arc_product: "vendor_payments", charge_type: "vendor_disbursement", disbursement_id: "d1" } },
+  ))
+  assert.deepEqual(
+    {
+      kind: normalized.kind,
+      provider: normalized.provider,
+      providerPaymentId: normalized.providerPaymentId,
+      disbursementId: normalized.disbursementId,
+      status: normalized.status,
+    },
+    {
+      kind: "disbursement.status",
+      provider: "stripe",
+      providerPaymentId: "pi_vendor_1",
+      disbursementId: "d1",
+      status: "funds_available",
+    },
+  )
+})
+
+test("Stripe adapter distinguishes the platform fee debit from vendor money", async () => {
+  const normalized = await stripeApProvider.normalizeWebhookEvent(stripeWebhook(
+    "payment_intent.payment_failed",
+    { id: "pi_fee_1", metadata: { arc_product: "vendor_payments", charge_type: "platform_fee" } },
+  ))
+  assert.equal(normalized.kind, "fee_charge.status")
+  assert.equal(normalized.status, "failed")
+  assert.equal(normalized.providerPaymentId, "pi_fee_1")
+})
+
+test("Stripe adapter ignores unrelated receivables payment intents", async () => {
+  const normalized = await stripeApProvider.normalizeWebhookEvent(stripeWebhook(
+    "payment_intent.succeeded",
+    { id: "pi_ar_1", metadata: { arc_product: "receivables" } },
+  ))
+  assert.equal(normalized, null)
+})
+
+test("Stripe ACH authorization warnings open inquiries without reversing the payable", async () => {
+  const inquiry = await stripeApProvider.normalizeWebhookEvent(stripeWebhook(
+    "charge.dispute.created",
+    { id: "dui_warning_1", payment_intent: "pi_vendor_1", status: "warning_needs_response", reason: "bank_cannot_process" },
+  ))
+  assert.equal(inquiry.kind, "disbursement.authorization_inquiry")
+  assert.equal(inquiry.providerPaymentId, "pi_vendor_1")
+
+  const returned = await stripeApProvider.normalizeWebhookEvent(stripeWebhook(
+    "charge.dispute.created",
+    { id: "du_return_1", payment_intent: "pi_vendor_1", status: "needs_response", reason: "fraudulent" },
+  ))
+  assert.equal(returned.kind, "disbursement.returned")
+  assert.equal(returned.providerReversalId, "du_return_1")
+})
+
+test("Stripe blocked-bank updates disable the funding source vocabulary", async () => {
+  const normalized = await stripeApProvider.normalizeWebhookEvent(stripeWebhook(
+    "payment_method.automatically_updated",
+    { id: "pm_bank_1", us_bank_account: { status_details: { blocked: { network_code: "R02" } } } },
+  ))
+  assert.equal(normalized.kind, "funding_source.updated")
+  assert.equal(normalized.providerPaymentMethodId, "pm_bank_1")
+  assert.equal(normalized.blocked, true)
+})
+
+test("payout holds count US bank-business hours, including observed holidays", () => {
+  assert.equal(addBusinessHours("2026-07-02T16:00:00.000Z", 48).toISOString(), "2026-07-07T16:00:00.000Z")
+  assert.equal(addBusinessHours("2026-12-31T16:00:00.000Z", 24).toISOString(), "2027-01-04T16:00:00.000Z")
+})
 
 test("payment reconciliation monitoring waits 48 hours and alerts on incident transitions", () => {
   const now = new Date("2026-08-10T12:00:00.000Z")
@@ -218,7 +302,8 @@ test("money movement remains protected by platform and organization feature gate
   const service = fs.readFileSync(path.resolve(__dirname, "../lib/services/payment-runs.ts"), "utf8")
   assert.match(service, /FINTECH_PAYMENTS_EXECUTION_ENABLED !== "true"/)
   assert.match(service, /flagKey: EXECUTION_FLAG, defaultEnabled: false/)
-  assert.match(service, /assertBillReleasable\(item\.bill_id, context\.orgId, \{ excludePaymentRunId: parsedRunId \}\)/)
+  assert.match(service, /assertRunPayablesStillCurrent\(material\.run, material\.items, context\.orgId\)/)
+  assert.match(service, /assertPaymentLaunchReady\(\)/)
   assert.match(service, /requireRecentPaymentStepUp/)
 })
 
@@ -472,7 +557,7 @@ test("a risk block is a decision waiting for someone, not a wall", () => {
 
   // Overriding a fraud control is at least as sensitive as approving the payment
   // it stopped, so it carries the same controls — and never the preparer.
-  assert.match(risk, /requirePermission\("payments\.approve_run"/)
+  assert.match(risk, /requirePermission\("payment\.approve_run"/)
   assert.match(risk, /requireRecentPaymentStepUp\(\)/)
   assert.match(risk, /run\.requested_by === context\.userId/)
   assert.match(risk, /review_type: "manual"/)
@@ -501,7 +586,7 @@ test("a designated approver roster narrows who can decide a run, and never widen
   const decide = runs.slice(runs.indexOf("export async function decidePaymentRun"), runs.indexOf("async function assertRunRiskAllowed"))
 
   // The roster is a second gate AFTER the permission, never a replacement for it.
-  assert.match(decide, /requirePermission\("payments\.approve_run", context\)/)
+  assert.match(decide, /requirePermission\("payment\.approve_run", context\)/)
   assert.match(decide, /assertUserMayApproveRun\(\{[\s\S]*?userId: context\.userId,[\s\S]*?divisionIds: runDivisionIds/)
 
   // An empty roster falls back to permission-only; a configured one is exclusive.
@@ -512,7 +597,7 @@ test("a designated approver roster narrows who can decide a run, and never widen
 
   // Designating someone who cannot approve would create a roster that blocks every run.
   const setRoster = approvers.slice(approvers.indexOf("export async function setPaymentRunApprovers"))
-  assert.match(setRoster, /payments\.manage_rail/)
+  assert.match(setRoster, /payment\.manage_rail/)
   assert.match(setRoster, /needs a role that grants payment-run approval/)
 
   // The preparer is not part of the designated approval roster. One required
@@ -527,13 +612,14 @@ test("a designated approver roster narrows who can decide a run, and never widen
 
 test("the approver roster migration is org-scoped, RLS-protected, and separates read from write", () => {
   const migration = fs.readFileSync(path.resolve(__dirname, "../supabase/migrations/20260803193117_payment_run_approver_roster.sql"), "utf8")
+  const normalization = fs.readFileSync(path.resolve(__dirname, "../supabase/migrations/20260812124629_normalize_payment_permission_domain.sql"), "utf8")
   assert.match(migration, /create table public\.payment_run_approvers/)
   assert.match(migration, /org_id uuid not null references public\.orgs\(id\) on delete cascade/)
   assert.match(migration, /unique \(org_id, user_id\)/)
   assert.match(migration, /alter table public\.payment_run_approvers enable row level security;/)
   // Seeing who approves is part of the workflow; changing it is a control change.
   assert.match(migration, /payment_run_approvers_read[\s\S]*?has_org_permission\(org_id, 'payment\.release'\)/)
-  assert.match(migration, /payment_run_approvers_write[\s\S]*?has_org_permission\(org_id, 'payments\.manage_rail'\)/)
+  assert.match(normalization, /payment_run_approvers_write[\s\S]*?has_org_permission\(org_id, 'payment\.manage_rail'\)/)
 })
 
 test("preparing a payable for approval resolves the destination server-side and never releases money", () => {
@@ -544,7 +630,10 @@ test("preparing a payable for approval resolves the destination server-side and 
   // never name the bank account the money lands in. The destination is looked up
   // from the vendor's active relationship, keyed off the bill's own company.
   assert.match(prepare, /from\("vendor_payment_relationships"\)[\s\S]*?recipient_account_id/)
-  assert.match(prepare, /recipient_account_id: recipientAccountId/)
+  // The preparation layer verifies readiness, but the payment-run service is
+  // the one mutation home that freezes the trusted destination. Carrying a
+  // destination through the action input would advertise it as caller-owned.
+  assert.doesNotMatch(prepare, /recipient_account_id:/)
   assert.match(prepare, /recipientByCompany\.get\(bill\.company_id\)/)
   assert.doesNotMatch(prepare, /input\.recipient_account_id|parsed\.recipient_account_id/)
 
@@ -728,7 +817,7 @@ test("preparer and approver both see the Arc fee split out from provider cost", 
 test("AP execution binds recipients server-side and reserves daily limits atomically", () => {
   const service = fs.readFileSync(path.resolve(__dirname, "../lib/services/payment-runs.ts"), "utf8")
   const migration = fs.readFileSync(path.resolve(__dirname, "../supabase/migrations/20260804005756_ap_payment_execution_hardening.sql"), "utf8")
-  assert.match(service, /payee_kind === "primary_vendor" \? prepared\.recipient\.id/)
+  assert.match(service, /recipient_account_id: prepared\.recipient\.id/)
   assert.match(service, /claim_payment_run_execution_atomic/)
   assert.match(migration, /payment_execution_reservations/)
   assert.match(migration, /pg_advisory_xact_lock/)
@@ -752,7 +841,7 @@ test("provider failures reverse submission entries and actual fees are reconcile
   const events = fs.readFileSync(path.resolve(__dirname, "../lib/services/payment-provider-events.ts"), "utf8")
   assert.match(ledger, /postDisbursementSubmissionReversalLedger/)
   assert.match(ledger, /postApFeeAccrualLedger/)
-  assert.match(events, /actual_processor_fee_cents: actualProcessorFeeCents/)
+  assert.match(events, /actual_processor_fee_cents: (?:event\.)?actualProcessorFeeCents/)
   assert.match(events, /targetStatus === "failed" \|\| targetStatus === "canceled"/)
   assert.match(events, /postDisbursementSubmissionReversalLedger/)
 })
@@ -1030,7 +1119,7 @@ test("fee variance no longer touches the builder's cash", () => {
   // overwriting would erase the evidence of what was actually charged.
   const chargeUpdate = events.slice(events.indexOf('from("disbursements").update({\n        provider_charge_id'))
   const updateBlock = chargeUpdate.slice(0, chargeUpdate.indexOf("})"))
-  assert.match(updateBlock, /actual_processor_fee_cents: actualProcessorFeeCents/)
+  assert.match(updateBlock, /actual_processor_fee_cents: (?:event\.)?actualProcessorFeeCents/)
   assert.doesNotMatch(updateBlock, /[^_]processor_fee_cents:/)
 })
 
@@ -1071,7 +1160,8 @@ test("a failed fee collection leaves the liability standing", () => {
   assert.match(reversal, /accountCode: "org_cash", direction: "debit"/)
   // Arc's fee debit reaches terminal state on its own webhook branch; without
   // it every fee charge would sit at `submitted` forever.
-  assert.match(events, /charge_type === "platform_fee"/)
+  const stripe = fs.readFileSync(path.resolve(__dirname, "../lib/integrations/payments/stripe-ap.ts"), "utf8")
+  assert.match(stripe, /charge_type === "platform_fee"/)
   assert.match(events, /processFeeChargeEvent\(/)
 })
 
@@ -1167,7 +1257,8 @@ test("recorded checks carry the controls an ACH payment carries", () => {
 
   // Separation of duties: the person releasing the money is not the person who
   // approved the obligation.
-  assert.match(controls, /approval_mode === "dual" && input\.bill\.approved_by === input\.userId|approval_mode === "dual" && input\.bill\.approved_by && input\.bill\.approved_by === input\.userId/)
+  assert.match(controls, /approval_mode === "dual" && approvalActors\.has\(input\.userId\)/)
+  assert.match(controls, /input\.bill\.approved_by, \.\.\.\(input\.separationActorIds \?\? \[\]\)/)
   // A check number is a real identifier with duplicate detection, not free text.
   assert.match(controls, /check_number/)
   assert.match(controls, /already recorded against another payment/)
@@ -1209,7 +1300,7 @@ test("1099 totals subtract reversals and flag vendors Arc cannot file for", () =
   // A returned payment was not income to the vendor; reporting it overstates
   // what they received on a form the IRS also receives.
   assert.match(service, /payment_reversals/)
-  assert.match(service, /Math\.max\(0, \(paidByCompany\.get\(company\.id\) \?\? 0\) - reversedCents\)/)
+  assert.match(service, /Math\.max\(\s*0,\s*\(paidByCompany\.get\(company\.id\) \?\? 0\) - reversedCents,?\s*\)/)
   // Reportable-but-unfileable is what someone needs to see in December.
   assert.match(service, /blockingReasons/)
   assert.match(service, /No W-9 on file/)
@@ -1810,7 +1901,8 @@ test("execution pays the destination that was approved, not wherever the vendor 
   assert.match(runs, /relationship\?\.recipient_account_id !== trustedRecipientId/)
   assert.match(runs, /changed after this run was approved/)
   // And a client-supplied destination is still ignored at composition time.
-  assert.match(runs, /recipient_account_id: payee\.payee_kind === "primary_vendor" \? prepared\.recipient\.id : payee\.recipient_account_id/)
+  assert.match(runs, /recipient_account_id: prepared\.recipient\.id/)
+  assert.doesNotMatch(runs, /recipient_account_id:\s*payee\.recipient_account_id/)
 })
 
 test("a changed payout destination is frozen and everyone affected is told", () => {
@@ -1916,6 +2008,17 @@ test("a payment that stops moving becomes a reconciliation exception, not silenc
   assert.match(reconciliation, /eventType: "payment_operations_alert"/)
   assert.match(reconciliation, /reason: "stale_payment_state"/)
   assert.match(reconciliation, /exceptionCount \+= await flagStalePaymentStates/)
+  assert.match(reconciliation, /RECONCILIATION_PAGE_SIZE = 500/)
+  assert.doesNotMatch(reconciliation, /limit\(2_000\)/)
+})
+
+test("only platform owners can record the external payment launch approvals", () => {
+  const readiness = paymentSource("lib/services/payment-launch-readiness.ts")
+
+  assert.match(readiness, /access\.isEnvSuperadmin/)
+  assert.match(readiness, /access\.roles\.includes\("platform_super_admin"\)/)
+  assert.match(readiness, /const \{ user \} = await requirePaymentLaunchOwner\(\)/)
+  assert.doesNotMatch(readiness, /requirePermission\("platform\.support\.write"/)
 })
 
 test("provider accounts are not created against live keys before live mode is approved", () => {
@@ -1943,7 +2046,7 @@ test("duplicate provider webhooks are settled by the unique index, not by a prio
   assert.match(events, /code !== "23505"/)
   assert.match(route, /code !== "23505"/)
   // And the service-role writes are org-scoped, unique provider id or not.
-  assert.match(route, /\.eq\("org_id", domainEvent\.org_id\)\n\s*\.eq\("provider_payment_id"/)
+  assert.match(route, /await recordPayment\([\s\S]*?domainEvent\.org_id,\s*\)/)
   assert.match(route, /const chargeOrgId = orgId \?\?/)
   assert.match(route, /\.eq\("org_id", chargeOrgId\)/)
 })

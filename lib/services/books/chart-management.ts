@@ -6,7 +6,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { recordAudit } from "@/lib/services/audit"
 import { requireAuthorization } from "@/lib/services/authorization"
 import { requireBooksWorkspaceEnabled } from "@/lib/services/books/module"
-import { GL_ACCOUNT_SUBTYPES } from "@/lib/services/books/types"
+import { GL_ACCOUNT_SUBTYPES, GL_ACCOUNT_SUBTYPE_TYPES, normalBalanceForSubtype } from "@/lib/services/books/types"
 import { requireOrgContext } from "@/lib/services/context"
 
 const accountTypeSchema = z.enum(["asset", "liability", "equity", "income", "cogs", "expense"])
@@ -48,6 +48,12 @@ export async function createGlAccount(input: {
     normalBalance: normalBalanceSchema,
     cashFlowCategory: cashFlowSchema.nullish(),
   }).parse(input)
+  if (GL_ACCOUNT_SUBTYPE_TYPES[parsed.subtype] !== parsed.accountType) {
+    throw new Error(`${parsed.subtype.replaceAll("_", " ")} is not a valid ${parsed.accountType} subtype`)
+  }
+  if (normalBalanceForSubtype(parsed.subtype) !== parsed.normalBalance) {
+    throw new Error(`${parsed.subtype.replaceAll("_", " ")} accounts use a ${normalBalanceForSubtype(parsed.subtype)} normal balance`)
+  }
   const service = createServiceSupabaseClient()
   const { data, error } = await service.from("gl_accounts").insert({
     org_id: context.orgId,
@@ -73,6 +79,50 @@ export async function createGlAccount(input: {
     source: "books.chart",
   })
   return { id: data.id }
+}
+
+export async function updateGlAccount(input: {
+  accountId: string
+  name: string
+  description?: string | null
+  cashFlowCategory?: string | null
+}, orgId?: string) {
+  const context = await requireChartManager(orgId)
+  const parsed = z.object({
+    accountId: z.string().uuid(),
+    name: z.string().trim().min(2).max(160),
+    description: z.string().trim().max(500).nullish(),
+    cashFlowCategory: cashFlowSchema.nullish(),
+  }).parse(input)
+  const service = createServiceSupabaseClient()
+  const { data: account, error: loadError } = await service
+    .from("gl_accounts")
+    .select("id, name, description, cash_flow_category, is_system")
+    .eq("org_id", context.orgId)
+    .eq("id", parsed.accountId)
+    .single()
+  if (loadError) throw new Error(`Failed to load account: ${loadError.message}`)
+  if (account.is_system) throw new Error("System account definitions are protected")
+  const next = {
+    name: parsed.name,
+    description: parsed.description || null,
+    cash_flow_category: parsed.cashFlowCategory ?? null,
+    updated_by: context.userId,
+    updated_at: new Date().toISOString(),
+  }
+  const { error } = await service.from("gl_accounts").update(next).eq("org_id", context.orgId).eq("id", account.id)
+  if (error) throw new Error(`Failed to update account: ${error.message}`)
+  await recordAudit({
+    orgId: context.orgId,
+    actorId: context.userId,
+    action: "update",
+    entityType: "gl_account",
+    entityId: account.id,
+    before: { name: account.name, description: account.description, cashFlowCategory: account.cash_flow_category },
+    after: { name: next.name, description: next.description, cashFlowCategory: next.cash_flow_category },
+    source: "books.chart",
+  })
+  return { id: account.id }
 }
 
 export async function setGlAccountActive(accountId: string, active: boolean, orgId?: string) {

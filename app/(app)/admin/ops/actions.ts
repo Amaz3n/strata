@@ -51,7 +51,7 @@ export async function retryAllFailedOutboxAction(): Promise<ActionResult<{ retri
  * whole value, and a blank resolution is indistinguishable from ignoring it.
  */
 export async function resolveReconciliationExceptionAction(
-  input: { itemId: string; note: string },
+  input: { itemId: string; note: string; reference: string; evidenceSource: "provider" | "bank" | "accounting" | "ledger" | "other" },
 ): Promise<ActionResult<{ resolved: true }>> {
   try {
     await resolvePaymentReconciliationItem(input)

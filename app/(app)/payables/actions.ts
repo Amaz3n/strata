@@ -118,7 +118,7 @@ export async function decidePayableApprovalAction(
 
 /**
  * Override one blocking payment hold on a payable, with a written reason.
- * Requires `payments.override_hold`; the override is recorded as immutable
+ * Requires `payment.override_hold`; the override is recorded as immutable
  * audit evidence and the refreshed hold evaluation comes back for the UI.
  */
 export async function overridePaymentHoldAction(

@@ -4,7 +4,6 @@ import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
 
 import { backfillImagePreviews } from "@/lib/services/preview-backfill"
 
-export const runtime = "nodejs"
 
 const DEFAULT_BATCH_SIZE = 200
 const MAX_BATCH_SIZE = 1000

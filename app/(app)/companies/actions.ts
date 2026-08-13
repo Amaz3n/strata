@@ -29,7 +29,7 @@ import {
 
 import { actionError, type ActionResult } from "@/lib/action-result"
 import { requestPrequalification, reviewPrequalification } from "@/lib/services/prequalification"
-import { inviteCompanyToPaymentSetup } from "@/lib/services/vendor-payment-invitations"
+import { inviteCompanyToPaymentSetup, setCompanyPaymentAccessStatus } from "@/lib/services/vendor-payment-invitations"
 
 async function run<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
   try {
@@ -90,6 +90,19 @@ export async function inviteCompanyToPaymentSetupAction(companyId: string) {
     const result = await inviteCompanyToPaymentSetup({ companyId })
     revalidatePath(`/companies/${companyId}`)
     revalidatePath("/payables")
+    return result
+  })
+}
+
+export async function setCompanyPaymentAccessStatusAction(
+  companyId: string,
+  status: "active" | "suspended" | "revoked",
+) {
+  return run(async () => {
+    const result = await setCompanyPaymentAccessStatus({ companyId, status })
+    revalidatePath(`/companies/${companyId}`)
+    revalidatePath("/payables")
+    revalidatePath("/payables/payment-runs")
     return result
   })
 }

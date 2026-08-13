@@ -85,12 +85,26 @@ Arc is a comprehensive construction management platform built on Supabase (Postg
 - **`payment_ledger_transactions` / `payment_ledger_entries`** - Balanced AP money-movement ledger
 - **`payment_reconciliation_runs` / `payment_reconciliation_items`** - Provider-to-Arc settlement reconciliation and exceptions
 
+AP payment behavior must be read from the complete ordered migration chain, not only
+`20260731221030_fintech_payment_foundation.sql`. Constraint alignment, construction
+controls, payout holds, reversal rollups, operations incidents, and payable-writer
+hardening are later corrective migrations. In particular, the foundation copies of
+`create_payment_run_atomic` and `record_ap_payment_reversal_atomic` are superseded.
+`supabase/tests/payment_lifecycle.test.sql` is the executable contract for the current
+run → settlement → reversal and manual/credit writer behavior.
+
 Bulk bill approval is performed by the service-only `approve_vendor_bills_atomic`
 RPC. It locks every selected bill, validates the entire set, commits audit/event
 evidence with the status changes, and enqueues idempotent ledger/accounting
 projection work in the same transaction. Payment approval remains a separate
 maker-checker control: many approved bills are submitted as one payment run and
 an independent approver decides the frozen run.
+
+Manual payments and vendor credits use `record_manual_ap_payment_atomic` and
+`apply_vendor_credit_atomic`; both lock the payable, enforce balance/retainage and
+in-flight-run invariants, insert the payment, update `paid_cents`/status, and write
+audit evidence in one transaction. `vendor_bills.paid_cents` is non-null and is the
+money source of truth; readers must never infer it from a `paid` status label.
 
 #### Project Operations
 - **`schedule_items`** - Project schedule items

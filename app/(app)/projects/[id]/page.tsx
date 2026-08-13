@@ -2,7 +2,6 @@ import { Suspense } from "react"
 import { notFound } from "next/navigation"
 import { unwrapAction } from "@/lib/action-result"
 
-export const dynamic = 'force-dynamic'
 import { PageLayout } from "@/components/layout/page-layout"
 import { getProjectOverviewAction } from "./overview-actions"
 import { getClientContactsAction, getOrgCompaniesAction, getProjectTeamAction, getProjectVendorsAction, getProjectAction } from "./actions"

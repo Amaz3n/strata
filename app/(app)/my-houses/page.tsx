@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation"
+export const instant = false
 
 // "My Houses" was merged into Home, which now composes itself from the bands
 // the viewer is accountable for — a superintendent's assigned houses lead it.

@@ -2,7 +2,6 @@ import { mobileDataResponse, mobileErrorResponse, mobileRequestId } from "@/lib/
 import { requireMobileOrg } from "@/lib/mobile/auth"
 import { deleteMobileDailyLog, updateMobileDailyLog } from "@/lib/mobile/daily-logs"
 
-export const runtime = "nodejs"
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ projectId: string; dailyLogId: string }> }) {
   const requestId = mobileRequestId(request)

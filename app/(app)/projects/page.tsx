@@ -10,7 +10,6 @@ import { unwrapAction } from "@/lib/action-result"
 import { resolveProductionDeskScope } from "@/lib/services/production-desk-scope"
 import { terminology } from "@/lib/terminology"
 
-export const dynamic = 'force-dynamic'
 
 async function ProjectsData({ communityId }: { communityId?: string }) {
   const { orgId, productTier } = await requireOrgContext()

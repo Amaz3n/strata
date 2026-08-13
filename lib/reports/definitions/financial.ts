@@ -8,6 +8,7 @@ import { getChangeOrderLogReport } from "@/lib/services/reports/change-order-log
 import { getContingencyUsageReport } from "@/lib/services/reports/contingency-usage"
 import { getDrawStatusReport } from "@/lib/services/reports/draw-status"
 import { getForecastReport } from "@/lib/services/reports/forecast-ctc"
+import { getJobCostDetailReport } from "@/lib/services/reports/job-cost-detail"
 import { getPayAppRegisterReport } from "@/lib/services/reports/pay-app-register"
 import { getPaymentsLedgerReport } from "@/lib/services/reports/payments-ledger"
 import { getPrequalificationRegisterReport } from "@/lib/services/reports/prequalification-register"
@@ -16,7 +17,14 @@ import { getProjectReconciliationReport } from "@/lib/services/reports/reconcili
 import { RECONCILIATION_QUEUE_LABELS } from "@/lib/services/reports/reconciliation-types"
 import { getVendor1099Report } from "@/lib/services/reports/vendor-1099"
 import { requireOrgContext } from "@/lib/services/context"
-import { buildBalanceSheet, buildCashBasisStatement, buildCashFlowStatement, buildGeneralLedger, buildProfitAndLoss, buildTrialBalance } from "@/lib/services/books/statements"
+import {
+  buildBalanceSheet,
+  buildCashBasisStatement,
+  buildCashFlowStatement,
+  buildGeneralLedger,
+  buildProfitAndLoss,
+  buildTrialBalance,
+} from "@/lib/services/books/statements"
 import { getPocJournalReview } from "@/lib/services/accounting-export"
 import { getOrgWipOverUnderReport, getProjectWipOverUnderReport, type WipOverUnderRow } from "@/lib/services/reports/wip-over-under"
 
@@ -144,7 +152,12 @@ const booksBalanceSheet: ReportDefinition = {
         { key: "assets", label: "Assets", value: formatMoneyCents(report.assetCents) },
         { key: "liabilities", label: "Liabilities", value: formatMoneyCents(report.liabilityCents) },
         { key: "equity", label: "Equity", value: formatMoneyCents(report.equityCents) },
-        { key: "difference", label: "Difference", value: formatMoneyCents(report.differenceCents), tone: report.differenceCents === 0 ? "positive" : "negative" },
+        {
+          key: "difference",
+          label: "Difference",
+          value: formatMoneyCents(report.differenceCents),
+          tone: report.differenceCents === 0 ? "positive" : "negative",
+        },
       ],
       tables: [
         {
@@ -207,8 +220,7 @@ const booksCashFlow: ReportDefinition = {
 const booksCashBasis: ReportDefinition = {
   slug: "books-cash-basis",
   title: "Cash Basis Summary",
-  summary:
-    "Accrual results converted to a cash basis, showing every conversion adjustment.",
+  summary: "Accrual results converted to a cash basis, showing every conversion adjustment.",
   group: "financial",
   scopes: ["org"],
   permissions: ["books.read"],
@@ -321,7 +333,12 @@ const booksPocJournal: ReportDefinition = {
       stats: [
         { key: "debits", label: "Debits", value: formatMoneyCents(debitCents) },
         { key: "credits", label: "Credits", value: formatMoneyCents(creditCents) },
-        { key: "difference", label: "Difference", value: formatMoneyCents(debitCents - creditCents), tone: debitCents === creditCents ? "positive" : "negative" },
+        {
+          key: "difference",
+          label: "Difference",
+          value: formatMoneyCents(debitCents - creditCents),
+          tone: debitCents === creditCents ? "positive" : "negative",
+        },
       ],
       tables: [
         {
@@ -369,12 +386,7 @@ function projectColumn(scope: string) {
 
 function projectCell(scope: string, row: { project_id: string | null; project_name: string | null }) {
   if (scope !== "org") return {}
-  return {
-    project_name: {
-      value: row.project_name ?? "—",
-      href: row.project_id ? `/projects/${row.project_id}` : undefined,
-    },
-  }
+  return { project_name: { value: row.project_name ?? "—", href: row.project_id ? `/projects/${row.project_id}` : undefined } }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -742,10 +754,7 @@ const drawStatus: ReportDefinition = {
               amount_cents: row.amount_cents,
             },
           })),
-          totals: {
-            title: `${report.rows.length} draw${report.rows.length === 1 ? "" : "s"}`,
-            amount_cents: sum(report.rows),
-          },
+          totals: { title: `${report.rows.length} draw${report.rows.length === 1 ? "" : "s"}`, amount_cents: sum(report.rows) },
           emptyMessage: "No draws scheduled in this scope.",
         },
       ],
@@ -797,12 +806,7 @@ const payAppRegister: ReportDefinition = {
           detail: "Per latest pay application",
           tone: totals.retainage_held_cents > 0 ? "warning" : undefined,
         },
-        {
-          key: "due",
-          label: "Open payment due",
-          value: formatMoneyCents(totals.open_payment_due_cents),
-          detail: "Submitted, approved, or invoiced",
-        },
+        { key: "due", label: "Open payment due", value: formatMoneyCents(totals.open_payment_due_cents), detail: "Submitted, approved, or invoiced" },
         { key: "balance", label: "Balance to finish", value: formatMoneyCents(totals.balance_to_finish_cents) },
       ],
       tables: [
@@ -922,10 +926,7 @@ const paymentsLedger: ReportDefinition = {
               provider: row.provider,
             },
           })),
-          totals: {
-            received_at: `${report.rows.length} payment${report.rows.length === 1 ? "" : "s"}`,
-            amount_cents: total,
-          },
+          totals: { received_at: `${report.rows.length} payment${report.rows.length === 1 ? "" : "s"}`, amount_cents: total },
           emptyMessage: "No payments recorded in this scope.",
         },
       ],
@@ -1016,13 +1017,57 @@ const forecastCtc: ReportDefinition = {
   },
 }
 
+const jobCostDetail: ReportDefinition = {
+  slug: "job-cost-detail",
+  title: "Job Cost Detail",
+  summary: "Every posted project cost by date, cost code, and originating payable or expense.",
+  group: "financial",
+  scopes: ["project"],
+  permissions: ["budget.read"],
+  params: [{ key: "asOf", kind: "date", label: "As of" }],
+  run: async (ctx) => {
+    const report = await getJobCostDetailReport({ projectId: ctx.projectId!, asOf: ctx.params.asOf })
+    return {
+      subtitle: report.as_of ? `${report.project_name} · through ${report.as_of}` : report.project_name,
+      notice: report.truncated
+        ? { tone: "warning", message: `Showing the ${report.row_cap} most recent costs. Narrow the as-of date before relying on the visible total.` }
+        : undefined,
+      stats: [
+        { key: "cost", label: report.truncated ? "Visible cost" : "Total cost", value: formatMoneyCents(report.total_cents) },
+        { key: "rows", label: "Cost entries", value: String(report.rows.length) },
+      ],
+      tables: [
+        {
+          key: "costs",
+          columns: [
+            { key: "incurred_on", header: "Date", type: "date" },
+            { key: "cost_code", header: "Cost code" },
+            { key: "description", header: "Description", className: "min-w-[240px]" },
+            { key: "source_type", header: "Source", type: "status" },
+            { key: "cost_cents", header: "Cost", type: "money" },
+          ],
+          rows: report.rows.map((row) => ({
+            key: row.id,
+            href: row.href,
+            cells: {
+              incurred_on: row.incurred_on,
+              cost_code: row.cost_code,
+              description: row.description,
+              source_type: row.source_type.replaceAll("_", " "),
+              cost_cents: row.cost_cents,
+            },
+          })),
+          totals: { description: report.truncated ? "Visible rows" : "Total", cost_cents: report.total_cents },
+          emptyMessage: "No posted job costs through this date.",
+        },
+      ],
+    }
+  },
+}
+
 function profitabilitySectionRows(section: ProfitabilitySection, prefix: string): ReportRow[] {
   const rows: ReportRow[] = [
-    {
-      key: `${prefix}-header`,
-      emphasis: "group",
-      cells: { label: section.label, amount_cents: null, budget_cents: null, variance_cents: null },
-    },
+    { key: `${prefix}-header`, emphasis: "group", cells: { label: section.label, amount_cents: null, budget_cents: null, variance_cents: null } },
   ]
   for (const line of section.lines) {
     rows.push({
@@ -1050,7 +1095,9 @@ function profitabilitySectionRows(section: ProfitabilitySection, prefix: string)
       amount_cents: section.total_cents,
       budget_cents: section.budget_total_cents ?? null,
       variance_cents:
-        typeof section.variance_total_cents === "number" ? { value: section.variance_total_cents, label: formatMoneyCents(section.variance_total_cents, { signed: true }) } : null,
+        typeof section.variance_total_cents === "number"
+          ? { value: section.variance_total_cents, label: formatMoneyCents(section.variance_total_cents, { signed: true }) }
+          : null,
     },
   })
   return rows
@@ -1098,20 +1145,12 @@ const projectProfitability: ReportDefinition = {
       subtitle: `${report.basis_label}${from ? ` · ${from} to ${to}` : ""}`,
       notice:
         report.suggested_group_by !== report.group_by
-          ? {
-              tone: "info",
-              message: `Cost-code coverage is thin here — grouping by ${report.suggested_group_by} will read more cleanly.`,
-            }
+          ? { tone: "info", message: `Cost-code coverage is thin here — grouping by ${report.suggested_group_by} will read more cleanly.` }
           : report.basis === "cash"
             ? { tone: "info", message: report.basis_description }
             : undefined,
       stats: [
-        {
-          key: "income",
-          label: "Income",
-          value: formatMoneyCents(report.total_income_cents),
-          detail: report.basis_label,
-        },
+        { key: "income", label: "Income", value: formatMoneyCents(report.total_income_cents), detail: report.basis_label },
         { key: "cost", label: "Cost of work", value: formatMoneyCents(report.total_cost_cents) },
         {
           key: "gross",
@@ -1188,10 +1227,7 @@ const reconciliation: ReportDefinition = {
       subtitle: report.is_clean ? "All checks clean" : `${report.total_exception_count} exception${report.total_exception_count === 1 ? "" : "s"} found`,
       notice:
         report.failed_checks.length > 0
-          ? {
-              tone: "warning",
-              message: `Some checks could not run (${report.failed_checks.join(", ")}). Results below may be incomplete.`,
-            }
+          ? { tone: "warning", message: `Some checks could not run (${report.failed_checks.join(", ")}). Results below may be incomplete.` }
           : undefined,
       stats: [
         {
@@ -1261,12 +1297,7 @@ const contingencyUsage: ReportDefinition = {
       stats: [
         { key: "starting", label: "Starting contingency", value: formatMoneyCents(starting) },
         { key: "drawn", label: "Drawn", value: formatMoneyCents(drawn), tone: drawn > 0 ? "warning" : undefined },
-        {
-          key: "remaining",
-          label: "Remaining",
-          value: formatMoneyCents(remaining),
-          tone: remaining <= 0 ? "negative" : "positive",
-        },
+        { key: "remaining", label: "Remaining", value: formatMoneyCents(remaining), tone: remaining <= 0 ? "negative" : "positive" },
       ],
       tables: [
         {
@@ -1289,10 +1320,7 @@ const contingencyUsage: ReportDefinition = {
               starting_amount_cents: row.starting_amount_cents,
               transfers_in_cents: row.transfers_in_cents,
               draws_cents: row.draws_cents,
-              remaining_cents: {
-                value: row.remaining_cents,
-                tone: row.remaining_cents <= 0 ? "negative" : undefined,
-              },
+              remaining_cents: { value: row.remaining_cents, tone: row.remaining_cents <= 0 ? "negative" : undefined },
               drawn_percent: row.drawn_percent,
             },
           })),
@@ -1375,12 +1403,7 @@ const vendor1099: ReportDefinition = {
       stats: [
         { key: "reportable", label: "Reportable vendors", value: String(reportable.length) },
         { key: "paid", label: "Total paid", value: formatMoneyCents(report.total_paid_cents) },
-        {
-          key: "missing",
-          label: "Missing W-9",
-          value: String(missingW9.length),
-          tone: missingW9.length > 0 ? "negative" : "positive",
-        },
+        { key: "missing", label: "Missing W-9", value: String(missingW9.length), tone: missingW9.length > 0 ? "negative" : "positive" },
       ],
       tables: [
         {
@@ -1415,10 +1438,7 @@ const vendor1099: ReportDefinition = {
               total_paid_cents: row.total_paid_cents,
             },
           })),
-          totals: {
-            vendor_name: `${report.rows.length} vendor${report.rows.length === 1 ? "" : "s"}`,
-            total_paid_cents: report.total_paid_cents,
-          },
+          totals: { vendor_name: `${report.rows.length} vendor${report.rows.length === 1 ? "" : "s"}`, total_paid_cents: report.total_paid_cents },
           emptyMessage: "No vendor payments recorded for this tax year.",
         },
       ],
@@ -1457,18 +1477,8 @@ const prequalificationRegister: ReportDefinition = {
       stats: [
         { key: "companies", label: "Companies", value: String(report.rows.length) },
         { key: "approved", label: "Approved", value: String(approved.length) },
-        {
-          key: "expiring",
-          label: "Expiring in 60 days",
-          value: String(expiring.length),
-          tone: expiring.length > 0 ? "warning" : undefined,
-        },
-        {
-          key: "expired",
-          label: "Expired",
-          value: String(expired.length),
-          tone: expired.length > 0 ? "negative" : "positive",
-        },
+        { key: "expiring", label: "Expiring in 60 days", value: String(expiring.length), tone: expiring.length > 0 ? "warning" : undefined },
+        { key: "expired", label: "Expired", value: String(expired.length), tone: expired.length > 0 ? "negative" : "positive" },
       ],
       tables: [
         {
@@ -1505,10 +1515,7 @@ const prequalificationRegister: ReportDefinition = {
                 bonding_aggregate_cents: row.bonding_aggregate_cents,
                 emr: row.emr,
                 reviewed_at: row.reviewed_at,
-                expires_at: {
-                  value: row.expires_at,
-                  tone: isExpired ? "negative" : isExpiring ? "warning" : undefined,
-                },
+                expires_at: { value: row.expires_at, tone: isExpired ? "negative" : isExpiring ? "warning" : undefined },
               },
             }
           }),
@@ -1538,6 +1545,7 @@ export const FINANCIAL_REPORTS: ReportDefinition[] = [
   wipOverUnder,
   projectProfitability,
   forecastCtc,
+  jobCostDetail,
   arAging,
   apAging,
   payAppRegister,

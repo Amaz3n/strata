@@ -1,4 +1,5 @@
 import { notFound, redirect } from "next/navigation"
+export const instant = false
 
 import { requireOrgContext } from "@/lib/services/context"
 

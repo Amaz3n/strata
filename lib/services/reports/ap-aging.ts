@@ -81,12 +81,8 @@ export async function getApAgingReport({
 
   const rows: APAgingRow[] = (data ?? []).map((row: any) => {
     const totalCents = typeof row.total_cents === "number" ? row.total_cents : 0
-    const paidCents = typeof row.paid_cents === "number"
-      ? row.paid_cents
-      : row.status === "paid"
-        ? totalCents
-        : 0
-    const isPaid = paidCents >= totalCents && totalCents > 0 ? true : row.status === "paid"
+    const paidCents = Number(row.paid_cents ?? 0)
+    const isPaid = paidCents >= totalCents && totalCents > 0
     const openBalanceCents = Math.max(0, totalCents - paidCents)
     const { bucket, daysPastDue } = getAgingBucket({ dueDate: row.due_date, asOf: asOfDate, isPaid })
 

@@ -2,7 +2,6 @@ import { mobilePageResponse, mobileErrorResponse, mobileRequestId } from "@/lib/
 import { requireMobileOrg } from "@/lib/mobile/auth"
 import { listMobileScheduleItems } from "@/lib/mobile/schedule"
 
-export const runtime = "nodejs"
 
 export async function GET(request: Request, { params }: { params: Promise<{ projectId: string }> }) {
   const requestId = mobileRequestId(request)

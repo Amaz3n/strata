@@ -17,7 +17,6 @@ interface SubBillsPageProps {
   params: Promise<{ token: string }>
 }
 
-export const revalidate = 0
 
 function canSignWaiver(status: string, lienWaiverStatus?: string | null): boolean {
   return (status === "approved" || status === "partial") && lienWaiverStatus !== "received"

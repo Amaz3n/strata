@@ -259,6 +259,10 @@ export function PaymentRailPanel({
   const [perPayment, setPerPayment] = useState(centsToDollars(settings?.policy.perPaymentLimitCents ?? null))
   const [perRun, setPerRun] = useState(centsToDollars(settings?.policy.perRunLimitCents ?? null))
   const [daily, setDaily] = useState(centsToDollars(settings?.policy.dailyLimitCents ?? null))
+  const [maxInflight, setMaxInflight] = useState(centsToDollars(settings?.policy.maxInflightCents ?? null))
+  const [returnLossCeiling, setReturnLossCeiling] = useState(centsToDollars(settings?.policy.returnLossCeilingCents ?? null))
+  const [payoutHoldHours, setPayoutHoldHours] = useState(String(settings?.policy.payoutHoldHours ?? 48))
+  const [newVendorHoldHours, setNewVendorHoldHours] = useState(String(settings?.policy.newVendorHoldHours ?? 72))
   const stripePromise = useMemo(() => (publishableKey ? loadStripe(publishableKey) : null), [publishableKey])
 
   useEffect(() => {
@@ -305,7 +309,17 @@ export function PaymentRailPanel({
   }
 
   const startPayments = () => perform(
-    () => updatePaymentRailPolicyAction({ approval_mode: "dual", control_change_cooling_hours: 72 }),
+    () => updatePaymentRailPolicyAction({
+      approval_mode: "dual",
+      control_change_cooling_hours: 72,
+      per_payment_limit_cents: 5_000_000,
+      per_run_limit_cents: 10_000_000,
+      daily_limit_cents: 10_000_000,
+      max_inflight_cents: 25_000_000,
+      return_loss_ceiling_cents: 2_500_000,
+      payout_hold_hours: 48,
+      new_vendor_hold_hours: 72,
+    }),
     "Vendor payments set up",
     "Your subs can now start payout verification from their portal.",
   )
@@ -327,14 +341,31 @@ export function PaymentRailPanel({
     Number(coolingHours) !== settings.policy.coolingHours ||
     dollarsToCents(perPayment) !== settings.policy.perPaymentLimitCents ||
     dollarsToCents(perRun) !== settings.policy.perRunLimitCents ||
-    dollarsToCents(daily) !== settings.policy.dailyLimitCents
+    dollarsToCents(daily) !== settings.policy.dailyLimitCents ||
+    dollarsToCents(maxInflight) !== settings.policy.maxInflightCents ||
+    dollarsToCents(returnLossCeiling) !== settings.policy.returnLossCeilingCents ||
+    Number(payoutHoldHours) !== settings.policy.payoutHoldHours ||
+    Number(newVendorHoldHours) !== settings.policy.newVendorHoldHours
 
   const perPaymentCents = dollarsToCents(perPayment)
   const perRunCents = dollarsToCents(perRun)
-  const capError = [perPayment, perRun, daily].some(isUnparseableCap)
-    ? "Enter a cap as a dollar amount above zero, or clear it to allow any amount."
+  const dailyCents = dollarsToCents(daily)
+  const maxInflightCents = dollarsToCents(maxInflight)
+  const returnLossCeilingCents = dollarsToCents(returnLossCeiling)
+  const capError = [perPayment, perRun, daily, maxInflight, returnLossCeiling].some(isUnparseableCap)
+    ? "Enter each limit as a dollar amount above zero."
+    : [perPaymentCents, perRunCents, dailyCents, maxInflightCents, returnLossCeilingCents].some((value) => value == null)
+      ? "All five production risk limits are required."
     : perPaymentCents && perRunCents && perRunCents < perPaymentCents
       ? "The run cap has to be at least as large as the single-payment cap."
+      : perRunCents && dailyCents && dailyCents < perRunCents
+        ? "The daily cap has to be at least as large as the run cap."
+        : dailyCents && maxInflightCents && maxInflightCents < dailyCents
+          ? "The in-flight exposure cap has to be at least as large as the daily cap."
+          : Number(payoutHoldHours) < 48 || Number(payoutHoldHours) > 720
+            ? "The vendor payout hold must be between 48 and 720 business hours."
+            : Number(newVendorHoldHours) < 24 || Number(newVendorHoldHours) > 720
+              ? "The new-vendor hold must be between 24 and 720 hours."
       : null
 
   const savePolicy = () => {
@@ -343,7 +374,11 @@ export function PaymentRailPanel({
       control_change_cooling_hours: Number(coolingHours),
       per_payment_limit_cents: perPaymentCents,
       per_run_limit_cents: perRunCents,
-      daily_limit_cents: dollarsToCents(daily),
+      daily_limit_cents: dailyCents,
+      max_inflight_cents: maxInflightCents,
+      return_loss_ceiling_cents: returnLossCeilingCents,
+      payout_hold_hours: Number(payoutHoldHours),
+      new_vendor_hold_hours: Number(newVendorHoldHours),
     }), "Payment controls saved")
   }
 
@@ -576,6 +611,28 @@ export function PaymentRailPanel({
             <span className="text-sm text-muted-foreground">$</span>
             <Input id="daily-limit" inputMode="decimal" placeholder="No cap" value={daily} onChange={(event) => setDaily(event.target.value)} disabled={!settings.canManage} className="tabular-nums" />
           </div>
+        </SettingsField>
+
+        <SettingsField label="In-flight exposure cap" htmlFor="max-inflight" hint="Caps all builder money still moving through debit and clearing, even across multiple days.">
+          <div className="flex max-w-sm items-center gap-2">
+            <span className="text-sm text-muted-foreground">$</span>
+            <Input id="max-inflight" inputMode="decimal" placeholder="Required" value={maxInflight} onChange={(event) => setMaxInflight(event.target.value)} disabled={!settings.canManage} className="tabular-nums" />
+          </div>
+        </SettingsField>
+
+        <SettingsField label="Return-loss circuit breaker" htmlFor="return-loss-ceiling" hint="Automatically turns off new payments when accumulated ACH return losses reach this amount.">
+          <div className="flex max-w-sm items-center gap-2">
+            <span className="text-sm text-muted-foreground">$</span>
+            <Input id="return-loss-ceiling" inputMode="decimal" placeholder="Required" value={returnLossCeiling} onChange={(event) => setReturnLossCeiling(event.target.value)} disabled={!settings.canManage} className="tabular-nums" />
+          </div>
+        </SettingsField>
+
+        <SettingsField label="Vendor payout hold" htmlFor="payout-hold-hours" hint="Business hours cleared ACH funds remain held before release to a vendor. Production minimum: 48.">
+          <Input id="payout-hold-hours" type="number" min={48} max={720} step={1} value={payoutHoldHours} onChange={(event) => setPayoutHoldHours(event.target.value)} disabled={!settings.canManage} className="max-w-sm tabular-nums" />
+        </SettingsField>
+
+        <SettingsField label="New-vendor hold" htmlFor="new-vendor-hold-hours" hint="Hours after a vendor relationship is claimed before its first payment can be released. Production minimum: 24.">
+          <Input id="new-vendor-hold-hours" type="number" min={24} max={720} step={1} value={newVendorHoldHours} onChange={(event) => setNewVendorHoldHours(event.target.value)} disabled={!settings.canManage} className="max-w-sm tabular-nums" />
         </SettingsField>
 
         {capError ? <SettingsError className="py-3">{capError}</SettingsError> : null}

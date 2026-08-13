@@ -6,7 +6,6 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { UsersActivityClient } from "@/components/admin/users-activity-client"
 import { getPlatformUsers } from "@/lib/services/admin"
 
-export const dynamic = "force-dynamic"
 
 async function UsersData() {
   const data = await getPlatformUsers()

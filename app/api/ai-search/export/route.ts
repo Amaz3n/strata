@@ -5,7 +5,6 @@ import { Buffer } from "node:buffer"
 import { getAiSearchArtifactDataset } from "@/lib/services/ai-search/artifacts"
 import { requireOrgContext } from "@/lib/services/context"
 
-export const runtime = "nodejs"
 
 type ExportFormat = "csv" | "pdf"
 

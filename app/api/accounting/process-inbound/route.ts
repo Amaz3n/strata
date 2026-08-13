@@ -25,5 +25,3 @@ async function processInboundAccountingEvents(request: NextRequest) {
 
 export const GET = withCronRun("accounting-process-inbound", processInboundAccountingEvents)
 export const POST = GET
-
-export const runtime = "nodejs"

@@ -1162,6 +1162,28 @@ export interface Invoice {
   sent_at?: string | null
   sent_to_emails?: string[] | null
   customer_name?: string | null
+  product_posture?: import("@/lib/product-tier").ProjectPosture | null
+  approval_status?: "not_required" | "draft" | "pending" | "approved" | "rejected"
+  delivery_status?: "not_sent" | "queued" | "sending" | "sent" | "delivered" | "bounced" | "failed"
+  issued_snapshot?: Record<string, any> | null
+}
+
+export interface InvoiceDelivery {
+  id: string
+  channel: "email" | "sms" | "link" | "download"
+  recipient?: string | null
+  status: "queued" | "sending" | "sent" | "delivered" | "bounced" | "failed"
+  provider_message_id?: string | null
+  error_message?: string | null
+  attempt_count: number
+  queued_at: string
+  sent_at?: string | null
+  delivered_at?: string | null
+  opened_at?: string | null
+  clicked_at?: string | null
+  failed_at?: string | null
+  metadata?: Record<string, any>
+  created_at: string
 }
 
 export type PaymentStatus = "pending" | "processing" | "succeeded" | "failed" | "canceled" | "refunded"
@@ -1242,6 +1264,27 @@ export interface PaymentReversal {
   metadata?: Record<string, any>
   occurred_at: string
   created_at?: string
+  updated_at?: string
+}
+
+export type ReceivableAdjustmentType = "credit_memo" | "write_off"
+
+export interface ReceivableAdjustment {
+  id: string
+  org_id: string
+  project_id?: string | null
+  invoice_id: string
+  adjustment_type: ReceivableAdjustmentType
+  status: "posted" | "void"
+  amount_cents: number
+  tax_cents: number
+  effective_date: string
+  reason: string
+  created_by?: string | null
+  voided_by?: string | null
+  voided_at?: string | null
+  metadata?: Record<string, any>
+  created_at: string
   updated_at?: string
 }
 

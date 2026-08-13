@@ -7,6 +7,9 @@ const rootDir = path.resolve(__dirname, "..")
 const originalResolveFilename = Module._resolveFilename
 
 Module._resolveFilename = function resolveAlias(request, parent, isMain, options) {
+  if (request === "server-only") {
+    return path.join(__dirname, "server-only-test-stub.js")
+  }
   if (request.startsWith("@/")) {
     return originalResolveFilename.call(this, path.join(rootDir, request.slice(2)), parent, isMain, options)
   }

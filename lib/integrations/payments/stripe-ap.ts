@@ -5,9 +5,11 @@ import Stripe from "stripe"
 import type {
   FundingSetupSession,
   FundingSourceSnapshot,
+  NormalizedPaymentRailEvent,
   PaymentRailProvider,
   ProviderDisbursementInput,
   ProviderDisbursementResult,
+  ProviderActivity,
   RecipientCreateInput,
   RecipientSnapshot,
 } from "@/lib/integrations/payments/payment-rail-provider"
@@ -103,6 +105,17 @@ function mapIntentStatus(status: Stripe.PaymentIntent.Status): ProviderDisbursem
   if (status === "processing") return "debit_pending"
   if (status === "canceled" || status === "requires_payment_method") return "failed"
   return "submitted"
+}
+
+function settlementStatus(status: Stripe.PaymentIntent.Status): ProviderActivity["status"] {
+  if (status === "succeeded") return "settled"
+  if (status === "canceled") return "canceled"
+  if (status === "requires_payment_method") return "failed"
+  return "pending"
+}
+
+function stripeMetadata(metadata: Stripe.Metadata | null | undefined): Record<string, string> {
+  return Object.fromEntries(Object.entries(metadata ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
 }
 
 /**
@@ -252,7 +265,7 @@ export const stripeApProvider: PaymentRailProvider = {
         ...input.metadata,
         org_id: input.orgId,
         disbursement_id: input.disbursementId,
-        charge_type: "destination",
+        charge_type: "vendor_disbursement",
         arc_product: "vendor_payments",
       },
     }, { idempotencyKey: input.idempotencyKey })
@@ -328,6 +341,87 @@ export const stripeApProvider: PaymentRailProvider = {
     }
   },
 
+  async listActivity(input) {
+    const created = {
+      gte: Math.floor(new Date(input.periodStart).getTime() / 1000),
+      lt: Math.floor(new Date(input.periodEnd).getTime() / 1000),
+    }
+    const activity: ProviderActivity[] = []
+
+    let paymentCursor: string | undefined
+    do {
+      const page = await stripeClient().paymentIntents.list({ created, limit: 100, ...(paymentCursor ? { starting_after: paymentCursor } : {}) })
+      for (const intent of page.data) {
+        if (intent.metadata.arc_product !== "vendor_payments") continue
+        activity.push({
+          kind: intent.metadata.charge_type === "platform_fee" ? "fee_payment" : "payment",
+          providerReference: intent.id,
+          providerAccountId: null,
+          amountCents: intent.amount_received > 0 ? intent.amount_received : intent.amount,
+          status: settlementStatus(intent.status),
+          linkedReferences: [],
+          metadata: stripeMetadata(intent.metadata),
+        })
+      }
+      paymentCursor = page.has_more ? page.data.at(-1)?.id : undefined
+    } while (paymentCursor)
+
+    let transferCursor: string | undefined
+    do {
+      const page = await stripeClient().transfers.list({ created, limit: 100, ...(transferCursor ? { starting_after: transferCursor } : {}) })
+      for (const transfer of page.data) {
+        if (transfer.metadata.arc_product !== "vendor_payments") continue
+        const source = typeof transfer.source_transaction === "string" ? transfer.source_transaction : transfer.source_transaction?.id
+        activity.push({
+          kind: "transfer",
+          providerReference: transfer.id,
+          providerAccountId: typeof transfer.destination === "string" ? transfer.destination : transfer.destination?.id ?? null,
+          amountCents: transfer.amount,
+          status: transfer.reversed ? "returned" : "settled",
+          linkedReferences: source ? [source] : [],
+          metadata: stripeMetadata(transfer.metadata),
+        })
+      }
+      transferCursor = page.has_more ? page.data.at(-1)?.id : undefined
+    } while (transferCursor)
+
+    for (const providerAccountId of [...new Set(input.recipientProviderAccountIds)]) {
+      let payoutCursor: string | undefined
+      do {
+        const page = await stripeClient().payouts.list(
+          { created, limit: 100, ...(payoutCursor ? { starting_after: payoutCursor } : {}) },
+          { stripeAccount: providerAccountId },
+        )
+        const payoutRows = await mapWithConcurrency(page.data, 4, async (payout) => ({
+          payout,
+          transferIds: await stripeApProvider.resolvePayoutTransferIds({ providerAccountId, providerPayoutId: payout.id }),
+        }))
+        for (const { payout, transferIds } of payoutRows) {
+          if (transferIds.length === 0) continue
+          const status: ProviderActivity["status"] = payout.status === "paid"
+            ? "settled"
+            : payout.status === "failed"
+              ? "failed"
+              : payout.status === "canceled"
+                ? "canceled"
+                : "pending"
+          activity.push({
+            kind: "payout",
+            providerReference: payout.id,
+            providerAccountId,
+            amountCents: payout.amount,
+            status,
+            linkedReferences: transferIds,
+            metadata: stripeMetadata(payout.metadata),
+          })
+        }
+        payoutCursor = page.has_more ? page.data.at(-1)?.id : undefined
+      } while (payoutCursor)
+    }
+
+    return activity
+  },
+
   async resolveTransferPaymentId(input) {
     const transfer = await stripeClient().transfers.retrieve(input.providerTransferId)
     const sourceTransaction = typeof transfer.source_transaction === "string"
@@ -376,5 +470,148 @@ export const stripeApProvider: PaymentRailProvider = {
       }
     })
     return [...new Set(resolved.filter((transferId): transferId is string => Boolean(transferId)))]
+  },
+
+  async normalizeWebhookEvent(input): Promise<NormalizedPaymentRailEvent | null> {
+    const event = input as Stripe.Event
+    if (!event || typeof event.id !== "string" || typeof event.type !== "string" || !event.data?.object) {
+      throw new Error("Stripe webhook event is malformed")
+    }
+    const base = {
+      provider: "stripe",
+      providerEventId: event.id,
+      providerEventType: event.type,
+      providerAccountId: typeof event.account === "string" ? event.account : null,
+      occurredAt: new Date(event.created * 1000).toISOString(),
+      payload: JSON.parse(JSON.stringify(event)) as Record<string, unknown>,
+    }
+    if (event.type === "account.updated") {
+      const account = event.data.object as Stripe.Account
+      return { ...base, kind: "recipient.updated", recipientProviderAccountId: account.id }
+    }
+    if (["account.external_account.created", "account.external_account.updated", "account.external_account.deleted"].includes(event.type) && base.providerAccountId) {
+      return { ...base, kind: "recipient.updated", recipientProviderAccountId: base.providerAccountId }
+    }
+    if (event.type === "payment_method.automatically_updated") {
+      const paymentMethod = event.data.object as Stripe.PaymentMethod
+      const statusDetails = paymentMethod.us_bank_account?.status_details
+      const blocked = Boolean(statusDetails && "blocked" in statusDetails && statusDetails.blocked)
+      return {
+        ...base,
+        kind: "funding_source.updated",
+        providerPaymentMethodId: paymentMethod.id,
+        blocked,
+        reason: blocked ? "Stripe reported the ACH bank account as blocked" : null,
+      }
+    }
+    if (event.type.startsWith("payment_intent.")) {
+      const intent = event.data.object as Stripe.PaymentIntent
+      if (intent.metadata.arc_product !== "vendor_payments") return null
+      const status = event.type === "payment_intent.processing"
+        ? "debit_pending"
+        : event.type === "payment_intent.succeeded"
+          ? "funds_available"
+          : event.type === "payment_intent.payment_failed"
+            ? "failed"
+            : event.type === "payment_intent.canceled"
+              ? "canceled"
+              : null
+      if (!status) return null
+      if (intent.metadata.charge_type === "platform_fee") {
+        return {
+          ...base,
+          kind: "fee_charge.status",
+          providerPaymentId: intent.id,
+          status: status === "funds_available" ? "succeeded" : status,
+        }
+      }
+      return {
+        ...base,
+        kind: "disbursement.status",
+        providerPaymentId: intent.id,
+        disbursementId: intent.metadata.disbursement_id || null,
+        status,
+        providerTransferId: null,
+      }
+    }
+    if (event.type === "transfer.created") {
+      const transfer = event.data.object as Stripe.Transfer
+      const paymentId = await stripeApProvider.resolveTransferPaymentId({ providerTransferId: transfer.id })
+      if (!paymentId) return null
+      return {
+        ...base,
+        kind: "disbursement.status",
+        providerPaymentId: paymentId,
+        disbursementId: null,
+        status: "transfer_pending",
+        providerTransferId: transfer.id,
+      }
+    }
+    if (event.type === "payout.paid") {
+      if (!base.providerAccountId) return null
+      const payout = event.data.object as Stripe.Payout
+      const transferIds = await stripeApProvider.resolvePayoutTransferIds({
+        providerAccountId: base.providerAccountId,
+        providerPayoutId: payout.id,
+      })
+      return { ...base, kind: "disbursement.paid", providerPayoutId: payout.id, providerTransferIds: transferIds }
+    }
+    if (event.type === "payout.failed" || event.type === "payout.canceled") {
+      if (!base.providerAccountId) return null
+      const payout = event.data.object as Stripe.Payout
+      const transferIds = await stripeApProvider.resolvePayoutTransferIds({
+        providerAccountId: base.providerAccountId,
+        providerPayoutId: payout.id,
+      })
+      return {
+        ...base,
+        kind: "disbursement.payout_attention",
+        providerPayoutId: payout.id,
+        providerTransferIds: transferIds,
+        status: event.type === "payout.failed" ? "failed" : "canceled",
+        reason: payout.failure_message ?? payout.failure_code ?? `Stripe payout ${event.type === "payout.failed" ? "failed" : "was canceled"}`,
+      }
+    }
+    if (["charge.dispute.created", "charge.dispute.updated", "charge.dispute.closed"].includes(event.type)) {
+      const dispute = event.data.object as Stripe.Dispute
+      const paymentId = typeof dispute.payment_intent === "string" ? dispute.payment_intent : dispute.payment_intent?.id
+      if (!paymentId) return null
+      if (String(dispute.status).startsWith("warning_")) {
+        return {
+          ...base,
+          kind: "disbursement.authorization_inquiry",
+          providerPaymentId: paymentId,
+          providerInquiryId: dispute.id,
+          status: dispute.status,
+          reason: dispute.reason ?? "ACH authorization evidence requested",
+        }
+      }
+      if (event.type !== "charge.dispute.created") return null
+      return {
+        ...base,
+        kind: "disbursement.returned",
+        providerPaymentId: paymentId,
+        providerReversalId: dispute.id,
+        reason: dispute.reason ?? "ACH payment returned",
+      }
+    }
+    if (event.type === "charge.succeeded") {
+      const eventCharge = event.data.object as Stripe.Charge
+      const paymentId = typeof eventCharge.payment_intent === "string" ? eventCharge.payment_intent : eventCharge.payment_intent?.id
+      if (!paymentId) return null
+      const charge = await stripeClient().charges.retrieve(eventCharge.id, {
+        expand: ["balance_transaction"],
+      }, base.providerAccountId ? { stripeAccount: base.providerAccountId } : undefined)
+      const balance = charge.balance_transaction && typeof charge.balance_transaction !== "string" ? charge.balance_transaction : null
+      return {
+        ...base,
+        kind: "disbursement.charge_settled",
+        providerPaymentId: paymentId,
+        providerChargeId: charge.id,
+        providerBalanceTransactionId: balance?.id ?? null,
+        actualProcessorFeeCents: balance?.fee ?? 0,
+      }
+    }
+    return null
   },
 }

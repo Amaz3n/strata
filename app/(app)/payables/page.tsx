@@ -12,7 +12,6 @@ import { hasAnyPermission } from "@/lib/services/permissions"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 
-export const dynamic = "force-dynamic"
 
 export default async function PayablesPage({ searchParams }: { searchParams: Promise<{ community?: string; tab?: string; q?: string; page?: string; pageSize?: string; run?: string; bill?: string }> }) {
   const params = await searchParams
@@ -51,7 +50,7 @@ export default async function PayablesPage({ searchParams }: { searchParams: Pro
   // Whether the viewer may see the risk queue is a permission fact checked up
   // front, not an error swallowed after the fact — a real failure loading the
   // queue should surface, never render as "no blocked runs".
-  const mayViewRiskQueue = railOpen && (await hasAnyPermission(["payments.approve_run", "payment.reconcile"]))
+  const mayViewRiskQueue = railOpen && (await hasAnyPermission(["payment.approve_run", "payment.reconcile"]))
   const [routing, blockedRuns] = railOpen
     ? await Promise.all([
         getPaymentApprovalRouting(orgId).catch(() => null),
