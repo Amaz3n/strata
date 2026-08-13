@@ -8,6 +8,7 @@ import { withSentryConfig } from "@sentry/nextjs"
 // directory as the root and trying to resolve a module graph across all of it —
 // which pegs every core and never finishes compiling a route. Pin it.
 const projectRoot = dirname(fileURLToPath(import.meta.url))
+const exhaustiveInstantValidation = process.env.NEXT_EXHAUSTIVE_INSTANT_VALIDATION === "true"
 
 /** @type {import('next').NextConfig} */
 const securityHeaders = [
@@ -73,11 +74,14 @@ const nextConfig = {
   // Server Actions configuration
   experimental: {
     cachedNavigations: true,
-    // Treat every Page and Default segment as an Instant Navigation contract.
-    // This validates both initial loads and client navigations at each shared
-    // layout boundary, and makes a blocking page fail the production build.
+    // Normal deploys validate the layouts and pages that explicitly own an
+    // Instant Navigation contract. CI opts into the exhaustive mode, which
+    // validates every Page and Default segment without putting that expensive
+    // graph walk on Vercel's deployment-critical path.
     instantInsights: {
-      validationLevel: "experimental-error",
+      validationLevel: exhaustiveInstantValidation
+        ? "experimental-error"
+        : "experimental-manual-error",
     },
     proxyClientMaxBodySize: '250mb',
     serverActions: {

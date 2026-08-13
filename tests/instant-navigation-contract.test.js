@@ -25,6 +25,21 @@ test("Cache Components and Partial Prefetching stay enabled", () => {
   assert.match(config, /partialPrefetching:\s*true/)
 })
 
+test("deploys validate explicit instant contracts while CI validates every route", () => {
+  const config = source("next.config.mjs")
+  const workflow = source(".github/workflows/verify.yml")
+
+  assert.match(config, /NEXT_EXHAUSTIVE_INSTANT_VALIDATION/)
+  assert.match(config, /"experimental-manual-error"/)
+  assert.match(config, /"experimental-error"/)
+  assert.match(workflow, /NEXT_EXHAUSTIVE_INSTANT_VALIDATION:\s*"true"/)
+})
+
+test("the Next.js typecheck excludes the independently built drawings worker", () => {
+  const config = JSON.parse(source("tsconfig.json"))
+  assert.ok(config.exclude.includes("workers"))
+})
+
 test("persistent app navigation opts into URL-aware runtime prefetching", () => {
   const link = source("lib/navigation/optimistic-pathname.tsx")
   assert.match(link, /prefetch\s*=\s*true/)

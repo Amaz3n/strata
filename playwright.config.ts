@@ -27,6 +27,8 @@ export default defineConfig({
         command: `pnpm build && pnpm start --port ${port}`,
         url: localBaseURL,
         reuseExistingServer: false,
-        timeout: 300_000,
+        // CI deliberately performs exhaustive validation across hundreds of
+        // routes before starting the production server.
+        timeout: 900_000,
       },
 })

@@ -28,6 +28,7 @@ jobs:
     env:
       E2E_USER_EMAIL: ${{ secrets.E2E_USER_EMAIL }}
       E2E_USER_PASSWORD: ${{ secrets.E2E_USER_PASSWORD }}
+      NEXT_EXHAUSTIVE_INSTANT_VALIDATION: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
