@@ -266,6 +266,7 @@ export function PayablesWorkspace({
    * meant neither ever ran.
    */
   const [checkNumber, setCheckNumber] = useState("")
+  const paymentIdempotencyKeyRef = useRef("")
   const { requireStepUp, stepUpPrompt } = usePaymentStepUp()
   const [paymentDate, setPaymentDate] = useState(() =>
     format(new Date(), "yyyy-MM-dd"),
@@ -455,6 +456,7 @@ export function PayablesWorkspace({
     setPaymentMethod(selectedBill?.payment_method ?? selectedBill?.preferred_payment_method ?? "check")
     setPaymentRef(selectedBill?.payment_reference ?? "")
     setPaymentDate(format(new Date(), "yyyy-MM-dd"))
+    paymentIdempotencyKeyRef.current = ""
     setReassignProjectId(selectedBill?.project_id ?? "")
   }, [baseline, selectedBill])
 
@@ -617,6 +619,9 @@ export function PayablesWorkspace({
           ? (parseDollarsToCents(paymentAmount) ?? undefined)
           : undefined
         const isPayment = status === "paid" || status === "partial"
+        if (isPayment && !paymentIdempotencyKeyRef.current) {
+          paymentIdempotencyKeyRef.current = crypto.randomUUID()
+        }
         const result = unwrapAction(
           await updateProjectVendorBillStatusAction(
             contextProjectId,
@@ -640,6 +645,7 @@ export function PayablesWorkspace({
               payment_date: isPayment ? paymentDate : undefined,
               payment_amount_cents:
                 isPayment && amountCents ? amountCents : undefined,
+              payment_idempotency_key: isPayment ? paymentIdempotencyKeyRef.current : undefined,
             },
           ),
         )
@@ -658,6 +664,7 @@ export function PayablesWorkspace({
           status === "approved" ? "Approved for payment" : "Payment recorded",
         )
         setPaymentFormOpen(false)
+        paymentIdempotencyKeyRef.current = ""
         onChanged()
       } catch (error) {
         toast.error((error as Error).message)

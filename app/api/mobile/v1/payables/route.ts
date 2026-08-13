@@ -3,7 +3,6 @@ import { requireMobileOrg } from "@/lib/mobile/auth"
 import { parsePageSize } from "@/lib/mobile/contracts"
 import { listMobilePayables } from "@/lib/mobile/payables"
 
-export const runtime = "nodejs"
 
 /**
  * Payables waiting on this person's approval.

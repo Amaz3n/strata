@@ -83,6 +83,8 @@ export function OpsClient({
 
   const [resolvingId, setResolvingId] = useState<string | null>(null)
   const [resolveNote, setResolveNote] = useState("")
+  const [resolveReference, setResolveReference] = useState("")
+  const [resolveEvidenceSource, setResolveEvidenceSource] = useState<"provider" | "bank" | "accounting" | "ledger" | "other">("provider")
 
   const money = (cents: number) =>
     new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100)
@@ -104,15 +106,22 @@ export function OpsClient({
   }
 
   const resolveException = (itemId: string) => {
-    if (resolveNote.trim().length < 8) {
-      toast.error("Say what you found in at least a few words")
+    if (resolveNote.trim().length < 20 || resolveReference.trim().length < 3) {
+      toast.error("Add an evidence reference and a complete resolution note")
       return
     }
     startRefreshing(async () => {
-      const result = await resolveReconciliationExceptionAction({ itemId, note: resolveNote.trim() })
+      const result = await resolveReconciliationExceptionAction({
+        itemId,
+        note: resolveNote.trim(),
+        reference: resolveReference.trim(),
+        evidenceSource: resolveEvidenceSource,
+      })
       if (result.success) {
         setResolvingId(null)
         setResolveNote("")
+        setResolveReference("")
+        setResolveEvidenceSource("provider")
         toast.success("Exception resolved")
         router.refresh()
       } else {
@@ -153,6 +162,9 @@ export function OpsClient({
         <div className="flex items-center justify-between gap-3">
           <span className="text-sm font-semibold">Ops</span>
           <div className="flex items-center gap-2">
+            <Button asChild variant="outline" size="sm" className="h-8 text-xs">
+              <Link href="/admin/ops/payment-launch">Payment launch gates</Link>
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -520,28 +532,52 @@ export function OpsClient({
                     </TableCell>
                     <TableCell className="pr-4 text-right">
                       {resolvingId === exception.id ? (
-                        <div className="flex items-center justify-end gap-2">
+                        <div className="flex flex-col items-stretch gap-2">
+                          <label className="sr-only" htmlFor={`ops-evidence-source-${exception.id}`}>Evidence source</label>
+                          <select
+                            id={`ops-evidence-source-${exception.id}`}
+                            value={resolveEvidenceSource}
+                            onChange={(event) => setResolveEvidenceSource(event.target.value as typeof resolveEvidenceSource)}
+                            className="h-8 border bg-background px-2 text-xs"
+                          >
+                            <option value="provider">Provider</option>
+                            <option value="bank">Bank</option>
+                            <option value="accounting">Accounting</option>
+                            <option value="ledger">Arc ledger</option>
+                            <option value="other">Other</option>
+                          </select>
+                          <input
+                            value={resolveReference}
+                            onChange={(event) => setResolveReference(event.target.value)}
+                            placeholder="Evidence reference"
+                            aria-label="Evidence reference"
+                            className="h-8 w-64 border bg-background px-2 text-xs"
+                          />
                           <input
                             autoFocus
                             value={resolveNote}
                             onChange={(event) => setResolveNote(event.target.value)}
                             placeholder="What did you find?"
                             aria-label="Resolution note"
-                            className="h-8 w-52 border bg-background px-2 text-xs"
+                            className="h-8 w-64 border bg-background px-2 text-xs"
                           />
-                          <Button size="sm" disabled={refreshing} onClick={() => resolveException(exception.id)}>
-                            Save
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => {
-                              setResolvingId(null)
-                              setResolveNote("")
-                            }}
-                          >
-                            Cancel
-                          </Button>
+                          <div className="flex justify-end gap-2">
+                            <Button size="sm" disabled={refreshing} onClick={() => resolveException(exception.id)}>
+                              Save
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => {
+                                setResolvingId(null)
+                                setResolveNote("")
+                                setResolveReference("")
+                                setResolveEvidenceSource("provider")
+                              }}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
                         </div>
                       ) : (
                         <Button
@@ -550,6 +586,8 @@ export function OpsClient({
                           onClick={() => {
                             setResolvingId(exception.id)
                             setResolveNote("")
+                            setResolveReference("")
+                            setResolveEvidenceSource("provider")
                           }}
                         >
                           Resolve

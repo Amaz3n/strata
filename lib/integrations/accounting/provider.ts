@@ -145,6 +145,8 @@ export interface AccountingProvider {
   drainInboundEvents?(input: { limit: number }): Promise<{ processed: number; reconciled: number }>
   listDimensionValues(input: { connectionId: string; kind: AccountingDimensionKind }): Promise<AccountingDimensionValue[]>
   listAccounts(input: { connectionId: string; kind: AccountingAccountKind }): Promise<AccountingDimensionValue[]>
+  /** Complete active chart used by Books cutover and outbound-mirror mapping. */
+  listAllAccounts?(input: { connectionId: string }): Promise<AccountingDimensionValue[]>
   searchCounterparties?(input: {
     connectionId: string
     role: AccountingCounterpartyRole

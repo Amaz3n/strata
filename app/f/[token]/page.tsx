@@ -12,8 +12,6 @@ interface Params {
   params: Promise<{ token: string }>
 }
 
-export const revalidate = 0
-export const dynamic = "force-dynamic"
 export const metadata = {
   robots: {
     index: false,

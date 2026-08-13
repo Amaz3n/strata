@@ -7,7 +7,6 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { getSafetyDesk } from "@/lib/services/safety-desk"
 
-export const dynamic = "force-dynamic"
 
 function dateLabel(value: string | null) {
   if (!value) return "—"

@@ -7,7 +7,6 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { listPlatformOrganizations } from "@/lib/services/platform-access"
 import { getPlatformSessionState } from "@/lib/services/platform-session"
 
-export const dynamic = "force-dynamic"
 
 /**
  * Impersonation lives here rather than on the Platform index because this is the

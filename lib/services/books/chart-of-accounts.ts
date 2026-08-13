@@ -26,6 +26,7 @@ export const SYSTEM_ACCOUNT_CODES = {
   constructionRevenue: "4000",
   otherRevenue: "4900",
   earlyPayDiscounts: "4910",
+  paymentFeeRecovery: "4920",
   jobCosts: "5000",
   subcontractorCosts: "5010",
   materialCosts: "5020",
@@ -41,6 +42,7 @@ export const SYSTEM_ACCOUNT_CODES = {
   interestExpense: "6060",
   payrollExpense: "6070",
   depreciationExpense: "6080",
+  badDebtExpense: "6090",
   otherExpense: "6900",
 } as const
 
@@ -70,6 +72,7 @@ export const CONSTRUCTION_CHART_TEMPLATE: readonly ChartAccountTemplate[] = [
   { code: "4000", name: "Construction revenue", accountType: "income", subtype: "construction_revenue", normalBalance: "credit", cashFlowCategory: "operating", system: true },
   { code: "4900", name: "Other revenue", accountType: "income", subtype: "other_revenue", normalBalance: "credit", cashFlowCategory: "operating", system: false },
   { code: "4910", name: "Early payment discounts", accountType: "income", subtype: "early_pay_discount", normalBalance: "credit", cashFlowCategory: "operating", system: true },
+  { code: "4920", name: "Payment fee recovery", accountType: "income", subtype: "payment_fee_recovery", normalBalance: "credit", cashFlowCategory: "operating", system: true },
   { code: "5000", name: "Job costs", accountType: "cogs", subtype: "job_costs", normalBalance: "debit", cashFlowCategory: "operating", system: true },
   { code: "5010", name: "Subcontractor costs", accountType: "cogs", subtype: "subcontractor_costs", normalBalance: "debit", cashFlowCategory: "operating", system: false },
   { code: "5020", name: "Material costs", accountType: "cogs", subtype: "material_costs", normalBalance: "debit", cashFlowCategory: "operating", system: false },
@@ -85,6 +88,6 @@ export const CONSTRUCTION_CHART_TEMPLATE: readonly ChartAccountTemplate[] = [
   { code: "6060", name: "Interest expense", accountType: "expense", subtype: "interest", normalBalance: "debit", cashFlowCategory: "operating", system: false },
   { code: "6070", name: "Payroll expense", accountType: "expense", subtype: "payroll", normalBalance: "debit", cashFlowCategory: "operating", system: false },
   { code: "6080", name: "Depreciation expense", accountType: "expense", subtype: "depreciation", normalBalance: "debit", cashFlowCategory: "operating", system: false },
+  { code: "6090", name: "Bad debt expense", accountType: "expense", subtype: "other_expense", normalBalance: "debit", cashFlowCategory: "operating", system: true },
   { code: "6900", name: "Other expense", accountType: "expense", subtype: "other_expense", normalBalance: "debit", cashFlowCategory: "operating", system: false },
 ] as const
-

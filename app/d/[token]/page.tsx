@@ -13,7 +13,6 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { EstimateBuilderSigningClient } from "@/components/portal/estimate-builder-signing-client"
 import { DocumentSigningClient } from "./document-signing-client"
 
-export const revalidate = 0
 export const metadata = {
   robots: {
     index: false,

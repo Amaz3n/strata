@@ -32,7 +32,10 @@ import { shouldShowProductionOrgNavigation } from "@/lib/product-tier"
 import { orgHasPriceAgreements } from "@/lib/services/price-book"
 import { isBooksWorkspaceEnabled } from "@/lib/services/books/module"
 
-export const dynamic = "force-dynamic"
+// This layout is the contract for every authenticated destination: a click
+// must be able to render app chrome immediately while request data streams.
+export const instant = true
+
 
 /**
  * Badge counts and the What's New announcement are shell decoration, not shell
@@ -68,7 +71,7 @@ async function ReleaseNotesAnnouncementSlot() {
   return <ReleaseNotesAnnouncement announcement={summary.announcement} />
 }
 
-export default async function AppLayout({
+async function AuthenticatedAppChrome({
   children,
 }: {
   children: React.ReactNode
@@ -157,5 +160,25 @@ export default async function AppLayout({
         </NavigationBadgeProvider>
       </OptimisticPathProvider>
     </SidebarProvider>
+  )
+}
+
+function AppChromeFallback() {
+  return (
+    <div className="flex h-svh max-h-svh overflow-hidden bg-background" aria-busy="true">
+      <div className="hidden w-64 shrink-0 border-r bg-sidebar md:block" />
+      <div className="min-w-0 flex-1">
+        <div className="h-14 border-b bg-background" />
+        <div className="h-[calc(100svh-3.5rem)] animate-pulse bg-muted/20" />
+      </div>
+    </div>
+  )
+}
+
+export default function AppLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <Suspense fallback={<AppChromeFallback />}>
+      <AuthenticatedAppChrome>{children}</AuthenticatedAppChrome>
+    </Suspense>
   )
 }

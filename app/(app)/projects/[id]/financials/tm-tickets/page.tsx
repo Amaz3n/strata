@@ -13,7 +13,6 @@ import { listProjectTmTickets } from "@/lib/services/tm-tickets"
 
 import { unwrapAction } from "@/lib/action-result"
 
-export const dynamic = "force-dynamic"
 
 interface PageProps {
   params: Promise<{ id: string }>

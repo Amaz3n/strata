@@ -4,7 +4,6 @@ import { commitQuickCaptureDraft, listQuickCaptureReviewTray, queueQuickCaptureF
 import { runWithServiceOrgContext } from "@/lib/services/context"
 import { quickCaptureInputSchema } from "@/lib/validation/quick-capture"
 
-export const runtime = "nodejs"
 
 export async function POST(request: Request) {
   const requestId = mobileRequestId(request)

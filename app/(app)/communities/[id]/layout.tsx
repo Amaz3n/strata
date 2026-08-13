@@ -10,6 +10,12 @@ import { PageLayout } from "@/components/layout/page-layout"
 import { getCommunityLane } from "@/lib/services/community-portfolio"
 import { getCommunity } from "@/lib/services/communities"
 
+// A fabricated community ID cannot produce a valid inventory shell. Runtime
+// validation still checks real community navigations in development.
+export const instant = {
+  unstable_disableBuildValidation: true,
+}
+
 export default async function CommunityLayout({
   children,
   params,

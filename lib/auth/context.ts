@@ -1,7 +1,9 @@
 import "server-only"
 
 import { cache } from "react"
+import { cacheLife } from "next/cache"
 import { cookies } from "next/headers"
+import { connection } from "next/server"
 import type { SupabaseClient, User } from "@supabase/supabase-js"
 import { createServerSupabaseClient, createServiceSupabaseClient } from "@/lib/supabase/server"
 import { isPlatformAdminUser } from "@/lib/auth/platform"
@@ -22,6 +24,24 @@ export interface AuthContext {
   user: User | null
   orgId: string | null
   membership: OrgMembership | null
+}
+
+/**
+ * Supabase Auth checks the current time while recovering a cookie-backed
+ * session. Keep that request-only work in a private cache scope so Cache
+ * Components can include the resolved session in runtime prefetches without
+ * ever sharing it through the server cache.
+ */
+async function getValidatedUser(): Promise<User | null> {
+  "use cache: private"
+  cacheLife("seconds")
+
+  const supabase = await createServerSupabaseClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+
+  return user
 }
 
 async function getPreferredOrgId(supabase: SupabaseClient, userId?: string | null) {
@@ -170,10 +190,10 @@ async function touchMembershipActivity(orgId: string, userId: string, lastActive
 // re-resolves this context; without the cache a single page render repeats the
 // whole chain dozens of times.
 export const getAuthContext = cache(async (): Promise<AuthContext> => {
-  const supabase = await createServerSupabaseClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const [supabase, user] = await Promise.all([
+    createServerSupabaseClient(),
+    getValidatedUser(),
+  ])
 
   const orgId = user ? await getPreferredOrgId(supabase, user.id) : null
   const membership = user && orgId ? await fetchMembership(supabase, orgId, user.id) : null
@@ -184,6 +204,10 @@ export const getAuthContext = cache(async (): Promise<AuthContext> => {
 export async function requireAuth(): Promise<AuthContext & { user: User }> {
   const context = await getAuthContext()
   if (!context.user) {
+    // Anonymous build samples cannot exercise authenticated routes. Defer the
+    // decision to request time so prerendering emits the surrounding shell;
+    // real anonymous requests still resolve connection() and fail normally.
+    await connection()
     throw new Error("User is not authenticated")
   }
   return context as AuthContext & { user: User }

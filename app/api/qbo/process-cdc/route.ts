@@ -8,4 +8,3 @@ function redirectToAccountingRoute(request: NextRequest) {
 
 export const GET = redirectToAccountingRoute
 export const POST = redirectToAccountingRoute
-export const runtime = "nodejs"

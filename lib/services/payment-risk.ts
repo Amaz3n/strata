@@ -53,8 +53,8 @@ export async function listBlockedPaymentRuns(orgId?: string): Promise<BlockedPay
   const context = await requireOrgContext(orgId)
   // Viewing the queue is for anyone who can act on payments after the fact:
   // approvers (who clear blocks) and reconcilers (who audit them). Acting on a
-  // block stays `payments.approve_run` in decidePaymentRiskReview.
-  await requireAnyPermission(["payments.approve_run", "payment.reconcile"], context)
+  // block stays `payment.approve_run` in decidePaymentRiskReview.
+  await requireAnyPermission(["payment.approve_run", "payment.reconcile"], context)
   const supabase = createServiceSupabaseClient()
 
   const { data: reviews, error } = await supabase
@@ -148,7 +148,7 @@ export type DecidePaymentRiskInput = z.infer<typeof decideRiskSchema>
 export async function decidePaymentRiskReview(input: DecidePaymentRiskInput, orgId?: string) {
   const parsed = decideRiskSchema.parse(input)
   const context = await requireOrgContext(orgId)
-  await requirePermission("payments.approve_run", context)
+  await requirePermission("payment.approve_run", context)
   const stepUpVerifiedAt = await requireRecentPaymentStepUp()
   const supabase = createServiceSupabaseClient()
 

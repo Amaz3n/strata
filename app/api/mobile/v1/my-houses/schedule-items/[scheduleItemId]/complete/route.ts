@@ -2,7 +2,6 @@ import { mobileDataResponse, mobileErrorResponse, mobileRequestId } from "@/lib/
 import { requireMobileOrg } from "@/lib/mobile/auth"
 import { completeMobileMyHouseItem } from "@/lib/mobile/my-houses"
 
-export const runtime = "nodejs"
 
 export async function POST(request: Request, { params }: { params: Promise<{ scheduleItemId: string }> }) {
   const requestId = mobileRequestId(request)

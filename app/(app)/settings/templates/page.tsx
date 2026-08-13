@@ -13,7 +13,6 @@ import { listCostCodesAction } from "../cost-codes/actions"
 import { ChecklistsClient } from "./checklists-client"
 import { listEstimateTemplatesAction } from "./actions"
 
-export const dynamic = "force-dynamic"
 
 const SECTIONS = [
   { key: "estimates", label: "Estimates", description: "Reusable sections and line items to start a new estimate from. Terms, cover note, and branding live in Organization." },

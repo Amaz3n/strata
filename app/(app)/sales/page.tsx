@@ -10,7 +10,6 @@ import { listLostReasons, listSalesDeals } from "@/lib/services/sales-deals"
 import { listTeamMembers } from "@/lib/services/team"
 import { SalesBoardSkeleton } from "./loading"
 
-export const dynamic = "force-dynamic"
 
 /** 400-lot communities are the design case; the board never streams unbounded. */
 const ROW_CAP = 500

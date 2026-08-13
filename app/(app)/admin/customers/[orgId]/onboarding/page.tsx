@@ -5,7 +5,6 @@ import { OnboardingWorkbench } from "@/components/admin/onboarding-workbench"
 import { getOnboardingRun } from "@/lib/services/onboarding"
 import { completeOnboardingStageAction, createOnboardingRunAction, markRunLiveAction, resetSampleCommunityAction, skipOnboardingStageAction, updateOnboardingRunAction } from "./actions"
 
-export const dynamic = "force-dynamic"
 
 export default async function ProductionOnboardingPage({ params }: { params: Promise<{ orgId: string }> }) {
   const { orgId } = await params

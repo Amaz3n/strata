@@ -13,7 +13,6 @@ import { BudgetSnapshotComparison } from "@/components/financials/budget-snapsho
 
 import { unwrapAction } from "@/lib/action-result"
 
-export const dynamic = "force-dynamic"
 
 interface PageProps {
   params: Promise<{ id: string }>

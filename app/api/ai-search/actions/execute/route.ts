@@ -3,7 +3,6 @@ import { NextResponse } from "next/server"
 import { executeAiSearchActionRequest } from "@/lib/services/ai-search/actions"
 import { requireOrgContext } from "@/lib/services/context"
 
-export const runtime = "nodejs"
 
 function getActionId(raw: unknown) {
   if (typeof raw !== "string") return ""

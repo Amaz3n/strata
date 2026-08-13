@@ -4,12 +4,13 @@ This runbook is a release gate, not a product roadmap. Complete it against an is
 
 ## Required deployment state
 
-- Apply and verify all pending AP migrations, including `20260804005756_ap_payment_execution_hardening.sql`.
+- Apply and verify every migration through `20260813011917_receivable_adjustments_privilege_lockdown.sql`. Verify the migration ledger contains no duplicate repository versions before deployment.
 - Set `FINTECH_PAYMENTS_MODE=test`, `FINTECH_PAYMENTS_EXECUTION_ENABLED=true`, and `FINTECH_PAYMENTS_RECONCILIATION_ENABLED=true` only in the test deployment.
 - Keep `FINTECH_PAYMENTS_LIVE_MODE_APPROVED=false`.
 - Configure an organization feature flag for the isolated QA organization only.
-- Configure a payment policy, approved fee policy, designated approvers, verified funding source, and Stripe test connected vendor.
+- Configure a payment policy with finite per-payment, per-run, daily, in-flight, and return-loss limits; a 48+ business-hour payout hold; a 24+ hour new-vendor hold; an approved fee policy; designated approvers; a verified funding source; and a Stripe test connected vendor.
 - Connect the accounting target and enable bill/payment sync.
+- Record the five launch attestations at `/admin/ops/payment-launch` with durable evidence references. Do not use placeholder approvals; the newest attestation for every gate must be approved.
 
 ## Test-mode payment matrix
 
@@ -34,12 +35,18 @@ For every case, save the run ID, disbursement ID, provider IDs, ledger transacti
 2. Fail the local disbursement update after provider acceptance. Retry and verify local state repairs through the provider idempotency key.
 3. Deliver every supported webhook twice and out of order. Verify monotonic state and one financial effect.
 4. Return or cancel a debit before payout. Verify the cash/clearing/fee submission entry is reversed.
-5. Return a paid ACH. Verify the AP payment reversal, reopened bill balance, suspense entry, and exception case.
+5. Return a paid ACH. Verify the AP payment reversal, reopened bill balance, `ach_return_loss` entry, disabled funding source/mandate, return-loss limit evaluation, and exception case.
 6. Fail ledger posting after settlement, then redeliver the webhook. Verify ledger completion.
 7. Fail accounting enqueue after settlement, then redeliver. Verify the deduplicated accounting job appears.
 8. Fail accounting push, correct the coding/connection, retry from the page, and verify the error clears.
 9. Send an unmatched provider event. Verify it remains actionable and is not permanently discarded.
 10. Reconcile more than 1,000 disbursements and verify the run is not falsely balanced by a page cap.
+11. Deliver an ACH warning dispute and verify it opens an authorization inquiry without reversing money; then deliver the actual return and verify exactly one reversal.
+12. Mark a connected payout failed after the transfer has completed. Verify the bill is not reopened or paid twice, the payout remains vendor-associated, and an operations incident stays open until `payout.paid`.
+13. Disable or automatically update the builder funding method at the provider. Verify the funding source and mandate fail closed and an operations alert is persisted.
+14. Create provider-side payment, transfer, payout, and fee activity with no Arc row. Verify independent provider-led reconciliation emits `missing_internal` exceptions.
+15. Force reconciliation to fail after starting. Verify `last_reconciliation_attempt_at` advances, `last_reconciled_at` does not, and the watchdog reports stale reconciliation.
+16. Create more than 2,000 stale payment exceptions, recover them, and verify every row is closed with machine-generated evidence rather than falling outside a query cap.
 
 ## Construction controls
 
@@ -50,6 +57,9 @@ For every case, save the run ID, disbursement ID, provider IDs, ledger transacti
 - Confirm commitment, project, vendor relationship, cost coding, and payment allocation remain consistent.
 - Confirm joint-payee ACH is unavailable unless every destination is explicitly verified and bound to the payment relationship.
 - Confirm external check recording uses the same payment holds and produces accounting sync and audit evidence.
+- Add an approved bill to a payment run, then attempt to change its amount, vendor, project, currency, retainage, coding, document, or approval status. Confirm the database rejects every mutation until the run is canceled.
+- Suspend the builder/vendor payment relationship and the global vendor entity after run creation. Confirm submit, approval, retry, and execution all fail before provider submission.
+- Confirm duplicate invoice numbers are canonicalized across case, whitespace, and punctuation, and that a duplicate-check database failure blocks submission rather than failing open.
 
 ## Accounting acceptance
 
@@ -63,7 +73,7 @@ For every case, save the run ID, disbursement ID, provider IDs, ledger transacti
 
 ## Customer enablement gates
 
-Live mode remains blocked until all are recorded:
+Live mode remains blocked until all are recorded in the append-only launch-gate ledger and the latest state of every required gate is `approved`:
 
 - Provider program and settlement configuration approved.
 - Payments counsel and money-transmission posture approved.
@@ -73,6 +83,8 @@ Live mode remains blocked until all are recorded:
 - Limits, reserves/loss allocation, fees, disclosures, support hours, and customer contract accepted.
 - QA evidence above reviewed with no unresolved severity-1 or severity-2 defects.
 - A named approver authorizes the customer/org feature flag and `FINTECH_PAYMENTS_LIVE_MODE_APPROVED=true` change.
+
+The enforced gate keys are `provider_program`, `payments_legal`, `risk_reserves`, `operations_runbook`, and `production_qa`. Only an environment superadmin or `platform_super_admin` can record or revoke them; ordinary support permissions are insufficient. Enabling an organization policy or executing/releasing money calls the same server-side readiness assertion, so UI or API bypasses do not bypass the gate.
 
 ## Rollback
 

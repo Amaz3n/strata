@@ -9,7 +9,6 @@ import { getOrgBilling } from "@/lib/services/orgs"
 import { canRunReport, resolveOrgReportScope, resolveProjectReportScopeById } from "@/lib/services/report-catalog"
 import { recordReportRun } from "@/lib/services/report-runs"
 
-export const runtime = "nodejs"
 
 /**
  * The single export path for the whole catalog. Because it runs the same

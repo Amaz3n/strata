@@ -12,7 +12,6 @@ import { getPriceBookHealth, listPriceAgreements } from "@/lib/services/price-bo
 import { getVarianceAnalysis } from "@/lib/services/reports/variance-analysis"
 import { getAmbientDeskContext } from "@/lib/services/desk-context"
 
-export const dynamic = "force-dynamic"
 
 function relationName(value: unknown, fallback: string) {
   const row = Array.isArray(value) ? value[0] : value

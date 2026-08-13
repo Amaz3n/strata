@@ -143,5 +143,3 @@ export async function GET(request: NextRequest) {
     return completeOAuth(request, "/settings?tab=integrations&error=qbo_failed", "error")
   }
 }
-
-export const runtime = "nodejs"

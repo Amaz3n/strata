@@ -10,7 +10,6 @@ import { getSystemMetrics, getUsageTrends } from "@/lib/services/admin"
 import { getDemoUsageSummary } from "@/lib/services/platform-demo-usage"
 import { cn } from "@/lib/utils"
 
-export const dynamic = "force-dynamic"
 
 function formatMoney(cents: number): string {
   return `$${Math.round(cents / 100).toLocaleString()}`

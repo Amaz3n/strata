@@ -132,7 +132,6 @@ export async function GET(req: Request, { params }: { params: Promise<{ fileId: 
   }
 }
 
-export const runtime = "nodejs"
 
 async function generateAndStoreHeicPreview(supabase: ReturnType<typeof createServiceSupabaseClient>, file: any) {
   const sourceBytes = await downloadFilesObject({

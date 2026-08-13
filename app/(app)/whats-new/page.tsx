@@ -8,7 +8,6 @@ import {
   listReleaseNotesForAdmin,
 } from "@/lib/services/release-notes"
 
-export const dynamic = "force-dynamic"
 
 const MANAGE_PERMISSIONS = ["platform.feature_flags.manage", "features.manage"]
 

@@ -50,6 +50,8 @@ export const vendorBillStatusUpdateSchema = z.object({
   check_number: z.string().trim().min(1).max(40).optional(),
   payment_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid payment date").optional(),
   payment_amount_cents: z.number().int().min(1).optional(),
+  /** Stable across retries so recording a manual payment is exactly-once. */
+  payment_idempotency_key: z.string().trim().min(8).max(200).optional(),
   retainage_percent: z.number().min(0).max(25).optional(),
   /**
    * "2/10 net 30" as two numbers. The payment-run builder already prices these
@@ -79,6 +81,9 @@ export const vendorBillCreateSchema = z.object({
   bill_number: z.string().min(1, "Invoice number is required").max(50),
   total_cents: z.number().int().positive("Amount must be greater than zero"),
   bill_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid date format"),
+  tax_jurisdiction_id: z.string().uuid().nullable().optional(),
+  tax_included_cents: z.number().int().nonnegative().optional(),
+  use_tax_accrued_cents: z.number().int().nonnegative().optional(),
   due_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid date format").optional(),
   description: z.string().max(1000).optional(),
   period_start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid date format").optional(),

@@ -4,8 +4,6 @@ import { requireAuth } from "@/lib/auth/context"
 import { requireAnyPermission } from "@/lib/services/permissions"
 import { getAuditLogs } from "@/lib/services/admin"
 
-export const runtime = "nodejs"
-export const dynamic = "force-dynamic"
 
 // Hard cap so an "all time" export can't fetch the whole table.
 const MAX_ROWS = 5000

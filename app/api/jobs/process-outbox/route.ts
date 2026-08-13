@@ -104,7 +104,6 @@ if (typeof globalThis.Path2D === "undefined") {
   } as any
 }
 
-export const runtime = "nodejs"
 
 const MAX_RETRIES = 3
 // Lightweight jobs (emails, indexing) run first; drawing pipeline jobs are

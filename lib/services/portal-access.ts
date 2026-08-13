@@ -1421,11 +1421,7 @@ export async function loadSubPortalData({
   for (const bill of companyBills) {
     const existing = billsByCommitment.get(bill.commitment_id) ?? { billed: 0, paid: 0 }
     existing.billed += bill.total_cents ?? 0
-    if (typeof bill.paid_cents === "number") {
-      existing.paid += bill.paid_cents
-    } else if (bill.status === "paid") {
-      existing.paid += bill.total_cents ?? 0
-    }
+    existing.paid += Number(bill.paid_cents ?? 0)
     billsByCommitment.set(bill.commitment_id, existing)
   }
 
@@ -1461,11 +1457,7 @@ export async function loadSubPortalData({
     commitment_title: (b.commitments as any)?.title ?? "",
     status: b.status,
     total_cents: b.total_cents ?? 0,
-    paid_cents: typeof b.paid_cents === "number"
-      ? b.paid_cents
-      : b.status === "paid"
-        ? b.total_cents ?? 0
-        : 0,
+    paid_cents: Number(b.paid_cents ?? 0),
     bill_date: b.bill_date,
     due_date: b.due_date,
     submitted_at: b.created_at,

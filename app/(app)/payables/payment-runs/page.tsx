@@ -1,4 +1,6 @@
 import { redirect } from "next/navigation"
+import { connection } from "next/server"
+export const instant = false
 
 /**
  * Payment runs no longer have a desk.
@@ -18,6 +20,7 @@ export default async function PaymentRunsRedirect({
 }: {
   searchParams: Promise<{ run?: string }>
 }) {
+  await connection()
   const { run } = await searchParams
   redirect(run ? `/payables?run=${run}` : "/payables")
 }

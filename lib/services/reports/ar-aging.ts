@@ -31,13 +31,17 @@ export type ARAgingReport = {
   totals: ARAgingTotals
 }
 
-function getInvoiceBalanceDueCents(row: any): number {
-  const balance = row.balance_due_cents
-  if (typeof balance === "number") return balance
-  const fromMeta = row?.metadata?.totals?.balance_due_cents
-  if (typeof fromMeta === "number") return fromMeta
-  const total = row.total_cents
-  return typeof total === "number" ? total : 0
+async function loadAll<T>(load: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: any }>, label: string) {
+  const pageSize = 500
+  const rows: T[] = []
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await load(from, from + pageSize - 1)
+    if (error) throw new Error(`Failed to load ${label}: ${error.message}`)
+    const page = data ?? []
+    rows.push(...page)
+    if (page.length < pageSize) return rows
+    if (rows.length >= 250_000) throw new Error(`${label} exceeded the report safety limit`)
+  }
 }
 
 export async function getArAgingReport({
@@ -52,15 +56,16 @@ export async function getArAgingReport({
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   await requirePermission("report.read", { supabase, orgId: resolvedOrgId, userId })
   const asOfDate = asOf ?? todayIsoDateOnly()
+  const asOfEndExclusive = new Date(`${asOfDate}T00:00:00.000Z`)
+  asOfEndExclusive.setUTCDate(asOfEndExclusive.getUTCDate() + 1)
+  const cutoff = asOfEndExclusive.toISOString()
 
   let query = supabase
     .from("invoices")
-    .select("id, org_id, project_id, invoice_number, title, status, issue_date, due_date, total_cents, balance_due_cents, metadata, project:projects(name)")
+    .select("id, org_id, project_id, invoice_number, title, status, issue_date, due_date, sent_at, total_cents, balance_due_cents, metadata, project:projects(name)")
     .eq("org_id", resolvedOrgId)
-    // Aging reports what customers owe, so it starts where the receivable does:
-    // an invoice still in `draft` or `saved` has not been sent to anyone. This is
-    // the same set the projector posts and `ar_control` ties out against.
-    .in("status", [...BILLED_INVOICE_STATUSES])
+    // Load all invoices issued by the cutoff. Current status alone is not an
+    // as-of fact: an invoice paid or voided later was still open historically.
     .order("due_date", { ascending: true, nullsFirst: true })
     .order("created_at", { ascending: false })
 
@@ -71,9 +76,82 @@ export async function getArAgingReport({
     query = applyReportingExclusion(query, excludedProjectIds)
   }
 
-  const { data, error } = await query
-  if (error) {
-    throw new Error(`Failed to load invoices for AR aging: ${error.message}`)
+  query = query.lte("issue_date", asOfDate)
+  const data = await loadAll<any>((from, to) => query.range(from, to), "invoices for AR aging")
+
+  const invoiceRows = (data ?? []).filter((row: any) => {
+    if (typeof row.sent_at === "string" && row.sent_at >= cutoff) return false
+    if (BILLED_INVOICE_STATUSES.includes(row.status)) return true
+    if (row.status !== "void") return false
+    const voidedAt = row.metadata?.voided_at
+    return typeof voidedAt === "string" && voidedAt >= cutoff
+  })
+  const invoiceIds = invoiceRows.map((row: any) => String(row.id))
+  const paidByInvoice = new Map<string, number>()
+  if (invoiceIds.length > 0) {
+    for (let start = 0; start < invoiceIds.length; start += 200) {
+      const ids = invoiceIds.slice(start, start + 200)
+      const [payments, allocations, reversals, adjustments] = await Promise.all([
+        loadAll<any>(
+          (from, to) => supabase
+            .from("payments")
+            .select("id,invoice_id,amount_cents,status,received_at")
+            .eq("org_id", resolvedOrgId)
+            .in("invoice_id", ids)
+            .in("status", ["succeeded", "completed", "paid", "refunded"])
+            .lt("received_at", cutoff)
+            .range(from, to),
+          "invoice payments for AR aging",
+        ),
+        loadAll<any>(
+          (from, to) => supabase
+            .from("payment_allocations")
+            .select("invoice_id,amount_cents,payment:payments!inner(status,received_at)")
+            .eq("org_id", resolvedOrgId)
+            .in("invoice_id", ids)
+            .in("payment.status", ["succeeded", "completed", "paid", "refunded"])
+            .lt("payment.received_at", cutoff)
+            .range(from, to),
+          "payment allocations for AR aging",
+        ),
+        loadAll<any>(
+          (from, to) => supabase
+            .from("payment_reversals")
+            .select("invoice_id,amount_cents,status,occurred_at")
+            .eq("org_id", resolvedOrgId)
+            .in("invoice_id", ids)
+            .eq("status", "succeeded")
+            .lt("occurred_at", cutoff)
+            .range(from, to),
+          "payment reversals for AR aging",
+        ),
+        loadAll<any>(
+          (from, to) => supabase
+            .from("receivable_adjustments")
+            .select("invoice_id,amount_cents,status,effective_date,voided_at")
+            .eq("org_id", resolvedOrgId)
+            .in("invoice_id", ids)
+            .lte("effective_date", asOfDate)
+            .range(from, to),
+          "receivable adjustments for AR aging",
+        ),
+      ])
+      for (const payment of payments) {
+        if (!payment.invoice_id) continue
+        paidByInvoice.set(String(payment.invoice_id), (paidByInvoice.get(String(payment.invoice_id)) ?? 0) + Number(payment.amount_cents ?? 0))
+      }
+      for (const allocation of allocations) {
+        paidByInvoice.set(String(allocation.invoice_id), (paidByInvoice.get(String(allocation.invoice_id)) ?? 0) + Number(allocation.amount_cents ?? 0))
+      }
+      for (const reversal of reversals) {
+        paidByInvoice.set(String(reversal.invoice_id), (paidByInvoice.get(String(reversal.invoice_id)) ?? 0) - Number(reversal.amount_cents ?? 0))
+      }
+      for (const adjustment of adjustments) {
+        const wasActive = adjustment.status === "posted" || (typeof adjustment.voided_at === "string" && adjustment.voided_at >= cutoff)
+        if (!wasActive) continue
+        paidByInvoice.set(String(adjustment.invoice_id), (paidByInvoice.get(String(adjustment.invoice_id)) ?? 0) + Number(adjustment.amount_cents ?? 0))
+      }
+    }
   }
 
   const totals: ARAgingTotals = {
@@ -88,11 +166,11 @@ export async function getArAgingReport({
     total_invoiced_cents: 0,
   }
 
-  const rows: ARAgingRow[] = (data ?? []).map((row: any) => {
+  const rows: ARAgingRow[] = invoiceRows.map((row: any) => {
     const totalCents = typeof row.total_cents === "number" ? row.total_cents : 0
-    const balanceDueCents = getInvoiceBalanceDueCents(row)
-    const openBalanceCents = Math.max(0, balanceDueCents)
-    const isPaid = row.status === "paid" || openBalanceCents === 0
+    const balanceDueCents = Math.max(0, totalCents - Math.max(0, paidByInvoice.get(String(row.id)) ?? 0))
+    const openBalanceCents = balanceDueCents
+    const isPaid = openBalanceCents === 0
 
     const { bucket, daysPastDue } = getAgingBucket({
       dueDate: row.due_date,
@@ -129,4 +207,3 @@ export async function getArAgingReport({
     totals,
   }
 }
-

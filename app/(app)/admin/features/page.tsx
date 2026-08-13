@@ -5,7 +5,6 @@ import { FeatureFlagsTable } from "@/components/admin/feature-flags-table"
 import { Skeleton } from "@/components/ui/skeleton"
 import { getFeatureFlags, getFeatureFlagOrganizations } from "@/lib/services/admin"
 
-export const dynamic = "force-dynamic"
 
 async function FeatureFlagsData() {
   const [featureFlags, organizations] = await Promise.all([

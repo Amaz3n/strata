@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { unstable_rethrow } from "next/navigation"
 
 import { getNextInvoiceNumber } from "@/lib/services/invoice-numbers"
 import { requireOrgContext } from "@/lib/services/context"
@@ -9,6 +10,7 @@ export async function GET() {
     const result = await getNextInvoiceNumber()
     return NextResponse.json(result)
   } catch (error: any) {
+    unstable_rethrow(error)
     console.error("Failed to fetch next invoice number", error)
     return NextResponse.json({ error: error?.message ?? "Unable to get next invoice number" }, { status: 500 })
   }

@@ -5,9 +5,14 @@ import { ExternalPortalSignOutButton } from "@/components/portal/external-portal
 import { Button } from "@/components/ui/button"
 import { getExternalPortalWorkspaceContext } from "@/lib/services/external-portal-auth"
 
-export const revalidate = 0
 export const metadata = {
   robots: { index: false, follow: false },
+}
+
+// This router requires an external-account session and immediately redirects
+// to that user's latest portal. Validate it in dev with the real session.
+export const instant = {
+  unstable_disableBuildValidation: true,
 }
 
 /**

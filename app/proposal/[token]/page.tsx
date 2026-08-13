@@ -5,7 +5,6 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { ProposalViewClient } from "./proposal-view-client"
 import { isDateExpired, formatLocalDate } from "@/lib/utils"
 
-export const revalidate = 0
 export const metadata = {
   robots: {
     index: false,

@@ -4,7 +4,6 @@ import { loadEstimateByToken } from "@/lib/services/estimate-portal"
 import { EstimatePortalClient } from "@/components/portal/estimate-portal-client"
 import { isDateExpired } from "@/lib/utils"
 
-export const revalidate = 0
 export const metadata = {
   robots: {
     index: false,

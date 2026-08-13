@@ -47,6 +47,8 @@ export const invoiceInputSchema = z.object({
     .transform((val) => (val && val.trim().length > 0 ? val : undefined)),
   client_visible: z.boolean().default(false),
   tax_rate: z.number().min(0).max(20).default(0),
+  tax_jurisdiction_id: z.string().uuid().optional().nullable(),
+  tax_jurisdiction_name: z.string().trim().max(160).optional().nullable(),
   discount_type: z.enum(["percent", "fixed"]).optional().nullable(),
   // Percent (0–100) or dollars depending on discount_type; ignored when discount_type is unset.
   discount_value: z.number().min(0).optional().nullable(),

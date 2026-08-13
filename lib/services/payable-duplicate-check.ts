@@ -90,8 +90,10 @@ export async function findDuplicatePayable({
 
   const { data, error } = await query
   if (error) {
-    console.warn("[payable-duplicates] Candidate lookup failed", error.message)
-    return null
+    // Duplicate detection protects the liability itself. Treating an
+    // unavailable database check as "no duplicate" lets the same invoice be
+    // created and paid twice precisely when the control is unhealthy.
+    throw new Error(`Unable to verify whether this payable is a duplicate: ${error.message}`)
   }
 
   // When aliases are supplied, a candidate counts as the same vendor if any

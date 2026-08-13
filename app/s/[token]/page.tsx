@@ -24,7 +24,6 @@ interface SubPortalHomeProps {
   params: Promise<{ token: string }>
 }
 
-export const revalidate = 0
 
 /** Bills that are approved but whose lien waiver has not come back yet. */
 function needsWaiver(status: string, lienWaiverStatus?: string | null) {

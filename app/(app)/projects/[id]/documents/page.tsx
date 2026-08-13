@@ -17,21 +17,16 @@ interface ProjectFilesPageProps {
   searchParams: Promise<{ path?: string }>
 }
 
-export default async function ProjectFilesPage({ params, searchParams }: ProjectFilesPageProps) {
-  const { id } = await params
-  const project = await getProjectAction(id)
+export const instant = true
 
-  if (!project) {
-    notFound()
-  }
-
+export default function ProjectFilesPage({ params, searchParams }: ProjectFilesPageProps) {
   return (
     <PageLayout
       title="Documents"
     >
       <Suspense
         fallback={
-          <div className="p-6 space-y-4">
+          <div data-instant-shell="project-documents" className="p-6 space-y-4">
             <Skeleton className="h-8 w-48 mb-6" />
             <div className="space-y-2">
               {Array.from({ length: 5 }).map((_, i) => (
@@ -41,22 +36,26 @@ export default async function ProjectFilesPage({ params, searchParams }: Project
           </div>
         }
       >
-        <ProjectFilesData id={id} project={project} searchParams={searchParams} />
+        <ProjectFilesData params={params} searchParams={searchParams} />
       </Suspense>
     </PageLayout>
   )
 }
 
 async function ProjectFilesData({
-  id,
-  project,
+  params,
   searchParams,
 }: {
-  id: string
-  project: any
+  params: Promise<{ id: string }>
   searchParams: Promise<{ path?: string }>
 }) {
-  const query = await searchParams
+  const [{ id }, query] = await Promise.all([params, searchParams])
+  const project = await getProjectAction(id)
+
+  if (!project) {
+    notFound()
+  }
+
   const normalizedPath = query.path?.trim() ? query.path : undefined
 
   const [filesResult, counts, folders] = await Promise.all([

@@ -4,7 +4,6 @@ import { supportsFormat } from "@/lib/reports/registry"
 import type { ReportFormat } from "@/lib/reports/types"
 import { resolveReportExportToken, runTokenReport } from "@/lib/services/report-configs"
 
-export const runtime = "nodejs"
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ slug: string }> }) {
   const bearer = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? request.nextUrl.searchParams.get("token")

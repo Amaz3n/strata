@@ -2,7 +2,6 @@ import { mobileDataResponse, mobileErrorResponse, mobileRequestId } from "@/lib/
 import { requireMobileOrg } from "@/lib/mobile/auth"
 import { decideMobilePayable } from "@/lib/mobile/payables"
 
-export const runtime = "nodejs"
 
 /**
  * Approve or reject a payable from the phone.

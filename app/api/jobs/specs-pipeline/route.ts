@@ -6,7 +6,6 @@ import { withCronRun } from "@/lib/services/job-runs"
 import { hasPendingSpecJobs, runSpecsPipeline } from "@/lib/services/specs-pipeline"
 import { triggerSpecsPipeline } from "@/lib/services/specs-pipeline-trigger"
 
-export const runtime = "nodejs"
 export const maxDuration = 300
 
 async function handle(request: NextRequest) {

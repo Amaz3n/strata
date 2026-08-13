@@ -16,7 +16,6 @@ import {
 
 import { requireOrgContext } from "@/lib/services/context";
 
-export const dynamic = "force-dynamic";
 
 const PAGE_SIZE = 25;
 

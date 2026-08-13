@@ -12,7 +12,6 @@ import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { getOrgProductTier } from "@/lib/services/context"
 import { prospectStatusEnum, type ProspectStatus } from "@/lib/validation/prospects"
 
-export const dynamic = "force-dynamic"
 
 interface PipelinePageProps {
   searchParams: Promise<{

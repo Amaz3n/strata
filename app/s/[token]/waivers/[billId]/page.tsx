@@ -13,7 +13,6 @@ interface PageProps {
   params: Promise<{ token: string; billId: string }>
 }
 
-export const revalidate = 0
 
 export default async function VendorBillWaiverPortalPage({ params }: PageProps) {
   const { token, billId } = await params

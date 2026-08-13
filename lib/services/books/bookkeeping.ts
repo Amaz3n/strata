@@ -342,6 +342,77 @@ export async function createAdjustingJournal(input: {
   return posted;
 }
 
+/** Stage a hand-authored entry for a different user to review and post. */
+export async function proposeAdjustingJournal(input: {
+  entryDate: string;
+  memo: string;
+  lines: JournalLineDraft[];
+  reversingOn?: string | null;
+  orgId?: string;
+}) {
+  const context = await requireBooksAdjust(input.orgId);
+  const service = createServiceSupabaseClient();
+  const draft: JournalEntryDraft = {
+    entryDate: input.entryDate,
+    entryKind: "adjusting",
+    memo: input.memo.trim(),
+    postingKey: "validation",
+    projectionVersion: 1,
+    policyVersion: 1,
+    lines: input.lines,
+  };
+  assertBalancedJournalDraft(draft);
+  const codes = [...new Set(input.lines.map((line) => line.accountCode))];
+  const [{ data: accounts, error: accountError }, { data: settings, error: settingsError }] = await Promise.all([
+    service.from("gl_accounts").select("id,code").eq("org_id", context.orgId).eq("active", true).in("code", codes),
+    service.from("books_settings").select("active_policy_version").eq("org_id", context.orgId).single(),
+  ]);
+  if (accountError ?? settingsError) throw new Error(`Failed to prepare journal proposal: ${(accountError ?? settingsError)?.message}`);
+  const accountByCode = new Map((accounts ?? []).map((row) => [row.code, row.id]));
+  if (codes.some((code) => !accountByCode.has(code))) throw new Error("One or more selected accounts are unavailable");
+  const digest = booksDigest({ date: input.entryDate, memo: input.memo.trim(), lines: input.lines });
+  const { data, error } = await service.from("books_journal_proposals").insert({
+    org_id: context.orgId,
+    entry_date: input.entryDate,
+    memo: input.memo.trim(),
+    reversing_on: input.reversingOn || null,
+    posting_key: `adjustment:${digest}`,
+    policy_version: Number(settings.active_policy_version),
+    proposed_by: context.userId,
+    lines: input.lines.map((line, index) => ({
+      line_no: index + 1,
+      account_id: accountByCode.get(line.accountCode),
+      project_id: line.projectId ?? null,
+      company_id: line.companyId ?? null,
+      description: line.description ?? null,
+      debit_cents: line.debitCents,
+      credit_cents: line.creditCents,
+      dimensions: line.dimensions ?? {},
+    })),
+  }).select("id").single();
+  if (error) throw new Error(`Failed to create journal proposal: ${error.message}`);
+  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: "books.journal_proposed", entityType: "books_journal_proposal", entityId: data.id, payload: { entry_date: input.entryDate, memo: input.memo.trim() }, channel: "notification" });
+  return { id: data.id };
+}
+
+export async function listJournalProposals(orgId?: string) {
+  const context = await requireBooksAdjust(orgId);
+  const service = createServiceSupabaseClient();
+  const { data, error } = await service.from("books_journal_proposals").select("id,entry_date,memo,reversing_on,status,proposed_by,proposed_at,review_note,lines,proposer:app_users!books_journal_proposals_proposed_by_fkey(full_name,email)").eq("org_id", context.orgId).order("proposed_at", { ascending: false }).limit(100);
+  if (error) throw new Error(`Failed to load journal proposals: ${error.message}`);
+  return { proposals: data ?? [], currentUserId: context.userId };
+}
+
+export async function reviewJournalProposal(input: { proposalId: string; decision: "approve" | "reject"; note?: string }, orgId?: string) {
+  const context = await requireBooksAdjust(orgId);
+  const service = createServiceSupabaseClient();
+  const parsed = z.object({ proposalId: z.string().uuid(), decision: z.enum(["approve","reject"]), note: z.string().trim().max(1000).optional() }).parse(input);
+  const { data, error } = await service.rpc("review_books_journal_proposal_atomic", { p_org_id: context.orgId, p_proposal_id: parsed.proposalId, p_reviewer_id: context.userId, p_decision: parsed.decision, p_note: parsed.note ?? "" });
+  if (error) throw new Error(`Failed to review journal proposal: ${error.message}`);
+  await recordEvent({ orgId: context.orgId, actorId: context.userId, eventType: `books.journal_${parsed.decision === "approve" ? "approved" : "rejected"}`, entityType: "books_journal_proposal", entityId: parsed.proposalId, payload: { note: parsed.note ?? null }, channel: "notification" });
+  return data;
+}
+
 export async function createRecurringPostingTemplate(input: {
   name: string;
   memo: string;

@@ -4,7 +4,6 @@ import { assertBidPortalActionAccess } from "@/lib/services/bid-portal"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { getFilesObjectStream } from "@/lib/storage/files-storage"
 
-export const runtime = "nodejs"
 
 function contentDisposition(fileName: string, disposition: "inline" | "attachment") {
   const fallback = fileName

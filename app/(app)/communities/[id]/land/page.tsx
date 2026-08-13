@@ -7,7 +7,6 @@ import { getCommunityLane } from "@/lib/services/community-portfolio"
 import { getCommunity } from "@/lib/services/communities"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 
-export const dynamic = "force-dynamic"
 
 /** The board reads two years so the horizon control is a zoom rather than a refetch. */
 const RUNWAY_HORIZON_MONTHS = 24

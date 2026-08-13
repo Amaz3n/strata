@@ -8,7 +8,6 @@ import { listDivisions } from "@/lib/services/divisions"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { listTeamMembers } from "@/lib/services/team"
 
-export const dynamic = "force-dynamic"
 
 /** Only what you configure once. Phases and takedowns moved to the Land tab. */
 export default async function CommunitySettingsPage({ params }: { params: Promise<{ id: string }> }) {

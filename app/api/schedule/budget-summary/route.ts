@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { unstable_rethrow } from "next/navigation"
 import { requireOrgContext } from "@/lib/services/context"
 import { getScheduleBudgetSummary } from "@/lib/services/schedule"
 
@@ -16,6 +17,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json(budgetSummary)
   } catch (error) {
+    unstable_rethrow(error)
     console.error("Error fetching budget summary:", error)
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to fetch budget summary" },

@@ -3,7 +3,6 @@ import { NextRequest, NextResponse } from "next/server"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { renderLienWaiverPdf, type LienWaiverPdfData } from "@/lib/pdfs/lien-waiver"
 
-export const runtime = "nodejs"
 
 /**
  * Public, token-scoped lien waiver download. Unconditional waivers are only

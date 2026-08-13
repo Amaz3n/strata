@@ -1,6 +1,7 @@
 import { cache } from "react"
 import { cookies, headers } from "next/headers"
-import { createServerClient, type CookieOptions } from "@supabase/ssr"
+import { unstable_rethrow } from "next/navigation"
+import { createServerClient } from "@supabase/ssr"
 import { createClient as createBrowserlessClient, type SupabaseClient } from "@supabase/supabase-js"
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -36,31 +37,26 @@ export const createServerSupabaseClient = cache(async (): Promise<SupabaseClient
     return createServerClient(url, anonKey, {
       global: { headers: forwardedHeaders },
       cookies: {
-        get: (name: string) => {
-          try {
-            const cookie = cookieStore.get(name)
-            return cookie?.value
-          } catch {
-            return undefined
-          }
+        getAll: () => {
+          return cookieStore.getAll()
         },
-        set: (name: string, value: string, options: CookieOptions) => {
+        setAll: (cookiesToSet) => {
           try {
-            cookieStore.set(name, value, options)
+            cookiesToSet.forEach(({ name, value, options }) => {
+              cookieStore.set(name, value, options)
+            })
           } catch {
-            // Failed to set cookie
-          }
-        },
-        remove: (name: string, options: CookieOptions) => {
-          try {
-            cookieStore.set(name, "", { ...options, maxAge: 0 })
-          } catch {
-            // Failed to remove cookie
+            // Server Components cannot write cookies. The proxy refreshes the
+            // session and persists any rotated tokens on the response instead.
           }
         },
       },
     })
   } catch (error) {
+    // cookies()/headers() intentionally suspend Cache Components prerenders.
+    // Preserve that framework control flow instead of mistaking it for a
+    // missing-cookie environment and continuing with an anonymous client.
+    unstable_rethrow(error)
     // If cookies fail, create a client without cookies (for server-side operations)
     console.warn('Cookies not available, creating client without cookies:', error)
     return createBrowserlessClient(url, anonKey, {

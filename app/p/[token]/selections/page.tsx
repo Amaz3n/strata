@@ -9,7 +9,6 @@ interface Params {
   params: Promise<{ token: string }>
 }
 
-export const revalidate = 0
 
 export default async function SelectionsPortalPage({ params }: Params) {
   const { token } = await params

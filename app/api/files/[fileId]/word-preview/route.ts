@@ -69,7 +69,6 @@ export async function GET(_req: Request, { params }: { params: Promise<{ fileId:
   }
 }
 
-export const runtime = "nodejs"
 
 function buildHtmlHeaders(): Headers {
   const headers = new Headers()

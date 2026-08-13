@@ -8,7 +8,6 @@ import { PlatformClient } from "@/components/platform/platform-client"
 import { getAdminStats } from "@/lib/services/admin"
 import { getCurrentPlatformAccess } from "@/lib/services/platform-access"
 
-export const dynamic = "force-dynamic"
 
 async function PlatformData() {
   const access = await getCurrentPlatformAccess()

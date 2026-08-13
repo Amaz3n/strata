@@ -1,4 +1,4 @@
-import type { Metadata } from "next"
+import { Suspense } from "react"
 import { notFound } from "next/navigation"
 import { HelpArticlePage } from "@/components/help/help-article"
 import {
@@ -12,42 +12,36 @@ import {
   getHelpStaticParams,
   resolveHelpRoute,
 } from "@/lib/help/catalog"
+import HelpLoading from "../loading"
 
 type HelpRoutePageProps = {
   params: Promise<{ slug: string[] }>
+}
+
+// The root Instant Navigation sample uses a scalar `slug` for report routes;
+// this catch-all route needs its own array-shaped sample.
+export const instant = {
+  unstable_samples: [{ params: { slug: ["getting-started"] } }],
+}
+
+export const metadata = {
+  title: "Help Center | Arc",
+  description: "Find guides and answers for using Arc.",
 }
 
 export function generateStaticParams() {
   return getHelpStaticParams()
 }
 
-export async function generateMetadata({
-  params,
-}: HelpRoutePageProps): Promise<Metadata> {
-  const { slug } = await params
-  const route = resolveHelpRoute(slug)
-  if (!route) return {}
-
-  const title =
-    route.type === "topic"
-      ? route.topic.title
-      : route.type === "collection"
-        ? route.collection.title
-        : route.article.title
-  const description =
-    route.type === "topic"
-      ? route.topic.description
-      : route.type === "collection"
-        ? route.collection.description
-        : route.article.description
-
-  return {
-    title: `${title} | Arc Help Center`,
-    description,
-  }
+export default function HelpRoutePage(props: HelpRoutePageProps) {
+  return (
+    <Suspense fallback={<HelpLoading />}>
+      <HelpRouteContent {...props} />
+    </Suspense>
+  )
 }
 
-export default async function HelpRoutePage({ params }: HelpRoutePageProps) {
+async function HelpRouteContent({ params }: HelpRoutePageProps) {
   const { slug } = await params
   const route = resolveHelpRoute(slug)
   if (!route) notFound()

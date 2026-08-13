@@ -4,7 +4,6 @@ import { requireMobileOrg } from "@/lib/mobile/auth"
 import { mapMobileProject } from "@/lib/mobile/projects"
 import { listProjects } from "@/lib/services/projects"
 
-export const runtime = "nodejs"
 
 export async function GET(request: Request) {
   const requestId = mobileRequestId(request)

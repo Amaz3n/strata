@@ -282,11 +282,18 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     // company records is the moment a future payment's destination is decided.
     // The people who own the rail see it, even though they do not approve it.
     "vendor_payment_relationship_claimed",
+    "vendor_payment_relationship_active",
+    "vendor_payment_relationship_onboarding",
+    "vendor_payment_relationship_suspended",
+    "vendor_payment_relationship_revoked",
+    "payment_rail_policy_updated",
+    "payment_run_approvers_updated",
+    "payment_hold_overridden",
   ])
   if (paymentSecurityEvents.has(event.event_type)) {
     const { data: roleRows } = await supabase.from("role_permissions")
       .select("role_id")
-      .in("permission_key", ["payments.manage_rail", "payments.approve_run"])
+      .in("permission_key", ["payment.manage_rail", "payment.approve_run"])
     const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
     if (roleIds.length === 0) return []
     const { data: memberships } = await supabase.from("memberships")
@@ -316,6 +323,19 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     return uniqUserIds([...(memberships ?? []).map((row) => row.user_id), ...(actorId ? [actorId] : [])])
   }
 
+  // A reversal changes the project's receivable/payable truth after a payment
+  // had previously been presented as settled. Route it to the finance audience
+  // for that project, including AR readers, rather than only to AP operators.
+  if (event.event_type === "payment_reversed" && projectId) {
+    return getProjectFinancialNotificationRecipients({
+      supabase,
+      orgId,
+      projectId,
+      actorId,
+      policyVersion: "payment-reversal-v1",
+    })
+  }
+
   const paymentOperationalEvents = new Set([
     "payment_run_execution_failed",
     "payment_operations_alert",
@@ -324,6 +344,7 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     "vendor_payment_returned",
     "payment_reconciliation_completed",
     "vendor_payout_destination_changed",
+    "payment_reversed",
   ])
   if (paymentOperationalEvents.has(event.event_type)) {
     const permissionKeys = event.event_type === "payment_reconciliation_completed"
@@ -331,12 +352,12 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
       : event.event_type === "payment_run_fee_charge_failed"
         // The vendors were paid; only Arc's own fee is outstanding. That is a
         // rail-ownership problem, not a release problem.
-        ? ["payments.manage_rail", "payment.reconcile"]
+        ? ["payment.manage_rail", "payment.reconcile"]
       : event.event_type === "payment_operations_alert"
         // A stalled release or a reconciliation that stopped running is a rail
         // problem, so the people who own the rail hear about it alongside the
         // ones who reconcile it.
-        ? ["payment.reconcile", "payments.manage_rail"]
+        ? ["payment.reconcile", "payment.manage_rail"]
         : ["payment.release", "payment.reconcile"]
     const { data: roleRows } = await supabase.from("role_permissions").select("role_id").in("permission_key", permissionKeys)
     const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
@@ -382,7 +403,7 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     if ((designated ?? []).length > 0) {
       return uniqUserIds((designated ?? []).map((row) => row.user_id)).filter((id) => id !== actorId)
     }
-    const { data: roleRows } = await supabase.from("role_permissions").select("role_id").eq("permission_key", "payments.approve_run")
+    const { data: roleRows } = await supabase.from("role_permissions").select("role_id").eq("permission_key", "payment.approve_run")
     const roleIds = [...new Set((roleRows ?? []).map((row) => row.role_id).filter(Boolean))]
     if (roleIds.length === 0) return []
     const { data: memberships } = await supabase.from("memberships").select("user_id").eq("org_id", orgId).eq("status", "active").in("role_id", roleIds)
@@ -410,6 +431,7 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
     "invoice_updated",
     "invoice_sent",
     "payment_recorded",
+    "vendor_credit_applied",
     "selection_created",
     "portal_message",
     "recipient_signed",
@@ -564,7 +586,7 @@ async function getNotificationRecipients(event: EventRecord, orgId: string): Pro
   }
 
   if (projectId && projectScopedEvents.has(event.event_type)) {
-    if (event.event_type === "payment_recorded") {
+    if (event.event_type === "payment_recorded" || event.event_type === "vendor_credit_applied") {
       return getProjectFinancialNotificationRecipients({
         supabase,
         orgId,
@@ -898,6 +920,59 @@ function buildNotificationFromEvent(event: EventRecord, userId: string) {
           typeof safePayload.invoice_number === "string" && typeof safePayload.amount_cents === "number"
             ? `Invoice #${safePayload.invoice_number} was paid for ${formatCurrencyFromCents(safePayload.amount_cents)}.`
             : fallbackMessage,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+
+    case "vendor_credit_applied": {
+      const amount = typeof safePayload.amount_cents === "number"
+        ? formatCentsForNotification(safePayload.amount_cents)
+        : null
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "vendor_credit_applied" as NotificationType,
+        title: `Vendor credit applied${amount ? `: ${amount}` : ""}`,
+        message: "An approved vendor credit reduced an open payable. Review the payable and accounting sync.",
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
+    case "payment_reversed": {
+      const amount = typeof safePayload.amount_cents === "number"
+        ? formatCentsForNotification(safePayload.amount_cents)
+        : null
+      return {
+        orgId: event.org_id,
+        userId,
+        type: "payment_reversed" as NotificationType,
+        title: `Customer payment reversed${amount ? `: ${amount}` : ""}`,
+        message: `A previously recorded customer payment was reversed${typeof safePayload.reversal_type === "string" ? ` (${safePayload.reversal_type})` : ""}. Review the invoice balance and bank reconciliation.`,
+        projectId: projectId ?? undefined,
+        entityType: entity_type,
+        entityId: entity_id,
+        eventId: event.id,
+      }
+    }
+
+    case "payment_rail_policy_updated":
+    case "payment_run_approvers_updated":
+    case "payment_hold_overridden":
+    case "vendor_payment_relationship_active":
+    case "vendor_payment_relationship_onboarding":
+    case "vendor_payment_relationship_suspended":
+    case "vendor_payment_relationship_revoked":
+      return {
+        orgId: event.org_id,
+        userId,
+        type: event_type as NotificationType,
+        title: titleForEventType(event_type),
+        message: fallbackMessage,
         projectId: projectId ?? undefined,
         entityType: entity_type,
         entityId: entity_id,
@@ -1340,6 +1415,23 @@ function titleForEventType(eventType: string): string {
       return "PO completion rejected"
     case "vendor_payment_relationship_claimed":
       return "Vendor connected a payout account"
+    case "payment_rail_policy_updated":
+      return "Vendor payment policy changed"
+    case "payment_run_approvers_updated":
+      return "Payment approver roster changed"
+    case "payment_hold_overridden":
+      return "Payment hold overridden"
+    case "payment_reversed":
+      return "Customer payment reversed"
+    case "vendor_credit_applied":
+      return "Vendor credit applied"
+    case "vendor_payment_relationship_active":
+    case "vendor_payment_relationship_onboarding":
+      return "Vendor payment access restored"
+    case "vendor_payment_relationship_suspended":
+      return "Vendor payment access suspended"
+    case "vendor_payment_relationship_revoked":
+      return "Vendor payment access revoked"
     default:
       return eventType.replace(/_/g, " ")
   }

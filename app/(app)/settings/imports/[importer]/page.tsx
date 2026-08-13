@@ -8,7 +8,6 @@ import { IMPORTER_DEFINITIONS, IMPORTER_KEYS, type ImporterKey } from "@/lib/ser
 import { getImportBatch, listImportBatches } from "@/lib/services/imports"
 import { commitOrgImportAction, discardOrgImportAction, patchOrgImportRowAction, previewOrgImportAction, setOrgImportUpdateExistingAction, stageOrgImportAction } from "../actions"
 
-export const dynamic = "force-dynamic"
 
 export default async function OrgImporterPage({ params, searchParams }: { params: Promise<{ importer: string }>; searchParams: Promise<{ batch?: string }> }) {
   const [{ importer: rawImporter }, query, productTier] = await Promise.all([params, searchParams, getOrgProductTier()])

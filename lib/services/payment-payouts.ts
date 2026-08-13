@@ -4,6 +4,8 @@ import { getPaymentRailProvider } from "@/lib/integrations/payments/payment-rail
 import { assertDisbursementTransition } from "@/lib/payments/payment-domain"
 import { recordAudit } from "@/lib/services/audit"
 import { recordEvent } from "@/lib/services/events"
+import { isFeatureEnabledForOrg } from "@/lib/services/feature-flags"
+import { assertPaymentLaunchReady } from "@/lib/services/payment-launch-readiness"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 /**
@@ -20,6 +22,7 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
 /** One tick's worth of transfers. The rest wait for the next sweep. */
 const TRANSFER_SWEEP_LIMIT = 100
+const EXECUTION_FLAG = "fintech_ap_payments"
 
 interface MaturedTransferRow {
   disbursement_id: string
@@ -39,6 +42,7 @@ export async function releaseMaturedVendorTransfers(): Promise<{
   if (process.env.FINTECH_PAYMENTS_EXECUTION_ENABLED !== "true") {
     return { attempted: 0, released: [], failed: [] }
   }
+  await assertPaymentLaunchReady()
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase.rpc("claim_matured_vendor_transfers", { p_limit: TRANSFER_SWEEP_LIMIT })
   if (error) throw new Error(`Unable to claim matured vendor transfers: ${error.message}`)
@@ -76,6 +80,13 @@ export async function releaseMaturedVendorTransfers(): Promise<{
     : { data: [], error: null }
   if (policyError) throw new Error(`Unable to load payment policies for transfer release: ${policyError.message}`)
   const railEnabledByOrg = new Map((policies ?? []).map((policy) => [policy.org_id, Boolean(policy.enabled)]))
+  const flagEntries = await Promise.all(
+    orgIds.map(async (orgId) => [
+      orgId,
+      await isFeatureEnabledForOrg({ supabase, orgId, flagKey: EXECUTION_FLAG, defaultEnabled: false }),
+    ] as const),
+  )
+  const executionEnabledByOrg = new Map(flagEntries)
 
   const released: string[] = []
   const failed: Array<{ disbursementId: string; error: string }> = []
@@ -88,8 +99,11 @@ export async function releaseMaturedVendorTransfers(): Promise<{
       // funds sit on the platform balance, the disbursement stays
       // `funds_available`, and re-enabling the rail lets the next sweep complete
       // it. Transferring is not recoverable. The vendor waiting is a real cost,
-      // which is why this is loud rather than silent — it raises
-      // `vendor_transfer_needs_attention` on every tick until someone acts.
+      // which is why this is loud rather than silent — it opens a durable
+      // incident and notifies when that incident first opens or reopens.
+      if (!executionEnabledByOrg.get(row.org_id)) {
+        throw new Error("This organization's AP payment feature is disabled; the cleared funds are held until it is re-enabled")
+      }
       if (!railEnabledByOrg.get(row.org_id)) {
         throw new Error("This organization's electronic payments are disabled; the cleared funds are held until it is re-enabled")
       }
@@ -135,6 +149,10 @@ export async function releaseMaturedVendorTransfers(): Promise<{
         .eq("id", row.disbursement_id)
         .eq("status", "funds_available")
       if (updateError) throw new Error(`Unable to record vendor transfer: ${updateError.message}`)
+      await supabase.rpc("resolve_payment_operations_incident", {
+        p_org_id: row.org_id,
+        p_finding_code: `vendor_transfer_blocked:${row.disbursement_id}`,
+      })
       released.push(row.disbursement_id)
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Vendor transfer failed"
@@ -146,14 +164,22 @@ export async function releaseMaturedVendorTransfers(): Promise<{
         .update({ failure_reason: message })
         .eq("org_id", row.org_id)
         .eq("id", row.disbursement_id)
+      const { data: shouldNotify, error: incidentError } = await supabase.rpc("open_payment_operations_incident", {
+        p_org_id: row.org_id,
+        p_finding_code: `vendor_transfer_blocked:${row.disbursement_id}`,
+        p_detail: message,
+      })
+      if (incidentError) throw new Error(`Unable to open vendor transfer incident: ${incidentError.message}`)
       await Promise.all([
-        recordEvent({
-          orgId: row.org_id,
-          eventType: "vendor_transfer_needs_attention",
-          entityType: "disbursement",
-          entityId: row.disbursement_id,
-          payload: { payment_run_id: row.run_id, amount_cents: row.amount_cents, error: message },
-        }),
+        shouldNotify
+          ? recordEvent({
+              orgId: row.org_id,
+              eventType: "vendor_transfer_needs_attention",
+              entityType: "disbursement",
+              entityId: row.disbursement_id,
+              payload: { payment_run_id: row.run_id, amount_cents: row.amount_cents, error: message },
+            })
+          : Promise.resolve(),
         recordAudit({
           orgId: row.org_id,
           action: "update",

@@ -2367,6 +2367,15 @@ export const qboProvider: AccountingProvider = {
       : await client.listAccountsPayableAccounts()
     return rows.map((item) => ({ id: item.id, name: item.name, fullyQualifiedName: item.fullyQualifiedName ?? undefined, accountType: (item as { accountType?: string }).accountType }))
   },
+  async listAllAccounts(input) {
+    const client = await requireQboClient(input.connectionId)
+    return (await client.listAllAccounts()).map((item) => ({
+      id: item.id,
+      name: item.name,
+      fullyQualifiedName: item.fullyQualifiedName,
+      accountType: item.accountType,
+    }))
+  },
   async searchCounterparties(input) {
     const client = await requireQboClient(input.connectionId)
     const rows = input.role === "customer"

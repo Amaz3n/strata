@@ -4,7 +4,6 @@ import { PortalPageHeader } from "@/components/portal/shell/portal-page-header"
 import { getPortalChangeEventRfq } from "@/lib/services/change-events"
 import { RfqResponseForm } from "./rfq-response-form"
 
-export const revalidate = 0
 
 export default async function RfqPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params

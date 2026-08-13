@@ -11,7 +11,6 @@ import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { grossMarginPct } from "@/lib/plans/margin"
 import { isIncentiveLive, offeringPrice, type OfferingIncentive } from "@/lib/sales/offering"
 
-export const dynamic = "force-dynamic"
 
 /**
  * The lane's sales and cancellation counts are a trailing quarter, so the

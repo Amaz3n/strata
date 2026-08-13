@@ -107,6 +107,64 @@ export interface ProviderSettlementSnapshot {
   processorFeeCents: number | null
 }
 
+export interface ProviderActivity {
+  kind: "payment" | "fee_payment" | "transfer" | "payout"
+  providerReference: string
+  providerAccountId: string | null
+  amountCents: number
+  status: "pending" | "settled" | "failed" | "canceled" | "returned"
+  linkedReferences: string[]
+  metadata: Record<string, string>
+}
+
+export type NormalizedPaymentRailEvent = {
+  provider: string
+  providerEventId: string
+  providerEventType: string
+  providerAccountId: string | null
+  occurredAt: string
+  payload: Record<string, unknown>
+} & (
+  | { kind: "recipient.updated"; recipientProviderAccountId: string }
+  | { kind: "fee_charge.status"; providerPaymentId: string; status: "debit_pending" | "succeeded" | "failed" | "canceled" }
+  | {
+      kind: "disbursement.status"
+      providerPaymentId: string
+      disbursementId: string | null
+      status: "debit_pending" | "funds_available" | "failed" | "canceled" | "transfer_pending"
+      providerTransferId: string | null
+    }
+  | { kind: "disbursement.paid"; providerPayoutId: string; providerTransferIds: string[] }
+  | {
+      kind: "disbursement.payout_attention"
+      providerPayoutId: string
+      providerTransferIds: string[]
+      status: "failed" | "canceled"
+      reason: string
+    }
+  | { kind: "disbursement.returned"; providerPaymentId: string; providerReversalId: string; reason: string }
+  | {
+      kind: "disbursement.authorization_inquiry"
+      providerPaymentId: string
+      providerInquiryId: string
+      status: string
+      reason: string
+    }
+  | {
+      kind: "funding_source.updated"
+      providerPaymentMethodId: string
+      blocked: boolean
+      reason: string | null
+    }
+  | {
+      kind: "disbursement.charge_settled"
+      providerPaymentId: string
+      providerChargeId: string
+      providerBalanceTransactionId: string | null
+      actualProcessorFeeCents: number
+    }
+)
+
 export interface PaymentRailProvider {
   readonly key: string
   /**
@@ -137,6 +195,15 @@ export interface PaymentRailProvider {
    */
   createVendorTransfer(input: ProviderVendorTransferInput): Promise<ProviderVendorTransferResult>
   retrieveSettlement(input: { providerPaymentId: string }): Promise<ProviderSettlementSnapshot>
+  /** Independently enumerate provider activity so reconciliation can find money
+   * that has no local Arc row, not merely re-fetch rows Arc already knows. */
+  listActivity(input: {
+    periodStart: string
+    periodEnd: string
+    recipientProviderAccountIds: string[]
+  }): Promise<ProviderActivity[]>
   resolveTransferPaymentId(input: { providerTransferId: string }): Promise<string | null>
   resolvePayoutTransferIds(input: { providerAccountId: string; providerPayoutId: string }): Promise<string[]>
+  /** Convert provider-specific webhook objects into Arc's event vocabulary. */
+  normalizeWebhookEvent(input: unknown): Promise<NormalizedPaymentRailEvent | null>
 }

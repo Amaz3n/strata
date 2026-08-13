@@ -3,7 +3,6 @@ import { requireAnyPermissionGuard } from "@/lib/auth/guards"
 import { SubscriptionPlansClient } from "@/components/admin/subscription-plans-client"
 import { getPlans } from "@/lib/services/admin"
 
-export const dynamic = 'force-dynamic'
 
 export default async function PlansPage() {
   await requireAnyPermissionGuard(["billing.manage", "platform.billing.manage"])

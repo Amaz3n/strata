@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation"
+import { connection } from "next/server"
 
 import { parseReportParams } from "@/lib/reports/params"
 import { getReportDefinition } from "@/lib/reports/registry"
@@ -7,7 +8,6 @@ import { ReportView } from "@/components/reports/report-view"
 import { canRunReport, resolveOrgReportScope } from "@/lib/services/report-catalog"
 import { getReportRun, listReportRuns } from "@/lib/services/report-runs"
 
-export const dynamic = "force-dynamic"
 
 interface PageProps {
   params: Promise<{ slug: string }>
@@ -15,6 +15,7 @@ interface PageProps {
 }
 
 export default async function OrgReportPage({ params, searchParams }: PageProps) {
+  await connection()
   const [{ slug }, search] = await Promise.all([params, searchParams])
   const definition = getReportDefinition(slug)
   if (!definition || !definition.scopes.includes("org")) notFound()

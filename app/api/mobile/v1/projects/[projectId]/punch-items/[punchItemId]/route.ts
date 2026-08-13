@@ -2,7 +2,6 @@ import { mobileDataResponse, mobileErrorResponse, mobileRequestId } from "@/lib/
 import { requireMobileOrg } from "@/lib/mobile/auth"
 import { updateMobilePunchStatus } from "@/lib/mobile/field"
 
-export const runtime = "nodejs"
 
 export async function PATCH(
   request: Request,

@@ -53,7 +53,6 @@ const RFI_AUDIENCE_OPTIONS = ["internal", "client", "sub"] as const
 const REMINDER_VARIANTS = ["due", "overdue"] as const
 const COMPLIANCE_DECISIONS = ["approved", "rejected"] as const
 
-export const dynamic = "force-dynamic"
 
 function firstValue(value: string | string[] | undefined): string | undefined {
   if (typeof value === "string") return value

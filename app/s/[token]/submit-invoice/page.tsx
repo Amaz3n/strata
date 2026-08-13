@@ -16,7 +16,6 @@ interface SubmitInvoicePageProps {
   searchParams: Promise<{ commitment?: string }>
 }
 
-export const revalidate = 0
 
 export default async function SubmitInvoicePage({
   params,

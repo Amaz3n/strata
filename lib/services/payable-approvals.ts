@@ -132,12 +132,10 @@ export async function preparePayableApproval(
     return {
       bill_id: entry.bill_id,
       amount_cents: entry.amount_cents,
-      retainage_held_cents: 0,
       payees: [
         {
           payee_kind: "primary_vendor" as const,
           method: "ach" as const,
-          recipient_account_id: recipientAccountId,
           payee_name: nameByCompany.get(bill.company_id) ?? "Vendor",
           amount_cents: entry.amount_cents,
         },

@@ -4,7 +4,6 @@ import { runBooksProjection } from "@/lib/services/books/projector"
 import { isAuthorizedCronRequest } from "@/lib/services/cron-auth"
 import { withCronRun } from "@/lib/services/job-runs"
 
-export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
 async function handler(request: NextRequest) {

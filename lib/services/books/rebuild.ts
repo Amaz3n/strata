@@ -123,7 +123,20 @@ export async function runLedgerRebuildDrillForOrg(orgId: string) {
         .range(from, from + ORPHAN_SCAN_PAGE_SIZE - 1)
       if (orphanError) throw new Error(orphanError.message)
       const orphanPage = orphanEntries ?? []
+      const orphanIds = orphanPage.map((entry) => entry.id)
+      const [debtEvents, assetEvents] = orphanIds.length > 0
+        ? await Promise.all([
+            service.from("books_debt_events").select("journal_entry_id").eq("org_id", orgId).in("journal_entry_id", orphanIds),
+            service.from("books_fixed_asset_events").select("journal_entry_id").eq("org_id", orgId).in("journal_entry_id", orphanIds),
+          ])
+        : [{ data: [], error: null }, { data: [], error: null }]
+      if (debtEvents.error ?? assetEvents.error) throw new Error((debtEvents.error ?? assetEvents.error)?.message)
+      const registeredEntryIds = new Set([
+        ...(debtEvents.data ?? []).map((row) => String(row.journal_entry_id)),
+        ...(assetEvents.data ?? []).map((row) => String(row.journal_entry_id)),
+      ])
       for (const entry of orphanPage) {
+        if (registeredEntryIds.has(String(entry.id))) continue
         differences.push({ type: "unexpected_journal", entry_id: entry.id, posting_key: entry.posting_key, entry_date: entry.entry_date })
       }
       if (orphanPage.length < ORPHAN_SCAN_PAGE_SIZE) break

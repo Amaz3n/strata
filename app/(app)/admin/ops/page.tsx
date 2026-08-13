@@ -16,7 +16,6 @@ import {
   listPaymentReconciliations,
 } from "@/lib/services/payment-reconciliation"
 
-export const dynamic = "force-dynamic"
 
 async function OpsData() {
   // Reconciliation needs `payment.reconcile`, which an ops viewer may not hold —

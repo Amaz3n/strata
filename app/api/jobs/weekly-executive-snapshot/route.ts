@@ -12,7 +12,6 @@ import {
 } from "@/lib/services/weekly-executive-snapshot"
 import { withCronRun } from "@/lib/services/job-runs"
 
-export const runtime = "nodejs"
 
 type PreferenceRow = {
   org_id: string | null

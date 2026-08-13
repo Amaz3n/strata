@@ -22,6 +22,10 @@ export const TIE_OUT_ITEM_CATEGORIES = [
   "tie_out_ap_control",
   "tie_out_retainage_receivable_control",
   "tie_out_retainage_payable_control",
+  "tie_out_customer_deposits_control",
+  "tie_out_debt_register_control",
+  "tie_out_fixed_assets_control",
+  "tie_out_accumulated_depreciation_control",
 ] as const
 
 /**

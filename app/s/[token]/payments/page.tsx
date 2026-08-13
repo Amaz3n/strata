@@ -6,7 +6,6 @@ import { validatePortalToken } from "@/lib/services/portal-access"
 import { getVendorPaymentSetupContext } from "@/lib/services/vendor-payment-identities"
 import { VendorPaymentSetup } from "./vendor-payment-setup"
 
-export const revalidate = 0
 
 export default async function VendorPaymentsPage({
   params,

@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation"
 import { Loader2 } from "lucide-react"
 import { toast } from "sonner"
 
-import type { Contact, CostCode, Invoice, InvoiceLienWaiver, InvoiceView, Payment, PaymentReversal, Project } from "@/lib/types"
+import type { Contact, CostCode, Invoice, InvoiceDelivery, InvoiceLienWaiver, InvoiceView, Payment, PaymentReversal, Project, ReceivableAdjustment } from "@/lib/types"
 import type { InvoiceInput } from "@/lib/validation/invoices"
 import {
   createInvoiceAction,
@@ -49,9 +49,12 @@ type DetailBundle = {
   invoice: Invoice
   link?: string
   views?: InvoiceView[]
+  deliveries?: InvoiceDelivery[]
+  booksEntries?: Array<{ id: string; entry_date: string; status: string; posting_key: string; posted_at?: string | null; reversal_of_entry_id?: string | null }>
   syncHistory?: Array<{ id: string; status: string; last_synced_at: string; error_message?: string | null; qbo_id?: string | null }>
   payments?: Payment[]
   reversals?: PaymentReversal[]
+  adjustments?: ReceivableAdjustment[]
   lienWaivers?: InvoiceLienWaiver[]
 }
 
@@ -406,6 +409,7 @@ export function ReceivablesWorkspace({
         invoice={detail.invoice}
         link={detail.link}
         payments={detail.payments}
+        reversals={detail.reversals}
         lienWaivers={detail.lienWaivers}
         builderInfo={builderInfo}
         projectName={projectName}
@@ -470,9 +474,19 @@ export function ReceivablesWorkspace({
       invoice={isNewSelection && !newSession?.draftId ? null : detail?.invoice ?? null}
       link={detail?.link}
       views={detail?.views}
+      deliveries={detail?.deliveries}
+      reversals={detail?.reversals}
+      adjustments={detail?.adjustments}
+      booksEntries={detail?.booksEntries}
       syncHistory={detail?.syncHistory}
       payments={detail?.payments}
       loading={detailLoading}
+      onChanged={async () => {
+        if (!detail?.invoice.id) return
+        const refreshed = await loadDetail(detail.invoice.id)
+        if (refreshed) onUpsertInvoice(refreshed.invoice)
+        onRefresh()
+      }}
     />
   )
 

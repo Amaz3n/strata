@@ -64,6 +64,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Ban, Plus, Building2, Calendar, Copy, Filter, FolderOpen, List, MoreHorizontal, RefreshCcw, Search, Trash2 } from "@/components/icons"
 import { ChevronDown, ChevronUp, Repeat, X } from "lucide-react"
 import { InvoiceBottomBar } from "@/components/invoices/invoice-bottom-bar"
@@ -288,6 +289,7 @@ export function InvoicesClient({
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all")
   const [dueFilter, setDueFilter] = useState<DueFilter>("any")
   const [agingFilter, setAgingFilter] = useState<AgingBucket | null>(null)
+  const [projectFilter, setProjectFilter] = useState("all")
   const [searchTerm, setSearchTerm] = useState("")
   const [sortKey, setSortKey] = useState<SortKey | null>(null)
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
@@ -309,6 +311,8 @@ export function InvoicesClient({
   const [moveTargetId, setMoveTargetId] = useState<string | null>(null)
   const [moveSearch, setMoveSearch] = useState("")
   const [moveLoading, setMoveLoading] = useState(false)
+  const [newInvoiceProjectOpen, setNewInvoiceProjectOpen] = useState(false)
+  const [newInvoiceProjectId, setNewInvoiceProjectId] = useState(projects[0]?.id ?? "")
   const [destructiveActionLoading, setDestructiveActionLoading] = useState(false)
   const [packageActionInvoiceId, setPackageActionInvoiceId] = useState<string | null>(null)
   const [packageActionKind, setPackageActionKind] = useState<"generate" | "share" | null>(null)
@@ -319,16 +323,19 @@ export function InvoicesClient({
 
   // Navigate to (or open) an invoice in the workspace via the ?invoice URL param.
   const goToInvoice = useCallback(
-    (value: string, opts?: { duplicate?: string }) => {
+    (value: string, opts?: { duplicate?: string; projectId?: string }) => {
       if (typeof window === "undefined") return
       const params = new URLSearchParams(window.location.search)
       params.set("invoice", value)
       if (opts?.duplicate) params.set("duplicate", opts.duplicate)
       else params.delete("duplicate")
+      const inferredProjectId = opts?.projectId ?? items.find((invoice) => invoice.id === value)?.project_id
+      if (inferredProjectId) params.set("project", inferredProjectId)
+      else if (projects.length === 1 && projects[0]?.id) params.set("project", projects[0].id)
       params.delete("source")
       router.replace(window.location.pathname + `?${params.toString()}`, { scroll: false })
     },
-    [router],
+    [items, projects, router],
   )
 
   const upsertInvoice = useCallback((invoice: Invoice) => {
@@ -393,6 +400,7 @@ export function InvoicesClient({
     return searchBase.filter((item) => {
       const resolvedStatus = displayStatusKey(item)
       const matchesStatus = statusFilter === "all" || resolvedStatus === statusFilter
+      const matchesProject = projectFilter === "all" || item.project_id === projectFilter
 
       const dueDate = item.due_date ? parseDateOnly(item.due_date) : null
       const isOpen = OPEN_STATUSES.includes(resolvedStatus) && balanceCentsOf(item) > 0
@@ -416,9 +424,9 @@ export function InvoicesClient({
           value.toLowerCase().includes(term),
         )
 
-      return matchesStatus && matchesDue && matchesAging && matchesSearch
+      return matchesStatus && matchesProject && matchesDue && matchesAging && matchesSearch
     })
-  }, [agingFilter, dueFilter, items, searchTerm, serverSearchResults, statusFilter])
+  }, [agingFilter, dueFilter, items, projectFilter, searchTerm, serverSearchResults, statusFilter])
 
   const sorted = useMemo(() => {
     if (!sortKey) return filtered
@@ -490,8 +498,15 @@ export function InvoicesClient({
         clear: () => setAgingFilter(null),
       })
     }
+    if (projectFilter !== "all") {
+      chips.push({
+        key: "project",
+        label: projects.find((project) => project.id === projectFilter)?.name ?? "Project",
+        clear: () => setProjectFilter("all"),
+      })
+    }
     return chips
-  }, [agingFilter, dueFilter, statusFilter])
+  }, [agingFilter, dueFilter, projectFilter, projects, statusFilter])
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) {
@@ -515,7 +530,17 @@ export function InvoicesClient({
   const packageByInvoiceId = useMemo(() => {
     return new Map(packageSummaries.map((summary) => [summary.invoice_id, summary]))
   }, [packageSummaries])
+  const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects])
   const scopedProject = projects.length === 1 ? projects[0] : null
+  const workspaceProjectId = searchParams.get("project") ?? scopedProject?.id ?? projects[0]?.id ?? ""
+  const startNewInvoice = () => {
+    if (projects.length <= 1) {
+      goToInvoice("new", { projectId: projects[0]?.id })
+      return
+    }
+    setNewInvoiceProjectId(searchParams.get("project") ?? projects[0]?.id ?? "")
+    setNewInvoiceProjectOpen(true)
+  }
 
   async function refreshInvoices() {
     try {
@@ -935,13 +960,33 @@ export function InvoicesClient({
                       </DropdownMenuSubContent>
                     </DropdownMenuPortal>
                   </DropdownMenuSub>
+                  {projects.length > 1 ? (
+                    <DropdownMenuSub>
+                      <DropdownMenuSubTrigger>
+                        <Building2 className="mr-2 h-4 w-4" />
+                        Project
+                      </DropdownMenuSubTrigger>
+                      <DropdownMenuPortal>
+                        <DropdownMenuSubContent className="max-h-80 w-64 overflow-y-auto" sideOffset={8}>
+                          <DropdownMenuRadioGroup value={projectFilter} onValueChange={setProjectFilter}>
+                            <DropdownMenuRadioItem value="all">All projects</DropdownMenuRadioItem>
+                            {projects.map((project) => (
+                              <DropdownMenuRadioItem key={project.id} value={project.id}>
+                                {project.name}
+                              </DropdownMenuRadioItem>
+                            ))}
+                          </DropdownMenuRadioGroup>
+                        </DropdownMenuSubContent>
+                      </DropdownMenuPortal>
+                    </DropdownMenuSub>
+                  ) : null}
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
           </div>
 
           <div className="flex flex-row gap-2">
-            <Button onClick={() => goToInvoice("new")} size="sm" className="h-9 flex-1 whitespace-nowrap sm:flex-none">
+            <Button onClick={startNewInvoice} size="sm" className="h-9 flex-1 whitespace-nowrap sm:flex-none">
               <Plus className="h-4 w-4 mr-2" />
               New invoice
             </Button>
@@ -1040,6 +1085,7 @@ export function InvoicesClient({
               setStatusFilter("all")
               setDueFilter("any")
               setAgingFilter(null)
+              setProjectFilter("all")
             }}
           >
             Clear all
@@ -1101,7 +1147,7 @@ export function InvoicesClient({
                 return (
                   <TableRow
                     key={invoice.id}
-                    className="align-top divide-x cursor-pointer"
+                    className="align-top divide-x cursor-pointer [content-visibility:auto] [contain-intrinsic-size:auto_64px]"
                     onClick={(event) => {
                       // The whole row opens the detail sheet, except clicks on interactive
                       // controls (checkbox, menus, buttons) which keep their own behavior.
@@ -1133,6 +1179,11 @@ export function InvoicesClient({
                     </TableCell>
                     <TableCell className="px-4 py-4 text-sm">
                       <span className="line-clamp-1">{customerName || "—"}</span>
+                      {projects.length > 1 && invoice.project_id ? (
+                        <span className="mt-0.5 line-clamp-1 text-[11px] text-muted-foreground">
+                          {projectById.get(invoice.project_id)?.name ?? "Unknown project"}
+                        </span>
+                      ) : null}
                     </TableCell>
                     <TableCell className="px-4 py-4 text-muted-foreground text-sm text-center">
                       {invoice.issue_date ? format(parseDateOnly(invoice.issue_date), "MMM d, yyyy") : "—"}
@@ -1206,7 +1257,7 @@ export function InvoicesClient({
                             <DropdownMenuItem
                               onSelect={(event) => {
                                 event.preventDefault()
-                                goToInvoice("new", { duplicate: invoice.id })
+                                goToInvoice("new", { duplicate: invoice.id, projectId: invoice.project_id ?? undefined })
                               }}
                             >
                               <Copy className="mr-2 h-4 w-4" />
@@ -1340,7 +1391,7 @@ export function InvoicesClient({
                           <p className="font-medium">No invoices yet</p>
                           <p className="text-sm">Create your first invoice to get started.</p>
                         </div>
-                        <Button onClick={() => goToInvoice("new")}>
+                        <Button onClick={startNewInvoice}>
                           <Plus className="mr-2 h-4 w-4" />
                           Create invoice
                         </Button>
@@ -1357,9 +1408,10 @@ export function InvoicesClient({
                             size="sm"
                             onClick={() => {
                               setSearchTerm("")
-                              setStatusFilter("all")
-                              setDueFilter("any")
-                              setAgingFilter(null)
+                            setStatusFilter("all")
+                            setDueFilter("any")
+                            setAgingFilter(null)
+                            setProjectFilter("all")
                             }}
                           >
                             Clear search and filters
@@ -1394,7 +1446,7 @@ export function InvoicesClient({
       </AnimatePresence>
 
       <ReceivablesWorkspace
-        projectId={scopedProject?.id ?? projects[0]?.id ?? ""}
+        projectId={workspaceProjectId}
         projects={projects}
         invoices={items}
         builderInfo={builderInfo}
@@ -1409,6 +1461,41 @@ export function InvoicesClient({
           router.refresh()
         }}
       />
+
+      <Dialog open={newInvoiceProjectOpen} onOpenChange={setNewInvoiceProjectOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Choose the job to bill</DialogTitle>
+            <DialogDescription>
+              Arc will load the right residential, commercial, or production billing workflow for that project.
+            </DialogDescription>
+          </DialogHeader>
+          <Select value={newInvoiceProjectId} onValueChange={setNewInvoiceProjectId}>
+            <SelectTrigger>
+              <SelectValue placeholder="Select a project" />
+            </SelectTrigger>
+            <SelectContent>
+              {projects.map((project) => (
+                <SelectItem key={project.id} value={project.id}>
+                  {project.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setNewInvoiceProjectOpen(false)}>Cancel</Button>
+            <Button
+              disabled={!newInvoiceProjectId}
+              onClick={() => {
+                setNewInvoiceProjectOpen(false)
+                goToInvoice("new", { projectId: newInvoiceProjectId })
+              }}
+            >
+              Create invoice
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog open={Boolean(sharingDraftInvoice)} onOpenChange={(open) => !open && setSharingDraftInvoice(null)}>
         <AlertDialogContent>

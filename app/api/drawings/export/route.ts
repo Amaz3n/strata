@@ -2,7 +2,6 @@ import { NextResponse } from "next/server"
 
 import { exportProjectSetPdf, exportSheetPdf } from "@/lib/services/drawings-export"
 
-export const runtime = "nodejs"
 // Whole-set exports copy hundreds of pages; give them the full window.
 export const maxDuration = 300
 

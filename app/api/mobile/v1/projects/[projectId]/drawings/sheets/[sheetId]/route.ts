@@ -2,7 +2,6 @@ import { mobileDataResponse, mobileErrorResponse, mobileRequestId } from "@/lib/
 import { requireMobileOrg } from "@/lib/mobile/auth"
 import { getMobileDrawingSheetDetail } from "@/lib/mobile/drawings"
 
-export const runtime = "nodejs"
 
 export async function GET(
   request: Request,

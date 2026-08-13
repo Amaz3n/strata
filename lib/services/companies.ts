@@ -583,7 +583,7 @@ export async function getCompaniesVendorFinancialSummary(
       if (!companyId || !result[companyId]) continue
       result[companyId].billed_cents += row.total_cents ?? 0
       result[companyId].paid_cents +=
-        row.paid_cents ?? (row.status === "paid" ? (row.total_cents ?? 0) : 0)
+        row.paid_cents ?? 0
       result[companyId].bill_count += 1
       result[companyId].can_view_bills = true
     }
@@ -722,7 +722,7 @@ export async function getVendorPayableProfile(
     trade: typeof metadata.trade === "string" ? metadata.trade : null,
     paymentTerms: (company.default_payment_terms as string | null) ?? null,
     paidCents: (recent ?? []).reduce(
-      (sum, row) => sum + Number(row.paid_cents ?? (row.status === "paid" ? row.total_cents ?? 0 : 0)),
+      (sum, row) => sum + Number(row.paid_cents ?? 0),
       0,
     ),
     billCount: (recent ?? []).length,

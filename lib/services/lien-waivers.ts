@@ -264,6 +264,7 @@ export interface PortalVendorBillWaiverContext {
     total_cents: number
     paid_cents: number
     due_date?: string | null
+    billing_period_end: string
     lien_waiver_status?: string | null
     lien_waiver_received_at?: string | null
   }
@@ -323,7 +324,7 @@ export async function getVendorBillWaiverForPortal({
     .select(
       `
       id, org_id, project_id, commitment_id, company_id, bill_number, status,
-      total_cents, paid_cents, due_date, lien_waiver_status, lien_waiver_received_at, metadata,
+      total_cents, paid_cents, bill_date, due_date, lien_waiver_status, lien_waiver_received_at, metadata,
       company:companies!vendor_bills_company_id_fkey(id, name),
       commitment:commitments(id, title, company_id),
       project:projects(id, name, location, metadata)
@@ -344,6 +345,11 @@ export async function getVendorBillWaiverForPortal({
   const project = relationOne((bill as any).project)
   const billCompanyId = (bill as any).company_id ?? commitment?.company_id ?? company?.id ?? null
   if (billCompanyId !== companyId) return null
+  const billMetadata = (bill.metadata as Record<string, unknown> | null) ?? {}
+  const billingPeriodEnd = String(billMetadata.billing_period_end ?? bill.due_date ?? bill.bill_date ?? "")
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(billingPeriodEnd)) {
+    throw new Error("Set the payable period end before requesting its lien waiver")
+  }
 
   const { data: waiver, error: waiverError } = await supabase
     .from("lien_waivers")
@@ -367,6 +373,7 @@ export async function getVendorBillWaiverForPortal({
       total_cents: bill.total_cents ?? 0,
       paid_cents: bill.paid_cents ?? 0,
       due_date: bill.due_date ?? null,
+      billing_period_end: billingPeriodEnd,
       lien_waiver_status: bill.lien_waiver_status ?? null,
       lien_waiver_received_at: bill.lien_waiver_received_at ?? null,
     },
@@ -433,7 +440,9 @@ export async function signVendorBillWaiverFromPortal({
 
   const supabase = createServiceSupabaseClient()
   const nowIso = new Date().toISOString()
-  const throughDate = nowIso.slice(0, 10)
+  // The release gate requires the waiver to cover the payable's billing
+  // period. Signing today is insufficient for a future-dated period end.
+  const throughDate = context.bill.billing_period_end
   const signatureData = {
     signer_name: normalizedSignerName,
     signature_text: normalizedSignature,

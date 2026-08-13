@@ -11,7 +11,6 @@ import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { orgHasPriceAgreements } from "@/lib/services/price-book"
 import { orgHasProductionProjects } from "@/lib/services/production-desk-scope"
 
-export const dynamic = "force-dynamic"
 
 const CONTAINER = "mx-auto w-full max-w-3xl space-y-8 px-5 py-6 lg:px-8 lg:py-8"
 

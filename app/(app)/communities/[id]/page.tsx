@@ -16,7 +16,6 @@ import { listAttachableProjects } from "@/lib/services/lots"
 import { getCurrentUserPermissions } from "@/lib/services/permissions"
 import { getCommunityPnl } from "@/lib/services/production-reporting"
 
-export const dynamic = "force-dynamic"
 
 interface InventoryPageProps {
   params: Promise<{ id: string }>

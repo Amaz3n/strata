@@ -6,10 +6,12 @@
 > reference docs at the `docs/` top level.
 
 **Status:** Foundation schema, services, provider adapter, controls, portal, operations
-UI, event handling, ledger, and reconciliation are implemented in code. The foundation
-migration has been applied. Money movement is disabled, no org has the rail enabled,
-and the external STOP gates remain closed.
-**Updated:** 2026-08-01.
+UI, event handling, ledger, provider-led reconciliation, and enforced launch gates are
+implemented in code. The foundation migration has been applied; the 2026-08-12
+hardening migrations were applied to the Arc Supabase project through the Supabase
+MCP and verified in production. Money movement is disabled, no org has the rail
+enabled, and the external STOP gates remain closed.
+**Updated:** 2026-08-12.
 **Audience:** product, engineering, operations, risk, and legal.
 **Companions:** `docs/plans/arc-books-gameplan.md`, `docs/plans/procore-parity-gameplan.md`, and
 `docs/plans/tech-frontier-gameplan.md`.
@@ -33,6 +35,45 @@ Implemented against the pending schema:
   provider event normalization, return handling, and daily reconciliation;
 - payment settings, payment-run operations, vendor-portal payment setup/status, RBAC,
   notifications, cron registration, and platform/per-org execution kill switches.
+
+Hardening completed in code and applied through the Supabase MCP on 2026-08-12:
+
+- manual AP payments and vendor-credit applications now use locked, idempotent RPCs
+  as the only writers of payable payment rollups;
+- draft approval is rejected by service, bulk path, and a database trigger;
+- approved payable obligations become database-immutable while attached to an active
+  payment run, and run submit/approval/execution revalidate the live bill, vendor,
+  relationship, holds, waivers, balance, currency, and jurisdiction;
+- policy enablement requires finite monotonic exposure limits, minimum cooling holds,
+  active funding, both execution jobs, and five current append-only launch attestations;
+- provider webhook attempts are allocated atomically; ACH inquiries no longer masquerade
+  as returns; funding invalidation and payout failure create durable operational cases;
+- reconciliation independently enumerates provider payments, transfers, payouts, and
+  fee charges, detects provider-only money, exhaustively pages stale cases, and advances
+  the success watermark only after a complete successful run;
+- clean local schema replay and the focused AP pgTAP suite are verified; migration
+  versions that previously collided were made unique so all files are recorded.
+- execution checkpoints cover process death before and during provider submission,
+  and payout release honors both the rail policy and org feature switch;
+- builder-controlled vendor suspension/revocation, strict portal-token lifecycle,
+  entity-membership portal visibility, period-correct waivers, and hold-override
+  authorization are implemented;
+- provider webhook objects are normalized by their adapter before domain processing;
+- payment permissions use one `payment.<verb>` namespace, with existing role and
+  member grants migrated to the normalized keys;
+- reconciliation exceptions have a builder workspace, and payment-control, reversal,
+  stale-release, and reconciliation incidents have owned, transition-deduplicated
+  notification routes;
+- SQL behavioral tests exercise run creation, settlement, reversal, manual payment,
+  credit application, idempotency, draft rejection, unsupported payment methods,
+  and removal of stale identity/payment fields against a from-zero migrated schema;
+- stale vendor password/authentication fields and the always-empty allocation snapshot
+  are removed, while database constraints make the initial rail explicitly one
+  verified primary-vendor ACH destination per payable.
+
+The first release supports one primary-vendor ACH payee per payable. Joint-payee and
+external-check fields were removed from public input because no complete controlled
+workflow exists for them; they are not launch claims.
 
 Not enabled or represented as complete:
 
@@ -423,7 +464,7 @@ Enable with a platform-controlled flag for the QA org only. Test:
 - preparer self-approval rejection;
 - onboarding reuse across two builders;
 - held bills and stale approval invalidation;
-- partial payment, retainage, and joint external check;
+- partial payment and retainage;
 - duplicate webhooks and out-of-order events;
 - ACH failure before settlement;
 - return/reversal after apparent success;

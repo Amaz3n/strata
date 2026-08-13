@@ -10,7 +10,6 @@ import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { getTmTicketBySignatureToken } from "@/lib/services/tm-tickets"
 
-export const revalidate = 0
 export const metadata = {
   robots: {
     index: false,

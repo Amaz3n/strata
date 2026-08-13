@@ -10,7 +10,6 @@ import { ensurePortalLink } from "@/lib/services/portal-links"
 import { withCronRun } from "@/lib/services/job-runs"
 import { createServiceSupabaseClient } from "@/lib/supabase/server"
 
-export const runtime = "nodejs"
 
 const APP_URL = (process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com").replace(/\/$/, "")
 // The app serves a single locale (Naples, FL); show the builder's local time in reminders.

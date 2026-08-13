@@ -5,7 +5,6 @@ import { listPortalPurchaseOrders } from "@/lib/services/po-completions"
 import { assertPortalActionAccess } from "@/lib/services/portal-access"
 import { PurchaseOrdersClient } from "./purchase-orders-client"
 
-export const revalidate = 0
 
 export default async function PortalPurchaseOrdersPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params

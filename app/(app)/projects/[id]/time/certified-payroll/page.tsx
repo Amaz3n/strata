@@ -10,7 +10,6 @@ import {
 } from "@/lib/services/certified-payroll"
 import { CertifiedPayrollClient } from "./certified-payroll-client"
 
-export const dynamic = "force-dynamic"
 
 export default async function CertifiedPayrollPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ report?: string }> }) {
   const [{ id }, query] = await Promise.all([params, searchParams])

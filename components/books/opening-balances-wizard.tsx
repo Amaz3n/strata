@@ -1,17 +1,24 @@
-"use client"
+"use client";
 
-import { useMemo, useState, useTransition } from "react"
-import { toast } from "sonner"
+import { useMemo, useState, useTransition } from "react";
+import { toast } from "sonner";
 
-import { importOpeningBalancesAction } from "@/app/(app)/books/actions"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Textarea } from "@/components/ui/textarea"
+import { importOpeningBalancesAction } from "@/app/(app)/books/actions";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   parseTrialBalance,
   type ParsedTrialBalanceRow,
-} from "@/lib/financials/trial-balance-import"
-import { cn, formatMoneyCentsExact } from "@/lib/utils"
+} from "@/lib/financials/trial-balance-import";
+import { cn, formatMoneyCentsExact } from "@/lib/utils";
 
 /**
  * Start Books on a date, from the trial balance of whatever system you are leaving.
@@ -24,26 +31,47 @@ import { cn, formatMoneyCentsExact } from "@/lib/utils"
  * historical migration, and the plan is explicit that it never should.
  */
 
-type GlAccount = { id: string; code: string; name: string; account_type: string; active: boolean }
+type GlAccount = {
+  id: string;
+  code: string;
+  name: string;
+  account_type: string;
+  active: boolean;
+};
 
-export function OpeningBalancesWizard({ accounts, asOf }: { accounts: GlAccount[]; asOf: string }) {
-  const [cutoverDate, setCutoverDate] = useState(asOf)
-  const [sourceFilename, setSourceFilename] = useState("")
-  const [pasted, setPasted] = useState("")
-  const [rows, setRows] = useState<ParsedTrialBalanceRow[] | null>(null)
-  const [pending, startTransition] = useTransition()
+export function OpeningBalancesWizard({
+  accounts,
+  asOf,
+}: {
+  accounts: GlAccount[];
+  asOf: string;
+}) {
+  const [cutoverDate, setCutoverDate] = useState(asOf);
+  const [sourceFilename, setSourceFilename] = useState("");
+  const [pasted, setPasted] = useState("");
+  const [rows, setRows] = useState<ParsedTrialBalanceRow[] | null>(null);
+  const [pending, startTransition] = useTransition();
 
-  const active = useMemo(() => accounts.filter((account) => account.active), [accounts])
+  const active = useMemo(
+    () => accounts.filter((account) => account.active),
+    [accounts],
+  );
 
   const totals = useMemo(() => {
-    const list = rows ?? []
-    const debitCents = list.reduce((sum, row) => sum + row.debitCents, 0)
-    const creditCents = list.reduce((sum, row) => sum + row.creditCents, 0)
-    return { debitCents, creditCents, differenceCents: debitCents - creditCents }
-  }, [rows])
+    const list = rows ?? [];
+    const debitCents = list.reduce((sum, row) => sum + row.debitCents, 0);
+    const creditCents = list.reduce((sum, row) => sum + row.creditCents, 0);
+    return {
+      debitCents,
+      creditCents,
+      differenceCents: debitCents - creditCents,
+    };
+  }, [rows]);
 
-  const unmapped = (rows ?? []).filter((row) => !row.accountCode && !row.problem).length
-  const unreadable = (rows ?? []).filter((row) => row.problem).length
+  const unmapped = (rows ?? []).filter(
+    (row) => !row.accountCode && !row.problem,
+  ).length;
+  const unreadable = (rows ?? []).filter((row) => row.problem).length;
   const problem = !rows?.length
     ? "Paste a trial balance to begin."
     : unreadable > 0
@@ -54,10 +82,10 @@ export function OpeningBalancesWizard({ accounts, asOf }: { accounts: GlAccount[
           ? "Every amount is zero."
           : totals.differenceCents !== 0
             ? `Debits and credits differ by ${formatMoneyCentsExact(Math.abs(totals.differenceCents))}.`
-            : null
+            : null;
 
   const submit = () => {
-    if (!rows) return
+    if (!rows) return;
     startTransition(async () => {
       const result = await importOpeningBalancesAction({
         cutoverDate,
@@ -70,31 +98,36 @@ export function OpeningBalancesWizard({ accounts, asOf }: { accounts: GlAccount[
           debitCents: row.debitCents,
           creditCents: row.creditCents,
         })),
-      })
+      });
       if (!result.success) {
-        toast.error(result.error)
-        return
+        toast.error(result.error);
+        return;
       }
-      toast.success("Opening batch validated — it now needs owner and CPA approval")
-      setRows(null)
-      setPasted("")
-    })
-  }
+      toast.success(
+        "Opening batch validated — it now needs owner and CPA approval",
+      );
+      setRows(null);
+      setPasted("");
+    });
+  };
 
   return (
     <section className="border bg-background">
       <div className="border-b px-5 py-4">
         <p className="text-sm font-semibold">Start Books on a date</p>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">
-          Paste the trial balance from the system you are leaving, as of the day before Arc
-          takes over. Arc opens with those balances and keeps every transaction from that
-          day forward.
+          Paste the trial balance from the system you are leaving, as of the day
+          before Arc takes over. Arc opens with those balances and keeps every
+          transaction from that day forward.
         </p>
         <p className="mt-2 border-l-2 border-muted-foreground/30 pl-3 text-xs leading-5 text-muted-foreground">
-          <span className="font-medium text-foreground">Your history stays where it is.</span>{" "}
-          Arc does not import prior years and should not — the old system remains the record
-          for anything before this date, and your accountant will still file from it. What
-          moves across is the closing position, nothing else.
+          <span className="font-medium text-foreground">
+            Your history stays where it is.
+          </span>{" "}
+          Arc does not import prior years and should not — the old system
+          remains the record for anything before this date, and your accountant
+          will still file from it. What moves across is the closing position,
+          nothing else.
         </p>
       </div>
 
@@ -103,7 +136,11 @@ export function OpeningBalancesWizard({ accounts, asOf }: { accounts: GlAccount[
           <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
             Books open on
           </span>
-          <Input type="date" value={cutoverDate} onChange={(event) => setCutoverDate(event.target.value)} />
+          <Input
+            type="date"
+            value={cutoverDate}
+            onChange={(event) => setCutoverDate(event.target.value)}
+          />
         </label>
         <label className="space-y-1">
           <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
@@ -127,16 +164,23 @@ export function OpeningBalancesWizard({ accounts, asOf }: { accounts: GlAccount[
             value={pasted}
             onChange={(event) => setPasted(event.target.value)}
             className="font-mono text-xs"
-            placeholder={"1000  Operating cash        125,000.00\n1100  Accounts receivable    48,200.00\n2000  Accounts payable                    31,700.00\n3000  Owner equity                       141,500.00"}
+            placeholder={
+              "1000  Operating cash        125,000.00\n1100  Accounts receivable    48,200.00\n2000  Accounts payable                    31,700.00\n3000  Owner equity                       141,500.00"
+            }
           />
         </label>
         <div className="mt-2 flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => setRows(parseTrialBalance(pasted, accounts))} disabled={!pasted.trim()}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setRows(parseTrialBalance(pasted, accounts))}
+            disabled={!pasted.trim()}
+          >
             Read trial balance
           </Button>
           <span className="text-xs text-muted-foreground">
-            Tab, comma or column-aligned all work. Amounts may be one signed balance or
-            separate debit and credit columns.
+            Tab, comma or column-aligned all work. Amounts may be one signed
+            balance or separate debit and credit columns.
           </span>
         </div>
       </div>
@@ -147,46 +191,76 @@ export function OpeningBalancesWizard({ accounts, asOf }: { accounts: GlAccount[
             <table className="w-full min-w-[620px] text-sm">
               <thead>
                 <tr className="text-left">
-                  <th className="pb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">From your file</th>
-                  <th className="pb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Arc account</th>
-                  <th className="pb-2 text-right text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Debit</th>
-                  <th className="pb-2 text-right text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Credit</th>
+                  <th className="pb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                    From your file
+                  </th>
+                  <th className="pb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Arc account
+                  </th>
+                  <th className="pb-2 text-right text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Debit
+                  </th>
+                  <th className="pb-2 text-right text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Credit
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row) => (
-                  <tr key={row.key} className={cn("border-t", row.problem && "bg-destructive/5")}>
+                  <tr
+                    key={row.key}
+                    className={cn(
+                      "border-t",
+                      row.problem && "bg-destructive/5",
+                    )}
+                  >
                     <td className="py-1.5 pr-3">
                       <span className="block truncate">{row.sourceLabel}</span>
-                      {row.problem ? <span className="text-xs text-destructive">{row.problem}</span> : null}
+                      {row.problem ? (
+                        <span className="text-xs text-destructive">
+                          {row.problem}
+                        </span>
+                      ) : null}
                     </td>
                     <td className="py-1.5 pr-3">
-                      <select
-                        value={row.accountCode}
+                      <Select
+                        value={row.accountCode || undefined}
                         disabled={Boolean(row.problem)}
-                        onChange={(event) =>
+                        onValueChange={(accountCode) =>
                           setRows((current) =>
                             (current ?? []).map((item) =>
-                              item.key === row.key ? { ...item, accountCode: event.target.value } : item,
+                              item.key === row.key
+                                ? { ...item, accountCode }
+                                : item,
                             ),
                           )
                         }
-                        className="flex h-8 w-full border border-input bg-transparent px-2 text-xs"
-                        aria-label={`Arc account for ${row.sourceLabel}`}
                       >
-                        <option value="">Choose account…</option>
-                        {active.map((account) => (
-                          <option key={account.id} value={account.code}>
-                            {account.code} · {account.name}
-                          </option>
-                        ))}
-                      </select>
+                        <SelectTrigger
+                          size="sm"
+                          className="w-full"
+                          aria-label={`Arc account for ${row.sourceLabel}`}
+                        >
+                          <SelectValue placeholder="Choose account…" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {active.map((account) => (
+                            <SelectItem key={account.id} value={account.code}>
+                              {account.code} · {account.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </td>
                     <td className="py-1.5 pr-3 text-right font-mono text-xs tabular-nums">
-                      {row.debitCents ? formatMoneyCentsExact(row.debitCents) : "—"}
+                      {row.debitCents
+                        ? formatMoneyCentsExact(row.debitCents)
+                        : "—"}
                     </td>
                     <td className="py-1.5 text-right font-mono text-xs tabular-nums">
-                      {row.creditCents ? formatMoneyCentsExact(row.creditCents) : "—"}
+                      {row.creditCents
+                        ? formatMoneyCentsExact(row.creditCents)
+                        : "—"}
                     </td>
                   </tr>
                 ))}
@@ -196,15 +270,25 @@ export function OpeningBalancesWizard({ accounts, asOf }: { accounts: GlAccount[
 
           <dl className="grid grid-cols-3 border-t bg-muted/30">
             <div className="border-r px-5 py-3">
-              <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Debits</dt>
-              <dd className="mt-0.5 font-mono text-sm tabular-nums">{formatMoneyCentsExact(totals.debitCents)}</dd>
+              <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Debits
+              </dt>
+              <dd className="mt-0.5 font-mono text-sm tabular-nums">
+                {formatMoneyCentsExact(totals.debitCents)}
+              </dd>
             </div>
             <div className="border-r px-5 py-3">
-              <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Credits</dt>
-              <dd className="mt-0.5 font-mono text-sm tabular-nums">{formatMoneyCentsExact(totals.creditCents)}</dd>
+              <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Credits
+              </dt>
+              <dd className="mt-0.5 font-mono text-sm tabular-nums">
+                {formatMoneyCentsExact(totals.creditCents)}
+              </dd>
             </div>
             <div className="px-5 py-3">
-              <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Difference</dt>
+              <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Difference
+              </dt>
               <dd
                 className={cn(
                   "mt-0.5 font-mono text-sm font-semibold tabular-nums",
@@ -224,12 +308,13 @@ export function OpeningBalancesWizard({ accounts, asOf }: { accounts: GlAccount[
 
       <div className="flex items-center justify-between gap-3 border-t px-5 py-4">
         <p className="text-xs text-muted-foreground">
-          {problem ?? "Balanced. Validating creates an immutable batch that still needs owner and CPA approval before it posts."}
+          {problem ??
+            "Balanced. Validating creates an immutable batch that still needs owner and CPA approval before it posts."}
         </p>
         <Button onClick={submit} disabled={Boolean(problem) || pending}>
           {pending ? "Validating…" : "Validate batch"}
         </Button>
       </div>
     </section>
-  )
+  );
 }

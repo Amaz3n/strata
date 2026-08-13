@@ -5,7 +5,6 @@ import { TradeLookaheadClient } from "@/components/schedule/trade-lookahead-clie
 import { getTradeLookahead } from "@/lib/services/trade-lookahead"
 import { cn } from "@/lib/utils"
 
-export const dynamic = "force-dynamic"
 
 const WINDOWS = [2, 3, 4] as const
 

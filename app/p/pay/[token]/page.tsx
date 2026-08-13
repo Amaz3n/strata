@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation"
+import { notFound, redirect } from "next/navigation"
 
 import { PayLinkClient } from "@/components/payments/pay-link-client"
 import { getInvoiceForPayLink } from "@/lib/services/payments"
@@ -7,7 +7,6 @@ interface Params {
   params: Promise<{ token: string }>
 }
 
-export const revalidate = 0
 export const metadata = {
   robots: {
     index: false,
@@ -20,6 +19,9 @@ export default async function PayLinkPage({ params }: Params) {
   const result = await getInvoiceForPayLink(token)
   if (!result || !result.invoice) {
     notFound()
+  }
+  if (result.invoice.token) {
+    redirect(`/i/${result.invoice.token}`)
   }
 
   const publishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
@@ -35,4 +37,3 @@ export default async function PayLinkPage({ params }: Params) {
     />
   )
 }
-

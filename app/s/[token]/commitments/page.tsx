@@ -8,7 +8,6 @@ interface SubCommitmentsPageProps {
   params: Promise<{ token: string }>
 }
 
-export const revalidate = 0
 
 export default async function SubCommitmentsPage({ params }: SubCommitmentsPageProps) {
   const { token } = await params

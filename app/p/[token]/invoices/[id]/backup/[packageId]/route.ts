@@ -8,7 +8,6 @@ interface Params {
   params: Promise<{ token: string; id: string; packageId: string }>
 }
 
-export const dynamic = "force-dynamic"
 
 export async function GET(_request: Request, { params }: Params) {
   const { token, id, packageId } = await params

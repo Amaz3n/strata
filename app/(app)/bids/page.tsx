@@ -4,7 +4,6 @@ import { getBidPackageStage } from "@/lib/bids/stage"
 
 import { BidsDeskClient } from "./bids-desk-client"
 
-export const dynamic = "force-dynamic"
 
 export default async function BidsDeskPage() {
   const rows = await listOrgBidPackages()

@@ -5,7 +5,6 @@ import { listWarrantyPrograms, listWarrantySlaTargets } from "@/lib/services/war
 
 import { WarrantySettingsClient } from "./warranty-settings-client"
 
-export const dynamic = "force-dynamic"
 
 export default async function WarrantySettingsPage() {
   const [programs, targets, productTier] = await Promise.all([

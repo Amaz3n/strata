@@ -7,6 +7,7 @@ import { getPaymentRailProvider } from "@/lib/integrations/payments/payment-rail
 import { recordAudit } from "@/lib/services/audit"
 import { requireOrgContext } from "@/lib/services/context"
 import { recordEvent } from "@/lib/services/events"
+import { assertPaymentLaunchReady } from "@/lib/services/payment-launch-readiness"
 import {
   sendVendorArcPayReadyEmail,
   sendVendorPayoutDestinationChangedEmail,
@@ -68,10 +69,10 @@ function jsonString(value: unknown, key: string) {
 async function listRecipientRelationships(recipientAccountId: string) {
   const supabase = createServiceSupabaseClient()
   const pageSize = 500
-  const rows: Array<{ id: string; org_id: string; company_id: string; invited_by: string | null }> = []
+  const rows: Array<{ id: string; org_id: string; company_id: string; invited_by: string | null; status: string }> = []
   for (let from = 0; ; from += pageSize) {
     const { data, error } = await supabase.from("vendor_payment_relationships")
-      .select("id,org_id,company_id,invited_by")
+      .select("id,org_id,company_id,invited_by,status")
       .eq("recipient_account_id", recipientAccountId)
       .in("status", ["invited", "claim_pending", "onboarding", "active"])
       .range(from, from + pageSize - 1)
@@ -133,6 +134,10 @@ export interface PaymentRailSettings {
     perPaymentLimitCents: number | null
     perRunLimitCents: number | null
     dailyLimitCents: number | null
+    maxInflightCents: number | null
+    returnLossCeilingCents: number | null
+    payoutHoldHours: number
+    newVendorHoldHours: number
     waiverJurisdiction: string
   }
   fundingSources: Array<{
@@ -171,11 +176,11 @@ export async function getPaymentRailSettings(orgId?: string): Promise<PaymentRai
   await requirePermission("payment.release", context)
   const supabase = createServiceSupabaseClient()
   const [{ data: policy }, { data: fundingSources }, { data: changes }, canManage, canApprove] = await Promise.all([
-    supabase.from("payment_rail_policies").select("enabled,approval_mode,requester_may_approve,control_change_cooling_hours,per_payment_limit_cents,per_run_limit_cents,daily_limit_cents,waiver_jurisdiction").eq("org_id", context.orgId).maybeSingle(),
+    supabase.from("payment_rail_policies").select("enabled,approval_mode,requester_may_approve,control_change_cooling_hours,per_payment_limit_cents,per_run_limit_cents,daily_limit_cents,max_inflight_cents,return_loss_ceiling_cents,payout_hold_hours,new_vendor_hold_hours,waiver_jurisdiction").eq("org_id", context.orgId).maybeSingle(),
     supabase.from("org_funding_sources").select("id,provider,bank_name,last4,verification_status,status,is_default,usable_after").eq("org_id", context.orgId).order("created_at", { ascending: false }).limit(20),
     supabase.from("payment_control_change_requests").select("id,funding_source_id,requested_by_user_id,status,required_approvals,apply_after,proposed_masked_details").eq("org_id", context.orgId).eq("kind", "org_funding_source").in("status", ["pending_approval", "cooling_off"]).order("created_at", { ascending: false }).limit(20),
-    hasPermission("payments.manage_rail", context),
-    hasPermission("payments.approve_run", context),
+    hasPermission("payment.manage_rail", context),
+    hasPermission("payment.approve_run", context),
   ])
   const changeIds = (changes ?? []).map((change) => change.id)
   const [{ data: approvals }, routing, candidates] = await Promise.all([
@@ -195,6 +200,10 @@ export async function getPaymentRailSettings(orgId?: string): Promise<PaymentRai
       perPaymentLimitCents: policy?.per_payment_limit_cents == null ? null : Number(policy.per_payment_limit_cents),
       perRunLimitCents: policy?.per_run_limit_cents == null ? null : Number(policy.per_run_limit_cents),
       dailyLimitCents: policy?.daily_limit_cents == null ? null : Number(policy.daily_limit_cents),
+      maxInflightCents: policy?.max_inflight_cents == null ? null : Number(policy.max_inflight_cents),
+      returnLossCeilingCents: policy?.return_loss_ceiling_cents == null ? null : Number(policy.return_loss_ceiling_cents),
+      payoutHoldHours: Number(policy?.payout_hold_hours ?? 48),
+      newVendorHoldHours: Number(policy?.new_vendor_hold_hours ?? 72),
       waiverJurisdiction: policy?.waiver_jurisdiction ?? "FL",
     },
     fundingSources: (fundingSources ?? []).map((row) => ({
@@ -233,17 +242,38 @@ export async function getPaymentRailSettings(orgId?: string): Promise<PaymentRai
 export async function updatePaymentRailPolicy(input: UpdatePaymentRailPolicyInput, orgId?: string) {
   const parsed = updatePaymentRailPolicySchema.parse(input)
   const context = await requireOrgContext(orgId)
-  await requirePermission("payments.manage_rail", context)
+  await requirePermission("payment.manage_rail", context)
   const supabase = createServiceSupabaseClient()
-  const { data: existing } = await supabase.from("payment_rail_policies").select("id,enabled,approval_mode,requester_may_approve,reconciliation_monitoring_started_at").eq("org_id", context.orgId).maybeSingle()
+  const { data: existing } = await supabase.from("payment_rail_policies").select("id,enabled,approval_mode,requester_may_approve,reconciliation_monitoring_started_at,per_payment_limit_cents,per_run_limit_cents,daily_limit_cents,max_inflight_cents,return_loss_ceiling_cents,payout_hold_hours,new_vendor_hold_hours").eq("org_id", context.orgId).maybeSingle()
   const nextApprovalMode = parsed.approval_mode ?? existing?.approval_mode ?? "dual"
   const nextRequesterMayApprove = parsed.requester_may_approve ?? existing?.requester_may_approve ?? false
   if (nextRequesterMayApprove && nextApprovalMode !== "sole") {
     throw new Error("Owner approval can only be used with one required approval")
   }
   if (parsed.enabled) {
+    await assertPaymentLaunchReady()
     const { count } = await supabase.from("org_funding_sources").select("id", { count: "exact", head: true }).eq("org_id", context.orgId).eq("status", "active")
     if (!count) throw new Error("Approve and activate a funding source before enabling electronic payments")
+    const requiredLimits = {
+      per_payment_limit_cents: parsed.per_payment_limit_cents !== undefined ? parsed.per_payment_limit_cents : existing?.per_payment_limit_cents,
+      per_run_limit_cents: parsed.per_run_limit_cents !== undefined ? parsed.per_run_limit_cents : existing?.per_run_limit_cents,
+      daily_limit_cents: parsed.daily_limit_cents !== undefined ? parsed.daily_limit_cents : existing?.daily_limit_cents,
+      max_inflight_cents: parsed.max_inflight_cents !== undefined ? parsed.max_inflight_cents : existing?.max_inflight_cents,
+      return_loss_ceiling_cents: parsed.return_loss_ceiling_cents !== undefined ? parsed.return_loss_ceiling_cents : existing?.return_loss_ceiling_cents,
+    }
+    if (Object.values(requiredLimits).some((value) => value == null)) {
+      throw new Error("Set payment, run, daily, in-flight, and return-loss limits before enabling electronic payments")
+    }
+    const perPayment = Number(requiredLimits.per_payment_limit_cents)
+    const perRun = Number(requiredLimits.per_run_limit_cents)
+    const daily = Number(requiredLimits.daily_limit_cents)
+    const maxInflight = Number(requiredLimits.max_inflight_cents)
+    if (perRun < perPayment || daily < perRun || maxInflight < daily) {
+      throw new Error("Risk limits must increase from payment to run to daily to in-flight exposure")
+    }
+    const payoutHoldHours = parsed.payout_hold_hours ?? existing?.payout_hold_hours ?? 48
+    const newVendorHoldHours = parsed.new_vendor_hold_hours ?? existing?.new_vendor_hold_hours ?? 72
+    if (payoutHoldHours < 48 || newVendorHoldHours < 24) throw new Error("Payment safety holds are below the production minimum")
   }
   const payload = {
     org_id: context.orgId,
@@ -635,10 +665,17 @@ export async function syncVendorRecipient(
   const relationships = await listRecipientRelationships(recipient.id)
   const relationshipStatus = snapshot.status === "ready" && snapshot.payoutsEnabled ? "active" : "onboarding"
   const newlyActivated = await Promise.all(relationships.map(async (relationship) => {
+    // A provider readiness sync is not authority to undo a builder's fraud
+    // response. Suspended and revoked relationships stay blocked until a
+    // builder explicitly restores them through setCompanyPaymentAccessStatus.
+    // Without this predicate, any later account.updated webhook silently
+    // reactivated a vendor the builder had deliberately cut off.
+    if (relationship.status === "suspended" || relationship.status === "revoked") return null
     let update = supabase.from("vendor_payment_relationships")
       .update({ status: relationshipStatus })
       .eq("org_id", relationship.org_id)
       .eq("id", relationship.id)
+      .in("status", ["invited", "claim_pending", "onboarding", "active"])
     if (relationshipStatus === "active") update = update.neq("status", "active")
     const { data: changed, error: updateError } = await update.select("id").maybeSingle()
     if (updateError) throw new Error(`Unable to update vendor payment relationship: ${updateError.message}`)
@@ -683,7 +720,7 @@ export async function reconcileVendorRecipientAfterOnboarding(vendorEntityId: st
 
 export async function createOrgFundingSetup(orgId?: string) {
   const context = await requireOrgContext(orgId)
-  await requirePermission("payments.manage_rail", context)
+  await requirePermission("payment.manage_rail", context)
   const supabase = createServiceSupabaseClient()
   const provider = getPaymentRailProvider(DEFAULT_PROVIDER)
   let { data: providerAccount } = await supabase.from("org_payment_provider_accounts").select("id,provider_customer_id").eq("org_id", context.orgId).eq("provider", provider.key).maybeSingle()
@@ -701,7 +738,7 @@ export async function createOrgFundingSetup(orgId?: string) {
 export async function completeOrgFundingSetup(input: { providerSetupId: string }, orgId?: string) {
   const parsed = z.object({ providerSetupId: z.string().trim().min(3).max(255) }).parse(input)
   const context = await requireOrgContext(orgId)
-  await requirePermission("payments.manage_rail", context)
+  await requirePermission("payment.manage_rail", context)
   const supabase = createServiceSupabaseClient()
   const provider = getPaymentRailProvider(DEFAULT_PROVIDER)
   const snapshot = await provider.retrieveFundingSource({ providerSetupId: parsed.providerSetupId })
@@ -752,7 +789,7 @@ export async function decidePaymentControlChange(input: { changeRequestId: strin
     if (value.decision === "rejected" && !value.reason) refinement.addIssue({ code: z.ZodIssueCode.custom, path: ["reason"], message: "A rejection reason is required" })
   }).parse(input)
   const context = await requireOrgContext(orgId)
-  await requirePermission("payments.approve_run", context)
+  await requirePermission("payment.approve_run", context)
   const stepUpVerifiedAt = await requireRecentPaymentStepUp()
   const supabase = createServiceSupabaseClient()
   const { data, error } = await supabase.rpc("decide_payment_control_change_atomic", {

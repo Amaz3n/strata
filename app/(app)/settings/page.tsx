@@ -1,6 +1,5 @@
 import { Suspense } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
-export const dynamic = 'force-dynamic'
 import { PageLayout } from "@/components/layout/page-layout"
 import { SettingsWindow } from "@/components/settings/settings-window"
 import { getStripeConnectedAccount } from "@/lib/services/stripe-connected-accounts"

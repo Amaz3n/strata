@@ -3,7 +3,6 @@ import { LaunchLane } from "@/components/starts/launch-lane"
 import { getStartsDesk } from "@/lib/services/starts-desk"
 import { resolveProductionDeskScope } from "@/lib/services/production-desk-scope"
 
-export const dynamic = "force-dynamic"
 
 export default async function StartsPage({
   searchParams,

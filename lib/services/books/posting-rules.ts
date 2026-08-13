@@ -1,4 +1,4 @@
-import { SYSTEM_ACCOUNT_CODES } from "@/lib/services/books/chart-of-accounts"
+import { SYSTEM_ACCOUNT_CODES } from "@/lib/services/books/chart-of-accounts";
 import {
   assertBalancedJournalDraft,
   assertIntegerCents,
@@ -6,7 +6,7 @@ import {
   type GlAccountType,
   type JournalEntryDraft,
   type JournalLineDraft,
-} from "@/lib/services/books/types"
+} from "@/lib/services/books/types";
 
 /**
  * Pure posting rules. No I/O, no Supabase, no clock — every input is supplied by
@@ -28,25 +28,27 @@ import {
  */
 
 type CommonPostingInput = {
-  id: string
-  date: string
-  memo: string
-  projectionVersion: number
+  id: string;
+  date: string;
+  memo: string;
+  projectionVersion: number;
   /** Economic revision of the source record; bumped when a posted source changes. */
-  sourceVersion?: number
-  policyVersion: number
-  projectId?: string
-  companyId?: string
-}
+  sourceVersion?: number;
+  policyVersion: number;
+  projectId?: string;
+  companyId?: string;
+};
 
 function line(
   accountCode: string,
   amountCents: number,
   side: "debit" | "credit",
-  input: Pick<CommonPostingInput, "projectId" | "companyId"> & { description?: string },
+  input: Pick<CommonPostingInput, "projectId" | "companyId"> & {
+    description?: string;
+  },
 ): JournalLineDraft {
-  assertIntegerCents(amountCents, "Posting amount")
-  if (amountCents <= 0) throw new Error("Posting amount must be positive")
+  assertIntegerCents(amountCents, "Posting amount");
+  if (amountCents <= 0) throw new Error("Posting amount must be positive");
   return {
     accountCode,
     debitCents: side === "debit" ? amountCents : 0,
@@ -54,7 +56,7 @@ function line(
     projectId: input.projectId,
     companyId: input.companyId,
     description: input.description,
-  }
+  };
 }
 
 /**
@@ -75,16 +77,21 @@ function signedLine(
   accountCode: string,
   amountCents: number,
   side: "debit" | "credit",
-  input: Pick<CommonPostingInput, "projectId" | "companyId"> & { description?: string },
+  input: Pick<CommonPostingInput, "projectId" | "companyId"> & {
+    description?: string;
+  },
 ): JournalLineDraft | null {
-  assertIntegerCents(amountCents, "Posting amount")
-  if (amountCents === 0) return null
-  const resolved = amountCents > 0 ? side : side === "debit" ? "credit" : "debit"
-  return line(accountCode, Math.abs(amountCents), resolved, input)
+  assertIntegerCents(amountCents, "Posting amount");
+  if (amountCents === 0) return null;
+  const resolved =
+    amountCents > 0 ? side : side === "debit" ? "credit" : "debit";
+  return line(accountCode, Math.abs(amountCents), resolved, input);
 }
 
-function compactLines(lines: Array<JournalLineDraft | null>): JournalLineDraft[] {
-  return lines.filter((item): item is JournalLineDraft => item !== null)
+function compactLines(
+  lines: Array<JournalLineDraft | null>,
+): JournalLineDraft[] {
+  return lines.filter((item): item is JournalLineDraft => item !== null);
 }
 
 /**
@@ -94,19 +101,26 @@ function compactLines(lines: Array<JournalLineDraft | null>): JournalLineDraft[]
  * What is never valid: a zero document (nothing happened), a withheld amount
  * pointing the other way from the total, or one larger than the total.
  */
-function assertSignedGross(grossCents: number, withheldCents: number, label: string) {
-  assertIntegerCents(grossCents, `${label} gross`)
-  assertIntegerCents(withheldCents, `${label} retainage`)
-  if (grossCents === 0) throw new Error(`${label} gross must not be zero`)
-  if (withheldCents === 0) return
-  if (Math.sign(withheldCents) !== Math.sign(grossCents) || Math.abs(withheldCents) > Math.abs(grossCents)) {
-    throw new Error(`${label} gross and retainage are invalid`)
+function assertSignedGross(
+  grossCents: number,
+  withheldCents: number,
+  label: string,
+) {
+  assertIntegerCents(grossCents, `${label} gross`);
+  assertIntegerCents(withheldCents, `${label} retainage`);
+  if (grossCents === 0) throw new Error(`${label} gross must not be zero`);
+  if (withheldCents === 0) return;
+  if (
+    Math.sign(withheldCents) !== Math.sign(grossCents) ||
+    Math.abs(withheldCents) > Math.abs(grossCents)
+  ) {
+    throw new Error(`${label} gross and retainage are invalid`);
   }
 }
 
 function complete(draft: JournalEntryDraft) {
-  assertBalancedJournalDraft(draft)
-  return draft
+  assertBalancedJournalDraft(draft);
+  return draft;
 }
 
 /**
@@ -118,13 +132,13 @@ function complete(draft: JournalEntryDraft) {
  * against another. Posting it as a disbursement invents cash that never moved
  * and guarantees the bank reconciliation can never tie.
  */
-const NON_CASH_PAYMENT_METHODS = new Set(["credit"])
+const NON_CASH_PAYMENT_METHODS = new Set(["credit"]);
 
 export type PaymentPostingClass =
   | { kind: "bill_payment" }
   | { kind: "invoice_payment" }
   | { kind: "credit_application" }
-  | { kind: "unpostable"; reason: string }
+  | { kind: "unpostable"; reason: string };
 
 /**
  * What a `payments` row means to the ledger.
@@ -135,10 +149,10 @@ export type PaymentPostingClass =
  * cannot classify is the one thing that silently breaks an AR or AP tie-out.
  */
 export function classifyPaymentPosting(input: {
-  method: string | null
-  hasBill: boolean
-  hasInvoice: boolean
-  creditApplied: boolean
+  method: string | null;
+  hasBill: boolean;
+  hasInvoice: boolean;
+  creditApplied: boolean;
 }): PaymentPostingClass {
   if (input.hasBill === input.hasInvoice) {
     return {
@@ -146,12 +160,15 @@ export function classifyPaymentPosting(input: {
       reason: input.hasBill
         ? "Payment is linked to both a vendor bill and an invoice and cannot be classified"
         : "Payment is linked to neither a vendor bill nor an invoice and cannot be posted",
-    }
+    };
   }
-  if (input.creditApplied || (input.method !== null && NON_CASH_PAYMENT_METHODS.has(input.method))) {
-    return { kind: "credit_application" }
+  if (
+    input.creditApplied ||
+    (input.method !== null && NON_CASH_PAYMENT_METHODS.has(input.method))
+  ) {
+    return { kind: "credit_application" };
   }
-  return { kind: input.hasBill ? "bill_payment" : "invoice_payment" }
+  return { kind: input.hasBill ? "bill_payment" : "invoice_payment" };
 }
 
 /**
@@ -162,29 +179,67 @@ export function classifyPaymentPosting(input: {
  * A negative gross is a vendor credit and posts as the exact mirror — Dr AP,
  * Cr job cost — because that is what the cost subledger already recorded.
  */
-export function postVendorBillFromCostLines(input: CommonPostingInput & {
-  grossCents: number
-  retainageCents?: number
-  costLines: Array<{ accountCode?: string; amountCents: number; projectId?: string; description?: string }>
-}) {
-  const retainageCents = input.retainageCents ?? 0
-  assertSignedGross(input.grossCents, retainageCents, "Vendor bill")
-  const costTotal = input.costLines.reduce((sum, item) => sum + item.amountCents, 0)
-  if (costTotal !== input.grossCents) {
-    throw new Error(`Vendor bill cost lines total ${costTotal} does not equal the bill gross ${input.grossCents}`)
+export function postVendorBillFromCostLines(
+  input: CommonPostingInput & {
+    grossCents: number;
+    useTaxCents?: number;
+    retainageCents?: number;
+    costLines: Array<{
+      accountCode?: string;
+      amountCents: number;
+      projectId?: string;
+      description?: string;
+    }>;
+  },
+) {
+  const retainageCents = input.retainageCents ?? 0;
+  const useTaxCents = input.useTaxCents ?? 0;
+  assertSignedGross(input.grossCents, retainageCents, "Vendor bill");
+  assertIntegerCents(useTaxCents, "Vendor bill use tax");
+  if (useTaxCents < 0)
+    throw new Error("Vendor bill use tax cannot be negative");
+  const costTotal = input.costLines.reduce(
+    (sum, item) => sum + item.amountCents,
+    0,
+  );
+  if (costTotal !== input.grossCents + useTaxCents) {
+    throw new Error(
+      `Vendor bill cost lines total ${costTotal} does not equal the bill gross plus use tax ${input.grossCents + useTaxCents}`,
+    );
   }
-  const payableCents = input.grossCents - retainageCents
+  const payableCents = input.grossCents - retainageCents;
   const lines = compactLines([
     ...input.costLines.map((item) =>
-      signedLine(item.accountCode ?? SYSTEM_ACCOUNT_CODES.jobCosts, item.amountCents, "debit", {
-        projectId: item.projectId ?? input.projectId,
-        companyId: input.companyId,
-        description: item.description,
-      }),
+      signedLine(
+        item.accountCode ?? SYSTEM_ACCOUNT_CODES.jobCosts,
+        item.amountCents,
+        "debit",
+        {
+          projectId: item.projectId ?? input.projectId,
+          companyId: input.companyId,
+          description: item.description,
+        },
+      ),
     ),
-    signedLine(SYSTEM_ACCOUNT_CODES.accountsPayable, payableCents, "credit", input),
-    signedLine(SYSTEM_ACCOUNT_CODES.retainagePayable, retainageCents, "credit", input),
-  ])
+    signedLine(
+      SYSTEM_ACCOUNT_CODES.accountsPayable,
+      payableCents,
+      "credit",
+      input,
+    ),
+    signedLine(
+      SYSTEM_ACCOUNT_CODES.retainagePayable,
+      retainageCents,
+      "credit",
+      input,
+    ),
+    signedLine(
+      SYSTEM_ACCOUNT_CODES.salesUseTaxPayable,
+      useTaxCents,
+      "credit",
+      input,
+    ),
+  ]);
   return complete({
     entryDate: input.date,
     entryKind: "operational",
@@ -195,32 +250,65 @@ export function postVendorBillFromCostLines(input: CommonPostingInput & {
     sourceType: "vendor_bill",
     sourceId: input.id,
     lines,
-  })
+  });
 }
 
-export function postBillPayment(input: CommonPostingInput & {
-  amountCents: number
-  cashAccountCode?: string
-  /** Processor and platform fees withheld from the disbursement. */
-  feeCents?: number
-  feeAccountCode?: string
-  /** Discount taken for paying early: reduces cash without reducing the payable. */
-  discountCents?: number
-}) {
-  const feeCents = input.feeCents ?? 0
-  const discountCents = input.discountCents ?? 0
-  assertIntegerCents(input.amountCents, "Bill payment amount")
-  assertIntegerCents(feeCents, "Bill payment fee")
-  assertIntegerCents(discountCents, "Bill payment discount")
+export function postBillPayment(
+  input: CommonPostingInput & {
+    amountCents: number;
+    cashAccountCode?: string;
+    /** Processor and platform fees withheld from the disbursement. */
+    feeCents?: number;
+    feeAccountCode?: string;
+    /** Discount taken for paying early: reduces cash without reducing the payable. */
+    discountCents?: number;
+  },
+) {
+  const feeCents = input.feeCents ?? 0;
+  const discountCents = input.discountCents ?? 0;
+  assertIntegerCents(input.amountCents, "Bill payment amount");
+  assertIntegerCents(feeCents, "Bill payment fee");
+  assertIntegerCents(discountCents, "Bill payment discount");
   if (input.amountCents <= 0 || feeCents < 0 || discountCents < 0) {
-    throw new Error("Bill payment amounts are invalid")
+    throw new Error("Bill payment amounts are invalid");
   }
-  if (discountCents >= input.amountCents) throw new Error("An early-pay discount cannot equal or exceed the payment")
-  const cashCents = input.amountCents - discountCents + feeCents
-  const lines = [line(SYSTEM_ACCOUNT_CODES.accountsPayable, input.amountCents, "debit", input)]
-  if (feeCents > 0) lines.push(line(input.feeAccountCode ?? SYSTEM_ACCOUNT_CODES.bankFees, feeCents, "debit", input))
-  if (discountCents > 0) lines.push(line(SYSTEM_ACCOUNT_CODES.earlyPayDiscounts, discountCents, "credit", input))
-  lines.push(line(input.cashAccountCode ?? SYSTEM_ACCOUNT_CODES.operatingCash, cashCents, "credit", input))
+  if (discountCents >= input.amountCents)
+    throw new Error("An early-pay discount cannot equal or exceed the payment");
+  const cashCents = input.amountCents - discountCents + feeCents;
+  const lines = [
+    line(
+      SYSTEM_ACCOUNT_CODES.accountsPayable,
+      input.amountCents,
+      "debit",
+      input,
+    ),
+  ];
+  if (feeCents > 0)
+    lines.push(
+      line(
+        input.feeAccountCode ?? SYSTEM_ACCOUNT_CODES.bankFees,
+        feeCents,
+        "debit",
+        input,
+      ),
+    );
+  if (discountCents > 0)
+    lines.push(
+      line(
+        SYSTEM_ACCOUNT_CODES.earlyPayDiscounts,
+        discountCents,
+        "credit",
+        input,
+      ),
+    );
+  lines.push(
+    line(
+      input.cashAccountCode ?? SYSTEM_ACCOUNT_CODES.operatingCash,
+      cashCents,
+      "credit",
+      input,
+    ),
+  );
   return complete({
     entryDate: input.date,
     entryKind: "operational",
@@ -231,22 +319,50 @@ export function postBillPayment(input: CommonPostingInput & {
     sourceType: "bill_payment",
     sourceId: input.id,
     lines,
-  })
+  });
 }
 
-export function postCustomerInvoice(input: CommonPostingInput & {
-  grossCents: number
-  retainageCents?: number
-  billingAccountCode?: string
-}) {
-  const retainageCents = input.retainageCents ?? 0
-  assertSignedGross(input.grossCents, retainageCents, "Invoice")
-  const receivableCents = input.grossCents - retainageCents
+export function postCustomerInvoice(
+  input: CommonPostingInput & {
+    grossCents: number;
+    taxCents?: number;
+    retainageCents?: number;
+    billingAccountCode?: string;
+  },
+) {
+  const retainageCents = input.retainageCents ?? 0;
+  const taxCents = input.taxCents ?? 0;
+  assertSignedGross(input.grossCents, retainageCents, "Invoice");
+  assertIntegerCents(taxCents, "Invoice sales tax");
+  if (taxCents < 0 || taxCents > Math.abs(input.grossCents))
+    throw new Error("Invoice sales tax is invalid");
+  const receivableCents = input.grossCents - retainageCents;
   const lines = compactLines([
-    signedLine(SYSTEM_ACCOUNT_CODES.accountsReceivable, receivableCents, "debit", input),
-    signedLine(SYSTEM_ACCOUNT_CODES.retainageReceivable, retainageCents, "debit", input),
-    signedLine(input.billingAccountCode ?? SYSTEM_ACCOUNT_CODES.contractLiability, input.grossCents, "credit", input),
-  ])
+    signedLine(
+      SYSTEM_ACCOUNT_CODES.accountsReceivable,
+      receivableCents,
+      "debit",
+      input,
+    ),
+    signedLine(
+      SYSTEM_ACCOUNT_CODES.retainageReceivable,
+      retainageCents,
+      "debit",
+      input,
+    ),
+    signedLine(
+      input.billingAccountCode ?? SYSTEM_ACCOUNT_CODES.contractLiability,
+      input.grossCents - taxCents,
+      "credit",
+      input,
+    ),
+    signedLine(
+      SYSTEM_ACCOUNT_CODES.salesUseTaxPayable,
+      taxCents,
+      "credit",
+      input,
+    ),
+  ]);
   return complete({
     entryDate: input.date,
     entryKind: "operational",
@@ -257,7 +373,7 @@ export function postCustomerInvoice(input: CommonPostingInput & {
     sourceType: "invoice",
     sourceId: input.id,
     lines,
-  })
+  });
 }
 
 /**
@@ -265,12 +381,20 @@ export function postCustomerInvoice(input: CommonPostingInput & {
  * There is no percentage-of-completion for these projects: the sale is the
  * recognition event, so the invoice books revenue directly.
  */
-export function postClosingInvoice(input: CommonPostingInput & {
-  grossCents: number
-  revenueAccountCode?: string
-}) {
-  assertIntegerCents(input.grossCents, "Closing invoice gross")
-  if (input.grossCents === 0) throw new Error("Closing invoice gross must not be zero")
+export function postClosingInvoice(
+  input: CommonPostingInput & {
+    grossCents: number;
+    taxCents?: number;
+    revenueAccountCode?: string;
+  },
+) {
+  const taxCents = input.taxCents ?? 0;
+  assertIntegerCents(input.grossCents, "Closing invoice gross");
+  assertIntegerCents(taxCents, "Closing invoice sales tax");
+  if (taxCents < 0 || taxCents > input.grossCents)
+    throw new Error("Closing invoice sales tax is invalid");
+  if (input.grossCents === 0)
+    throw new Error("Closing invoice gross must not be zero");
   return complete({
     entryDate: input.date,
     entryKind: "operational",
@@ -281,36 +405,159 @@ export function postClosingInvoice(input: CommonPostingInput & {
     sourceType: "invoice",
     sourceId: input.id,
     lines: compactLines([
-      signedLine(SYSTEM_ACCOUNT_CODES.accountsReceivable, input.grossCents, "debit", input),
-      signedLine(input.revenueAccountCode ?? SYSTEM_ACCOUNT_CODES.constructionRevenue, input.grossCents, "credit", input),
+      signedLine(
+        SYSTEM_ACCOUNT_CODES.accountsReceivable,
+        input.grossCents,
+        "debit",
+        input,
+      ),
+      signedLine(
+        input.revenueAccountCode ?? SYSTEM_ACCOUNT_CODES.constructionRevenue,
+        input.grossCents - taxCents,
+        "credit",
+        input,
+      ),
+      signedLine(
+        SYSTEM_ACCOUNT_CODES.salesUseTaxPayable,
+        taxCents,
+        "credit",
+        input,
+      ),
     ]),
-  })
+  });
+}
+
+/**
+ * A post-issuance credit or write-off reduces the receivable without pretending
+ * cash was received. Credits reverse the original billing/revenue (and any tax
+ * included in the credit); write-offs preserve revenue and expense the loss.
+ */
+export function postReceivableAdjustment(
+  input: CommonPostingInput & {
+    amountCents: number;
+    taxCents?: number;
+    adjustmentType: "credit_memo" | "write_off";
+    revenueBasis?: "closing" | "percentage_of_completion";
+  },
+) {
+  assertIntegerCents(input.amountCents, "Receivable adjustment amount");
+  assertIntegerCents(input.taxCents ?? 0, "Receivable adjustment sales tax");
+  if (input.amountCents <= 0)
+    throw new Error("Receivable adjustment amount must be positive");
+  const taxCents = input.taxCents ?? 0;
+  if (taxCents < 0 || taxCents > input.amountCents)
+    throw new Error("Receivable adjustment sales tax is invalid");
+
+  const debitLines =
+    input.adjustmentType === "write_off"
+      ? [
+          line(
+            SYSTEM_ACCOUNT_CODES.badDebtExpense,
+            input.amountCents,
+            "debit",
+            input,
+          ),
+        ]
+      : compactLines([
+          signedLine(
+            input.revenueBasis === "closing"
+              ? SYSTEM_ACCOUNT_CODES.constructionRevenue
+              : SYSTEM_ACCOUNT_CODES.contractLiability,
+            input.amountCents - taxCents,
+            "debit",
+            input,
+          ),
+          signedLine(
+            SYSTEM_ACCOUNT_CODES.salesUseTaxPayable,
+            taxCents,
+            "debit",
+            input,
+          ),
+        ]);
+
+  return complete({
+    entryDate: input.date,
+    entryKind: "operational",
+    memo: input.memo,
+    postingKey: buildPostingKey(`receivable_adjustment:${input.id}`, input),
+    projectionVersion: input.projectionVersion,
+    policyVersion: input.policyVersion,
+    sourceType: "receivable_adjustment",
+    sourceId: input.id,
+    lines: [
+      ...debitLines,
+      line(
+        SYSTEM_ACCOUNT_CODES.accountsReceivable,
+        input.amountCents,
+        "credit",
+        input,
+      ),
+    ],
+  });
 }
 
 /**
  * A customer receipt.
  *
- * Processor and platform fees are withheld from the deposit before it reaches
- * the builder's account — `payments.net_cents` is recorded as gross minus both —
- * so cash is debited NET and the fee is booked as expense. Debiting cash for the
- * full receipt overstates the bank by every fee ever charged and makes the bank
- * reconciliation permanently unclosable.
+ * Processor and platform fees are withheld before settlement, so undeposited
+ * funds is debited NET and the fee is booked as expense. A later bank-feed
+ * deposit categorization moves the actual settled amount Dr bank / Cr 1010.
+ * That keeps grouped payouts and checks in transit out of the bank balance until
+ * the bank says the money arrived.
  */
-export function postInvoicePayment(input: CommonPostingInput & {
-  amountCents: number
-  cashAccountCode?: string
-  /** Processor and platform fees netted out of the deposit. */
-  feeCents?: number
-  feeAccountCode?: string
-}) {
-  const feeCents = input.feeCents ?? 0
-  assertIntegerCents(input.amountCents, "Customer payment amount")
-  assertIntegerCents(feeCents, "Customer payment fee")
-  if (input.amountCents <= 0 || feeCents < 0) throw new Error("Customer payment amounts are invalid")
-  if (feeCents >= input.amountCents) throw new Error("A processor fee cannot equal or exceed the receipt")
-  const lines = [line(input.cashAccountCode ?? SYSTEM_ACCOUNT_CODES.operatingCash, input.amountCents - feeCents, "debit", input)]
-  if (feeCents > 0) lines.push(line(input.feeAccountCode ?? SYSTEM_ACCOUNT_CODES.bankFees, feeCents, "debit", input))
-  lines.push(line(SYSTEM_ACCOUNT_CODES.accountsReceivable, input.amountCents, "credit", input))
+export function postInvoicePayment(
+  input: CommonPostingInput & {
+    amountCents: number;
+    /** Total charged to the customer, including a disclosed payment-method fee. */
+    grossCents?: number;
+    cashAccountCode?: string;
+    /** Processor and platform fees netted out of the deposit. */
+    feeCents?: number;
+    feeAccountCode?: string;
+  },
+) {
+  const feeCents = input.feeCents ?? 0;
+  const grossCents = input.grossCents ?? input.amountCents;
+  const recoveryCents = grossCents - input.amountCents;
+  assertIntegerCents(input.amountCents, "Customer payment amount");
+  assertIntegerCents(feeCents, "Customer payment fee");
+  assertIntegerCents(grossCents, "Customer payment gross");
+  if (input.amountCents <= 0 || feeCents < 0)
+    throw new Error("Customer payment amounts are invalid");
+  if (grossCents < input.amountCents || feeCents >= grossCents)
+    throw new Error("A processor fee cannot equal or exceed the receipt");
+  const lines = [
+    line(
+      input.cashAccountCode ?? SYSTEM_ACCOUNT_CODES.undepositedFunds,
+      grossCents - feeCents,
+      "debit",
+      input,
+    ),
+  ];
+  if (feeCents > 0)
+    lines.push(
+      line(
+        input.feeAccountCode ?? SYSTEM_ACCOUNT_CODES.bankFees,
+        feeCents,
+        "debit",
+        input,
+      ),
+    );
+  lines.push(
+    line(
+      SYSTEM_ACCOUNT_CODES.accountsReceivable,
+      input.amountCents,
+      "credit",
+      input,
+    ),
+  );
+  if (recoveryCents > 0)
+    lines.push(
+      line(SYSTEM_ACCOUNT_CODES.paymentFeeRecovery, recoveryCents, "credit", {
+        ...input,
+        description: "Customer payment fee recovery",
+      }),
+    );
   return complete({
     entryDate: input.date,
     entryKind: "operational",
@@ -321,22 +568,154 @@ export function postInvoicePayment(input: CommonPostingInput & {
     sourceType: "invoice_payment",
     sourceId: input.id,
     lines,
-  })
+  });
+}
+
+/** Cash received before it is earned remains a customer-deposit liability. */
+export function postCustomerDepositReceipt(
+  input: CommonPostingInput & {
+    amountCents: number;
+    grossCents?: number;
+    feeCents?: number;
+  },
+) {
+  const feeCents = input.feeCents ?? 0;
+  const grossCents = input.grossCents ?? input.amountCents;
+  const recoveryCents = grossCents - input.amountCents;
+  assertIntegerCents(input.amountCents, "Customer deposit amount");
+  assertIntegerCents(feeCents, "Customer deposit fee");
+  if (
+    input.amountCents <= 0 ||
+    grossCents < input.amountCents ||
+    feeCents < 0 ||
+    feeCents >= grossCents
+  )
+    throw new Error("Customer deposit amounts are invalid");
+  const lines = [
+    line(
+      SYSTEM_ACCOUNT_CODES.undepositedFunds,
+      grossCents - feeCents,
+      "debit",
+      input,
+    ),
+  ];
+  if (feeCents > 0)
+    lines.push(line(SYSTEM_ACCOUNT_CODES.bankFees, feeCents, "debit", input));
+  lines.push(
+    line(
+      SYSTEM_ACCOUNT_CODES.customerDeposits,
+      input.amountCents,
+      "credit",
+      input,
+    ),
+  );
+  if (recoveryCents > 0)
+    lines.push(
+      line(
+        SYSTEM_ACCOUNT_CODES.paymentFeeRecovery,
+        recoveryCents,
+        "credit",
+        input,
+      ),
+    );
+  return complete({
+    entryDate: input.date,
+    entryKind: "operational",
+    memo: input.memo,
+    postingKey: buildPostingKey(`customer_deposit_receipt:${input.id}`, input),
+    projectionVersion: input.projectionVersion,
+    policyVersion: input.policyVersion,
+    sourceType: "customer_deposit_receipt",
+    sourceId: input.id,
+    lines,
+  });
+}
+
+/** Apply previously received funds to an ordinary invoice without moving cash. */
+export function postCustomerDepositApplication(
+  input: CommonPostingInput & { amountCents: number },
+) {
+  assertIntegerCents(input.amountCents, "Customer deposit application");
+  if (input.amountCents <= 0)
+    throw new Error("Customer deposit application must be positive");
+  return complete({
+    entryDate: input.date,
+    entryKind: "operational",
+    memo: input.memo,
+    postingKey: buildPostingKey(
+      `customer_deposit_application:${input.id}`,
+      input,
+    ),
+    projectionVersion: input.projectionVersion,
+    policyVersion: input.policyVersion,
+    sourceType: "customer_deposit_application",
+    sourceId: input.id,
+    lines: [
+      line(
+        SYSTEM_ACCOUNT_CODES.customerDeposits,
+        input.amountCents,
+        "debit",
+        input,
+      ),
+      line(
+        SYSTEM_ACCOUNT_CODES.accountsReceivable,
+        input.amountCents,
+        "credit",
+        input,
+      ),
+    ],
+  });
+}
+
+/** Refund or reverse a deposit receipt through the same settlement account. */
+export function postCustomerDepositReversal(
+  input: CommonPostingInput & { amountCents: number },
+) {
+  assertIntegerCents(input.amountCents, "Customer deposit reversal");
+  if (input.amountCents <= 0)
+    throw new Error("Customer deposit reversal must be positive");
+  return complete({
+    entryDate: input.date,
+    entryKind: "operational",
+    memo: input.memo,
+    postingKey: buildPostingKey(`customer_deposit_reversal:${input.id}`, input),
+    projectionVersion: input.projectionVersion,
+    policyVersion: input.policyVersion,
+    sourceType: "customer_deposit_reversal",
+    sourceId: input.id,
+    lines: [
+      line(
+        SYSTEM_ACCOUNT_CODES.customerDeposits,
+        input.amountCents,
+        "debit",
+        input,
+      ),
+      line(
+        SYSTEM_ACCOUNT_CODES.undepositedFunds,
+        input.amountCents,
+        "credit",
+        input,
+      ),
+    ],
+  });
 }
 
 /** A negative amount is an expense credit and posts as the mirror. */
-export function postExpense(input: CommonPostingInput & {
-  amountCents: number
-  expenseAccountCode?: string
-  /** Omit to book the expense against AP instead of cash (an unpaid, accrued expense). */
-  paymentAccountCode?: string
-  accrued?: boolean
-}) {
-  assertIntegerCents(input.amountCents, "Expense amount")
-  if (input.amountCents === 0) throw new Error("An expense with no amount is not an accounting fact")
+export function postExpense(
+  input: CommonPostingInput & {
+    amountCents: number;
+    expenseAccountCode?: string;
+    /** Omit to book the expense against AP instead of cash (an unpaid, accrued expense). */
+    paymentAccountCode?: string;
+    accrued?: boolean;
+  },
+) {
+  assertIntegerCents(input.amountCents, "Expense amount");
+  if (input.amountCents === 0)
+    throw new Error("An expense with no amount is not an accounting fact");
   const creditAccount = input.accrued
     ? SYSTEM_ACCOUNT_CODES.accountsPayable
-    : input.paymentAccountCode ?? SYSTEM_ACCOUNT_CODES.operatingCash
+    : (input.paymentAccountCode ?? SYSTEM_ACCOUNT_CODES.operatingCash);
   return complete({
     entryDate: input.date,
     entryKind: "operational",
@@ -347,10 +726,76 @@ export function postExpense(input: CommonPostingInput & {
     sourceType: "expense",
     sourceId: input.id,
     lines: compactLines([
-      signedLine(input.expenseAccountCode ?? SYSTEM_ACCOUNT_CODES.otherExpense, input.amountCents, "debit", input),
+      signedLine(
+        input.expenseAccountCode ?? SYSTEM_ACCOUNT_CODES.otherExpense,
+        input.amountCents,
+        "debit",
+        input,
+      ),
       signedLine(creditAccount, input.amountCents, "credit", input),
     ]),
-  })
+  });
+}
+
+/**
+ * A direct-paid expense at the same line grain as the job-cost subledger.
+ * Multi-project receipts must not collapse back to their header project in the
+ * GL; doing so makes the company P&L balance while every project P&L is wrong.
+ */
+export function postExpenseFromCostLines(
+  input: CommonPostingInput & {
+    amountCents: number;
+    costLines: Array<{
+      accountCode?: string;
+      amountCents: number;
+      projectId?: string;
+      description?: string;
+    }>;
+    paymentAccountCode?: string;
+  },
+) {
+  assertIntegerCents(input.amountCents, "Expense amount");
+  if (input.amountCents === 0)
+    throw new Error("An expense with no amount is not an accounting fact");
+  const costTotal = input.costLines.reduce(
+    (sum, item) => sum + item.amountCents,
+    0,
+  );
+  if (costTotal !== input.amountCents) {
+    throw new Error(
+      `Expense cost lines total ${costTotal} does not equal the expense amount ${input.amountCents}`,
+    );
+  }
+  return complete({
+    entryDate: input.date,
+    entryKind: "operational",
+    memo: input.memo,
+    postingKey: buildPostingKey(`expense:${input.id}`, input),
+    projectionVersion: input.projectionVersion,
+    policyVersion: input.policyVersion,
+    sourceType: "expense",
+    sourceId: input.id,
+    lines: compactLines([
+      ...input.costLines.map((item) =>
+        signedLine(
+          item.accountCode ?? SYSTEM_ACCOUNT_CODES.jobCosts,
+          item.amountCents,
+          "debit",
+          {
+            projectId: item.projectId ?? input.projectId,
+            companyId: input.companyId,
+            description: item.description,
+          },
+        ),
+      ),
+      signedLine(
+        input.paymentAccountCode ?? SYSTEM_ACCOUNT_CODES.operatingCash,
+        input.amountCents,
+        "credit",
+        input,
+      ),
+    ]),
+  });
 }
 
 /**
@@ -358,32 +803,59 @@ export function postExpense(input: CommonPostingInput & {
  * `payable` releases withheld sub retainage into AP; `receivable` moves owner
  * retainage into AR once it becomes billable.
  */
-export function postRetainageRelease(input: CommonPostingInput & {
-  amountCents: number
-  side: "payable" | "receivable"
-}) {
-  assertIntegerCents(input.amountCents, "Retainage release")
-  if (input.amountCents <= 0) throw new Error("Retainage release must be positive")
-  const lines = input.side === "payable"
-    ? [
-        line(SYSTEM_ACCOUNT_CODES.retainagePayable, input.amountCents, "debit", input),
-        line(SYSTEM_ACCOUNT_CODES.accountsPayable, input.amountCents, "credit", input),
-      ]
-    : [
-        line(SYSTEM_ACCOUNT_CODES.accountsReceivable, input.amountCents, "debit", input),
-        line(SYSTEM_ACCOUNT_CODES.retainageReceivable, input.amountCents, "credit", input),
-      ]
+export function postRetainageRelease(
+  input: CommonPostingInput & {
+    amountCents: number;
+    side: "payable" | "receivable";
+  },
+) {
+  assertIntegerCents(input.amountCents, "Retainage release");
+  if (input.amountCents <= 0)
+    throw new Error("Retainage release must be positive");
+  const lines =
+    input.side === "payable"
+      ? [
+          line(
+            SYSTEM_ACCOUNT_CODES.retainagePayable,
+            input.amountCents,
+            "debit",
+            input,
+          ),
+          line(
+            SYSTEM_ACCOUNT_CODES.accountsPayable,
+            input.amountCents,
+            "credit",
+            input,
+          ),
+        ]
+      : [
+          line(
+            SYSTEM_ACCOUNT_CODES.accountsReceivable,
+            input.amountCents,
+            "debit",
+            input,
+          ),
+          line(
+            SYSTEM_ACCOUNT_CODES.retainageReceivable,
+            input.amountCents,
+            "credit",
+            input,
+          ),
+        ];
   return complete({
     entryDate: input.date,
     entryKind: "operational",
     memo: input.memo,
-    postingKey: buildPostingKey(`retainage_release_${input.side}:${input.id}`, input),
+    postingKey: buildPostingKey(
+      `retainage_release_${input.side}:${input.id}`,
+      input,
+    ),
     projectionVersion: input.projectionVersion,
     policyVersion: input.policyVersion,
     sourceType: `retainage_release_${input.side}`,
     sourceId: input.id,
     lines,
-  })
+  });
 }
 
 /**
@@ -392,23 +864,41 @@ export function postRetainageRelease(input: CommonPostingInput & {
  * Without this the two sides drift permanently: Arc reopens the vendor bill (or
  * the invoice) while the ledger still shows money that came back.
  */
-export function postPaymentReversal(input: CommonPostingInput & {
-  amountCents: number
-  side: "bill_payment" | "invoice_payment"
-  cashAccountCode?: string
-}) {
-  assertIntegerCents(input.amountCents, "Payment reversal")
-  if (input.amountCents <= 0) throw new Error("Payment reversal must be positive")
-  const cash = input.cashAccountCode ?? SYSTEM_ACCOUNT_CODES.operatingCash
-  const lines = input.side === "bill_payment"
-    ? [
-        line(cash, input.amountCents, "debit", input),
-        line(SYSTEM_ACCOUNT_CODES.accountsPayable, input.amountCents, "credit", input),
-      ]
-    : [
-        line(SYSTEM_ACCOUNT_CODES.accountsReceivable, input.amountCents, "debit", input),
-        line(cash, input.amountCents, "credit", input),
-      ]
+export function postPaymentReversal(
+  input: CommonPostingInput & {
+    amountCents: number;
+    side: "bill_payment" | "invoice_payment";
+    cashAccountCode?: string;
+  },
+) {
+  assertIntegerCents(input.amountCents, "Payment reversal");
+  if (input.amountCents <= 0)
+    throw new Error("Payment reversal must be positive");
+  const cash =
+    input.cashAccountCode ??
+    (input.side === "invoice_payment"
+      ? SYSTEM_ACCOUNT_CODES.undepositedFunds
+      : SYSTEM_ACCOUNT_CODES.operatingCash);
+  const lines =
+    input.side === "bill_payment"
+      ? [
+          line(cash, input.amountCents, "debit", input),
+          line(
+            SYSTEM_ACCOUNT_CODES.accountsPayable,
+            input.amountCents,
+            "credit",
+            input,
+          ),
+        ]
+      : [
+          line(
+            SYSTEM_ACCOUNT_CODES.accountsReceivable,
+            input.amountCents,
+            "debit",
+            input,
+          ),
+          line(cash, input.amountCents, "credit", input),
+        ];
   return complete({
     entryDate: input.date,
     entryKind: "operational",
@@ -419,7 +909,7 @@ export function postPaymentReversal(input: CommonPostingInput & {
     sourceType: "payment_reversal",
     sourceId: input.id,
     lines,
-  })
+  });
 }
 
 /**
@@ -429,12 +919,15 @@ export function postPaymentReversal(input: CommonPostingInput & {
  * A negative entry is a labor correction and posts as the mirror, for the same
  * reason: the subledger already carries it signed.
  */
-export function postLaborCost(input: CommonPostingInput & {
-  amountCents: number
-  costAccountCode?: string
-}) {
-  assertIntegerCents(input.amountCents, "Labor cost")
-  if (input.amountCents === 0) throw new Error("A labor entry with no amount is not an accounting fact")
+export function postLaborCost(
+  input: CommonPostingInput & {
+    amountCents: number;
+    costAccountCode?: string;
+  },
+) {
+  assertIntegerCents(input.amountCents, "Labor cost");
+  if (input.amountCents === 0)
+    throw new Error("A labor entry with no amount is not an accounting fact");
   return complete({
     entryDate: input.date,
     entryKind: "operational",
@@ -445,10 +938,20 @@ export function postLaborCost(input: CommonPostingInput & {
     sourceType: "labor_cost",
     sourceId: input.id,
     lines: compactLines([
-      signedLine(input.costAccountCode ?? SYSTEM_ACCOUNT_CODES.laborCosts, input.amountCents, "debit", input),
-      signedLine(SYSTEM_ACCOUNT_CODES.payrollClearing, input.amountCents, "credit", input),
+      signedLine(
+        input.costAccountCode ?? SYSTEM_ACCOUNT_CODES.laborCosts,
+        input.amountCents,
+        "debit",
+        input,
+      ),
+      signedLine(
+        SYSTEM_ACCOUNT_CODES.payrollClearing,
+        input.amountCents,
+        "credit",
+        input,
+      ),
     ]),
-  })
+  });
 }
 
 /**
@@ -460,34 +963,63 @@ export function postLaborCost(input: CommonPostingInput & {
  * draws down billings; a project billed less than it has earned drives `2350`
  * into a debit balance, which the balance sheet presents as a contract asset.
  */
-export function postRevenueRecognition(input: CommonPostingInput & {
-  deltaCents: number
-  periodKey: string
-}) {
-  assertIntegerCents(input.deltaCents, "Revenue recognition delta")
-  if (input.deltaCents === 0) throw new Error("A zero revenue-recognition delta does not require a journal entry")
-  if (!input.projectId) throw new Error("Revenue recognition requires a project")
-  const amountCents = Math.abs(input.deltaCents)
-  const earning = input.deltaCents > 0
+export function postRevenueRecognition(
+  input: CommonPostingInput & {
+    deltaCents: number;
+    periodKey: string;
+  },
+) {
+  assertIntegerCents(input.deltaCents, "Revenue recognition delta");
+  if (input.deltaCents === 0)
+    throw new Error(
+      "A zero revenue-recognition delta does not require a journal entry",
+    );
+  if (!input.projectId)
+    throw new Error("Revenue recognition requires a project");
+  const amountCents = Math.abs(input.deltaCents);
+  const earning = input.deltaCents > 0;
   return complete({
     entryDate: input.date,
     entryKind: "poc",
     memo: input.memo,
-    postingKey: buildPostingKey(`revenue_recognition:${input.projectId}:${input.periodKey}`, input),
+    postingKey: buildPostingKey(
+      `revenue_recognition:${input.projectId}:${input.periodKey}`,
+      input,
+    ),
     projectionVersion: input.projectionVersion,
     policyVersion: input.policyVersion,
     sourceType: "revenue_recognition",
     sourceId: input.id,
     lines: earning
       ? [
-          line(SYSTEM_ACCOUNT_CODES.contractLiability, amountCents, "debit", input),
-          line(SYSTEM_ACCOUNT_CODES.constructionRevenue, amountCents, "credit", input),
+          line(
+            SYSTEM_ACCOUNT_CODES.contractLiability,
+            amountCents,
+            "debit",
+            input,
+          ),
+          line(
+            SYSTEM_ACCOUNT_CODES.constructionRevenue,
+            amountCents,
+            "credit",
+            input,
+          ),
         ]
       : [
-          line(SYSTEM_ACCOUNT_CODES.constructionRevenue, amountCents, "debit", input),
-          line(SYSTEM_ACCOUNT_CODES.contractLiability, amountCents, "credit", input),
+          line(
+            SYSTEM_ACCOUNT_CODES.constructionRevenue,
+            amountCents,
+            "debit",
+            input,
+          ),
+          line(
+            SYSTEM_ACCOUNT_CODES.contractLiability,
+            amountCents,
+            "credit",
+            input,
+          ),
         ],
-  })
+  });
 }
 
 /**
@@ -495,33 +1027,65 @@ export function postRevenueRecognition(input: CommonPostingInput & {
  * each account's `accountType` — inferring income from a `4xxx` code prefix would
  * misclassify any custom account whose code does not follow the seeded chart.
  */
-export function postYearEndClose(input: CommonPostingInput & {
-  incomeAccountBalances: Array<{ accountCode: string; accountType: GlAccountType; balanceCents: number }>
-}) {
-  const lines: JournalLineDraft[] = []
-  let netIncomeCents = 0
+export function postYearEndClose(
+  input: CommonPostingInput & {
+    incomeAccountBalances: Array<{
+      accountCode: string;
+      accountType: GlAccountType;
+      balanceCents: number;
+    }>;
+  },
+) {
+  const lines: JournalLineDraft[] = [];
+  let netIncomeCents = 0;
   for (const account of input.incomeAccountBalances) {
-    assertIntegerCents(account.balanceCents, `Year-end balance for ${account.accountCode}`)
-    if (account.balanceCents === 0) continue
-    if (account.accountType !== "income" && account.accountType !== "cogs" && account.accountType !== "expense") {
-      throw new Error(`Account ${account.accountCode} is not a income-statement account and cannot be closed`)
+    assertIntegerCents(
+      account.balanceCents,
+      `Year-end balance for ${account.accountCode}`,
+    );
+    if (account.balanceCents === 0) continue;
+    if (
+      account.accountType !== "income" &&
+      account.accountType !== "cogs" &&
+      account.accountType !== "expense"
+    ) {
+      throw new Error(
+        `Account ${account.accountCode} is not a income-statement account and cannot be closed`,
+      );
     }
-    const income = account.accountType === "income"
-    netIncomeCents += income ? account.balanceCents : -account.balanceCents
+    const income = account.accountType === "income";
+    netIncomeCents += income ? account.balanceCents : -account.balanceCents;
     // `balanceCents` is normal-balance signed, so a contra balance arrives negative: an
     // income account carrying a debit balance (refunds exceeding revenue), or an expense
     // account carrying a credit balance (a vendor refund booked against the expense).
     // Closing it out reverses the direction — choosing by account type alone emits a
     // one-sided entry that `complete()` rejects, which made year-end close impossible in
     // any year holding one.
-    const closeWithDebit = income ? account.balanceCents > 0 : account.balanceCents < 0
-    lines.push(line(account.accountCode, Math.abs(account.balanceCents), closeWithDebit ? "debit" : "credit", input))
+    const closeWithDebit = income
+      ? account.balanceCents > 0
+      : account.balanceCents < 0;
+    lines.push(
+      line(
+        account.accountCode,
+        Math.abs(account.balanceCents),
+        closeWithDebit ? "debit" : "credit",
+        input,
+      ),
+    );
   }
-  if (lines.length === 0) throw new Error("No income-statement balances remain to close")
+  if (lines.length === 0)
+    throw new Error("No income-statement balances remain to close");
   // A break-even year still has to zero its income statement; the account lines already
   // balance each other, so there is nothing left to move to retained earnings.
   if (netIncomeCents !== 0) {
-    lines.push(line(SYSTEM_ACCOUNT_CODES.retainedEarnings, Math.abs(netIncomeCents), netIncomeCents > 0 ? "credit" : "debit", input))
+    lines.push(
+      line(
+        SYSTEM_ACCOUNT_CODES.retainedEarnings,
+        Math.abs(netIncomeCents),
+        netIncomeCents > 0 ? "credit" : "debit",
+        input,
+      ),
+    );
   }
   return complete({
     entryDate: input.date,
@@ -533,5 +1097,5 @@ export function postYearEndClose(input: CommonPostingInput & {
     sourceType: "year_end_close",
     sourceId: input.id,
     lines,
-  })
+  });
 }

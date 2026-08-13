@@ -122,14 +122,16 @@ async function resolveBillCompany(supabase: SupabaseClient, orgId: string, compa
 export async function evaluateHolds(
   billId: string,
   orgId?: string,
-  options: { enqueueWaiverChase?: boolean } = {},
+  options: { enqueueWaiverChase?: boolean; skipAuthorization?: boolean } = {},
 ): Promise<PaymentHoldEvaluation> {
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const { data: bill, error } = await supabase.from("vendor_bills")
     .select("id,project_id,company_id,commitment_id,lien_waiver_status,retainage_cents,total_cents,funding_invoice_id,metadata")
     .eq("org_id", resolvedOrgId).eq("id", billId).maybeSingle()
   if (error || !bill) throw new Error("Vendor bill not found")
-  await requireAuthorization({ permission: "payment.release", userId, orgId: resolvedOrgId, projectId: bill.project_id, supabase, resourceType: "vendor_bill", resourceId: billId })
+  if (!options.skipAuthorization) {
+    await requireAuthorization({ permission: "bill.read", userId, orgId: resolvedOrgId, projectId: bill.project_id, supabase, resourceType: "vendor_bill", resourceId: billId })
+  }
   const companyId = await resolveBillCompany(supabase, resolvedOrgId, bill.company_id, bill.commitment_id)
   const [{ data: projectPolicy }, { data: orgPolicy }, { data: overrideRows }, compliance, funding, rules, { data: projectControls }] = await Promise.all([
     supabase.from("payment_hold_policies").select("conditions,waiver_auto_chase").eq("org_id", resolvedOrgId).eq("project_id", bill.project_id).maybeSingle(),
@@ -199,7 +201,7 @@ export async function assertBillReleasable(
   orgId?: string,
   options: { excludePaymentRunId?: string } = {},
 ): Promise<PaymentReleaseEvidence> {
-  const { supabase, orgId: resolvedOrgId } = await requireOrgContext(orgId)
+  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const { data: bill, error } = await supabase
     .from("vendor_bills")
     .select("id,project_id,company_id,commitment_id,bill_date,due_date,total_cents,metadata,lien_waiver_status")
@@ -207,8 +209,18 @@ export async function assertBillReleasable(
     .eq("id", billId)
     .maybeSingle()
   if (error || !bill) throw new Error("Vendor bill not found")
+  await requireAuthorization({
+    permission: "payment.release",
+    userId,
+    orgId: resolvedOrgId,
+    projectId: bill.project_id,
+    supabase,
+    logDecision: true,
+    resourceType: "vendor_bill",
+    resourceId: billId,
+  })
 
-  const holdEvaluation = await evaluateHolds(billId, resolvedOrgId, { enqueueWaiverChase: true })
+  const holdEvaluation = await evaluateHolds(billId, resolvedOrgId, { enqueueWaiverChase: true, skipAuthorization: true })
   if (!holdEvaluation.releasable) {
     const reasons = holdEvaluation.holds
       .filter((hold) => hold.level === "block" && !hold.overridden)
@@ -360,7 +372,7 @@ export async function overridePaymentHold(input: PaymentHoldOverrideInput, orgId
   const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
   const { data: bill } = await supabase.from("vendor_bills").select("project_id").eq("org_id", resolvedOrgId).eq("id", parsed.bill_id).maybeSingle()
   if (!bill) throw new Error("Vendor bill not found")
-  await requireAuthorization({ permission: "payments.override_hold", userId, orgId: resolvedOrgId, projectId: bill.project_id, supabase, logDecision: true, resourceType: "vendor_bill", resourceId: parsed.bill_id })
+  await requireAuthorization({ permission: "payment.override_hold", userId, orgId: resolvedOrgId, projectId: bill.project_id, supabase, logDecision: true, resourceType: "vendor_bill", resourceId: parsed.bill_id })
   const payload = { org_id: resolvedOrgId, project_id: bill.project_id, bill_id: parsed.bill_id, hold_kind: parsed.hold_kind, overridden_by: userId, reason: parsed.reason }
   const { data, error } = await supabase.from("payment_hold_overrides").insert(payload).select("id").single()
   if (error || !data) throw new Error(`Failed to override payment hold: ${error?.message}`)
@@ -368,7 +380,7 @@ export async function overridePaymentHold(input: PaymentHoldOverrideInput, orgId
     recordEvent({ orgId: resolvedOrgId, actorId: userId, eventType: "payment_hold_overridden", entityType: "vendor_bill", entityId: parsed.bill_id, payload: { project_id: bill.project_id, hold_kind: parsed.hold_kind, reason: parsed.reason } }),
     recordAudit({ orgId: resolvedOrgId, actorId: userId, action: "insert", entityType: "payment_hold_override", entityId: data.id, after: payload }),
   ])
-  return evaluateHolds(parsed.bill_id, resolvedOrgId)
+  return evaluateHolds(parsed.bill_id, resolvedOrgId, { skipAuthorization: true })
 }
 
 export async function sendVendorBillWaiverChase(orgId: string, billId: string) {

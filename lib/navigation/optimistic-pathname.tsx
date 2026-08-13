@@ -99,7 +99,7 @@ function isPlainLeftClick(e: React.MouseEvent<HTMLAnchorElement>) {
 }
 
 export const OptimisticLink = React.forwardRef<HTMLAnchorElement, OptimisticLinkProps>(
-  function OptimisticLink({ href, onClick, target, replace, ...rest }, ref) {
+  function OptimisticLink({ href, onClick, target, replace, prefetch = true, ...rest }, ref) {
     const ctx = React.useContext(OptimisticPathContext)
     return (
       <Link
@@ -107,6 +107,7 @@ export const OptimisticLink = React.forwardRef<HTMLAnchorElement, OptimisticLink
         href={href}
         target={target}
         replace={replace}
+        prefetch={prefetch}
         onClick={(e) => {
           onClick?.(e)
           if (!ctx || target === "_blank" || !isPlainLeftClick(e)) return

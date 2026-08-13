@@ -101,6 +101,7 @@ type CreationContext = {
     dimensions: Array<{ key: string; label: string; values: AccountOption[] }>
     defaults: { expenseAccountId?: string; apAccountId?: string }
   }
+  taxJurisdictions: Array<{ id: string; name: string; use_tax_rate_micros: number }>
 }
 
 interface PayableCreateWorkspaceProps {
@@ -172,6 +173,9 @@ export function PayableCreateWorkspace({
   const [commitmentId, setCommitmentId] = useState(NO_COMMITMENT)
   const [companyId, setCompanyId] = useState("")
   const [vendorName, setVendorName] = useState("")
+  const [taxJurisdictionId, setTaxJurisdictionId] = useState("none")
+  const [taxIncludedDollars, setTaxIncludedDollars] = useState("")
+  const [useTaxDollars, setUseTaxDollars] = useState("")
   const [vendorPickerOpen, setVendorPickerOpen] = useState(false)
   // The card replaces the picker once a vendor is on the payable; this forces
   // the picker back for the one case that matters — the scan matched the wrong
@@ -746,6 +750,9 @@ export function PayableCreateWorkspace({
           bill_number: billNumber.trim(),
           total_cents: amountCents,
           bill_date: billDate,
+          tax_jurisdiction_id: taxJurisdictionId === "none" ? null : taxJurisdictionId,
+          tax_included_cents: parseDollarsToCents(taxIncludedDollars) ?? 0,
+          use_tax_accrued_cents: parseDollarsToCents(useTaxDollars) ?? 0,
           due_date: dueDate || undefined,
           description: description.trim() || undefined,
           file_id: fileId,
@@ -1036,6 +1043,18 @@ export function PayableCreateWorkspace({
                         <FieldLabel>Memo</FieldLabel>
                         <Textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Work, materials, or billing period…" rows={3} />
                       </div>
+                      {context?.taxJurisdictions.length ? (
+                        <>
+                          <div>
+                            <FieldLabel>Tax jurisdiction</FieldLabel>
+                            <Select value={taxJurisdictionId} onValueChange={setTaxJurisdictionId}><SelectTrigger className="h-10"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="none">No tax jurisdiction</SelectItem>{context.taxJurisdictions.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div><FieldLabel>Tax on vendor bill</FieldLabel><Input value={taxIncludedDollars} onChange={(event) => setTaxIncludedDollars(event.target.value.replace(/[^\d.,]/g, ""))} inputMode="decimal" placeholder="0.00" /></div>
+                            <div><FieldLabel>Use tax to accrue</FieldLabel><Input value={useTaxDollars} onChange={(event) => setUseTaxDollars(event.target.value.replace(/[^\d.,]/g, ""))} inputMode="decimal" placeholder="0.00" /></div>
+                          </div>
+                        </>
+                      ) : null}
                   </div>
 
                   <div className="space-y-6 border-t pt-8">

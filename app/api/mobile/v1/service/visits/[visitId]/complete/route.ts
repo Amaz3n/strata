@@ -3,7 +3,6 @@ import { requireMobileOrg } from "@/lib/mobile/auth"
 import { runWithServiceOrgContext } from "@/lib/services/context"
 import { completeWarrantyVisit } from "@/lib/services/warranty"
 
-export const runtime = "nodejs"
 
 export async function POST(request: Request, { params }: { params: Promise<{ visitId: string }> }) {
   const requestId = mobileRequestId(request)

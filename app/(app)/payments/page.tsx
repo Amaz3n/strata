@@ -1,7 +1,9 @@
 import { redirect } from "next/navigation"
+import { connection } from "next/server"
+export const instant = false
 
-export const dynamic = 'force-dynamic'
 
-export default function PaymentsPage() {
+export default async function PaymentsPage() {
+  await connection()
   redirect("/billing")
 }

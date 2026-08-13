@@ -1,7 +1,6 @@
 import { mobileDataResponse, mobileErrorResponse, mobileRequestId } from "@/lib/mobile/api"
 import { mapMobileUser, listMobileOrganizations, requireMobileUser } from "@/lib/mobile/auth"
 
-export const runtime = "nodejs"
 
 export async function GET(request: Request) {
   const requestId = mobileRequestId(request)

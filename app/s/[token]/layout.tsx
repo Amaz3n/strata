@@ -1,7 +1,8 @@
-import type { ReactNode } from "react"
+import { Suspense, type ReactNode } from "react"
 import { notFound } from "next/navigation"
 
 import { PortalShell } from "@/components/portal/shell/portal-shell"
+import { PortalShellSkeleton } from "@/components/portal/shell/portal-skeleton"
 import { buildSubPortalNav } from "@/components/portal/shell/portal-nav-items"
 import { resolvePortalGate } from "@/lib/portal/gate"
 import { loadSubPortalShellContext } from "@/lib/services/portal-access"
@@ -21,13 +22,26 @@ export const metadata = {
   },
 }
 
-export const revalidate = 0
+// A fabricated build token cannot pass the portal gate. Validate this Instant
+// shell in development when a real subcontractor link supplies its access context.
+export const instant = {
+  unstable_disableBuildValidation: true,
+}
+
 
 /**
  * Gates once and renders the chrome once, for every page under `/s/[token]`.
  * Pages below this only load and render their own section.
  */
-export default async function SubPortalLayout({ children, params }: SubPortalLayoutProps) {
+export default function SubPortalLayout({ children, params }: SubPortalLayoutProps) {
+  return (
+    <Suspense fallback={<PortalShellSkeleton />}>
+      <SubPortalLayoutContent params={params}>{children}</SubPortalLayoutContent>
+    </Suspense>
+  )
+}
+
+async function SubPortalLayoutContent({ children, params }: SubPortalLayoutProps) {
   const { token } = await params
 
   const gate = await resolvePortalGate({

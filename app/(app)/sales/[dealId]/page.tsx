@@ -22,7 +22,6 @@ import { getSalesDealDetail } from "@/lib/services/sales-deals"
 import { listTeamMembers } from "@/lib/services/team"
 import { cn } from "@/lib/utils"
 
-export const dynamic = "force-dynamic"
 
 /** Matches the cap `getSalesDealDetail` passes to the activity query. */
 const ACTIVITY_CAP = 60

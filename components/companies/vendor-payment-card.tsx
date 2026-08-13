@@ -3,7 +3,7 @@
 import { useTransition } from "react";
 import { useRouter } from "next/navigation";
 
-import { inviteCompanyToPaymentSetupAction } from "@/app/(app)/companies/actions";
+import { inviteCompanyToPaymentSetupAction, setCompanyPaymentAccessStatusAction } from "@/app/(app)/companies/actions";
 import { unwrapAction } from "@/lib/action-result";
 import type { CompanyPaymentReadiness } from "@/lib/services/vendor-payment-invitations";
 import { Button } from "@/components/ui/button";
@@ -80,6 +80,21 @@ export function VendorPaymentCard({
       }
     });
 
+  const changeAccess = (nextStatus: "active" | "suspended" | "revoked") =>
+    startTransition(async () => {
+      try {
+        const result = unwrapAction(await setCompanyPaymentAccessStatusAction(companyId, nextStatus));
+        toast({
+          title: nextStatus === "active" ? "Payment access restored" : nextStatus === "suspended" ? "Payment access suspended" : "Payment access revoked",
+          description: nextStatus === "active" ? "Future payment runs may use this vendor once their destination is ready." : "Existing in-flight payments are unchanged; future runs are blocked.",
+        });
+        router.refresh();
+        void result;
+      } catch (error) {
+        toast({ title: "Unable to change payment access", description: (error as Error).message });
+      }
+    });
+
   return (
     <div className="flex items-start justify-between gap-4">
       <div className="min-w-0">
@@ -92,10 +107,22 @@ export function VendorPaymentCard({
           </p>
         ) : null}
       </div>
-      {copy.action && canEdit ? (
-        <Button variant="outline" size="sm" className="shrink-0" onClick={invite} disabled={pending}>
-          {pending ? "Sending…" : copy.action}
-        </Button>
+      {canEdit ? (
+        <div className="flex shrink-0 flex-wrap justify-end gap-2">
+          {copy.action ? (
+            <Button variant="outline" size="sm" onClick={invite} disabled={pending}>
+              {pending ? "Sending…" : copy.action}
+            </Button>
+          ) : null}
+          {status === "suspended" || status === "revoked" ? (
+            <Button variant="outline" size="sm" onClick={() => changeAccess("active")} disabled={pending}>Restore</Button>
+          ) : status !== "not_started" ? (
+            <>
+              <Button variant="outline" size="sm" onClick={() => changeAccess("suspended")} disabled={pending}>Suspend</Button>
+              <Button variant="destructive" size="sm" onClick={() => changeAccess("revoked")} disabled={pending}>Revoke</Button>
+            </>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

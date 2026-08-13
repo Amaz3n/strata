@@ -5,7 +5,6 @@ import { logger } from "@/lib/logging/logger"
 import { DEFAULT_EVAL_CASES, runAiAssistantEvals } from "@/lib/services/ai-assistant/evals"
 import type { EvalCase } from "@/lib/ai/eval-scoring"
 
-export const runtime = "nodejs"
 // Twelve cases through the real tool loop, sequentially.
 export const maxDuration = 300
 

@@ -6,7 +6,6 @@ import { createServiceSupabaseClient } from "@/lib/supabase/server"
 import { SEARCH_CONFIGS, type SearchEntityType } from "@/lib/services/search-config"
 import { REINDEX_JOB_TYPE } from "@/lib/services/search-index"
 
-export const runtime = "nodejs"
 
 const PAGE_SIZE = 1000
 // Cap how many reindex jobs a single invocation enqueues so the request stays

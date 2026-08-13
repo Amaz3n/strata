@@ -2,7 +2,6 @@ import { NextResponse } from "next/server"
 
 import { completePlatformBugAiFix } from "@/lib/services/platform-bugs"
 
-export const runtime = "nodejs"
 
 function getText(value: unknown) {
   if (typeof value !== "string") return null

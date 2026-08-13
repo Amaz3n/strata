@@ -235,11 +235,7 @@ export async function listCompanyCommitments(companyId: string, orgId?: string):
     if (!commitmentId) continue
     const current = billedByCommitment.get(commitmentId) ?? { billed: 0, paid: 0 }
     current.billed += bill.total_cents ?? 0
-    if (typeof bill.paid_cents === "number") {
-      current.paid += bill.paid_cents
-    } else if (bill.status === "paid") {
-      current.paid += bill.total_cents ?? 0
-    }
+    current.paid += Number(bill.paid_cents ?? 0)
     billedByCommitment.set(commitmentId, current)
   }
 
@@ -315,11 +311,7 @@ export async function listProjectCommitments(projectId: string, orgId?: string, 
     if (!commitmentId) continue
     const current = billedByCommitment.get(commitmentId) ?? { billed: 0, paid: 0 }
     current.billed += bill.total_cents ?? 0
-    if (typeof bill.paid_cents === "number") {
-      current.paid += bill.paid_cents
-    } else if (bill.status === "paid") {
-      current.paid += bill.total_cents ?? 0
-    }
+    current.paid += Number(bill.paid_cents ?? 0)
     billedByCommitment.set(commitmentId, current)
   }
 

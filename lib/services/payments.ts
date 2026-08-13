@@ -1,7 +1,18 @@
-import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto"
-import { z } from "zod"
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from "node:crypto";
+import { z } from "zod";
 
-import type { Invoice, Payment, PaymentIntent, PaymentLink, PaymentReversal } from "@/lib/types"
+import type {
+  Invoice,
+  Payment,
+  PaymentIntent,
+  PaymentLink,
+  PaymentReversal,
+} from "@/lib/types";
 import {
   createPaymentIntentInputSchema,
   generatePayLinkInputSchema,
@@ -10,31 +21,46 @@ import {
   type CreatePublicInvoicePaymentIntentInput,
   type GeneratePayLinkInput,
   type RecordPaymentInput,
-} from "@/lib/validation/payments"
-import { requireOrgContext } from "@/lib/services/context"
-import { createServiceSupabaseClient } from "@/lib/supabase/server"
-import { recordAudit } from "@/lib/services/audit"
-import { recordEvent } from "@/lib/services/events"
-import { createStripePaymentIntent } from "@/lib/integrations/payments/stripe"
-import { calculatePaymentFeeQuote, type OnlinePaymentMethod, loadPaymentFeePolicy } from "@/lib/payments/fees"
-import { generateConditionalWaiverForPayment } from "@/lib/services/lien-waivers"
-import { releaseInvoiceLienWaiversIfPaid } from "@/lib/services/invoice-lien-waivers"
-import { enqueuePaymentSync } from "@/lib/services/accounting-sync"
-import { requireAuthorization } from "@/lib/services/authorization"
-import { requireReadyStripeConnectedAccount, requireReadyStripeConnectedAccountForOrg } from "@/lib/services/stripe-connected-accounts"
+} from "@/lib/validation/payments";
+import { requireOrgContext } from "@/lib/services/context";
+import { createServiceSupabaseClient } from "@/lib/supabase/server";
+import { recordAudit } from "@/lib/services/audit";
+import { recordEvent } from "@/lib/services/events";
+import { createStripePaymentIntent } from "@/lib/integrations/payments/stripe";
+import {
+  calculatePaymentFeeQuote,
+  type OnlinePaymentMethod,
+  loadPaymentFeePolicy,
+} from "@/lib/payments/fees";
+import { generateConditionalWaiverForPayment } from "@/lib/services/lien-waivers";
+import { releaseInvoiceLienWaiversIfPaid } from "@/lib/services/invoice-lien-waivers";
+import { enqueuePaymentSync } from "@/lib/services/accounting-sync";
+import { requireAuthorization } from "@/lib/services/authorization";
+import {
+  escapeHtml,
+  getOrgSenderEmail,
+  renderStandardEmailLayout,
+  sendEmail,
+} from "@/lib/services/mailer";
+import {
+  requireReadyStripeConnectedAccount,
+  requireReadyStripeConnectedAccountForOrg,
+} from "@/lib/services/stripe-connected-accounts";
 
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com"
-const PAY_PATH = `${APP_URL}/p/pay`
-const LINK_SECRET = process.env.PAYMENT_LINK_SECRET
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://arcnaples.com";
+const PAY_PATH = `${APP_URL}/p/pay`;
+const LINK_SECRET = process.env.PAYMENT_LINK_SECRET;
 
 const reminderRuleSchema = z.object({
   invoice_id: z.string().uuid("Invoice is required"),
   channel: z.enum(["email", "sms"]).default("email"),
-  schedule: z.enum(["before_due", "after_due", "overdue"]).default("before_due"),
+  schedule: z
+    .enum(["before_due", "after_due", "overdue"])
+    .default("before_due"),
   offset_days: z.number().int().min(0).default(0),
   template_id: z.string().optional(),
   metadata: z.record(z.any()).optional(),
-})
+});
 
 const lateFeeRuleSchema = z.object({
   project_id: z.string().uuid().optional(),
@@ -45,7 +71,7 @@ const lateFeeRuleSchema = z.object({
   repeat_days: z.number().int().min(0).optional(),
   max_applications: z.number().int().min(1).optional(),
   metadata: z.record(z.any()).optional(),
-})
+});
 
 function mapPayment(row: any): Payment {
   return {
@@ -73,11 +99,11 @@ function mapPayment(row: any): Payment {
     received_at: row.received_at ?? row.created_at,
     created_at: row.created_at ?? undefined,
     updated_at: row.updated_at ?? undefined,
-  }
+  };
 }
 
 function mapAllocatedPayment(row: any, invoiceId: string): Payment {
-  const payment = Array.isArray(row.payment) ? row.payment[0] : row.payment
+  const payment = Array.isArray(row.payment) ? row.payment[0] : row.payment;
   return mapPayment({
     ...(payment ?? {}),
     invoice_id: invoiceId,
@@ -90,7 +116,7 @@ function mapAllocatedPayment(row: any, invoiceId: string): Payment {
       allocated_amount_cents: row.amount_cents,
       allocation_metadata: row.metadata ?? {},
     },
-  })
+  });
 }
 
 function mapPaymentReversal(row: any): PaymentReversal {
@@ -109,7 +135,7 @@ function mapPaymentReversal(row: any): PaymentReversal {
     occurred_at: row.occurred_at ?? row.created_at,
     created_at: row.created_at ?? undefined,
     updated_at: row.updated_at ?? undefined,
-  }
+  };
 }
 
 function mapPaymentIntent(row: any): PaymentIntent {
@@ -136,7 +162,7 @@ function mapPaymentIntent(row: any): PaymentIntent {
     metadata: row.metadata ?? undefined,
     created_at: row.created_at ?? undefined,
     updated_at: row.updated_at ?? undefined,
-  }
+  };
 }
 
 function mapPaymentLink(row: any): PaymentLink {
@@ -152,36 +178,42 @@ function mapPaymentLink(row: any): PaymentLink {
     metadata: row.metadata ?? undefined,
     created_at: row.created_at ?? undefined,
     updated_at: row.updated_at ?? undefined,
-  }
+  };
 }
 
 function hashToken(token: string) {
-  return createHash("sha256").update(token).digest("hex")
+  return createHash("sha256").update(token).digest("hex");
 }
 
 function generateToken() {
-  return randomBytes(32).toString("hex")
+  return randomBytes(32).toString("hex");
 }
 
 type PayLinkPayload = {
-  org_id: string
-  project_id: string
-  invoice_id: string
-  exp: number
-  nonce: string
-}
+  org_id: string;
+  project_id: string;
+  invoice_id: string;
+  exp: number;
+  nonce: string;
+};
 
 function ensureLinkSecret() {
   if (!LINK_SECRET) {
-    throw new Error("PAYMENT_LINK_SECRET is not configured")
+    throw new Error("PAYMENT_LINK_SECRET is not configured");
   }
-  return LINK_SECRET
+  return LINK_SECRET;
 }
 
-export function generateSignedPayLink(params: { orgId: string; projectId: string; invoiceId: string; expiresInHours?: number }) {
-  const secret = ensureLinkSecret()
-  const nonce = randomBytes(16).toString("hex")
-  const exp = Math.floor(Date.now() / 1000) + (params.expiresInHours ?? 72) * 3600
+export function generateSignedPayLink(params: {
+  orgId: string;
+  projectId: string;
+  invoiceId: string;
+  expiresInHours?: number;
+}) {
+  const secret = ensureLinkSecret();
+  const nonce = randomBytes(16).toString("hex");
+  const exp =
+    Math.floor(Date.now() / 1000) + (params.expiresInHours ?? 72) * 3600;
 
   const payload: PayLinkPayload = {
     org_id: params.orgId,
@@ -189,124 +221,142 @@ export function generateSignedPayLink(params: { orgId: string; projectId: string
     invoice_id: params.invoiceId,
     exp,
     nonce,
-  }
+  };
 
-  const payloadStr = Buffer.from(JSON.stringify(payload)).toString("base64url")
-  const signature = createHmac("sha256", secret).update(payloadStr).digest("base64url")
-  const token = `${payloadStr}.${signature}`
-  const url = `${PAY_PATH}/${token}`
-  return { url, token }
+  const payloadStr = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = createHmac("sha256", secret)
+    .update(payloadStr)
+    .digest("base64url");
+  const token = `${payloadStr}.${signature}`;
+  const url = `${PAY_PATH}/${token}`;
+  return { url, token };
 }
 
 export function validateSignedPayLink(token: string): PayLinkPayload | null {
-  if (!token.includes(".")) return null
-  const secret = LINK_SECRET
-  if (!secret) return null
+  if (!token.includes(".")) return null;
+  const secret = LINK_SECRET;
+  if (!secret) return null;
 
-  const parts = token.split(".")
-  if (parts.length !== 2) return null
-  const [payloadStr, signature] = parts
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+  const [payloadStr, signature] = parts;
 
-  const expectedSig = createHmac("sha256", secret).update(payloadStr).digest("base64url")
+  const expectedSig = createHmac("sha256", secret)
+    .update(payloadStr)
+    .digest("base64url");
   try {
     if (!timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
-      return null
+      return null;
     }
   } catch {
-    return null
+    return null;
   }
 
   try {
-    const payload = JSON.parse(Buffer.from(payloadStr, "base64url").toString()) as PayLinkPayload
+    const payload = JSON.parse(
+      Buffer.from(payloadStr, "base64url").toString(),
+    ) as PayLinkPayload;
     if (payload.exp < Math.floor(Date.now() / 1000)) {
-      return null
+      return null;
     }
-    return payload
+    return payload;
   } catch {
-    return null
+    return null;
   }
 }
 
 async function rotatePayLinkNonce(invoiceId: string, orgId: string) {
-  const supabase = createServiceSupabaseClient()
+  const supabase = createServiceSupabaseClient();
   const { data: link } = await supabase
     .from("payment_links")
     .select("id, used_count")
     .eq("invoice_id", invoiceId)
     .eq("org_id", orgId)
-    .maybeSingle()
+    .maybeSingle();
 
-  if (!link) return
-  const nextUsed = (link.used_count ?? 0) + 1
-  const newNonce = randomBytes(16).toString("hex")
-  await supabase.from("payment_links").update({ nonce: newNonce, used_count: nextUsed }).eq("id", link.id)
+  if (!link) return;
+  const nextUsed = (link.used_count ?? 0) + 1;
+  const newNonce = randomBytes(16).toString("hex");
+  await supabase
+    .from("payment_links")
+    .update({ nonce: newNonce, used_count: nextUsed })
+    .eq("id", link.id);
 }
 
-async function getInvoiceTotals(supabase: ReturnType<typeof createServiceSupabaseClient>, invoiceId: string, orgId: string) {
+async function getInvoiceTotals(
+  supabase: ReturnType<typeof createServiceSupabaseClient>,
+  invoiceId: string,
+  orgId: string,
+) {
   const { data, error } = await supabase
     .from("invoices")
-    .select("id, org_id, project_id, invoice_number, total_cents, balance_due_cents, due_date, status, metadata")
+    .select(
+      "id, org_id, project_id, token, invoice_number, total_cents, balance_due_cents, due_date, status, metadata",
+    )
     .eq("id", invoiceId)
     .eq("org_id", orgId)
-    .maybeSingle()
+    .maybeSingle();
 
   if (error || !data) {
-    throw new Error("Invoice not found or inaccessible")
+    throw new Error("Invoice not found or inaccessible");
   }
 
-  return data
+  return data;
 }
 
 function stripePaymentMethodTypesFor(method?: string | null) {
-  if (method === "ach") return ["us_bank_account"]
-  if (method === "card") return ["card"]
-  return ["us_bank_account", "card"]
+  if (method === "ach") return ["us_bank_account"];
+  if (method === "card") return ["card"];
+  return ["us_bank_account", "card"];
 }
 
 function toStripeMethod(method?: string | null): OnlinePaymentMethod | null {
-  return method === "ach" || method === "card" ? method : null
+  return method === "ach" || method === "card" ? method : null;
 }
 
 function metadataInt(metadata: Record<string, any> | undefined, key: string) {
-  const value = metadata?.[key]
-  if (typeof value === "number" && Number.isFinite(value)) return Math.round(value)
+  const value = metadata?.[key];
+  if (typeof value === "number" && Number.isFinite(value))
+    return Math.round(value);
   if (typeof value === "string" && value.trim().length > 0) {
-    const parsed = Number.parseInt(value, 10)
-    return Number.isFinite(parsed) ? parsed : null
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : null;
   }
-  return null
+  return null;
 }
 
 async function buildPaymentIntentAmounts(params: {
-  supabase: ReturnType<typeof createServiceSupabaseClient>
-  orgId: string
-  invoiceBalanceCents: number
-  method?: string | null
-  includeProcessingFee?: boolean
+  supabase: ReturnType<typeof createServiceSupabaseClient>;
+  orgId: string;
+  invoiceBalanceCents: number;
+  method?: string | null;
+  includeProcessingFee?: boolean;
 }): Promise<{
-  chargeAmountCents: number
-  invoiceBalanceCents: number
-  paymentMethodFeeCents: number
-  metadata: Record<string, string>
+  chargeAmountCents: number;
+  invoiceBalanceCents: number;
+  paymentMethodFeeCents: number;
+  metadata: Record<string, string>;
 }> {
-  const paymentMethod = toStripeMethod(params.method)
+  const paymentMethod = toStripeMethod(params.method);
   if (!params.includeProcessingFee || !paymentMethod) {
     return {
       chargeAmountCents: params.invoiceBalanceCents,
       invoiceBalanceCents: params.invoiceBalanceCents,
       paymentMethodFeeCents: 0,
       metadata: {},
-    }
+    };
   }
 
-  const policy = await loadPaymentFeePolicy(params.supabase, params.orgId)
+  const policy = await loadPaymentFeePolicy(params.supabase, params.orgId);
   const quote = calculatePaymentFeeQuote({
     invoiceBalanceCents: params.invoiceBalanceCents,
     method: paymentMethod,
     policy,
-  })
+  });
   if (!quote.enabled) {
-    throw new Error(`${quote.label} payments are not enabled for this invoice.`)
+    throw new Error(
+      `${quote.label} payments are not enabled for this invoice.`,
+    );
   }
 
   return {
@@ -319,38 +369,160 @@ async function buildPaymentIntentAmounts(params: {
       payment_method_fee_cents: String(quote.feeCents),
       payment_method_fee_percent: String(quote.feePercent),
       payment_method_fee_fixed_cents: String(quote.feeFixedCents),
-      payment_method_fee_cap_cents: quote.feeCapCents == null ? "" : String(quote.feeCapCents),
+      payment_method_fee_cap_cents:
+        quote.feeCapCents == null ? "" : String(quote.feeCapCents),
       payment_method_total_cents: String(quote.totalCents),
     },
-  }
+  };
 }
 
 async function findReusablePaymentIntent(params: {
-  supabase: ReturnType<typeof createServiceSupabaseClient>
-  orgId: string
-  invoiceId: string
-  amountCents: number
-  method?: string | null
+  supabase: ReturnType<typeof createServiceSupabaseClient>;
+  orgId: string;
+  invoiceId: string;
+  amountCents: number;
+  method?: string | null;
 }) {
   const { data } = await params.supabase
     .from("payment_intents")
     .select("*")
     .eq("org_id", params.orgId)
     .eq("invoice_id", params.invoiceId)
-    .in("status", ["requires_payment_method", "requires_confirmation", "requires_action", "processing"])
+    .in("status", [
+      "requires_payment_method",
+      "requires_confirmation",
+      "requires_action",
+      "processing",
+    ])
     .order("created_at", { ascending: false })
-    .limit(5)
+    .limit(5);
 
   const reusable = (data ?? []).find((intent: any) => {
-    const metadata = intent.metadata ?? {}
+    const metadata = intent.metadata ?? {};
     return (
       Number(intent.amount_cents ?? 0) === params.amountCents &&
       (metadata.payment_method_choice ?? null) === (params.method ?? null) &&
       typeof intent.client_secret === "string" &&
       intent.client_secret.length > 0
-    )
-  })
-  return reusable ? mapPaymentIntent(reusable) : null
+    );
+  });
+  return reusable ? mapPaymentIntent(reusable) : null;
+}
+
+function paymentReservationKey(params: {
+  invoiceId: string;
+  principalCents: number;
+  chargeCents: number;
+  currency: string;
+  method?: string | null;
+}) {
+  // A stable half-hour window makes simultaneous checkout requests converge on
+  // one database reservation and one Stripe idempotency key. Existing open
+  // intents are reused before this key is created.
+  const window = Math.floor(Date.now() / (30 * 60 * 1000));
+  const fingerprint = [
+    params.invoiceId,
+    params.principalCents,
+    params.chargeCents,
+    params.currency.toLowerCase(),
+    params.method ?? "any",
+    window,
+  ].join(":");
+  return `invoice-payment:${createHash("sha256").update(fingerprint).digest("hex")}`;
+}
+
+async function createReservedStripePaymentIntent(params: {
+  supabase: ReturnType<typeof createServiceSupabaseClient>;
+  orgId: string;
+  projectId?: string | null;
+  invoiceId: string;
+  invoiceNumber?: string | null;
+  currency: string;
+  principalCents: number;
+  chargeCents: number;
+  method?: string | null;
+  connectedAccountId: string;
+  metadata: Record<string, any>;
+}) {
+  const idempotencyKey = paymentReservationKey({
+    invoiceId: params.invoiceId,
+    principalCents: params.principalCents,
+    chargeCents: params.chargeCents,
+    currency: params.currency,
+    method: params.method,
+  });
+  const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+  const { data: reservation, error: reservationError } = await params.supabase.rpc(
+    "reserve_invoice_payment",
+    {
+      p_org_id: params.orgId,
+      p_invoice_id: params.invoiceId,
+      p_principal_cents: params.principalCents,
+      p_charge_cents: params.chargeCents,
+      p_currency: params.currency,
+      p_method: params.method ?? null,
+      p_idempotency_key: idempotencyKey,
+      p_expires_at: expiresAt,
+      p_metadata: params.metadata,
+    },
+  );
+  if (reservationError || !reservation) {
+    throw new Error(
+      reservationError?.message ?? "Unable to reserve the invoice balance",
+    );
+  }
+
+  const existingProviderIntentId = (reservation as any).provider_intent_id;
+  if (existingProviderIntentId) {
+    const { data: existing } = await params.supabase
+      .from("payment_intents")
+      .select("*")
+      .eq("idempotency_key", idempotencyKey)
+      .maybeSingle();
+    if (existing) return mapPaymentIntent(existing);
+  }
+
+  const reservationId = String((reservation as any).id);
+  const stringMetadata = Object.fromEntries(
+    Object.entries(params.metadata).map(([key, value]) => [key, String(value)]),
+  );
+  const stripeIntent = await createStripePaymentIntent({
+    amount_cents: params.chargeCents,
+    currency: params.currency,
+    invoice_id: params.invoiceId,
+    org_id: params.orgId,
+    project_id: params.projectId,
+    description: `Invoice ${params.invoiceNumber ?? params.invoiceId}`,
+    connected_account_id: params.connectedAccountId,
+    payment_method_types: stripePaymentMethodTypesFor(params.method),
+    idempotency_key: idempotencyKey,
+    metadata: {
+      ...stringMetadata,
+      payment_reservation_id: reservationId,
+    },
+  });
+
+  const { data: committed, error: commitError } = await params.supabase.rpc(
+    "commit_invoice_payment_intent",
+    {
+      p_reservation_id: reservationId,
+      p_provider_intent_id: stripeIntent.provider_intent_id,
+      p_status: stripeIntent.status,
+      p_client_secret: stripeIntent.client_secret,
+      p_connected_account_id: params.connectedAccountId,
+      p_charge_type: "direct",
+      p_metadata: {
+        ...params.metadata,
+        payment_reservation_id: reservationId,
+      },
+    },
+  );
+  if (commitError || !committed) {
+    throw new Error(
+      commitError?.message ?? "Failed to persist the payment intent",
+    );
+  }
+  return mapPaymentIntent(committed);
 }
 
 async function ensureReceiptForPayment({
@@ -363,23 +535,23 @@ async function ensureReceiptForPayment({
   method,
   reference,
 }: {
-  supabase: ReturnType<typeof createServiceSupabaseClient>
-  orgId: string
-  invoice: any
-  paymentId: string
-  amountCents: number
-  provider?: string | null
-  method?: string | null
-  reference?: string | null
+  supabase: ReturnType<typeof createServiceSupabaseClient>;
+  orgId: string;
+  invoice: any;
+  paymentId: string;
+  amountCents: number;
+  provider?: string | null;
+  method?: string | null;
+  reference?: string | null;
 }) {
   try {
     const issuedToEmail =
       (invoice?.metadata as any)?.customer_email ??
       (invoice?.metadata as any)?.customerEmail ??
       (invoice?.metadata as any)?.email ??
-      null
+      null;
 
-    await supabase.from("receipts").upsert(
+    const { data: receipt, error } = await supabase.from("receipts").upsert(
       {
         org_id: orgId,
         project_id: invoice.project_id ?? null,
@@ -396,15 +568,59 @@ async function ensureReceiptForPayment({
         },
       },
       { onConflict: "payment_id" },
-    )
+    ).select("id, delivery_status").single();
+    if (error) throw error;
+    if (!issuedToEmail || receipt.delivery_status === "sent") return;
+
+    await supabase.from("receipts").update({ delivery_status: "sending" }).eq("id", receipt.id).eq("org_id", orgId);
+    const { data: org } = await supabase
+      .from("orgs")
+      .select("name, logo_url, slug")
+      .eq("id", orgId)
+      .maybeSingle();
+    const amount = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amountCents / 100);
+    const receiptUrl = invoice.token ? `${APP_URL}/i/${invoice.token}/receipt/${receipt.id}` : undefined;
+    const html = renderStandardEmailLayout({
+      title: `Payment received for invoice ${invoice.invoice_number ?? ""}`.trim(),
+      messageHtml: `<p>We received your payment of <strong>${escapeHtml(amount)}</strong> for invoice <strong>${escapeHtml(String(invoice.invoice_number ?? invoice.id))}</strong>.</p><p>Thank you. Your invoice balance has been updated.</p>`,
+      buttonText: receiptUrl ? "View receipt" : undefined,
+      buttonUrl: receiptUrl,
+      orgName: org?.name ?? null,
+      orgLogoUrl: org?.logo_url ?? null,
+      showManageSettings: false,
+    });
+    try {
+      const delivered = await sendEmail({
+        to: [issuedToEmail],
+        subject: `Payment receipt · Invoice ${invoice.invoice_number ?? ""}`.trim(),
+        html,
+        from: getOrgSenderEmail(org?.slug, org?.name),
+        idempotencyKey: `invoice-receipt:${paymentId}`,
+      });
+      await supabase
+        .from("receipts")
+        .update({ delivery_status: delivered ? "sent" : "not_sent" })
+        .eq("id", receipt.id)
+        .eq("org_id", orgId);
+    } catch (deliveryError) {
+      await supabase.from("receipts").update({ delivery_status: "failed" }).eq("id", receipt.id).eq("org_id", orgId);
+      throw deliveryError;
+    }
   } catch (err) {
-    console.warn("Failed to create receipt for payment", err)
+    console.warn("Failed to create receipt for payment", err);
   }
 }
 
-export async function generatePayLink(input: GeneratePayLinkInput, orgId?: string) {
-  const parsed = generatePayLinkInputSchema.parse(input)
-  const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
+export async function generatePayLink(
+  input: GeneratePayLinkInput,
+  orgId?: string,
+) {
+  const parsed = generatePayLinkInputSchema.parse(input);
+  const {
+    orgId: resolvedOrgId,
+    supabase,
+    userId,
+  } = await requireOrgContext(orgId);
   await requireAuthorization({
     permission: "invoice.send",
     userId,
@@ -413,17 +629,17 @@ export async function generatePayLink(input: GeneratePayLinkInput, orgId?: strin
     logDecision: true,
     resourceType: "invoice",
     resourceId: parsed.invoice_id,
-  })
+  });
 
   const { data: invoice, error: invoiceError } = await supabase
     .from("invoices")
     .select("id, org_id, project_id")
     .eq("id", parsed.invoice_id)
     .eq("org_id", resolvedOrgId)
-    .maybeSingle()
+    .maybeSingle();
 
   if (invoiceError || !invoice) {
-    throw new Error("Invoice not found for pay link generation")
+    throw new Error("Invoice not found for pay link generation");
   }
 
   // Prefer signed HMAC link when secret is configured; fall back to hashed token if not.
@@ -432,14 +648,21 @@ export async function generatePayLink(input: GeneratePayLinkInput, orgId?: strin
       orgId: resolvedOrgId,
       projectId: invoice.project_id,
       invoiceId: parsed.invoice_id,
-      expiresInHours: parsed.expires_at ? Math.max(1, Math.floor((new Date(parsed.expires_at).getTime() - Date.now()) / 3600000)) : 72,
-    })
-    return { url, token }
+      expiresInHours: parsed.expires_at
+        ? Math.max(
+            1,
+            Math.floor(
+              (new Date(parsed.expires_at).getTime() - Date.now()) / 3600000,
+            ),
+          )
+        : 72,
+    });
+    return { url, token };
   }
 
-  const token = generateToken()
-  const token_hash = hashToken(token)
-  const nonce = generateToken()
+  const token = generateToken();
+  const token_hash = hashToken(token);
+  const nonce = generateToken();
 
   const payload = {
     org_id: resolvedOrgId,
@@ -449,157 +672,152 @@ export async function generatePayLink(input: GeneratePayLinkInput, orgId?: strin
     expires_at: parsed.expires_at ?? null,
     max_uses: parsed.max_uses ?? null,
     metadata: parsed.metadata ?? {},
-  }
+  };
 
   const { data: linkRow, error: linkError } = await supabase
     .from("payment_links")
     .insert(payload)
     .select("*")
-    .single()
+    .single();
 
   if (linkError || !linkRow) {
-    throw new Error(`Failed to create payment link: ${linkError?.message}`)
+    throw new Error(`Failed to create payment link: ${linkError?.message}`);
   }
 
-  const url = `${PAY_PATH}/${token}`
-  return { url, token, link: mapPaymentLink(linkRow) }
+  const url = `${PAY_PATH}/${token}`;
+  return { url, token, link: mapPaymentLink(linkRow) };
 }
 
 export async function validatePayLinkToken(token: string) {
   // If token is HMAC-signed, validate without DB lookup.
-  const signedPayload = validateSignedPayLink(token)
+  const signedPayload = validateSignedPayLink(token);
   if (signedPayload) {
     return {
-      link: { id: "", org_id: signedPayload.org_id, invoice_id: signedPayload.invoice_id } as PaymentLink,
+      link: {
+        id: "",
+        org_id: signedPayload.org_id,
+        invoice_id: signedPayload.invoice_id,
+      } as PaymentLink,
       invoice: {
         id: signedPayload.invoice_id,
         org_id: signedPayload.org_id,
         project_id: signedPayload.project_id,
       } as Invoice,
       signed: true as const,
-    }
+    };
   }
 
-  const token_hash = hashToken(token)
-  const supabase = createServiceSupabaseClient()
+  const token_hash = hashToken(token);
+  const supabase = createServiceSupabaseClient();
   const { data, error } = await supabase
     .from("payment_links")
-    .select("*, invoice:invoices(id, org_id, project_id, invoice_number, title, status, due_date, total_cents, balance_due_cents, metadata)")
+    .select(
+      "*, invoice:invoices(id, org_id, project_id, invoice_number, title, status, due_date, total_cents, balance_due_cents, metadata)",
+    )
     .eq("token_hash", token_hash)
-    .maybeSingle()
+    .maybeSingle();
 
-  if (error || !data) return null
-  if (data.expires_at && new Date(data.expires_at).getTime() < Date.now()) return null
-  if (data.max_uses != null && data.used_count != null && data.used_count >= data.max_uses) return null
+  if (error || !data) return null;
+  if (data.expires_at && new Date(data.expires_at).getTime() < Date.now())
+    return null;
+  if (
+    data.max_uses != null &&
+    data.used_count != null &&
+    data.used_count >= data.max_uses
+  )
+    return null;
 
   return {
     link: mapPaymentLink(data),
     invoice: data.invoice as Invoice,
-  }
+  };
 }
 
 export async function getInvoiceForPayLink(token: string) {
-  const result = await validatePayLinkToken(token)
-  if (!result) return null
+  const result = await validatePayLinkToken(token);
+  if (!result) return null;
 
-  const supabase = createServiceSupabaseClient()
+  const supabase = createServiceSupabaseClient();
   const { data, error } = await supabase
     .from("invoices")
     .select(
-      "id, org_id, project_id, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, metadata, created_at, updated_at, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
+      "id, org_id, project_id, token, invoice_number, title, status, issue_date, due_date, notes, client_visible, subtotal_cents, tax_cents, total_cents, balance_due_cents, currency, metadata, created_at, updated_at, invoice_lines (id, description, quantity, unit, unit_price_cents, metadata)",
     )
     .eq("id", result.invoice.id)
     .eq("org_id", result.invoice.org_id)
-    .maybeSingle()
+    .maybeSingle();
 
-  if (error || !data) return null
-  if (data.client_visible === false || data.status === "void") return null
+  if (error || !data) return null;
+  if (data.client_visible === false || data.status === "void") return null;
 
   return {
     link: result.link,
     invoice: {
-      ...result.invoice,
+      ...data,
       metadata: data.metadata ?? result.invoice.metadata,
       lines: (data as any).invoice_lines ?? [],
     },
-  }
+  };
 }
 
 export async function createPayLinkPaymentIntent(token: string) {
-  const result = await getInvoiceForPayLink(token)
-  if (!result) throw new Error("Payment link is invalid, expired, or unavailable")
+  const result = await getInvoiceForPayLink(token);
+  if (!result)
+    throw new Error("Payment link is invalid, expired, or unavailable");
 
-  const invoice = result.invoice
-  const supabase = createServiceSupabaseClient()
-  const invoiceBalanceCents = invoice.balance_due_cents ?? invoice.total_cents ?? 0
-  if (invoiceBalanceCents <= 0) throw new Error("Invoice has no outstanding balance")
+  const invoice = result.invoice;
+  const supabase = createServiceSupabaseClient();
+  const invoiceBalanceCents =
+    invoice.balance_due_cents ?? invoice.total_cents ?? 0;
+  if (invoiceBalanceCents <= 0)
+    throw new Error("Invoice has no outstanding balance");
 
-  const connectedAccount = await requireReadyStripeConnectedAccountForOrg(invoice.org_id)
+  const connectedAccount = await requireReadyStripeConnectedAccountForOrg(
+    invoice.org_id,
+  );
   const amounts = await buildPaymentIntentAmounts({
     supabase,
     orgId: invoice.org_id,
     invoiceBalanceCents,
     includeProcessingFee: false,
-  })
+  });
   const reusable = await findReusablePaymentIntent({
     supabase,
     orgId: invoice.org_id,
     invoiceId: invoice.id,
     amountCents: amounts.chargeAmountCents,
-  })
-  if (reusable) return reusable
+  });
+  if (reusable) return reusable;
 
-  const stripeIntent = await createStripePaymentIntent({
-    amount_cents: amounts.chargeAmountCents,
+  return createReservedStripePaymentIntent({
+    supabase,
+    orgId: invoice.org_id,
+    projectId: invoice.project_id,
+    invoiceId: invoice.id,
+    invoiceNumber: invoice.invoice_number,
     currency: invoice.currency ?? "usd",
-    invoice_id: invoice.id,
-    org_id: invoice.org_id,
-    project_id: invoice.project_id,
-    description: `Invoice ${invoice.invoice_number ?? invoice.id}`,
-    connected_account_id: connectedAccount.stripe_account_id,
-    payment_method_types: stripePaymentMethodTypesFor(),
+    principalCents: amounts.invoiceBalanceCents,
+    chargeCents: amounts.chargeAmountCents,
+    connectedAccountId: connectedAccount.stripe_account_id,
     metadata: {
-      ...amounts.metadata,
-      pay_link_authorized: "true",
+      invoice_balance_cents: amounts.invoiceBalanceCents,
+      payment_method_fee_cents: 0,
+      payment_method_total_cents: amounts.chargeAmountCents,
+      pay_link_authorized: true,
     },
-  })
-
-  const { data, error } = await supabase
-    .from("payment_intents")
-    .insert({
-      org_id: invoice.org_id,
-      project_id: invoice.project_id,
-      invoice_id: invoice.id,
-      provider: "stripe",
-      amount_cents: amounts.chargeAmountCents,
-      currency: invoice.currency ?? "usd",
-      status: stripeIntent.status,
-      client_secret: stripeIntent.client_secret,
-      provider_intent_id: stripeIntent.provider_intent_id,
-      connected_account_id: connectedAccount.stripe_account_id,
-      charge_type: "direct",
-      application_fee_amount: 0,
-      processor_fee_cents: 0,
-      platform_fee_cents: 0,
-      on_behalf_of_account_id: null,
-      idempotency_key: stripeIntent.provider_intent_id,
-      metadata: {
-        invoice_balance_cents: amounts.invoiceBalanceCents,
-        payment_method_fee_cents: 0,
-        payment_method_total_cents: amounts.chargeAmountCents,
-        pay_link_authorized: true,
-      },
-    })
-    .select("*")
-    .single()
-
-  if (error || !data) throw new Error(`Failed to create payment intent: ${error?.message}`)
-  return mapPaymentIntent(data)
+  });
 }
 
-export async function createPaymentIntent(input: CreatePaymentIntentInput, orgId?: string) {
-  const parsed = createPaymentIntentInputSchema.parse(input)
-  const { orgId: resolvedOrgId, supabase, userId } = await requireOrgContext(orgId)
+export async function createPaymentIntent(
+  input: CreatePaymentIntentInput,
+  orgId?: string,
+) {
+  const parsed = createPaymentIntentInputSchema.parse(input);
+  const {
+    orgId: resolvedOrgId,
+    supabase,
+    userId,
+  } = await requireOrgContext(orgId);
   await requireAuthorization({
     permission: "payment.read",
     userId,
@@ -608,62 +826,48 @@ export async function createPaymentIntent(input: CreatePaymentIntentInput, orgId
     logDecision: true,
     resourceType: "invoice",
     resourceId: parsed.invoice_id,
-  })
+  });
 
-  const invoice = await getInvoiceTotals(supabase, parsed.invoice_id, resolvedOrgId)
-  const amount = parsed.amount_cents ?? invoice.balance_due_cents ?? invoice.total_cents ?? 0
-  if (amount <= 0) throw new Error("Invoice has no outstanding balance")
-  const connectedAccount = await requireReadyStripeConnectedAccount(resolvedOrgId)
+  const invoice = await getInvoiceTotals(
+    supabase,
+    parsed.invoice_id,
+    resolvedOrgId,
+  );
+  const amount =
+    parsed.amount_cents ??
+    invoice.balance_due_cents ??
+    invoice.total_cents ??
+    0;
+  if (amount <= 0) throw new Error("Invoice has no outstanding balance");
+  const connectedAccount =
+    await requireReadyStripeConnectedAccount(resolvedOrgId);
   const amounts = await buildPaymentIntentAmounts({
     supabase,
     orgId: resolvedOrgId,
     invoiceBalanceCents: amount,
     method: parsed.method,
     includeProcessingFee: parsed.include_processing_fee,
-  })
+  });
   const reusable = await findReusablePaymentIntent({
     supabase,
     orgId: resolvedOrgId,
     invoiceId: parsed.invoice_id,
     amountCents: amounts.chargeAmountCents,
     method: parsed.method,
-  })
-  if (reusable) return reusable
+  });
+  if (reusable) return reusable;
 
-  const stripeIntent = await createStripePaymentIntent({
-    amount_cents: amounts.chargeAmountCents,
+  return createReservedStripePaymentIntent({
+    supabase,
+    orgId: resolvedOrgId,
+    projectId: invoice.project_id,
+    invoiceId: parsed.invoice_id,
+    invoiceNumber: invoice.invoice_number,
     currency: parsed.currency ?? "usd",
-    invoice_id: parsed.invoice_id,
-    org_id: resolvedOrgId,
-    project_id: invoice.project_id,
-    description: `Invoice ${parsed.invoice_id}`,
-    connected_account_id: connectedAccount.stripe_account_id,
-    payment_method_types: stripePaymentMethodTypesFor(parsed.method),
-    metadata: {
-      ...amounts.metadata,
-      ...(parsed.metadata
-        ? Object.fromEntries(Object.entries(parsed.metadata).map(([key, value]) => [key, String(value)]))
-        : {}),
-    },
-  })
-
-  const intentPayload = {
-    org_id: resolvedOrgId,
-    project_id: invoice.project_id,
-    invoice_id: parsed.invoice_id,
-    provider: "stripe",
-    amount_cents: amounts.chargeAmountCents,
-    currency: parsed.currency ?? "usd",
-    status: stripeIntent.status,
-    client_secret: stripeIntent.client_secret,
-    provider_intent_id: stripeIntent.provider_intent_id,
-    connected_account_id: connectedAccount.stripe_account_id,
-    charge_type: "direct",
-    application_fee_amount: 0,
-    processor_fee_cents: 0,
-    platform_fee_cents: 0,
-    on_behalf_of_account_id: null,
-    idempotency_key: stripeIntent.provider_intent_id,
+    principalCents: amounts.invoiceBalanceCents,
+    chargeCents: amounts.chargeAmountCents,
+    method: parsed.method,
+    connectedAccountId: connectedAccount.stripe_account_id,
     metadata: {
       ...(parsed.metadata ?? {}),
       payment_method_choice: parsed.method ?? null,
@@ -671,131 +875,104 @@ export async function createPaymentIntent(input: CreatePaymentIntentInput, orgId
       payment_method_fee_cents: amounts.paymentMethodFeeCents,
       payment_method_total_cents: amounts.chargeAmountCents,
     },
-  }
-
-  const { data, error } = await supabase.from("payment_intents").insert(intentPayload).select("*").single()
-
-  if (error || !data) {
-    throw new Error(`Failed to create payment intent: ${error?.message}`)
-  }
-
-  return mapPaymentIntent(data)
+  });
 }
 
-export async function createPublicInvoicePaymentIntent(input: CreatePublicInvoicePaymentIntentInput) {
-  const supabase = createServiceSupabaseClient()
+export async function createPublicInvoicePaymentIntent(
+  input: CreatePublicInvoicePaymentIntentInput,
+) {
+  const supabase = createServiceSupabaseClient();
   const { data: invoice, error } = await supabase
     .from("invoices")
-    .select("id, org_id, project_id, token, invoice_number, status, client_visible, total_cents, balance_due_cents, currency")
+    .select(
+      "id, org_id, project_id, token, invoice_number, status, client_visible, total_cents, balance_due_cents, currency",
+    )
     .eq("token", input.token)
-    .maybeSingle()
+    .maybeSingle();
 
   if (error || !invoice) {
-    throw new Error("Invoice not found or inaccessible")
+    throw new Error("Invoice not found or inaccessible");
   }
   if (invoice.client_visible === false || invoice.status === "void") {
-    throw new Error("Invoice is not available for online payment")
+    throw new Error("Invoice is not available for online payment");
   }
 
-  const invoiceBalanceCents = invoice.balance_due_cents ?? invoice.total_cents ?? 0
-  if (invoiceBalanceCents <= 0) throw new Error("Invoice has no outstanding balance")
+  const invoiceBalanceCents =
+    invoice.balance_due_cents ?? invoice.total_cents ?? 0;
+  if (invoiceBalanceCents <= 0)
+    throw new Error("Invoice has no outstanding balance");
 
   // Optional partial payment: never above the outstanding balance, never below $1.
-  const requestedCents = input.amount_cents ?? invoiceBalanceCents
+  const requestedCents = input.amount_cents ?? invoiceBalanceCents;
   if (requestedCents > invoiceBalanceCents) {
-    throw new Error("Payment amount cannot exceed the outstanding balance")
+    throw new Error("Payment amount cannot exceed the outstanding balance");
   }
   if (requestedCents < Math.min(100, invoiceBalanceCents)) {
-    throw new Error("Minimum online payment is $1.00")
+    throw new Error("Minimum online payment is $1.00");
   }
 
-  const connectedAccount = await requireReadyStripeConnectedAccountForOrg(invoice.org_id)
+  const connectedAccount = await requireReadyStripeConnectedAccountForOrg(
+    invoice.org_id,
+  );
   const amounts = await buildPaymentIntentAmounts({
     supabase,
     orgId: invoice.org_id,
     invoiceBalanceCents: requestedCents,
     method: input.method,
     includeProcessingFee: true,
-  })
+  });
   const reusable = await findReusablePaymentIntent({
     supabase,
     orgId: invoice.org_id,
     invoiceId: invoice.id,
     amountCents: amounts.chargeAmountCents,
     method: input.method,
-  })
-  if (reusable) return reusable
+  });
+  if (reusable) return reusable;
 
-  const stripeIntent = await createStripePaymentIntent({
-    amount_cents: amounts.chargeAmountCents,
+  return createReservedStripePaymentIntent({
+    supabase,
+    orgId: invoice.org_id,
+    projectId: invoice.project_id,
+    invoiceId: invoice.id,
+    invoiceNumber: invoice.invoice_number,
     currency: invoice.currency ?? "usd",
-    invoice_id: invoice.id,
-    org_id: invoice.org_id,
-    project_id: invoice.project_id,
-    description: `Invoice ${invoice.invoice_number ?? invoice.id}`,
-    connected_account_id: connectedAccount.stripe_account_id,
-    payment_method_types: stripePaymentMethodTypesFor(input.method),
-    metadata: {
-      ...amounts.metadata,
-      invoice_token: input.token,
-    },
-  })
-
-  const intentPayload = {
-    org_id: invoice.org_id,
-    project_id: invoice.project_id,
-    invoice_id: invoice.id,
-    provider: "stripe",
-    amount_cents: amounts.chargeAmountCents,
-    currency: invoice.currency ?? "usd",
-    status: stripeIntent.status,
-    client_secret: stripeIntent.client_secret,
-    provider_intent_id: stripeIntent.provider_intent_id,
-    connected_account_id: connectedAccount.stripe_account_id,
-    charge_type: "direct",
-    application_fee_amount: 0,
-    processor_fee_cents: 0,
-    platform_fee_cents: 0,
-    on_behalf_of_account_id: null,
-    idempotency_key: stripeIntent.provider_intent_id,
+    principalCents: requestedCents,
+    chargeCents: amounts.chargeAmountCents,
+    method: input.method,
+    connectedAccountId: connectedAccount.stripe_account_id,
     metadata: {
       payment_method_choice: input.method,
-      invoice_balance_cents: invoiceBalanceCents,
+      invoice_balance_cents: requestedCents,
+      invoice_outstanding_before_cents: invoiceBalanceCents,
       requested_amount_cents: requestedCents,
       is_partial_payment: requestedCents < invoiceBalanceCents,
       payment_method_fee_cents: amounts.paymentMethodFeeCents,
       payment_method_total_cents: amounts.chargeAmountCents,
     },
-  }
-
-  const { data, error: insertError } = await supabase.from("payment_intents").insert(intentPayload).select("*").single()
-  if (insertError || !data) {
-    throw new Error(`Failed to create payment intent: ${insertError?.message}`)
-  }
-
-  return mapPaymentIntent(data)
+  });
 }
 
 export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
-  const parsed = recordPaymentInputSchema.parse(input)
-  const supabase = createServiceSupabaseClient()
+  const parsed = recordPaymentInputSchema.parse(input);
+  const supabase = createServiceSupabaseClient();
 
-  let resolvedOrgId = orgId
-  let invoiceId = parsed.invoice_id
-  let paymentLinkId: string | undefined
+  let resolvedOrgId = orgId;
+  let invoiceId = parsed.invoice_id;
+  let paymentLinkId: string | undefined;
 
   if (parsed.pay_link_token) {
-    const validation = await validatePayLinkToken(parsed.pay_link_token)
-    if (!validation) throw new Error("Payment link is invalid or expired")
-    resolvedOrgId = validation.invoice.org_id
-    invoiceId = validation.invoice.id
-    paymentLinkId = validation.link.id
+    const validation = await validatePayLinkToken(parsed.pay_link_token);
+    if (!validation) throw new Error("Payment link is invalid or expired");
+    resolvedOrgId = validation.invoice.org_id;
+    invoiceId = validation.invoice.id;
+    paymentLinkId = validation.link.id;
   }
 
   if (!resolvedOrgId || !invoiceId) {
-    const ctx = await requireOrgContext(orgId)
-    resolvedOrgId = ctx.orgId
-    invoiceId = invoiceId ?? parsed.invoice_id ?? undefined
+    const ctx = await requireOrgContext(orgId);
+    resolvedOrgId = ctx.orgId;
+    invoiceId = invoiceId ?? parsed.invoice_id ?? undefined;
     await requireAuthorization({
       permission: "payment.release",
       userId: ctx.userId,
@@ -804,14 +981,14 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
       logDecision: true,
       resourceType: "invoice",
       resourceId: invoiceId ?? undefined,
-    })
+    });
   }
 
   if (!resolvedOrgId || !invoiceId) {
-    throw new Error("Missing org or invoice for payment")
+    throw new Error("Missing org or invoice for payment");
   }
 
-  const invoice = await getInvoiceTotals(supabase, invoiceId, resolvedOrgId)
+  const invoice = await getInvoiceTotals(supabase, invoiceId, resolvedOrgId);
 
   if (parsed.provider_payment_id) {
     const { data: existing } = await supabase
@@ -819,16 +996,43 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
       .select("*")
       .eq("org_id", resolvedOrgId)
       .eq("provider_payment_id", parsed.provider_payment_id)
-      .maybeSingle()
+      .maybeSingle();
 
-    if (existing) return mapPayment(existing)
+    if (existing && existing.status === (parsed.status ?? "succeeded")) {
+      return mapPayment(existing);
+    }
   }
 
-  const grossCents = metadataInt(parsed.metadata, "payment_method_total_cents") ?? parsed.amount_cents
-  const processorFeeCents = metadataInt(parsed.metadata, "processor_fee_cents") ?? (parsed.fee_cents ?? 0)
-  const platformFeeCents = metadataInt(parsed.metadata, "platform_fee_cents") ?? 0
-  const applicationFeeCents = metadataInt(parsed.metadata, "application_fee_cents") ?? platformFeeCents
-  const totalFeeCents = processorFeeCents + platformFeeCents
+  const { data: providerIntent } = parsed.provider_payment_id
+    ? await supabase
+        .from("payment_intents")
+        .select("amount_cents,provider_charge_id,connected_account_id,processor_fee_cents,platform_fee_cents,application_fee_amount,provider_transfer_id,metadata")
+        .eq("org_id", resolvedOrgId)
+        .eq("provider_intent_id", parsed.provider_payment_id)
+        .maybeSingle()
+    : { data: null };
+  const mergedMetadata = {
+    ...((providerIntent?.metadata as Record<string, any> | null) ?? {}),
+    ...(parsed.metadata ?? {}),
+  };
+
+  const providerGrossCents = Number(providerIntent?.amount_cents ?? 0);
+  const providerProcessorFeeCents = Number(providerIntent?.processor_fee_cents ?? 0);
+  const providerPlatformFeeCents = Number(providerIntent?.platform_fee_cents ?? 0);
+  const providerApplicationFeeCents = Number(providerIntent?.application_fee_amount ?? 0);
+  const grossCents = providerGrossCents > 0
+    ? providerGrossCents
+    : (metadataInt(mergedMetadata, "payment_method_total_cents") ?? parsed.amount_cents);
+  const processorFeeCents = providerProcessorFeeCents > 0
+    ? providerProcessorFeeCents
+    : (metadataInt(mergedMetadata, "processor_fee_cents") ?? parsed.fee_cents ?? 0);
+  const platformFeeCents = providerPlatformFeeCents > 0
+    ? providerPlatformFeeCents
+    : (metadataInt(mergedMetadata, "platform_fee_cents") ?? 0);
+  const applicationFeeCents = providerApplicationFeeCents > 0
+    ? providerApplicationFeeCents
+    : (metadataInt(mergedMetadata, "application_fee_cents") ?? platformFeeCents);
+  const totalFeeCents = processorFeeCents + platformFeeCents;
 
   const payload = {
     org_id: resolvedOrgId,
@@ -840,59 +1044,59 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
     method: parsed.method ?? "ach",
     provider: parsed.provider ?? "stripe",
     provider_payment_id: parsed.provider_payment_id,
-    provider_charge_id: parsed.metadata?.provider_charge_id,
-    connected_account_id: parsed.metadata?.connected_account_id,
+    provider_charge_id: providerIntent?.provider_charge_id ?? parsed.metadata?.provider_charge_id,
+    connected_account_id: providerIntent?.connected_account_id ?? parsed.metadata?.connected_account_id,
     status: parsed.status ?? "succeeded",
     reference: parsed.reference ?? null,
     fee_cents: totalFeeCents,
     processor_fee_cents: processorFeeCents,
     platform_fee_cents: platformFeeCents,
     application_fee_cents: applicationFeeCents,
-    provider_balance_transaction_id: parsed.metadata?.provider_balance_transaction_id,
-    provider_transfer_id: parsed.metadata?.provider_transfer_id,
+    provider_balance_transaction_id:
+      parsed.metadata?.provider_balance_transaction_id,
+    provider_transfer_id: providerIntent?.provider_transfer_id ?? parsed.metadata?.provider_transfer_id,
     net_cents: grossCents - totalFeeCents,
-    metadata: parsed.metadata ?? {},
+    metadata: mergedMetadata,
     idempotency_key: parsed.idempotency_key ?? null,
-  }
+  };
 
-  const { data: paymentResult, error: paymentError } = await supabase.rpc("apply_invoice_payment_atomic", {
-    p_org_id: resolvedOrgId,
-    p_invoice_id: invoiceId,
-    p_amount_cents: payload.amount_cents,
-    p_currency: payload.currency,
-    p_method: payload.method,
-    p_provider: payload.provider,
-    p_provider_payment_id: payload.provider_payment_id,
-    p_status: payload.status,
-    p_reference: payload.reference,
-    p_fee_cents: payload.fee_cents,
-    p_gross_cents: payload.gross_cents,
-    p_net_cents: payload.net_cents,
-    p_idempotency_key: payload.idempotency_key,
-    p_metadata: payload.metadata,
-  })
+  const { data: paymentResult, error: paymentError } = await supabase.rpc(
+    "apply_invoice_payment_with_details_atomic",
+    {
+      p_org_id: resolvedOrgId,
+      p_invoice_id: invoiceId,
+      p_amount_cents: payload.amount_cents,
+      p_currency: payload.currency,
+      p_method: payload.method,
+      p_provider: payload.provider,
+      p_provider_payment_id: payload.provider_payment_id,
+      p_status: payload.status,
+      p_reference: payload.reference,
+      p_fee_cents: payload.fee_cents,
+      p_gross_cents: payload.gross_cents,
+      p_net_cents: payload.net_cents,
+      p_idempotency_key: payload.idempotency_key,
+      p_metadata: payload.metadata,
+      p_received_at: parsed.received_at,
+      p_provider_charge_id: payload.provider_charge_id,
+      p_connected_account_id: payload.connected_account_id,
+      p_processor_fee_cents: payload.processor_fee_cents,
+      p_platform_fee_cents: payload.platform_fee_cents,
+      p_application_fee_cents: payload.application_fee_cents,
+      p_provider_balance_transaction_id:
+        payload.provider_balance_transaction_id,
+      p_provider_transfer_id: payload.provider_transfer_id,
+    },
+  );
 
   if (paymentError || !paymentResult) {
-    throw new Error(`Failed to record payment: ${paymentError?.message}`)
+    throw new Error(`Failed to record payment: ${paymentError?.message}`);
   }
 
-  const paymentRow = paymentResult as any
-  await supabase
-    .from("payments")
-    .update({
-      received_at: parsed.received_at,
-      provider_charge_id: payload.provider_charge_id,
-      connected_account_id: payload.connected_account_id,
-      processor_fee_cents: payload.processor_fee_cents,
-      platform_fee_cents: payload.platform_fee_cents,
-      application_fee_cents: payload.application_fee_cents,
-      provider_balance_transaction_id: payload.provider_balance_transaction_id,
-      provider_transfer_id: payload.provider_transfer_id,
-    })
-    .eq("org_id", resolvedOrgId)
-    .eq("id", paymentRow.id)
+  const paymentRow = paymentResult as any;
+  const paymentSettled = ["succeeded", "completed", "paid"].includes(payload.status);
 
-  if (payload.status === "succeeded" && payload.invoice_id) {
+  if (paymentSettled && payload.invoice_id) {
     await ensureReceiptForPayment({
       supabase,
       orgId: resolvedOrgId,
@@ -902,14 +1106,14 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
       provider: payload.provider,
       method: payload.method,
       reference: payload.reference,
-    })
+    });
     // Non-fatal: releases any pending lien waivers once this payment settles the invoice.
     await releaseInvoiceLienWaiversIfPaid({
       supabase,
       orgId: resolvedOrgId,
       invoiceId,
       paymentId: paymentRow.id,
-    })
+    });
   }
 
   await recordAudit({
@@ -919,7 +1123,7 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
     entityType: "payment",
     entityId: paymentRow.id,
     after: payload,
-  })
+  });
 
   await recordEvent({
     orgId: resolvedOrgId,
@@ -934,58 +1138,70 @@ export async function recordPayment(input: RecordPaymentInput, orgId?: string) {
       amount_cents: parsed.amount_cents,
       status: parsed.status ?? "succeeded",
     },
-  })
+  });
 
-  // Auto-generate conditional lien waiver for this payment (best-effort).
-  try {
-    await generateConditionalWaiverForPayment(paymentRow.id, resolvedOrgId)
-  } catch (waiverError) {
-    console.error("Failed to generate lien waiver", waiverError)
+  // A processing ACH is not money received and cannot release a waiver.
+  if (paymentSettled) {
+    try {
+      await generateConditionalWaiverForPayment(paymentRow.id, resolvedOrgId);
+    } catch (waiverError) {
+      console.error("Failed to generate lien waiver", waiverError);
+    }
   }
 
-  if (paymentLinkId) {
+  if (paymentSettled && paymentLinkId) {
     const { data: linkRow } = await supabase
       .from("payment_links")
       .select("used_count, max_uses")
       .eq("id", paymentLinkId)
-      .maybeSingle()
+      .maybeSingle();
 
     if (linkRow) {
-      const nextUsed = (linkRow.used_count ?? 0) + 1
-      await supabase.from("payment_links").update({ used_count: nextUsed }).eq("id", paymentLinkId)
+      const nextUsed = (linkRow.used_count ?? 0) + 1;
+      await supabase
+        .from("payment_links")
+        .update({ used_count: nextUsed })
+        .eq("id", paymentLinkId);
     }
-  } else if (parsed.pay_link_token) {
+  } else if (paymentSettled && parsed.pay_link_token) {
     // HMAC-signed link path: rotate nonce to prevent replay when possible.
-    await rotatePayLinkNonce(invoiceId, resolvedOrgId)
+    await rotatePayLinkNonce(invoiceId, resolvedOrgId);
   }
 
-  try {
-    await enqueuePaymentSync(paymentRow.id, resolvedOrgId)
-  } catch (err) {
-    console.error("Failed to enqueue QBO payment sync", err)
+  if (paymentSettled) {
+    try {
+      await enqueuePaymentSync(paymentRow.id, resolvedOrgId);
+    } catch (err) {
+      console.error("Failed to enqueue QBO payment sync", err);
+    }
   }
 
-  return mapPayment({ ...paymentRow, ...payload })
+  return mapPayment({ ...paymentRow, ...payload });
 }
 
 export async function recordPaymentReversal(input: {
-  paymentId?: string
-  providerPaymentId?: string
-  providerChargeId?: string
-  amountCents: number
-  reversalType: "refund" | "ach_return" | "chargeback" | "dispute" | "correction"
-  providerReversalId?: string
-  reason?: string
-  metadata?: Record<string, any>
-  orgId?: string
+  paymentId?: string;
+  providerPaymentId?: string;
+  providerChargeId?: string;
+  amountCents: number;
+  reversalType:
+    | "refund"
+    | "ach_return"
+    | "chargeback"
+    | "dispute"
+    | "correction";
+  providerReversalId?: string;
+  reason?: string;
+  metadata?: Record<string, any>;
+  orgId?: string;
 }) {
-  const supabase = createServiceSupabaseClient()
-  let resolvedOrgId = input.orgId
-  let paymentId = input.paymentId
+  const supabase = createServiceSupabaseClient();
+  let resolvedOrgId = input.orgId;
+  let paymentId = input.paymentId;
 
   if (!resolvedOrgId) {
-    const ctx = await requireOrgContext()
-    resolvedOrgId = ctx.orgId
+    const ctx = await requireOrgContext();
+    resolvedOrgId = ctx.orgId;
     await requireAuthorization({
       permission: "payment.release",
       userId: ctx.userId,
@@ -994,7 +1210,7 @@ export async function recordPaymentReversal(input: {
       logDecision: true,
       resourceType: "payment",
       resourceId: paymentId,
-    })
+    });
   }
 
   if (!paymentId && input.providerPaymentId) {
@@ -1003,8 +1219,8 @@ export async function recordPaymentReversal(input: {
       .select("id")
       .eq("org_id", resolvedOrgId)
       .eq("provider_payment_id", input.providerPaymentId)
-      .maybeSingle()
-    paymentId = payment?.id
+      .maybeSingle();
+    paymentId = payment?.id;
   }
   if (!paymentId && input.providerChargeId) {
     const { data: payment } = await supabase
@@ -1012,10 +1228,10 @@ export async function recordPaymentReversal(input: {
       .select("id")
       .eq("org_id", resolvedOrgId)
       .eq("provider_charge_id", input.providerChargeId)
-      .maybeSingle()
-    paymentId = payment?.id
+      .maybeSingle();
+    paymentId = payment?.id;
   }
-  if (!paymentId) throw new Error("Payment not found for reversal")
+  if (!paymentId) throw new Error("Payment not found for reversal");
 
   const { data, error } = await supabase.rpc("record_payment_reversal_atomic", {
     p_org_id: resolvedOrgId,
@@ -1025,9 +1241,9 @@ export async function recordPaymentReversal(input: {
     p_provider_reversal_id: input.providerReversalId ?? null,
     p_reason: input.reason ?? null,
     p_metadata: input.metadata ?? {},
-  })
+  });
   if (error || !data) {
-    throw new Error(`Failed to record payment reversal: ${error?.message}`)
+    throw new Error(`Failed to record payment reversal: ${error?.message}`);
   }
 
   await recordAudit({
@@ -1037,7 +1253,13 @@ export async function recordPaymentReversal(input: {
     entityType: "payment_reversal",
     entityId: (data as any).id,
     after: data,
-  })
+  });
+  const { data: reversedPayment } = await supabase
+    .from("payments")
+    .select("project_id")
+    .eq("org_id", resolvedOrgId)
+    .eq("id", paymentId)
+    .maybeSingle();
   await recordEvent({
     orgId: resolvedOrgId,
     eventType: "payment_reversed",
@@ -1047,35 +1269,48 @@ export async function recordPaymentReversal(input: {
       amount_cents: input.amountCents,
       reversal_type: input.reversalType,
       provider_reversal_id: input.providerReversalId ?? null,
+      project_id: reversedPayment?.project_id ?? null,
     },
-  })
+  });
 
-  return data
+  return data;
 }
 
 export async function resolvePaymentReversal(input: {
-  orgId: string
-  providerReversalId: string
-  outcome: "succeeded" | "reversed"
-  reason?: string | null
-  metadata?: Record<string, any>
+  orgId: string;
+  providerReversalId: string;
+  outcome: "succeeded" | "reversed";
+  reason?: string | null;
+  metadata?: Record<string, any>;
 }) {
-  const supabase = createServiceSupabaseClient()
-  const { data, error } = await supabase.rpc("resolve_payment_reversal_atomic", {
-    p_org_id: input.orgId,
-    p_provider_reversal_id: input.providerReversalId,
-    p_outcome: input.outcome,
-    p_reason: input.reason ?? null,
-    p_metadata: input.metadata ?? {},
-  })
+  const supabase = createServiceSupabaseClient();
+  const { data, error } = await supabase.rpc(
+    "resolve_payment_reversal_atomic",
+    {
+      p_org_id: input.orgId,
+      p_provider_reversal_id: input.providerReversalId,
+      p_outcome: input.outcome,
+      p_reason: input.reason ?? null,
+      p_metadata: input.metadata ?? {},
+    },
+  );
   if (error || !data) {
-    throw new Error(`Failed to resolve payment reversal: ${error?.message ?? "No result returned"}`)
+    throw new Error(
+      `Failed to resolve payment reversal: ${error?.message ?? "No result returned"}`,
+    );
   }
-  return data
+  return data;
 }
 
-export async function listPaymentsForInvoice(invoiceId: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+export async function listPaymentsForInvoice(
+  invoiceId: string,
+  orgId?: string,
+) {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
   await requireAuthorization({
     permission: "payment.read",
     userId,
@@ -1084,7 +1319,7 @@ export async function listPaymentsForInvoice(invoiceId: string, orgId?: string) 
     logDecision: true,
     resourceType: "invoice",
     resourceId: invoiceId,
-  })
+  });
   const [paymentsRes, allocationsRes] = await Promise.all([
     supabase
       .from("payments")
@@ -1096,15 +1331,23 @@ export async function listPaymentsForInvoice(invoiceId: string, orgId?: string) 
       .select("*, payment:payments(*)")
       .eq("org_id", resolvedOrgId)
       .eq("invoice_id", invoiceId),
-  ])
+  ]);
 
-  if (paymentsRes.error) throw new Error(`Failed to list payments: ${paymentsRes.error.message}`)
-  if (allocationsRes.error) throw new Error(`Failed to list payment allocations: ${allocationsRes.error.message}`)
+  if (paymentsRes.error)
+    throw new Error(`Failed to list payments: ${paymentsRes.error.message}`);
+  if (allocationsRes.error)
+    throw new Error(
+      `Failed to list payment allocations: ${allocationsRes.error.message}`,
+    );
 
   return [
     ...(paymentsRes.data ?? []).map(mapPayment),
-    ...(allocationsRes.data ?? []).map((row: any) => mapAllocatedPayment(row, invoiceId)),
-  ].sort((a, b) => String(b.received_at ?? "").localeCompare(String(a.received_at ?? "")))
+    ...(allocationsRes.data ?? []).map((row: any) =>
+      mapAllocatedPayment(row, invoiceId),
+    ),
+  ].sort((a, b) =>
+    String(b.received_at ?? "").localeCompare(String(a.received_at ?? "")),
+  );
 }
 
 /**
@@ -1113,8 +1356,15 @@ export async function listPaymentsForInvoice(invoiceId: string, orgId?: string) 
  * receivable detail sheet's payment breakdown so users can see what settled an invoice
  * — not just the resulting balance.
  */
-export async function getInvoicePaymentActivity(invoiceId: string, orgId?: string) {
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+export async function getInvoicePaymentActivity(
+  invoiceId: string,
+  orgId?: string,
+) {
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
   await requireAuthorization({
     permission: "payment.read",
     userId,
@@ -1123,7 +1373,7 @@ export async function getInvoicePaymentActivity(invoiceId: string, orgId?: strin
     logDecision: true,
     resourceType: "invoice",
     resourceId: invoiceId,
-  })
+  });
 
   const [paymentsRes, allocationsRes, reversalsRes] = await Promise.all([
     supabase
@@ -1142,24 +1392,39 @@ export async function getInvoicePaymentActivity(invoiceId: string, orgId?: strin
       .eq("org_id", resolvedOrgId)
       .eq("invoice_id", invoiceId)
       .order("occurred_at", { ascending: false }),
-  ])
+  ]);
 
-  if (paymentsRes.error) throw new Error(`Failed to list payments: ${paymentsRes.error.message}`)
-  if (allocationsRes.error) throw new Error(`Failed to list payment allocations: ${allocationsRes.error.message}`)
-  if (reversalsRes.error) throw new Error(`Failed to list payment reversals: ${reversalsRes.error.message}`)
+  if (paymentsRes.error)
+    throw new Error(`Failed to list payments: ${paymentsRes.error.message}`);
+  if (allocationsRes.error)
+    throw new Error(
+      `Failed to list payment allocations: ${allocationsRes.error.message}`,
+    );
+  if (reversalsRes.error)
+    throw new Error(
+      `Failed to list payment reversals: ${reversalsRes.error.message}`,
+    );
 
   return {
     payments: [
       ...(paymentsRes.data ?? []).map(mapPayment),
-      ...(allocationsRes.data ?? []).map((row: any) => mapAllocatedPayment(row, invoiceId)),
-    ].sort((a, b) => String(b.received_at ?? "").localeCompare(String(a.received_at ?? ""))),
+      ...(allocationsRes.data ?? []).map((row: any) =>
+        mapAllocatedPayment(row, invoiceId),
+      ),
+    ].sort((a, b) =>
+      String(b.received_at ?? "").localeCompare(String(a.received_at ?? "")),
+    ),
     reversals: (reversalsRes.data ?? []).map(mapPaymentReversal),
-  }
+  };
 }
 
 export async function upsertReminderRule(input: unknown, orgId?: string) {
-  const parsed = reminderRuleSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const parsed = reminderRuleSchema.parse(input);
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
   await requireAuthorization({
     permission: "invoice.send",
     userId,
@@ -1168,17 +1433,17 @@ export async function upsertReminderRule(input: unknown, orgId?: string) {
     logDecision: true,
     resourceType: "invoice",
     resourceId: parsed.invoice_id,
-  })
+  });
 
   const { data: invoice, error: invoiceError } = await supabase
     .from("invoices")
     .select("id, org_id")
     .eq("id", parsed.invoice_id)
     .eq("org_id", resolvedOrgId)
-    .maybeSingle()
+    .maybeSingle();
 
   if (invoiceError || !invoice) {
-    throw new Error("Invoice not found for reminder rule")
+    throw new Error("Invoice not found for reminder rule");
   }
 
   const { data, error } = await supabase
@@ -1193,18 +1458,22 @@ export async function upsertReminderRule(input: unknown, orgId?: string) {
       metadata: parsed.metadata ?? {},
     })
     .select("*")
-    .single()
+    .single();
 
   if (error || !data) {
-    throw new Error(`Failed to create reminder rule: ${error?.message}`)
+    throw new Error(`Failed to create reminder rule: ${error?.message}`);
   }
 
-  return data
+  return data;
 }
 
 export async function upsertLateFeeRule(input: unknown, orgId?: string) {
-  const parsed = lateFeeRuleSchema.parse(input)
-  const { supabase, orgId: resolvedOrgId, userId } = await requireOrgContext(orgId)
+  const parsed = lateFeeRuleSchema.parse(input);
+  const {
+    supabase,
+    orgId: resolvedOrgId,
+    userId,
+  } = await requireOrgContext(orgId);
   await requireAuthorization({
     permission: "payment.release",
     userId,
@@ -1213,7 +1482,7 @@ export async function upsertLateFeeRule(input: unknown, orgId?: string) {
     logDecision: true,
     resourceType: parsed.project_id ? "project" : "org",
     resourceId: parsed.project_id ?? resolvedOrgId,
-  })
+  });
 
   const { data, error } = await supabase
     .from("late_fees")
@@ -1229,56 +1498,64 @@ export async function upsertLateFeeRule(input: unknown, orgId?: string) {
       metadata: parsed.metadata ?? {},
     })
     .select("*")
-    .single()
+    .single();
 
   if (error || !data) {
-    throw new Error(`Failed to create late fee rule: ${error?.message}`)
+    throw new Error(`Failed to create late fee rule: ${error?.message}`);
   }
 
-  return data
+  return data;
 }
 
 export async function findDueReminders() {
-  const supabase = createServiceSupabaseClient()
+  const supabase = createServiceSupabaseClient();
   const { data, error } = await supabase
     .from("reminders")
     .select(
       "id, org_id, invoice:invoices(id, org_id, due_date, status, balance_due_cents, invoice_number, project_id), channel, schedule, offset_days, template_id, metadata",
-    )
+    );
 
   if (error) {
-    throw new Error(`Failed to load reminders: ${error.message}`)
+    throw new Error(`Failed to load reminders: ${error.message}`);
   }
 
-  const now = new Date()
+  const now = new Date();
   const due = (data ?? []).filter((row) => {
-    const invoice = Array.isArray(row.invoice) ? row.invoice[0] : row.invoice
-    const dueDate = invoice?.due_date ? new Date(invoice.due_date) : undefined
-    if (!dueDate) return false
-    const diffDays = Math.floor((dueDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
-    const overdueDays = Math.floor((now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24))
+    const invoice = Array.isArray(row.invoice) ? row.invoice[0] : row.invoice;
+    const dueDate = invoice?.due_date ? new Date(invoice.due_date) : undefined;
+    if (!dueDate) return false;
+    const diffDays = Math.floor(
+      (dueDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24),
+    );
+    const overdueDays = Math.floor(
+      (now.getTime() - dueDate.getTime()) / (1000 * 60 * 60 * 24),
+    );
 
     if (row.schedule === "before_due") {
-      return diffDays <= row.offset_days && diffDays >= 0
+      return diffDays <= row.offset_days && diffDays >= 0;
     }
     if (row.schedule === "after_due" || row.schedule === "overdue") {
-      return overdueDays >= row.offset_days && (invoice?.balance_due_cents ?? 0) > 0
+      return (
+        overdueDays >= row.offset_days && (invoice?.balance_due_cents ?? 0) > 0
+      );
     }
-    return false
-  })
+    return false;
+  });
 
-  return due
+  return due;
 }
 
 export async function findLateFeeCandidates() {
-  const supabase = createServiceSupabaseClient()
+  const supabase = createServiceSupabaseClient();
   const { data, error } = await supabase
     .from("late_fees")
-    .select("id, org_id, project_id, strategy, amount_cents, percent_rate, grace_days, repeat_days, max_applications, metadata")
+    .select(
+      "id, org_id, project_id, strategy, amount_cents, percent_rate, grace_days, repeat_days, max_applications, metadata",
+    );
 
   if (error) {
-    throw new Error(`Failed to load late fee rules: ${error.message}`)
+    throw new Error(`Failed to load late fee rules: ${error.message}`);
   }
 
-  return data ?? []
+  return data ?? [];
 }

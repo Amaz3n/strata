@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation"
+export const instant = false
 interface PageProps {
   params: Promise<{ id: string }>
 }
